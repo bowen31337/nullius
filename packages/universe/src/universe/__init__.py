@@ -1,14 +1,17 @@
 """The tradable universe, as a workspace component.
 
 Features (app_spec.xml, "Universe & Survivorship Integrity", features 40,
-41, 43, 44 and 47): persist a monthly tradable universe computed as top-N by
+41, 43, 44, 45 and 47): persist a monthly tradable universe computed as top-N by
 trailing 30-day median dollar volume, exclude symbols whose median falls
 below a configured liquidity floor — persisting each exclusion with its
 reason — persist the point-in-time ``universe_membership`` rows
 ``(symbol, valid_from, valid_to, delist_reason)`` those builds imply, retain
 every symbol's daily price history so a delisted name still answers to any
-window covering its listed period, and audit each historical window for the
-delisted symbols still present in it. docs/nullius-tech-architecture.md §4.3
+window covering its listed period, audit each historical window for the
+delisted symbols still present in it, and reject a build whose window is
+known to contain delistings yet counts ``delisted=0`` — the pruning
+signature the gate (:mod:`universe.gate`) refuses to persist.
+docs/nullius-tech-architecture.md §4.3
 fixes the definition; the module docstrings in this package record the mechanics.
 
 Two contract notes for anyone composing or extending this component:
@@ -41,6 +44,13 @@ from .audit import (
 )
 from .bars import DailyBar, coerce_date
 from .config import UniverseConfig
+from .gate import (
+    SurvivorshipGap,
+    UniverseBuildRejected,
+    known_delistings,
+    reject_survivorship_gaps,
+    survivorship_gaps,
+)
 from .history import PriceBar, PriceHistoryStore
 from .monthly import (
     MonthlyUniverse,
@@ -105,6 +115,12 @@ __all__ = [
     "render_report",
     "persist_survivorship_audit",
     "load_survivorship_audit",
+    # Feature 45 — the survivorship gate
+    "SurvivorshipGap",
+    "UniverseBuildRejected",
+    "known_delistings",
+    "survivorship_gaps",
+    "reject_survivorship_gaps",
 ]
 
 __version__ = "0.1.0"

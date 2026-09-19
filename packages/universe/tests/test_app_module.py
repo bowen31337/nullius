@@ -20,11 +20,23 @@ audit report is *emitted by the composed system*, so the end-to-end reads
 it through the seat — composed application, universe service, report lines
 with the window bounds and the delisted-symbol count — rather than through
 a directly imported service. That is the whole reason the seat exists.
+
+The feature-45 path is pinned the same way: the survivorship gate rides
+the composed service's own persist path, so the end-to-end composes the
+application and is *refused* by it when the build's window is known to
+contain a delisting yet would count ``delisted=0`` — and accepted once the
+delisted name's history lands. The rejection crosses the scan seam, so it
+is asserted as a ``ValueError`` carrying the gate's message, not as the
+directly imported exception class (the loader imports scanned packages
+under their own mangled names; the scanned copy's exception is a sibling
+of the imported one, exactly as its service class is).
 """
 
 from __future__ import annotations
 
 import datetime as dt
+
+import pytest
 
 from app.module_loader import Application
 
@@ -117,4 +129,33 @@ def test_the_seat_emits_the_survivorship_report(test_database_url: str) -> None:
     assert april == "2026-04 [2026-03-02, 2026-03-31] delisted=0"
     # May's window covers BBB's retained closes after the universe dropped
     # it: the period known to contain a delisting reports it, by name.
+    assert may == "2026-05 [2026-04-01, 2026-04-30] delisted=1: BBBUSDT"
+
+
+def test_the_seat_rejects_a_build_on_pruned_history(test_database_url: str) -> None:
+    # The feature-45 flow through the app namespace: the composed service's
+    # own persist path refuses a build whose window is known to contain a
+    # delisting but would count delisted=0 — the survivor's April closes
+    # are in the history and the delisted name's are not — and nothing
+    # lands until the missing history does.
+    from app.modules.universe import universe_component
+
+    service = universe_component()
+    top_one = UniverseConfig(top_n=1)
+    service.persist(service.build(_two_symbol_april(), "2026-04", config=top_one))
+    service.ingest_prices(
+        [PriceBar("AAAUSDT", APRIL_1 + dt.timedelta(days=offset), 10.0) for offset in range(30)]
+    )
+
+    with pytest.raises(ValueError, match="universe build rejected.*BBBUSDT"):
+        service.persist(service.build(_two_symbol_may(), "2026-05", config=top_one))
+    assert service.load("2026-05") is None
+
+    # The delisted name's history lands, and the same build is accepted —
+    # the report now counts the name the gate defended.
+    service.ingest_prices(
+        [PriceBar("BBBUSDT", APRIL_1 + dt.timedelta(days=offset), 20.0) for offset in range(30)]
+    )
+    service.persist(service.build(_two_symbol_may(), "2026-05", config=top_one))
+    (_april, may) = service.render_survivorship_report()
     assert may == "2026-05 [2026-04-01, 2026-04-30] delisted=1: BBBUSDT"

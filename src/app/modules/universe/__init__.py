@@ -20,12 +20,18 @@ The seat is where the survivorship audit report (feature 44) is read out of
 the composed system: the caller asks for the component and the component
 already knows how to emit the report — one line per historical window
 carrying the window bounds and the delisted-symbol count
-(``service.render_survivorship_report()``). Like the snapshot seat, this
+(``service.render_survivorship_report()``). The survivorship gate
+(feature 45) rides the same composed service without a seat API of its
+own: a build whose window is known to contain delistings yet counts
+``delisted=0`` is refused by ``service.persist()`` itself, so composing
+the component is enough to be protected. Like the snapshot seat, this
 module answers exactly one question — *what is the composed universe
-component?* — and does not re-export the audit or its rendering: a caller
-who has the service can reach ``service.survivorship_audit()`` for the
-counted, listed names and the rendering for the report lines, and a second
-spelling of those APIs here would be a second thing to keep in sync.
+component?* — and does not re-export the audit, its rendering or the
+gate: a caller who has the service can reach
+``service.survivorship_audit()`` for the counted, listed names, the
+rendering for the report lines, and ``service.survivorship_gaps()`` for
+the windows the gate would refuse, and a second spelling of those APIs
+here would be a second thing to keep in sync.
 """
 
 from __future__ import annotations

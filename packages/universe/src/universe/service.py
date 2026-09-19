@@ -27,6 +27,7 @@ from typing import Iterable, Optional
 from .audit import WindowAudit, render_report, survivorship_audit
 from .bars import DailyBar
 from .config import UniverseConfig
+from .gate import SurvivorshipGap, reject_survivorship_gaps, survivorship_gaps
 from .history import PriceBar, PriceHistoryStore
 from .membership import MembershipInterval
 from .monthly import (
@@ -34,6 +35,7 @@ from .monthly import (
     UniverseBuildResult,
     build_monthly_universe,
     build_monthly_universes,
+    month_key,
 )
 from .store import (
     DATABASE_URL_ENV,
@@ -126,7 +128,14 @@ class UniverseService:
     def persist(
         self, universe: MonthlyUniverse, database_url: Optional[str] = None
     ) -> int:
-        """Persist a build to this service's store (or an explicit one)."""
+        """Persist a build to this service's store (or an explicit one).
+
+        Refuses the build — :class:`~universe.gate.UniverseBuildRejected`,
+        nothing written — when its own trailing window is known to contain
+        delistings, is populated in the retained price history, and would
+        count ``delisted=0``: that window is on pruned history, and the
+        store declines to persist a universe built on it (feature 45).
+        """
         return persist_monthly_universe(
             universe, database_url if database_url is not None else self.database_url
         )
@@ -245,12 +254,9 @@ class UniverseService:
         url = database_url if database_url is not None else self.database_url
         universes = load_all_monthly_universes(url)
         intervals = load_universe_membership(url)
-        if months is not None:
-            from .monthly import month_key
-
-            wanted = {month_key(month) for month in months}
-            universes = tuple(u for u in universes if u.month in wanted)
-        return survivorship_audit(self.price_history, intervals, universes, url)
+        return survivorship_audit(
+            self.price_history, intervals, _months_only(universes, months), url
+        )
 
     def render_survivorship_report(
         self,
@@ -259,6 +265,58 @@ class UniverseService:
     ) -> tuple[str, ...]:
         """The survivorship audit rendered as one line per window."""
         return render_report(self.survivorship_audit(months, database_url))
+
+    def survivorship_gaps(
+        self,
+        months: Optional[Iterable[str | date | datetime]] = None,
+        database_url: Optional[str] = None,
+    ) -> tuple[SurvivorshipGap, ...]:
+        """The windows whose delisted count is 0 but must not be (feature 45).
+
+        Every persisted build whose trailing window the membership table
+        says contained delistings, whose price history is populated, and
+        whose audit therefore under-reports — the pruning signature the
+        gate exists to catch. Reading the gaps does not reject anything:
+        this is the operator's inspection, the same facts
+        :meth:`reject_survivorship_gaps` would raise on.
+        """
+        url = database_url if database_url is not None else self.database_url
+        universes = load_all_monthly_universes(url)
+        intervals = load_universe_membership(url)
+        return survivorship_gaps(
+            self.price_history, intervals, _months_only(universes, months), url
+        )
+
+    def reject_survivorship_gaps(
+        self,
+        months: Optional[Iterable[str | date | datetime]] = None,
+        database_url: Optional[str] = None,
+    ) -> None:
+        """Raise for every under-reporting window, or return when none.
+
+        The sweep form of the persist path's gate: one
+        :class:`~universe.gate.UniverseBuildRejected` naming every month
+        whose window is populated, known to contain delistings, and yet
+        counts ``delisted=0``. Quiet when every window's zero is honest —
+        a clean period, or a period whose history has not landed yet.
+        """
+        reject_survivorship_gaps(self.survivorship_gaps(months, database_url))
+
+
+def _months_only(
+    universes: tuple[MonthlyUniverse, ...],
+    months: Optional[Iterable[str | date | datetime]],
+) -> tuple[MonthlyUniverse, ...]:
+    """Filter builds to ``months`` (each spelled any way :func:`month_key`
+    accepts); no filter means every build.
+
+    One spelling of "only these months" for the audit and the gate, so
+    the two cannot disagree about which windows a caller asked for.
+    """
+    if months is None:
+        return universes
+    wanted = {month_key(month) for month in months}
+    return tuple(universe for universe in universes if universe.month in wanted)
 
 
 def build_universe_service() -> UniverseService:

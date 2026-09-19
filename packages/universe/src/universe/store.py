@@ -36,6 +36,17 @@ from the same bars leave the tables byte-identical apart from
 ``computed_at``, which records when the build ran — provenance, not a
 score, so wall-clock reading here does not touch the replay determinism
 contract.
+
+Feature 45's survivorship gate rides this persist path: after the
+membership table is re-derived, the build's own trailing window is checked
+against what the store knows — a window the membership table says
+contained names that left, whose price history is populated, and whose
+delisted count is therefore 0 is a window on pruned history, and the
+persist raises :class:`~universe.gate.UniverseBuildRejected` inside the
+transaction so nothing lands. The two honest zeros pass untouched: a
+clean period counts 0, and a window with no bars at all is an absence of
+evidence, not proof of pruning. See :mod:`universe.gate` for the
+definitions.
 """
 
 from __future__ import annotations
@@ -239,6 +250,14 @@ def persist_monthly_universe(
     derived from. A symbol admitted by this build gains its interval here;
     a symbol this build dropped has its interval closed, with the reason
     this build supplies.
+
+    The re-derived table then feeds the survivorship gate (feature 45):
+    if this build's own trailing window is known — from that membership —
+    to contain delistings, is populated in the retained price history, and
+    yet would count ``delisted=0``, :class:`~universe.gate.UniverseBuildRejected`
+    is raised inside the transaction and the whole persist rolls back, so
+    a rejected build leaves the store exactly as it was. Ingest the
+    missing names' price history and re-present the build.
     """
     cfg = universe.config
     computed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -309,7 +328,8 @@ def persist_monthly_universe(
                 for exclusion in universe.exclusions
             ],
         )
-        _recompute_membership(connection)
+        intervals = _recompute_membership(connection)
+        _reject_survivorship_gap(connection, universe, intervals)
     return len(universe.members)
 
 
@@ -410,7 +430,7 @@ def load_all_monthly_universes(
     )
 
 
-def _recompute_membership(connection: sqlite3.Connection) -> int:
+def _recompute_membership(connection: sqlite3.Connection) -> tuple[MembershipInterval, ...]:
     """Re-derive ``universe_membership`` from the builds on ``connection``.
 
     Called inside the persist transaction, after the month's own rows are
@@ -418,7 +438,9 @@ def _recompute_membership(connection: sqlite3.Connection) -> int:
     The table is replaced wholesale (delete then insert) rather than
     patched: an interval's end can move when a later month is built or an
     earlier one is restated, and a wholesale replace is the one operation
-    that cannot leave a stale interval behind. Returns the row count.
+    that cannot leave a stale interval behind. Returns the intervals
+    written, so the caller can hand them to the survivorship gate without
+    re-deriving — the rows and the gate must see one membership.
 
     Ordering is the derivation's own — ``(valid_from, symbol)`` — so the
     rows land identically for identical builds.
@@ -441,7 +463,30 @@ def _recompute_membership(connection: sqlite3.Connection) -> int:
             for interval in intervals
         ],
     )
-    return len(intervals)
+    return intervals
+
+
+def _reject_survivorship_gap(
+    connection: sqlite3.Connection,
+    universe: MonthlyUniverse,
+    intervals: tuple[MembershipInterval, ...],
+) -> None:
+    """Refuse to persist a build whose own window under-reports (feature 45).
+
+    The gate sees the membership this transaction just re-derived — so the
+    names *this* build drops are in scope — and reads the build's window
+    on the same connection, so the verdict matches the store it would
+    leave behind. Raising inside the persist transaction rolls back every
+    write above: the build row, members, exclusions and membership rows
+    all stay unwritten, and the caller is told which names to ingest.
+    """
+    # Imported here, not at module top: gate imports history, and history
+    # imports store — the same cycle _recompute_survivorship_audit dodges.
+    from .gate import reject_survivorship_gaps, survivorship_gaps_on_connection
+
+    reject_survivorship_gaps(
+        survivorship_gaps_on_connection(connection, intervals, (universe,))
+    )
 
 
 def _load_builds_on(connection: sqlite3.Connection) -> tuple[MonthlyUniverse, ...]:
@@ -496,7 +541,7 @@ def persist_universe_membership(database_url: Optional[str] = None) -> int:
     version, and the tests that assert the derivation is reproducible.
     """
     with closing(connect(database_url)) as connection, connection:
-        return _recompute_membership(connection)
+        return len(_recompute_membership(connection))
 
 
 def load_universe_membership(
