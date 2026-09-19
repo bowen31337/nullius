@@ -1,72 +1,141 @@
 <project_specification mode="brownfield">
-  <project_name>nullius feature-store — feature 50 (cache_hit counter)</project_name>
+  <project_name>nullius — feature 68 (borrow cost from the recorded exchange borrow rate series)</project_name>
   <addition_summary>
-    Add feature 50 to the Point-in-Time feature-store plugin: the
-    FeatureMaterialiser counts how many requests reuse an already-materialised
-    feature instead of recomputing it, exposing a cache_hit counter so the
-    laziness of feature 49 is measurable. The counter is incremented on the
-    reuse path (a hit that returns the stored Parquet without calling the
-    definition) and reported on the MaterialisedFeature result, so a caller can
-    observe reuse without timing or comparing payloads.
+    Implement app_spec.xml feature 68 in the cost-model plugin: the system
+    sources borrow cost from the recorded exchange borrow rate series and
+    returns a carry adjustment per holding period. The borrow series is the
+    recorded funding/borrow stream — one row per symbol per poll, each row a
+    (reading_time, borrow_rate) pair, retained forever, with the rate kept
+    verbatim in the venue's own string spelling (packages/ingest member,
+    nullius_ingest.funding). Feature 68 adds the cost-model's borrow-cost
+    half: a pure, deterministic function that takes that series for one symbol
+    and the holding period's bounds and returns the carry adjustment the
+    holding period accrues — the time-weighted borrow cost of holding the
+    position across the recorded rates. The function is added to the shared
+    cost library (packages/cost-model), so research evaluation and live
+    execution compute borrow cost from one code path rather than two. It
+    depends on feature 59 (the cost-model plugin and its configuration
+    identity) and stays on the cost path's stance: verbatim rates are
+    decimalised here, the series is consumed as data (never read from the
+    ingest store by the cost model), a series that does not cover the holding
+    period is refused loudly rather than extrapolated, and a missing rate
+    inside the period is refused rather than interpolated.
   </addition_summary>
   <existing_context>
-    <stack>Python / uv-workspace / pytest (ruff + mypy conventions)</stack>
-    <test_baseline>feature-store suite under tests/feature-store/, run with pyarrow installed</test_baseline>
+    <stack>Python 3.12 / uv-workspace (packages/cost-model member, import cost_model) / pytest (ruff + mypy conventions)</stack>
+    <test_baseline>cost-model suite under packages/cost-model/tests/, stdlib-only modules plus PyYAML where the config layer is exercised</test_baseline>
     <conventions>
       snake_case modules, frozen dataclasses for value types, docstrings that
       cite app_spec.xml feature numbers and docs/nullius-tech-architecture.md
-      sections, stdlib-only keying/row layers, third-party imports (pyarrow)
-      deferred to first use, @register only in the package __init__ (never a
-      submodule), degrade-don't-break composition. Tests assert on observed
-      behaviour (call counts) rather than values, with long narrative docstrings
-      explaining the "why".
+      sections, stdlib-only computation, third-party imports (PyYAML) deferred
+      to first use, @register only in the package __init__ (never a submodule),
+      degrade-don't-break composition. The cost model is a pure shared library:
+      it consumes the borrow series as data and never imports the ingest member.
+      Rates arrive verbatim in the venue's own string spelling and are
+      decimalised on the cost path; a holding period the series does not cover is
+      refused, not extrapolated. Tests assert on observed behaviour with long
+      narrative docstrings explaining the "why".
     </conventions>
   </existing_context>
+  <!-- Layout mirrors the clean main app_spec.xml: uv-workspace is what makes
+       plugin="cost-model" resolve to the real packages/cost-model/ tree rather
+       than the single-package src/plugins/cost-model/ default. Parsed before
+       features. -->
+  <layout profile="uv-workspace"/>
   <features_to_add>
-    <category name="Feature Store Caching">
-      <feature index="1" shape="core" touches_files="packages/feature-store/src/feature_store/materialise.py">
-        System exposes a cache_hit counter on the FeatureMaterialiser that is incremented every time a request reuses an already-materialised feature instead of recomputing it, returning a non-negative integer count so the laziness of feature 49 is measurable
+    <category name="Borrow Cost">
+      <feature index="1" shape="plugin" plugin="cost-model">
+        <description>System constructs a frozen BorrowRateRow for one recorded borrow-rate observation with the symbol, the timezone-aware reading_time instant and the borrow_rate kept verbatim in the venue's own string spelling, refusing a blank or non-string rate and a naive or non-monotonic instant with a named error message</description>
       </feature>
-      <feature index="2" shape="core" touches_files="packages/feature-store/src/feature_store/materialise.py" depends_on="1">
-        System reports the cache_hit count on each MaterialisedFeature result so a caller reads reuse off the return value rather than inferring it from timing
+      <feature index="2" shape="plugin" plugin="cost-model" depends_on="1">
+        <description>System decimalises a verbatim borrow-rate string to a Decimal on the cost path, refusing a value that is not a finite non-negative decimal with a named error message so an exchange spelling such as "0.00003" becomes a number without a float rounding and a corrupt or negative rate is never silently priced</description>
       </feature>
-      <feature index="3" shape="core" touches_files="packages/feature-store/src/feature_store/materialise.py" depends_on="1">
-        System exposes a cache_hit_rate property (hits over total materialise calls) that returns a ratio in [0, 1], so the reuse depth of the lake is measurable
+      <feature index="3" shape="plugin" plugin="cost-model" depends_on="1,2">
+        <description>System returns the carry adjustment for a holding period from a recorded borrow rate series, time-weighting each observation's rate over the span it is the newest recorded rate and returning the cumulative carry cost of holding the position across the period, with the result a signed Decimal carrying the same units as the rate times the holding fraction</description>
       </feature>
-      <feature index="4" shape="core" touches_files="packages/feature-store/src/feature_store/materialise.py" depends_on="1">
-        System resets the cache_hit counters with an explicit reset method that returns both counters to zero, so a replay window or a test can bound the measurement
+      <feature index="4" shape="plugin" plugin="cost-model" depends_on="3">
+        <description>System refuses a holding period the recorded series does not cover, raising a named carry error with an error message when no observation is at or before the holding start or none is at or after the holding end, so borrow cost is never extrapolated beyond the recorded history</description>
+      </feature>
+      <feature index="5" shape="plugin" plugin="cost-model" depends_on="3">
+        <description>System refuses a holding period with a gap in the recorded series, raising a named carry error with an error message when two consecutive observations spanning the period are separated by more than the series' own poll interval so a borrow cost is never computed across a hole in the recorded rates</description>
+      </feature>
+      <feature index="6" shape="plugin" plugin="cost-model" depends_on="3,4,5">
+        <description>System exposes the borrow-cost computation as a function on the shared cost library that takes the recorded borrow rate series and the holding period bounds and returns the carry adjustment, so research evaluation and live execution import one shared code path rather than two implementations of the same series</description>
       </feature>
     </category>
-    <category name="Feature Store Caching Verification">
-      <feature index="5" shape="core" touches_files="tests/feature-store/test_materialise.py" depends_on="2">
-        System passes an end-to-end test in which the first materialise call computes and reports a miss, the second call reuses the stored file without calling the definition, increments cache_hit, and returns the identical rows
+    <category name="Borrow Cost Verification">
+      <feature index="7" shape="plugin" plugin="cost-model" depends_on="3,4,5,6">
+        <description>System passes an end-to-end test in which a recorded borrow rate series with a constant rate returns the rate times the holding fraction, a stepped series returns the time-weighted sum across the two rates, a series that does not cover the holding start or end is refused, a series with a gap inside the period is refused, and the shared library function returns the same carry adjustment as the direct computation</description>
       </feature>
     </category>
   </features_to_add>
   <integration_points>
-    Extends FeatureMaterialiser.materialise (packages/feature-store/src/feature_store/materialise.py) to increment the counter on the reuse path
-    Extends MaterialisedFeature with the observed hit/miss facts
-    Covered by tests/feature-store/test_materialise.py
+    New module packages/cost-model/src/cost_model/borrow.py owning the borrow
+    cost computation over a recorded borrow rate series (the recorded
+    funding/borrow stream of packages/ingest, consumed as data — the cost model
+    does not import nullius_ingest)
+    Reuses the cost model's existing error taxonomy
+    (packages/cost-model/src/cost_model/errors.py) for the carry refusal,
+    adding one CarryBorrowCostError subclass for the not-covered and gap cases
+    Exported from the package __init__ (packages/cost-model/src/cost_model/__init__.py)
+    alongside the existing symbols, so research and live paths import one spelling
+    Covered by packages/cost-model/tests/test_borrow.py
   </integration_points>
   <constraints>
-    Must not change feature 49's observable behaviour: a hit still does not call compute, a miss still computes and writes, replace=True still recomputes deliberately, a corrupt lake is still refused not recomputed
-    Must not touch the FeatureKey, FeatureStore, or any shared file (src/app/middleware.py, src/app/settings.py, migrations/**, alembic/**)
-    The counter is a process-memory measurement, never persisted to the lake — a fresh materialiser over the same lake starts at zero, matching feature 49's disk-only persistence
-    Follow the existing docstring discipline: cite app_spec.xml feature 50 and the materialise module's existing cross-references to it
-    All existing feature-store tests must stay green
+    Must not modify the config, store, service or any shared file
+    (src/app/middleware.py, src/app/settings.py, migrations/**, alembic/**)
+    The cost model consumes the borrow series as data and never imports the
+    ingest member — the borrow rate rows are passed in, not read from the
+    FundingRateStore by the cost model, so the shared library stays a pure
+    dependency of both research and live paths
+    Rates are kept verbatim in the venue's own string spelling and decimalised
+    on the cost path; no float rounding is introduced between the recorded rate
+    and the carry adjustment
+    A holding period the series does not cover is refused, not extrapolated; a
+    gap inside the period is refused, not interpolated; a quiet or empty series
+    is refused, not silently priced at zero
+    The carry adjustment is deterministic and reproducible: the same series and
+    the same holding bounds always return the same adjustment, with no clock
+    read and no process state
+    Follow the existing docstring discipline: cite app_spec.xml feature 68 and
+    docs/nullius-tech-architecture.md §4.1 (the borrow stream), §6.2 (the cost
+    model) and §2 (the Z0 trust zone)
+    All existing cost-model tests must stay green
   </constraints>
   <implementation_steps>
-    <phase name="Feature Store Caching">
-      Add a cache_hit counter to FeatureMaterialiser, incremented on the reuse path in materialise()
-      Report the hit/miss fact on MaterialisedFeature and expose cache_hit / cache_hit_rate / reset accessors
+    <phase name="Phase 1: Borrow Cost">
+      Add the frozen BorrowRateRow value type (symbol, timezone-aware
+      reading_time, verbatim borrow_rate string) with named refusals for a blank
+      or non-string rate and a naive or non-monotonic instant
+      Add the verbatim-rate decimaliser, refusing a value that is not a finite
+      non-negative decimal by name
+      Add the carry-adjustment computation that time-weights each observation's
+      rate over the span it is the newest recorded rate and returns the
+      cumulative carry cost across the holding period as a signed Decimal
+      Add the not-covered refusal (no observation at or before the start, or none
+      at or after the end) and the gap refusal (two consecutive observations
+      spanning the period separated by more than the poll interval)
+      Add the shared-library function that takes the recorded series and the
+      holding bounds and returns the carry adjustment, exported from the package
+      __init__
     </phase>
-    <phase name="Feature Store Caching Verification">
-      Add end-to-end tests asserting the counter increments on reuse and not on a miss, and that the reused rows are identical
+    <phase name="Phase 2: Borrow Cost Verification">
+      Add end-to-end tests asserting a constant-rate series returns the rate
+      times the holding fraction, a stepped series returns the time-weighted sum,
+      a not-covered series is refused, a gapped series is refused, and the shared
+      library function returns the same carry adjustment as the direct
+      computation
     </phase>
   </implementation_steps>
   <success_criteria>
-    Feature 50 implemented and measured at the materialise seam
-    cache_hit increments exactly once per reuse and never on a compute
-    All existing feature-store tests still green; new caching tests green
+    Feature 68 implemented: borrow cost is sourced from the recorded exchange
+    borrow rate series and returns a carry adjustment per holding period
+    The carry computation is a pure, deterministic function on the shared cost
+    library, exported from the cost-model package __init__
+    A holding period the series does not cover is refused, not extrapolated; a
+    gap inside the period is refused, not interpolated
+    Rates are decimalised from their verbatim string spelling with no float
+    rounding
+    All existing cost-model tests still green; new borrow-cost tests green
   </success_criteria>
 </project_specification>
