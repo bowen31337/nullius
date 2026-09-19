@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from app.module_loader import register
 
+from .bars import DailyBar, coerce_date
 from .keys import (
     FREQUENCIES,
     MARKET_WIDE_SYMBOL,
@@ -27,18 +28,63 @@ from .keys import (
     FeatureKeyError,
     Frequency,
 )
+from .persistence import (
+    FEATURE_NAME_BREADTH,
+    FEATURE_NAME_CORRELATION,
+    FEATURE_VERSION,
+    IncompleteRegimeMetricsError,
+    RegimeFeatureStore,
+    decode_breadth,
+    decode_correlation,
+    encode_breadth,
+    encode_correlation,
+)
+from .regime import (
+    DEFAULT_BREADTH_WINDOW,
+    DEFAULT_MIN_OVERLAP,
+    BreadthResult,
+    CorrelationResult,
+    PricePanel,
+    RegimeMetrics,
+    breadth_above_moving_average,
+    build_regime_metrics,
+    mean_pairwise_correlation,
+)
+from .service import RegimeService, build_regime_service
 from .store import DuplicateFeatureKeyError, FeatureRecord, FeatureStore
 
 __all__ = [
-    "FREQUENCIES",
-    "MARKET_WIDE_SYMBOL",
+    "BreadthResult",
+    "CorrelationResult",
+    "DEFAULT_BREADTH_WINDOW",
+    "DEFAULT_MIN_OVERLAP",
+    "DailyBar",
     "DuplicateFeatureKeyError",
+    "FEATURE_NAME_BREADTH",
+    "FEATURE_NAME_CORRELATION",
+    "FEATURE_VERSION",
+    "FREQUENCIES",
     "FeatureKey",
     "FeatureKeyError",
     "FeatureRecord",
     "FeatureStore",
     "Frequency",
+    "IncompleteRegimeMetricsError",
+    "MARKET_WIDE_SYMBOL",
+    "PricePanel",
+    "RegimeFeatureStore",
+    "RegimeMetrics",
+    "RegimeService",
+    "breadth_above_moving_average",
     "build_feature_store",
+    "build_regime_metrics",
+    "build_regime_service",
+    "coerce_date",
+    "decode_breadth",
+    "decode_correlation",
+    "encode_breadth",
+    "encode_correlation",
+    "mean_pairwise_correlation",
 ]
 
 
@@ -51,3 +97,18 @@ def build_feature_store() -> FeatureStore:
     keyed from the first :meth:`FeatureStore.put`.
     """
     return FeatureStore()
+
+
+@register("regime-metrics")
+def build_regime_service() -> RegimeService:
+    """Compose-time contribution: the feature-57 regime-metrics service.
+
+    Feature 57 computes the mean pairwise correlation of the top-50 universe
+    plus breadth above an N-day moving average and persists both.  This is
+    that capability as a composed component: a zero-argument builder (the
+    factory's one-way contract) that computes both metrics over a snapshot's
+    universe and stores them as feature-store records.  It borrows a feature
+    store rather than owning one, so a deployment routes it at the composed
+    ``feature-store`` component.
+    """
+    return RegimeService.from_env()
