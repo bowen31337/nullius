@@ -1,0 +1,34 @@
+# nullius workspace member: the frozen evaluator plugin
+# (app_spec.xml, "Frozen Evaluator Pipeline", feature 70;
+# docs/nullius-tech-architecture.md §6 for the evaluator service and its
+# identity — ``evaluator_hash = sha256(image_digest + config)``).
+#
+# Joins the uv workspace by convention — packages/<name> with its own
+# pyproject.toml — so the module loader (src/app/module_loader.py) discovers
+# this component by scanning the members the root pyproject.toml declares.
+# No edit to any central file is needed or wanted.
+#
+# Deliberately stdlib-only. The identity is a hash over a container digest
+# and a resolved configuration: it needs hashlib, json and an SQLite row,
+# and nothing else. An import-safe member that resolves no third-party
+# wheel cannot break another member's resolution, and this one is imported
+# on every factory scan — including the replay path, which is forbidden
+# from reaching the evaluator at all (architecture §1: "Replay must never
+# invoke the evaluator"), so the cheaper this import is the better. Later
+# features in this category (the cross-hash comparison refusal, the window
+# resolution, the sandboxed execution) layer on top of this package's
+# identity rather than beside it.
+
+[project]
+name = "evaluator"
+version = "0.1.0"
+description = "Frozen evaluator identity: the digest-pinned image plus resolved configuration, persisted as evaluator_hash."
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/evaluator"]
