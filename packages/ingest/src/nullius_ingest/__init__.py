@@ -45,6 +45,16 @@ What lives where:
   :class:`SealGate`, which wraps the sealing service and refuses a seal
   while any gap stays open (feature 26; §15's "REST backfill the gap
   before sealing the next snapshot" row).
+* :mod:`nullius_ingest.agg_trades` — :class:`AggTradeStore`, the append-only log
+  of aggregated trades off the websocket feed, **compressed** with gzip before
+  it is written and **retained permanently** rather than expired, and
+  :class:`AggTradeWorker`, the stream worker that flushes each cycle's trades
+  into that log (§4.1's "aggTrades | WS | continuous | forever, compressed"
+  row; feature 18).  It is the one stream whose rows are compressed, and the
+  codec is a property of the store fixed once rather than a per-record field
+  that could drift; a quiet cycle — a fetch that returns no trades — is a
+  zero-row success, not a failure.  It registers itself as the ``aggTrades``
+  stream's worker, so importing this package is the whole wiring.
 * :mod:`nullius_ingest.exchange_info` — :class:`ExchangeInfoVersionStore`,
   the append-only version log each daily ``exchangeInfo`` fetch is persisted
   into as a *new* version rather than an overwrite, and
@@ -121,6 +131,22 @@ from __future__ import annotations
 
 from app.module_loader import register
 
+from .agg_trades import (
+    AGG_TRADES_STREAM,
+    COMPRESSION,
+    AggTradeBatch,
+    AggTradeCorruptError,
+    AggTradeError,
+    AggTradeFetch,
+    AggTradeParseError,
+    AggTradeRecord,
+    AggTradeRow,
+    AggTradeStore,
+    AggTradeWorker,
+    build_agg_trade_worker,
+    parse_agg_trades,
+    register_agg_trade_worker,
+)
 from .backfill import (
     GAP_FILLED_EVENT,
     GapBackfiller,
@@ -282,9 +308,11 @@ from .worker import (
 )
 
 __all__ = [
+    "AGG_TRADES_STREAM",
     "ASKS",
     "BIDS",
     "BOOK_DIFFS_STREAM",
+    "COMPRESSION",
     "EXCHANGE_INFO_STREAM",
     "GAP_DETECTED_EVENT",
     "GAP_FILLED_EVENT",
@@ -307,6 +335,15 @@ __all__ = [
     "BookFeatureStore",
     "BookFeatureWorker",
     "BookState",
+    "AggTradeBatch",
+    "AggTradeCorruptError",
+    "AggTradeError",
+    "AggTradeFetch",
+    "AggTradeParseError",
+    "AggTradeRecord",
+    "AggTradeRow",
+    "AggTradeStore",
+    "AggTradeWorker",
     "BPS_THRESHOLDS",
     "BOOK_FEATURES_STREAM",
     "ColumnSpec",
@@ -391,6 +428,7 @@ __all__ = [
     "WorkerFactory",
     "WorkerRegistry",
     "align_to_window",
+    "build_agg_trade_worker",
     "build_book_diff_worker",
     "build_book_feature_worker",
     "build_default_workers",
@@ -398,7 +436,9 @@ __all__ = [
     "cancel_replace_events",
     "CANCEL_REPLACE",
     "classify_levels",
+    "parse_agg_trades",
     "parse_trade_prints",
+    "register_agg_trade_worker",
     "register_trade_flow_worker",
     "size_moments",
     "TradeFlowBatch",
