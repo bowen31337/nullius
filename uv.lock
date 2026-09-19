@@ -2,6 +2,12 @@ version = 1
 revision = 3
 requires-python = ">=3.12"
 
+[manifest]
+members = [
+    "nullius",
+    "nullius-feature-store",
+]
+
 [[package]]
 name = "colorama"
 version = "0.4.6"
@@ -34,6 +40,17 @@ dev = [
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.0" }]
+
+[[package]]
+name = "nullius-feature-store"
+version = "0.1.0"
+source = { editable = "packages/feature-store" }
+dependencies = [
+    { name = "nullius" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "nullius", editable = "." }]
 
 [[package]]
 name = "packaging"

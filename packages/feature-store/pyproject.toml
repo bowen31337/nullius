@@ -1,0 +1,30 @@
+# nullius feature store — workspace member for the "feature-store" plugin
+# (app_spec.xml, "Point-in-Time Feature Store", feature 48;
+# docs/nullius-tech-architecture.md §4.4).
+#
+# Joins the uv workspace by convention: the root pyproject.toml declares
+# `members = ["packages/*"]`, so this directory's pyproject.toml is the
+# whole registration — no edit to any shared file.  The import package is
+# `feature_store` under src/, which is also what the application factory's
+# scan (src/app/module_loader.py) imports to fire this member's
+# `@register` calls.
+
+[project]
+name = "nullius-feature-store"
+version = "0.1.0"
+description = "Point-in-time feature store: the five-component keying contract for every stored feature."
+requires-python = ">=3.12"
+# The only dependency is the workspace root, for the factory's registration
+# protocol (`import app.module_loader`).  The keying contract itself is
+# stdlib-only so it stays import-safe in any environment, replay included.
+dependencies = ["nullius"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/feature_store"]
