@@ -14,16 +14,20 @@ record's payload opaque and deferred row-level stamping to "the payload
 layer those features add", so ``rows`` supplies it — a frozen
 :class:`~feature_store.rows.FeatureRow` carrying ``computed_as_of``, and
 :func:`~feature_store.rows.stamp_rows`, which reads the clock once per
-write so every row in a batch shares one instant.  Feature 52's
-``computed_as_of <= t`` read filter builds on that seam.
+write so every row in a batch shares one instant.  Feature 52 is that
+seam's read half (:mod:`feature_store.point_in_time`):
+:func:`~feature_store.point_in_time.rows_as_of` and its payload/store
+layers return only the rows whose ``computed_as_of`` is at or before the
+query time, so a point-in-time read cannot see a later computation.
 
 Importing this package registers five components with the application
 factory — a deliberate import side effect, per the factory's registration
 protocol (``app.module_loader``) — so ``create_app()`` discovers them by
 scanning the declared workspace without the factory ever knowing this
-package's name.  Feature 51's row layer registers nothing: it is a pure
-function over rows, not an orchestration service with composed state, so
-it stays a module plus its package re-exports.
+package's name.  The row layer (51) and the point-in-time read (52)
+register nothing: both are pure functions over rows and payloads, not
+orchestration services with composed state, so they stay modules plus
+their package re-exports.
 
 * ``feature-store`` — the five-component-keyed store itself (feature 48);
 * ``regime-metrics`` — feature 57's mean pairwise correlation plus breadth;
@@ -85,6 +89,12 @@ from .persistence import (
     decode_correlation,
     encode_breadth,
     encode_correlation,
+)
+from .point_in_time import (
+    PointInTimeError,
+    decode_rows_as_of,
+    read_rows_as_of,
+    rows_as_of,
 )
 from .regime import (
     DEFAULT_BREADTH_WINDOW,
@@ -212,6 +222,7 @@ __all__ = [
     "IncompleteRegimeMetricsError",
     "IncompleteVolatilityMetricsError",
     "LABELS_DEFINITION",
+    "PointInTimeError",
     "PricePanel",
     "RealizedVolatilityResult",
     "RegimeFeatureStore",
@@ -245,6 +256,7 @@ __all__ = [
     "decode_labels",
     "decode_realized_volatility",
     "decode_rows",
+    "decode_rows_as_of",
     "decode_vol_of_vol",
     "definition_parameters",
     "encode_autocorrelation",
@@ -258,10 +270,12 @@ __all__ = [
     "feature_version",
     "market_return_series",
     "mean_pairwise_correlation",
+    "read_rows_as_of",
     "realized_volatility",
     "regime_feature_matrix",
     "return_autocorrelation",
     "rolling_realized_volatility",
+    "rows_as_of",
     "stamp_rows",
     "utc_now",
     "volatility_of_volatility",

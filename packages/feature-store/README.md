@@ -67,8 +67,60 @@ supplied at the call site, defaulting to `utc_now()`. Nothing reads a global
 clock, so the deterministic replay path can reproduce a write exactly.
 
 Feature 52's read filter — the `computed_as_of <= t` query — is **not**
-implemented here. This module stamps rows and carries them; that filter is
-the next feature's contract, built on this seam.
+here: this module stamps rows and carries them. That filter is
+`feature_store.point_in_time`, the next section.
+
+## Feature 52 — the point-in-time read (`computed_as_of <= t`)
+
+app_spec.xml feature 52: *System returns only rows whose computed_as_of is
+at or before the query time, so a point-in-time read cannot see a later
+computation.* This is the reading half of §4.4's rule, the half the stamp
+exists for — and the half the category is named for. A row stamped after
+the query instant is a computation that had not happened yet at that
+instant; handing it to a caller asking *what did we know at `t`?* answers
+*what is true now* instead, which is exactly the leakage §4.4 warns about
+when it calls the feature store "the single most common source of subtle
+leakage in real quant systems".
+
+`feature_store.point_in_time` enforces the filter in the read path itself —
+not in caller discipline — at three layers that compose and so cannot
+disagree about what `<=` means:
+
+- `rows_as_of(rows, *, as_of)` — the filter over a batch of stamped rows
+  already in hand;
+- `decode_rows_as_of(payload, *, as_of)` — decode one record's opaque
+  `bytes` through feature 51's envelope, then filter;
+- `read_rows_as_of(store, key, *, as_of)` — get under the key, decode,
+  filter: the point-in-time read at the store layer.
+
+**The boundary is inclusive.** "At or before" is `<=`: a row stamped
+exactly at the query instant had been computed by then, so it is visible —
+equality is the edge between known and not-yet-known, and the edge belongs
+to the known side. Visibility gates on the stamp alone: a row's *values*
+may describe any time (a forecast, a forward-looking label), and none of
+that is consulted — `computed_as_of` says when the row was computed, and
+that is the whole of the point-in-time question. No function here reads a
+wall clock either, so the same question asked twice gets the same answer,
+replay included. Rows come back verbatim — the same objects, in their
+written order, still carrying the stamps that were written.
+
+**A stored-but-later record reads as empty, not as missing.**
+`read_rows_as_of` returns `None` only when nothing is stored under the key
+(the same normal miss `store.get` returns) and `()` when a record *is*
+stored but every row in it was computed after the query instant: the later
+computation exists, and the read declines to see it. Collapsing the two
+answers would hide the very state this feature guarantees.
+
+**The query time is validated like a stamp.** A naive `as_of` compared
+against an aware `computed_as_of` would raise `TypeError` deep inside the
+loop, far from the caller who could have named the offset; it is refused
+at the query as `PointInTimeError` instead. An aware instant in another
+offset is normalised to UTC rather than rejected — it names the same
+moment either way.
+
+Like feature 51's row layer, this registers nothing with the application
+factory: a pure function over rows and payloads, not an orchestration
+service with composed state.
 
 ## Feature 57 — mean pairwise correlation + breadth
 
@@ -195,9 +247,10 @@ conflated.
   (feature 57), `"dispersion-metrics"` (feature 56), `"volatility-metrics"`
   (feature 55) and `"regime-labeler"` (feature 58), all via `@register`,
   discovered by `app.module_loader`’s workspace scan. Feature 51's row
-  stamping registers nothing: it is a pure function over rows — the payload
-  layer of the store's own contract — not an orchestration service, so it
-  has no composed state for the factory to own
+  stamping and feature 52's point-in-time read register nothing: both are
+  pure functions over rows and payloads — the payload layer of the store's
+  own contract — not orchestration services, so neither has composed state
+  for the factory to own
 - app-package seat: `app.modules.feature-store` (`src/app/modules/feature-store/`),
   which exposes `feature_store_component()`, `regime_metrics_component()`,
   `dispersion_metrics_component()` and `volatility_metrics_component()`
@@ -206,5 +259,5 @@ conflated.
 Stdlib-only by design — the identity contract stays import-safe in any
 environment, deterministic replay included. Parquet materialisation
 (feature 49) and caching (50) layer on top of this seam; row-level
-stamping (51) has landed in `feature_store.rows`, and feature 52's
-`computed_as_of <= t` read filter builds on that.
+stamping (51) has landed in `feature_store.rows`, and its
+`computed_as_of <= t` read filter (52) in `feature_store.point_in_time`.
