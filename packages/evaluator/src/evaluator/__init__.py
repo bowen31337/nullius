@@ -88,16 +88,24 @@ pairs forward returns with the score grid — one target series per horizon, at
 the five horizons :data:`HORIZONS` pins, stepping in bars on the market grid —
 and it is the cheapest import in this package so far, stdlib-only with no
 lazily-reached numerics at all, because a target series is keyed data, not a
-frame. The rest of the pipeline (the null gate, purge and
+frame. Feature 76 adds pipeline step 5: :func:`gate_targets` asks the null
+oracle for the target series — the one substitution the pipeline allows and
+the only ask in this package — and :func:`check_targets_gated` certifies
+that a bundle held downstream is the gate's own answer over the alignment
+it gates, so a target series that arrived by any other door is refused; it
+is stdlib-only the same way, because the oracle call is an injected seam —
+the gate holds no socket, only records. The rest of the pipeline (purge and
 embargo, costs, metrics) is the rest of this category's features, and each
-layers on this identity, this window, this execution, this normalization and
-this alignment
+layers on this identity, this window, this execution, this normalization,
+this alignment and this gate
 rather than beside them: a score that cannot name its evaluator cannot be
 compared, a score computed over a window that reaches past its decision time
 is look-ahead, a raw score that is not validated against the contract cannot
 be trusted, a score that has not been normalized to a common scale cannot
-be compared across authors, and a metric computed against targets that were
-not aligned to the grid it scored on measures nothing.
+be compared across authors, a metric computed against targets that were not
+aligned to the grid it scored on measures nothing, and a metric computed
+against targets that did not come through the gate measures a world nobody
+ran.
 Keeping the import this cheap also keeps the replay path importable —
 architecture §1 forbids replay from reaching the evaluator at all, so the
 less this package does at import time, the less there is to accidentally
@@ -118,6 +126,7 @@ from ._errors import (
     EvaluatorConfigError,
     EvaluatorEmbargoError,
     EvaluatorError,
+    EvaluatorGateError,
     EvaluatorIdentityError,
     EvaluatorImageError,
     EvaluatorPurgeError,
@@ -173,6 +182,16 @@ from ._embargo import (
     EmbargoCheck,
     check_fold_embargoed,
 )
+from ._gate import (
+    NULL_GATE_STEP,
+    GateCheck,
+    GatedTargets,
+    Oracle,
+    OracleRequest,
+    OracleResponse,
+    check_targets_gated,
+    gate_targets,
+)
 from ._service import ENV_IMAGE, EvaluatorService, build_evaluator_service
 from ._window import (
     ROSTER_STREAM,
@@ -211,6 +230,15 @@ __all__ = [
     "EvaluatorEmbargoError",
     "EmbargoCheck",
     "check_fold_embargoed",
+    # Feature 76 — the null gate
+    "NULL_GATE_STEP",
+    "GateCheck",
+    "GatedTargets",
+    "Oracle",
+    "OracleRequest",
+    "OracleResponse",
+    "check_targets_gated",
+    "gate_targets",
     # Feature 70 — the first term: the pinned container image
     "DIGEST_ALGORITHM",
     "DIGEST_HEX_LENGTH",
@@ -236,6 +264,7 @@ __all__ = [
     # Errors
     "EvaluatorConfigError",
     "EvaluatorError",
+    "EvaluatorGateError",
     "EvaluatorIdentityError",
     "EvaluatorImageError",
     "EvaluatorSandboxError",

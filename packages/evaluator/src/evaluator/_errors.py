@@ -116,6 +116,22 @@ code failed:
   the trailing lookback bars, and a training bar within that span of a
   boundary is scored from features built out of test-half bars — the model
   reads the test set through its inputs (see ``_embargo``).
+* :class:`EvaluatorGateError` — the null-gate supply contract (app_spec.xml
+  feature 76). Step 5 of §6.1's pipeline is the only place the null
+  substitution happens, so the failures here are failures of that
+  exclusivity: a malformed §7.2 ask or answer (a node identity that is not
+  a name, an answer that is not a response, a non-finite target, a budget
+  directive that is not the one bool the barrier lets cross), an answer
+  that does not live on exactly the aligned support (a date or symbol the
+  alignment does not back — a series that arrived by a path other than the
+  gate), a bundle checked against an alignment it was not gated over (a
+  replayed answer is a substitution however well-formed it is), and an
+  oracle that answers the horizons with disagreeing directives. Each is
+  refused rather than trusted, because a target series that reached the
+  metrics by any door but the gate's is a second experiment nobody
+  calibrated. The *values* of an answer are never compared to the aligned
+  ones — a gate that did would be the client-side null detector principle
+  P2 forbids (see ``_gate``).
 """
 
 from __future__ import annotations
@@ -125,6 +141,7 @@ __all__ = [
     "EvaluatorConfigError",
     "EvaluatorEmbargoError",
     "EvaluatorError",
+    "EvaluatorGateError",
     "EvaluatorIdentityError",
     "EvaluatorImageError",
     "EvaluatorNormalizeError",
@@ -280,4 +297,25 @@ class EvaluatorSignalError(EvaluatorError):
     returns a contract-violating vector is not this error — that is a
     ``contract_violation`` the caller decides on (feature 12), carried on the
     vector's ``problems`` rather than raised.
+    """
+
+
+class EvaluatorGateError(EvaluatorError):
+    """A target series was supplied outside the null gate, or the ask is malformed.
+
+    Raised by :func:`evaluator.gate_targets` and
+    :func:`evaluator.check_targets_gated` (app_spec.xml feature 76) when
+    step 5 of the §6.1 pipeline — the only place the null substitution
+    happens — cannot certify that a target series came through it: a §7.2
+    ask or answer that is not one (a node identity that is not a name, an
+    answer that is not a response, a non-finite target, a budget directive
+    that is not the one bool the barrier lets cross, directives that
+    disagree across the horizons), an answer that does not live on exactly
+    the aligned support (a date or symbol the alignment does not back — it
+    arrived by a path other than the gate), and a bundle checked against an
+    alignment it was not gated over (a replayed answer is a substitution
+    however well-formed it is). The *values* of an answer are never
+    compared to the aligned ones — a gate that did would be the
+    client-side null detector principle P2 forbids, and the branch is
+    indistinguishable by design.
     """
