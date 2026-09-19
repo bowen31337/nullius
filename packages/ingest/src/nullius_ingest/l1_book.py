@@ -448,9 +448,12 @@ def _parse_snapshot(entry: object, index: int) -> L1BookRow:
 
     # The instant: the venue's event time ``E`` first, then the generic time.
     # One is required, because a snapshot with no instant cannot be placed on the
-    # 1 second grid, and substituting ours would invent which second it was.
+    # 1 second grid, and substituting ours would invent which second it was.  The
+    # store's own spelling — ``window_start``, an ISO instant written by
+    # :func:`_row_to_envelope` — is also accepted, so the read path can parse a
+    # record back from the envelope it wrote.
     raw_time = None
-    for key in ("event_time", "eventTime", "E", "time", "ts", "T", "trade_time", "tradeTime"):
+    for key in ("event_time", "eventTime", "E", "window_start", "time", "ts", "T", "trade_time", "tradeTime"):
         if key in entry:
             raw_time = entry[key]
             break

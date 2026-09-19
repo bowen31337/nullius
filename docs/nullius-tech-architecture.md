@@ -125,6 +125,7 @@ Separate worker per stream class. All writes are append-only into a staging area
 |---|---|---|---|
 | Klines 1m/1h/1d | REST backfill + WS | continuous | forever |
 | aggTrades | WS | continuous | forever (compressed) |
+| L1 best bid/ask | WS (`bookTicker`) | 1s | forever |
 | L2 book diffs | WS @100ms | continuous | **rolling 90 days only** |
 | Book features (derived) | computed from diffs | 1s | forever |
 | Funding / borrow rate | REST | 1m | forever |
