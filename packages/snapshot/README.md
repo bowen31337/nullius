@@ -50,6 +50,28 @@ mount.select("bars", "BTCUSDT", "2026-09-01")  # this symbol, this date, nothing
 # not a sealed snapshot
 ```
 
+## Refusing a request for staging
+
+`service.open(name)` — the seam every read path goes through — refuses a
+request that names the staging area (feature 35). Staging is the ingest
+workers' writable area and is never on the evaluator's mount path, so an
+evaluator that asks for it is told so, and pointed at the sealed snapshots it
+*may* open:
+
+```python
+service.open("staging")
+# SnapshotStagingRequestError: request 'staging' names the staging area
+# /lake/staging, which is never on the evaluator mount path; staging is the
+# ingest workers' writable area, not a sealed snapshot — open one of the
+# sealed snapshots instead (SnapshotService.sealed)
+```
+
+`SnapshotStagingRequestError` is a `SnapshotNotFoundError`, so a caller
+catching either vocabulary handles it. A request that merely *contains*
+"staging" but resolves elsewhere — `../staging`, an absolute path — is
+refused as a malformed name by the strict parser, not as a staging request;
+only a request that resolves *onto* the staging area is a staging request.
+
 Writes are refused in three independent layers:
 
 1. **The filesystem.** Sealing persists `0444`/`0555`, so a write through a

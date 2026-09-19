@@ -44,6 +44,7 @@ from snapshot import (
     SnapshotNotFoundError,
     SnapshotReadOnlyError,
     SnapshotService,
+    SnapshotStagingRequestError,
     materialize_read_only,
     mount_snapshot,
 )
@@ -102,10 +103,8 @@ class TestMountingASealedSnapshot:
     @pytest.mark.parametrize(
         "request_",
         [
-            "staging",
-            "../staging",
-            "2026-09-01T00:00:00Z_a3f91c/../staging",
-            "/lake/staging",
+            "../staging",          # traversal: contains "staging" but points elsewhere
+            "/lake/staging",       # absolute: not a name at all
             "2026-09-01T00:00:00Z_a3f91c/bars",
             "2026-09-01T00:00:00Z_A3F91C",
             "",
@@ -116,9 +115,12 @@ class TestMountingASealedSnapshot:
         self, service: SnapshotService, request_: str
     ) -> None:
         # The strict parser is the boundary: no name that is not
-        # `<sealed_at>_<hash prefix>` ever becomes a path. Note what this
-        # buys feature 34's neighbours: a request naming a *staging* path is
-        # refused as a malformed name here, before any path exists to reject.
+        # `<sealed_at>_<hash prefix>` ever becomes a path. A request that
+        # merely *contains* "staging" but resolves elsewhere — a ``..`` walk
+        # off the lake, an absolute path — is refused here as a malformed
+        # name, before any path exists to reject. (A request that resolves
+        # *onto* the staging area is refused more sharply, as a staging
+        # request — feature 35, tested in test_staging_request.py.)
         with pytest.raises(SnapshotNameError) as caught:
             service.mount(request_)
         # A malformed name is refused as a *name*, not resolved and then
@@ -126,6 +128,22 @@ class TestMountingASealedSnapshot:
         # filesystem location, because no location was ever constructed.
         assert "no sealed snapshot" not in str(caught.value)
         assert not hasattr(caught.value, "filename")
+
+    @pytest.mark.parametrize(
+        "request_",
+        [
+            "staging",
+            "2026-09-01T00:00:00Z_a3f91c/../staging",  # resolves onto staging via ..
+        ],
+    )
+    def test_a_request_resolving_onto_staging_is_a_staging_request(
+        self, service: SnapshotService, request_: str
+    ) -> None:
+        # Feature 35: a request that resolves onto the staging area is refused
+        # explicitly as a staging request, not incidentally as a malformed
+        # name — the evaluator is told staging is never on its mount path.
+        with pytest.raises(SnapshotStagingRequestError):
+            service.mount(request_)
 
     def test_mounting_a_directory_that_is_not_a_snapshot_is_refused(
         self, lake_root: Path

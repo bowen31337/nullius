@@ -17,6 +17,11 @@ failure of the sealing path with a single ``except``. The subclasses split by
   exists is refused, not overwritten.
 * :class:`SnapshotNotFoundError` — the addressing contract on read: a name
   that parses but names no sealed snapshot in this lake.
+* :class:`SnapshotStagingRequestError` — the mount-path contract: a request
+  that names a staging path (or anything outside the sealed ``snapshots/``
+  tree) rather than a sealed snapshot. It is a :class:`SnapshotNotFoundError`
+  — a well-formed-syntax request that names nothing the evaluator may open —
+  specialised to say *why*: staging is never on the evaluator mount path.
 * :class:`SnapshotReadOnlyError` — the read-only mount contract. A write
   attempt through a mounted snapshot is refused with a permission error
   *message*, and this is that message made catchable by type.
@@ -47,6 +52,7 @@ __all__ = [
     "SnapshotNameError",
     "SnapshotNotFoundError",
     "SnapshotReadOnlyError",
+    "SnapshotStagingRequestError",
 ]
 
 
@@ -68,6 +74,27 @@ class SnapshotAlreadySealedError(SnapshotError):
 
 class SnapshotNotFoundError(SnapshotError):
     """A well-formed name that names no sealed snapshot in this lake."""
+
+
+class SnapshotStagingRequestError(SnapshotNotFoundError):
+    """A request named a staging path, which is never on the evaluator mount path.
+
+    A subclass of :class:`SnapshotNotFoundError` on purpose: a request for
+    ``staging`` (or any path outside the sealed ``snapshots/`` tree) is a
+    request that names nothing the evaluator may open, so ``except
+    SnapshotNotFoundError`` — and the broader ``except SnapshotError`` — both
+    catch it. It is specialised only in its message, which states the
+    contract the plain miss cannot: staging is the ingest workers' writable
+    area and is never on the evaluator's mount path, so the evaluator must
+    open one of the sealed snapshots instead (``SnapshotService.sealed``).
+
+    Raised only for a request that *reaches* the staging area — i.e. the
+    strict name parser has already refused the malformed names, so this is
+    the deliberate, named refusal for the shape that got through: a
+    canonical-looking request whose first component is the lake's staging
+    directory. It names the offending request and the staging path it
+    resolves to, so an operator can tell a staging request from a typo.
+    """
 
 
 class SnapshotReadOnlyError(SnapshotError, PermissionError):

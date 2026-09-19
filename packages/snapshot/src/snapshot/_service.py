@@ -31,7 +31,13 @@ once and enforced nowhere is a comment, not a guarantee:
 
 Staging is *copied*, never moved or emptied: the §4.1 contract keeps staging
 append-only and owned by the ingest workers, so a seal is a pure read from
-their side.
+their side. And staging is refused on the read side too: :meth:`open` rejects
+a request that names the staging area with a :class:`SnapshotStagingRequestError`
+(feature 35 — *"staging is never on the evaluator mount path"*), stating the
+contract and pointing the evaluator at the sealed snapshots it may open. That
+refusal is the read-side twin of feature 28's layout guarantee, and it is the
+mount's door: ``mount`` goes through ``open``, so a request for staging never
+reaches a mount either.
 
 The default snapshot hash is the content digest of the staged files (the
 ``sorted(file_hashes)`` term of the §4.2 formula — see ``_content``); a
@@ -60,6 +66,7 @@ from ._errors import (
     SnapshotAlreadySealedError,
     SnapshotError,
     SnapshotNotFoundError,
+    SnapshotStagingRequestError,
 )
 from ._mount import SnapshotMount, materialize_read_only
 from ._naming import (
@@ -258,11 +265,34 @@ class SnapshotService:
     def open(self, name: str) -> SnapshotRef:
         """Return the sealed snapshot addressed by a canonical directory name.
 
-        The name is validated against the strict naming contract before it
-        ever becomes a path, so traversal such as ``../staging`` is rejected
-        as a malformed name rather than resolved. A name that parses but
-        names nothing raises :class:`SnapshotNotFoundError`.
+        The evaluator's door (§4.2: *"the evaluator can only open sealed
+        snapshots; staging is not on its mount path at all"*). Three refusals,
+        in order, each sharper than the last:
+
+        1. *A request that names the staging area* — ``"staging"``,
+           ``"staging/bars/part-0.parquet"`` — is refused first, and
+           *explicitly*, as :class:`SnapshotStagingRequestError`. This is the
+           refusal feature 35 specifies: not a generic "that is not a snapshot
+           name", but a statement of the contract — staging is the ingest
+           workers' writable area and is never on the evaluator's mount path,
+           and the sealed snapshots returned by :meth:`sealed` are what the
+           evaluator may open instead. A staging request is checked before the
+           strict parser, because refusing it as a malformed name would hide
+           the very fact the evaluator needs to learn.
+        2. *A malformed name* — anything that is not ``<sealed_at>_<prefix>``,
+           including traversal such as ``../staging`` — is rejected by the
+           strict parser as a :class:`SnapshotNameError`, before it ever
+           becomes a path.
+        3. *A name that parses but names nothing* raises
+           :class:`SnapshotNotFoundError`.
         """
+        if self._names_staging(name):
+            raise SnapshotStagingRequestError(
+                f"request {name!r} names the staging area {self.staging_root}, "
+                "which is never on the evaluator mount path; staging is the "
+                "ingest workers' writable area, not a sealed snapshot — open "
+                "one of the sealed snapshots instead (SnapshotService.sealed)"
+            )
         parse_snapshot_name(name)  # validation only; the ref re-parses lazily
         path = self.snapshots_root / name
         if not path.is_dir():
@@ -270,6 +300,23 @@ class SnapshotService:
                 f"no sealed snapshot named {name!r} under {self.snapshots_root}"
             )
         return SnapshotRef(name=name, path=path)
+
+    def _names_staging(self, name: str) -> bool:
+        """Whether a request resolves onto the lake's staging area.
+
+        The one request that is a miss *for a reason*: a name whose first
+        component is the lake's staging directory — ``"staging"``,
+        ``"staging/bars/part-0.parquet"`` — resolves onto the writable area
+        the evaluator never sees, rather than under ``snapshots/``. Detecting
+        it by containment (the resolved request lands in the resolved staging
+        root) rather than by string match keeps it correct for any spelling
+        and independent of the naming contract it sits beside. A canonical
+        ``<sealed_at>_<prefix>`` name resolves under ``snapshots/`` and never
+        matches, so this check never shadows a genuine snapshot request.
+        """
+        candidate = (self.lake_root / name).resolve(strict=False)
+        staging = self.staging_root.resolve(strict=False)
+        return candidate == staging or staging in candidate.parents
 
     def mount(self, name: str, *, reassert_modes: bool = True) -> SnapshotMount:
         """Mount a sealed snapshot read-only, by canonical directory name.

@@ -51,6 +51,7 @@ from ._errors import (
     SnapshotNameError,
     SnapshotNotFoundError,
     SnapshotReadOnlyError,
+    SnapshotStagingRequestError,
 )
 from ._mount import (
     READ_ONLY_OPERATIONS,
@@ -83,6 +84,7 @@ __all__ = [
     "SnapshotReadOnlyError",
     "SnapshotRef",
     "SnapshotService",
+    "SnapshotStagingRequestError",
     "content_digest",
     "format_sealed_at",
     "materialize_read_only",
