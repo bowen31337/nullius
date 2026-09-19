@@ -25,7 +25,8 @@ Two properties follow, and this module enforces both at construction time:
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Iterable, Tuple, Union
+from types import MappingProxyType
+from typing import Any, Iterable, Mapping, Optional, Tuple, Union
 
 __all__ = ["MarketWindow"]
 
@@ -98,6 +99,56 @@ def _as_universe(universe: Iterable[str]) -> Tuple[str, ...]:
     return tuple(seen)
 
 
+def _as_frames(frames: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
+    """Normalize materialized frames to a read-only mapping of Arrow tables.
+
+    A window's frames are the data it actually hands out, so they are pinned
+    at construction exactly like ``t`` is: each frame is coerced to an Arrow
+    table once, and the result is a fresh ``dict`` owned by the window alone.
+    Two consequences, both deliberate:
+
+    * **Serialization and equality are well defined.**  ``__eq__`` compares
+      frames, which is only meaningful if a frame is a value — a Polars frame
+      and an Arrow table holding the same rows would otherwise compare
+      unequal for no reason a caller could act on.  Materializing on the way
+      in means a window has one representation, not two.
+    * **Frames are captured, not referenced.**  The returned dict is fresh, so
+      a caller keeping a reference to the mapping it passed cannot add a frame
+      to a live window afterwards.  Writes *through* the window are refused
+      separately, by the read-only proxy :attr:`MarketWindow.frames` returns.
+      An Arrow table's own buffers are immutable by construction, so nothing
+      underneath can be rewritten either.
+
+    Values are coerced eagerly here rather than lazily at first access: a
+    window that only fails when someone asks it for a frame would carry a bad
+    frame silently through construction, sealing, and dispatch.
+    """
+    if frames is None:
+        return {}
+    if not isinstance(frames, Mapping):
+        raise TypeError(
+            "frames must be a mapping of frame name to frame, got "
+            f"{type(frames).__name__}"
+        )
+    if not frames:
+        # An explicitly empty mapping is the same state as no mapping: there
+        # is nothing to coerce, so pyarrow is not reached for.  A window that
+        # carries no frames must stay constructible in an environment that has
+        # no Arrow at all — that is the whole reason the import is deferred.
+        return {}
+    from ._arrow import coerce_table, require_arrow
+
+    arrow = require_arrow()
+    normalized: dict[str, Any] = {}
+    for name, frame in frames.items():
+        if not isinstance(name, str) or not name:
+            raise TypeError(
+                f"frame names must be non-empty strings, got {name!r}"
+            )
+        normalized[name] = coerce_table(arrow, name, frame)
+    return normalized
+
+
 class MarketWindow:
     """A point-in-time market view, pre-sliced to its decision time ``t``.
 
@@ -106,7 +157,11 @@ class MarketWindow:
     binds the decision time into read-only storage and then closes the door:
     :meth:`__setattr__` and :meth:`__delattr__` raise unconditionally, so
     ``window.t = ...`` fails for every caller, including the factory, the
-    sandbox payload channel, and any later accessor added to this class.
+    sandbox payload channel, and any later accessor added to this class.  The
+    door is closed on the window's *contents* as well as its attributes — the
+    frames mapping is read-only too (see :attr:`frames`), since attaching a
+    frame after construction would widen the window just as rebinding ``t``
+    would.
 
     Attributes
     ----------
@@ -118,18 +173,26 @@ class MarketWindow:
         is resolved host-side against the point-in-time universe table before
         construction (docs/nullius-tech-architecture.md §4.3); the window
         stores the result, it does not re-resolve against the wall clock.
+    frames:
+        The materialized data the window actually carries, as a read-only
+        mapping of frame name to Arrow table.  Read-only, and captured at
+        construction — see :func:`_as_frames`.  Empty for a window that has
+        materialized nothing, which is a legitimate state: the accessors that
+        *do* read the lake (features 5-9) populate it, and feature 14
+        serializes it to the sandbox over the payload channel.
     """
 
     # Slots, deliberately: the read-only guarantee is only as strong as the
     # object's inability to grow new attributes.  With a __dict__ a caller
     # could not rebind `t` (see __setattr__) but could still attach shadow
-    # state; slots keep the contract's surface exactly two fields wide.
-    __slots__ = ("_t", "_universe", "_initialized")
+    # state; slots keep the contract's surface to the fields it declares.
+    __slots__ = ("_t", "_universe", "_frames", "_initialized")
 
     def __init__(
         self,
         t: Union[datetime, str],
         universe: Iterable[str] = (),
+        frames: Optional[Mapping[str, Any]] = None,
     ) -> None:
         # The constructor is single-shot.  Re-invoking it on a live window
         # (`window.__init__(later_t)`) would rebind `t` through the one
@@ -149,6 +212,7 @@ class MarketWindow:
         # is the single sanctioned write in this object's lifetime.
         object.__setattr__(self, "_t", _as_utc(t))
         object.__setattr__(self, "_universe", _as_universe(universe))
+        object.__setattr__(self, "_frames", _as_frames(frames))
         object.__setattr__(self, "_initialized", True)
 
     @property
@@ -160,6 +224,48 @@ class MarketWindow:
     def universe(self) -> Tuple[str, ...]:
         """The symbols tradable as of ``t``. Read-only."""
         return self._universe
+
+    @property
+    def frames(self) -> Mapping[str, Any]:
+        """The materialized frames, keyed by name. Read-only.
+
+        Returned as a :class:`~types.MappingProxyType` — a live view of the
+        window's own storage, not a copy — so the read path stays cheap for a
+        payload carrying many frames, while ``window.frames["x"] = ...``
+        raises ``TypeError`` for every caller.
+
+        That immutability is load-bearing, not tidiness.  A signal runs with
+        this window in hand; if the mapping were writable, ``ctx.frames[...]
+        = ...`` would attach data to a live window after its decision time was
+        fixed — which is a window widening, and precisely the failure the
+        read-only ``t`` exists to prevent.  A dict would have made that
+        possible while ``t`` sat safely frozen beside it, so the guard covers
+        the mapping and not just the attribute.
+
+        The proxy is a view, so it reflects the storage it wraps; nothing in
+        this class writes to that storage after construction, so what it
+        reflects never changes.
+        """
+        return MappingProxyType(self._frames)
+
+    def to_arrow(self):
+        """Serialize this window to an Arrow IPC payload (feature 14).
+
+        The host-side half of the payload channel: the bytes produced here go
+        to the sandbox, which holds no filesystem mounts and can obtain a
+        window no other way (docs/nullius-tech-architecture.md §5.2).  The
+        returned :class:`~contract.payload.MarketWindowPayload` keeps the
+        buffer alive, so the sandbox's zero-copy read stays valid for as long
+        as the payload does.
+
+        Delegated to :mod:`contract.payload` rather than implemented here so
+        that this module — the one every import of the package pulls in, and
+        the one the factory scan touches — keeps its stdlib-only import
+        surface, with pyarrow reached lazily behind the payload seam.
+        """
+        from .payload import serialize_window
+
+        return serialize_window(self)
 
     def __setattr__(self, key: str, value: object) -> None:
         # The core guarantee of this contract.  A window is immutable after
@@ -195,22 +301,49 @@ class MarketWindow:
         # instance — the one sanctioned writer.  Without this, the default
         # __reduce_ex__ would restore slot state with plain setattr, which the
         # immutability guard refuses: a copied window would crash instead of
-        # copying.  Rebuilding from (t, universe) also means a restored window
-        # carries exactly the state this class validates, and none it doesn't.
-        return (type(self), (self._t, self._universe))
+        # copying.  Rebuilding from (t, universe, frames) also means a restored
+        # window carries exactly the state this class validates, and none it
+        # doesn't — and that a window pickled *with* its frames comes back with
+        # them, rather than silently losing the data it was carrying.
+        return (type(self), (self._t, self._universe, self._frames))
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, MarketWindow):
             return NotImplemented
-        return self._t == other._t and self._universe == other._universe
+        return (
+            self._t == other._t
+            and self._universe == other._universe
+            and self._frames_equal(other)
+        )
+
+    def _frames_equal(self, other: "MarketWindow") -> bool:
+        """Compare frames by name and content.
+
+        Arrow's ``Table.equals`` ignores schema metadata, which is the right
+        choice here: two tables holding the same columns and rows *are* the
+        same frame to a signal, and a producer's choice of schema-level
+        annotation is not a difference the contract should ever surface as
+        window inequality.  Names must match too, so a window renamed on one
+        side does not compare equal to its unrenamed twin.
+        """
+        if self._frames.keys() != other._frames.keys():
+            return False
+        return all(
+            table.equals(other._frames[name]) for name, table in self._frames.items()
+        )
 
     def __hash__(self) -> int:
         # Safe because the window is immutable: its hash cannot drift while it
-        # sits in a set or a dict key.
-        return hash((self._t, self._universe))
+        # sits in a set or a dict key.  Frames participate by name only — a
+        # table is not hashable, and hashing its bytes would be a surprising
+        # cost on an object whose hash looks free.  This keeps the invariant
+        # __hash__ requires: two equal windows have equal (t, universe, names),
+        # so equal windows still hash equal.
+        return hash((self._t, self._universe, tuple(self._frames)))
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         return (
             f"MarketWindow(t={self._t.isoformat()!r}, "
-            f"universe={len(self._universe)} symbols)"
+            f"universe={len(self._universe)} symbols, "
+            f"frames={list(self._frames)!r})"
         )

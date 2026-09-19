@@ -17,13 +17,33 @@ from __future__ import annotations
 
 from app.module_loader import register
 
+from .payload import (
+    PAYLOAD_MAGIC,
+    PAYLOAD_VERSION,
+    MarketWindowPayload,
+    NoPayloadError,
+    PayloadChannel,
+    PayloadFormatError,
+    frames_alias_payload,
+    window_from_payload,
+    serialize_window,
+)
 from .window import MarketWindow
 
 __all__ = [
     "CONTRACT_VERSION",
     "MARKET_WINDOW_ABI",
     "MarketWindow",
+    "MarketWindowPayload",
+    "NoPayloadError",
+    "PAYLOAD_MAGIC",
+    "PAYLOAD_VERSION",
+    "PayloadChannel",
+    "PayloadFormatError",
     "build_market_window_contract",
+    "frames_alias_payload",
+    "window_from_payload",
+    "serialize_window",
 ]
 
 # The signal ABI version.  Feature 15 of the spec ("System versions the signal

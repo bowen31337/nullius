@@ -13,12 +13,30 @@
 # itself be a package. An `src/nullius/` level has no __init__.py, so the
 # scan would stop one directory too high and find nothing.
 
+# Dependencies: pyarrow, and deliberately only pyarrow. Arrow IPC is the
+# format a materialized window travels in (feature 14; §5.2's
+# `payload=window.to_arrow()`), so this member owns the Arrow dependency
+# rather than inheriting it from whichever member happens to write Parquet.
+#
+# The import is deferred to first use (`contract._arrow.require_arrow`), so
+# the factory's workspace scan — which imports this package to fire its
+# @register — does not require pyarrow to be installed. That keeps the member
+# import-safe in the environments the workspace contract promises one will be
+# (factory scan, test sandbox, replay path); only the payload paths that
+# genuinely need Arrow raise, and they name the missing dependency when they do.
+
 [project]
 name = "nullius-contract"
 version = "0.1.0"
 description = "Z0 MarketWindow contract and signal ABI for the nullius research system"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    # 14.0 shipped the Arrow IPC stream reader this module uses
+    # (`pyarrow.ipc.open_stream`) across every supported Python; `>=` rather
+    # than `==` because nothing here depends on an Arrow version's behaviour,
+    # only on the format.
+    "pyarrow>=14.0",
+]
 
 [build-system]
 requires = ["hatchling"]

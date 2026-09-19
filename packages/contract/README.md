@@ -71,9 +71,69 @@ The composed component is reachable from the `app` package namespace at
 `app.modules.contract.contract_component()`, which returns the dict — or
 `None` when no contract component is registered.
 
+## The Arrow IPC payload channel (feature 14)
+
+A materialized window travels to the sandbox as Arrow IPC — one self-describing
+payload over a channel, with **zero copy** on the read side
+(docs/nullius-tech-architecture.md §5.2, `payload=window.to_arrow()`).
+
+```python
+import pyarrow as pa
+from contract import MarketWindow, PayloadChannel
+
+window = MarketWindow(
+    t="2026-09-01T12:00:00+00:00",
+    universe=("BTCUSDT", "ETHUSDT"),
+    frames={"bars": pa.table({"ts": [1, 2], "close": [61000.5, 61001.0]})},
+)
+
+payload = window.to_arrow()      # MarketWindowPayload — the bytes
+payload.decision_time            # '2026-09-01T12:00:00+00:00'  (no frame read)
+payload.universe                 # ('BTCUSDT', 'ETHUSDT')
+payload.frame_names              # ('bars',)
+
+rebuilt = payload.materialize()  # MarketWindow — frames view the payload
+rebuilt == window                # True
+```
+
+**Why a container and not a bare IPC stream.** Arrow carries metadata per
+*schema*; the window's facts (decision time, universe, contract version) are
+per *payload*. Encoding them as a synthetic column would make every frame's
+schema a lie. So the payload is a framed container: a magic header, a length
+table, then a zero-column manifest stream followed by one IPC stream per
+frame. The manifest is read without touching a single frame.
+
+**The zero-copy claim.** `materialize()` slices each frame segment out of the
+payload buffer rather than copying it, so the returned tables' buffers point
+into the payload's own allocation. Values alone cannot prove this — a copying
+reader returns identical tables — so `frames_alias_payload()` checks buffer
+addresses, and the suite includes a negative control proving that check can
+fail.
+
+**Two refusals worth knowing:**
+
+- An **unmaterialized** window cannot be serialized. The sandbox has no
+  filesystem mounts, so a window with no frames has no data behind it;
+  shipping a header would surface as an unexplainable zero signal far from
+  its cause. "No data" is an empty *frame*, not an absent one.
+- A **malformed** payload is refused rather than interpreted. These bytes
+  arrive over a channel, so a bad magic, an unknown version, a truncated or
+  padded body, or an unreadable segment raises `PayloadFormatError`.
+
+`PayloadChannel` is the seam itself — bytes in, bytes out, with no path, fd or
+handle, which is what lets the sandbox run with no mounts at all.
+`receive()` raises `NoPayloadError` when nothing arrived; that is the
+contract-level half of feature 159.
+
+pyarrow is a declared dependency of this member, but it is imported lazily
+(`contract._arrow.require_arrow`) so the factory's workspace scan does not
+need it installed — only the payload paths do, and they name it when missing.
+
 ## Tests
 
-`tests/contract/` (repository-level tree) pins both halves: the
-market-window contract (read-only `t`, UTC normalization, universe tuple,
-equality/hash) and the composition wiring (workspace membership, scan-root
-resolution, factory composition, single-component registration, seat).
+`tests/contract/` (repository-level tree) pins every half: the market-window
+contract (read-only `t`, UTC normalization, universe tuple, equality/hash),
+the composition wiring (workspace membership, scan-root resolution, factory
+composition, single-component registration, seat), and the payload channel
+(`test_payload.py`: round-trip fidelity, zero-copy by buffer identity with a
+negative control, framing, and every malformed-payload refusal).
