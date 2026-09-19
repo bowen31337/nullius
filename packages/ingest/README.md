@@ -39,6 +39,7 @@ The `ingest` workspace member: app_spec.xml feature 16 —
 | `nullius_ingest/registry.py` | `WorkerRegistry`, `register_worker` — the seam for later features |
 | `nullius_ingest/watermark.py` | `SequenceStore` — the durable per-stream batch store feature 29 resumes from |
 | `nullius_ingest/staging.py` | `StagingArea` — the append-only staging area feature 28 writes into |
+| `nullius_ingest/agg_trades.py` | `AggTradeStore`, `AggTradeWorker`, `parse_agg_trades` — the feature 18 websocket aggTrades flush, **compressed** (gzip) and retained permanently |
 | `nullius_ingest/schema.py` | `DeclaredSchema`, `ParquetBatch`, `SchemaDrift`, `SchemaValidatingWorker` — the feature 27 gate |
 | `nullius_ingest/gaps.py` | `GapDetector`, `GapDetected`, `GapEventLog` — the feature 25 gap detection |
 | `nullius_ingest/backfill.py` | `GapBackfiller`, `SealGate` — the feature 26 REST backfill and seal gate |
@@ -412,6 +413,104 @@ directory, so the permanent history becomes part of the sealed, content-addresse
 record rather than a sidecar a replay would have to reconstruct from live
 requests — which it could not do honestly, since a record describes rates the
 venue quoted at an instant that has passed.
+
+## Aggregated trades off the websocket feed, compressed and retained permanently (feature 18)
+
+§4.1's table gives this stream the row *"aggTrades | WS | continuous | forever,
+compressed"*, and two of its columns are load-bearing and, taken together, set
+it apart from every other stream in the table. The retention is *forever* —
+like funding and exchangeInfo, and unlike the L2 book diffs §4.1 keeps for a
+rolling 90 days, the aggTrade tape is kept permanently: a trade is an
+irreversible fact of the market, and a row dropped at ingest time is a row no
+replay can ever recover, because the venue's trade-history endpoints age out.
+And the rows are *compressed* — the one property no other stream claims. A
+100-symbol aggTrade tape is the largest of the raw streams, and storing it
+uncompressed *forever* is the self-inflicted infrastructure problem §4.1
+describes; compressing it is the answer. Feature 18 states the behaviour:
+
+> System ingests aggTrades from the websocket feed, persisting compressed rows
+> retained permanently.
+
+- **Each flush is a new record, structurally.** `AggTradeStore` appends
+  `<lake>/staging/aggTrades/<sequence>.bin` via feature 28's `StagingArea`, so
+  record `n`'s bytes are frozen the moment `n + 1` lands — the batch store
+  refuses a second batch at a sequence it already holds. There is no code path
+  that could overwrite a prior record.
+- **The rows are compressed before they are written.** Every record's envelope
+  is gzip-compressed (`COMPRESSION = "gzip"`) before it reaches the staging
+  area, and decompressed on the read path, so the permanent tape occupies a
+  fraction of its raw size and the bytes a seal copies are the compressed ones.
+  The codec is a property of the store, fixed once, and is deliberately *not*
+  written into each envelope: a per-record codec field is a thing that could
+  drift and corrupt the whole log, whereas a store that always compresses the
+  same way needs no such field. `payload_sha256` is the hash of the *compressed*
+  bytes — the file's identity, the value the seal's MANIFEST records — while
+  `source_sha256` is over the *uncompressed* canonical document and answers "did
+  the trades change?".
+- **Retained permanently, not expired.** The aggTrade log is written once into
+  the same staging area as every other stream, but nothing in the system
+  expires it — the deliberate contrast with the 90-day book-diff window. There
+  is deliberately no `prune`: a retention window that removes data would
+  contradict the *forever* the §4.1 row promises.
+- **Prices and quantities are kept verbatim in the venue's spelling.**
+  `"61234.50"` stays `"61234.50"`, never a `Decimal`: whether the venue said
+  `"61234.50"` or `"61234.5"` is a fact about the venue, and re-rendering it
+  would make an audit unable to tell a venue change from our own lossy parse.
+  The trade ids (the aggregated trade id, and the first/last outright-trade-id
+  range) are kept as integers, not strings — unlike a price they are compared
+  and ordered, and a gap on reconnect is a hole in the id sequence. A trade's
+  quantity is always a genuine traded size — an aggTrade is a completed fill,
+  never a level removal — so no quantity is special-cased.
+- **A failed flush consumes no record.** The document is parsed and validated
+  *before* anything is written, so a rate-limit body, a truncated frame or an
+  empty response never appears in the log as a flush that happened. A quiet
+  cycle — a fetch that returns no trades — is a zero-row success, not a failure:
+  a liquid book prints continuously but a quiet one can legitimately go a cycle
+  without a trade.
+- **Damaged bytes are refused, not parsed around.** A record file whose
+  compressed bytes are not gzip, whose recorded sequence is not the sequence its
+  filename claims, or whose recomputed document hash disagrees with the one it
+  recorded, raises `AggTradeCorruptError`. A tape a reader walks as the market's
+  trade history must not hand back a plausible-looking trade assembled from
+  bytes that changed.
+
+The fetch is injected (`AggTradeFetch`) — this member ships no websocket client,
+so the venue's auth, rate limits and reconnect policy stay the deployment's
+business and the module stays stdlib-only. It registers itself as the
+`aggTrades` stream's worker, so importing the package is the whole wiring, and a
+deployment wires its websocket client with
+`register_agg_trade_worker(fetch, registry=default_worker_registry())` — passing
+the default registry explicitly, because the function defaults to a *private*
+one so that wiring a fetch never silently replaces the auto-discovered worker
+for every later composition in the process. Until then the worker still
+composes and its cycle reports that stream's own failure — feature 16's
+contract, where an unconfigured stream is a row in the report rather than a
+component that fails to load.
+
+```python
+from datetime import datetime, timezone
+from nullius_ingest import AggTradeStore, AggTradeWorker
+
+store = AggTradeStore.from_env()      # <lake>/staging/aggTrades
+worker = AggTradeWorker(
+    store, lambda: ws_client.latest_agg_trades()
+)
+
+result = worker.run_cycle()   # flushes, persists compressed record 1
+result.sequence               # 1 — the record, i.e. the log's watermark
+result.rows_written           # the trades the record carries
+store.path_for(1).read_bytes()[:2] == b"\x1f\x8b"   # gzip magic: it is compressed
+
+record = store.current()
+record.batch.rows[0].price    # '61234.50' — the venue's own spelling
+record.batch.rows[0].agg_id   # the aggregated trade id, an integer
+```
+
+The `records()` log is what a seal copies into §4.2's `aggtrades/` snapshot
+directory, so the permanent, compressed tape becomes part of the sealed,
+content-addressed record rather than a sidecar a replay would have to
+reconstruct from live requests — which it could not do honestly, since a record
+describes trades that printed at instants that have passed.
 
 ## Adding a stream worker (features 17–29)
 
