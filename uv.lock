@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 members = [
     "nullius",
     "nullius-feature-store",
+    "nullius-ingest",
     "snapshot",
     "universe",
 ]
@@ -53,6 +54,11 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "nullius", editable = "." }]
+
+[[package]]
+name = "nullius-ingest"
+version = "0.1.0"
+source = { editable = "packages/ingest" }
 
 [[package]]
 name = "packaging"

@@ -1,0 +1,28 @@
+# The "ingest" workspace member — Market Data Ingest Workers
+# (app_spec.xml feature 16; docs/nullius-tech-architecture.md §4.1).
+#
+# Per the root pyproject.toml workspace contract, this directory joins the
+# uv workspace (and uv.lock) automatically by existing with this file; no
+# edit to any other file registers it.  The module loader discovers it by
+# scanning the declared members, so nothing outside this directory ever
+# needs to know this package's name.
+#
+# Deliberately stdlib-only: the isolation framework (feature 16) needs
+# threads, futures and dataclasses and nothing else.  Stream
+# implementations in later features (websockets, REST clients, Parquet
+# writers) declare their own dependencies here, in this file, when they
+# land — the member owns its dependencies, per the workspace contract.
+
+[project]
+name = "nullius-ingest"
+version = "0.1.0"
+description = "Market-data ingest workers: one isolated worker per stream class, returning per-stream failures"
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nullius_ingest"]
