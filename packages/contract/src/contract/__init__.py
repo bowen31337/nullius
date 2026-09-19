@@ -28,6 +28,7 @@ from .payload import (
     window_from_payload,
     serialize_window,
 )
+from .resolution import resolve_universe
 from .window import MarketWindow
 
 __all__ = [
@@ -42,6 +43,7 @@ __all__ = [
     "PayloadFormatError",
     "build_market_window_contract",
     "frames_alias_payload",
+    "resolve_universe",
     "window_from_payload",
     "serialize_window",
 ]

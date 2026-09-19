@@ -170,9 +170,12 @@ class MarketWindow:
         window returns may be later than this.  Read-only.
     universe:
         The symbols tradable as of ``t``, as a tuple.  Read-only.  Membership
-        is resolved host-side against the point-in-time universe table before
-        construction (docs/nullius-tech-architecture.md §4.3); the window
-        stores the result, it does not re-resolve against the wall clock.
+        is resolved host-side against the point-in-time universe table
+        (docs/nullius-tech-architecture.md §4.3); the window stores the
+        result, it does not re-resolve against the wall clock.
+        :meth:`from_memberships` is the construction path that resolves it
+        against the window's own ``t``; a window built with an explicit
+        ``universe`` stores what it was handed.
     frames:
         The materialized data the window actually carries, as a read-only
         mapping of frame name to Arrow table.  Read-only, and captured at
@@ -222,8 +225,62 @@ class MarketWindow:
 
     @property
     def universe(self) -> Tuple[str, ...]:
-        """The symbols tradable as of ``t``. Read-only."""
+        """The symbols tradable as of ``t``. Read-only.
+
+        Returns a tuple, and — for a window built by :meth:`from_memberships`
+        — a tuple that was *resolved against this window's own decision time*,
+        never against the wall clock.  Those are two separate promises and
+        only the first is a container choice: a tuple holds today's roster
+        just as happily as it holds the roster ``t`` deserves.  See
+        :meth:`from_memberships` for the construction path that makes the
+        second promise structural rather than merely intended.
+        """
         return self._universe
+
+    @classmethod
+    def from_memberships(
+        cls,
+        t: Union[datetime, str],
+        memberships: "Iterable[Any]",
+        frames: Optional[Mapping[str, Any]] = None,
+    ) -> "MarketWindow":
+        """Build a window whose universe is resolved *as of its own* ``t``.
+
+        The point-in-time construction path (app_spec.xml feature 13;
+        docs/nullius-tech-architecture.md §4.3).  Rather than trusting a
+        caller to hand over the right roster, this resolves membership
+        against the window's decision time — the same ``t`` the constructor
+        freezes — so the universe a window reports and the instant it is
+        sliced at cannot disagree.
+
+        That coupling is the whole point.  A caller resolving for itself
+        writes ``resolve_membership(datetime.now())`` at a call site that
+        looks exactly like the correct one; here there is no clock to reach
+        for, because the only instant available is the window's own ``t``.
+
+        The resolution itself lives in :func:`contract.resolution.resolve_universe`,
+        which is pure and clock-free; this method is the thin constructor-side
+        join.  Memberships are accepted structurally — interval objects with
+        ``symbol``/``valid_from``/``valid_to``, mappings of the same keys, or
+        plain triples — so this module (Z0, the boundary everything else sits
+        behind) depends on no other member, and the real
+        ``universe.membership.MembershipInterval`` satisfies the acceptance
+        without either package importing the other.
+
+        Note the shape of this API: ``t`` is a *constructor* argument, and the
+        resulting ``universe`` is an ordinary read-only property taking no
+        argument at all.  Feature 10 requires that no ``MarketWindow``
+        *accessor* accept a timestamp — an accessor that took one would be a
+        caller's chance to widen the window.  Resolving at construction, once,
+        from the already-frozen ``t``, keeps that door shut.
+        """
+        from .resolution import resolve_universe
+
+        return cls(
+            t,
+            universe=resolve_universe(t, memberships),
+            frames=frames,
+        )
 
     @property
     def frames(self) -> Mapping[str, Any]:

@@ -49,6 +49,58 @@ raises: a `TypeError` for a non-datetime, a `ValueError` for an unparseable
 string, and a deliberate rejection for a bare `date`, which names a calendar
 day, not an instant.
 
+## Point-in-time universe resolution (feature 13)
+
+`MarketWindow.universe` is a tuple, and for a window built by
+`from_memberships` it is a tuple *resolved against that window's own decision
+time* — never the wall clock. Those are two separate promises, and only the
+first is a container choice: a tuple holds today's roster just as happily.
+
+```python
+from contract import MarketWindow
+
+# (symbol, valid_from, valid_to) — a delisting and a listing straddling t.
+rows = [
+    ("BTCUSDT", "2020-01-01", None),
+    ("ETHUSDT", "2020-01-01", "2026-05-01"),   # delisted before t
+    ("SOLUSDT", "2021-08-01", "2026-09-01"),   # delisted AFTER t — still tradable at t
+    ("DOGEUSDT", "2026-07-01", None),          # listed AFTER t — not tradable at t
+]
+
+window = MarketWindow.from_memberships("2026-06-15T12:00:00+00:00", rows)
+window.universe   # ('BTCUSDT', 'SOLUSDT') — ETH gone, SOL kept, DOGE not yet
+```
+
+Both directions of the failure are silent, which is what makes the coupling
+worth having. A symbol delisted *after* `t` must still appear (it was tradable
+then; dropping it is the survivorship pruning that flatters a backtest), and
+one listed *after* `t` must not (returning it is look-ahead).
+
+The resolution is `resolve_universe(when, memberships)` — pure, clock-free,
+and **with no default `when`**. A default of `datetime.now()` would make the
+wall-clock reading the convenient one and the correct one the extra typing,
+and a reviewer could not tell the two call sites apart. Requiring the argument
+forces every caller to name the instant it is resolving for, and
+`from_memberships` supplies the window's own frozen `t` so the roster and the
+slice instant cannot disagree.
+
+Resolution lives in `contract/resolution.py`, which imports nothing from the
+`universe` member: `contract` is Z0, the boundary everything else sits behind,
+so depending on a consumer of the contract would invert the stack. Membership
+rows are accepted *structurally* — objects with `symbol`/`valid_from`/`valid_to`
+(the universe member's real `MembershipInterval`, exercised against this seam
+in the suite), mappings of the same keys, or plain triples. Bounds may be
+`date`, `datetime` or ISO strings; `valid_from` is inclusive and `valid_to`
+exclusive, matching `universe/membership.py` exactly, and `valid_to=None` is
+the open horizon. The result is sorted and de-duplicated, so a resolution is
+bit-reproducible (feature 46) and a window's universe is a sound `__hash__`
+input.
+
+Note the shape: `t` is a *constructor* argument and `universe` remains an
+accessor taking no argument at all. Feature 10 requires that no accessor
+accept a timestamp — one that did would be a caller's chance to widen the
+window. Resolving once at construction keeps that door shut.
+
 ## The ABI record
 
 Importing the package registers a builder with the application factory
@@ -134,6 +186,11 @@ need it installed — only the payload paths do, and they name it when missing.
 `tests/contract/` (repository-level tree) pins every half: the market-window
 contract (read-only `t`, UTC normalization, universe tuple, equality/hash),
 the composition wiring (workspace membership, scan-root resolution, factory
-composition, single-component registration, seat), and the payload channel
+composition, single-component registration, seat), the payload channel
 (`test_payload.py`: round-trip fidelity, zero-copy by buffer identity with a
-negative control, framing, and every malformed-payload refusal).
+negative control, framing, and every malformed-payload refusal), and the
+point-in-time resolution (`test_universe_point_in_time.py`: both directions of
+the survivorship/look-ahead failure, the `valid_from`/`valid_to` boundary
+convention, clock independence, stable ordering, the accepted row shapes, the
+refusals, and the structural seam against the universe member's real
+`MembershipInterval`).
