@@ -7,8 +7,8 @@ Two shapes, because the lake persists two levels of knowledge:
   the full snapshot hash, the ``sealed_at`` instant, the directory path, and
   the read-only ``{relative path: sha256}`` mapping. That mapping is exactly
   what the seal persists as the snapshot's ``MANIFEST.json`` (app_spec.xml
-  feature 31) — see ``manifest_path`` — and what the full hash formula
-  (feature 32) folds — no re-walk needed.
+  feature 31) — see ``manifest_path`` — and the first of the three terms the
+  full hash formula (feature 32, ``_identity``) folds — no re-walk needed.
 * :class:`SnapshotRef` — everything a *directory name* knows. Once a seal
   has finished, the name ``<sealed_at>_<hash prefix>`` is the only address
   the lake's *filesystem layout* persists; the manifest beside it is the

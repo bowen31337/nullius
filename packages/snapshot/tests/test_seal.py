@@ -11,22 +11,25 @@ plus a hash prefix". Each block below maps to one clause of that sentence:
   the filesystem level, and re-sealing different bytes under an existing
   name is refused.
 * *named by sealed_at plus a hash prefix* — the directory name is exactly
-  ``<sealed_at>_<snapshot_hash[:6]>`` for both the default content digest
+  ``<sealed_at>_<snapshot_hash[:6]>`` for both the default §4.2 formula
   and a caller-supplied full hash.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import stat
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Mapping, Optional
 
 import pytest
 from snapshot import (
+    SCHEMA_VERSION,
     SealedSnapshot,
     SnapshotAlreadySealedError,
     SnapshotContentError,
@@ -46,11 +49,27 @@ BTC_PART_1 = b"BTCUSDT-2026-09-01-part-1"
 ETH_PART_0 = b"ETHUSDT-2026-09-01-part-0"
 
 
-def _staged_digest(staged: Path) -> str:
-    parts = [BTC_PART_0, BTC_PART_1, ETH_PART_0]
-    return content_digest(
-        [hashlib.sha256(p).hexdigest() for p in parts]
+def _formula(
+    file_hashes: list[str],
+    universe: Optional[Mapping[str, object]] = None,
+    schema_version: str = SCHEMA_VERSION,
+) -> str:
+    """The §4.2 formula, spelled out independently of the implementation."""
+    universe_term = (
+        "null"
+        if universe is None
+        else json.dumps(dict(universe), sort_keys=True, separators=(",", ":"))
     )
+    preimage = "\n".join(
+        ("".join(sorted(file_hashes)), universe_term, schema_version)
+    ).encode("utf-8")
+    return hashlib.sha256(preimage).hexdigest()
+
+
+def _staged_hash(universe: Optional[Mapping[str, object]] = None) -> str:
+    """The §4.2 formula over the staged fixture's bytes."""
+    parts = [BTC_PART_0, BTC_PART_1, ETH_PART_0]
+    return _formula([hashlib.sha256(p).hexdigest() for p in parts], universe)
 
 
 def _working_dirs(lake_root: Path) -> list[str]:
@@ -68,12 +87,16 @@ class TestPersistsANamedDirectory:
         assert record.path.parent == lake_root / "snapshots"
         assert record.path.name == "2026-09-01T00:00:00Z_a3f91c"
 
-    def test_default_hash_is_the_content_digest_of_the_staged_files(
+    def test_default_hash_is_the_formula_over_the_staged_files(
         self, service: SnapshotService, staged: Path
     ) -> None:
         record = service.seal(staged, sealed_at=AT)
-        assert record.snapshot_hash == _staged_digest(staged)
-        assert record.path.name == snapshot_name(AT, _staged_digest(staged))
+        expected = _staged_hash()
+        assert record.snapshot_hash == expected
+        assert record.path.name == snapshot_name(AT, expected)
+        # …and the fold is the full formula, not the bare content term: the
+        # universe and schema terms are in the preimage the name abbreviates.
+        assert record.snapshot_hash != content_digest(record.files)
 
     def test_bytes_land_on_disk_byte_for_byte(
         self, service: SnapshotService, staged: Path
@@ -139,7 +162,10 @@ class TestPersistsANamedDirectory:
     ) -> None:
         record = service.seal(lake_root / "staging", sealed_at=AT)
         assert record.files == {}
-        assert record.snapshot_hash == hashlib.sha256(b"").hexdigest()
+        # An empty snapshot still carries the formula's other terms: the
+        # hash folds no file hashes plus the (unasserted) universe plus the
+        # schema version — not the bare sha256(b"") of the content term.
+        assert record.snapshot_hash == _formula([])
         assert record.path.is_dir()
 
     def test_missing_source_is_rejected(

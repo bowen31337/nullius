@@ -13,12 +13,12 @@ in this module exists to make that true by construction:
   manifest entry that meant different things on different platforms would
   defeat the addressing.
 * :func:`content_digest` folds the per-file hashes into the snapshot's
-  default content digest: the sha256 of the sorted file hashes, concatenated
+  content digest: the sha256 of the sorted file hashes, concatenated
   as lowercase hex. This is deliberately the ``sorted(file_hashes)`` term of
   the §4.2 formula, ``sha256(sorted(file_hashes) + universe_definition +
-  schema_version)``, and nothing more — the universe and schema terms belong
-  to the feature that persists them, which layers them on top of this fold
-  rather than replacing it.
+  schema_version)``, and nothing more — the universe and schema terms are
+  layered on top of this fold by ``_identity.snapshot_digest`` (feature 32)
+  rather than folded in here.
 
 Two properties of that fold are worth stating plainly, because they are
 choices, not accidents. Hashes are sorted, so the digest does not depend on
@@ -26,7 +26,7 @@ directory iteration order. And the fold is over hashes alone — not
 ``(path, hash)`` pairs — so two snapshots whose files swapped *names* but
 kept the same bytes digest identically, exactly as the §4.2 formula reads.
 The universe definition and schema version that disambiguate such cases are
-the downstream feature's terms to add.
+the identity module's terms to add.
 
 The walk refuses what it cannot address. A symlink — even one pointing at a
 perfectly ordinary file inside staging — is an error, not a shortcut: a
@@ -44,7 +44,13 @@ from pathlib import Path
 
 from ._errors import SnapshotContentError
 
-__all__ = ["CHUNK_SIZE", "content_digest", "sha256_file", "walk_content"]
+__all__ = [
+    "CHUNK_SIZE",
+    "content_digest",
+    "sha256_file",
+    "sorted_hash_concat",
+    "walk_content",
+]
 
 #: Bytes read per chunk when hashing; 1 MiB keeps memory flat on GB-scale
 #: Parquet without punishing small files with syscall overhead.
@@ -103,18 +109,33 @@ def walk_content(root: Path) -> dict[str, str]:
     return files
 
 
-def content_digest(file_hashes: Iterable[str] | Mapping[str, str]) -> str:
-    """Fold per-file hashes into the snapshot's content digest.
+def sorted_hash_concat(file_hashes: Iterable[str] | Mapping[str, str]) -> str:
+    """Concatenate the per-file hashes, sorted, as lowercase hex.
 
     Accepts an iterable of hashes or a ``{path: hash}`` mapping (the values
     are used; the mapping form is a convenience for passing
-    :func:`walk_content`'s result straight through). The fold is the
-    ``sorted(file_hashes)`` term of the §4.2 ``snapshot_hash`` formula: the
-    sha256 of the sorted lowercase-hex digests, concatenated. Each digest is
-    a fixed 64 characters, so concatenation is unambiguous. An empty input
-    yields the sha256 of the empty string — an empty snapshot is a
-    legitimate, addressable thing.
+    :func:`walk_content`'s result straight through). This string is the
+    preimage two digest spellings share: :func:`content_digest` hashes it
+    alone, and the full §4.2 formula (``_identity.snapshot_digest``) frames
+    it with the universe and schema terms before hashing. It is defined
+    once, here, so the two spellings cannot drift apart — a fold that
+    disagreed with the formula's first term would silently re-key the lake.
+
+    Each digest is a fixed 64 characters and the input is lowercased, so
+    the concatenation is unambiguous and case-normalised. Nothing validates
+    that the inputs are hashes: the walk produced them, and a caller
+    folding other strings gets the fold of those strings.
     """
     hashes = file_hashes.values() if isinstance(file_hashes, Mapping) else file_hashes
-    joined = "".join(sorted(hash_.lower() for hash_ in hashes))
-    return hashlib.sha256(joined.encode("ascii")).hexdigest()
+    return "".join(sorted(hash_.lower() for hash_ in hashes))
+
+
+def content_digest(file_hashes: Iterable[str] | Mapping[str, str]) -> str:
+    """Fold per-file hashes into the snapshot's content digest.
+
+    The sha256 of :func:`sorted_hash_concat` — the ``sorted(file_hashes)``
+    term of the §4.2 ``snapshot_hash`` formula and nothing more. An empty
+    input yields the sha256 of the empty string: an empty snapshot is a
+    legitimate, addressable thing.
+    """
+    return hashlib.sha256(sorted_hash_concat(file_hashes).encode("ascii")).hexdigest()

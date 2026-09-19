@@ -27,8 +27,10 @@ to hold:
   snapshot was sealed against, asserted by the caller as a JSON object.
   The universe member's :class:`~universe.UniverseConfig` is the intended
   producer (its ``dataclasses.asdict`` form); this package deliberately
-  does not depend on it, so the manifest accepts any JSON object and the
-  §4.2 hash formula (feature 32) can fold it by value.
+  does not depend on it, so the manifest accepts any JSON object — and the
+  §4.2 hash formula (feature 32) folds the same value into the snapshot's
+  identity (the validation and canonical spelling live in ``_identity``,
+  imported here so the manifest records exactly what the hash folded).
 
 **The manifest describes content, so it is not content.** The manifest is
 written *inside* the published snapshot (frozen ``0444`` with everything
@@ -61,6 +63,7 @@ from typing import Any, Optional, Union
 
 from ._content import CHUNK_SIZE, walk_content
 from ._errors import SnapshotManifestError, SnapshotNameError
+from ._identity import validate_universe
 from ._naming import (
     format_sealed_at,
     normalize_snapshot_hash,
@@ -76,7 +79,6 @@ __all__ = [
     "SnapshotManifest",
     "build_manifest",
     "count_rows",
-    "validate_universe",
     "walk_sealed_content",
 ]
 
@@ -145,49 +147,12 @@ def _line_count(path: Path) -> Optional[int]:
 
 
 # -- The universe definition ------------------------------------------------
-
-
-def validate_universe(
-    universe: Optional[Mapping[str, Any]],
-) -> Optional[Mapping[str, Any]]:
-    """Accept a universe definition for recording, or refuse it loudly.
-
-    ``None`` means "not asserted" and passes through — it is recorded as
-    JSON ``null``, distinct from ``{}`` (an asserted empty definition).
-    Anything else must be a JSON *object* (a mapping) whose contents JSON
-    can carry; a dataclass or a list is refused with a message that says
-    what to pass instead (the mapping form, e.g. ``asdict`` of the
-    universe member's config). The accepted value is returned behind a
-    read-only proxy, mirroring the record treatment in ``_records``.
-    """
-    if universe is None:
-        return None
-    if not isinstance(universe, Mapping):
-        raise SnapshotManifestError(
-            "universe definition must be a JSON object (a mapping of "
-            f"parameter names to values), got {type(universe).__name__}; "
-            "pass the mapping form of the definition — for the universe "
-            "member's UniverseConfig, dataclasses.asdict(config)"
-        )
-    try:
-        json.dumps(universe, sort_keys=True)
-    except (TypeError, ValueError) as exc:
-        raise SnapshotManifestError(
-            f"universe definition is not JSON-serializable: {exc}; a "
-            "manifest records values the lake can re-read"
-        ) from exc
-    return MappingProxyType(dict(universe))
-
-
-def _universe_key(universe: Optional[Mapping[str, Any]]) -> Optional[str]:
-    """The canonical JSON spelling of a universe definition, for equality.
-
-    Key-sorted so two equal definitions spelled in different key orders
-    compare equal — the same canonicalisation ``to_json_bytes`` applies.
-    """
-    if universe is None:
-        return None
-    return json.dumps(dict(universe), sort_keys=True)
+#
+# validate_universe — the acceptance door every asserted definition passes
+# before the manifest records it — lives in ``_identity`` now: feature 32
+# folds the same value into the snapshot hash, so the validation and the
+# canonical spelling it hashes by are the identity module's to own, and the
+# manifest imports them from there (recording exactly what the hash folded).
 
 
 # -- The records -------------------------------------------------------------

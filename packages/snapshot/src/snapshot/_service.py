@@ -56,13 +56,18 @@ gap the re-seal check used to have — an existing directory's manifest
 pins its full hash, so the same bytes can no longer be re-sealed under a
 different identity that happens to share six characters.
 
-The default snapshot hash is the content digest of the staged files (the
-``sorted(file_hashes)`` term of the §4.2 formula — see ``_content``); a
-caller who already knows the full hash — the manifest feature, or a seal
-retry replaying a decided identity — supplies it via ``snapshot_hash=`` and
-the seal honours it, deriving the directory's prefix from it. Whatever hash
-names the directory, the seal verifies it against nothing else: the hash is
-the identity, and identity is the caller's to assert.
+The default snapshot hash is the full §4.2 formula (feature 32,
+``_identity.snapshot_digest``): a sha256 over the staged files' sorted
+hashes, the asserted universe definition, and the lake's schema version.
+The universe and schema terms are not decoration — the same bytes sealed
+against a different definition of the world, or under a different data
+schema, are a different snapshot by construction and seal under their own
+name rather than colliding with the old one. A caller who has already
+decided the identity — a seal retry replaying it, a test pinning a name —
+supplies the full hash via ``snapshot_hash=`` and the seal honours it,
+deriving the directory's prefix from it. Whatever hash names the directory,
+the seal verifies it against nothing else: the hash is the identity, and
+identity is the caller's to assert.
 """
 
 from __future__ import annotations
@@ -78,7 +83,7 @@ from typing import Mapping, Optional, Union
 
 from app.module_loader import find_workspace_root
 
-from ._content import content_digest, walk_content
+from ._content import walk_content
 from ._errors import (
     SnapshotAlreadySealedError,
     SnapshotContentError,
@@ -87,10 +92,10 @@ from ._errors import (
     SnapshotNotFoundError,
     SnapshotStagingRequestError,
 )
+from ._identity import canonical_universe, snapshot_digest, validate_universe
 from ._manifest import (
     MANIFEST_NAME,
     SnapshotManifest,
-    _universe_key,
     build_manifest,
     walk_sealed_content,
 )
@@ -197,14 +202,17 @@ class SnapshotService:
         ``source`` defaults to the lake's staging area — the §4.1
         seal-on-schedule flow. ``sealed_at`` defaults to now (UTC, second
         resolution); a caller driving the schedule supplies the instant.
-        ``snapshot_hash`` defaults to the content digest of the staged
-        files; supply the full 64-hex hash to seal under an identity decided
-        elsewhere (the manifest feature's formula, or a retry replaying a
-        prior decision). ``universe`` is the universe definition the
-        manifest records (feature 31): a JSON object — for the universe
-        member's config, ``dataclasses.asdict(config)`` — or ``None`` to
-        record that none was asserted; the manifest feature docstrings
-        (``_manifest``) state the exact treatment.
+        ``snapshot_hash`` defaults to the §4.2 formula over the staged
+        content — the sorted per-file hashes plus the universe definition
+        plus the lake schema version (``_identity``), so the definition the
+        caller asserts is part of the identity the directory is named by
+        (feature 32); supply the full 64-hex hash instead to seal under an
+        identity decided elsewhere, such as a retry replaying a prior
+        decision. ``universe`` is the universe definition the manifest
+        records (feature 31) and the default hash folds: a JSON object —
+        for the universe member's config, ``dataclasses.asdict(config)`` —
+        or ``None`` to record that none was asserted; the identity docstring
+        (``_identity``) states the exact treatment.
 
         The seal publishes a ``MANIFEST.json`` beside the content (per-file
         sha256, row counts, the universe definition and the full snapshot
@@ -232,8 +240,13 @@ class SnapshotService:
                 "root; a seal writes the snapshot's manifest itself — move "
                 "or rename the staged file before sealing"
             )
+        # Validated before the hash and the name: the definition is an
+        # input to the identity (feature 32), so a bad one is refused
+        # before any identity is computed with it — and before the
+        # exists-check, which would otherwise compare raw unvalidated input.
+        validated_universe = validate_universe(universe)
         full_hash = (
-            content_digest(files)
+            snapshot_digest(files, universe=validated_universe)
             if snapshot_hash is None
             else normalize_snapshot_hash(snapshot_hash)
         )
@@ -244,14 +257,16 @@ class SnapshotService:
         if final.exists():
             # The name is taken: identical bytes make this an idempotent
             # re-seal, different bytes an immutability violation.
-            return self._existing_or_conflict(final, instant, full_hash, files, universe)
+            return self._existing_or_conflict(
+                final, instant, full_hash, files, validated_universe
+            )
 
         manifest = build_manifest(
             files=files,
             source=source_path,
             snapshot_hash=full_hash,
             sealed_at=instant,
-            universe=universe,
+            universe=validated_universe,
         )
         self.snapshots_root.mkdir(parents=True, exist_ok=True)
         working = self.snapshots_root / f".sealing-{uuid.uuid4().hex}"
@@ -265,7 +280,7 @@ class SnapshotService:
                 # Lost a race for the name: fall through to the same
                 # identity check the pre-flight path performs.
                 return self._existing_or_conflict(
-                    final, instant, full_hash, files, universe
+                    final, instant, full_hash, files, validated_universe
                 )
         finally:
             _discard_working_tree(working)
@@ -364,7 +379,12 @@ class SnapshotService:
                 f"vs {len(files)} staged); sealed directories are never "
                 "overwritten"
             )
-        if universe is not None and _universe_key(universe) != _universe_key(
+        # Since the formula became the default identity (feature 32), a
+        # retry asserting a different universe computes a different hash and
+        # lands under its own name; this refusal guards the path that pins
+        # the name explicitly — one immutable identity must not be
+        # re-asserted against a different definition of the world.
+        if universe is not None and canonical_universe(universe) != canonical_universe(
             persisted.universe
         ):
             raise SnapshotAlreadySealedError(

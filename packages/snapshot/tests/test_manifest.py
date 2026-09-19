@@ -15,14 +15,21 @@ describes; each block below pins one clause of the feature:
   ``num_rows`` (the lake's data format, parsed from its Thrift metadata
   with no dependency), a line count for line-oriented text, and an
   explicit ``null`` — never a guess — where a format carries no rows.
-* *the universe definition* — asserted by the caller as a JSON object,
-  recorded verbatim, and pinned: re-sealing against a *different*
-  definition on an immutable name is refused.
+* *the universe definition* — asserted by the caller as a JSON object and
+  recorded verbatim.
 
 And because a manifest is identity, the suite also pins what the manifest
 does to the re-seal contract: an existing directory's manifest carries
 its full 64-character hash, closing the six-character-prefix gap the
 pre-manifest check documented.
+
+Since feature 32 the definition is also a term of the *default* identity
+(``_identity.snapshot_digest``), so re-sealing the same bytes against a
+different definition computes a different hash and seals beside the old
+one rather than colliding with it. The refusal still guards the path that
+pins the name explicitly with ``snapshot_hash=``: one immutable identity
+must not be re-asserted against a different definition of the world. Both
+halves are pinned in ``TestManifestPinsIdentity``.
 """
 
 from __future__ import annotations
@@ -262,7 +269,7 @@ class TestManifestPersisted:
         assert MANIFEST_NAME not in record.files
         import snapshot as snapshot_package
 
-        assert record.snapshot_hash == snapshot_package.content_digest(
+        assert record.snapshot_hash == snapshot_package.snapshot_digest(
             {
                 path: hashlib.sha256(data).hexdigest()
                 for path, data in [
@@ -270,7 +277,8 @@ class TestManifestPersisted:
                     ("b", BTC_PART_1),
                     ("c", ETH_PART_0),
                 ]
-            }
+            },
+            universe=None,
         )
 
     def test_the_manifest_records_the_universe_definition(
@@ -793,20 +801,55 @@ class TestManifestPinsIdentity:
         self, service: SnapshotService, staged: Path
     ) -> None:
         first = service.seal(staged, sealed_at=AT, universe=UNIVERSE)
-        # The retry asserts no universe: the seal already happened, and
-        # the manifest on disk is what stands.
-        second = service.seal(staged, sealed_at=AT)
+        # The retry asserts the same definition: the seal already happened,
+        # and the manifest on disk is what stands — its instant and hash,
+        # not the retry's re-derived ones.
+        second = service.seal(staged, sealed_at=AT, universe=dict(UNIVERSE))
         assert second.path == first.path
+        assert second.snapshot_hash == first.snapshot_hash
+        assert second.sealed_at == first.sealed_at
         assert service.read_manifest(second.name).universe == UNIVERSE
 
     def test_a_reseal_asserting_a_different_universe_is_refused(
         self, service: SnapshotService, staged: Path
     ) -> None:
-        service.seal(staged, sealed_at=AT, universe=UNIVERSE)
+        # An explicit hash pins the name: the same identity re-asserted
+        # against a different definition of the world is the immutability
+        # violation, not a new snapshot.
+        service.seal(staged, sealed_at=AT, snapshot_hash=HASH, universe=UNIVERSE)
         with pytest.raises(
             SnapshotAlreadySealedError, match="different universe definition"
         ):
-            service.seal(staged, sealed_at=AT, universe=UNIVERSE_2)
+            service.seal(
+                staged, sealed_at=AT, snapshot_hash=HASH, universe=UNIVERSE_2
+            )
+
+    def test_a_different_universe_seals_beside_not_over(
+        self, service: SnapshotService, staged: Path
+    ) -> None:
+        # The definition is an input to the default identity (feature 32):
+        # the same bytes under a different universe are a *different*
+        # snapshot by construction, so they seal under their own name
+        # rather than colliding on the old one.
+        first = service.seal(staged, sealed_at=AT, universe=UNIVERSE)
+        second = service.seal(staged, sealed_at=AT, universe=UNIVERSE_2)
+        assert second.path != first.path
+        assert second.snapshot_hash != first.snapshot_hash
+        assert first.path.is_dir() and second.path.is_dir()
+        assert service.read_manifest(second.name).universe == UNIVERSE_2
+
+    def test_no_asserted_universe_is_its_own_snapshot(
+        self, service: SnapshotService, staged: Path
+    ) -> None:
+        # "None asserted" is a different claim from any definition — and
+        # from the empty definition — so it too seals under its own name.
+        asserted = service.seal(staged, sealed_at=AT, universe=UNIVERSE)
+        absent = service.seal(staged, sealed_at=AT)
+        empty = service.seal(staged, sealed_at=AT, universe={})
+        names = {asserted.path.name, absent.path.name, empty.path.name}
+        assert len(names) == 3
+        assert service.read_manifest(absent.name).universe is None
+        assert service.read_manifest(empty.name).universe == {}
 
     def test_a_reseal_with_the_same_universe_is_idempotent(
         self, service: SnapshotService, staged: Path

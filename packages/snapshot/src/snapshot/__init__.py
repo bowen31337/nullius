@@ -1,9 +1,11 @@
 """Snapshot sealing and content addressing for the nullius lake.
 
 Implements app_spec.xml feature 30, "System persists a sealed snapshot into
-an immutable directory named by sealed_at plus a hash prefix", and feature
+an immutable directory named by sealed_at plus a hash prefix", feature
 31, "System persists a MANIFEST.json per snapshot recording per-file
-sha256, row counts and the universe definition", on the layout of
+sha256, row counts and the universe definition", and feature 32, "System
+persists snapshot_hash computed as a sha256 over sorted file hashes plus
+the universe definition plus the schema version", on the layout of
 docs/nullius-tech-architecture.md §4.1-§4.2: ingest workers append into
 ``<lake>/staging``, and sealing copies that content into an immutable
 directory ``<lake>/snapshots/<sealed_at>_<snapshot_hash[:6]>`` — for
@@ -27,10 +29,12 @@ scripts, tests and the sibling features of this category, which build on
 these seams: every seal persists a :data:`MANIFEST_NAME` inside the
 snapshot — per-file sha256, row counts and the universe definition
 (app_spec.xml feature 31, §4.2's layout) — read back through
-:meth:`SnapshotService.read_manifest`; the full §4.2 hash formula (feature
-32) folds the same per-file hashes; the read-only mount and
-staging-rejection checks lean on the frozen modes and the strict name
-parser.
+:meth:`SnapshotService.read_manifest`; and every seal's default identity is
+the full §4.2 hash formula (feature 32, :func:`snapshot_digest`): a sha256
+over the sorted per-file hashes plus the universe definition plus the lake
+schema version, so the same bytes under a different definition or schema
+are a different snapshot. The read-only mount and staging-rejection checks
+lean on the frozen modes and the strict name parser.
 
 The read side of the same boundary is :class:`SnapshotMount` (feature 34):
 ``service.mount(name)`` opens a sealed snapshot read-only, handing out
@@ -62,6 +66,7 @@ from ._errors import (
     SnapshotReadOnlyError,
     SnapshotStagingRequestError,
 )
+from ._identity import SCHEMA_VERSION, canonical_universe, snapshot_digest
 from ._manifest import (
     MANIFEST_NAME,
     MANIFEST_VERSION,
@@ -93,6 +98,7 @@ __all__ = [
     "ManifestFileEntry",
     "READ_ONLY_OPERATIONS",
     "ReadOnlyPath",
+    "SCHEMA_VERSION",
     "SealedSnapshot",
     "SnapshotAlreadySealedError",
     "SnapshotContentError",
@@ -106,6 +112,7 @@ __all__ = [
     "SnapshotRef",
     "SnapshotService",
     "SnapshotStagingRequestError",
+    "canonical_universe",
     "content_digest",
     "count_rows",
     "format_sealed_at",
@@ -118,6 +125,7 @@ __all__ = [
     "resolve_sealed_at",
     "seal_snapshot",
     "sha256_file",
+    "snapshot_digest",
     "snapshot_name",
     "walk_content",
 ]
@@ -149,7 +157,8 @@ def seal_snapshot(
     Seals ``source`` (default: the lake's staging area) into the lake at
     ``lake_root`` (default: resolved from ``LAKE_ROOT`` as above) and returns
     the seal record; ``universe`` is the universe definition the persisted
-    MANIFEST.json records (see :meth:`SnapshotService.seal`). Intended for
+    MANIFEST.json records and the §4.2 hash folds (see
+    :meth:`SnapshotService.seal`). Intended for
     scripts and the sealing cron of §4.1; the composed application and the
     tests use the service directly, since a long-lived process should
     resolve its lake once.
