@@ -37,9 +37,42 @@ The `ingest` workspace member: app_spec.xml feature 16 —
 | `nullius_ingest/worker.py` | `IngestWorker` protocol, `CycleResult`, `StreamFailure`, `StreamOutcome`, `FunctionWorker` |
 | `nullius_ingest/supervisor.py` | `IngestSupervisor`, `IngestReport` |
 | `nullius_ingest/registry.py` | `WorkerRegistry`, `register_worker` — the seam for later features |
+| `nullius_ingest/watermark.py` | `SequenceStore` — the durable per-stream batch store feature 29 resumes from |
+| `nullius_ingest/staging.py` | `StagingArea` — the append-only staging area feature 28 writes into |
 
-Stdlib-only by design; stream implementations declare their own
-dependencies in this member's `pyproject.toml` when they land.
+Stdlib-only by design, except `staging` (which resolves its lake root via
+the factory's `find_workspace_root`, as the snapshot member does); stream
+implementations declare their own dependencies in this member's
+`pyproject.toml` when they land.
+
+## Staging — the write side of the seal boundary (feature 28)
+
+The `StagingArea` is where every ingest worker appends its output: an
+append-only per-stream log under `<lake>/staging/<stream>/<seq>.bin`, one
+batch per worker cycle. It is the write half of the §4.1 seal boundary —
+what workers append here, the sealing service (the `snapshot` member) later
+copies into an immutable snapshot; the evaluator never reads it, because
+staging is a *sibling* of `snapshots/`, never inside it.
+
+- **Append-only.** An append always claims `current + 1`; the shared
+  batch-store mechanics refuse a second batch at a sequence already held, so
+  staging is written once and copied by the seal, never overwritten.
+- **Never on the evaluator mount path.** Constructing a `StagingArea` at, or
+  beneath, a `snapshots/` directory raises `StagingRootError` — the
+  mount-path guarantee enforced structurally on the write side, not hoped
+  for. A mis-wired `LAKE_ROOT` cannot put ingest output where the evaluator
+  reads.
+- **Durable.** Each append is written to a temp file, `fsync`ed, then
+  atomically renamed into place — the same commit feature 29's resume relies
+  on — so a crash leaves a batch fully appended or absent, never torn.
+
+```python
+from nullius_ingest import StagingArea, StreamClass
+
+area = StagingArea.from_env()          # <lake>/staging, resolved from LAKE_ROOT
+batch = area.append(StreamClass.KLINES, payload=rows_bytes, rows=100)
+batch.sequence                          # 1, then 2, 3, ... per stream
+```
 
 ## Adding a stream worker (features 17–29)
 

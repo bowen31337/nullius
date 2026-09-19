@@ -23,6 +23,10 @@ What lives where:
 * :mod:`nullius_ingest.watermark` — :class:`SequenceStore`, the durable
   per-stream batch store feature 29 resumes from, and its in-memory
   stand-in.
+* :mod:`nullius_ingest.staging` — :class:`StagingArea`, the append-only
+  staging area feature 28 writes into, and the write side of the seal
+  boundary: staging is a sibling of ``snapshots/``, never on the
+  evaluator mount path.
 
 The package self-registers with the application factory: scanning this
 workspace member runs this module, the ``@register`` decorator below
@@ -42,6 +46,11 @@ from .registry import (
     build_default_workers,
     build_supervisor,
     register_worker,
+)
+from .staging import (
+    StagedBatch,
+    StagingArea,
+    StagingRootError,
 )
 from .streams import StreamClass, coerce_stream_class
 from .supervisor import IngestReport, IngestSupervisor
@@ -67,6 +76,9 @@ __all__ = [
     "ResumableFunctionWorker",
     "ResumableWorker",
     "SequenceStore",
+    "StagedBatch",
+    "StagingArea",
+    "StagingRootError",
     "StreamClass",
     "StreamFailure",
     "StreamOutcome",
