@@ -55,16 +55,58 @@ daily frequency — feature 48 admits no four-component keys. The membership
 is the universe’s top-N (feature 40); this member never ranks liquidity, it
 is *given* the membership and computes what the market did across it.
 
+## Feature 56 — dispersion + autocorrelation, version stamped
+
+Beyond the keying contract, this member implements feature 56: *System
+computes cross-sectional return dispersion plus return autocorrelation at
+several lags, persisting them with feature_version stamps.*
+
+- `feature_store.dispersion` — the pure reductions, a sibling of `regime`:
+  `cross_sectional_dispersion` (the *width* of the panel’s latest
+  cross-section: the population standard deviation of its members’ most
+  recent log returns, with the equal-weighted mean and the scored count
+  beside it), `market_return_series` (the equal-weighted cross-sectional mean
+  return, one value per period), `return_autocorrelation` (the *memory*: a
+  pairwise-complete Pearson of that series against its own shift, at every
+  requested lag), and `build_dispersion_metrics` bundling both into a
+  `DispersionMetrics`. The default lag set is `(1, 2, 3, 5, 10)` — “several
+  lags” is the contract, so a single lag would not satisfy it.
+- `feature_store.dispersion_persistence` — the persisting half: encodes each
+  metric to a deterministic JSON envelope and stores both as feature-store
+  records under the market-wide daily key. Reads them back as a pair.
+- `feature_store.dispersion_service` — `DispersionService`: assembles the
+  panel from daily bars + a universe membership, computes both metrics, and
+  persists both. Registered with the application factory as the
+  `"dispersion-metrics"` component.
+
+**The version stamp is the point.** `feature_version` is a component of the
+five-part key, so a record’s version is part of its *identity*: a changed
+definition lands under a new version and leaves the prior-version rows
+untouched (feature 53), rather than overwriting numbers a replay may still be
+reading. Version `"1"` names a definition stated in words
+(`DISPERSION_DEFINITION`, `AUTOCORRELATION_DEFINITION`) and defaulted in
+`definition_parameters()`, so the stamp is checkable rather than a bare
+number. `DispersionService.persist` therefore refuses
+(`VersionMismatchError`) a computation whose lags, `min_symbols` or
+`min_observations` disagree with the definition the stamp names — storing
+different numbers under an address that promises version 1 would be a record
+that is wrong by construction and undetectable from the key alone.
+
+A thin cross-section is `nan`, never `0.0`: dispersion over one symbol is not
+a cross-section, and an unscored lag reports `nan` over zero pairs rather
+than a zero a reader would mistake for a measured absence of memory.
+
 ## Layout
 
 - distribution: `nullius-feature-store` (this directory, `packages/feature-store/`)
 - import package: `feature_store` (under `src/`)
-- registered components: `"feature-store"` (feature 48) and `"regime-metrics"`
-  (feature 57), both via `@register`, discovered by `app.module_loader`’s
-  workspace scan
+- registered components: `"feature-store"` (feature 48), `"regime-metrics"`
+  (feature 57) and `"dispersion-metrics"` (feature 56), all via `@register`,
+  discovered by `app.module_loader`’s workspace scan
 - app-package seat: `app.modules.feature-store` (`src/app/modules/feature-store/`),
-  which exposes `feature_store_component()` and `regime_metrics_component()`
-  without the `app` package depending on any member at import time
+  which exposes `feature_store_component()`, `regime_metrics_component()` and
+  `dispersion_metrics_component()` without the `app` package depending on any
+  member at import time
 
 Stdlib-only by design — the identity contract stays import-safe in any
 environment, deterministic replay included. Parquet materialisation

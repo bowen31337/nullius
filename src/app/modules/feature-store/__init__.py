@@ -2,11 +2,13 @@
 
 The implementation lives in the ``feature-store`` workspace member
 (``packages/feature-store``, import name ``feature_store``), which
-self-registers with the application factory under two component names —
-``feature-store`` (feature 48, the five-component-keyed store) and
+self-registers with the application factory under three component names —
+``feature-store`` (feature 48, the five-component-keyed store),
 ``regime-metrics`` (feature 57, the mean-pairwise-correlation-plus-breadth
-service) — scanning the workspace imports it, its ``@register`` decorators
-fire, and ``create_app()`` composes both components.
+service) and ``dispersion-metrics`` (feature 56, the
+dispersion-plus-autocorrelation service, version stamped) — scanning the
+workspace imports it, its ``@register`` decorators fire, and ``create_app()``
+composes all three components.
 
 This module is the member's seat inside the ``app`` package namespace
 (``src/app/modules/feature-store/``): it exposes the composed components
@@ -25,11 +27,13 @@ from typing import TYPE_CHECKING, Any
 from app.module_loader import Application, create_app
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a dependency
-    from feature_store import FeatureStore, RegimeService
+    from feature_store import DispersionService, FeatureStore, RegimeService
 
 __all__ = [
+    "DISPERSION_METRICS_COMPONENT",
     "FEATURE_STORE_COMPONENT",
     "REGIME_METRICS_COMPONENT",
+    "dispersion_metrics_component",
     "feature_store_component",
     "regime_metrics_component",
 ]
@@ -42,6 +46,10 @@ FEATURE_STORE_COMPONENT = "feature-store"
 #: The component name the feature-store member registers its regime-metrics
 #: service under (feature 57).
 REGIME_METRICS_COMPONENT = "regime-metrics"
+
+#: The component name the feature-store member registers its dispersion-metrics
+#: service under (feature 56).
+DISPERSION_METRICS_COMPONENT = "dispersion-metrics"
 
 
 def feature_store_component(app: Application | None = None) -> FeatureStore | Any:
@@ -70,3 +78,17 @@ def regime_metrics_component(app: Application | None = None) -> RegimeService | 
     """
     application = app if app is not None else create_app()
     return application.get(REGIME_METRICS_COMPONENT)
+
+
+def dispersion_metrics_component(app: Application | None = None) -> DispersionService | Any:
+    """Return the composed dispersion-metrics service (feature 56).
+
+    With ``app`` given, the component is read from that application; without
+    it, the application is composed first via
+    :func:`app.module_loader.create_app` (scanning the declared workspace).
+    Returns ``None`` when no ``dispersion-metrics`` component is registered —
+    an absent component is a discoverable state, not an exception, exactly as
+    an empty workspace is for the factory.
+    """
+    application = app if app is not None else create_app()
+    return application.get(DISPERSION_METRICS_COMPONENT)
