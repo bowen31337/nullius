@@ -1009,6 +1009,179 @@ class MarketWindow(metaclass=_EnforceNoTimestampAccessor):
         frame = truncate_trades_frame(frame, self._t, seconds)
         return pl.from_arrow(frame)
 
+    def bars(
+        self,
+        freq: str,
+        lookback: Optional[int] = None,
+    ):
+        """The OHLC candle rows this window carries, at one frequency.
+
+        app_spec.xml feature 5: *System exposes MarketWindow.bars for 1m, 1h
+        and 1d frequencies, which returns a Polars frame containing no row
+        later than the window decision time.*  §5.1 declares it as
+        ``bars(freq: Literal["1m","1h","1d"], lookback: int) -> pl.DataFrame``.
+        The rows are the candle stream feature 17's worker persists — every
+        closed 1m, 1h and 1d candle the venue printed, off the REST backfill
+        plus a websocket tail, retained forever (§4.1's ``Klines 1m/1h/1d |
+        REST backfill + WS | continuous | forever``) — carried by the sealed
+        snapshot's ``bars/`` partitions (§4.2), which is what a host
+        materialized into this window's frames.
+
+        **The frequency is a closed vocabulary, the one thing this accessor
+        validates.**  §4.1 names exactly three candle cadences — ``"1m"``,
+        ``"1h"`` and ``"1d"`` — and feature 17 validates a candle's interval
+        against that same set at the row boundary, so the frequency a caller
+        asks for and the cadence a candle was persisted under share one
+        spelling.  A request for any other frequency is refused rather than
+        passed through, because the stream has no rows under it and a promise
+        of a cadence the contract cannot have persisted is the failure the
+        refusal makes loud — unlike :meth:`bookfeat`, whose feature name is
+        free-form because the derived book tier is the part of §4.1 that grows.
+        Each frequency lives under its own frame name,
+        :func:`contract.bars.bars_frame_name` — ``bars:<freq>`` — and the
+        lookup is exact: a window carrying "1h" answers ``bars("1m")`` with an
+        **empty** DataFrame, not with the other cadence's candles.  Use
+        :func:`contract.bars.bars_frame_names` over :attr:`frames` to see which
+        frequencies a window actually carries, so a miss is distinguishable
+        from a typo.
+
+        **Containing no row later than the decision time, checked rather than
+        assumed.**  An honestly-built window carries no post-``t`` candles at
+        all — that is the physical guarantee this class exists to make — so on
+        honest data the truncation is a no-op verification.  It runs anyway, on
+        every call: feature 5 puts it in this accessor's own sentence, and a
+        promise about rows that *can* be checked (these rows carry
+        ``open_time`` by requirement — the candle's place in the open-time-
+        ordered series, which is exactly the instant "later than the decision
+        time" is measured against) is checked —
+        :func:`contract.bars.truncate_bars_frame` enforces ``open_time <= t``
+        whether or not a lookback was given, so a host bug or a hand-built
+        window cannot leak a future candle through this method.  It can only
+        ever return a subset of the candles at or before ``t``, never one the
+        window's slicing was meant to exclude.
+
+        **The lookback is a row count, not a duration.**  The candle stream is
+        bucketed — one row per closed interval — so ``lookback`` counts rows on
+        the shared discipline :meth:`feature`, :meth:`borrow` and
+        :meth:`bookfeat` apply: ``None`` (the default) is every row the window
+        carries — still truncated at ``t`` — and a non-negative ``int`` is the
+        trailing ``lookback`` rows, taken from the recent end of the oldest-
+        first frame.  A negative value or a ``bool`` is refused rather than
+        clamped, via :func:`contract.bars.validate_bars_lookback`.  That is the
+        one respect in which this accessor differs from :meth:`trades`, whose
+        lookback is measured in seconds because the trade tape is not bucketed;
+        here the rows are already closed seconds/minutes/days, so a count is the
+        stable quantity.
+
+        The rows live under fixed-prefix frame names, ``bars:<freq>`` — not
+        versioned the way :meth:`feature`'s addresses are, because an OHLC
+        candle is an *observed* fact of the market (the property that makes the
+        candle stream's retention *forever*), and an observation has no
+        definition whose revision a version would name.  A present bars frame
+        must carry ``symbol`` and ``open_time`` — which book, which candle-open
+        instant: the two columns this accessor's own mechanics turn on (see
+        :func:`contract.bars.check_bars_frame`) — while the candle's further
+        columns pass through untouched, and column *types* are the host's: the
+        venue's own string spellings of ``open``/``high_price``/``low_price``/
+        ``close``/``volume`` (``"61234.50"``, not ``61234.5``) come back
+        verbatim, never re-rendered into a float whose rounding an audit could
+        not tell from the exchange's own.  ``open_time`` itself must carry
+        instants — a tz-aware column is compared as instants, a naive one is
+        read as UTC, and anything else is refused by name.
+
+        Parameters
+        ----------
+        freq:
+            The candle cadence, one of ``"1m"``, ``"1h"`` or ``"1d"``.  A
+            string in that closed set — anything else is refused (see
+            :func:`contract.bars.validate_bars_freq`).
+        lookback:
+            ``None`` (the default) for every row the window carries — still
+            truncated at ``t`` — or a non-negative ``int`` for the trailing
+            ``lookback`` candles, counted across the whole frame with the
+            recent end the one a lookback means.  The same numeric discipline
+            :meth:`feature`, :meth:`borrow` and :meth:`bookfeat` apply, via
+            :func:`contract.bars.validate_bars_lookback` — a negative value or
+            a ``bool`` is refused rather than clamped.
+
+        Returns
+        -------
+        polars.DataFrame
+            The candle rows as carried by this window, truncated at ``t`` and
+            (when a lookback was given) the trailing ``lookback`` of them,
+            converted from the stored Arrow table.  A window that carries no
+            frame under ``bars:<freq>`` returns a frame with *no columns*
+            (``shape == (0, 0)``) — the miss, reported as nothing rather than
+            as a substitute frame; a present frame read down to nothing returns
+            *0 rows with the frame's columns* (``shape == (0, n)``).  So the
+            columns say whether the candles were there at all, exactly as
+            :meth:`feature`'s, :meth:`borrow`'s, :meth:`bookfeat`'s and
+            :meth:`trades`'s do.
+
+        Raises
+        ------
+        BarsAccessError
+            A ``freq`` outside the three candle cadences or a malformed
+            ``lookback`` (the request was invalid), a present bars frame
+            missing a required column (the host materialized something that is
+            not candle rows under the frequency's name), or a present
+            ``open_time`` that does not carry instants (not a timestamp column
+            — the truncation is a promise about instants).  The *absence* of
+            the frame is none of these: that is the empty answer above.
+
+        Note the signature: no parameter reads as a timestamp, which is
+        feature 10's requirement and the reason this accessor can exist at
+        all.  ``freq`` names a *cadence* and ``lookback`` an amount of *data*,
+        neither an instant — a caller cannot pass a time here, so no caller can
+        widen the window through this method; the upper bound of every slice it
+        returns is the ``t`` fixed at construction, and the truncation enforces
+        it.
+        """
+        from .bars import (
+            check_bars_frame,
+            select_bars_frame,
+            truncate_bars_frame,
+            validate_bars_freq,
+            validate_bars_lookback,
+        )
+        from .features import require_polars
+
+        # The frequency is validated before the mapping is consulted, so a
+        # request for a cadence the stream does not carry is reported as such
+        # even against a window carrying nothing — rather than reading as "no
+        # rows for that frequency".
+        validate_bars_freq(freq)
+        # Validated before the mapping is consulted, so a malformed lookback is
+        # reported as such even against a window carrying nothing — the same
+        # ordering discipline every other accessor applies.
+        rows = validate_bars_lookback(lookback)
+        # An exact match on the frequency's own frame name: never the
+        # ``feature:`` namespace, never a neighbouring frame, never a fallback.
+        frame = select_bars_frame(self._frames, freq)
+        pl = require_polars()
+        if frame is None:
+            # The window carries no candles for this frequency. An empty frame
+            # is the honest answer and the safe one: it cannot be mistaken for
+            # another frequency's candles the way a substitute could.
+            return pl.DataFrame()
+        # The frame is present, so the accessor's row promise is checkable —
+        # and checked before any slicing, so a frame that is not candle rows is
+        # refused however much of it the caller asked for.
+        check_bars_frame(frame)
+        # The truncation at the frozen ``t`` runs on every call, lookback or
+        # not — feature 5's own sentence, made structural: the candles this
+        # frame carries are sliced to open_time <= t and can never answer with
+        # a candle opened after the decision time.
+        frame = truncate_bars_frame(frame, self._t)
+        if rows is not None:
+            # The *trailing* slice, on the same terms as :meth:`feature` and
+            # :meth:`bookfeat`: the recent end of an oldest-first frame — the
+            # candles nearest the decision time — with an over-long lookback
+            # reading as the whole frame rather than as "no data".
+            offset = max(frame.num_rows - rows, 0)
+            frame = frame.slice(offset, rows)
+        return pl.from_arrow(frame)
+
     def to_arrow(self):
         """Serialize this window to an Arrow IPC payload (feature 14).
 

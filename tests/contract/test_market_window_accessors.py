@@ -59,7 +59,8 @@ def test_inspect_accessors_reports_the_window_surface():
     # which takes a lookback and no time, the bookfeat accessor feature 7
     # adds, which takes a name and a lookback and no time, and the trades
     # accessor feature 6 adds, which takes a lookback in seconds and no
-    # time.
+    # time, and the bars accessor feature 5 adds, which takes a frequency
+    # and a lookback and no time.
     assert set(inspect_accessors()) == {
         "t",
         "universe",
@@ -69,6 +70,7 @@ def test_inspect_accessors_reports_the_window_surface():
         "borrow",
         "bookfeat",
         "trades",
+        "bars",
     }
 
 
