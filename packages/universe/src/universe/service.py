@@ -14,6 +14,8 @@ hundred-and-nothing symbols):
 * ``NULLIUS_UNIVERSE_TOP_N`` — symbols admitted per month (default 100)
 * ``NULLIUS_UNIVERSE_WINDOW_DAYS`` — trailing window length (default 30)
 * ``NULLIUS_UNIVERSE_MIN_OBSERVATIONS`` — eligibility minimum (default 1)
+* ``NULLIUS_UNIVERSE_MIN_DOLLAR_VOLUME`` — the liquidity floor below
+  which a symbol is excluded with a persisted reason (default 0, no floor)
 """
 
 from __future__ import annotations
@@ -47,6 +49,16 @@ def _env_int(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number, got {raw!r}") from exc
+
+
 class UniverseService:
     """Build and persist monthly universes under one configuration.
 
@@ -72,6 +84,9 @@ class UniverseService:
             top_n=_env_int(_ENV_PREFIX + "TOP_N", 100),
             window_days=_env_int(_ENV_PREFIX + "WINDOW_DAYS", 30),
             min_observations=_env_int(_ENV_PREFIX + "MIN_OBSERVATIONS", 1),
+            # float() accepts "nan" and "-inf"; the config's own validation
+            # rejects them, so a bad floor fails the build loudly here.
+            min_dollar_volume=_env_float(_ENV_PREFIX + "MIN_DOLLAR_VOLUME", 0.0),
         )
         return cls(config=config)
 

@@ -1,9 +1,11 @@
 """The tradable universe, as a workspace component.
 
-Feature (app_spec.xml, "Universe & Survivorship Integrity", feature 40):
-persist a monthly tradable universe computed as top-N by trailing 30-day
-median dollar volume. docs/nullius-tech-architecture.md §4.3 fixes the
-definition; the module docstrings in this package record the mechanics.
+Features (app_spec.xml, "Universe & Survivorship Integrity", features 40
+and 47): persist a monthly tradable universe computed as top-N by trailing
+30-day median dollar volume, and exclude symbols whose median falls below
+a configured liquidity floor — persisting each exclusion with its reason.
+docs/nullius-tech-architecture.md §4.3 fixes the definition; the module
+docstrings in this package record the mechanics.
 
 Two contract notes for anyone composing or extending this component:
 
@@ -16,9 +18,11 @@ under the loader's scan-time name.
 
 *Point-in-time honesty.* The universe for a month is computed only from
 bars dated before that month begins, and what was computed is persisted
-with the window and config that produced it. Downstream members derive
-the interval-form membership table and the survivorship audit from these
-builds; nothing here may quietly rebuild history with today's data.
+with the window and config that produced it — including the floor-excluded
+symbols, whose absence is a recorded decision rather than a silence.
+Downstream members derive the interval-form membership table and the
+survivorship audit from these builds; nothing here may quietly rebuild
+history with today's data.
 """
 
 from app.module_loader import register
@@ -29,9 +33,11 @@ from .monthly import (
     MonthlyUniverse,
     SkippedMonth,
     UniverseBuildResult,
+    UniverseExclusion,
     UniverseMember,
     build_monthly_universes,
     build_monthly_universe,
+    floor_exclusion_reason,
     median_dollar_volumes,
     month_key,
     month_start,
@@ -43,6 +49,7 @@ __all__ = [
     "DailyBar",
     "UniverseConfig",
     "UniverseMember",
+    "UniverseExclusion",
     "MonthlyUniverse",
     "UniverseBuildResult",
     "SkippedMonth",
@@ -51,6 +58,7 @@ __all__ = [
     "build_monthly_universe",
     "build_monthly_universes",
     "median_dollar_volumes",
+    "floor_exclusion_reason",
     "month_key",
     "month_start",
     "coerce_date",

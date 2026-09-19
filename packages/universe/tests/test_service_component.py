@@ -73,6 +73,7 @@ class TestFactoryRegistration:
         assert service.config.top_n == 100
         assert service.config.window_days == 30
         assert service.config.min_observations == 1
+        assert service.config.min_dollar_volume == 0.0
         assert service.database_url == test_database_url
 
     def test_default_roots_follow_the_declared_workspace(self) -> None:
@@ -92,9 +93,26 @@ class TestServiceFromEnv:
         monkeypatch.setenv("NULLIUS_UNIVERSE_TOP_N", "7")
         monkeypatch.setenv("NULLIUS_UNIVERSE_WINDOW_DAYS", "60")
         monkeypatch.setenv("NULLIUS_UNIVERSE_MIN_OBSERVATIONS", "10")
+        monkeypatch.setenv("NULLIUS_UNIVERSE_MIN_DOLLAR_VOLUME", "25000")
         assert UniverseService.from_env().config == UniverseConfig(
-            top_n=7, window_days=60, min_observations=10
+            top_n=7, window_days=60, min_observations=10, min_dollar_volume=25_000.0
         )
+
+    def test_from_env_rejects_a_bad_floor_loudly(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("NULLIUS_UNIVERSE_MIN_DOLLAR_VOLUME", "ten thousand")
+        with pytest.raises(ValueError, match="NULLIUS_UNIVERSE_MIN_DOLLAR_VOLUME"):
+            UniverseService.from_env()
+
+    def test_from_env_rejects_a_non_finite_floor_via_config(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # float("nan") parses, but a NaN floor must still fail the build:
+        # the env parser delegates finiteness to the config's validation.
+        monkeypatch.setenv("NULLIUS_UNIVERSE_MIN_DOLLAR_VOLUME", "nan")
+        with pytest.raises(ValueError, match="min_dollar_volume"):
+            UniverseService.from_env()
 
     def test_from_env_rejects_a_bad_override_loudly(
         self, monkeypatch: pytest.MonkeyPatch
@@ -129,3 +147,25 @@ class TestServiceEndToEnd:
             service.persist(universe)
         for universe in result.builds:
             assert service.load(universe.month) == universe
+
+    def test_floor_flows_build_persist_load_through_the_service(
+        self, test_database_url: str
+    ) -> None:
+        # The configured floor is the operator's whole interface to
+        # feature 47: set it on the service and the exclusion travels with
+        # the build into the store and back, reason intact.
+        service = UniverseService(
+            config=UniverseConfig(top_n=5, min_dollar_volume=50.0)
+        )
+        bars = april_bars() + [
+            DailyBar("BBBUSDT", APRIL_1 + dt.timedelta(days=offset), 5.0)
+            for offset in range(30)
+        ]
+        universe = service.build(bars, "2026-05")
+        assert universe.symbols == ("AAAUSDT",)
+        assert universe.excluded_symbols == ("BBBUSDT",)
+        assert service.persist(universe) == 1
+        loaded = service.load("2026-05")
+        assert loaded == universe
+        assert loaded is not None
+        assert "falls below the configured floor of 50.0" in loaded.exclusions[0].reason

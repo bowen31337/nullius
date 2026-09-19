@@ -196,6 +196,187 @@ class TestSingleMonthBuild:
         assert universe.config == UniverseConfig()
 
 
+class TestLiquidityFloor:
+    """The eligibility floor (feature 47): below it, excluded with a reason."""
+
+    def test_below_floor_symbol_excluded_even_with_room_in_top_n(self) -> None:
+        # top_n=10 seats everyone eligible; the floor still refuses BBB.
+        bars = steady_bars("AAAUSDT", 100.0, april_days()) + steady_bars(
+            "BBBUSDT", 5.0, april_days()
+        )
+        universe = build_monthly_universe(
+            bars, MAY_1, UniverseConfig(top_n=10, min_dollar_volume=10.0)
+        )
+        assert universe.symbols == ("AAAUSDT",)
+        assert universe.excluded_symbols == ("BBBUSDT",)
+        assert universe.exclusions[0].median_dollar_volume == 5.0
+
+    def test_symbol_exactly_at_the_floor_stays_eligible(self) -> None:
+        # "Falls below" is strict: the boundary belongs to the tradable
+        # side, or every floor would silently exclude its own threshold.
+        universe = build_monthly_universe(
+            steady_bars("AAAUSDT", 100.0, april_days()),
+            MAY_1,
+            UniverseConfig(top_n=10, min_dollar_volume=100.0),
+        )
+        assert universe.symbols == ("AAAUSDT",)
+        assert universe.exclusions == ()
+
+    def test_floor_applies_before_ranking(self) -> None:
+        # Ranks are conferred among the eligible only: CCC never reaches
+        # the ranking, so AAA and BBB hold ranks 1 and 2, not 1 and 3.
+        bars = (
+            steady_bars("AAAUSDT", 300.0, april_days())
+            + steady_bars("BBBUSDT", 100.0, april_days())
+            + steady_bars("CCCUSDT", 50.0, april_days())
+        )
+        universe = build_monthly_universe(
+            bars, MAY_1, UniverseConfig(top_n=2, min_dollar_volume=60.0)
+        )
+        assert universe.symbols == ("AAAUSDT", "BBBUSDT")
+        assert [member.rank for member in universe.members] == [1, 2]
+        assert universe.excluded_symbols == ("CCCUSDT",)
+
+    def test_exclusion_reason_names_the_median_and_the_floor(self) -> None:
+        universe = build_monthly_universe(
+            steady_bars("AAAUSDT", 5.0, april_days()),
+            MAY_1,
+            UniverseConfig(top_n=10, min_dollar_volume=10.0),
+        )
+        (exclusion,) = universe.exclusions
+        assert exclusion.symbol == "AAAUSDT"
+        assert exclusion.reason == (
+            "trailing-window median dollar volume 5.0 falls below "
+            "the configured floor of 10.0"
+        )
+
+    def test_exclusions_are_sorted_by_symbol_regardless_of_bar_order(self) -> None:
+        # Exclusions carry no rank; determinism still demands a total
+        # order, and it must not inherit the order bars arrived in.
+        reversed_bars = steady_bars("ZZZUSDT", 1.0, april_days()) + steady_bars(
+            "MMMUSDT", 2.0, april_days()
+        ) + steady_bars("AAAUSDT", 3.0, april_days())
+        forward_bars = list(reversed(reversed_bars))
+        config = UniverseConfig(top_n=10, min_dollar_volume=10.0)
+        for bars in (reversed_bars, forward_bars):
+            universe = build_monthly_universe(bars, MAY_1, config)
+            assert universe.excluded_symbols == ("AAAUSDT", "MMMUSDT", "ZZZUSDT")
+
+    def test_floor_zero_by_default_excludes_nothing(self) -> None:
+        bars = steady_bars("AAAUSDT", 100.0, april_days()) + steady_bars(
+            "BBBUSDT", 0.5, april_days()
+        )
+        explicit = build_monthly_universe(
+            bars, MAY_1, UniverseConfig(min_dollar_volume=0.0)
+        )
+        assert explicit == build_monthly_universe(bars, MAY_1, UniverseConfig())
+        assert explicit.exclusions == ()
+        assert explicit.symbols == ("AAAUSDT", "BBBUSDT")
+
+    def test_floor_judges_the_median_not_the_mean(self) -> None:
+        # One liquidation-cascade day gives BBBB a towering mean but a
+        # floor-reading median: the spike must not buy eligibility.
+        spiky = [
+            DailyBar("BBBUSDT", day, 1.0) for day in april_days()[:-1]
+        ] + [DailyBar("BBBUSDT", april_days()[-1], 1_000_000_000.0)]
+        universe = build_monthly_universe(
+            steady_bars("AAAUSDT", 100.0, april_days()) + spiky,
+            MAY_1,
+            UniverseConfig(top_n=5, min_dollar_volume=100.0),
+        )
+        assert universe.symbols == ("AAAUSDT",)
+        assert universe.excluded_symbols == ("BBBUSDT",)
+
+    def test_thin_symbol_has_no_median_so_is_absent_not_floored(self) -> None:
+        # min_observations and the floor are different doors out: a symbol
+        # with too few bars never earns a median, so it cannot be judged
+        # against the floor — it is simply not a candidate, and it must
+        # not appear among the floor's exclusions.
+        bars = steady_bars("AAAUSDT", 1_000_000.0, april_days()[:1]) + steady_bars(
+            "BBBUSDT", 100.0, april_days()
+        )
+        universe = build_monthly_universe(
+            bars, MAY_1, UniverseConfig(top_n=10, min_observations=5, min_dollar_volume=10.0)
+        )
+        assert universe.symbols == ("BBBUSDT",)
+        assert universe.exclusions == ()
+        assert "AAAUSDT" not in universe.excluded_symbols
+
+    def test_floor_is_judged_on_the_trailing_window_only(self) -> None:
+        # DDD trades a fortune inside May and nothing before it: the floor
+        # cannot see May any more than the ranking can — causality binds
+        # the eligibility rule exactly as it binds the ranking rule.
+        bars = steady_bars("AAAUSDT", 100.0, april_days()) + [
+            DailyBar("DDDUSDT", dt.date(2026, 5, 15), 1_000_000.0)
+        ]
+        universe = build_monthly_universe(
+            bars, MAY_1, UniverseConfig(top_n=10, min_dollar_volume=10.0)
+        )
+        assert universe.symbols == ("AAAUSDT",)
+        assert universe.excluded_symbols == ()
+
+    def test_rebuild_with_a_floor_is_bit_identical(self) -> None:
+        bars = steady_bars("AAAUSDT", 100.0, april_days()) + steady_bars(
+            "BBBUSDT", 5.0, april_days()
+        )
+        config = UniverseConfig(top_n=5, min_dollar_volume=10.0)
+        assert build_monthly_universe(bars, MAY_1, config) == build_monthly_universe(
+            bars, MAY_1, config
+        )
+
+    def test_raising_the_floor_can_only_shrink_the_universe(self) -> None:
+        # A stricter floor admits a subset and never invents members.
+        bars = (
+            steady_bars("AAAUSDT", 300.0, april_days())
+            + steady_bars("BBBUSDT", 100.0, april_days())
+            + steady_bars("CCCUSDT", 50.0, april_days())
+        )
+        lax = build_monthly_universe(
+            bars, MAY_1, UniverseConfig(top_n=10, min_dollar_volume=40.0)
+        )
+        strict = build_monthly_universe(
+            bars, MAY_1, UniverseConfig(top_n=10, min_dollar_volume=200.0)
+        )
+        assert set(strict.symbols) < set(lax.symbols)
+        assert lax.exclusions == ()
+        assert strict.symbols == ("AAAUSDT",)
+        assert strict.excluded_symbols == ("BBBUSDT", "CCCUSDT")
+
+    def test_sweep_reports_the_floor_when_it_empties_a_month(self) -> None:
+        # May's window (April) holds bars, but the only symbol's median is
+        # below the floor: the skip must name the floor, not the
+        # observation minimum — the reason is the audit trail. (The May 1
+        # bar exists so the sweep enumerates May at all; it sits outside
+        # May's own window and cannot rescue the symbol.)
+        bars = steady_bars("AAAUSDT", 5.0, april_days()) + [
+            DailyBar("AAAUSDT", dt.date(2026, 5, 1), 1_000_000.0)
+        ]
+        result = build_monthly_universes(
+            bars, UniverseConfig(top_n=10, min_dollar_volume=10.0)
+        )
+        assert result.builds == ()
+        reasons = {skip.month: skip.reason for skip in result.skipped}
+        assert "floor" in reasons["2026-05"]
+        assert "minimum" not in reasons["2026-05"]
+        # April itself is a plain data gap: its March window holds nothing.
+        assert "no daily bars" in reasons["2026-04"]
+
+    def test_sweep_still_reports_the_observation_minimum_when_no_medians_exist(self) -> None:
+        # Two thin April days: nothing reaches min_observations, so no
+        # median exists for the floor to judge — the older reason applies.
+        bars = [
+            DailyBar("AAAUSDT", dt.date(2026, 4, 1), 5.0),
+            DailyBar("AAAUSDT", dt.date(2026, 4, 2), 5.0),
+            DailyBar("AAAUSDT", dt.date(2026, 5, 1), 5.0),
+        ]
+        result = build_monthly_universes(
+            bars, UniverseConfig(top_n=10, min_observations=5, min_dollar_volume=1.0)
+        )
+        reasons = {skip.month: skip.reason for skip in result.skipped}
+        assert "minimum of 5" in reasons["2026-05"]
+        assert "floor" not in reasons["2026-05"]
+
+
 class TestMedianHelper:
     def test_median_over_window_only(self) -> None:
         bars = steady_bars("AAAUSDT", 10.0, april_days())

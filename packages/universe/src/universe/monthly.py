@@ -25,6 +25,15 @@ Why the *median* rather than the mean of daily dollar volume: a single
 liquidation cascade must not buy a thin symbol a month in the top-N. The
 median is the spike-proof liquidity measure; the mean is the spike
 amplifier.
+
+The same median is also the eligibility floor's yardstick (feature 47): a
+symbol whose trailing median dollar volume falls below the configured
+``min_dollar_volume`` never reaches the ranking at all, and the exclusion
+is recorded — symbol, rejected median, reason — on the build so it can be
+persisted next to the members it did not join. An exclusion is a fact
+about the build, not a log line: months later, an audit reading the store
+must be able to tell a symbol that was out-ranked from one the floor
+refused, without re-running the build to find out.
 """
 
 from __future__ import annotations
@@ -41,12 +50,14 @@ from .config import UniverseConfig
 
 __all__ = [
     "UniverseMember",
+    "UniverseExclusion",
     "MonthlyUniverse",
     "SkippedMonth",
     "UniverseBuildResult",
     "month_key",
     "month_start",
     "median_dollar_volumes",
+    "floor_exclusion_reason",
     "build_monthly_universe",
     "build_monthly_universes",
 ]
@@ -130,13 +141,45 @@ class UniverseMember:
 
 
 @dataclass(frozen=True)
+class UniverseExclusion:
+    """One symbol the liquidity floor refused, with the median it was judged on.
+
+    ``reason`` is the canonical sentence :func:`floor_exclusion_reason`
+    produces, so every exclusion ever persisted reads identically and the
+    store's reason column is prose a human can audit, not a code a human
+    has to look up.
+    """
+
+    symbol: str
+    median_dollar_volume: float
+    reason: str
+
+
+def floor_exclusion_reason(median: float, floor: float) -> str:
+    """The one canonical reason a floor exclusion is persisted with.
+
+    Names both numbers — the rejected median and the floor that rejected
+    it — so a single row explains itself without the build row beside it.
+    Formatted with plain ``repr`` floats, which round-trip exactly and are
+    stable across runs: identical builds persist byte-identical reasons.
+    """
+    return (
+        f"trailing-window median dollar volume {median} falls below "
+        f"the configured floor of {floor}"
+    )
+
+
+@dataclass(frozen=True)
 class MonthlyUniverse:
     """The tradable universe effective for one month, with its provenance.
 
     Carries the exact window and config it was computed from, so any later
     audit can distinguish "the data said so" from "someone rebuilt it with
     different knobs". ``symbols`` returns membership in rank order — the
-    stable ordering every downstream reduction should consume.
+    stable ordering every downstream reduction should consume — and
+    ``exclusions`` carries the floor-refused symbols in symbol order, so
+    the build answers "who is in" and "who was turned away and why" in one
+    durable value.
     """
 
     month: str
@@ -145,10 +188,15 @@ class MonthlyUniverse:
     window_end: dt.date
     config: UniverseConfig
     members: tuple[UniverseMember, ...]
+    exclusions: tuple[UniverseExclusion, ...] = ()
 
     @property
     def symbols(self) -> tuple[str, ...]:
         return tuple(member.symbol for member in self.members)
+
+    @property
+    def excluded_symbols(self) -> tuple[str, ...]:
+        return tuple(exclusion.symbol for exclusion in self.exclusions)
 
     def __len__(self) -> int:
         return len(self.members)
@@ -213,6 +261,37 @@ def median_dollar_volumes(
     return medians
 
 
+def _split_by_floor(
+    medians: dict[str, float], floor: float
+) -> tuple[dict[str, float], tuple[UniverseExclusion, ...]]:
+    """Partition ranked-candidate medians by the liquidity floor.
+
+    Returns the eligible medians — at or above the floor, since "falls
+    below" is strict and the boundary belongs to the tradable side — and
+    the exclusion record for each symbol the floor refused, sorted by
+    symbol. That sorting is load-bearing, not cosmetic: exclusions carry
+    no rank, but determinism still demands a total order, and
+    symbol-ascending mirrors the ranking's own tie-break. Iterating the
+    symbols sorted (rather than dict order) keeps the split independent of
+    the order bars happened to arrive in.
+    """
+    eligible: dict[str, float] = {}
+    excluded: list[UniverseExclusion] = []
+    for symbol in sorted(medians):
+        median = medians[symbol]
+        if median >= floor:
+            eligible[symbol] = median
+        else:
+            excluded.append(
+                UniverseExclusion(
+                    symbol=symbol,
+                    median_dollar_volume=median,
+                    reason=floor_exclusion_reason(median, floor),
+                )
+            )
+    return eligible, tuple(excluded)
+
+
 def build_monthly_universe(
     bars: Iterable[DailyBar],
     month: "str | dt.date | dt.datetime",
@@ -222,17 +301,23 @@ def build_monthly_universe(
 
     Ranks every symbol with a median over the trailing window by median
     dollar volume (descending, ties broken by symbol ascending) and admits
-    the top ``config.top_n``. A month with no eligible symbols yields an
-    empty universe — the honest answer for a data gap, and visible as such
-    rather than as an exception somebody caught and forgot.
+    the top ``config.top_n``. Symbols whose median falls below
+    ``config.min_dollar_volume`` are excluded before ranking — the floor
+    is an eligibility rule, not a ranking factor, so no below-floor symbol
+    can buy a seat with a high rank it did not have — and each is recorded
+    in ``exclusions`` with its median and the canonical reason. A month
+    with no eligible symbols yields an empty universe — the honest answer
+    for a data gap, and visible as such rather than as an exception
+    somebody caught and forgot.
     """
     cfg = config if config is not None else UniverseConfig()
     effective_from = month_start(month)
     window_start, window_end = _window_bounds(effective_from, cfg.window_days)
     medians = median_dollar_volumes(bars, window_start, window_end, cfg.min_observations)
+    eligible, exclusions = _split_by_floor(medians, cfg.min_dollar_volume)
     # Total order: liquidity descending, then symbol ascending. Deterministic
     # for any input, including exact float ties.
-    ranked = sorted(medians.items(), key=lambda item: (-item[1], item[0]))
+    ranked = sorted(eligible.items(), key=lambda item: (-item[1], item[0]))
     members = tuple(
         UniverseMember(symbol=symbol, rank=position, median_dollar_volume=median)
         for position, (symbol, median) in enumerate(ranked[: cfg.top_n], start=1)
@@ -244,6 +329,7 @@ def build_monthly_universe(
         window_end=window_end,
         config=cfg,
         members=members,
+        exclusions=exclusions,
     )
 
 
@@ -264,7 +350,9 @@ def build_monthly_universes(
     is an absence of evidence, and persisting an empty universe for it
     would launder that absence into a real observation. The skip reasons
     distinguish "no bars at all in the window" (a gap) from "bars present
-    but nothing met the eligibility minimum" (a policy outcome).
+    but nothing met the eligibility minimum" (a policy outcome) from
+    "symbols had medians but the liquidity floor refused them all" (the
+    floor doing exactly what it was configured to do).
     """
     cfg = config if config is not None else UniverseConfig()
     materialized = tuple(bars)
@@ -292,6 +380,18 @@ def build_monthly_universes(
         bars_in_window = _window_has_a_date(traded_dates, window_start, window_end)
         if universe.members:
             builds.append(universe)
+        elif universe.exclusions:
+            # Medians existed and the floor refused every one of them: the
+            # skip is the floor's doing, and the reason says so.
+            skipped.append(
+                SkippedMonth(
+                    month=universe.month,
+                    reason=(
+                        f"every symbol's trailing-window median dollar volume "
+                        f"fell below the configured floor of {cfg.min_dollar_volume}"
+                    ),
+                )
+            )
         elif bars_in_window:
             skipped.append(
                 SkippedMonth(
