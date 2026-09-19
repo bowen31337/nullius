@@ -62,7 +62,12 @@ from typing import Optional
 from app.module_loader import register
 
 from .debit import DEBIT_ROUTE, DebitEndpoint, DebitRequest, DebitResponse
-from .errors import TrialLedgerError, TrialRecordError, TrialStoreError
+from .errors import (
+    TrialImmutableError,
+    TrialLedgerError,
+    TrialRecordError,
+    TrialStoreError,
+)
 from .record import TrialLedgerRecord, utc_now
 from .store import DATABASE_URL_ENV, TRIAL_LEDGER_TABLE, TrialLedger
 
@@ -75,6 +80,7 @@ __all__ = [
     "DebitRequest",
     "DebitResponse",
     "TRIAL_LEDGER_TABLE",
+    "TrialImmutableError",
     "TrialLedger",
     "TrialLedgerError",
     "TrialLedgerRecord",

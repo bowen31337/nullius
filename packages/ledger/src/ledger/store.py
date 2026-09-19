@@ -25,9 +25,25 @@ and the raw append must keep its two-calls-two-rows contract; the
 check-and-insert runs inside one transaction on one connection
 (``INSERT … SELECT … WHERE NOT EXISTS``), so a debit racing its own
 retry cannot double-charge.  Nothing here updates, nothing deletes: the
-API offers no such spelling, and the *enforced* refusal (role grants
-that deny UPDATE and DELETE) is feature 92's, arriving with the database
-role that carries it.
+API offers no such spelling.
+
+**The refusal is enforced, not merely conventional (feature 92).**  The
+spec's own sentence refuses to rest at "the API offers no such spelling":
+the refusal must hold against a hand that reaches past it — a raw
+connection, a second package, an operator script, a bug — so every
+statement the store issues runs through one guarded seam
+(:meth:`TrialLedger._execute`), and an UPDATE or DELETE targeting
+``trial_ledger`` is refused with :class:`~ledger.errors.TrialImmutableError`
+before it touches a row.  That is the SQLite spelling of feature 103's
+Postgres "role grants that deny UPDATE and DELETE": where the production
+database denies the privilege to the writing role, this member denies the
+statement at the connection that speaks to the database, because SQLite
+has no roles to grant to.  The check is by statement shape and names the
+table, so a mutation of another table, and every non-mutating statement
+(``CREATE``, ``INSERT``, ``SELECT``, ``PRAGMA``), runs unchanged; the
+:func:`guarded` context manager exposes the same wall to any caller that
+wants a raw statement against this database without opting out of the
+append-only guarantee.
 
 **The sequence is monotonic because the table says so, not because the
 rows happen to accumulate.**  The column is SQLite's ``INTEGER PRIMARY
@@ -87,15 +103,16 @@ consumed a hypothesis while the honest counter looked away.
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
-from collections.abc import Callable, Mapping
-from contextlib import closing
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import closing, contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import unquote, urlparse
 
-from .errors import TrialRecordError, TrialStoreError
+from .errors import TrialImmutableError, TrialRecordError, TrialStoreError
 from .record import TrialLedgerRecord, _validated_instant, _validated_uuid, utc_now
 
 __all__ = [
@@ -138,6 +155,128 @@ CREATE TABLE IF NOT EXISTS {TRIAL_LEDGER_TABLE} (
 # apart in column order — the failure that would silently swap an
 # identity for a stamp.
 _COLUMNS = "seq, ts, node_id, campaign_id"
+
+# Feature 92's seam: refuse an UPDATE or DELETE against trial_ledger before
+# it runs.  The check is by statement shape, not by trust — it names the
+# table, so a mutation of another table on the same database is not this
+# store's concern, and a statement that merely *mentions* the table in a
+# SELECT is not refused.  A leading-stripped, whitespace-collapsed scan of
+# the statement's first token catches the verb however it is cased and
+# however it is padded or prefixed with a common table expression, because
+# the refusal must meet the *attempt*, exactly as a denied privilege does.
+_MUTATION_RE = re.compile(
+    r"^\s*(?:WITH\s+\w+\s+AS\s*\(.*?\)\s*)?(UPDATE|DELETE)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _immutability_violation(statement: str) -> Optional[str]:
+    """The verb of a statement that would mutate ``trial_ledger``, else ``None``.
+
+    Returns ``"UPDATE"`` or ``"DELETE"`` when the statement's mutating verb
+    targets the trial_ledger table — matched by the table's own name, the
+    one constant :data:`TRIAL_LEDGER_TABLE` carries, so the check and the
+    DDL cannot drift apart — and ``None`` for every statement that must run
+    unchanged: a CREATE, INSERT, SELECT or PRAGMA, and a mutation of any
+    other table.  The table is matched whether it is qualified or not and
+    however it is separated from the verb, so ``UPDATE trial_ledger SET …``
+    and ``DELETE FROM trial_ledger WHERE …`` are both caught, while
+    ``DELETE FROM other_table`` and ``SELECT * FROM trial_ledger`` are not.
+    """
+    match = _MUTATION_RE.match(statement)
+    if match is None:
+        return None
+    # The verb is only refused when it names trial_ledger as its target.
+    # UPDATE names the table directly after the verb; DELETE names it after
+    # FROM.  Both are checked against the canonical table name.
+    verb = match.group(1)
+    if verb.upper() == "UPDATE":
+        target = _MUTATION_RE.sub("", statement, count=1)
+        names_table = re.match(
+            r"\s*" + re.escape(TRIAL_LEDGER_TABLE) + r"\b", target, re.IGNORECASE
+        )
+    else:  # DELETE
+        names_table = re.search(
+            r"\bFROM\s+" + re.escape(TRIAL_LEDGER_TABLE) + r"\b",
+            statement,
+            re.IGNORECASE,
+        )
+    return verb if names_table else None
+
+
+def _guarded_statement(statement: str) -> None:
+    """Refuse a statement that would mutate ``trial_ledger``.
+
+    The single enforcement point every store statement runs through.  A
+    mutating statement against trial_ledger raises
+    :class:`~ledger.errors.TrialImmutableError`, naming the table and the
+    verb, before the database is touched — so a refused mutation spends no
+    sequence number and leaves the ledger exactly as it was.  Every other
+    statement returns normally.
+    """
+    verb = _immutability_violation(statement)
+    if verb is not None:
+        raise TrialImmutableError(
+            f"the trial_ledger table is append-only: a {verb} statement "
+            f"against {TRIAL_LEDGER_TABLE} was refused before it ran.  "
+            f"trial_ledger is an append-only write-ahead log (feature 92: "
+            f"the refusal is enforced at the store's connection, the SQLite "
+            f"spelling of feature 103's role grants that deny UPDATE and "
+            f"DELETE); a mutated row would restate a past charge, which the "
+            f"honest K counter never does.  Append a superseding row instead."
+        )
+
+
+class _GuardedConnection(sqlite3.Connection):
+    """A ``sqlite3.Connection`` whose ``execute`` refuses trial_ledger mutations.
+
+    The enforcement the store's own methods and :func:`guarded` share, made
+    a property of the connection rather than of any one caller.  ``execute``
+    runs :func:`_guarded_statement` first, so an UPDATE or DELETE against
+    ``trial_ledger`` is refused with :class:`~ledger.errors.TrialImmutableError`
+    before the statement reaches the database; every other statement runs
+    unchanged.  ``executemany`` is left intact — the store never issues it,
+    and a caller reaching for it is already outside the append path.  A
+    subclass (selected via ``sqlite3.connect(..., factory=...)``) rather
+    than a wrapped attribute, because ``Connection.execute`` is read-only.
+    """
+
+    def execute(self, statement: str, *parameters: Any) -> sqlite3.Cursor:  # type: ignore[override]
+        _guarded_statement(statement)
+        return super().execute(statement, *parameters)
+
+
+@contextmanager
+def guarded(database_url: str) -> Iterator[_GuardedConnection]:
+    """A raw connection to ``database_url`` that keeps trial_ledger append-only.
+
+    The enforcement a caller reaches for when it needs a raw statement
+    against this database — an operator script, a derived view that must
+    read with its own SQL — without opting out of feature 92's guarantee.
+    Every statement executed on the yielded connection runs through the
+    same wall the store's own methods do (:class:`_GuardedConnection`), so
+    an UPDATE or DELETE against trial_ledger is refused with
+    :class:`~ledger.errors.TrialImmutableError` however it is reached; a
+    caller that wants to mutate must do so on a bare ``sqlite3.connect``
+    of its own, fully outside this store, and cannot mistake that for the
+    ledger's own API.
+
+    The caller owns the connection and its transaction, exactly as a raw
+    ``sqlite3.connect`` would give: commit or roll back before the block
+    exits.  This is the SQLite counterpart of feature 103's Postgres role
+    grants — where the production database denies the privilege to the
+    writing role, this denies the statement at the seam that speaks to the
+    database.
+    """
+    path = _sqlite_path(database_url)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path, factory=_GuardedConnection)
+    try:
+        with connection:
+            connection.executescript(_SCHEMA)
+        yield connection
+    finally:
+        connection.close()
 
 
 def _sqlite_path(database_url: str) -> Path:
@@ -250,9 +389,11 @@ class TrialLedger:
     the raw feature-86 charge that counts what it is told, and
     :meth:`debit`, feature 95's idempotent charge keyed by ``node_id`` —
     and neither ever issues an UPDATE or a DELETE.  There is no such
-    method to call, by design; feature 92's role grants make the same
-    refusal at the database itself, for every client this package never
-    met.
+    method to call, by design; and feature 92's refusal is enforced at the
+    connection itself — every operation opens a :class:`_GuardedConnection`
+    whose ``execute`` refuses an UPDATE or DELETE against trial_ledger
+    before it runs — so the same wall meets every client this package never
+    met, not merely the append and debit methods.
     """
 
     def __init__(self, database_url: str) -> None:
@@ -307,17 +448,31 @@ class TrialLedger:
         return self._path
 
     def _connect(self) -> sqlite3.Connection:
-        """Open the database and ensure the ledger's table exists.
+        """Open the database, ensure the ledger's table, and arm the guard.
 
         The schema is created idempotently on every connect, so a fresh
         database and an existing one take the same path and no migration
         step is needed for this member — the same contract the universe
-        member's ``connect`` states.  The caller owns the connection; use
-        it as a context manager to commit.
+        member's ``connect`` states.  The connection is a
+        :class:`_GuardedConnection`, so every statement the store issues —
+        the append's INSERT, the debit's check-and-insert, the read paths'
+        SELECT — runs through feature 92's wall: an UPDATE or DELETE
+        against trial_ledger is refused with
+        :class:`~ledger.errors.TrialImmutableError` before it touches a
+        row, whatever method reached for it.  The refusal is thus a
+        property of the store's connection, not of any one method's
+        convention.  The caller owns the connection; use it as a context
+        manager to commit.
         """
         path = self.path
         path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(path)
+        # A _GuardedConnection: its execute refuses an UPDATE or DELETE
+        # against trial_ledger before it runs (feature 92), so the append's
+        # INSERT, the debit's check-and-insert and the read paths' SELECT
+        # all run through the same wall, whatever method reached for the
+        # table.  A subclass via ``factory=`` rather than a wrapped
+        # attribute, because ``Connection.execute`` is read-only.
+        connection = sqlite3.connect(path, factory=_GuardedConnection)
         with connection:
             connection.executescript(_SCHEMA)
         return connection

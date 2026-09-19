@@ -23,6 +23,13 @@ code failed:
   discoverable state in which no ledger component composes (see
   :meth:`ledger.store.TrialLedger.resolve`), because the factory's stance
   toward an unconfigured component is to degrade, not to break.
+* :class:`TrialImmutableError` — the immutability contract (app_spec.xml
+  feature 92).  A statement that would UPDATE or DELETE a ``trial_ledger``
+  row was refused before it ran.  The refusal is enforced at the store's
+  connection — the SQLite spelling of feature 103's Postgres role grants
+  that deny UPDATE and DELETE — so it meets every client, not merely the
+  ones this package knows how to write.  A mutated row would restate a
+  past charge, and the honest ``K`` counter (§8) does not restate.
 
 Every message names the offending value and the contract it broke, in the
 same discipline as the snapshot member's taxonomy: these errors are
@@ -37,6 +44,7 @@ __all__ = [
     "TrialLedgerError",
     "TrialRecordError",
     "TrialStoreError",
+    "TrialImmutableError",
 ]
 
 
@@ -67,4 +75,26 @@ class TrialStoreError(TrialLedgerError):
     debit that silently failed to persist is exactly the state feature 86
     exists to prevent: an evaluation that consumed a hypothesis while the
     honest counter looked away.
+    """
+
+
+class TrialImmutableError(TrialLedgerError):
+    """A statement that would mutate a ``trial_ledger`` row was refused.
+
+    Raised by the store's connection layer (feature 92), before the
+    statement runs, when the statement would UPDATE or DELETE a row of the
+    ``trial_ledger`` table.  The refusal is enforced at the connection the
+    store opens for every operation, so it holds for every client that
+    reaches the table through this store — a raw connection, a second
+    package, an operator script, a bug — and not merely for the append and
+    debit methods, which never mutate by their own convention.  That is
+    the SQLite spelling of feature 103's Postgres "role grants that deny
+    UPDATE and DELETE": where the production database denies the privilege
+    to the writing role, this member denies the statement at the seam that
+    speaks to the database, because SQLite has no roles to grant to.
+
+    The message names the table and the verb refused, so an operator
+    reading a stack trace understands not merely that the statement failed
+    but *why it must*: a mutated row would restate a past charge, and the
+    honest ``K`` counter is append-only by enforcement, not by request.
     """
