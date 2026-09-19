@@ -1,0 +1,31 @@
+# nullius workspace member: the snapshot plugin
+# (app_spec.xml, "Snapshot Sealing & Content Addressing", feature 30;
+# docs/nullius-tech-architecture.md §4.1-§4.2 for the seal-on-schedule flow
+# and the lake layout this package writes).
+#
+# Registered by convention, not by edit: src/snapshot/__init__.py carries the
+# component builder, and the factory's module loader (src/app/module_loader.py)
+# discovers it by scanning the members the root pyproject.toml declares. No
+# central registry, router table or app factory is touched to wire this
+# package in — that is the one-way dependency the workspace contract pins.
+#
+# Stdlib-only by design. Sealing, hashing and directory naming need nothing
+# else, and an import-safe member with no dependencies cannot break another
+# member's resolution. Later features in this category (MANIFEST.json, the
+# full snapshot_hash formula over universe definition and schema version, the
+# snapshot_manifest record, the read-only evaluator mount) layer on top of
+# this package's API rather than beside it.
+
+[project]
+name = "snapshot"
+version = "0.1.0"
+description = "Seals staged lake content into immutable, content-addressed snapshot directories."
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/snapshot"]
