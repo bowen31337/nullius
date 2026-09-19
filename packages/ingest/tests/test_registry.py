@@ -105,6 +105,7 @@ def test_a_private_registry_never_leaks_into_the_default() -> None:
         registry.build_workers()[0]
     )
     assert set(default_worker_registry().stream_classes()) == {
+        StreamClass.AGG_TRADES,
         StreamClass.BOOK_DIFFS,
         StreamClass.BOOK_FEATURES,
         StreamClass.EXCHANGE_INFO,
