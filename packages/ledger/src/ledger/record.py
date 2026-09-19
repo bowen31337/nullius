@@ -1,0 +1,224 @@
+"""Feature 86's row layer: one trial_ledger row, as a value.
+
+app_spec.xml, "Trial Ledger Append-Only Accounting", feature 86: *System
+persists one trial_ledger row per evaluation under a monotonically
+increasing sequence number.*  docs/nullius-tech-architecture.md §8 fixes
+the row's first four columns — ``seq``, ``ts``, ``node_id``,
+``campaign_id`` — and leaves the rest (the provenance triple of feature
+87, the epoch of 88, the charge semantics of 89-90, the outcome of 91) to
+the features that own them.  This module is the row those columns make:
+the value a debit writes, and the value a read hands back.  A record read
+from the ledger equals the record the append returned — the row is a
+statement about a past charge, and a re-read must not restate it.
+
+**The sequence number is the table's to assign, and the record's to
+carry.**  ``seq`` is assigned by the store's append
+(:mod:`ledger.store`), never chosen by a caller; the record layer's only
+job on it is to refuse a value the ledger could not have assigned — a
+non-int, a bool (``bool`` is an ``int`` subclass, and ``True`` is not a
+sequence number), anything below 1, where SQLite's ``AUTOINCREMENT``
+counting starts.  The positive check is not decoration: construction
+revalidates rows read back from disk, so it is the seam that refuses a
+hand-mangled row whose ``seq`` was zeroed.
+
+**The stamp is timezone-aware UTC, and a naive instant is refused.**  The
+same rule the feature store's row layer states (feature 51): a ledger is
+ordered and ranged by its stamp — "how many trials before ``t``" is a
+question later features ask — and comparing a naive datetime against an
+aware one raises :class:`TypeError` deep inside that query, far from the
+write that could have named its offset.  Refusing the naive instant at
+construction puts the failure on the writer.  An aware instant in another
+offset names an unambiguous instant, so it is normalised to UTC rather
+than rejected.  The default clock (:func:`utc_now`) stamps at second
+resolution with microseconds *dropped* rather than rounded — the result
+is never after the instant observed, and two debits that are "the same
+second" for every practical purpose carry the same second.
+
+**The identity columns are UUIDs, canonically spelled.**  A trial row
+names the node that was evaluated and the campaign it belongs to — the
+two identities §8 pins ``NOT NULL`` — and both are accepted as a
+:class:`~uuid.UUID` or as text, then normalised to the canonical
+hyphenated lowercase spelling so the row joins against the tree store's
+``node.id`` / ``node.campaign_id`` however the caller came by the value.
+A value that is not a UUID at all is refused at the write: a charge that
+cannot be joined to the node that incurred it is a charge no audit can
+attribute, and spending a sequence number on it would make the ledger's
+count honest and its contents useless.
+
+Instances are frozen: this is append-only accounting, and editing a
+persisted charge in place would rewrite the account rather than
+superseding it.  Supersession, where the category needs it, is a new row.
+
+Stdlib-only, like the rest of the member: the row representation must
+stay import-safe everywhere — the factory's scan, test sandboxes, the
+deterministic replay path.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import uuid
+from dataclasses import dataclass
+from typing import Any, Union
+
+from .errors import TrialRecordError
+
+__all__ = ["TrialLedgerRecord", "utc_now"]
+
+
+def utc_now() -> dt.datetime:
+    """The current instant, timezone-aware UTC — the append's default clock.
+
+    Second resolution, microseconds dropped rather than rounded: the stamp
+    orders debits against one another and the sequence already does that
+    exactly, so sub-second precision buys nothing a reader needs while
+    making two debits that are "the same instant" for every practical
+    purpose compare as different.  Dropping — not rounding — keeps the
+    stamp never *after* the instant observed.
+    """
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+
+
+def _validated_uuid(value: Any, field_name: str) -> str:
+    """Validate an identity column, returning its canonical UUID spelling.
+
+    Accepts a :class:`~uuid.UUID` or any text :func:`uuid.UUID` parses
+    (hyphenated or not, any case), and returns the one spelling the table
+    stores: hyphenated lowercase.  Anything else is a caller bug at the
+    write — a charge that cannot be joined is a charge that cannot be
+    audited — so it is refused here, naming the value.
+    """
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, str):
+        try:
+            return str(uuid.UUID(value))
+        except (ValueError, AttributeError) as exc:
+            raise TrialRecordError(
+                f"{field_name} must be a UUID; got {value!r}: {exc}"
+            ) from exc
+    raise TrialRecordError(
+        f"{field_name} must be a UUID or its text spelling; got "
+        f"{type(value).__name__}"
+    )
+
+
+def _validated_instant(value: Any, field_name: str) -> dt.datetime:
+    """Validate a stamp, returning it aware-UTC.
+
+    Accepts a timezone-aware :class:`~datetime.datetime` (any offset — an
+    aware instant in another offset names the same instant, so it is
+    normalised rather than rejected) or its ISO-8601 text (the form the
+    table stores, so a row read back revalidates through this same check).
+    A naive datetime is refused: the ledger is ranged by its stamp, and a
+    naive/aware comparison raises :class:`TypeError` far from the write
+    that omitted the offset.
+    """
+    instant: dt.datetime
+    if isinstance(value, dt.datetime):
+        instant = value
+    elif isinstance(value, str):
+        try:
+            instant = dt.datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise TrialRecordError(
+                f"{field_name} must be an ISO-8601 datetime or a datetime; "
+                f"got {value!r}: {exc}"
+            ) from exc
+    else:
+        raise TrialRecordError(
+            f"{field_name} must be a timezone-aware datetime; got "
+            f"{type(value).__name__}"
+        )
+    if instant.tzinfo is None or instant.tzinfo.utcoffset(instant) is None:
+        raise TrialRecordError(
+            f"{field_name} must be timezone-aware; got the naive datetime "
+            f"{instant.isoformat()!r}. A ledger stamp is compared and ranged "
+            "against other instants, and a naive one has no offset to "
+            "compare with — pass an aware UTC instant (see utc_now())"
+        )
+    return instant.astimezone(dt.timezone.utc)
+
+
+def _validated_seq(value: Any) -> int:
+    """Validate a sequence number the ledger could have assigned.
+
+    An ``int`` of 1 or more, and not a ``bool``: ``True`` is an ``int``
+    subclass equal to 1, and a sequence number that arrived as a truth
+    value is a caller bug wearing a valid number.  Anything else — a
+    float, numeric text — is refused rather than coerced, because a
+    coerced sequence is a row the ledger never appended.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TrialRecordError(
+            f"seq must be an integer assigned by the ledger's append; got "
+            f"{type(value).__name__}"
+        )
+    if value < 1:
+        raise TrialRecordError(
+            f"seq must be 1 or greater (the ledger counts from 1); got "
+            f"{value!r}"
+        )
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class TrialLedgerRecord:
+    """One persisted ``trial_ledger`` row: a charge, as a value.
+
+    ``seq`` is the monotonically increasing sequence number the table
+    assigned at the append — the row's order in the log, and the number
+    feature 86's whole sentence turns on.  ``ts`` is when the charge was
+    debited, aware-UTC, fixed at write time and never restated by a read.
+    ``node_id`` and ``campaign_id`` name the evaluation that was charged:
+    the node the evaluator ran and the campaign it belongs to, both in
+    canonical UUID spelling so the row joins against the tree store.
+
+    Construction validates and canonicalises, so an instance is
+    trustworthy by construction: the store's append builds its return
+    value through this constructor, and the read path rebuilds rows
+    through it, which is how a malformed row on disk is refused rather
+    than served.  Frozen, because this is the append-only half of the
+    accounting: a record of a past charge is a fact, and facts are
+    superseded by new rows, never edited.
+    """
+
+    #: The sequence number the append assigned — 1, 2, 3, … strictly
+    #: increasing for the life of the table, never reused.
+    seq: int
+    #: When the charge was debited, aware-UTC; the default clock stamps at
+    #: second resolution.
+    ts: dt.datetime
+    #: The evaluated node, canonical UUID spelling (§8: ``node_id UUID``).
+    node_id: str
+    #: The campaign the node belongs to, canonical UUID spelling.
+    campaign_id: str
+
+    def __post_init__(self) -> None:
+        # frozen+slots forbids plain assignment, so canonicalisation writes
+        # through object.__setattr__ exactly once, at construction.  After
+        # this the instance is sealed.
+        object.__setattr__(self, "seq", _validated_seq(self.seq))
+        object.__setattr__(self, "ts", _validated_instant(self.ts, "ts"))
+        object.__setattr__(
+            self, "node_id", _validated_uuid(self.node_id, "node_id")
+        )
+        object.__setattr__(
+            self, "campaign_id", _validated_uuid(self.campaign_id, "campaign_id")
+        )
+
+    def row(self) -> tuple[Union[int, str], ...]:
+        """The record as the store's column tuple, in table order.
+
+        ``seq, ts, node_id, campaign_id`` — the order the table's columns
+        are declared in and the order the read path unpacks, kept in one
+        method so the two cannot drift apart and silently swap an identity
+        for a stamp.  ``ts`` serialises as canonical ISO-8601 UTC with an
+        explicit offset, the exact text the table stores.
+        """
+        return (
+            self.seq,
+            self.ts.astimezone(dt.timezone.utc).isoformat(),
+            self.node_id,
+            self.campaign_id,
+        )

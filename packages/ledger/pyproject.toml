@@ -1,0 +1,34 @@
+# nullius workspace member: the ledger plugin
+# (app_spec.xml, "Trial Ledger Append-Only Accounting", feature 86;
+# docs/nullius-tech-architecture.md §8 for the table this member appends to).
+#
+# Joins the uv workspace by convention — packages/ledger with this file —
+# so the module loader (src/app/module_loader.py) discovers it by scanning
+# the members the root pyproject.toml declares.  No edit to any central
+# registry, router table or app factory is needed or wanted to wire this
+# package in.
+#
+# Deliberately stdlib-only.  The append-only ledger speaks sqlite through
+# ``DATABASE_URL`` (the spec's single-machine allowance; Postgres arrives
+# with the versioned-migration member that owns feature 103's DDL), and
+# the monotonic sequence is the table's own AUTOINCREMENT, not a
+# dependency.  An import-safe member with no dependencies cannot break
+# another member's resolution — the factory's scan imports this package,
+# so its import cost is every composition's cost.  Later features in this
+# category (the provenance stamps, the epoch accounting, the k-effective
+# derivation, the debit endpoint) layer on top of this package's append
+# seam rather than beside it.
+
+[project]
+name = "ledger"
+version = "0.1.0"
+description = "Append-only trial ledger: one row per evaluation under a monotonically increasing sequence number."
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ledger"]
