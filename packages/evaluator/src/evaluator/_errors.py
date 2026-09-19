@@ -39,6 +39,17 @@ code failed:
   that cannot be believed: a row read back whose terms do not fold to the
   hash it is filed under is a tamper, and it surfaces here rather than
   loading as a plausible-looking lie (see ``_store``).
+* :class:`EvaluatorWindowError` — the window contract (app_spec.xml feature
+  72). The evaluation window is resolved host-side by slicing a *sealed*
+  snapshot to the decision time, so the failures here are all failures of
+  that slicing: something that is not a sealed mount at all (a path, a
+  service, a name), a decision time the sealed coverage cannot speak for
+  (before the first partition, after the last), a snapshot with no bars
+  partitions to resolve a universe from, and a partition value that does
+  not parse as the ISO date the §4.2 layout promises. Each is refused
+  rather than defaulted, because the window is the thing every downstream
+  number is computed over — a silently widened or fabricated window is
+  look-ahead bias with a return value (see ``_window``).
 """
 
 from __future__ import annotations
@@ -49,6 +60,7 @@ __all__ = [
     "EvaluatorIdentityError",
     "EvaluatorImageError",
     "EvaluatorStoreError",
+    "EvaluatorWindowError",
 ]
 
 
@@ -91,4 +103,15 @@ class EvaluatorStoreError(EvaluatorError):
     Raised when no store is configured (feature 70 is a persistence feature,
     so there is nothing to degrade to), when ``DATABASE_URL`` names a scheme
     this store does not speak, and when an SQLite write fails.
+    """
+
+
+class EvaluatorWindowError(EvaluatorError):
+    """The evaluation window could not be resolved from a sealed snapshot.
+
+    Raised by :func:`evaluator.resolve_window` (app_spec.xml feature 72) for
+    an object that is not a sealed snapshot mount, a decision time outside
+    the sealed bars coverage, a snapshot carrying no bars partitions, and a
+    partition date that does not parse as ISO — every failure of the slice
+    itself, rather than of anything downstream of it.
     """

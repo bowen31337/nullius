@@ -61,16 +61,22 @@ no central file names it, and none may. All intra-package imports are
 relative, so the package imports identically under its own name and under
 the loader's scan-time name.
 
-*Nothing here evaluates anything.* This member owns the evaluator's
-*identity* — the thing §14.1 calls the first third of the provenance triple
-— and nothing else. The pipeline (window resolution, sandboxed execution,
-normalization, alignment, the null gate, purge and embargo, costs, metrics)
-is the rest of this category's features, and each layers on this identity
-rather than beside it: a score that cannot name its evaluator cannot be
-compared, so the identity is what those features address. Keeping the import
-this cheap also keeps the replay path importable — architecture §1 forbids
-replay from reaching the evaluator at all, so the less this package does at
-import time, the less there is to accidentally invoke.
+*It resolves the window, but evaluates nothing.* This member owns the
+evaluator's *identity* — the thing §14.1 calls the first third of the
+provenance triple — plus the host-side window resolution of feature 72: the
+sealed snapshot sliced to the decision time, returning the point-in-time
+universe and the partitions at or before it. Both are host-side, resolved
+before any sandbox exists, and both are cheap to import — the identity is
+what a score is stamped *with*, the window is what it is computed *over*,
+and neither touches the environment at import time. The rest of the pipeline
+(sandboxed execution, normalization, alignment, the null gate, purge and
+embargo, costs, metrics) is the rest of this category's features, and each
+layers on this identity and this window rather than beside them: a score
+that cannot name its evaluator cannot be compared, and a score computed over
+a window that reaches past its decision time is look-ahead. Keeping the
+import this cheap also keeps the replay path importable — architecture §1
+forbids replay from reaching the evaluator at all, so the less this package
+does at import time, the less there is to accidentally invoke.
 """
 
 from app.module_loader import register
@@ -88,6 +94,7 @@ from ._errors import (
     EvaluatorIdentityError,
     EvaluatorImageError,
     EvaluatorStoreError,
+    EvaluatorWindowError,
 )
 from ._identity import (
     EVALUATOR_HASH_LENGTH,
@@ -105,6 +112,12 @@ from ._image import (
     parse_image_ref,
 )
 from ._service import ENV_IMAGE, EvaluatorService, build_evaluator_service
+from ._window import (
+    ROSTER_STREAM,
+    SLICED_STREAMS,
+    WindowResolution,
+    resolve_window,
+)
 from ._store import (
     DATABASE_URL_ENV,
     IDENTITY_TABLE,
@@ -147,6 +160,12 @@ __all__ = [
     "EvaluatorIdentityError",
     "EvaluatorImageError",
     "EvaluatorStoreError",
+    "EvaluatorWindowError",
+    # Feature 72 — the host-side window resolution
+    "ROSTER_STREAM",
+    "SLICED_STREAMS",
+    "WindowResolution",
+    "resolve_window",
 ]
 
 __version__ = "0.1.0"
