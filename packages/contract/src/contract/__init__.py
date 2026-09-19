@@ -28,6 +28,15 @@ from .payload import (
     window_from_payload,
     serialize_window,
 )
+from .features import (
+    FEATURE_FRAME_PREFIX,
+    FeatureAccessError,
+    feature_frame_name,
+    feature_frame_names,
+    parse_feature_frame_name,
+    select_feature_frame,
+    validate_lookback,
+)
 from .resolution import resolve_universe
 from .signal import (
     SIGNAL_ENTRYPOINT,
@@ -71,6 +80,8 @@ __all__ = [
     "CONTRACT_VERSION",
     "CONTRACT_VERSION_FIELD",
     "CONTRACT_VIOLATION",
+    "FEATURE_FRAME_PREFIX",
+    "FeatureAccessError",
     "INDEX_LABEL_FIELD",
     "MARKET_WINDOW_ABI",
     "NODE_ABI_RECORD_FIELDS",
@@ -99,8 +110,13 @@ __all__ = [
     "contract_version",
     "describe_contract_version",
     "describe_signal_signature",
+    "feature_frame_name",
+    "feature_frame_names",
     "frames_alias_payload",
     "inspect_accessors",
+    "parse_feature_frame_name",
+    "select_feature_frame",
+    "validate_lookback",
     "is_symbol_label",
     "node_abi_record",
     "parse_contract_version",

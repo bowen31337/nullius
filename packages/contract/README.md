@@ -140,7 +140,7 @@ and otherwise returns the accessor names:
 ```python
 from contract import inspect_accessors
 
-inspect_accessors()   # ('frames', 't', 'to_arrow', 'universe') — none takes a time
+inspect_accessors()   # ('feature', 'frames', 't', 'to_arrow', 'universe') — none takes a time
 ```
 
 The check is over the *class*, so one inspection covers every window that will
@@ -164,6 +164,92 @@ namespace at `app.modules.contract.window_accessor_names()`, which calls
 `inspect_accessors()` and returns the accessor names — or raises, exactly as
 the member does, since a widening accessor is a hard failure of the boundary
 every signal is evaluated against, not a discoverable absent state.
+
+## `feature(name, version)` — exactly one version (feature 9)
+
+§5.1 declares `feature(name: str, version: str, lookback: int) -> pl.DataFrame`,
+and §4.4 says why the version is not optional: `feature_version` is a component
+of a stored feature's *identity* — *"A changed definition gets a new
+`feature_version`; it never overwrites."*  Version 1 and version 2 of one
+feature are different definitions' output, so feature 9's clause — "returns rows
+for that exact version only" — is the whole content of the accessor:
+
+```python
+from contract import MarketWindow, feature_frame_name
+
+window = MarketWindow(
+    t="2026-09-01T12:00:00+00:00",
+    universe=("BTCUSDT",),
+    frames={
+        feature_frame_name("vol", "1"): v1_table,   # the old definition
+        feature_frame_name("vol", "2"): v2_table,   # the revised one
+    },
+)
+
+window.feature("vol", "2")            # v2's rows — the version asked for
+window.feature("vol", "2", lookback=20)  # its trailing 20 rows
+window.feature("vol", "1")            # v1's rows — NOT v2's
+window.feature("vol", "3")            # empty: the version was never computed
+```
+
+**The version is part of the frame's name, not a column in it.**  Frame names
+are what feature 14's payload manifest records, so version identity travels to
+the sandbox for free: a window that crossed the channel as Arrow IPC bytes still
+answers `feature("vol", "2")` correctly.  A version carried as a *column* would
+be a row-level fact a caller could forget to filter on, and "forgot to filter on
+the version column" is precisely the bug feature 9 exists to make unaskable.
+
+**A miss is an empty frame, never another version's rows.**  The lookup is an
+exact match on one frame name; there is no "latest version" resolution, no
+prefix match (`"1"` never picks up `"10"`), and no fallback to whatever versions
+happen to be present.  That direction matters: an empty `DataFrame` cannot leak
+a wrong version's numbers, whereas a substituted one would silently attribute
+v2's values to v1 and nothing downstream could tell.  It is the same stance the
+system takes elsewhere — a missing partition is an empty result, not an error
+(`SnapshotMount.partitions`); a store miss is `None` (`FeatureStore.get`).
+
+**`lookback` is the trailing count.**  `None` (the default) returns every row
+the window carries; a non-negative `int` returns the *last* N — the recent end
+of an oldest-first frame, which is what a lookback means.  A count larger than
+the frame returns the whole frame rather than an out-of-range offset, so an
+over-long lookback never reads as "no data".  A negative count or a `bool` is
+refused: `lookback=True` would silently mean "the last one row", and a wrong
+answer that looks like a right one is exactly the failure this module is built
+against.
+
+```python
+from contract import FeatureAccessError, feature_frame_names
+
+window.feature("vol", "")             # FeatureAccessError — the *question* is invalid
+window.feature("vol", "1", lookback=-1)  # FeatureAccessError — negative count
+feature_frame_names(window.frames)    # (('vol', '1'), ('vol', '2')) — which versions exist
+```
+
+A malformed name, version or lookback is validated *before* the window is
+consulted, so a typo against a window carrying nothing reports the typo rather
+than reading as a data gap.  `feature_frame_names()` answers the complementary
+question — which versions this window actually carries — which is what makes a
+miss distinguishable from a mistake.
+
+**The encoding is total and collision-free.**  A feature frame is named
+`feature:<name>:<version>`, and `:` is refused *inside* both components.  That
+refusal is load-bearing: without it, `("a:1", "2")` and `("a", "1:2")` would both
+spell `feature:a:1:2` — two distinct feature versions addressing one frame,
+which is the silent version-mixing feature 9 forbids arriving through the
+encoding rather than the lookup.  `feature_frame_name` / `parse_feature_frame_name`
+are exported so a host materializing a window and an accessor reading one cannot
+drift apart over where the version goes.
+
+The naming and lookup core lives in `contract/features.py`, which is
+**stdlib-only**: `require_polars` is reached once per call, on the same lazy seam
+as `_arrow.require_arrow` and `signal._require_signal_module`, so the
+version-discipline logic is import-safe and testable in every environment the
+workspace contract promises one will be.
+
+Note the signature: `feature(self, name, version, lookback=None)` has no
+parameter that reads as a timestamp, which is feature 10's requirement — this
+accessor can only ever return a *subset* of the rows the window was sliced to
+contain, never a row past `t`.
 
 ## The ABI record
 
@@ -442,6 +528,22 @@ the survivorship/look-ahead failure, the `valid_from`/`valid_to` boundary
 convention, clock independence, stable ordering, the accepted row shapes, the
 refusals, and the structural seam against the universe member's real
 `MembershipInterval`).
+
+Feature 9 is pinned by `test_market_window_feature.py`, in the two halves that
+fail in opposite directions: that the version is *honoured* (each version's rows
+come back as its own, and — the case that matters most — a request for a version
+the window does not carry returns nothing rather than the nearest or the latest,
+since a values-only check on one version would not catch a mix-up), and that the
+*request is validated* (a malformed name, version or lookback is refused, which
+is a different fact from a miss, and the malformed request is reported even
+against a window carrying nothing). It also pins the encoding
+(`feature:<name>:<version>` round-trips, the separator is refused inside a
+component so two distinct pairs cannot spell one frame, and distinct pairs give
+distinct names), the lookback boundaries (`None` is the whole frame, an
+over-long count is the whole frame, `0` is empty, negative and `bool` are
+refused), and the one thing this feature could plausibly have broken — that the
+version survives the feature 14 payload channel and that the new accessor still
+takes no timestamp parameter (feature 10).
 
 Feature 15 is pinned by `test_contract_version.py`: that the stamp resolves to
 the ABI it declares (rather than being a bare string), the persist/read round

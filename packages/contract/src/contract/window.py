@@ -506,6 +506,124 @@ class MarketWindow(metaclass=_EnforceNoTimestampAccessor):
         """
         return MappingProxyType(self._frames)
 
+    def feature(
+        self,
+        name: str,
+        version: str,
+        lookback: Optional[int] = None,
+    ):
+        """The rows of one stored feature, at exactly the version asked for.
+
+        app_spec.xml feature 9: *System exposes MarketWindow.feature taking a
+        name plus an explicit version, which returns rows for that exact
+        version only.*  §5.1 declares it as
+        ``feature(name: str, version: str, lookback: int) -> pl.DataFrame``.
+
+        **"That exact version only" is the whole contract, and it is the
+        reason the version is a required argument.**  §4.4 makes
+        ``feature_version`` a component of a stored feature's *identity* — "A
+        changed definition gets a new ``feature_version``; it never
+        overwrites" — so version 1 and version 2 of one feature are different
+        data, computed by different definitions.  An accessor that resolved
+        "the latest" would answer a question about v1 with v2's numbers and
+        nothing downstream could tell; the explicit version is what makes the
+        two unaskable-for-one-another.  There is no default version here for
+        exactly that reason: a default would make the ambiguous call the
+        convenient one.
+
+        The lookup is therefore an exact match on a frame name that encodes
+        *both* components — ``feature:<name>:<version>`` — and it never
+        searches, prefixes or falls back (see :mod:`contract.features`).  A
+        window that carries only v2 of ``"vol"`` answers ``feature("vol",
+        "1")`` with an **empty** DataFrame, not with v2's rows: a miss is
+        reported as nothing, which is the safe direction, because an empty
+        frame cannot leak a wrong version's numbers while a substituted one
+        silently would.  Use :func:`contract.features.feature_frame_names`
+        over :attr:`frames` to see which versions a window actually carries,
+        so a miss is distinguishable from a typo.
+
+        Parameters
+        ----------
+        name:
+            The feature's name (``"realized_vol"``, ``"dispersion"``, …), a
+            non-empty, unpadded string free of ``:`` and path separators —
+            see :func:`contract.features.feature_frame_name` for why the
+            separator is refused rather than escaped.
+        version:
+            The ``feature_version`` to read, as the opaque string a stored
+            feature is keyed by (``"1"``, ``"v2"``, …).  Compared as a
+            string, exactly: ``"1"`` never matches ``"10"``.
+        lookback:
+            ``None`` (the default) for every row the window carries, or a
+            non-negative ``int`` for the trailing ``lookback`` of them.  A
+            count larger than the frame is not an error — it returns the
+            whole frame, since "the last 500 rows" of a 200-row frame is
+            those 200 rows.  A negative count or a ``bool`` is refused (see
+            :func:`contract.features.validate_lookback`).
+
+        Returns
+        -------
+        polars.DataFrame
+            The version's rows as carried by this window.  The frame is
+            converted from the window's stored Arrow table, so the conversion
+            allocates no copy of the values (Arrow and Polars share the same
+            buffer layout — the zero-copy seam feature 14 documents for the
+            payload channel).
+
+            **Two shapes of empty, and the difference is meaningful.**  A
+            version the window does not carry returns a frame with *no
+            columns* (``shape == (0, 0)``) — the window holds no schema for
+            data it was never given, and inventing one would be a guess.  A
+            version that *is* present, read with ``lookback=0`` or against an
+            empty frame, returns *0 rows with that version's columns*
+            (``shape == (0, n)``).  So ``len(df) == 0`` says "no rows", while
+            the columns say whether the feature was there at all — and
+            ``df["value"]`` raising ``ColumnNotFoundError`` is the miss,
+            reported as a missing column rather than silently as an empty
+            one.  A caller that cannot tell the two apart should ask
+            :func:`contract.features.feature_frame_names`.
+
+        Raises
+        ------
+        FeatureAccessError
+            A malformed ``name``, ``version`` or ``lookback`` — the *request*
+            was invalid, which is a different fact from the window not
+            carrying the version (that is the empty answer above).
+
+        Note the signature: no parameter reads as a timestamp, which is
+        feature 10's requirement and the reason this accessor can exist at
+        all.  ``lookback`` names an amount of *data*, not an instant; a
+        caller cannot pass a time here, so no caller can widen the window
+        through this method — it can only ever return a subset of the rows
+        the window was sliced to contain.
+        """
+        from .features import (
+            require_polars,
+            select_feature_frame,
+            validate_lookback,
+        )
+
+        # Validated before the mapping is consulted, so a malformed request is
+        # reported as such even against a window carrying nothing — rather
+        # than reading as "no rows for that version" (see FeatureAccessError).
+        rows = validate_lookback(lookback)
+        frame = select_feature_frame(self._frames, name, version)
+        pl = require_polars()
+        if frame is None:
+            # The window does not carry this exact version.  An empty frame is
+            # the honest answer and the safe one: it cannot be mistaken for
+            # another version's rows the way a fallback could.
+            return pl.DataFrame()
+        if rows is not None:
+            # The *trailing* slice: the most recent rows at the window's
+            # decision time are the last of an oldest-first frame, and the
+            # recent end is the one a lookback means.  `max(..., 0)` is what
+            # makes an over-long lookback a whole-frame read rather than an
+            # out-of-range offset.
+            offset = max(frame.num_rows - rows, 0)
+            frame = frame.slice(offset, rows)
+        return pl.from_arrow(frame)
+
     def to_arrow(self):
         """Serialize this window to an Arrow IPC payload (feature 14).
 
