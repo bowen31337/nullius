@@ -2,13 +2,15 @@
 
 The implementation lives in the ``feature-store`` workspace member
 (``packages/feature-store``, import name ``feature_store``), which
-self-registers with the application factory under three component names —
+self-registers with the application factory under four component names —
 ``feature-store`` (feature 48, the five-component-keyed store),
 ``regime-metrics`` (feature 57, the mean-pairwise-correlation-plus-breadth
-service) and ``dispersion-metrics`` (feature 56, the
-dispersion-plus-autocorrelation service, version stamped) — scanning the
+service), ``dispersion-metrics`` (feature 56, the
+dispersion-plus-autocorrelation service, version stamped) and
+``volatility-metrics`` (feature 55, the realized-volatility-plus-vol-of-vol
+service, each metric persisted as a versioned regime feature) — scanning the
 workspace imports it, its ``@register`` decorators fire, and ``create_app()``
-composes all three components.
+composes all four components.
 
 This module is the member's seat inside the ``app`` package namespace
 (``src/app/modules/feature-store/``): it exposes the composed components
@@ -27,15 +29,22 @@ from typing import TYPE_CHECKING, Any
 from app.module_loader import Application, create_app
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a dependency
-    from feature_store import DispersionService, FeatureStore, RegimeService
+    from feature_store import (
+        DispersionService,
+        FeatureStore,
+        RegimeService,
+        VolatilityService,
+    )
 
 __all__ = [
     "DISPERSION_METRICS_COMPONENT",
     "FEATURE_STORE_COMPONENT",
     "REGIME_METRICS_COMPONENT",
+    "VOLATILITY_METRICS_COMPONENT",
     "dispersion_metrics_component",
     "feature_store_component",
     "regime_metrics_component",
+    "volatility_metrics_component",
 ]
 
 #: The component name the feature-store member registers its store under
@@ -50,6 +59,10 @@ REGIME_METRICS_COMPONENT = "regime-metrics"
 #: The component name the feature-store member registers its dispersion-metrics
 #: service under (feature 56).
 DISPERSION_METRICS_COMPONENT = "dispersion-metrics"
+
+#: The component name the feature-store member registers its volatility-metrics
+#: service under (feature 55).
+VOLATILITY_METRICS_COMPONENT = "volatility-metrics"
 
 
 def feature_store_component(app: Application | None = None) -> FeatureStore | Any:
@@ -92,3 +105,17 @@ def dispersion_metrics_component(app: Application | None = None) -> DispersionSe
     """
     application = app if app is not None else create_app()
     return application.get(DISPERSION_METRICS_COMPONENT)
+
+
+def volatility_metrics_component(app: Application | None = None) -> VolatilityService | Any:
+    """Return the composed volatility-metrics service (feature 55).
+
+    With ``app`` given, the component is read from that application; without
+    it, the application is composed first via
+    :func:`app.module_loader.create_app` (scanning the declared workspace).
+    Returns ``None`` when no ``volatility-metrics`` component is registered —
+    an absent component is a discoverable state, not an exception, exactly as
+    an empty workspace is for the factory.
+    """
+    application = app if app is not None else create_app()
+    return application.get(VOLATILITY_METRICS_COMPONENT)

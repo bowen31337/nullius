@@ -96,17 +96,65 @@ A thin cross-section is `nan`, never `0.0`: dispersion over one symbol is not
 a cross-section, and an unscored lag reports `nan` over zero pairs rather
 than a zero a reader would mistake for a measured absence of memory.
 
+## Feature 55 — multi-horizon realized volatility + vol-of-vol, versioned
+
+This member also implements feature 55: *System computes multi-horizon
+realized volatility plus volatility-of-volatility, persisting each as a
+versioned regime feature.*
+
+- `feature_store.volatility` — the pure reductions, a sibling of `regime`
+  and `dispersion`: `realized_volatility` (the *magnitude*: the annualized
+  root-mean-square of the trailing `horizon` returns, computed at several
+  horizons at once — 10, 21, 63 by default — so a spike inside a tranquil
+  quarter reads at the short horizon instead of being averaged away),
+  `rolling_realized_volatility` (that same estimate at every position, the
+  base series the instability is measured over),
+  `volatility_of_volatility` (the *instability*: the population standard
+  deviation of a trailing window of the base series, with its mean beside
+  it, so a wide-but-low vol regime reads differently from a wide-and-high
+  one), and `build_volatility_metrics` bundling both into a
+  `VolatilityMetrics`. Both consume the market return series — the same
+  equal-weighted cross-sectional mean feature 56's autocorrelation measures —
+  so the member's regime features share one definition of "the market's
+  return".
+- `feature_store.volatility_persistence` — the persisting half: encodes each
+  metric to a deterministic JSON envelope and stores each under its **own
+  `feature_name`** (`realized_volatility`, `volatility_of_volatility`) as its
+  own version-stamped record under the market-wide daily key. Reads them
+  back as a pair.
+- `feature_store.volatility_service` — `VolatilityService`: assembles the
+  panel from daily bars + a universe membership, computes both metrics, and
+  persists each. Registered with the application factory as the
+  `"volatility-metrics"` component.
+
+Same versioning discipline as feature 56: the `feature_version` stamp is a
+segment of each record's address, version `"1"` names a definition stated in
+words (`REALIZED_VOL_DEFINITION`, `VOL_OF_VOL_DEFINITION`) and defaulted in
+`definition_parameters()`, and `VolatilityService.persist` refuses
+(`VersionMismatchError`) a computation whose horizons, base window, vol
+window or annualization disagree with the definition the stamp names.
+
+Estimator choices version 1 commits to: squared returns, deliberately *not*
+demeaned (over daily windows the mean return is noise); the strict trailing
+window (a gap is an absent observation, never a reason to reach further
+back — the same rule the breadth moving average follows); and annualization
+by `sqrt(365)`, because crypto quotes trade every calendar day. An
+unscored horizon is `nan` over the count of slots that were present, and a
+measured calm (every return zero) is `0.0` — a different fact, never
+conflated.
+
 ## Layout
 
 - distribution: `nullius-feature-store` (this directory, `packages/feature-store/`)
 - import package: `feature_store` (under `src/`)
 - registered components: `"feature-store"` (feature 48), `"regime-metrics"`
-  (feature 57) and `"dispersion-metrics"` (feature 56), all via `@register`,
-  discovered by `app.module_loader`’s workspace scan
+  (feature 57), `"dispersion-metrics"` (feature 56) and
+  `"volatility-metrics"` (feature 55), all via `@register`, discovered by
+  `app.module_loader`’s workspace scan
 - app-package seat: `app.modules.feature-store` (`src/app/modules/feature-store/`),
-  which exposes `feature_store_component()`, `regime_metrics_component()` and
-  `dispersion_metrics_component()` without the `app` package depending on any
-  member at import time
+  which exposes `feature_store_component()`, `regime_metrics_component()`,
+  `dispersion_metrics_component()` and `volatility_metrics_component()`
+  without the `app` package depending on any member at import time
 
 Stdlib-only by design — the identity contract stays import-safe in any
 environment, deterministic replay included. Parquet materialisation

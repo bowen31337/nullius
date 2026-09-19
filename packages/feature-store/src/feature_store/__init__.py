@@ -9,7 +9,7 @@ of the category builds on: lazy Parquet materialisation (49), caching
 (50), point-in-time reads (51/52), versioned definitions (53) and the
 regime features themselves (55–58).
 
-Importing this package registers three components with the application
+Importing this package registers four components with the application
 factory — a deliberate import side effect, per the factory's registration
 protocol (``app.module_loader``) — so ``create_app()`` discovers them by
 scanning the declared workspace without the factory ever knowing this
@@ -18,7 +18,10 @@ package's name:
 * ``feature-store`` — the five-component-keyed store itself (feature 48);
 * ``regime-metrics`` — feature 57's mean pairwise correlation plus breadth;
 * ``dispersion-metrics`` — feature 56's cross-sectional return dispersion
-  plus several-lag return autocorrelation, persisted version stamped.
+  plus several-lag return autocorrelation, persisted version stamped;
+* ``volatility-metrics`` — feature 55's multi-horizon realized volatility
+  plus volatility-of-volatility, each persisted as a versioned regime
+  feature.
 """
 
 from __future__ import annotations
@@ -84,22 +87,64 @@ from .regime import (
 )
 from .service import RegimeService, build_regime_service
 from .store import DuplicateFeatureKeyError, FeatureRecord, FeatureStore
+from .volatility import (
+    ANNUALIZATION_PERIODS,
+    DEFAULT_BASE_WINDOW,
+    DEFAULT_HORIZONS,
+    DEFAULT_VOL_WINDOW,
+    RealizedVolatilityResult,
+    VolOfVolResult,
+    VolatilityMetrics,
+    build_volatility_metrics,
+    realized_volatility,
+    rolling_realized_volatility,
+    volatility_of_volatility,
+)
+from .volatility_persistence import (
+    FEATURE_NAME_REALIZED_VOL,
+    FEATURE_NAME_VOL_OF_VOL,
+    REALIZED_VOL_DEFINITION,
+    VOL_OF_VOL_DEFINITION,
+    IncompleteVolatilityMetricsError,
+    VolatilityFeatureStore,
+    decode_realized_volatility,
+    decode_vol_of_vol,
+    encode_realized_volatility,
+    encode_vol_of_vol,
+)
+from .volatility_service import (
+    VolatilityService,
+    VersionMismatchError as VolatilityVersionMismatchError,
+)
+
+# Names the volatility modules share with their siblings' modules
+# (FEATURE_VERSION, definition_parameters, feature_version) stay at their
+# module paths: feature 56's spellings already hold the package namespace,
+# and a re-export would silently rebind them to a different feature's rows.
 
 __all__ = [
+    "ANNUALIZATION_PERIODS",
     "AUTOCORRELATION_DEFINITION",
+    "DEFAULT_BASE_WINDOW",
     "DEFAULT_BREADTH_WINDOW",
+    "DEFAULT_HORIZONS",
     "DEFAULT_LAGS",
     "DEFAULT_MIN_OBSERVATIONS",
     "DEFAULT_MIN_OVERLAP",
     "DEFAULT_MIN_SYMBOLS",
+    "DEFAULT_VOL_WINDOW",
     "DISPERSION_DEFINITION",
     "FEATURE_NAME_AUTOCORRELATION",
     "FEATURE_NAME_BREADTH",
     "FEATURE_NAME_CORRELATION",
     "FEATURE_NAME_DISPERSION",
+    "FEATURE_NAME_REALIZED_VOL",
+    "FEATURE_NAME_VOL_OF_VOL",
     "FEATURE_VERSION",
     "FREQUENCIES",
     "MARKET_WIDE_SYMBOL",
+    "REALIZED_VOL_DEFINITION",
+    "VOL_OF_VOL_DEFINITION",
     "AutocorrelationResult",
     "BreadthResult",
     "CorrelationResult",
@@ -116,32 +161,48 @@ __all__ = [
     "Frequency",
     "IncompleteDispersionMetricsError",
     "IncompleteRegimeMetricsError",
+    "IncompleteVolatilityMetricsError",
     "PricePanel",
+    "RealizedVolatilityResult",
     "RegimeFeatureStore",
     "RegimeMetrics",
     "RegimeService",
     "VersionMismatchError",
+    "VolOfVolResult",
+    "VolatilityFeatureStore",
+    "VolatilityMetrics",
+    "VolatilityService",
+    "VolatilityVersionMismatchError",
     "breadth_above_moving_average",
     "build_dispersion_metrics",
     "build_dispersion_service",
     "build_feature_store",
     "build_regime_metrics",
     "build_regime_service",
+    "build_volatility_metrics",
+    "build_volatility_service",
     "coerce_date",
     "cross_sectional_dispersion",
     "decode_autocorrelation",
     "decode_breadth",
     "decode_correlation",
     "decode_dispersion",
+    "decode_realized_volatility",
+    "decode_vol_of_vol",
     "definition_parameters",
     "encode_autocorrelation",
     "encode_breadth",
     "encode_correlation",
     "encode_dispersion",
+    "encode_realized_volatility",
+    "encode_vol_of_vol",
     "feature_version",
     "market_return_series",
     "mean_pairwise_correlation",
+    "realized_volatility",
     "return_autocorrelation",
+    "rolling_realized_volatility",
+    "volatility_of_volatility",
 ]
 
 
@@ -188,3 +249,23 @@ def build_dispersion_service() -> DispersionService:
     this definition rebinds that name — calling it here would recurse.
     """
     return DispersionService.from_env()
+
+
+@register("volatility-metrics")
+def build_volatility_service() -> VolatilityService:
+    """Compose-time contribution: the feature-55 volatility-metrics service.
+
+    Feature 55 computes multi-horizon realized volatility plus
+    volatility-of-volatility and persists each as a versioned regime feature.
+    This is that capability as a composed component: a zero-argument builder
+    (the factory's one-way contract) that computes both metrics over a
+    snapshot's universe and stores each under its own market-wide daily key,
+    both stamped with the current ``feature_version``.  It borrows a feature
+    store rather than owning one, so a deployment routes it at the composed
+    ``feature-store`` component.
+
+    Constructs through :meth:`VolatilityService.from_env` rather than calling
+    :func:`feature_store.volatility_service.build_volatility_service`, because
+    this definition rebinds that name — calling it here would recurse.
+    """
+    return VolatilityService.from_env()
