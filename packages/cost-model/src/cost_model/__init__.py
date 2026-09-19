@@ -21,6 +21,19 @@ latency distribution of 67, the borrow series of 68) layer on top of this
 package's resolved value rather than beside it, which is what keeps one
 schedule from becoming two.
 
+Feature 67 layers onto that identity: *System persists an empirical p50,
+p95 and p99 latency distribution measured from shadow runs rather than an
+assumed constant.*  It is the ``latency`` section of §6.2's document made
+concrete — ``source: measured_from_shadow``, ``distribution:
+empirical_p50_p95_p99`` — and it follows the same rule as the identity:
+the distribution is measured from the tape and written down, never assumed.
+:mod:`cost_model.latency` holds the distribution (the samples and the three
+quantiles derived from them) and :mod:`cost_model.latency_store` persists
+it, keyed by the ``(venue, version)`` identity feature 59 already persists
+and the instant the latency was measured, so a cost model's latency is a
+history that accumulates as shadow runs pile up rather than one assumed
+number.  It, too, layers on the resolved identity rather than beside it.
+
 This package also *is* a component of the composed application: importing
 it registers a builder with the application factory
 (``app.module_loader.register``), so the module loader discovers it by
@@ -61,6 +74,18 @@ from .errors import (
     CostModelError,
     CostModelStoreError,
 )
+from .latency import (
+    DEFAULT_QUANTILES,
+    QUANTILE_METHOD,
+    EmpiricalLatencyDistribution,
+    quantile,
+)
+from .latency_store import (
+    LATENCY_TABLE,
+    load_latency_distributions,
+    load_latest_latency_distribution,
+    persist_latency_distribution,
+)
 from .service import CostModelService, build_cost_model_service
 from .store import (
     COST_MODEL_TABLE,
@@ -74,17 +99,25 @@ __all__ = [
     "COST_MODEL_KEY",
     "COST_MODEL_PATH_ENV",
     "COST_MODEL_TABLE",
+    "DATABASE_URL_ENV",
+    "DEFAULT_COST_MODEL_PATH",
+    "DEFAULT_QUANTILES",
+    "LATENCY_TABLE",
+    "QUANTILE_METHOD",
     "CostModelConfig",
     "CostModelConfigError",
     "CostModelError",
     "CostModelService",
     "CostModelStoreError",
-    "DATABASE_URL_ENV",
-    "DEFAULT_COST_MODEL_PATH",
+    "EmpiricalLatencyDistribution",
     "build_cost_model_service",
     "load_cost_model",
+    "load_latency_distributions",
+    "load_latest_latency_distribution",
     "load_persisted_cost_model",
     "persist_cost_model",
+    "persist_latency_distribution",
+    "quantile",
     "read_cost_model_document",
     "require_yaml",
 ]

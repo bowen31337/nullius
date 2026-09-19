@@ -32,7 +32,7 @@
 [project]
 name = "cost-model"
 version = "0.1.0"
-description = "Shared cost model: the YAML fee schedule and fill model, loaded once and hash-pinned."
+description = "Shared cost model: the YAML fee schedule, fill model and empirical latency distribution, loaded once and hash-pinned."
 requires-python = ">=3.12"
 dependencies = ["nullius", "pyyaml>=6.0"]
 

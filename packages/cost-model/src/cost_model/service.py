@@ -47,6 +47,11 @@ from .config import (
     CostModelConfig,
     load_cost_model,
 )
+from .latency import EmpiricalLatencyDistribution
+from .latency_store import (
+    load_latest_latency_distribution,
+    persist_latency_distribution,
+)
 from .store import (
     DATABASE_URL_ENV,
     load_persisted_cost_model,
@@ -178,6 +183,60 @@ class CostModelService:
         against.
         """
         return load_persisted_cost_model(
+            venue,
+            version,
+            database_url if database_url is not None else self.database_url,
+        )
+
+    def persist_latency(
+        self,
+        distribution: EmpiricalLatencyDistribution,
+        venue: str,
+        version: str,
+        *,
+        measured_at: Optional[str] = None,
+        source: Optional[str] = None,
+        database_url: Optional[str] = None,
+    ) -> EmpiricalLatencyDistribution:
+        """Persist a measured latency distribution for a cost model.
+
+        Feature 67's persist half: the distribution's samples land keyed by
+        the cost model's ``(venue, version)`` identity and the instant the
+        latency was measured, so a cost model's latency is a history that
+        accumulates as shadow runs pile up.  The load-then-persist ordering
+        that :meth:`resolved` gives the identity is mirrored here — the
+        caller measures a distribution and hands it over, and the store
+        writes down what was measured rather than an assumed constant.
+
+        A re-measurement at a later instant adds a row; at the same instant
+        it upserts onto the one row (see
+        :func:`cost_model.latency_store.persist_latency_distribution`).
+        """
+        return persist_latency_distribution(
+            distribution,
+            venue,
+            version,
+            measured_at=measured_at,
+            source=source,
+            database_url=database_url if database_url is not None else self.database_url,
+        )
+
+    def latency(
+        self,
+        venue: str,
+        version: str,
+        database_url: Optional[str] = None,
+    ) -> Optional[EmpiricalLatencyDistribution]:
+        """Read the most recently measured latency distribution for a cost model.
+
+        The reader a latency-aware cost computation resolves against: given
+        the venue and version a score names, the store answers with the
+        latest distribution that was measured — or ``None``, which is the
+        honest answer for a cost model whose latency has never been
+        measured, and the signal that pricing against it must not fall back
+        to an assumed constant.
+        """
+        return load_latest_latency_distribution(
             venue,
             version,
             database_url if database_url is not None else self.database_url,
