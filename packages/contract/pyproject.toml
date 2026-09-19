@@ -1,0 +1,28 @@
+# The `contract` workspace member — Z0: MarketWindow, signal ABI.
+# Immutable, versioned (docs/nullius-tech-architecture.md §5.1, §19).
+#
+# The root pyproject.toml declares `members = ["packages/*"]`, so this
+# directory joins the workspace and uv.lock the moment this file exists —
+# no edit to the root is required or wanted (see the workspace contract
+# spelled out at the top of the root pyproject.toml).
+#
+# Layout note, and it is load-bearing: the importable package lives at
+# src/contract/, NOT src/nullius/contract/. The module loader
+# (src/app/module_loader.py) treats the member's `src` directory as a
+# *package-parent* root, and every immediate child of a scan root must
+# itself be a package. An `src/nullius/` level has no __init__.py, so the
+# scan would stop one directory too high and find nothing.
+
+[project]
+name = "nullius-contract"
+version = "0.1.0"
+description = "Z0 MarketWindow contract and signal ABI for the nullius research system"
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/contract"]

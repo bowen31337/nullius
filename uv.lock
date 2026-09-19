@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 [manifest]
 members = [
     "nullius",
+    "nullius-contract",
     "nullius-feature-store",
     "nullius-ingest",
     "snapshot",
@@ -43,6 +44,11 @@ dev = [
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.0" }]
+
+[[package]]
+name = "nullius-contract"
+version = "0.1.0"
+source = { editable = "packages/contract" }
 
 [[package]]
 name = "nullius-feature-store"
