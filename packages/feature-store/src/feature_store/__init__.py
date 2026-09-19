@@ -20,16 +20,30 @@ seam's read half (:mod:`feature_store.point_in_time`):
 layers return only the rows whose ``computed_as_of`` is at or before the
 query time, so a point-in-time read cannot see a later computation.
 
-Importing this package registers five components with the application
+Feature 49 is the materialisation pair — the "Parquet" half in
+:mod:`feature_store.parquet` :func:`~feature_store.parquet.encode_parquet`
+/ :func:`~feature_store.parquet.decode_parquet`, and the "lazily on first
+request, persisting the result for later reuse" half in
+:mod:`feature_store.materialise`, whose
+:class:`~feature_store.materialise.FeatureMaterialiser` reads a feature's
+key-addressed Parquet file when one exists and computes one when none does.
+It is the first module in this member that needs a third-party dependency
+(pyarrow, for the format §4.1 pins), so the import is deferred to first use
+(:func:`~feature_store.parquet.require_arrow`) and the package stays
+import-safe for the factory's scan.
+
+Importing this package registers six components with the application
 factory — a deliberate import side effect, per the factory's registration
 protocol (``app.module_loader``) — so ``create_app()`` discovers them by
 scanning the declared workspace without the factory ever knowing this
-package's name.  The row layer (51) and the point-in-time read (52)
-register nothing: both are pure functions over rows and payloads, not
-orchestration services with composed state, so they stay modules plus
-their package re-exports.
+package's name.  The row layer (51), the point-in-time read (52) and the
+Parquet codec (49's format half) register nothing: each is a pure function
+over rows and payloads, not an orchestration service with composed state,
+so they stay modules plus their package re-exports.
 
 * ``feature-store`` — the five-component-keyed store itself (feature 48);
+* ``feature-materialiser`` — feature 49's lazy Parquet materialisation,
+  bound to the lake the process is pointed at (``LAKE_ROOT``);
 * ``regime-metrics`` — feature 57's mean pairwise correlation plus breadth;
 * ``dispersion-metrics`` — feature 56's cross-sectional return dispersion
   plus several-lag return autocorrelation, persisted version stamped;
@@ -78,6 +92,23 @@ from .keys import (
     FeatureKey,
     FeatureKeyError,
     Frequency,
+)
+from .materialise import (
+    FEATURES_DIRECTORY,
+    LAKE_ROOT_ENV,
+    MATERIALISED_SUFFIX,
+    FeatureMaterialiser,
+    MaterialisationError,
+    MaterialisedFeature,
+)
+from .parquet import (
+    PARQUET_COMPRESSION,
+    ParquetMaterialisationError,
+    decode_parquet,
+    encode_parquet,
+    from_table,
+    require_arrow,
+    to_table,
 )
 from .persistence import (
     FEATURE_NAME_BREADTH,
@@ -195,6 +226,7 @@ __all__ = [
     "FEATURE_NAME_LABELS",
     "FEATURE_NAME_REALIZED_VOL",
     "FEATURE_NAME_VOL_OF_VOL",
+    "FEATURES_DIRECTORY",
     "FEATURE_VERSION",
     "FREQUENCIES",
     "MARKET_WIDE_SYMBOL",
@@ -211,6 +243,7 @@ __all__ = [
     "DuplicateFeatureKeyError",
     "FeatureKey",
     "FeatureKeyError",
+    "FeatureMaterialiser",
     "FeatureRecord",
     "FeatureRow",
     "FeatureRowError",
@@ -222,6 +255,12 @@ __all__ = [
     "IncompleteRegimeMetricsError",
     "IncompleteVolatilityMetricsError",
     "LABELS_DEFINITION",
+    "LAKE_ROOT_ENV",
+    "MATERIALISED_SUFFIX",
+    "PARQUET_COMPRESSION",
+    "MaterialisationError",
+    "MaterialisedFeature",
+    "ParquetMaterialisationError",
     "PointInTimeError",
     "PricePanel",
     "RealizedVolatilityResult",
@@ -241,6 +280,7 @@ __all__ = [
     "breadth_above_moving_average",
     "build_dispersion_metrics",
     "build_dispersion_service",
+    "build_feature_materialiser",
     "build_feature_store",
     "build_regime_labeler_service",
     "build_regime_metrics",
@@ -254,6 +294,7 @@ __all__ = [
     "decode_correlation",
     "decode_dispersion",
     "decode_labels",
+    "decode_parquet",
     "decode_realized_volatility",
     "decode_rows",
     "decode_rows_as_of",
@@ -264,19 +305,23 @@ __all__ = [
     "encode_correlation",
     "encode_dispersion",
     "encode_labels",
+    "encode_parquet",
     "encode_realized_volatility",
     "encode_rows",
     "encode_vol_of_vol",
     "feature_version",
+    "from_table",
     "market_return_series",
     "mean_pairwise_correlation",
     "read_rows_as_of",
     "realized_volatility",
     "regime_feature_matrix",
+    "require_arrow",
     "return_autocorrelation",
     "rolling_realized_volatility",
     "rows_as_of",
     "stamp_rows",
+    "to_table",
     "utc_now",
     "volatility_of_volatility",
 ]
@@ -291,6 +336,28 @@ def build_feature_store() -> FeatureStore:
     keyed from the first :meth:`FeatureStore.put`.
     """
     return FeatureStore()
+
+
+@register("feature-materialiser")
+def build_feature_materialiser() -> FeatureMaterialiser:
+    """Compose-time contribution: feature 49's lazy Parquet materialiser.
+
+    The materialiser bound to the lake the process is actually pointed at
+    (``LAKE_ROOT``), resolved at composition time.  Kept as a named
+    module-level function — rather than registering ``from_env`` directly — so
+    the registry shows an intention rather than a classmethod, and so tests can
+    assert on the builder independently of construction.  Construction performs
+    no I/O (see the class docstring), so composing the application never
+    touches the lake.
+
+    Defined here rather than in :mod:`feature_store.materialise` on purpose.
+    The factory's scan re-executes a package's ``__init__`` on every
+    ``create_app`` call, but a submodule already cached in ``sys.modules`` is
+    not re-executed; a ``@register`` in a submodule would therefore fire on the
+    first composition of a process and silently drop out of every later one.
+    Registration lives on the import path the scan always runs.
+    """
+    return FeatureMaterialiser.from_env()
 
 
 @register("regime-metrics")

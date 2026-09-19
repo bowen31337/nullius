@@ -66,10 +66,14 @@ version = "0.1.0"
 source = { editable = "packages/feature-store" }
 dependencies = [
     { name = "nullius" },
+    { name = "pyarrow" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "nullius", editable = "." }]
+requires-dist = [
+    { name = "nullius", editable = "." },
+    { name = "pyarrow", specifier = ">=14.0" },
+]
 
 [[package]]
 name = "nullius-ingest"

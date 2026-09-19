@@ -2,9 +2,9 @@
 
 The implementation lives in the ``feature-store`` workspace member
 (``packages/feature-store``), which self-registers with the application
-factory under ``"feature-store"`` (feature 48), ``"regime-metrics"``
-(feature 57), ``"dispersion-metrics"`` (feature 56) and
-``"volatility-metrics"`` (feature 55).
+factory under ``"feature-store"`` (feature 48), ``"feature-materialiser"``
+(feature 49), ``"regime-metrics"`` (feature 57), ``"dispersion-metrics"``
+(feature 56) and ``"volatility-metrics"`` (feature 55).
 ``src/app/modules/feature-store/`` is the member's seat in the ``app``
 package namespace: it asks the factory for those components without the
 ``app`` package depending on any member at import time.  These tests pin that
@@ -48,22 +48,26 @@ def test_member_is_declared_in_the_scanned_workspace() -> None:
     assert MEMBER_SRC in workspace_scan_roots()
 
 
-def test_scan_registers_all_four_components() -> None:
+def test_scan_registers_all_five_components() -> None:
     registry = Registration()
     components = scan_components(MEMBER_SRC, registry=registry)
     names = [component.name for component in components]
-    # Feature 48's store, feature 57's regime-metrics service, feature 56's
-    # dispersion-metrics service and feature 55's volatility-metrics service
-    # — all registered by the one member, all discoverable.
+    # Feature 48's store, feature 49's lazy Parquet materialiser, feature 57's
+    # regime-metrics service, feature 56's dispersion-metrics service and
+    # feature 55's volatility-metrics service — all registered by the one
+    # member, all discoverable.
     assert "feature-store" in names
+    assert "feature-materialiser" in names
     assert "regime-metrics" in names
     assert "dispersion-metrics" in names
     assert "volatility-metrics" in names
 
 
-def test_composed_app_builds_all_four_components() -> None:
+def test_composed_app_builds_all_five_components() -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
     assert app.get("feature-store") is not None
+    materialiser = app.get("feature-materialiser")
+    assert materialiser is not None
     regime = app.get("regime-metrics")
     assert regime is not None
     dispersion = app.get("dispersion-metrics")
@@ -78,8 +82,13 @@ def test_composed_app_builds_all_four_components() -> None:
     assert callable(dispersion.load)
     assert callable(volatility.persist)
     assert callable(volatility.load)
+    # The materialiser exposes the lazy materialise/load seam (feature 49).
+    assert callable(materialiser.materialise)
+    assert callable(materialiser.load)
+    assert callable(materialiser.path_for)
     for name in (
         "feature-store",
+        "feature-materialiser",
         "regime-metrics",
         "dispersion-metrics",
         "volatility-metrics",
@@ -92,6 +101,7 @@ def test_app_seat_exposes_the_components() -> None:
     # it names the components and asks the factory for them without the app
     # package depending on any member at import time.
     assert seat.FEATURE_STORE_COMPONENT == "feature-store"
+    assert seat.FEATURE_MATERIALISER_COMPONENT == "feature-materialiser"
     assert seat.REGIME_METRICS_COMPONENT == "regime-metrics"
     assert seat.DISPERSION_METRICS_COMPONENT == "dispersion-metrics"
     assert seat.VOLATILITY_METRICS_COMPONENT == "volatility-metrics"
@@ -99,6 +109,8 @@ def test_app_seat_exposes_the_components() -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
     store = seat.feature_store_component(app)
     assert callable(getattr(store, "put", None))
+    materialiser = seat.feature_materialiser_component(app)
+    assert callable(getattr(materialiser, "materialise", None))
     regime = seat.regime_metrics_component(app)
     assert callable(getattr(regime, "persist", None))
     dispersion = seat.dispersion_metrics_component(app)
@@ -111,6 +123,7 @@ def test_seat_returns_none_when_nothing_registered() -> None:
     # An application with no component registered is a discoverable state, not
     # an exception — mirroring the factory's stance.
     assert seat.feature_store_component(Application()) is None
+    assert seat.feature_materialiser_component(Application()) is None
     assert seat.regime_metrics_component(Application()) is None
     assert seat.dispersion_metrics_component(Application()) is None
     assert seat.volatility_metrics_component(Application()) is None

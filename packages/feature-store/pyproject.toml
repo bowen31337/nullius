@@ -14,10 +14,29 @@ name = "nullius-feature-store"
 version = "0.1.0"
 description = "Point-in-time feature store: the five-component keying contract for every stored feature."
 requires-python = ">=3.12"
-# The only dependency is the workspace root, for the factory's registration
-# protocol (`import app.module_loader`).  The keying contract itself is
-# stdlib-only so it stays import-safe in any environment, replay included.
-dependencies = ["nullius"]
+# Dependencies: the workspace root, for the factory's registration protocol
+# (`import app.module_loader`), and pyarrow, for feature 49.
+#
+# pyarrow is the Parquet writer/reader.  §4.1's stack table pins the format
+# ("Parquet + Zstd, columnar, compressed, portable") and the technology stack
+# names DuckDB "querying Parquet in place", so the bytes a materialised feature
+# is stored as must be real Parquet that another tool can read — not a private
+# encoding.  The member that writes those bytes owns the dependency rather than
+# inheriting it from whichever member happens to read them.
+#
+# `>=` rather than `==`: the codec depends on the *format* (Parquet's logical
+# timestamp type, the Zstd codec, the write/read table API), not on a pyarrow
+# release's behaviour.
+#
+# The import is deferred to first use (`feature_store.parquet.require_arrow`),
+# so the factory's workspace scan — which imports this package to fire its
+# @register decorators — does not require pyarrow to be installed.  That keeps
+# the member import-safe in the environments the workspace contract promises
+# one will be (factory scan, test sandbox, replay path); only the
+# materialisation paths that genuinely need Arrow raise, and they name the
+# missing dependency when they do.  The keying contract, the row layer and the
+# point-in-time read remain stdlib-only.
+dependencies = ["nullius", "pyarrow>=14.0"]
 
 [build-system]
 requires = ["hatchling"]

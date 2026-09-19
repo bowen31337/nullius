@@ -243,21 +243,63 @@ conflated.
 
 - distribution: `nullius-feature-store` (this directory, `packages/feature-store/`)
 - import package: `feature_store` (under `src/`)
-- registered components: `"feature-store"` (feature 48), `"regime-metrics"`
-  (feature 57), `"dispersion-metrics"` (feature 56), `"volatility-metrics"`
-  (feature 55) and `"regime-labeler"` (feature 58), all via `@register`,
-  discovered by `app.module_loader`’s workspace scan. Feature 51's row
-  stamping and feature 52's point-in-time read register nothing: both are
-  pure functions over rows and payloads — the payload layer of the store's
-  own contract — not orchestration services, so neither has composed state
-  for the factory to own
+- registered components: `"feature-store"` (feature 48),
+  `"feature-materialiser"` (feature 49), `"regime-metrics"` (feature 57),
+  `"dispersion-metrics"` (feature 56), `"volatility-metrics"` (feature 55)
+  and `"regime-labeler"` (feature 58), all via `@register`, discovered by
+  `app.module_loader`’s workspace scan. Feature 51's row stamping and
+  feature 52's point-in-time read register nothing: both are pure functions
+  over rows and payloads — the payload layer of the store's own contract —
+  not orchestration services, so neither has composed state for the factory
+  to own
 - app-package seat: `app.modules.feature-store` (`src/app/modules/feature-store/`),
-  which exposes `feature_store_component()`, `regime_metrics_component()`,
-  `dispersion_metrics_component()` and `volatility_metrics_component()`
-  without the `app` package depending on any member at import time
+  which exposes `feature_store_component()`, `feature_materialiser_component()`,
+  `regime_metrics_component()`, `dispersion_metrics_component()` and
+  `volatility_metrics_component()` without the `app` package depending on any
+  member at import time
+
+Every `@register` in this member is on the package's own import path
+(`feature_store/__init__.py`), never in a submodule. The factory's scan
+re-executes a package's `__init__` on every `create_app()` call but does not
+re-execute a submodule already cached in `sys.modules`, so a registration in
+a submodule would fire only on the first composition of a process and vanish
+from every later one.
 
 Stdlib-only by design — the identity contract stays import-safe in any
-environment, deterministic replay included. Parquet materialisation
-(feature 49) and caching (50) layer on top of this seam; row-level
-stamping (51) has landed in `feature_store.rows`, and its
-`computed_as_of <= t` read filter (52) in `feature_store.point_in_time`.
+environment, deterministic replay included. Feature 49 is the one exception
+that proves the rule: it is the first module here needing a third-party
+dependency (pyarrow, for the Parquet format §4.1 pins), so the import is
+deferred to first use (`feature_store.parquet.require_arrow`) and the package
+stays import-safe for the scan. Row-level stamping (51) has landed in
+`feature_store.rows`, and its `computed_as_of <= t` read filter (52) in
+`feature_store.point_in_time`; caching (50) layers on top of this seam.
+
+### Parquet materialisation (feature 49)
+
+`feature_store.parquet` is the format half: `encode_parquet`/`decode_parquet`
+turn a batch of feature rows into Zstd-compressed Parquet bytes and back. The
+`computed_as_of` stamp is a real Arrow `timestamp("us", tz="UTC")` column, not
+a string, so a point-in-time filter can push down into the file; the value
+columns are inferred over each whole column, so column types are a property of
+the batch rather than of whichever row happened to be read first. Encoding is
+deterministic: the same rows, schema and compression give byte-identical
+output, which is what makes replay comparison meaningful.
+
+`feature_store.materialise` is the "lazily on first request, persisting the
+result for later reuse" half. `FeatureMaterialiser` maps a `FeatureKey` to a
+file under `<lake_root>/features/` — the key's own five path-safe segments,
+with `.parquet` on the last — so the address is derived from the identity
+rather than assigned by a table nobody can read. `materialise(key, compute)`
+reads that file when it exists and calls `compute` when it does not, reporting
+which happened through `MaterialisedFeature.materialised`. The happy path is
+the reuse path: a hit does not call `compute` at all, so a definition's clock
+is never advanced by a read.
+
+Writes are atomic (temp file beside the destination, then `os.replace`), so a
+crash mid-write leaves the previous materialisation intact rather than a
+half-file that later reads would trust. A corrupt file is refused with
+`MaterialisationError` naming the path and the `replace=True` remedy — it is
+never silently recomputed, because a corrupt artefact is a fact about the lake
+and a recompute would hide it. An absent file and a corrupt one are different
+states, and so are a file whose rows are all later than the query time and no
+file at all.

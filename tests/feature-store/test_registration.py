@@ -17,8 +17,13 @@ two module worlds.
 """
 
 import sys
+from pathlib import Path
 
-from app.module_loader import create_app, scan_components
+import feature_store
+
+from app.module_loader import Registration, create_app, scan_components
+
+MEMBER_SRC = Path(feature_store.__file__).resolve().parent.parent
 
 
 def test_workspace_scan_discovers_the_feature_store_component() -> None:
@@ -50,6 +55,61 @@ def test_create_app_composes_a_feature_store() -> None:
     assert len(store) == 0
     assert "feature-store" in app
     assert "feature-store" in app.order
+
+
+def test_create_app_composes_a_feature_materialiser() -> None:
+    # Feature 49's component: registered by the same member, discovered by the
+    # same scan, with no edit to any shared registry.
+    app = create_app()
+    materialiser = app.get("feature-materialiser")
+    assert materialiser is not None
+    assert type(materialiser).__qualname__ == "FeatureMaterialiser"
+    assert type(materialiser).__module__.endswith("feature_store.materialise")
+    # Bound to the lake the process is pointed at — resolved at composition
+    # time (LAKE_ROOT, set per test by the shared fixtures) — and composing
+    # touched no disk: construction performs no I/O (feature 49's laziness).
+    assert materialiser.lake_root.name == "lake"
+    assert not materialiser.features_root.exists()
+    assert "feature-materialiser" in app
+    assert "feature-materialiser" in app.order
+
+
+def test_the_materialiser_component_builds_without_pyarrow() -> None:
+    # The laziness extends to the dependency: pyarrow is imported on first
+    # *use* (feature_store.parquet.require_arrow), not at module scope, so the
+    # factory's scan can import this package and compose the component in an
+    # environment where pyarrow is absent — the same import-safety contract the
+    # workspace makes for every member (factory scan, test sandbox, replay).
+    builder = next(
+        component.builder
+        for component in scan_components()
+        if component.name == "feature-materialiser"
+    )
+    assert callable(builder)
+
+
+def test_scan_registers_the_materialiser_exactly_once() -> None:
+    scan_components()
+    names = [component.name for component in scan_components()]
+    assert names.count("feature-materialiser") == 1
+
+
+def test_the_materialiser_survives_a_second_composition() -> None:
+    # The scan re-executes a package's ``__init__`` on every ``create_app``
+    # call, but a submodule already cached in ``sys.modules`` is not
+    # re-executed.  A ``@register`` in a submodule therefore fires on the
+    # first composition of a process and silently drops out of every later
+    # one — so this asserts the component is present in a *second*, freshly
+    # composed application, not merely that the first one had it.  Five of
+    # this member's six components live in ``__init__`` and would keep
+    # passing if the sixth drifted back into a submodule; this is the test
+    # that catches that.
+    first = create_app(MEMBER_SRC, registry=Registration())
+    assert "feature-materialiser" in first.order
+
+    second = create_app(MEMBER_SRC, registry=Registration())
+    assert "feature-materialiser" in second.order
+    assert second.get("feature-materialiser") is not None
 
 
 def test_composed_store_round_trips_a_feature() -> None:
