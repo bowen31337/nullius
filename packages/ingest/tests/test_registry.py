@@ -106,6 +106,7 @@ def test_a_private_registry_never_leaks_into_the_default() -> None:
     )
     assert set(default_worker_registry().stream_classes()) == {
         StreamClass.BOOK_DIFFS,
+        StreamClass.BOOK_FEATURES,
         StreamClass.EXCHANGE_INFO,
         StreamClass.FUNDING,
     }

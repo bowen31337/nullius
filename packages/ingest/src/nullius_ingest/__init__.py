@@ -65,6 +65,18 @@ What lives where:
   :meth:`~nullius_ingest.staging.StagingArea.retire` — whole batches only, so
   append-only survives retention.  It registers itself as the ``bookDiffs``
   stream's worker, so importing this package is the whole wiring.
+* :mod:`nullius_ingest.book_features` — :class:`BookFeatureStore`, the
+  append-only log of *derived* book features at 1 second resolution, persisted
+  permanently alongside the raw diffs rather than expired with them, and
+  :class:`BookFeatureWorker`, the stream worker that reconstructs the L2 book
+  from feature 19's raw diffs and snapshots the depth resting within the 5/10/25/50
+  bps bands per side at each 1s boundary (§4.1's "Derived book features | WS @1s |
+  continuous | permanent" row; feature 20).  It reads the raw-diff store feature
+  19 persisted — the reader seam that module built for it — and persists its own
+  closing book with each record, so a restart resumes the reconstruction from the
+  derived log rather than re-deriving it from raw diffs that may since have left
+  the 90-day window.  It registers itself as the ``bookFeatures`` stream's worker,
+  so importing this package is the whole wiring.
 
 The package self-registers with the application factory: scanning this
 workspace member runs this module, the ``@register`` decorator below
@@ -111,6 +123,24 @@ from .book_diffs import (
     parse_book_diffs,
     register_book_diff_worker,
     window_start_for,
+)
+from .book_features import (
+    BPS_THRESHOLDS,
+    BOOK_FEATURES_STREAM,
+    FEATURE_SLICE,
+    FEATURE_SLICE_MILLISECONDS,
+    BookFeatureBatch,
+    BookFeatureCorruptError,
+    BookFeatureError,
+    BookFeatureParseError,
+    BookFeatureRecord,
+    BookFeatureRow,
+    BookFeatureStore,
+    BookFeatureWorker,
+    BookState,
+    build_book_feature_worker,
+    parse_book_features,
+    register_book_feature_worker,
 )
 from .exchange_info import (
     EXCHANGE_INFO_STREAM,
@@ -196,6 +226,17 @@ __all__ = [
     "BookDiffRow",
     "BookDiffStore",
     "BookDiffWorker",
+    "BookFeatureBatch",
+    "BookFeatureCorruptError",
+    "BookFeatureError",
+    "BookFeatureParseError",
+    "BookFeatureRecord",
+    "BookFeatureRow",
+    "BookFeatureStore",
+    "BookFeatureWorker",
+    "BookState",
+    "BPS_THRESHOLDS",
+    "BOOK_FEATURES_STREAM",
     "ColumnSpec",
     "CycleResult",
     "DailyExchangeInfoWorker",
@@ -208,6 +249,8 @@ __all__ = [
     "CADENCE",
     "ExchangeInfoVersion",
     "ExchangeInfoVersionStore",
+    "FEATURE_SLICE",
+    "FEATURE_SLICE_MILLISECONDS",
     "FilterType",
     "FUNDING_STREAM",
     "FundingCorruptError",
@@ -258,6 +301,7 @@ __all__ = [
     "WorkerRegistry",
     "align_to_window",
     "build_book_diff_worker",
+    "build_book_feature_worker",
     "build_default_workers",
     "build_exchange_info_worker",
     "build_funding_worker",
@@ -265,9 +309,11 @@ __all__ = [
     "build_supervisor",
     "coerce_stream_class",
     "parse_book_diffs",
+    "parse_book_features",
     "parse_exchange_info",
     "parse_funding",
     "register_book_diff_worker",
+    "register_book_feature_worker",
     "register_exchange_info_worker",
     "register_funding_worker",
     "register_worker",
