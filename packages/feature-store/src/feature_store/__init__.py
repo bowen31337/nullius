@@ -21,7 +21,9 @@ package's name:
   plus several-lag return autocorrelation, persisted version stamped;
 * ``volatility-metrics`` — feature 55's multi-horizon realized volatility
   plus volatility-of-volatility, each persisted as a versioned regime
-  feature.
+  feature;
+* ``regime-labeler`` — feature 58's market-regime labels, a k-means fit on
+  a trailing window only, persisted as a versioned regime feature.
 """
 
 from __future__ import annotations
@@ -85,6 +87,26 @@ from .regime import (
     build_regime_metrics,
     mean_pairwise_correlation,
 )
+from .regime_labeler import (
+    DEFAULT_K,
+    DEFAULT_WINDOW,
+    FullHistoryFitError,
+    RegimeLabeler,
+    RegimeLabels,
+    regime_feature_matrix,
+)
+from .regime_labeler_persistence import (
+    FEATURE_NAME_LABELS,
+    LABELS_DEFINITION,
+    RegimeLabelerFeatureStore,
+    IncompleteLabelerMetricsError,
+    decode_labels,
+    encode_labels,
+)
+from .regime_labeler_service import (
+    RegimeLabelerService,
+    build_regime_labeler_service,
+)
 from .service import RegimeService, build_regime_service
 from .store import DuplicateFeatureKeyError, FeatureRecord, FeatureStore
 from .volatility import (
@@ -131,13 +153,16 @@ __all__ = [
     "DEFAULT_LAGS",
     "DEFAULT_MIN_OBSERVATIONS",
     "DEFAULT_MIN_OVERLAP",
+    "DEFAULT_K",
     "DEFAULT_MIN_SYMBOLS",
     "DEFAULT_VOL_WINDOW",
+    "DEFAULT_WINDOW",
     "DISPERSION_DEFINITION",
     "FEATURE_NAME_AUTOCORRELATION",
     "FEATURE_NAME_BREADTH",
     "FEATURE_NAME_CORRELATION",
     "FEATURE_NAME_DISPERSION",
+    "FEATURE_NAME_LABELS",
     "FEATURE_NAME_REALIZED_VOL",
     "FEATURE_NAME_VOL_OF_VOL",
     "FEATURE_VERSION",
@@ -159,12 +184,19 @@ __all__ = [
     "FeatureRecord",
     "FeatureStore",
     "Frequency",
+    "FullHistoryFitError",
     "IncompleteDispersionMetricsError",
+    "IncompleteLabelerMetricsError",
     "IncompleteRegimeMetricsError",
     "IncompleteVolatilityMetricsError",
+    "LABELS_DEFINITION",
     "PricePanel",
     "RealizedVolatilityResult",
     "RegimeFeatureStore",
+    "RegimeLabeler",
+    "RegimeLabelerFeatureStore",
+    "RegimeLabelerService",
+    "RegimeLabels",
     "RegimeMetrics",
     "RegimeService",
     "VersionMismatchError",
@@ -177,6 +209,7 @@ __all__ = [
     "build_dispersion_metrics",
     "build_dispersion_service",
     "build_feature_store",
+    "build_regime_labeler_service",
     "build_regime_metrics",
     "build_regime_service",
     "build_volatility_metrics",
@@ -187,6 +220,7 @@ __all__ = [
     "decode_breadth",
     "decode_correlation",
     "decode_dispersion",
+    "decode_labels",
     "decode_realized_volatility",
     "decode_vol_of_vol",
     "definition_parameters",
@@ -194,12 +228,14 @@ __all__ = [
     "encode_breadth",
     "encode_correlation",
     "encode_dispersion",
+    "encode_labels",
     "encode_realized_volatility",
     "encode_vol_of_vol",
     "feature_version",
     "market_return_series",
     "mean_pairwise_correlation",
     "realized_volatility",
+    "regime_feature_matrix",
     "return_autocorrelation",
     "rolling_realized_volatility",
     "volatility_of_volatility",
@@ -269,3 +305,23 @@ def build_volatility_service() -> VolatilityService:
     this definition rebinds that name — calling it here would recurse.
     """
     return VolatilityService.from_env()
+
+
+@register("regime-labeler")
+def build_regime_labeler_service() -> RegimeLabelerService:
+    """Compose-time contribution: the feature-58 regime-labeler service.
+
+    Feature 58 labels each date with a market-regime stratum from a k-means
+    fit on a trailing window only — never the full history — and persists the
+    labels as a versioned regime feature.  This is that capability as a
+    composed component: a zero-argument builder (the factory's one-way
+    contract) that labels a snapshot's market history and stores the labels
+    under the market-wide daily key.  It borrows a feature store rather than
+    owning one, so a deployment routes it at the composed ``feature-store``
+    component.
+
+    Constructs through :meth:`RegimeLabelerService.from_env` rather than
+    calling :func:`feature_store.regime_labeler_service.build_regime_labeler_service`,
+    because this definition rebinds that name — calling it here would recurse.
+    """
+    return RegimeLabelerService.from_env()
