@@ -166,3 +166,110 @@ def test_empty_payload_is_a_legal_feature() -> None:
     record = make_record(payload=b"")
     store.put(record)
     assert store.get(record.key) is record
+
+
+# ---------------------------------------------------------------------------
+# The version query surface (feature 53's observable coexistence)
+# ---------------------------------------------------------------------------
+
+
+def test_versions_lists_distinct_versions_for_a_feature_name() -> None:
+    # Feature 53: a changed definition writes under a new version and leaves
+    # the prior-version rows untouched, so one feature_name holds several
+    # versions.  versions() makes that coexistence observable rather than
+    # leaving the old rows reachable only by hand-reconstructing each key.
+    store = FeatureStore()
+    store.put(make_record(feature_name="vol", feature_version="1", symbol="BTCUSDT"))
+    store.put(make_record(feature_name="vol", feature_version="2", symbol="BTCUSDT"))
+    store.put(make_record(feature_name="other", feature_version="1", symbol="BTCUSDT"))
+    assert store.versions("vol") == ("1", "2")
+    assert store.versions("other") == ("1",)
+
+
+def test_versions_are_sorted_and_deduplicated() -> None:
+    # Deterministic and de-duplicated, like keys(): the same version under
+    # many snapshots/symbols/frequencies is reported once, in sorted order.
+    store = FeatureStore()
+    for symbol in ("BTCUSDT", "ETHUSDT"):
+        for snap in (SNAPSHOT, "0" * 64):
+            store.put(make_record(feature_name="vol", feature_version="2", symbol=symbol, snapshot_hash=snap))
+    store.put(make_record(feature_name="vol", feature_version="10", symbol="BTCUSDT"))
+    store.put(make_record(feature_name="vol", feature_version="1", symbol="BTCUSDT"))
+    # String sort, so "10" precedes "2" — versions are opaque strings, and
+    # the ordering is the canonical one, not a numeric assumption.
+    assert store.versions("vol") == ("1", "10", "2")
+
+
+def test_versions_of_an_unstored_name_is_empty_not_an_error() -> None:
+    store = FeatureStore()
+    store.put(make_record(feature_name="vol", feature_version="1", symbol="BTCUSDT"))
+    assert store.versions("never_stored") == ()
+
+
+def test_records_returns_all_versions_across_every_other_component() -> None:
+    # The reach half of feature 53: the prior-version rows left untouched are
+    # all returned, spanning every snapshot, symbol and frequency under the
+    # name, sorted in canonical component order.
+    store = FeatureStore()
+    v1 = make_record(feature_name="vol", feature_version="1", symbol="BTCUSDT", payload=b"v1")
+    v2 = make_record(feature_name="vol", feature_version="2", symbol="ETHUSDT", payload=b"v2")
+    store.put(v1)
+    store.put(v2)
+    records = store.records("vol")
+    assert records == (v1, v2)
+    assert [r.payload for r in records] == [b"v1", b"v2"]
+
+
+def test_records_are_sorted_in_canonical_component_order() -> None:
+    store = FeatureStore()
+    shuffled = [
+        make_record(feature_name="vol", feature_version="2", symbol="ETHUSDT"),
+        make_record(feature_name="vol", feature_version="1", symbol="BTCUSDT"),
+        make_record(feature_name="vol", feature_version="1", symbol="ETHUSDT"),
+    ]
+    for record in shuffled:
+        store.put(record)
+    names = [r.key.feature_name for r in store.records("vol")]
+    assert names == ["vol", "vol", "vol"]
+    assert store.records("vol") == tuple(
+        sorted(store.records("vol"), key=lambda r: FeatureKey.to_tuple(r.key))
+    )
+
+
+def test_versions_and_records_filter_out_other_feature_names() -> None:
+    store = FeatureStore()
+    store.put(make_record(feature_name="vol", feature_version="1", symbol="BTCUSDT"))
+    store.put(make_record(feature_name="corr", feature_version="1", symbol="BTCUSDT"))
+    assert store.versions("vol") == ("1",)
+    assert [r.key.feature_name for r in store.records("vol")] == ["vol"]
+
+
+def test_versions_rejects_an_impossible_feature_name() -> None:
+    # feature_name is a key component; a value that could never be part of a
+    # key (empty, padded, path-unsafe) is a caller bug, not a silent miss.
+    store = FeatureStore()
+    for bad in ("", "  padded  ", "a/b", ".", ".."):
+        with pytest.raises(Exception, match="feature_name"):
+            store.versions(bad)
+        with pytest.raises(Exception, match="feature_name"):
+            store.records(bad)
+
+
+def test_a_version_bump_leaves_prior_rows_untouched_and_reachable() -> None:
+    # The whole of feature 53, observed end to end: a changed definition
+    # persists under a new version; the version-1 row is neither overwritten
+    # nor orphaned — it is still the record under its exact key, still listed
+    # by versions(), and still returned by records().
+    store = FeatureStore()
+    v1 = make_record(feature_name="vol", feature_version="1", payload=b"v1-numbers")
+    v2 = make_record(feature_name="vol", feature_version="2", payload=b"v2-numbers")
+    store.put(v1)
+    store.put(v2)  # a different key, so no DuplicateFeatureKeyError
+
+    # The version-1 row is untouched: still the record under its exact key.
+    assert store.get(v1.key) is v1
+    assert store.get(v1.key).payload == b"v1-numbers"
+    # Both versions now coexist under the one name.
+    assert store.versions("vol") == ("1", "2")
+    # And both prior and new rows are reachable by the query surface.
+    assert store.records("vol") == (v1, v2)

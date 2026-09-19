@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterator
 
-from .keys import FeatureKey
+from .keys import FeatureKey, _validated_component
 
 __all__ = [
     "DuplicateFeatureKeyError",
@@ -90,6 +90,16 @@ class FeatureStore:
     order, so traversals are deterministic and bit-reproducible — the
     same discipline the universe plugin applies to symbol ordering
     (feature 46).
+
+    :meth:`versions` and :meth:`records` are the query surface the store
+    defers to in :meth:`get`'s docstring: :meth:`get` refuses partial
+    addressing (by name, say) because a name is not a full address, but a
+    name is a legitimate *query*, and this is where it is answered.  They
+    exist to make feature 53's coexistence observable — a changed
+    definition writes under a new ``feature_version`` and leaves the
+    prior-version rows untouched, so one ``feature_name`` can hold several
+    versions at once, and :meth:`versions`/:meth:`records` let a caller see
+    and reach them rather than having to reconstruct each full key by hand.
     """
 
     def __init__(self) -> None:
@@ -130,6 +140,50 @@ class FeatureStore:
     def keys(self) -> tuple[FeatureKey, ...]:
         """Every stored key, sorted in canonical component order."""
         return tuple(sorted(self._records, key=FeatureKey.to_tuple))
+
+    def versions(self, feature_name: str) -> tuple[str, ...]:
+        """The distinct ``feature_version`` values stored under ``feature_name``.
+
+        The query half of feature 53's contract.  A changed definition writes
+        under a new ``feature_version`` and leaves the prior-version rows
+        untouched (feature 48's distinctness, enforced by the whole-key
+        mapping), so a single ``feature_name`` can hold several versions at
+        once; this enumerates them.  The result is sorted and de-duplicated,
+        so it is deterministic and bit-reproducible like :meth:`keys` — the
+        same traversal discipline feature 46 applies to symbols.
+
+        ``feature_name`` is validated as a key component before use: a name
+        that could never be part of a key (empty, padded, path-unsafe) is a
+        caller bug, raised as :class:`~feature_store.keys.FeatureKeyError`
+        rather than silently returning an empty answer.  An empty result is a
+        normal miss — a name under which nothing is stored — not an error.
+        """
+        name = _validated_component("feature_name", feature_name)
+        return tuple(
+            sorted({record.key.feature_version for record in self._records.values() if record.key.feature_name == name})
+        )
+
+    def records(self, feature_name: str) -> tuple[FeatureRecord, ...]:
+        """Every stored record under ``feature_name``, across all versions.
+
+        The reach half of feature 53's contract: the prior-version rows a
+        changed definition leaves untouched are written but, without this,
+        unreachable except by reconstructing each full key by hand.  This
+        returns them all — every version, every snapshot, every symbol and
+        frequency — so a caller can read a specific version's rows back.  The
+        result is sorted in canonical component order (so version, then
+        snapshot, then symbol, then frequency), deterministic and
+        bit-reproducible.
+
+        ``feature_name`` is validated as a key component before use, exactly
+        as :meth:`versions` does; an empty result is a normal miss, not an
+        error.
+        """
+        name = _validated_component("feature_name", feature_name)
+        matching = [
+            entry for entry in self._records.values() if entry.key.feature_name == name
+        ]
+        return tuple(sorted(matching, key=lambda entry: FeatureKey.to_tuple(entry.key)))
 
     def __contains__(self, key: object) -> bool:
         # Containment stays boolean: a non-key simply is not in the store.
