@@ -17,6 +17,7 @@ import pytest
 from app.module_loader import Application, Registration, create_app, scan_components
 from universe import (
     DailyBar,
+    PriceBar,
     UniverseConfig,
     UniverseService,
     build_universe_service,
@@ -169,3 +170,122 @@ class TestServiceEndToEnd:
         assert loaded == universe
         assert loaded is not None
         assert "falls below the configured floor of 50.0" in loaded.exclusions[0].reason
+
+
+class TestResolveAsOfDecisionTime:
+    """Feature 43's resolution: membership as of a decision time, not now."""
+
+    def _service(self, url: str) -> UniverseService:
+        return UniverseService(config=UniverseConfig(top_n=1), database_url=url)
+
+    def _scenario(self, service: UniverseService) -> None:
+        # April: BBB outranks AAA, so BBB is the sole member. May: AAA
+        # outranks BBB, so AAA is admitted and BBB's interval closes on May 1.
+        service.persist(service.build(_two_symbol_april(), "2026-04"))
+        service.persist(service.build(_two_symbol_may(), "2026-05"))
+
+    def test_resolve_returns_the_member_during_its_interval(
+        self, test_database_url: str
+    ) -> None:
+        service = self._service(test_database_url)
+        self._scenario(service)
+        # Mid-April: BBB is the member.
+        assert service.resolve(dt.date(2026, 4, 15)) == ("BBBUSDT",)
+
+    def test_resolve_excludes_a_symbol_after_it_leaves(
+        self, test_database_url: str
+    ) -> None:
+        service = self._service(test_database_url)
+        self._scenario(service)
+        # Mid-May: BBB has left; AAA is the member.
+        assert service.resolve(dt.date(2026, 5, 15)) == ("AAAUSDT",)
+
+    def test_resolve_before_any_membership_is_empty(
+        self, test_database_url: str
+    ) -> None:
+        service = self._service(test_database_url)
+        self._scenario(service)
+        assert service.resolve(dt.date(2026, 1, 1)) == ()
+
+    def test_resolve_accepts_an_iso_string(self, test_database_url: str) -> None:
+        service = self._service(test_database_url)
+        self._scenario(service)
+        assert service.resolve("2026-04-15") == ("BBBUSDT",)
+
+    def test_resolve_is_sorted(self, test_database_url: str) -> None:
+        # Two symbols both admitted across both months resolve together, sorted.
+        service = UniverseService(
+            config=UniverseConfig(top_n=5), database_url=test_database_url
+        )
+        service.persist(service.build(_two_symbol_april(), "2026-04"))
+        service.persist(service.build(_two_symbol_may(), "2026-05"))
+        assert service.resolve(dt.date(2026, 4, 15)) == ("AAAUSDT", "BBBUSDT")
+
+
+class TestPriceHistoryAndAuditFacade:
+    """Feature 43/44 through the service: ingest prices and audit windows."""
+
+    def _service(self, url: str) -> UniverseService:
+        return UniverseService(config=UniverseConfig(top_n=1), database_url=url)
+
+    def test_ingest_prices_persists_and_audits(
+        self, test_database_url: str
+    ) -> None:
+        service = self._service(test_database_url)
+        service.persist(service.build(_two_symbol_april(), "2026-04"))
+        service.persist(service.build(_two_symbol_may(), "2026-05"))
+        count = service.ingest_prices(
+            [PriceBar("BBBUSDT", APRIL_1 + dt.timedelta(days=offset), 20.0) for offset in range(30)]
+        )
+        assert count == 30
+        # BBB won April, lost May — a delisting — and has April closes, so the
+        # May window (April 1–30) reports it.
+        audits = service.survivorship_audit()
+        may = [a for a in audits if a.month == "2026-05"]
+        assert len(may) == 1
+        assert may[0].delisted_present == ("BBBUSDT",)
+
+    def test_price_history_window_query_through_the_service(
+        self, test_database_url: str
+    ) -> None:
+        service = self._service(test_database_url)
+        service.ingest_prices([PriceBar("BBBUSDT", APRIL_1, 20.0), PriceBar("AAAUSDT", APRIL_1, 10.0)])
+        assert service.price_history.symbols_in_window(
+            dt.date(2026, 4, 1), dt.date(2026, 4, 1)
+        ) == ("AAAUSDT", "BBBUSDT")
+
+    def test_render_report_through_the_service(
+        self, test_database_url: str
+    ) -> None:
+        service = self._service(test_database_url)
+        service.persist(service.build(_two_symbol_april(), "2026-04"))
+        service.persist(service.build(_two_symbol_may(), "2026-05"))
+        service.ingest_prices(
+            [PriceBar("BBBUSDT", APRIL_1 + dt.timedelta(days=offset), 20.0) for offset in range(30)]
+        )
+        (line,) = service.render_survivorship_report(months=["2026-05"])
+        assert line == "2026-05 [2026-04-01, 2026-04-30] delisted=1: BBBUSDT"
+
+
+def _two_symbol_april() -> list[DailyBar]:
+    # April's trailing window is March 2–31; BBB (100) outranks AAA (50) there,
+    # so top_n=1 admits BBB.
+    march_2 = dt.date(2026, 3, 2)
+    return [
+        DailyBar("BBBUSDT", march_2 + dt.timedelta(days=offset), 100.0)
+        for offset in range(30)
+    ] + [
+        DailyBar("AAAUSDT", march_2 + dt.timedelta(days=offset), 50.0)
+        for offset in range(30)
+    ]
+
+
+def _two_symbol_may() -> list[DailyBar]:
+    # May's trailing window is April 1–30; AAA (100) now outranks BBB (50).
+    return [
+        DailyBar("AAAUSDT", APRIL_1 + dt.timedelta(days=offset), 100.0)
+        for offset in range(30)
+    ] + [
+        DailyBar("BBBUSDT", APRIL_1 + dt.timedelta(days=offset), 50.0)
+        for offset in range(30)
+    ]

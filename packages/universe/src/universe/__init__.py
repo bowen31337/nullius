@@ -1,13 +1,15 @@
 """The tradable universe, as a workspace component.
 
 Features (app_spec.xml, "Universe & Survivorship Integrity", features 40,
-41 and 47): persist a monthly tradable universe computed as top-N by
+41, 43, 44 and 47): persist a monthly tradable universe computed as top-N by
 trailing 30-day median dollar volume, exclude symbols whose median falls
 below a configured liquidity floor — persisting each exclusion with its
-reason — and persist the point-in-time ``universe_membership`` rows
-``(symbol, valid_from, valid_to, delist_reason)`` those builds imply.
-docs/nullius-tech-architecture.md §4.3 fixes the definition; the module
-docstrings in this package record the mechanics.
+reason — persist the point-in-time ``universe_membership`` rows
+``(symbol, valid_from, valid_to, delist_reason)`` those builds imply, retain
+every symbol's daily price history so a delisted name still answers to any
+window covering its listed period, and audit each historical window for the
+delisted symbols still present in it. docs/nullius-tech-architecture.md §4.3
+fixes the definition; the module docstrings in this package record the mechanics.
 
 Two contract notes for anyone composing or extending this component:
 
@@ -31,8 +33,15 @@ with today's data.
 
 from app.module_loader import register
 
+from .audit import (
+    WindowAudit,
+    delisted_symbols,
+    render_report,
+    survivorship_audit,
+)
 from .bars import DailyBar, coerce_date
 from .config import UniverseConfig
+from .history import PriceBar, PriceHistoryStore
 from .monthly import (
     MonthlyUniverse,
     SkippedMonth,
@@ -52,8 +61,11 @@ from .service import UniverseService, build_universe_service
 from .store import (
     load_all_monthly_universes,
     load_monthly_universe,
+    load_survivorship_audit,
     load_universe_membership,
     persist_monthly_universe,
+    persist_price_history,
+    persist_survivorship_audit,
     persist_universe_membership,
 )
 
@@ -82,6 +94,17 @@ __all__ = [
     "load_monthly_universe",
     "load_all_monthly_universes",
     "load_universe_membership",
+    # Feature 43 — retain delisted symbols with their full price history
+    "PriceBar",
+    "PriceHistoryStore",
+    "persist_price_history",
+    # Feature 44 — the survivorship audit
+    "WindowAudit",
+    "delisted_symbols",
+    "survivorship_audit",
+    "render_report",
+    "persist_survivorship_audit",
+    "load_survivorship_audit",
 ]
 
 __version__ = "0.1.0"

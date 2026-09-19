@@ -40,12 +40,13 @@ contract.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from contextlib import closing
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 from urllib.parse import unquote, urlparse
 
 from .config import UniverseConfig
@@ -60,6 +61,9 @@ __all__ = [
     "load_monthly_universe",
     "load_all_monthly_universes",
     "load_universe_membership",
+    "persist_price_history",
+    "load_survivorship_audit",
+    "persist_survivorship_audit",
 ]
 
 DATABASE_URL_ENV = "DATABASE_URL"
@@ -118,6 +122,31 @@ CREATE TABLE IF NOT EXISTS universe_membership (
 );
 CREATE INDEX IF NOT EXISTS universe_membership_symbol_valid_from
     ON universe_membership (symbol, valid_from);
+
+-- Feature 43: the retained price history. One row per (symbol, date) — every
+-- symbol that ever had a bar, members and delisted names alike, so a window
+-- covering a symbol's listed period returns it whether or not it is still a
+-- member. Survivorship bias is pruned histories; this table is not pruned.
+CREATE TABLE IF NOT EXISTS universe_price_history (
+    symbol  TEXT NOT NULL,
+    date    DATE NOT NULL,  -- ISO date, the calendar day the bar covers
+    close   REAL NOT NULL,  -- the day's closing price in the quote asset
+    PRIMARY KEY (symbol, date)
+);
+CREATE INDEX IF NOT EXISTS universe_price_history_symbol_date
+    ON universe_price_history (symbol, date);
+
+-- Feature 44: the survivorship audit, derived from the builds and the price
+-- history. One row per month: how many (and which) symbols the universe has
+-- since dropped are still present in that month's window. Re-derived on ingest
+-- so it can never lag the history it summarises.
+CREATE TABLE IF NOT EXISTS universe_survivorship_audit (
+    month              TEXT PRIMARY KEY,  -- 'YYYY-MM'
+    window_start       DATE NOT NULL,     -- inclusive start of the build's trailing window
+    window_end         DATE NOT NULL,     -- inclusive end (day before the month starts)
+    delisted_present   INTEGER NOT NULL,  -- count of delisted symbols present in the window
+    delisted_symbols   JSON NOT NULL      -- JSON array of those symbols, sorted
+);
 """
 
 
@@ -493,6 +522,121 @@ def load_universe_membership(
             valid_from=date.fromisoformat(row[1]),
             valid_to=date.fromisoformat(row[2]) if row[2] else None,
             delist_reason=row[3],
+        )
+        for row in rows
+    )
+
+
+def persist_price_history(
+    bars: Iterable,
+    database_url: Optional[str] = None,
+) -> int:
+    """Upsert daily price bars into ``universe_price_history``; returns the count.
+
+    Feature 43's retention path: every bar is keyed by ``(symbol, date)`` and
+    upserted, so re-ingesting a restated day replaces its close in place rather
+    than duplicating it. The bars may be this member's :class:`~universe.history.PriceBar`
+    or anything with ``symbol``/``date``/``close`` attributes; they are read
+    positionally, so the store does not import the dataclass (the dataclass
+    validates; this writes).
+    """
+    rows = [(bar.symbol, bar.date.isoformat(), bar.close) for bar in bars]
+    with closing(connect(database_url)) as connection, connection:
+        connection.executemany(
+            """
+            INSERT INTO universe_price_history (symbol, date, close)
+            VALUES (?, ?, ?)
+            ON CONFLICT(symbol, date) DO UPDATE SET close = excluded.close
+            """,
+            rows,
+        )
+    return len(rows)
+
+
+def _recompute_survivorship_audit(
+    connection: sqlite3.Connection,
+    universes: Iterable,
+    intervals: Iterable[MembershipInterval],
+) -> int:
+    """Re-derive ``universe_survivorship_audit`` on an open ``connection``.
+
+    Called inside the ingest transaction, after the prices it summarises are
+    written, so the audit always sees the bars it was just handed. The table is
+    replaced wholesale (delete then insert), the same operation that cannot
+    leave a stale window behind that :func:`_recompute_membership` uses. The
+    per-window symbols come from the shared window query, so the audit and the
+    reader agree on what "present in a window" means. Returns the row count.
+    """
+    # Imported here, not at module top: history imports store, so a top-level
+    # import would be a cycle. Both are plain functions over a connection.
+    from .audit import survivorship_audit_on_connection
+
+    connection.execute("DELETE FROM universe_survivorship_audit")
+    audits = survivorship_audit_on_connection(connection, intervals, universes)
+    connection.executemany(
+        """
+        INSERT INTO universe_survivorship_audit
+            (month, window_start, window_end, delisted_present, delisted_symbols)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                audit.month,
+                audit.window_start.isoformat(),
+                audit.window_end.isoformat(),
+                audit.delisted_count,
+                json.dumps(audit.delisted_present),
+            )
+            for audit in audits
+        ],
+    )
+    return len(audits)
+
+
+def persist_survivorship_audit(
+    universes: Iterable,
+    intervals: Iterable[MembershipInterval],
+    database_url: Optional[str] = None,
+) -> int:
+    """Re-derive and replace the survivorship audit; returns the rows written.
+
+    Ingest re-derives the audit alongside the prices it summarises, so this
+    exists for the case with no ingest to hand: repairing a store whose audit
+    table was dropped, or a tool that restates prices or membership out of band.
+    Idempotent — running it twice leaves the same rows.
+    """
+    from .audit import survivorship_audit
+
+    with closing(connect(database_url)) as connection, connection:
+        return _recompute_survivorship_audit(connection, universes, intervals)
+
+
+def load_survivorship_audit(
+    database_url: Optional[str] = None,
+) -> tuple:
+    """Read the persisted survivorship audit, one :class:`~universe.audit.WindowAudit`
+    per month, oldest first.
+
+    Rows come back ordered by month — the derivation's own order — so a caller
+    comparing a loaded audit against a freshly derived one compares like with
+    like.
+    """
+    from .audit import WindowAudit
+
+    with closing(connect(database_url)) as connection:
+        rows = connection.execute(
+            """
+            SELECT month, window_start, window_end, delisted_present, delisted_symbols
+            FROM universe_survivorship_audit
+            ORDER BY month
+            """
+        ).fetchall()
+    return tuple(
+        WindowAudit(
+            month=row[0],
+            window_start=date.fromisoformat(row[1]),
+            window_end=date.fromisoformat(row[2]),
+            delisted_present=tuple(json.loads(row[4])),
         )
         for row in rows
     )

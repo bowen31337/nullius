@@ -24,8 +24,10 @@ import os
 from datetime import date, datetime
 from typing import Iterable, Optional
 
+from .audit import WindowAudit, render_report, survivorship_audit
 from .bars import DailyBar
 from .config import UniverseConfig
+from .history import PriceBar, PriceHistoryStore
 from .membership import MembershipInterval
 from .monthly import (
     MonthlyUniverse,
@@ -37,8 +39,11 @@ from .store import (
     DATABASE_URL_ENV,
     load_all_monthly_universes,
     load_monthly_universe,
+    load_survivorship_audit,
     load_universe_membership,
     persist_monthly_universe,
+    persist_price_history,
+    persist_survivorship_audit,
     persist_universe_membership,
 )
 
@@ -167,6 +172,93 @@ class UniverseService:
         return persist_universe_membership(
             database_url if database_url is not None else self.database_url
         )
+
+    @property
+    def price_history(self) -> PriceHistoryStore:
+        """The retained price history bound to this service's store (feature 43).
+
+        A fresh :class:`~universe.history.PriceHistoryStore` each access, routed
+        at the same database the builds and membership use, so a window query
+        and a build read one history. Thin facade: the store owns the queries.
+        """
+        return PriceHistoryStore(self.database_url)
+
+    def resolve(
+        self, when: str | date | datetime, database_url: Optional[str] = None
+    ) -> tuple[str, ...]:
+        """The symbols tradable as of ``when`` — membership resolved at a decision time.
+
+        Reads the point-in-time membership table and returns every interval
+        that covers ``when``, sorted. This is feature 43's "resolves membership
+        as of a decision time" and feature 42's intent, surfaced through the
+        same facade: a window built at ``t`` asks this, not the current roster,
+        so a symbol that has since left still answers when ``t`` was inside its
+        interval.
+        """
+        intervals = load_universe_membership(
+            database_url if database_url is not None else self.database_url
+        )
+        return tuple(
+            interval.symbol
+            for interval in intervals
+            if interval.covers(when)
+        )
+
+    def ingest_prices(
+        self, bars: Iterable[PriceBar], database_url: Optional[str] = None
+    ) -> int:
+        """Retain daily price bars for every symbol (feature 43); returns the count.
+
+        Re-ingesting a restated ``(symbol, date)`` replaces its close in place.
+        After the prices land, the survivorship audit is re-derived from the
+        full history and every build, so the audit never lags the prices it
+        summarises — the same in-transaction coupling :meth:`persist` gives
+        membership.
+        """
+        url = database_url if database_url is not None else self.database_url
+        count = persist_price_history(bars, url)
+        self._rederive_audit(url)
+        return count
+
+    def _rederive_audit(self, database_url: Optional[str]) -> int:
+        """Re-derive and persist the survivorship audit from builds + history."""
+        from .audit import survivorship_audit
+
+        universes = load_all_monthly_universes(database_url)
+        intervals = load_universe_membership(database_url)
+        return persist_survivorship_audit(
+            universes, intervals, database_url
+        )
+
+    def survivorship_audit(
+        self,
+        months: Optional[Iterable[str | date | datetime]] = None,
+        database_url: Optional[str] = None,
+    ) -> tuple[WindowAudit, ...]:
+        """The survivorship audit, one window per month (feature 44).
+
+        Reads the builds (which supply each window's bounds) and the membership
+        table (which supplies the delisted set) and crosses them with the
+        retained price history. With ``months`` given, only those months are
+        audited; omitted, it audits every persisted build, oldest first.
+        """
+        url = database_url if database_url is not None else self.database_url
+        universes = load_all_monthly_universes(url)
+        intervals = load_universe_membership(url)
+        if months is not None:
+            from .monthly import month_key
+
+            wanted = {month_key(month) for month in months}
+            universes = tuple(u for u in universes if u.month in wanted)
+        return survivorship_audit(self.price_history, intervals, universes, url)
+
+    def render_survivorship_report(
+        self,
+        months: Optional[Iterable[str | date | datetime]] = None,
+        database_url: Optional[str] = None,
+    ) -> tuple[str, ...]:
+        """The survivorship audit rendered as one line per window."""
+        return render_report(self.survivorship_audit(months, database_url))
 
 
 def build_universe_service() -> UniverseService:

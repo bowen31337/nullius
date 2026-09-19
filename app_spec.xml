@@ -214,9 +214,21 @@
       </feature>
       <feature index="43" shape="plugin" plugin="universe" depends_on="41">
         <description>System retains delisted symbols with their full price history, which returns them in any window covering their listed period</description>
+        <acceptance>
+          <bullet>System retains daily price bars for every symbol ingested, including symbols later removed from the universe, keyed by symbol and date</bullet>
+          <bullet>System returns every symbol that has a price bar inside a requested window, so a symbol delisted after the window still appears when the window covers its listed period</bullet>
+          <bullet>System returns a stable, sorted symbol ordering from every window query, so downstream reductions stay bit-reproducible</bullet>
+          <bullet>System resolves universe membership as of a requested decision time, which returns the symbols tradable then rather than now</bullet>
+        </acceptance>
       </feature>
       <feature index="44" shape="plugin" plugin="universe" depends_on="43">
         <description>System emits a survivorship audit report counting delisted symbols present in each historical window</description>
+        <acceptance>
+          <bullet>System counts, for each historical monthly window, the delisted symbols still present in the retained price history for that window</bullet>
+          <bullet>System lists the delisted symbols present per window, so an auditor reads which names a current-universe-only view would silently drop</bullet>
+          <bullet>System renders the audit as one line per window carrying the window bounds and the delisted-symbol count</bullet>
+          <bullet>System returns a non-zero delisted-symbol count across a period known to contain delistings, and zero across a period with none</bullet>
+        </acceptance>
       </feature>
       <feature index="45" shape="plugin" plugin="universe" depends_on="44">
         <description>System rejects a universe build whose delisted-symbol count is 0 across a period known to contain delistings</description>
@@ -423,7 +435,7 @@
         <description>System creates the regime_coverage table counting stored worlds per regime stratum</description>
       </feature>
       <feature index="108" shape="core" touches_files="migrations/versions/**">
-        <description>System creates the forward_record, promotion_registry, universe_membership and snapshot_manifest tables in one versioned migration</description>
+        <description>System creates the forward_record, promotion_registry, universe_membership, universe_price_history and universe_survivorship_audit tables in one versioned migration</description>
       </feature>
     </category>
 
@@ -1384,6 +1396,20 @@
         <column>valid_from DATE NOT NULL</column>
         <column>valid_to DATE</column>
         <column>delist_reason TEXT</column>
+      </table>
+      <table name="universe_price_history">
+        <column>symbol TEXT NOT NULL</column>
+        <column>date DATE NOT NULL</column>
+        <column>close REAL NOT NULL</column>
+        <column>PRIMARY KEY (symbol, date)</column>
+      </table>
+      <table name="universe_survivorship_audit">
+        <column>month TEXT NOT NULL</column>
+        <column>window_start DATE NOT NULL</column>
+        <column>window_end DATE NOT NULL</column>
+        <column>delisted_present INTEGER NOT NULL</column>
+        <column>delisted_symbols JSON NOT NULL</column>
+        <column>PRIMARY KEY (month)</column>
       </table>
       <table name="snapshot_manifest">
         <column>snapshot_hash CHAR(64) PRIMARY KEY</column>
