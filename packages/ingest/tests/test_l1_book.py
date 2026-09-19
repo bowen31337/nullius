@@ -71,9 +71,12 @@ def btc_snapshot(
         "ask": ask,
         "bidQty": bid_qty,
         "askQty": ask_qty,
-        # A real bookTicker carries an update id and an order id alongside the
-        # top of book; they are ignored, so a snapshot that carries them must
-        # still parse.
+        # The event time the snapshot is placed on the 1 second grid by.  Kept
+        # at T0 by default so a snapshot's window start is deterministic without
+        # depending on when the suite runs.  A real bookTicker carries an update
+        # id and an order id alongside the top of book; they are ignored, so a
+        # snapshot that carries them must still parse.
+        "E": 1_772_366_400_000,
         "updateId": 1234567890,
         "orderId": 9876543210,
     }
@@ -91,6 +94,7 @@ def eth_snapshot(
         "ask": ask,
         "bidQty": bid_qty,
         "askQty": ask_qty,
+        "E": 1_772_366_400_000,
     }
 
 
