@@ -40,6 +40,7 @@ The `ingest` workspace member: app_spec.xml feature 16 —
 | `nullius_ingest/watermark.py` | `SequenceStore` — the durable per-stream batch store feature 29 resumes from |
 | `nullius_ingest/staging.py` | `StagingArea` — the append-only staging area feature 28 writes into |
 | `nullius_ingest/schema.py` | `DeclaredSchema`, `ParquetBatch`, `SchemaDrift`, `SchemaValidatingWorker` — the feature 27 gate |
+| `nullius_ingest/gaps.py` | `GapDetector`, `GapDetected`, `GapEventLog` — the feature 25 gap detection |
 
 Stdlib-only by design, except `staging` (which resolves its lake root via
 the factory's `find_workspace_root`, as the snapshot member does); stream
@@ -109,6 +110,61 @@ drifted from the declared schema."* The gate is
 The gate needs no Parquet reader — it compares column sets, which is
 exactly what a footer exposes — so the member stays stdlib-only; the
 stream workers of features 17–24 feed it from their own readers.
+
+## Gap detection on reconnect (feature 25)
+
+§15's failure table names the feed-side failure this member must watch
+for — *"WS gap / reconnect | Sequence-number gap | REST backfill the
+gap before sealing the next snapshot"* — and feature 25 states the
+detection: *"System detects a websocket sequence-number gap on
+reconnect, which emits a gap_detected event naming the affected
+stream."* The watcher is `nullius_ingest/gaps.py`:
+
+- **A per-stream sequence watermark.** `GapDetector` holds the highest
+  sequence observed per stream class; each websocket feed numbers its
+  messages monotonically, so continuity is checkable — after `n`, the
+  feed owes `n + 1`. Workers call `observe(stream, sequence)` per
+  message and `reconnect(stream)` when the socket re-establishes.
+- **A jump emits one event.** A message arriving past the owed sequence
+  emits a `GapDetected` event naming that stream (and only that stream)
+  and the inclusive range it skipped, with `on_reconnect=True` when the
+  hole opened across the reconnect boundary. A skip within an open
+  connection is detected the same way, flagged `on_reconnect=False` — a
+  hole is a hole wherever it opened, and the backfill does not care
+  where.
+- **What is not a gap stays silent.** A stream's first-ever observation
+  (no baseline to gap against), a contiguous tail after reconnect
+  (nothing was lost), and a duplicate or replayed message (no forward
+  hole; the watermark never regresses).
+- **The event is emitted, not raised.** It is returned to the caller and
+  handed to the `on_event` sink wired at construction; the standard sink
+  is `GapEventLog`, a thread-safe append-only record (the supervisor
+  runs one thread per worker, so a shared log receives events from
+  several threads). Detection is *not* failure — §15's recovery is REST
+  backfill, not a halt — so the detecting cycle still succeeds, the
+  watermark advances past the hole (the tail after it is real data), and
+  the hole lives on in the log: the seam feature 26's backfill and seal
+  gate read.
+
+```python
+from nullius_ingest import GapDetector, GapEventLog
+
+log = GapEventLog()
+detector = GapDetector(on_event=log.record)
+
+detector.observe("aggTrades", 1)   # first ever — no baseline, no event
+detector.observe("aggTrades", 2)   # contiguous
+detector.reconnect("aggTrades")    # the socket dropped and returned
+detector.observe("aggTrades", 7)   # jumped 3..6 → gap_detected event
+
+log.events("aggTrades")[0].render()
+# 'gap_detected: aggTrades is missing sequences 3..6 (4 messages)
+#  detected on reconnect'
+```
+
+The module stays stdlib-only: watching integers go up needs no
+websocket client. The stream workers of features 17–24 own the
+connections and call `observe`/`reconnect` from their own readers.
 
 ## Adding a stream worker (features 17–29)
 

@@ -32,6 +32,11 @@ What lives where:
   staging area feature 28 writes into, and the write side of the seal
   boundary: staging is a sibling of ``snapshots/``, never on the
   evaluator mount path.
+* :mod:`nullius_ingest.gaps` — :class:`GapDetector`, the per-stream
+  sequence tracker that detects a websocket gap on reconnect and emits a
+  ``gap_detected`` event naming the affected stream (feature 25; §15's
+  "WS gap / reconnect" row), and the :class:`GapEventLog` the backfill
+  (feature 26) reads.
 
 The package self-registers with the application factory: scanning this
 workspace member runs this module, the ``@register`` decorator below
@@ -45,6 +50,7 @@ from __future__ import annotations
 
 from app.module_loader import register
 
+from .gaps import GAP_DETECTED_EVENT, GapDetected, GapDetector, GapEventLog
 from .registry import (
     WorkerFactory,
     WorkerRegistry,
@@ -78,11 +84,15 @@ from .worker import (
 )
 
 __all__ = [
+    "GAP_DETECTED_EVENT",
     "Batch",
     "ColumnSpec",
     "CycleResult",
     "DeclaredSchema",
     "FunctionWorker",
+    "GapDetected",
+    "GapDetector",
+    "GapEventLog",
     "InMemorySequenceStore",
     "IngestReport",
     "IngestSupervisor",
