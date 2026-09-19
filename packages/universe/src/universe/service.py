@@ -26,13 +26,21 @@ from typing import Iterable, Optional
 
 from .bars import DailyBar
 from .config import UniverseConfig
+from .membership import MembershipInterval
 from .monthly import (
     MonthlyUniverse,
     UniverseBuildResult,
     build_monthly_universe,
     build_monthly_universes,
 )
-from .store import DATABASE_URL_ENV, load_monthly_universe, persist_monthly_universe
+from .store import (
+    DATABASE_URL_ENV,
+    load_all_monthly_universes,
+    load_monthly_universe,
+    load_universe_membership,
+    persist_monthly_universe,
+    persist_universe_membership,
+)
 
 __all__ = ["UniverseService", "build_universe_service"]
 
@@ -126,6 +134,38 @@ class UniverseService:
         """Load a persisted build from this service's store (or an explicit one)."""
         return load_monthly_universe(
             month, database_url if database_url is not None else self.database_url
+        )
+
+    def load_all(self, database_url: Optional[str] = None) -> tuple[MonthlyUniverse, ...]:
+        """Load every persisted build, oldest first."""
+        return load_all_monthly_universes(
+            database_url if database_url is not None else self.database_url
+        )
+
+    def membership(
+        self, database_url: Optional[str] = None
+    ) -> tuple[MembershipInterval, ...]:
+        """Read the persisted point-in-time membership table (feature 41).
+
+        The rows are derived from the persisted builds, so reading the
+        table and re-deriving it from :meth:`load_all` give the same
+        answer — which is the property that makes the table safe for a
+        downstream replay to resolve against.
+        """
+        return load_universe_membership(
+            database_url if database_url is not None else self.database_url
+        )
+
+    def rebuild_membership(self, database_url: Optional[str] = None) -> int:
+        """Re-derive the membership table from the store's builds.
+
+        Every :meth:`persist` already does this; the method exists to
+        repair a store whose table was dropped or written by an older
+        version, and it is idempotent — running it twice leaves the same
+        rows.
+        """
+        return persist_universe_membership(
+            database_url if database_url is not None else self.database_url
         )
 
 

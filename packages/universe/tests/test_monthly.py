@@ -23,6 +23,7 @@ from universe import (
     median_dollar_volumes,
     month_key,
     month_start,
+    next_month_start,
 )
 
 APRIL_1 = dt.date(2026, 4, 1)
@@ -417,6 +418,14 @@ class TestMonthHelpers:
     def test_invalid_month_raises(self) -> None:
         with pytest.raises(ValueError):
             month_start("2026-13")
+
+    def test_next_month_start_steps_and_rolls_the_year(self) -> None:
+        # The membership table closes an interval on this date, so "the
+        # month after" must step one month and roll the year — a December
+        # interval ends in the following January, not in month 13.
+        assert next_month_start(dt.date(2026, 5, 1)) == dt.date(2026, 6, 1)
+        assert next_month_start(dt.date(2026, 12, 1)) == dt.date(2027, 1, 1)
+        assert next_month_start(dt.date(2026, 12, 31)) == dt.date(2027, 1, 1)
 
 
 class TestBatchSweep:

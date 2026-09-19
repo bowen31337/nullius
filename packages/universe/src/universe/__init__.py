@@ -1,9 +1,11 @@
 """The tradable universe, as a workspace component.
 
-Features (app_spec.xml, "Universe & Survivorship Integrity", features 40
-and 47): persist a monthly tradable universe computed as top-N by trailing
-30-day median dollar volume, and exclude symbols whose median falls below
-a configured liquidity floor — persisting each exclusion with its reason.
+Features (app_spec.xml, "Universe & Survivorship Integrity", features 40,
+41 and 47): persist a monthly tradable universe computed as top-N by
+trailing 30-day median dollar volume, exclude symbols whose median falls
+below a configured liquidity floor — persisting each exclusion with its
+reason — and persist the point-in-time ``universe_membership`` rows
+``(symbol, valid_from, valid_to, delist_reason)`` those builds imply.
 docs/nullius-tech-architecture.md §4.3 fixes the definition; the module
 docstrings in this package record the mechanics.
 
@@ -19,10 +21,12 @@ under the loader's scan-time name.
 *Point-in-time honesty.* The universe for a month is computed only from
 bars dated before that month begins, and what was computed is persisted
 with the window and config that produced it — including the floor-excluded
-symbols, whose absence is a recorded decision rather than a silence.
-Downstream members derive the interval-form membership table and the
-survivorship audit from these builds; nothing here may quietly rebuild
-history with today's data.
+symbols, whose absence is a recorded decision rather than a silence. The
+interval-form ``universe_membership`` table is derived from those persisted
+builds (see :mod:`universe.membership`) and re-derived on every persist, so
+the interval form can never disagree with the monthly facts; the
+survivorship audit reads both. Nothing here may quietly rebuild history
+with today's data.
 """
 
 from app.module_loader import register
@@ -41,9 +45,17 @@ from .monthly import (
     median_dollar_volumes,
     month_key,
     month_start,
+    next_month_start,
 )
+from .membership import MembershipInterval, membership_intervals
 from .service import UniverseService, build_universe_service
-from .store import load_monthly_universe, persist_monthly_universe
+from .store import (
+    load_all_monthly_universes,
+    load_monthly_universe,
+    load_universe_membership,
+    persist_monthly_universe,
+    persist_universe_membership,
+)
 
 __all__ = [
     "DailyBar",
@@ -53,6 +65,7 @@ __all__ = [
     "MonthlyUniverse",
     "UniverseBuildResult",
     "SkippedMonth",
+    "MembershipInterval",
     "UniverseService",
     "build_universe_service",
     "build_monthly_universe",
@@ -61,9 +74,14 @@ __all__ = [
     "floor_exclusion_reason",
     "month_key",
     "month_start",
+    "next_month_start",
     "coerce_date",
+    "membership_intervals",
     "persist_monthly_universe",
+    "persist_universe_membership",
     "load_monthly_universe",
+    "load_all_monthly_universes",
+    "load_universe_membership",
 ]
 
 __version__ = "0.1.0"

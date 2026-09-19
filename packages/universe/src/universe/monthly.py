@@ -56,6 +56,7 @@ __all__ = [
     "UniverseBuildResult",
     "month_key",
     "month_start",
+    "next_month_start",
     "median_dollar_volumes",
     "floor_exclusion_reason",
     "build_monthly_universe",
@@ -94,7 +95,14 @@ def month_key(value: "str | dt.date | dt.datetime") -> str:
     return f"{start.year:04d}-{start.month:02d}"
 
 
-def _next_month_start(start: dt.date) -> dt.date:
+def next_month_start(start: dt.date) -> dt.date:
+    """The first day of the calendar month after ``start``.
+
+    Public because it is the rule that ends a membership interval as well as
+    the sweep's step: an interval closes on the first day of the month whose
+    build stopped admitting the symbol (:mod:`universe.membership`), and
+    "the month after" must mean one thing across both.
+    """
     # December rolls the year; no calendar library needed for one step.
     return dt.date(start.year + (start.month == 12), start.month % 12 + 1, 1)
 
@@ -104,7 +112,7 @@ def _iter_month_starts(first: dt.date, last: dt.date) -> Iterator[dt.date]:
     end = month_start(last)
     while cursor <= end:
         yield cursor
-        cursor = _next_month_start(cursor)
+        cursor = next_month_start(cursor)
 
 
 def _window_bounds(effective_from: dt.date, window_days: int) -> tuple[dt.date, dt.date]:

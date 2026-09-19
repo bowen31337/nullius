@@ -8,17 +8,26 @@ universe that exists only in memory is a universe a replay cannot trust.
 
 Storage is the relational store addressed by ``DATABASE_URL`` (SQLite on a
 single machine, per the spec's dev allowance; Postgres 16 in production).
-This member owns three tables and creates them idempotently — deliberately
-*not* the spec's ``universe_membership`` table, which the versioned
-migration owns and which carries the derived interval form ``(symbol,
-valid_from, valid_to, delist_reason)``. The builds here are the raw
-material: one row per month vouching for the exact window and config used
-(including the liquidity floor), one row per admitted symbol with its rank
-and its median dollar volume, and one row per floor-refused symbol with
-the rejected median and the persisted exclusion reason — the difference
-between "out-ranked" and "not liquid enough" is exactly what an audit
-later needs to read off the store, and neither fact may be recomputed
+This member owns four tables and creates them idempotently. Three hold the
+raw material: one row per month vouching for the exact window and config
+used (including the liquidity floor), one row per admitted symbol with its
+rank and its median dollar volume, and one row per floor-refused symbol
+with the rejected median and the persisted exclusion reason — the
+difference between "out-ranked" and "not liquid enough" is exactly what an
+audit later needs to read off the store, and neither fact may be recomputed
 from today's data.
+
+The fourth is ``universe_membership`` — the point-in-time
+``(symbol, valid_from, valid_to, delist_reason)`` table of architecture
+§4.3, whose shape the spec's schema block fixes and whose versioned
+migration (feature 108) creates. It is *derived* here, never authored:
+every persist re-derives the whole table from the builds inside the same
+transaction, so the interval form and the monthly builds can never
+disagree, and a corrected or backfilled month is reflected in membership
+the moment it lands — the append-only alternative would let a restated
+month leave a stale interval behind for a later replay to trust. The
+derivation itself lives in :mod:`universe.membership` and is a pure
+function of the builds, so the same month is reachable by re-running it.
 
 Rebuilding a month is an atomic replace: the build row is upserted and the
 member and exclusion rows are deleted and re-inserted in one transaction,
@@ -40,16 +49,29 @@ from typing import Optional
 from urllib.parse import unquote, urlparse
 
 from .config import UniverseConfig
+from .membership import MembershipInterval, membership_intervals
 from .monthly import MonthlyUniverse, UniverseExclusion, UniverseMember, month_key
 
 __all__ = [
     "DATABASE_URL_ENV",
     "connect",
     "persist_monthly_universe",
+    "persist_universe_membership",
     "load_monthly_universe",
+    "load_all_monthly_universes",
+    "load_universe_membership",
 ]
 
 DATABASE_URL_ENV = "DATABASE_URL"
+
+# The build row's columns, in the order _build_from_rows unpacks them. Kept
+# as one string so the single-month reader and the all-builds reader cannot
+# drift apart in column order — the failure that would silently swap a
+# window bound for a config knob.
+_BUILD_COLUMNS = (
+    "month, effective_from, window_start, window_end, "
+    "top_n, window_days, min_observations, min_dollar_volume"
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS universe_monthly_build (
@@ -83,6 +105,19 @@ CREATE TABLE IF NOT EXISTS universe_monthly_exclusion (
     reason               TEXT NOT NULL,  -- the persisted exclusion reason (canonical text)
     PRIMARY KEY (month, symbol)
 );
+
+-- The point-in-time membership table of architecture §4.3, in the shape the
+-- spec's schema block fixes: (symbol, valid_from, valid_to, delist_reason).
+-- Derived from the monthly builds on every persist; see module docstring.
+CREATE TABLE IF NOT EXISTS universe_membership (
+    symbol        TEXT NOT NULL,
+    valid_from    DATE NOT NULL,  -- inclusive: first day of the first admitted month
+    valid_to      DATE,           -- exclusive; NULL while the interval is open
+    delist_reason TEXT,           -- NULL exactly while the interval is open
+    PRIMARY KEY (symbol, valid_from)
+);
+CREATE INDEX IF NOT EXISTS universe_membership_symbol_valid_from
+    ON universe_membership (symbol, valid_from);
 """
 
 
@@ -168,6 +203,13 @@ def persist_monthly_universe(
     the exclusions, all inside one transaction) — a symbol that rose above
     the floor leaves no stale exclusion behind, and one that fell below
     gains its exclusion in the same rebuild.
+
+    The point-in-time ``universe_membership`` table (feature 41) is
+    re-derived from the builds inside that same transaction, so a persist
+    never leaves the interval form lagging behind the monthly facts it is
+    derived from. A symbol admitted by this build gains its interval here;
+    a symbol this build dropped has its interval closed, with the reason
+    this build supplies.
     """
     cfg = universe.config
     computed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -238,7 +280,41 @@ def persist_monthly_universe(
                 for exclusion in universe.exclusions
             ],
         )
+        _recompute_membership(connection)
     return len(universe.members)
+
+
+def _build_from_rows(
+    build_row: tuple,
+    member_rows: list[tuple],
+    exclusion_rows: list[tuple],
+) -> MonthlyUniverse:
+    """Map one build's persisted rows back to a :class:`MonthlyUniverse`.
+
+    The single row-to-value mapping in this module: both readers go through
+    it, so a column added to the build table is decoded in exactly one
+    place. ``build_row`` is in ``_BUILD_COLUMNS`` order.
+    """
+    return MonthlyUniverse(
+        month=build_row[0],
+        effective_from=date.fromisoformat(build_row[1]),
+        window_start=date.fromisoformat(build_row[2]),
+        window_end=date.fromisoformat(build_row[3]),
+        config=UniverseConfig(
+            top_n=build_row[4],
+            window_days=build_row[5],
+            min_observations=build_row[6],
+            min_dollar_volume=build_row[7],
+        ),
+        members=tuple(
+            UniverseMember(symbol=row[0], rank=row[1], median_dollar_volume=row[2])
+            for row in member_rows
+        ),
+        exclusions=tuple(
+            UniverseExclusion(symbol=row[0], median_dollar_volume=row[1], reason=row[2])
+            for row in exclusion_rows
+        ),
+    )
 
 
 def load_monthly_universe(
@@ -255,11 +331,7 @@ def load_monthly_universe(
     month_text = month_key(month)
     with closing(connect(database_url)) as connection:
         build_row = connection.execute(
-            """
-            SELECT month, effective_from, window_start, window_end,
-                   top_n, window_days, min_observations, min_dollar_volume
-            FROM universe_monthly_build WHERE month = ?
-            """,
+            f"SELECT {_BUILD_COLUMNS} FROM universe_monthly_build WHERE month = ?",
             (month_text,),
         ).fetchone()
         if build_row is None:
@@ -280,23 +352,147 @@ def load_monthly_universe(
             """,
             (month_text,),
         ).fetchall()
-    return MonthlyUniverse(
-        month=build_row[0],
-        effective_from=date.fromisoformat(build_row[1]),
-        window_start=date.fromisoformat(build_row[2]),
-        window_end=date.fromisoformat(build_row[3]),
-        config=UniverseConfig(
-            top_n=build_row[4],
-            window_days=build_row[5],
-            min_observations=build_row[6],
-            min_dollar_volume=build_row[7],
-        ),
-        members=tuple(
-            UniverseMember(symbol=row[0], rank=row[1], median_dollar_volume=row[2])
-            for row in member_rows
-        ),
-        exclusions=tuple(
-            UniverseExclusion(symbol=row[0], median_dollar_volume=row[1], reason=row[2])
-            for row in exclusion_rows
-        ),
+    return _build_from_rows(build_row, member_rows, exclusion_rows)
+
+
+def load_all_monthly_universes(
+    database_url: Optional[str] = None,
+) -> tuple[MonthlyUniverse, ...]:
+    """Every persisted build, oldest month first.
+
+    The membership derivation is a function of the whole build history, so
+    it needs the whole history in hand; this is the reader that supplies
+    it. Loading each build through :func:`load_monthly_universe` keeps one
+    row-to-value mapping in the codebase rather than two that could drift.
+    """
+    with closing(connect(database_url)) as connection:
+        months = [
+            row[0]
+            for row in connection.execute(
+                "SELECT month FROM universe_monthly_build ORDER BY month"
+            ).fetchall()
+        ]
+    return tuple(
+        universe
+        for universe in (
+            load_monthly_universe(month, database_url) for month in months
+        )
+        if universe is not None
+    )
+
+
+def _recompute_membership(connection: sqlite3.Connection) -> int:
+    """Re-derive ``universe_membership`` from the builds on ``connection``.
+
+    Called inside the persist transaction, after the month's own rows are
+    written, so the derivation always sees the build it was just handed.
+    The table is replaced wholesale (delete then insert) rather than
+    patched: an interval's end can move when a later month is built or an
+    earlier one is restated, and a wholesale replace is the one operation
+    that cannot leave a stale interval behind. Returns the row count.
+
+    Ordering is the derivation's own — ``(valid_from, symbol)`` — so the
+    rows land identically for identical builds.
+    """
+    connection.execute("DELETE FROM universe_membership")
+    intervals = membership_intervals(_load_builds_on(connection))
+    connection.executemany(
+        """
+        INSERT INTO universe_membership (
+            symbol, valid_from, valid_to, delist_reason
+        ) VALUES (?, ?, ?, ?)
+        """,
+        [
+            (
+                interval.symbol,
+                interval.valid_from.isoformat(),
+                interval.valid_to.isoformat() if interval.valid_to else None,
+                interval.delist_reason,
+            )
+            for interval in intervals
+        ],
+    )
+    return len(intervals)
+
+
+def _load_builds_on(connection: sqlite3.Connection) -> tuple[MonthlyUniverse, ...]:
+    """Read every build on an open ``connection``, oldest month first.
+
+    The in-transaction twin of :func:`load_all_monthly_universes` — it must
+    see the uncommitted row the caller just wrote, so it cannot open its
+    own connection.
+    """
+    months = [
+        row[0]
+        for row in connection.execute(
+            "SELECT month FROM universe_monthly_build ORDER BY month"
+        ).fetchall()
+    ]
+    builds: list[MonthlyUniverse] = []
+    for month in months:
+        build_row = connection.execute(
+            f"SELECT {_BUILD_COLUMNS} FROM universe_monthly_build WHERE month = ?",
+            (month,),
+        ).fetchone()
+        if build_row is None:  # pragma: no cover - read back inside one txn
+            continue
+        builds.append(
+            _build_from_rows(
+                build_row,
+                connection.execute(
+                    """
+                    SELECT symbol, rank, median_dollar_volume
+                    FROM universe_monthly_member WHERE month = ? ORDER BY rank
+                    """,
+                    (month,),
+                ).fetchall(),
+                connection.execute(
+                    """
+                    SELECT symbol, median_dollar_volume, reason
+                    FROM universe_monthly_exclusion WHERE month = ? ORDER BY symbol
+                    """,
+                    (month,),
+                ).fetchall(),
+            )
+        )
+    return tuple(builds)
+
+
+def persist_universe_membership(database_url: Optional[str] = None) -> int:
+    """Re-derive and replace the membership table; returns the rows written.
+
+    :func:`persist_monthly_universe` already does this on every build, so
+    this exists for the two cases that have no build to hand: repairing a
+    store whose membership table was dropped or written by an older
+    version, and the tests that assert the derivation is reproducible.
+    """
+    with closing(connect(database_url)) as connection, connection:
+        return _recompute_membership(connection)
+
+
+def load_universe_membership(
+    database_url: Optional[str] = None,
+) -> tuple[MembershipInterval, ...]:
+    """Read the persisted point-in-time membership table, ordered by date.
+
+    Rows come back ordered by ``(valid_from, symbol)`` — the derivation's
+    own order — so a caller comparing a loaded table against a freshly
+    derived one compares like with like.
+    """
+    with closing(connect(database_url)) as connection:
+        rows = connection.execute(
+            """
+            SELECT symbol, valid_from, valid_to, delist_reason
+            FROM universe_membership
+            ORDER BY valid_from, symbol
+            """
+        ).fetchall()
+    return tuple(
+        MembershipInterval(
+            symbol=row[0],
+            valid_from=date.fromisoformat(row[1]),
+            valid_to=date.fromisoformat(row[2]) if row[2] else None,
+            delist_reason=row[3],
+        )
+        for row in rows
     )
