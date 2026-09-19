@@ -727,6 +727,149 @@ class MarketWindow(metaclass=_EnforceNoTimestampAccessor):
             frame = frame.slice(offset, rows)
         return pl.from_arrow(frame)
 
+    def bookfeat(
+        self,
+        name: str,
+        lookback: Optional[int] = None,
+    ):
+        """One derived order-book feature's rows, at 1 second resolution.
+
+        app_spec.xml feature 7: *System exposes MarketWindow.bookfeat by
+        feature name, which returns derived order-book features at 1 second
+        resolution.*  §5.1 declares it as
+        ``bookfeat(name: str, lookback: int) -> pl.DataFrame``.  The rows are
+        the derived tier §4.1's L2 retention decision exists to keep — depth
+        at 5/10/25/50 bps each side, microprice, spread, OFI over several
+        windows, cancel/replace rate, trade-size moments — persisted
+        permanently at 1s resolution from the raw diffs the rolling 90-day
+        window retains, and carried by the sealed snapshot's ``bookfeat/``
+        partitions (§4.2), which is what a host materialized into this
+        window's frames.
+
+        **"By feature name" is an address, not a search.**  The name selects
+        one frame, ``bookfeat:<name>`` (see
+        :func:`contract.bookfeat.bookfeat_frame_name`), and the lookup is
+        exact: no prefix match, no nearest name, no fallback.  A window that
+        carries ``"depth"`` answers ``bookfeat("microprice")`` with an
+        **empty** DataFrame, not with the depth ladder's rows — a miss is
+        reported as nothing, which is the safe direction, because an empty
+        frame cannot leak another feature's numbers while a substituted one
+        silently would.  Use :func:`contract.bookfeat.bookfeat_frame_names`
+        over :attr:`frames` to see which features a window actually carries,
+        so a miss is distinguishable from a typo.
+
+        The name is free-form rather than a closed vocabulary, because the
+        derived tier is the part of §4.1 that grows: the depth ladder was
+        feature 20, microstructure feature 21, trade flow feature 22, and
+        the next family is a name this contract refuses to enumerate ahead
+        of.  The component discipline (non-empty, unpadded, separator- and
+        path-free) is :meth:`feature`'s, applied to the one component this
+        address has.
+
+        **No version, because the derived tier has none to address.**  §4.4's
+        ``feature_version`` belongs to the Z0 feature store's base features —
+        "a changed definition gets a new ``feature_version``; it never
+        overwrites" — while the derived book tier is a §4.1 *stream*: an
+        append-only log the ingest workers persist by sequence, whose
+        revision story is the raw window itself (a revised definition
+        backfills from the 90 days of raw diffs and accumulates forward, the
+        constraint §4.1 accepts as honest).  The signature §5.1 declares
+        here takes a name and a lookback, and no version — so neither does
+        the frame name.  The namespaces cannot collide: a feature frame
+        always spells ``feature:<name>:<version>`` (three parts), a bookfeat
+        frame always spells two, and this accessor never reads a base
+        feature's rows any more than :meth:`feature` returns the derived
+        tier's.
+
+        Parameters
+        ----------
+        name:
+            The derived feature's name (``"depth"``, ``"microstructure"``,
+            ``"trade_flow"``, … — whatever family the host materialized), a
+            non-empty, unpadded string free of ``:`` and path separators —
+            see :func:`contract.bookfeat.bookfeat_frame_name` for why the
+            separator is refused rather than escaped.
+        lookback:
+            ``None`` (the default) for every row the window carries, or a
+            non-negative ``int`` for the trailing ``lookback`` of them —
+            rows, counted across the whole frame, so a lookback over a
+            per-symbol-per-second frame spans whole seconds (the recent end
+            is the one a 1s-resolution feature means).  The same discipline
+            :meth:`feature` and :meth:`borrow` apply, via
+            :func:`contract.bookfeat.validate_bookfeat_lookback`.
+
+        Returns
+        -------
+        polars.DataFrame
+            The named feature's rows as carried by this window, converted
+            from the stored Arrow table (zero-copy).  A window that carries
+            no frame under the name returns a frame with *no columns*
+            (``shape == (0, 0)``) — the miss, reported as nothing rather
+            than as a substitute frame; a present frame read with
+            ``lookback=0`` or against an empty frame returns *0 rows with
+            the frame's columns* (``shape == (0, n)``).  So the columns say
+            whether the feature was there at all, exactly as :meth:`feature`
+            and :meth:`borrow` do.
+
+            Each row is one symbol's features for one closed 1 second
+            window, stamped ``window_start`` on the exact 1s lattice the
+            ingest tier floors onto — the resolution is a fact about the
+            stream, and the values come back as the host carried them: the
+            derived tier's canonical fixed-point spellings (``"100.5000"``,
+            not ``100.5``) pass through verbatim, never re-rendered into a
+            float whose rounding an audit could not tell from the
+            computation's own.
+
+        Raises
+        ------
+        BookfeatAccessError
+            A malformed ``name`` or ``lookback`` — the *request* was
+            invalid — or a present bookfeat frame missing a required column
+            (the host materialized something that is not 1 second
+            resolution rows under the feature's name).  The *absence* of the
+            frame is neither: that is the empty answer above.
+
+        Note the signature: no parameter reads as a timestamp, which is
+        feature 10's requirement and the reason this accessor can exist at
+        all.  ``name`` names a *feature* and ``lookback`` an amount of
+        *data*, neither an instant — a caller cannot pass a time here, so
+        no caller can widen the window through this method; it can only
+        ever return a subset of the rows the window was sliced to contain,
+        every one of them a second ``t`` has already closed.
+        """
+        from .bookfeat import (
+            check_bookfeat_frame,
+            select_bookfeat_frame,
+            validate_bookfeat_lookback,
+        )
+        from .features import require_polars
+
+        # Validated before the mapping is consulted, so a malformed request is
+        # reported as such even against a window carrying nothing — the same
+        # ordering discipline :meth:`feature` and :meth:`borrow` apply.
+        rows = validate_bookfeat_lookback(lookback)
+        # An exact match on the feature's own name: never the ``feature:``
+        # namespace, never a neighbouring name, never a fallback.
+        frame = select_bookfeat_frame(self._frames, name)
+        pl = require_polars()
+        if frame is None:
+            # The window carries no rows under this name.  An empty frame is
+            # the honest answer and the safe one: it cannot be mistaken for
+            # another feature's rows the way a substitute could.
+            return pl.DataFrame()
+        # The frame is present, so the accessor's row promise is checkable —
+        # and checked before any slicing, so a frame that is not 1 second
+        # resolution rows is refused however much of it the caller asked for.
+        check_bookfeat_frame(frame)
+        if rows is not None:
+            # The *trailing* slice, on the same terms as :meth:`feature`: the
+            # recent end of an oldest-first frame — the seconds nearest the
+            # decision time — with an over-long lookback reading as the whole
+            # frame rather than as "no data".
+            offset = max(frame.num_rows - rows, 0)
+            frame = frame.slice(offset, rows)
+        return pl.from_arrow(frame)
+
     def to_arrow(self):
         """Serialize this window to an Arrow IPC payload (feature 14).
 

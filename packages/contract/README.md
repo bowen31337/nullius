@@ -331,6 +331,93 @@ every accessor.  Note the signature: `borrow(self, lookback=None)` has no
 parameter that reads as a timestamp (feature 10) — the 60-second cadence
 behind the rows is a fact about the stream, not a clock this method reads.
 
+## `bookfeat(name, lookback)` — derived order-book features at 1s (feature 7)
+
+§5.1 declares `bookfeat(self, name: str, lookback: int) -> pl.DataFrame`,
+and §4.1 fixes the tier behind it — the *derived* half of the L2 retention
+decision: raw diffs roll away after a rolling 90 days, while the book
+features they were folded into are persisted permanently at 1s resolution.
+The families §4.1 names (depth at 5/10/25/50 bps each side, microprice,
+spread, OFI over several windows, cancel/replace rate, trade-size moments)
+are the rows this accessor hands a signal, one row per symbol per closed
+second, carried by the sealed snapshot's `bookfeat/` partitions.
+
+```python
+from contract import MarketWindow, bookfeat_frame_name
+
+window = MarketWindow(
+    t="2026-09-01T12:00:00+00:00",
+    universe=("BTCUSDT", "ETHUSDT"),
+    frames={
+        bookfeat_frame_name("depth"): depth_table,   # symbol, window_start, ladder
+        bookfeat_frame_name("microprice"): micro_table,
+        "bars": bars_table,                          # the window's other frames
+    },
+)
+
+window.bookfeat("depth")               # every depth row the window carries
+window.bookfeat("depth", lookback=120) # the trailing 120 rows — whole seconds
+window.bookfeat("depth", lookback=0)   # 0 rows, with the frame's columns
+```
+
+**"By feature name" is an address, not a search.**  The name selects one
+frame, `bookfeat:<name>`, and the lookup is exact: no prefix match, no
+nearest name, no fallback — a window carrying `"depth"` answers
+`bookfeat("microprice")` with an empty `DataFrame`, never with the ladder's
+rows.  The name is free-form rather than a closed vocabulary, because the
+derived tier is the part of §4.1 that grows: the ladder was feature 20,
+microstructure feature 21, trade flow feature 22, and the next family is a
+name this contract refuses to enumerate ahead of.  The component discipline
+(non-empty, unpadded, separator- and path-free) is `feature`'s, applied to
+the one component this address has; `bookfeat_frame_names(window.frames)`
+enumerates what a window carries, so a miss is distinguishable from a typo.
+
+**No version, because the derived tier has none to address.**  §4.4's
+`feature_version` belongs to the Z0 feature store's base features; the
+derived book tier is a §4.1 *stream* — an append-only log the ingest
+workers persist by sequence, whose revision story is the raw window itself
+(a revised definition backfills from the 90 days of raw diffs and
+accumulates forward, the constraint §4.1 accepts as honest).  The signature
+§5.1 declares takes a name and a lookback and no version, and so does the
+frame name.  The namespaces cannot collide: a feature frame always spells
+`feature:<name>:<version>` (three parts), a bookfeat frame always spells
+two, and `bookfeat()` never reads a base feature's rows any more than
+`feature()` returns the derived tier's.
+
+**The promise is about rows, so it is checked.**  Feature 7 says "1 second
+resolution rows", and every family in the tier shares the two columns that
+promise is checkable over: a present bookfeat frame must carry `symbol`
+and `window_start` — one row per symbol per closed 1 second window, the
+newest second at most the decision time's own.  A frame missing either is
+refused with a `BookfeatAccessError` naming what is missing, whatever the
+lookback; everything else — the ladder's bands, the reference price, each
+family's own value columns — passes through untouched, and column *types*
+are the host's: the derived tier's canonical fixed-point spellings
+(`"100.5000"`, not `100.5`) come back verbatim, never re-rendered.
+
+**A miss is an empty frame, never a substitute.**  A window carrying no
+frame under the name answers with an empty `DataFrame` (no columns, so the
+miss is distinguishable from an empty read the same way features 8 and 9's
+are).  An empty answer cannot leak a wrong number; a "helpful" fallback to
+the nearest name silently would.
+
+**`lookback` is the shared discipline.**  `None` (the default) returns every
+row the window carries; a non-negative `int` returns the *last* N rows,
+counted across the whole frame — over a per-symbol-per-second frame that
+spans whole seconds, which is the recent end a 1 second resolution feature
+means.  A count larger than the frame returns the whole frame; `0` returns
+0 rows *with* the frame's columns; a negative count or a `bool` is refused,
+as `BookfeatAccessError`, even against a window carrying nothing — a caller
+bug never reads as a data gap.
+
+The naming, row-shape and lookback core lives in `contract/bookfeat.py`,
+which is **stdlib-only**: polars is reached once per call, on the same lazy
+seam as every accessor.  Note the signature:
+`bookfeat(self, name, lookback=None)` has no parameter that reads as a
+timestamp (feature 10) — `name` names a feature and `lookback` an amount of
+data, neither an instant, and the 1 second resolution behind the rows is a
+fact about the stream, not a clock this method reads.
+
 ## The ABI record
 
 Importing the package registers a builder with the application factory
@@ -644,6 +731,33 @@ empty window, and the refusal is `BorrowAccessError` — this accessor's own, no
 over the same domain as `validate_lookback`), that the rows survive the feature
 14 payload channel verbatim, and that the new accessor still takes no timestamp
 parameter (feature 10).
+
+Feature 7 is pinned by `test_market_window_bookfeat.py`, in five halves: that
+the rows are *that feature's rows* (read from the exact `bookfeat:<name>`
+address, returned verbatim — the derived tier's canonical fixed-point spellings
+come back as persisted, every row stamped with its closed `window_start`, each
+family's own value columns pass through, and the accessor never reaches into
+the `feature:` namespace, the observed borrow stream, or a *neighbouring*
+family's frame — in both directions); that the *row promise is kept or refused*
+(a present frame missing `symbol` or `window_start` raises `BookfeatAccessError`
+naming the missing columns, whatever the lookback, while a frame of only the
+required columns is answerable); that a *miss is empty, never a substitute* (a
+window with no frame under the name answers `(0, 0)`, distinguishable by
+columns from an empty read, and a miss's column raises rather than handing back
+a silent zero); that the *lookback is the shared discipline* (`None`/trailing/
+over-long/`0` on the same terms as `feature` and `borrow` — the trailing count
+spanning whole seconds over a per-symbol-per-second frame — negative and `bool`
+and non-int and malformed *names* refused even against an empty window, and the
+refusal is `BookfeatAccessError`, this accessor's own); and that the *name is a
+validated component whose encoding round-trips* (`bookfeat_frame_name` and its
+parser are inverses, the separator and path separators are refused so the
+encoding stays injective, the parser refuses every foreign frame name, and
+`bookfeat_frame_names` enumerates only the bookfeat frames a window carries,
+sorted). It also pins the pure core (`check_bookfeat_frame` over both column
+spellings, `validate_bookfeat_lookback` over the same domain as
+`validate_lookback`), that the rows survive the feature 14 payload channel
+verbatim, and that the new accessor still takes no timestamp parameter
+(feature 10).
 
 Feature 15 is pinned by `test_contract_version.py`: that the stamp resolves to
 the ABI it declares (rather than being a bare string), the persist/read round
