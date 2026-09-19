@@ -140,7 +140,7 @@ and otherwise returns the accessor names:
 ```python
 from contract import inspect_accessors
 
-inspect_accessors()   # ('feature', 'frames', 't', 'to_arrow', 'universe') — none takes a time
+inspect_accessors()   # ('borrow', 'feature', 'frames', 't', 'to_arrow', 'universe') — none takes a time
 ```
 
 The check is over the *class*, so one inspection covers every window that will
@@ -250,6 +250,86 @@ Note the signature: `feature(self, name, version, lookback=None)` has no
 parameter that reads as a timestamp, which is feature 10's requirement — this
 accessor can only ever return a *subset* of the rows the window was sliced to
 contain, never a row past `t`.
+
+## `borrow(lookback)` — the margin borrow rate rows (feature 8)
+
+§5.1 declares `borrow(self, lookback: int) -> pl.DataFrame`, §4.1 fixes the
+stream behind it — `Funding / borrow rate | REST | 1m | forever`, the
+60-second poll feature 23 ingests — and the PRD names the use: margin borrow
+rate *"is a real-time crowding indicator that substitutes for paid
+short-interest data."*  A rising borrow rate means borrowing to short is
+getting more expensive, which means short interest is building — the crowding
+quantity a signal conditions on, observed from the free margin API.  Because
+the stream is polled every 60 seconds, the newest row a window carries is at
+most about one poll interval older than `t`: as fresh as the sealed lake can
+be at the decision instant, which is what makes the series a *real-time*
+proxy.
+
+```python
+from contract import BORROW_FRAME_NAME, MarketWindow
+
+window = MarketWindow(
+    t="2026-09-01T12:00:00+00:00",
+    universe=("BTCUSDT", "ETHUSDT"),
+    frames={
+        BORROW_FRAME_NAME: borrow_table,   # symbol, borrow_rate, … per poll
+        "bars": bars_table,                # the window's other frames
+    },
+)
+
+window.borrow()               # every borrow row the window carries
+window.borrow(lookback=120)   # the trailing 120 rows — the recent polls
+window.borrow(lookback=0)     # 0 rows, with the frame's columns
+```
+
+**The frame name is fixed, not versioned.**  Feature 9's frames are named
+`feature:<name>:<version>` because a *computed* feature's identity includes
+its definition's version (§4.4).  A margin borrow rate is not a computed
+feature; it is an observation of what the venue quoted at an instant, and an
+observation has no definition to revise — so there is no version component to
+address.  The frame name is the stream's own name, `BORROW_FRAME_NAME`
+(`"borrow"`), exported so the host materializing a window and the accessor
+reading one share one spelling.  The two namespaces cannot collide: a frame
+literally named `feature:borrow:1` is feature 9's address for a *computed*
+feature called "borrow", which `borrow()` never reads — and `feature()` never
+returns the observed stream's rows.
+
+**The promise is about rows, so it is checked.**  Feature 8 says "returns
+margin borrow rate *rows*", and a signal author reading this contract is
+entitled to know the frame holds a `symbol` and a `borrow_rate` column before
+computing on them.  A present borrow frame missing either required column is
+refused with a `BorrowAccessError` naming what is missing — a loud failure at
+the accessor rather than a `ColumnNotFoundError` three frames inside the
+signal.  The check is deliberately minimal: anything further — `utilization`,
+`funding_rate`, the conventional `reading_time` — passes through untouched,
+because the crowding proxy legitimately reads those and the contract has no
+reason to forbid what it cannot promise.  Column *types* are the host's: the
+ingest side keeps the venue's own string spelling verbatim (`"0.0001"`, not
+`0.0001`), and the accessor returns whatever it was handed rather than
+re-rendering it — a rounding introduced here would be indistinguishable from
+the venue's own in an audit.
+
+**A miss is an empty frame, never a substitute.**  A window carrying no
+borrow frame — the host materialized nothing for this stream, or the poll had
+not run at `t` — answers with an empty `DataFrame` (no columns, so the miss is
+distinguishable from an empty read the same way feature 9's are).  An empty
+answer cannot leak a wrong number; a "helpful" fallback to another frame
+silently would.
+
+**`lookback` is the shared discipline.**  `None` (the default) returns every
+row the window carries; a non-negative `int` returns the *last* N rows,
+counted across the whole frame — over a per-symbol-per-poll frame that spans
+whole polls, which is the recent end a crowding proxy means.  A count larger
+than the frame returns the whole frame; `0` returns 0 rows *with* the
+frame's columns; a negative count or a `bool` is refused, as
+`BorrowAccessError`, even against a window carrying nothing — a caller bug
+never reads as a data gap.
+
+The naming, row-shape and lookback core lives in `contract/borrow.py`, which
+is **stdlib-only**: polars is reached once per call, on the same lazy seam as
+every accessor.  Note the signature: `borrow(self, lookback=None)` has no
+parameter that reads as a timestamp (feature 10) — the 60-second cadence
+behind the rows is a fact about the stream, not a clock this method reads.
 
 ## The ABI record
 
@@ -544,6 +624,26 @@ over-long count is the whole frame, `0` is empty, negative and `bool` are
 refused), and the one thing this feature could plausibly have broken — that the
 version survives the feature 14 payload channel and that the new accessor still
 takes no timestamp parameter (feature 10).
+
+Feature 8 is pinned by `test_market_window_borrow.py`, in four halves: that the
+rows are *the borrow rows* (read from the stream's own fixed frame name,
+returned verbatim — the venue's string spelling comes back as the venue spelled
+it, extra columns like `utilization` and `reading_time` pass through, and the
+accessor never reaches into feature 9's `feature:` namespace in either
+direction); that the *row promise is kept or refused* (a present frame missing
+`symbol` or `borrow_rate` raises `BorrowAccessError` naming the missing columns,
+whatever the lookback, while a frame of only the required columns is
+answerable); that a *miss is empty, never a substitute* (a window with no borrow
+frame answers `(0, 0)`, distinguishable by columns from an empty read, and a
+miss's column raises rather than handing back a silent zero); and that the
+*lookback is the shared discipline* (`None`/trailing/over-long/`0` on the same
+terms as `feature`, negative and `bool` and non-int refused even against an
+empty window, and the refusal is `BorrowAccessError` — this accessor's own, not
+`FeatureAccessError` pointing at a different module). It also pins the pure core
+(`check_borrow_frame` over both column spellings, `validate_borrow_lookback`
+over the same domain as `validate_lookback`), that the rows survive the feature
+14 payload channel verbatim, and that the new accessor still takes no timestamp
+parameter (feature 10).
 
 Feature 15 is pinned by `test_contract_version.py`: that the stamp resolves to
 the ABI it declares (rather than being a bare string), the persist/read round

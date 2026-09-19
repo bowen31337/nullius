@@ -54,14 +54,16 @@ def test_inspect_accessors_reports_the_window_surface():
     # The enumeration returns the accessor names it inspected, so a caller
     # learns what the surface is, not merely that nothing was rejected.  The
     # window exposes its three read-only properties, its serialization method,
-    # and the feature accessor feature 9 adds — which takes a name, a version
-    # and a lookback, and no time.
+    # the feature accessor feature 9 adds — which takes a name, a version
+    # and a lookback, and no time — and the borrow accessor feature 8 adds,
+    # which takes a lookback and no time.
     assert set(inspect_accessors()) == {
         "t",
         "universe",
         "frames",
         "to_arrow",
         "feature",
+        "borrow",
     }
 
 

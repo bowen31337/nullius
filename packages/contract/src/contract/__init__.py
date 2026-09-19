@@ -37,6 +37,13 @@ from .features import (
     select_feature_frame,
     validate_lookback,
 )
+from .borrow import (
+    BORROW_FRAME_NAME,
+    BORROW_REQUIRED_COLUMNS,
+    BorrowAccessError,
+    check_borrow_frame,
+    validate_borrow_lookback,
+)
 from .resolution import resolve_universe
 from .signal import (
     SIGNAL_ENTRYPOINT,
@@ -77,6 +84,8 @@ from .violation import (
 from .window import MarketWindow, inspect_accessors
 
 __all__ = [
+    "BORROW_FRAME_NAME",
+    "BORROW_REQUIRED_COLUMNS",
     "CONTRACT_VERSION",
     "CONTRACT_VERSION_FIELD",
     "CONTRACT_VIOLATION",
@@ -90,6 +99,7 @@ __all__ = [
     "SIGNAL_ENTRYPOINT",
     "SIGNAL_SEED_ARG",
     "SIGNAL_SIGNATURE",
+    "BorrowAccessError",
     "Compatibility",
     "ContractVersionError",
     "MarketWindow",
@@ -105,6 +115,7 @@ __all__ = [
     "SignalSignature",
     "absent_symbol_problems",
     "build_market_window_contract",
+    "check_borrow_frame",
     "check_signal_return",
     "compare",
     "contract_version",
@@ -116,6 +127,7 @@ __all__ = [
     "inspect_accessors",
     "parse_feature_frame_name",
     "select_feature_frame",
+    "validate_borrow_lookback",
     "validate_lookback",
     "is_symbol_label",
     "node_abi_record",

@@ -624,6 +624,109 @@ class MarketWindow(metaclass=_EnforceNoTimestampAccessor):
             frame = frame.slice(offset, rows)
         return pl.from_arrow(frame)
 
+    def borrow(
+        self,
+        lookback: Optional[int] = None,
+    ):
+        """The margin borrow rate rows this window carries — the crowding proxy.
+
+        app_spec.xml feature 8: *System exposes MarketWindow.borrow which
+        returns margin borrow rate rows used as a real-time crowding proxy.*
+        §5.1 declares it as ``borrow(lookback: int) -> pl.DataFrame``.  The
+        rows are the funding stream's borrow half (§4.1: REST, 1m, forever —
+        feature 23's 60-second poll), so the newest row a window carries is
+        at most about one poll interval older than ``t``: as fresh as the
+        sealed lake can be at the decision instant, which is what makes the
+        series a *real-time* proxy for the short-interest crowding the PRD
+        describes — observed from the free margin API rather than bought
+        from a vendor.
+
+        The rows live under one fixed frame name,
+        :data:`contract.borrow.BORROW_FRAME_NAME` — not versioned the way
+        :meth:`feature`'s addresses are, because a borrow rate is an
+        *observed* stream rather than a computed feature, and an observation
+        has no definition whose revision a version would name.  A signal
+        author is therefore entitled to know what the rows hold, and the
+        accessor checks it: a present borrow frame must carry
+        ``symbol`` and ``borrow_rate`` (see
+        :func:`contract.borrow.check_borrow_frame`), while every further
+        column — ``utilization``, ``funding_rate``, the conventional
+        ``reading_time`` — passes through untouched, and column *types* are
+        the host's: the venue's own string spelling (``"0.0001"``) comes
+        back verbatim, never re-rendered into a float whose rounding an
+        audit could not tell from the exchange's own.
+
+        Parameters
+        ----------
+        lookback:
+            ``None`` (the default) for every row the window carries, or a
+            non-negative ``int`` for the trailing ``lookback`` of them —
+            rows, counted across the whole frame, so a lookback over a
+            per-symbol-per-poll frame spans whole polls (the recent end is
+            the one a crowding proxy means).  The same discipline
+            :meth:`feature` applies, via
+            :func:`contract.borrow.validate_borrow_lookback`.
+
+        Returns
+        -------
+        polars.DataFrame
+            The borrow rate rows as carried by this window, converted from
+            the stored Arrow table (zero-copy).  A window that carries no
+            borrow frame returns a frame with *no columns*
+            (``shape == (0, 0)``) — the miss, reported as nothing rather
+            than as a substitute frame; a present frame read with
+            ``lookback=0`` returns 0 rows *with* the frame's columns, so
+            the two shapes of empty stay distinguishable exactly as
+            :meth:`feature`'s are.
+
+        Raises
+        ------
+        BorrowAccessError
+            A malformed ``lookback`` (the request was invalid), or a present
+            borrow frame missing a required column (the host materialized
+            something that is not margin borrow rate rows under the stream's
+            name).  The *absence* of the frame is neither: that is the empty
+            answer above.
+
+        Note the signature: no parameter reads as a timestamp, which is
+        feature 10's requirement.  ``lookback`` names an amount of *data*,
+        not an instant — the accessor can only ever return a subset of the
+        rows the window was sliced to contain, and the 60-second cadence
+        behind those rows is a fact about the stream, not a clock this
+        method reads.
+        """
+        from .borrow import (
+            BORROW_FRAME_NAME,
+            check_borrow_frame,
+            validate_borrow_lookback,
+        )
+        from .features import require_polars
+
+        # Validated before the mapping is consulted, so a malformed request is
+        # reported as such even against a window carrying nothing — the same
+        # ordering discipline :meth:`feature` applies.
+        rows = validate_borrow_lookback(lookback)
+        # An exact match on the stream's own name: never the ``feature:``
+        # namespace, never a neighbour, never a fallback.
+        frame = self._frames.get(BORROW_FRAME_NAME)
+        pl = require_polars()
+        if frame is None:
+            # The window carries no borrow rows.  An empty frame is the honest
+            # answer and the safe one: it cannot be mistaken for another
+            # stream's rows the way a substitute could.
+            return pl.DataFrame()
+        # The frame is present, so the accessor's row promise is checkable —
+        # and checked before any slicing, so a frame that is not borrow rate
+        # rows is refused however much of it the caller asked for.
+        check_borrow_frame(frame)
+        if rows is not None:
+            # The *trailing* slice, on the same terms as :meth:`feature`: the
+            # recent end of an oldest-first frame, with an over-long lookback
+            # reading as the whole frame rather than as "no data".
+            offset = max(frame.num_rows - rows, 0)
+            frame = frame.slice(offset, rows)
+        return pl.from_arrow(frame)
+
     def to_arrow(self):
         """Serialize this window to an Arrow IPC payload (feature 14).
 
