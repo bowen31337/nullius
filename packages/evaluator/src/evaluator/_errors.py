@@ -116,6 +116,28 @@ code failed:
   the trailing lookback bars, and a training bar within that span of a
   boundary is scored from features built out of test-half bars — the model
   reads the test set through its inputs (see ``_embargo``).
+* :class:`EvaluatorCostError` — the cost-application contract (app_spec.xml
+  feature 79). Step 7 of §6.1's pipeline charges the venue's fee schedule
+  against the returns the null gate supplied, so the failures here are
+  failures of that pricing rather than of any fee arithmetic: a bundle that
+  is not step 5's own result (costs are applied to the world the evaluation
+  is actually measured in, and the alignment alone does not say which world
+  that was), a node identity that is not a name or a cost model that does
+  not resolve to a ``(venue, version)`` pair, a quote that is not a
+  ``CostQuote``, a quote answered under a *different* cost model (a changed
+  fee schedule is its own §15 failure case, and filing one schedule's
+  numbers under another's provenance is what the refusal prevents), a quote
+  that does not live on exactly the charged support (a missing charge is not
+  a free trade and a charge for an unscored symbol is a fee for nobody),
+  an evaluation with nothing chargeable at any horizon, and a budget
+  directive that is not a bool — §7.2's one crossing bit is forwarded
+  untouched by this step, and a bit is not an int that happens to be 0 or 1.
+  The fee
+  arithmetic itself is deliberately *absent* from this taxonomy: §6.2 and
+  feature 69 require research evaluation and live execution to import one
+  shared cost library, and a second implementation here — refusing its own
+  fee cases with its own errors — would be exactly the divergence ``β₄``
+  penalizes (see ``_costs``).
 * :class:`EvaluatorGateError` — the null-gate supply contract (app_spec.xml
   feature 76). Step 5 of §6.1's pipeline is the only place the null
   substitution happens, so the failures here are failures of that
@@ -139,6 +161,7 @@ from __future__ import annotations
 __all__ = [
     "EvaluatorAlignmentError",
     "EvaluatorConfigError",
+    "EvaluatorCostError",
     "EvaluatorEmbargoError",
     "EvaluatorError",
     "EvaluatorGateError",
@@ -297,6 +320,28 @@ class EvaluatorSignalError(EvaluatorError):
     returns a contract-violating vector is not this error — that is a
     ``contract_violation`` the caller decides on (feature 12), carried on the
     vector's ``problems`` rather than raised.
+    """
+
+
+class EvaluatorCostError(EvaluatorError):
+    """The cost model could not be applied to the supplied returns.
+
+    Raised by :func:`evaluator.apply_costs` and the post-cost store
+    (app_spec.xml feature 79) when step 7 of the §6.1 pipeline cannot net a
+    fee schedule out of the returns the null gate supplied: a bundle that is
+    not step 5's own result, a node identity that is not a name, a
+    ``cost_model`` that does not resolve to a ``(venue, version)`` pair, a
+    quote that is not a ``CostQuote``, a quote answered under a different
+    cost model than the evaluation names, a quote that does not live on
+    exactly the charged support (a date or symbol the returns do not back, or
+    a missing charge — absence is not zero), and a bundle with no computable
+    target at any horizon, which has no return to net a cost out of.
+
+    Deliberately *not* here: any fee arithmetic. §6.2 requires one shared
+    cost library for research evaluation and live execution, and a second
+    implementation inside the evaluator would be precisely the divergence
+    ``β₄`` penalizes — so the fee schedule arrives as an injected seam and
+    its failures propagate as its own.
     """
 
 

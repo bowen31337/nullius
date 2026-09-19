@@ -94,18 +94,35 @@ the only ask in this package — and :func:`check_targets_gated` certifies
 that a bundle held downstream is the gate's own answer over the alignment
 it gates, so a target series that arrived by any other door is refused; it
 is stdlib-only the same way, because the oracle call is an injected seam —
-the gate holds no socket, only records. The rest of the pipeline (purge and
-embargo, costs, metrics) is the rest of this category's features, and each
-layers on this identity, this window, this execution, this normalization,
-this alignment and this gate
+the gate holds no socket, only records. Feature 79 adds pipeline step 7:
+:func:`apply_costs` nets the venue's fee schedule out of the gate's own
+answer — ``post_cost = gross − charge``, per symbol, per bar, per horizon —
+and :func:`persist_signal_returns` writes the series down, so the artifact
+§9.2 calls the key one (``signal_returns.parquet``, "per-symbol, per-period,
+post-cost ← enables ir_marginal") exists as soon as the step runs. It is
+stdlib-only too, and pointedly so: the fee arithmetic is *not* here. §6.2
+requires one shared cost library for research evaluation and live execution,
+and feature 69 refuses a second implementation of the fee schedule — so the
+charges arrive as an injected seam (:data:`CostSchedule`), the same shape
+§7.2's oracle and feature 73's ``materialize`` use, and this member's
+contribution is the pairing rather than the prices. The step also *forwards*
+§7.2's opaque budget directive untouched, because the steps that consume it
+(features 80, 83 and 84) receive step 7's record rather than the gate's, and
+feature 84's trial charge has to be written even when an evaluation failed —
+so a bit dropped here is one no later step can go back for. The rest of the pipeline
+(purge and embargo, metrics) is the rest of this category's features, and
+each layers on this identity, this window, this execution, this
+normalization, this alignment, this gate and this pricing
 rather than beside them: a score that cannot name its evaluator cannot be
 compared, a score computed over a window that reaches past its decision time
 is look-ahead, a raw score that is not validated against the contract cannot
 be trusted, a score that has not been normalized to a common scale cannot
 be compared across authors, a metric computed against targets that were not
-aligned to the grid it scored on measures nothing, and a metric computed
+aligned to the grid it scored on measures nothing, a metric computed
 against targets that did not come through the gate measures a world nobody
-ran.
+ran, and a metric computed against returns whose fee assumptions and
+deductions are not on the record cannot be defended to anyone who asks what
+it cost to earn them.
 Keeping the import this cheap also keeps the replay path importable —
 architecture §1 forbids replay from reaching the evaluator at all, so the
 less this package does at import time, the less there is to accidentally
@@ -124,6 +141,7 @@ from ._config import (
 from ._errors import (
     EvaluatorAlignmentError,
     EvaluatorConfigError,
+    EvaluatorCostError,
     EvaluatorEmbargoError,
     EvaluatorError,
     EvaluatorGateError,
@@ -192,6 +210,24 @@ from ._gate import (
     check_targets_gated,
     gate_targets,
 )
+from ._costs import (
+    COST_STEP,
+    CostModelRef,
+    CostQuote,
+    CostRequest,
+    CostSchedule,
+    PostCostReturns,
+    PostCostSeries,
+    apply_costs,
+    cost_model_ref,
+)
+from ._cost_store import (
+    SIGNAL_RETURNS_GRID_TABLE,
+    SIGNAL_RETURNS_TABLE,
+    PostCostStore,
+    load_signal_returns,
+    persist_signal_returns,
+)
 from ._service import ENV_IMAGE, EvaluatorService, build_evaluator_service
 from ._window import (
     ROSTER_STREAM,
@@ -239,6 +275,23 @@ __all__ = [
     "OracleResponse",
     "check_targets_gated",
     "gate_targets",
+    # Feature 79 — applying the cost model
+    "COST_STEP",
+    "CostModelRef",
+    "CostQuote",
+    "CostRequest",
+    "CostSchedule",
+    "PostCostReturns",
+    "PostCostSeries",
+    "EvaluatorCostError",
+    "apply_costs",
+    "cost_model_ref",
+    # Feature 79 — persisting the post-cost signal returns
+    "SIGNAL_RETURNS_GRID_TABLE",
+    "SIGNAL_RETURNS_TABLE",
+    "PostCostStore",
+    "load_signal_returns",
+    "persist_signal_returns",
     # Feature 70 — the first term: the pinned container image
     "DIGEST_ALGORITHM",
     "DIGEST_HEX_LENGTH",
