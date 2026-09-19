@@ -17,6 +17,8 @@ package down with it.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import sys
 from pathlib import Path
 
@@ -69,3 +71,35 @@ def test_the_seat_can_seal_and_mount(lake_root: Path) -> None:
     with pytest.raises(PermissionError, match="read-only"):
         part.write_bytes(b"tampered")
     assert part.read_bytes() == b"seated bytes"
+
+
+def test_the_seat_verifies_on_open_and_emits_the_corruption_alert(
+    lake_root: Path,
+) -> None:
+    # Feature 36 from the app namespace: the composed service re-hashes a
+    # snapshot when it is opened, so bytes touched after sealing refuse the
+    # open with the corruption alert rather than being served read-only.
+    # The service comes from the factory's scanned copy of the member
+    # (``_nullius_scanned_snapshot``), whose classes are distinct objects
+    # from the ``snapshot`` package this suite imports — the same reason
+    # the tests above assert by type name — so the alert is asserted by
+    # attribute and the digest, not by class identity.
+    from app.modules.snapshot import snapshot_component
+
+    service = snapshot_component()
+    staging = lake_root / "staging"
+    (staging / "bars").mkdir()
+    (staging / "bars" / "part-0.parquet").write_bytes(b"seated bytes")
+    record = service.seal(sealed_at="2026-09-01T00:00:00Z", snapshot_hash="a3f91c" + "0" * 58)
+
+    sealed_file = record.path / "bars" / "part-0.parquet"
+    os.chmod(sealed_file, 0o644)  # the owner-chmod crack _mount documents
+    sealed_file.write_bytes(b"tampered after sealing")
+    os.chmod(sealed_file, 0o444)
+
+    with pytest.raises(Exception, match="is corrupt") as raised:
+        service.mount(record.name)
+    assert type(raised.value).__name__ == "SnapshotCorruptionError"
+    (finding,) = raised.value.alert.findings
+    assert finding.path == "bars/part-0.parquet"
+    assert finding.recomputed == hashlib.sha256(b"tampered after sealing").hexdigest()

@@ -343,7 +343,13 @@ class TestSymlinksAreNeverFollowed:
         os.symlink(staging_secret, sealed_path / "escape")
         os.symlink(lake_root / "staging" / "bars", sealed_path / "linked")
         os.chmod(sealed_path, 0o555)
-        return service.mount(NAME), staging_secret
+        # A tree this tampered is corrupt — verification on open (feature
+        # 36, test_verification.py) refuses it at the default door — so the
+        # mount is taken through the skip seam: what is under test here is
+        # the mount's own refusal to *follow* what it did not create, the
+        # layer that still stands for a caller that bypassed or skipped the
+        # check.
+        return service.mount(NAME, verify=False), staging_secret
 
     def test_a_final_component_link_is_refused_on_every_read(
         self, planted: tuple[SnapshotMount, Path]
@@ -496,7 +502,12 @@ class TestTheKernelAgrees:
         raw.write_bytes(b"written while loose")
         assert raw.read_bytes() == b"written while loose"
 
-        remounted = service.mount(mount.name)
+        # The written bytes are corruption, and the default door now says
+        # so (feature 36, test_verification.py pins the alert). This test
+        # is about the mode repair, so it remounts through the skip seam —
+        # layer 3's behaviour in isolation, exactly as it was before the
+        # verification door sat in front of it.
+        remounted = service.mount(mount.name, verify=False)
         assert remounted.modes_corrected >= 1
         assert stat.S_IMODE(raw.stat().st_mode) == 0o444
         with pytest.raises(PermissionError):
@@ -556,7 +567,10 @@ class TestModeReassertion:
         with loosened.open("wb") as handle:  # the drift is real
             handle.write(b"overwritten while loose")
 
-        mount = service.mount(NAME)
+        # The overwrite is corruption the default door refuses (feature 36,
+        # test_verification.py); the mode repair is this test's subject, so
+        # it mounts through the skip seam.
+        mount = service.mount(NAME, verify=False)
 
         assert mount.modes_reasserted is True
         assert mount.modes_corrected >= 2

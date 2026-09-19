@@ -43,6 +43,20 @@ refusal is the read-side twin of feature 28's layout guarantee, and it is the
 mount's door: ``mount`` goes through ``open``, so a request for staging never
 reaches a mount either.
 
+**Opening is verifying (feature 36).** The immutability above is enforced
+against every *API* surface, but the frozen modes are ownership-governed —
+the sealing user can ``chmod`` them away and write, the documented crack
+``_mount`` states. :meth:`open` is where that crack is detected rather
+than merely repaired: it recomputes the sha256 of every file the
+snapshot's ``MANIFEST.json`` records and refuses — with
+:class:`SnapshotCorruptionError` carrying the full
+:class:`CorruptionAlert` — when any recorded hash fails to match, when a
+recorded file is missing, or when the tree holds a node the manifest never
+recorded (see ``_verification``). Every door built on ``open`` inherits
+the check: a corrupt snapshot cannot be mounted, and its manifest is not
+believed. :meth:`verify` returns the same alert as data instead of a
+refusal, and :meth:`verify_all` sweeps the lake with it.
+
 **The manifest is the snapshot's on-disk identity (feature 31).** Every seal
 writes a ``MANIFEST.json`` into the published tree — the per-file sha256
 mapping this service already computes, each file's row count read from its
@@ -135,6 +149,7 @@ from ._naming import (
 )
 from ._recomputation import RecomputationRegistry, SupersessionRecord
 from ._records import SealedSnapshot, SnapshotRef
+from ._verification import CorruptionAlert, corruption_error, verify_tree
 
 __all__ = ["LAKE_ROOT_ENV", "SnapshotService"]
 
@@ -353,8 +368,9 @@ class SnapshotService:
         refused rather than humoured. On all three counts matching, the
         retry is the very seal that already happened and the caller gets
         its record back. The manifest is trusted rather than re-walking
-        the bytes: it was written by the seal that published them, and
-        full verification-on-open is feature 36's contract.
+        the bytes here: it was written by the seal that published them,
+        and the byte-level check against it is ``_verification``'s own
+        contract (feature 36), enforced whenever the snapshot is opened.
 
         A directory *without* a manifest — sealed before feature 31, or
         built by hand — falls back to comparing the tree's content bytes
@@ -518,12 +534,12 @@ class SnapshotService:
 
     # -- Reading ------------------------------------------------------------
 
-    def open(self, name: str) -> SnapshotRef:
+    def open(self, name: str, *, verify: bool = True) -> SnapshotRef:
         """Return the sealed snapshot addressed by a canonical directory name.
 
         The evaluator's door (§4.2: *"the evaluator can only open sealed
-        snapshots; staging is not on its mount path at all"*). Three refusals,
-        in order, each sharper than the last:
+        snapshots; staging is not on its mount path at all"*). Four refusals,
+        in order — three about the *name*, and then one about the *bytes*:
 
         1. *A request that names the staging area* — ``"staging"``,
            ``"staging/bars/part-0.parquet"`` — is refused first, and
@@ -541,6 +557,26 @@ class SnapshotService:
            becomes a path.
         3. *A name that parses but names nothing* raises
            :class:`SnapshotNotFoundError`.
+        4. *A directory whose bytes no longer match its record* is refused as
+           corrupt (feature 36): every sha256 the snapshot's ``MANIFEST.json``
+           records is recomputed against the tree, and any disagreement — a
+           file whose bytes hash differently, a recorded file that is absent,
+           a node the manifest never recorded, an injected symlink — raises
+           :class:`SnapshotCorruptionError` carrying the full
+           :class:`CorruptionAlert` (see ``_verification``). The frozen modes
+           sealing persists can be ``chmod``'d away by their owner; the
+           recorded hashes cannot be argued with, so the door trusts the
+           record over the modes. A snapshot sealed before manifests carries
+           no record to check against and opens as before — vacuously
+           verified — while :meth:`read_manifest` refuses the absent
+           manifest loudly; a manifest that cannot be parsed propagates
+           :class:`SnapshotManifestError` unchanged.
+
+        ``verify=False`` skips the rehash for a caller that has verified the
+        tree already and takes the consequence on itself — a performance
+        seam, the read-side twin of ``mount``'s ``reassert_modes``. The
+        default is the feature: an open is a claim that the bytes are the
+        sealed ones.
         """
         if self._names_staging(name):
             raise SnapshotStagingRequestError(
@@ -555,7 +591,51 @@ class SnapshotService:
             raise SnapshotNotFoundError(
                 f"no sealed snapshot named {name!r} under {self.snapshots_root}"
             )
+        if verify:
+            alert = verify_tree(path)
+            if alert is not None:
+                raise corruption_error(alert)
         return SnapshotRef(name=name, path=path)
+
+    def verify(self, name: str) -> Optional[CorruptionAlert]:
+        """Verify the named snapshot; return its alert, or ``None`` if clean.
+
+        The non-raising form of :meth:`open`'s fourth refusal (feature 36):
+        the same recomputation of every recorded sha256, the same comparison
+        against the tree, but the result is *data* rather than a refusal —
+        for a monitor, an operator sweep, or a caller that wants to report
+        corruption rather than be stopped by it. ``None`` means every
+        recorded hash matched and the tree holds nothing the manifest fails
+        to cover; a :class:`CorruptionAlert` carries one finding per
+        discrepancy, sorted by path.
+
+        The request goes through the same door as any read — staging
+        requests are refused as staging requests, malformed names by the
+        strict parser, misses as misses — so a verification can never be
+        pointed at anything but a sealed snapshot of this lake.
+        """
+        return verify_tree(self.open(name, verify=False).path)
+
+    def verify_all(self) -> tuple[CorruptionAlert, ...]:
+        """Verify every sealed snapshot in the lake, and report every alert.
+
+        The sweep form of feature 36: one alert per corrupt snapshot, so a
+        single bad tree neither hides its neighbours nor stops the audit —
+        the raising door would halt at the first corruption it met, which
+        is right for an evaluator and wrong for a monitor. An empty tuple
+        is the healthy lake, stated as data rather than as silence.
+
+        A snapshot whose manifest cannot be parsed propagates
+        :class:`SnapshotManifestError` rather than being skipped: a sweep
+        that quietly jumped over a snapshot it could not read would report
+        health it never established.
+        """
+        alerts: list[CorruptionAlert] = []
+        for name in self.sealed():
+            alert = self.verify(name)
+            if alert is not None:
+                alerts.append(alert)
+        return tuple(alerts)
 
     def read_manifest(self, name: str) -> SnapshotManifest:
         """Read the MANIFEST.json of the sealed snapshot called ``name``.
@@ -564,9 +644,12 @@ class SnapshotService:
         directory name (feature 31): the full snapshot hash, the per-file
         sha256 entries with their row counts, and the universe definition
         asserted at seal time. The request goes through :meth:`open`'s
-        door — staging requests are refused as staging requests, malformed
-        names by the strict parser, misses as misses — because a manifest
-        read is a read of a sealed snapshot like any other.
+        verified door — staging requests are refused as staging requests,
+        malformed names by the strict parser, misses as misses, and the
+        bytes the manifest describes are re-hashed against its entries
+        before the record is believed (feature 36) — because a manifest
+        read is a read of a sealed snapshot like any other, and a record
+        handed out over corrupt bytes is a claim nobody checked.
 
         Two integrity cross-checks come free with the door: the manifest's
         recorded hash must carry the prefix the directory was named under,
@@ -615,7 +698,7 @@ class SnapshotService:
         staging = self.staging_root.resolve(strict=False)
         return candidate == staging or staging in candidate.parents
 
-    def mount(self, name: str, *, reassert_modes: bool = True) -> SnapshotMount:
+    def mount(self, name: str, *, reassert_modes: bool = True, verify: bool = True) -> SnapshotMount:
         """Mount a sealed snapshot read-only, by canonical directory name.
 
         This is the evaluator's door (§4.2: *"a snapshot is sealed, hashed,
@@ -626,6 +709,14 @@ class SnapshotService:
         malformed name rather than resolved; a canonical name that names
         nothing raises :class:`SnapshotNotFoundError`. Only then is a mount
         built.
+
+        The mount also inherits :meth:`open`'s verification (feature 36):
+        the snapshot's bytes are re-hashed against its manifest before the
+        mount exists, so a corrupt snapshot cannot be mounted — serving
+        tampered bytes through the read-only mount that exists to serve
+        sealed ones would invert the feature this category is about.
+        ``verify=False`` skips the rehash for a caller that verified the
+        tree already (the same performance seam as ``reassert_modes``).
 
         Opening the mount re-asserts the sealed modes across the tree (see
         :func:`snapshot.materialize_read_only`), which is a tightening, never
@@ -639,7 +730,7 @@ class SnapshotService:
         out — raise :class:`~snapshot.SnapshotReadOnlyError`, a
         ``PermissionError`` naming the operation and the sealed path.
         """
-        ref = self.open(name)
+        ref = self.open(name, verify=verify)
         corrections = materialize_read_only(ref.path) if reassert_modes else 0
         return SnapshotMount(
             name=ref.name,
@@ -653,7 +744,12 @@ class SnapshotService:
 
         The sweep an evaluator host performs at start-up — or an operator
         after a restore — and the moment the mode re-assertion pays for
-        itself, since it visits every snapshot's tree once.
+        itself, since it visits every snapshot's tree once. The same sweep
+        is now an integrity audit too: each mount verifies its snapshot's
+        bytes against the manifest (feature 36), so a tree that drifted or
+        was tampered with stops the sweep with
+        :class:`SnapshotCorruptionError` — a host that wants the findings
+        as data instead uses :meth:`verify_all`.
         """
         return [self.mount(name) for name in self.sealed()]
 

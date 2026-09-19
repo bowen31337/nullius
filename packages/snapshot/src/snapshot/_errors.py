@@ -44,6 +44,15 @@ failure of the sealing path with a single ``except``. The subclasses split by
   lake actually persists: a change naming a hash that is not currently sealed
   is refused rather than applied, because a recomputation flag anchored to a
   hash the lake does not hold would flag scores that do not exist.
+* :class:`SnapshotCorruptionError` — the verification contract (app_spec.xml
+  feature 36). A snapshot opened whose bytes no longer match the sha256 its
+  ``MANIFEST.json`` records is refused rather than served: the recomputed
+  digest of some file failed to match the recorded one (or a recorded file
+  is gone, or the tree holds nodes the manifest never recorded), and the
+  open door emits the corruption alert instead of handing out the tampered
+  bytes. Carries the full :class:`~snapshot.CorruptionAlert` on its
+  ``alert`` attribute, so the exception is the emission and the record is
+  the payload.
 
 Every message names the offending value and the contract it broke, because
 these errors are operational signals for a seal-on-schedule pipeline
@@ -64,9 +73,15 @@ mount.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:  # pragma: no cover - typing only; the record lives in _verification
+    from ._verification import CorruptionAlert
+
 __all__ = [
     "SnapshotAlreadySealedError",
     "SnapshotContentError",
+    "SnapshotCorruptionError",
     "SnapshotError",
     "SnapshotHashReusedError",
     "SnapshotManifestError",
@@ -192,3 +207,42 @@ class SnapshotRecomputationError(SnapshotError):
     would flag scores that do not exist. A subclass of :class:`SnapshotError`
     so callers catching the sealing path's single vocabulary catch it too.
     """
+
+
+class SnapshotCorruptionError(SnapshotError):
+    """A snapshot was opened whose bytes do not match its recorded sha256.
+
+    app_spec.xml feature 36: *"System verifies a snapshot on open by
+    recomputing file hashes, which emits a corruption alert when any
+    recorded sha256 fails to match."* This is that alert made catchable by
+    type. The immutability layers of features 30-34 stop writes through
+    every API surface, but the modes are ownership-governed — the sealing
+    user can ``chmod`` them away and write — so verification is the
+    detection that answers the crack: the open door (and every door built
+    on it — ``mount``, ``read_manifest``) recomputes the sha256 of every
+    file the snapshot's ``MANIFEST.json`` records and refuses to serve a
+    snapshot whose bytes disagree with its record, in any of three ways: a
+    recorded hash that fails to match, a recorded file that is missing, or
+    a tree node the manifest never recorded.
+
+    The exception carries the structured record of what was found:
+    :attr:`alert` is the :class:`~snapshot.CorruptionAlert` (one
+    :class:`~snapshot.CorruptionFinding` per discrepancy, recorded and
+    recomputed digests side by side), and the message is the alert's own
+    summary plus the consequence — the snapshot is not opened. Build one
+    with :func:`snapshot.corruption_error` rather than by hand, so the
+    record and the message cannot drift apart. A subclass of
+    :class:`SnapshotError`, so the package's single ``except`` catches a
+    corrupt snapshot along with every other failure of the sealing path.
+    """
+
+    #: The structured findings the verification produced. Present on every
+    #: error this package raises through the open door; ``None`` only on a
+    #: hand-built error with no record behind it.
+    alert: Optional["CorruptionAlert"]
+
+    def __init__(
+        self, message: str, alert: Optional["CorruptionAlert"] = None
+    ) -> None:
+        super().__init__(message)
+        self.alert = alert

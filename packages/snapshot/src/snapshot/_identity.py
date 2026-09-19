@@ -46,7 +46,8 @@ The fold is deterministic the way sealing requires: the same file hashes,
 universe definition and schema version produce the same hash on any
 machine, any day, in any directory order — which is what lets a crashed
 schedule's retry recompute the identity it decided, and feature 36's
-verification recompute the identity it checks.
+verification recompute, hash for hash, the same per-file digests it
+compares against the manifest's record.
 """
 
 from __future__ import annotations

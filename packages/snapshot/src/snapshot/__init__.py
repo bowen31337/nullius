@@ -5,11 +5,14 @@ an immutable directory named by sealed_at plus a hash prefix", feature
 31, "System persists a MANIFEST.json per snapshot recording per-file
 sha256, row counts and the universe definition", feature 32, "System
 persists snapshot_hash computed as a sha256 over sorted file hashes plus
-the universe definition plus the schema version", feature 38, "System
-assigns a new snapshot_hash when the lake is extended, which invalidates
-previously cached scores rather than silently reusing them", and feature
-39, "System persists a recomputation flag on every score affected by a
-snapshot change, while the discovery tree structure survives intact", on
+the universe definition plus the schema version", feature 36, "System
+verifies a snapshot on open by recomputing file hashes, which emits a
+corruption alert when any recorded sha256 fails to match", feature 38,
+"System assigns a new snapshot_hash when the lake is extended, which
+invalidates previously cached scores rather than silently reusing them",
+and feature 39, "System persists a recomputation flag on every score
+affected by a snapshot change, while the discovery tree structure
+survives intact", on
 the layout of docs/nullius-tech-architecture.md §4.1-§4.2: ingest workers append into
 ``<lake>/staging``, and sealing copies that content into an immutable
 directory ``<lake>/snapshots/<sealed_at>_<snapshot_hash[:6]>`` — for
@@ -67,6 +70,21 @@ twice over — by the ``0444``/``0555`` modes sealing writes into the
 filesystem, and by the mount's own structural refusals — so a write through
 the mount fails as a ``PermissionError`` whether or not the kernel would
 have agreed.
+
+Opening is also verifying (feature 36): :meth:`SnapshotService.open` — and
+every door built on it, from :meth:`SnapshotService.mount` to
+:meth:`SnapshotService.read_manifest` — recomputes the sha256 of every
+file the snapshot's MANIFEST.json records and compares it against the
+recorded entry, so a snapshot whose bytes were touched after sealing is
+refused with :class:`SnapshotCorruptionError` carrying the full
+:class:`CorruptionAlert` (every mismatched digest, every recorded file
+gone missing, every planted node the manifest never covered) rather than
+silently served. The frozen modes can be chmod'd away by their owner —
+the documented crack ``_mount`` states — but a recorded hash cannot be
+argued with. The non-raising form of the same check is
+:meth:`SnapshotService.verify` (and the :meth:`SnapshotService.verify_all`
+sweep), for operators and monitors that want the alert as a record instead
+of a refusal.
 """
 
 from __future__ import annotations
@@ -82,6 +100,7 @@ from ._content import content_digest, sha256_file, walk_content
 from ._errors import (
     SnapshotAlreadySealedError,
     SnapshotContentError,
+    SnapshotCorruptionError,
     SnapshotError,
     SnapshotHashReusedError,
     SnapshotManifestError,
@@ -122,12 +141,25 @@ from ._recomputation import (
 )
 from ._records import SealedSnapshot, SnapshotRef
 from ._service import LAKE_ROOT_ENV, SnapshotService
+from ._verification import (
+    HASH_MISMATCH,
+    MISSING_FILE,
+    UNRECORDED_NODE,
+    CorruptionAlert,
+    CorruptionFinding,
+    corruption_error,
+    verify_tree,
+)
 
 __all__ = [
+    "CorruptionAlert",
+    "CorruptionFinding",
+    "HASH_MISMATCH",
     "LAKE_ROOT_ENV",
     "MANIFEST_NAME",
     "MANIFEST_VERSION",
     "ManifestFileEntry",
+    "MISSING_FILE",
     "READ_ONLY_OPERATIONS",
     "ReadOnlyPath",
     "RECOMPUTATION_NAME",
@@ -138,6 +170,7 @@ __all__ = [
     "SealedSnapshot",
     "SnapshotAlreadySealedError",
     "SnapshotContentError",
+    "SnapshotCorruptionError",
     "SnapshotError",
     "SnapshotHashReusedError",
     "SnapshotManifest",
@@ -151,8 +184,10 @@ __all__ = [
     "SnapshotService",
     "SnapshotStagingRequestError",
     "SupersessionRecord",
+    "UNRECORDED_NODE",
     "canonical_universe",
     "content_digest",
+    "corruption_error",
     "count_rows",
     "format_sealed_at",
     "manifest_snapshot",
@@ -167,6 +202,8 @@ __all__ = [
     "sha256_file",
     "snapshot_digest",
     "snapshot_name",
+    "verify_snapshot",
+    "verify_tree",
     "walk_content",
 ]
 
@@ -250,6 +287,28 @@ def manifest_snapshot(
         else SnapshotService.from_env()
     )
     return service.read_manifest(name)
+
+
+def verify_snapshot(
+    name: str, *, lake_root: Optional[Union[str, Path]] = None
+) -> Optional[CorruptionAlert]:
+    """One-shot convenience around :meth:`SnapshotService.verify`.
+
+    Verifies the sealed snapshot called ``name`` from the lake at
+    ``lake_root`` (default: resolved from ``LAKE_ROOT`` as above) and
+    returns its :class:`CorruptionAlert`, or ``None`` when every recorded
+    sha256 matches the bytes on disk — feature 36's check in the
+    non-raising form, for a health sweep or a monitoring cron that wants
+    the alert as a record. The door still refuses staging requests,
+    malformed names and misses exactly as :meth:`SnapshotService.open`
+    does; only the corruption finding comes back instead of raising.
+    """
+    service = (
+        SnapshotService(lake_root)
+        if lake_root is not None
+        else SnapshotService.from_env()
+    )
+    return service.verify(name)
 
 
 def recomputation_registry(

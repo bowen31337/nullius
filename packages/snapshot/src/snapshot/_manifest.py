@@ -15,8 +15,9 @@ to hold:
 * **The per-file sha256 mapping** — the seal already computes it
   (``_content.walk_content``); the manifest persists it inside the
   snapshot, so the lake — not the sealer's memory — can later answer
-  *"which exact bytes does this snapshot contain?* (feature 36's
-  corruption check compares against exactly these entries).
+  *"which exact bytes does this snapshot contain?* (the corruption check
+  of feature 36, ``_verification``, compares against exactly these
+  entries).
 * **A row count per file** — read from the file's own format: the
   Parquet footer's ``num_rows`` (``_parquet``), or the line count of a
   line-oriented text file. A file whose format carries no row concept
