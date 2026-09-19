@@ -61,6 +61,7 @@ from ._errors import (
     SnapshotError,
     SnapshotNotFoundError,
 )
+from ._mount import SnapshotMount, materialize_read_only
 from ._naming import (
     normalize_snapshot_hash,
     parse_snapshot_name,
@@ -269,6 +270,48 @@ class SnapshotService:
                 f"no sealed snapshot named {name!r} under {self.snapshots_root}"
             )
         return SnapshotRef(name=name, path=path)
+
+    def mount(self, name: str, *, reassert_modes: bool = True) -> SnapshotMount:
+        """Mount a sealed snapshot read-only, by canonical directory name.
+
+        This is the evaluator's door (§4.2: *"a snapshot is sealed, hashed,
+        and mounted read-only; the evaluator can only open sealed
+        snapshots"*). The name goes through the same strict parser
+        :meth:`open` uses, so a request naming a staging path — or any name
+        that is not ``<sealed_at>_<hash prefix>`` — is refused as a
+        malformed name rather than resolved; a canonical name that names
+        nothing raises :class:`SnapshotNotFoundError`. Only then is a mount
+        built.
+
+        Opening the mount re-asserts the sealed modes across the tree (see
+        :func:`snapshot.materialize_read_only`), which is a tightening, never
+        a grant: a snapshot whose permissions drifted — a copy, a restore —
+        is put back under the contract before anyone reads through it.
+        ``reassert_modes=False`` skips that pass for a read-only filesystem
+        where the walk would be wasted work; the mount's own refusals are
+        structural and do not depend on it.
+
+        Writes through the returned mount — and through any path it hands
+        out — raise :class:`~snapshot.SnapshotReadOnlyError`, a
+        ``PermissionError`` naming the operation and the sealed path.
+        """
+        ref = self.open(name)
+        corrections = materialize_read_only(ref.path) if reassert_modes else 0
+        return SnapshotMount(
+            name=ref.name,
+            path=ref.path,
+            modes_reasserted=reassert_modes,
+            modes_corrected=corrections,
+        )
+
+    def mounted(self) -> list[SnapshotMount]:
+        """Mount every sealed snapshot in this lake, sorted by name.
+
+        The sweep an evaluator host performs at start-up — or an operator
+        after a restore — and the moment the mode re-assertion pays for
+        itself, since it visits every snapshot's tree once.
+        """
+        return [self.mount(name) for name in self.sealed()]
 
     def sealed(self) -> list[str]:
         """List the sealed snapshots in this lake, sorted by name.

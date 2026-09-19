@@ -28,7 +28,11 @@ from app.module_loader import create_app
 def _assert_is_the_snapshot_service(component: object) -> None:
     assert type(component).__name__ == "SnapshotService"
     assert type(component).__module__.endswith("snapshot._service")
-    for operation in ("seal", "open", "sealed"):
+    # The sealing side and the read-only mount side both hang off the
+    # composed component: `mount`/`mounted` are feature 34's seam, and a
+    # composition that carried the sealer but not the mount would be a
+    # plugin half-wired.
+    for operation in ("mount", "mounted", "seal", "open", "sealed"):
         assert callable(getattr(component, operation)), operation
 
 
@@ -59,6 +63,28 @@ def test_sealing_through_the_composed_service(lake_root: Path) -> None:
     assert record.path == expected
     assert record.path.is_dir()
     assert (record.path / "bars" / "part-0.parquet").read_bytes() == b"composed bytes"
+
+
+def test_mounting_through_the_composed_service(lake_root: Path) -> None:
+    # Feature 34 through the composed application: the evaluator-facing
+    # path an assembled system actually takes.
+    app = create_app()
+    service = app.get("snapshot")
+    _assert_is_the_snapshot_service(service)
+
+    staging = lake_root / "staging"
+    (staging / "bars").mkdir()
+    (staging / "bars" / "part-0.parquet").write_bytes(b"sealed bytes")
+    record = service.seal(sealed_at=datetime(2026, 9, 1, tzinfo=timezone.utc))  # type: ignore[attr-defined]
+
+    mount = service.mount(record.name)  # type: ignore[attr-defined]
+    assert mount.name == record.name
+    part = mount.root / "bars" / "part-0.parquet"
+    assert part.read_bytes() == b"sealed bytes"
+
+    with pytest.raises(PermissionError, match="read-only"):
+        part.write_bytes(b"tampered")
+    assert part.read_bytes() == b"sealed bytes"
 
 
 def test_builder_rebinds_when_the_environment_moves(

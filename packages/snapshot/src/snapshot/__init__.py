@@ -24,6 +24,15 @@ these seams: the manifest persists the seal record's file mapping; the full
 §4.2 hash formula folds the same per-file hashes; the read-only mount and
 staging-rejection checks lean on the frozen modes and the strict name
 parser.
+
+The read side of the same boundary is :class:`SnapshotMount` (feature 34):
+``service.mount(name)`` opens a sealed snapshot read-only, handing out
+:class:`ReadOnlyPath` handles that read freely and refuse every write with a
+permission error naming the operation and the sealed path. It is enforced
+twice over — by the ``0444``/``0555`` modes sealing writes into the
+filesystem, and by the mount's own structural refusals — so a write through
+the mount fails as a ``PermissionError`` whether or not the kernel would
+have agreed.
 """
 
 from __future__ import annotations
@@ -41,6 +50,14 @@ from ._errors import (
     SnapshotError,
     SnapshotNameError,
     SnapshotNotFoundError,
+    SnapshotReadOnlyError,
+)
+from ._mount import (
+    READ_ONLY_OPERATIONS,
+    ReadOnlyPath,
+    SnapshotMount,
+    materialize_read_only,
+    permission_denied,
 )
 from ._naming import (
     format_sealed_at,
@@ -54,18 +71,25 @@ from ._service import LAKE_ROOT_ENV, SnapshotService
 
 __all__ = [
     "LAKE_ROOT_ENV",
+    "READ_ONLY_OPERATIONS",
+    "ReadOnlyPath",
     "SealedSnapshot",
     "SnapshotAlreadySealedError",
     "SnapshotContentError",
     "SnapshotError",
+    "SnapshotMount",
     "SnapshotNameError",
     "SnapshotNotFoundError",
+    "SnapshotReadOnlyError",
     "SnapshotRef",
     "SnapshotService",
     "content_digest",
     "format_sealed_at",
+    "materialize_read_only",
+    "mount_snapshot",
     "normalize_snapshot_hash",
     "parse_snapshot_name",
+    "permission_denied",
     "resolve_sealed_at",
     "seal_snapshot",
     "sha256_file",
@@ -108,3 +132,23 @@ def seal_snapshot(
         else SnapshotService.from_env()
     )
     return service.seal(source, sealed_at=sealed_at, snapshot_hash=snapshot_hash)
+
+
+def mount_snapshot(
+    name: str, *, lake_root: Optional[Union[str, Path]] = None
+) -> SnapshotMount:
+    """One-shot convenience around :meth:`SnapshotService.mount`.
+
+    Mounts the sealed snapshot called ``name`` from the lake at ``lake_root``
+    (default: resolved from ``LAKE_ROOT`` as above) and returns the
+    read-only mount. The mirror of :func:`seal_snapshot` on the read side,
+    for a script or a health sweep that wants one snapshot and not a
+    service; a long-lived evaluator host should hold a service and call
+    :meth:`SnapshotService.mount` per request instead.
+    """
+    service = (
+        SnapshotService(lake_root)
+        if lake_root is not None
+        else SnapshotService.from_env()
+    )
+    return service.mount(name)

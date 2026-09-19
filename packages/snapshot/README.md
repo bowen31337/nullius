@@ -29,6 +29,46 @@ The default snapshot hash is the content digest of the staged files — the
 universe and schema terms are the manifest/hash features of this category;
 they fold the same per-file hashes this seal computes.
 
+## The read-only mount
+
+`service.mount(name)` is the evaluator's door — app_spec.xml feature 34,
+§4.2's *"a snapshot is sealed, hashed, and mounted read-only"*. It returns a
+`SnapshotMount` whose every path is a `ReadOnlyPath`:
+
+```python
+mount = service.mount("2026-09-01T00:00:00Z_a3f91c")
+
+mount.read_bytes("bars/symbol=BTCUSDT/date=2026-09-01/part-0.parquet")
+mount.partitions("bars")                       # ('BTCUSDT', 'ETHUSDT') — from names, no Parquet opened
+mount.select("bars", "BTCUSDT", "2026-09-01")  # this symbol, this date, nothing else
+
+(mount.root / "bars" / "…" / "part-0.parquet").write_bytes(b"x")
+# SnapshotReadOnlyError: [Errno 13] Permission denied: write to
+# /lake/snapshots/2026-09-01T00:00:00Z_a3f91c/bars/…/part-0.parquet refused:
+# sealed snapshot 2026-09-01T00:00:00Z_a3f91c is mounted read-only
+# (docs/nullius-tech-architecture.md §4.2); staging is the writable area,
+# not a sealed snapshot
+```
+
+Writes are refused in three independent layers:
+
+1. **The filesystem.** Sealing persists `0444`/`0555`, so a write through a
+   raw `Path` fails at the kernel regardless of this API. That is the
+   guarantee; the mount sits on top of it.
+2. **The mount.** Every mutating verb — `write_bytes`, `open("w")`,
+   `unlink`, `mkdir`, `rename`, `chmod`, `touch`, … — raises before any
+   syscall, so the refusal explains itself instead of arriving as a bare
+   `EACCES`. `SnapshotReadOnlyError` inherits from *both* `SnapshotError`
+   and `PermissionError`: either `except` clause catches it.
+3. **Re-assertion on mount.** Modes travel badly (an archive restore, a
+   copy that drops permissions), so mounting clears any write bit it finds.
+   That is a tightening only — it never grants a permission, and an
+   operator's stricter-than-contract mode is left alone. `modes_corrected`
+   reports what the walk repaired, so drift is visible rather than silent.
+
+Enforced by the mount, not by convention: a `ReadOnlyPath` has no mutating
+verb to call in the first place, and `Path(ro_path)` lands back on layer 1.
+
 ## Wiring
 
 None required. This is a uv workspace member under `packages/`, and
