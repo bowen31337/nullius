@@ -1,0 +1,195 @@
+"""The cost model as a composed application component (feature 59).
+
+Feature 59 in one sentence: *"System persists the resolved cost model
+version string with its venue name after loading the YAML
+configuration."*  The sentence has an order — load, then persist — and
+:class:`CostModelService.resolved` is that order made concrete: it loads
+the YAML configuration (via :func:`cost_model.config.load_cost_model`),
+persists the resolved pair (via :func:`cost_model.store.persist_cost_model`),
+and returns the resolved :class:`~cost_model.config.CostModelConfig` so the
+caller evaluates against the very identity that landed.  A caller that
+loads and forgets to persist cannot get that ordering wrong by accident,
+because there is no public method that does one without the other.
+
+The factory's contract is one-way: a component knows how to build itself
+from nothing, and the factory asks exactly that.
+:meth:`CostModelService.from_env` is that self-construction — the document
+path from :data:`~cost_model.config.COST_MODEL_PATH_ENV`, the store from
+``DATABASE_URL``.  The factory never passes anything in, so nothing here
+may require a parameter it will not receive.
+
+Environment overrides (both optional, both validated loudly):
+
+* ``NULLIUS_COST_MODEL_PATH`` — the YAML document to load (default: the
+  §6.2 document this member ships, see
+  :data:`~cost_model.config.DEFAULT_COST_MODEL_PATH`)
+* ``DATABASE_URL`` — the relational store the resolved pair lands in (the
+  workspace-wide spelling every member's store reads)
+
+**Absent store, deferred refusal.**  Construction performs no I/O and
+never requires a store: an application composes — and a process that only
+wants to *read* a cost model runs — in a deployment with no
+``DATABASE_URL`` at all, the same stance the snapshot member's manifest
+store takes.  The refusal is deferred to the moment a persist is actually
+asked for, and it names the variable that would have named the store.
+That keeps "unconfigured" a discoverable state while keeping "configured
+but broken" an error, which are not the same thing and must not be
+conflated.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Optional, Union
+
+from .config import (
+    COST_MODEL_PATH_ENV,
+    CostModelConfig,
+    load_cost_model,
+)
+from .store import (
+    DATABASE_URL_ENV,
+    load_persisted_cost_model,
+    persist_cost_model,
+)
+
+__all__ = ["CostModelService", "build_cost_model_service"]
+
+
+class CostModelService:
+    """Load the YAML cost model and persist the pair it resolves.
+
+    Thin by design: every method delegates to the loader or the store, so
+    the service adds path/store binding and nothing else.  Both addresses
+    are captured at construction and every method still accepts an explicit
+    override, so tests and tools can route the same service at a scratch
+    document or a scratch store.
+    """
+
+    def __init__(
+        self,
+        config: Optional[CostModelConfig] = None,
+        *,
+        config_path: Optional[Union[str, "os.PathLike[str]"]] = None,
+        database_url: Optional[str] = None,
+    ) -> None:
+        """Bind a service to a document path (or an already-resolved config).
+
+        ``config`` short-circuits loading: a caller holding a resolved
+        :class:`~cost_model.config.CostModelConfig` — a test, or a tool that
+        resolved it through some other door — gets a service that persists
+        *that* identity without re-reading a document.  ``config_path``
+        alone defers the load to the first call, so constructing a service
+        performs no I/O and a service whose document is missing fails on
+        use, at the caller who asked, rather than at composition.
+        """
+        if config is not None and config_path is not None:
+            raise ValueError(
+                "pass either a resolved config or a config_path, not both: a "
+                "service bound to a config never reads a document, so the "
+                "path would be silently ignored"
+            )
+        self._config = config
+        self.config_path = config_path
+        self.database_url = (
+            database_url
+            if database_url is not None
+            else os.environ.get(DATABASE_URL_ENV)
+        )
+
+    @classmethod
+    def from_env(cls) -> "CostModelService":
+        """Construct the component the application factory composes.
+
+        Reads the document path from
+        :data:`~cost_model.config.COST_MODEL_PATH_ENV` and the store from
+        ``DATABASE_URL``, both optional.  No I/O happens here: the document
+        is read on the first :meth:`resolved`/:meth:`load`, and the store
+        is opened on the first persist.
+        """
+        raw = os.environ.get(COST_MODEL_PATH_ENV)
+        config_path: Optional[str] = raw if raw else None
+        return cls(config_path=config_path)
+
+    @property
+    def config(self) -> CostModelConfig:
+        """The resolved cost model, loading the document on first access.
+
+        The loaded value is cached, so a service that resolves once reads
+        its document once — the YAML file is a signed Z0 artifact, and
+        re-parsing it per call would both cost more and let a mid-process
+        edit change the identity a caller is pricing against.
+
+        Composing the service touches no disk; this property is what reads
+        the document, and it raises
+        :class:`~cost_model.errors.CostModelConfigError` for a document that
+        is missing, unparseable or not a cost model.
+        """
+        if self._config is None:
+            self._config = load_cost_model(self.config_path)
+        return self._config
+
+    def load(
+        self, path: Optional[Union[str, "os.PathLike[str]"]] = None
+    ) -> CostModelConfig:
+        """Load (or return the already-resolved) cost model.
+
+        With ``path`` given the document is read fresh from that path and
+        the result replaces the cached value, so one service can resolve
+        several documents in sequence.  With no path, an already-resolved
+        config is returned as-is — the service was constructed with a value,
+        and re-reading a document it was explicitly told not to read would
+        be a surprise.
+        """
+        if path is not None:
+            self._config = load_cost_model(path)
+        return self.config
+
+    def resolved(
+        self, database_url: Optional[str] = None
+    ) -> CostModelConfig:
+        """Load the configuration, persist the resolved pair, return it.
+
+        Feature 59's sentence, in its order.  The load happens first and
+        its failures (:class:`~cost_model.errors.CostModelConfigError`) are
+        raised before any store is touched, so a bad document writes
+        nothing; the persist then lands the pair, and a store failure
+        (:class:`~cost_model.errors.CostModelStoreError`) is raised rather
+        than swallowed, because a resolved cost model that never landed is
+        the gap the feature closes.
+        """
+        config = self.config
+        return persist_cost_model(
+            config, database_url if database_url is not None else self.database_url
+        )
+
+    def persisted(
+        self,
+        venue: str,
+        version: str,
+        database_url: Optional[str] = None,
+    ) -> Optional[CostModelConfig]:
+        """Read a persisted cost model back, or ``None`` when absent.
+
+        The reader a later feature resolves a score's fee assumptions
+        against: given the venue and version a score names, the store
+        answers with the identity that was loaded — or ``None``, which is
+        the honest answer for a cost model this store has never priced
+        against.
+        """
+        return load_persisted_cost_model(
+            venue,
+            version,
+            database_url if database_url is not None else self.database_url,
+        )
+
+
+def build_cost_model_service() -> CostModelService:
+    """Zero-argument builder registered with the application factory.
+
+    Kept as a named module-level function (rather than passing
+    ``CostModelService.from_env`` directly) so the registry shows an
+    intention rather than a classmethod, and so tests can assert on the
+    builder independently of construction.
+    """
+    return CostModelService.from_env()

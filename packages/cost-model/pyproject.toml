@@ -1,0 +1,47 @@
+# nullius cost model — workspace member for the "cost-model" plugin
+# (app_spec.xml, "Cost Model & Fill Simulation", feature 59;
+# docs/nullius-tech-architecture.md §6.2 for the YAML document it reads).
+#
+# Joins the uv workspace by convention — packages/cost-model with this
+# file — so the module loader (src/app/module_loader.py) discovers it by
+# scanning the members the root pyproject.toml declares.  No edit to any
+# central registry, router table or app factory is needed or wanted to
+# wire this package in.
+#
+# Dependencies: the workspace root, for the factory's registration
+# protocol (`import app.module_loader`), and PyYAML, for feature 59’s
+# "after loading the YAML configuration".
+#
+# PyYAML is the YAML parser.  The cost model is a *signed artifact* — §2
+# puts it in the Z0 trust zone, "read-only mounts; separate IAM role" —
+# and the document §6.2 specifies is YAML, so a member that must read it
+# owns a real YAML parser rather than a hand-rolled subset that would
+# quietly mean something else on the day the file grows a nested list or
+# a multi-line string.  `>=` rather than `==`: the code depends on the
+# YAML language and on `safe_load`’s mapping behaviour, not on a PyYAML
+# release’s internals.
+#
+# The import is deferred to first use (`cost_model.require_yaml`), so the
+# factory’s workspace scan — which imports this package to fire its
+# @register decorators — does not require PyYAML to be installed.  That
+# keeps the member import-safe in the environments the workspace contract
+# promises one will be (factory scan, test sandbox, replay path); only the
+# load path that genuinely parses YAML raises, and it names the missing
+# dependency when it does.
+
+[project]
+name = "cost-model"
+version = "0.1.0"
+description = "Shared cost model: the YAML fee schedule and fill model, loaded once and hash-pinned."
+requires-python = ">=3.12"
+dependencies = ["nullius", "pyyaml>=6.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cost_model"]

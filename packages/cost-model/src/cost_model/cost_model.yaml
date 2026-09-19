@@ -1,0 +1,40 @@
+# The default cost model document — docs/nullius-tech-architecture.md §6.2,
+# verbatim in its version and venue, so the shipped default is the document
+# the architecture writes down rather than a plausible-looking invention.
+#
+# Shipped inside the package (``src/cost_model/cost_model.yaml``) so it
+# travels with the installed member: a composed application resolves a cost
+# model in any environment with no deployment step.  A real deployment
+# points ``NULLIUS_COST_MODEL_PATH`` at the signed Z0 artifact; see
+# ``cost_model.config`` for why this default exists and what it is not.
+#
+# Version and venue are QUOTED on purpose.  YAML types a bare ``2026.09.1``
+# as a string anyway, but a bare ``1.0`` would be a float and ``str(1.0)``
+# is a spelling no human wrote — quoting pins the text feature 60 hashes to
+# exactly what the author typed.  See ``cost_model.config.CostModelConfig``.
+cost_model:
+  version: "2026.09.1"
+  venue: binance_spot
+
+  # The fee schedule (features 61-62 apply it).  Carried here because §6.2's
+  # document carries it and this file is that document; the fields below this
+  # point are read by the features that own them, not by feature 59.
+  fees:
+    taker_bps: 10.0
+    maker_bps: 10.0
+    discount_token: BNB        # → 7.5 bps
+
+  fill_model:
+    passive:
+      require_trade_through: true     # fill only if tape trades THROUGH the price
+      queue_position_penalty_bps: 1.5
+      fill_probability_model: exp_decay_vs_queue_depth
+    aggressive:
+      walk_book: true                 # cross the recorded L2, not the midpoint
+
+  latency:
+    source: measured_from_shadow      # NOT assumed
+    distribution: empirical_p50_p95_p99
+
+  borrow:
+    source: exchange_api
