@@ -12,6 +12,14 @@ Nothing a component does — not its registration, not its builder body — may
 reach back and mutate the factory or the object it returns.  The factory is the
 composition root and the sole author of the object it returns.
 
+The composition roots themselves are declared rather than guessed: the root
+``pyproject.toml`` persists the uv workspace (``[tool.uv.workspace]`` with
+members under ``packages/``), and the factory reads that declaration to decide
+what to scan.  With no explicit roots, :func:`create_app` composes exactly the
+declared workspace — there is one place a component package may live, and it
+is written down, so no contributor (human or agent) can invent a competing
+project layout that composition would silently honour.
+
 This module has no third-party dependencies and no I/O beyond filesystem scans
 and imports, so it is import-safe in any environment (tests, sandboxes, the
 deterministic replay path).
@@ -23,6 +31,7 @@ import importlib.util
 import logging
 import os
 import sys
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,9 +44,12 @@ __all__ = [
     "Reducer",
     "Registration",
     "create_app",
+    "find_workspace_root",
     "register",
     "registered_components",
     "scan_components",
+    "workspace_members",
+    "workspace_scan_roots",
 ]
 
 log = logging.getLogger(__name__)
@@ -180,6 +192,153 @@ def registered_components(
     return list(_current_registry_for(registry).components())
 
 
+# --------------------------------------------------------------------------
+# Workspace declaration discovery
+#
+# The root pyproject.toml is the single persisted statement of project
+# layout: ``[tool.uv.workspace] members = ["packages/*"]``.  Everything
+# below reads that statement and nothing else — the factory never carries
+# its own hard-coded idea of where components live, because a hard-coded
+# idea is exactly how competing project layouts get invented.
+# --------------------------------------------------------------------------
+
+
+def _load_pyproject(pyproject: Path) -> Optional[dict]:
+    """Parse a pyproject.toml, returning ``None`` when unreadable or invalid.
+
+    A broken or absent file is a warning, not an error: discovery degrades
+    to "nothing declared, nothing scanned" rather than breaking import-safe
+    composition.  Malicious or merely corrupt TOML never takes the factory
+    down.
+    """
+    try:
+        with pyproject.open("rb") as handle:
+            return tomllib.load(handle)
+    except (OSError, ValueError):  # ValueError covers TOMLDecodeError
+        log.warning("could not parse %s; ignoring it", pyproject, exc_info=True)
+        return None
+
+
+def find_workspace_root(
+    start: Optional["str | os.PathLike[str]"] = None,
+) -> Optional[Path]:
+    """Locate the workspace root above ``start``.
+
+    The root is the nearest ancestor directory whose ``pyproject.toml``
+    carries a ``[tool.uv.workspace]`` table — not merely the nearest
+    ``pyproject.toml``, so a stray nested project file cannot capture
+    discovery.  ``start`` defaults to this module's file, anchoring
+    discovery to the checked-out tree rather than to whichever directory
+    the process happens to run from.
+
+    Returns ``None`` when no workspace root exists above ``start`` (for
+    example when the factory has been imported from site-packages); the
+    callers below then behave as if nothing was declared.
+    """
+    cursor = Path(start) if start is not None else Path(__file__)
+    cursor = cursor.resolve()
+    if cursor.is_file():
+        cursor = cursor.parent
+    for candidate in (cursor, *cursor.parents):
+        pyproject = candidate / "pyproject.toml"
+        if not pyproject.is_file():
+            continue
+        data = _load_pyproject(pyproject)
+        if data is None:
+            continue
+        tool = data.get("tool")
+        uv = tool.get("uv") if isinstance(tool, dict) else None
+        if isinstance(uv, dict) and "workspace" in uv:
+            return candidate
+    return None
+
+
+def workspace_members(
+    start: Optional["str | os.PathLike[str]"] = None,
+) -> list[Path]:
+    """Resolve the declared workspace member directories, sorted by path.
+
+    Reads ``[tool.uv.workspace] members`` from the root pyproject.toml and
+    expands each pattern relative to the workspace root.  Glob matches keep
+    only directories that contain a ``pyproject.toml`` — mirroring uv, which
+    ignores a bare directory under ``packages/`` — so scratch space there is
+    harmless and invisible.  A literal (non-glob) member that is missing is
+    logged and skipped, so a partially checked-out tree degrades instead of
+    failing composition.
+
+    No workspace root, an unreadable declaration, or an empty workspace all
+    yield an empty list: an empty workspace is not an error state.
+    """
+    root = find_workspace_root(start)
+    if root is None:
+        return []
+    data = _load_pyproject(root / "pyproject.toml")
+    if data is None:
+        return []
+    tool = data.get("tool")
+    uv = tool.get("uv") if isinstance(tool, dict) else None
+    workspace = uv.get("workspace") if isinstance(uv, dict) else None
+    if not isinstance(workspace, dict):
+        return []
+    patterns = workspace.get("members", [])
+    if not isinstance(patterns, list):
+        log.warning("[tool.uv.workspace] members is not a list; ignoring it")
+        return []
+    resolved: set[Path] = set()
+    for pattern in patterns:
+        if not isinstance(pattern, str) or not pattern:
+            continue
+        if any(character in pattern for character in "*?["):
+            resolved.update(
+                candidate
+                for candidate in sorted(root.glob(pattern))
+                if candidate.is_dir() and (candidate / "pyproject.toml").is_file()
+            )
+        else:
+            member = root / pattern
+            if member.is_dir() and (member / "pyproject.toml").is_file():
+                resolved.add(member)
+            else:
+                log.warning(
+                    "declared workspace member %s has no pyproject.toml; skipping",
+                    member,
+                )
+    return sorted(resolved)
+
+
+def workspace_scan_roots(
+    start: Optional["str | os.PathLike[str]"] = None,
+) -> list[Path]:
+    """Map declared members onto scan roots for :func:`scan_components`.
+
+    A member is a *project* directory (``packages/<name>`` with its own
+    ``pyproject.toml``); the scan wants *package-parent* directories —
+    directories whose immediate children are importable packages.  Both
+    common member layouts resolve:
+
+    * src layout — ``packages/<name>/src/<pkg>/__init__.py`` — scans
+      ``packages/<name>/src``;
+    * flat layout — ``packages/<name>/<pkg>/__init__.py`` — scans the
+      member directory itself.
+
+    A member that is itself a package (``__init__.py`` directly inside it)
+    scans its parent — ``packages/`` — and the scan skips sibling members
+    without a top-level ``__init__.py``, so the layouts interoperate.
+    Results are de-duplicated and sorted, so scan order — and therefore
+    composition order — stays deterministic.
+    """
+    roots: list[Path] = []
+    for member in workspace_members(start):
+        src = member / "src"
+        if src.is_dir():
+            roots.append(src)
+        elif (member / "__init__.py").is_file():
+            roots.append(member.parent)
+        else:
+            roots.append(member)
+    return sorted(dict.fromkeys(roots))
+
+
 def scan_components(
     *roots: "str | os.PathLike[str]",
     registry: Optional[Registration] = None,
@@ -191,6 +350,12 @@ def scan_components(
     imported so that its module-level ``@register`` calls fire; the components
     they register are collected from ``registry`` (default: the current one).
 
+    With no ``roots`` the declared uv workspace supplies them:
+    :func:`workspace_scan_roots` reads ``[tool.uv.workspace]`` from the root
+    pyproject.toml, so a bare ``scan_components()`` follows the persisted
+    layout rather than a hard-coded guess.  Components live where the
+    declaration says they live, nowhere else.
+
     Importing a package runs its top-level code.  Registration is a deliberate
     import side effect — this is how a component "announces" itself to the
     factory without the factory knowing its name in advance.
@@ -200,6 +365,9 @@ def scan_components(
     component cannot take down composition — matching the "per-component
     isolation" principle of the wider system.
     """
+    if not roots:
+        roots = tuple(workspace_scan_roots())
+        log.debug("no scan roots given; scanning the declared workspace %s", roots)
     target = _current_registry_for(registry)
     # Make `target` the current registry so that `@register` calls fired during
     # import (which omit an explicit registry) land in the same registry that
@@ -293,7 +461,8 @@ def create_app(
     This is the application factory.  It:
 
     1. scans ``roots`` (workspace package directories) so every component's
-       ``@register`` decorator runs,
+       ``@register`` decorator runs — defaulting to the roots declared by the
+       workspace's root pyproject.toml when none are given,
     2. reads the resulting components from ``registry`` (default: current),
     3. calls each component's builder, and
     4. folds the results into a single :class:`Application` via ``reducer``.
