@@ -1,0 +1,454 @@
+identity:
+  name: nullius
+  domain: quant-research
+  _provenance:
+    by: elicited
+    source: cli
+    confidence: 1.0
+    needs_review: true
+stack:
+  layout_profile: uv-workspace
+  existing_context: null
+  _provenance:
+    by: inferred
+    source: docs/nullius-tech-architecture.md §18 (Python 3.12) + §19 (per-component package
+      tree)
+    confidence: 0.7
+    span: "nullius/\n  contract/          # Z0 — MarketWindow, signal ABI. Immutable, versioned."
+    needs_review: true
+competency_questions:
+- id: cq-1
+  question: Can the system discover predictive signals in crypto markets using only free CEX
+    data?
+  priority: 1
+  _provenance:
+    by: extracted
+    source: prd.md §2.1
+    confidence: 0.9
+    span: Discover predictive signals with positive, cost-adjusted, out-of-sample information
+      ratio, using only free public CEX data (REST + websocket).
+    needs_review: false
+- id: cq-2
+  question: Can the system maintain a measured false discovery rate for the research process
+    itself?
+  priority: 1
+  _provenance:
+    by: extracted
+    source: prd.md §2.1
+    confidence: 0.9
+    span: Maintain a *measured* false discovery rate for the research process itself, not
+      merely a backtest metric for its output.
+    needs_review: false
+- id: cq-3
+  question: Can the system close a recursive loop at the exploration layer so that search
+    quality improves with accumulated campaign history?
+  priority: 1
+  _provenance:
+    by: extracted
+    source: prd.md §2.1
+    confidence: 0.9
+    span: Close a recursive loop at the exploration layer so that search quality improves
+      with accumulated campaign history.
+    needs_review: false
+- id: cq-4
+  question: Can the system produce an automatic, honest count of hypotheses tested?
+  priority: 1
+  _provenance:
+    by: extracted
+    source: prd.md §2.1
+    confidence: 0.9
+    span: Produce an honest, automatic count of hypotheses tested, so multiple-testing deflation
+      can be applied correctly rather than guessed.
+    needs_review: false
+- id: cq-5
+  question: Can the system prove its core thesis wrong at milestone M3 before any capital
+    is at risk?
+  priority: 1
+  _provenance:
+    by: extracted
+    source: prd.md §2.1
+    confidence: 0.9
+    span: Fail fast and cheaply. The system must be able to prove its own core thesis wrong
+      at milestone M3 before any capital is at risk.
+    needs_review: false
+- id: cq-6
+  question: Can a signal function access future data?
+  priority: 1
+  _provenance:
+    by: extracted
+    source: prd.md §3
+    confidence: 0.9
+    span: No access to future data. The `MarketWindow` object physically cannot return data
+      after `ctx.t`.
+    needs_review: false
+- id: cq-7
+  question: Can planted null nodes be detected by the signal agent?
+  priority: 1
+  _provenance:
+    by: extracted
+    source: prd.md §4.1
+    confidence: 0.9
+    span: The agent cannot detect this. There is no synthetic price series to sniff. The features,
+      prices, order books and volumes are all real. Only the scorer knows.
+    needs_review: false
+- id: cq-8
+  question: Can the exploration policy learn the value of a node from its `is_null` status?
+  priority: 1
+  _provenance:
+    by: extracted
+    source: prd.md §4.2
+    confidence: 0.3
+    span: '`is_null` is visible to **exactly one component**: the replay scorer. It must never
+      appear in: the discovery agent''s prompt or context, the exploration policy''s `observed()`
+      prefix, any stored artifact the policy can read during replay, any log the policy-development
+      agent reads between revisions.'
+    needs_review: true
+- id: cq-9
+  question: Can the replay engine invoke the evaluator?
+  priority: 1
+  _provenance:
+    by: extracted
+    source: architecture.md §1
+    confidence: 0.3
+    span: Replay must never invoke the evaluator. The replay engine has read access to the
+      artifact store and zero access to the evaluator or sandbox. This is what makes dreaming
+      free.
+    needs_review: true
+- id: cq-10
+  question: Can the signal sandbox access future data from the data lake?
+  priority: 1
+  _provenance:
+    by: extracted
+    source: architecture.md §1
+    confidence: 0.3
+    span: Future data must be physically absent, not merely forbidden. The signal sandbox
+      never mounts the data lake. It receives a pre-sliced, materialized array containing
+      only data at or before `t`. Look-ahead becomes impossible rather than discouraged.
+    needs_review: true
+- id: cq-11
+  question: Can an LLM agent modify the evaluator, cost model, or data snapshots?
+  priority: 1
+  _provenance:
+    by: extracted
+    source: architecture.md §2
+    confidence: 0.9
+    span: The evaluator, cost model, and data snapshots live in a read-only trust zone that
+      LLM-authored code has no write credential for, and no network path to.
+    needs_review: false
+- id: cq-12
+  question: Can the system detect whether planted nulls are being detected by the signal agent?
+  priority: 2
+  _provenance:
+    by: extracted
+    source: prd.md §4.3
+    confidence: 0.9
+    span: Each campaign, run a two-sample Kolmogorov–Smirnov test on the in-sample score distributions
+      of null nodes vs. real nodes. If `p < 0.05`, the nulls are detectable, the agent may
+      be learning to identify them, and the campaign's calibration is **void**.
+    needs_review: false
+- id: cq-13
+  question: Can the system compute a signal's marginal contribution to the existing book?
+  priority: 2
+  _provenance:
+    by: extracted
+    source: prd.md §6.2
+    confidence: 0.3
+    span: A new signal correlated 0.9 with the existing book is nearly worthless regardless
+      of standalone IR. This is why the artifact stores the **full signal return series**,
+      not just a scalar. Marginal contribution against any book is then computable at replay
+      time from stored data.
+    needs_review: true
+- id: cq-14
+  question: Can the evaluator be modified after the discovery loop begins?
+  priority: 1
+  _provenance:
+    by: extracted
+    source: prd.md §6.3
+    confidence: 0.3
+    span: The self-improvement loop must not be able to modify the evaluator. Enforce with
+      a read-only mount and a CI check on the hash.
+    needs_review: true
+- id: cq-15
+  question: Can a replay of a fixed policy on a fixed tree produce different scores?
+  priority: 1
+  _provenance:
+    by: extracted
+    source: architecture.md §1
+    confidence: 0.3
+    span: Replay must be bit-reproducible or the method is invalid. Pinned images, pinned
+      seeds, single-threaded BLAS in eval workers, no wall-clock reads in searched code, plus
+      a nightly canary that asserts a fixed policy replays a fixed tree to an identical score.
+    needs_review: true
+- id: cq-16
+  question: Can a policy see unrevealed nodes during replay?
+  priority: 1
+  _provenance:
+    by: extracted
+    source: architecture.md §10.2
+    confidence: 0.9
+    span: '`prefix_view()` constructs a fresh object exposing only revealed nodes. It is not
+      a filtered view over the full tree; unrevealed nodes are not present in the returned
+      structure at all. A policy cannot reach them by introspection, attribute walking, or
+      a stray `__dict__` access.'
+    needs_review: false
+- id: cq-17
+  question: Can a null node's evaluation debit statistical degrees of freedom?
+  priority: 1
+  _provenance:
+    by: extracted
+    source: prd.md §4.1.1
+    confidence: 0.9
+    span: '**Null nodes cost compute, not statistical power.** A null node''s signal was never
+      compared to real forward returns, so it consumes agent calls and CPU but **not degrees
+      of freedom**. It must not count toward `K` in the deflation term, and must not debit
+      epoch usage in the trial ledger.'
+    needs_review: false
+- id: cq-18
+  question: Can the system track forward-test outcomes for recalibration?
+  priority: 2
+  _provenance:
+    by: extracted
+    source: prd.md §5
+    confidence: 0.3
+    span: Every promoted signal is timestamped and its live forward IC tracked from the promotion
+      date forward. After 90 days, that signal has a track record on data that **did not exist
+      when the hypothesis was formed**. No purging scheme is needed; the data is honestly
+      out of sample by construction. Those outcomes become labels.
+    needs_review: true
+- id: cq-19
+  question: Can the interface accidentally reveal which nodes are null during a live campaign?
+  priority: 1
+  _provenance:
+    by: extracted
+    source: design.md §7
+    confidence: 0.9
+    span: The information barrier is an interface constraint, not only a backend one. `is_null`
+      must not be visually inferable by anyone operating a live campaign, including by accident.
+    needs_review: false
+- id: cq-20
+  question: Can the system run without sequestered test data?
+  priority: 1
+  _provenance:
+    by: extracted
+    source: prd.md §7.1
+    confidence: 0.9
+    span: the policy sees only in-sample metrics and diagnostics. On termination it must emit
+      `v̂`, the signal it would deploy. It is scored on a **sequestered epoch it has never
+      observed in any world**.
+    needs_review: false
+constraints:
+- text: Must not modify the existing evaluator, cost model, or data snapshots.
+  _provenance:
+    by: extracted
+    source: architecture.md §1, P1
+    confidence: 0.9
+    span: The evaluator, cost model, and data snapshots live in a read-only trust zone that
+      LLM-authored code has no write credential for, and no network path to.
+    needs_review: false
+- text: '`is_null` is readable by exactly one component: the replay scorer.'
+  _provenance:
+    by: extracted
+    source: docs/alpha-engine-prd.md §13.2
+    confidence: 0.95
+    span: '`is_null` is readable by exactly one component: the replay scorer.'
+    needs_review: false
+- text: 'The exploration policy sees prefix-only information: no unrevealed scores, no absolute
+    score targets, no hardcoded node ids.'
+  _provenance:
+    by: extracted
+    source: docs/alpha-engine-prd.md §13.3
+    confidence: 0.95
+    span: The exploration policy sees **prefix-only** information. No unrevealed scores, no
+      absolute score targets, no hardcoded node ids.
+    needs_review: false
+- text: Sequestered epochs retire permanently after 3 promotion decisions; when clean epochs
+    run out the system stops, which is a legitimate terminal state.
+  _provenance:
+    by: extracted
+    source: docs/alpha-engine-prd.md §13.4
+    confidence: 0.95
+    span: Sequestered epochs are retired permanently after **3 promotion decisions**. Track
+      in a ledger. When clean epochs run out, the system stops. That is a legitimate terminal
+      state.
+    needs_review: false
+- text: Every score carries (evaluator_hash, data_snapshot_hash, cost_model_hash); mismatched
+    scores are never compared.
+  _provenance:
+    by: extracted
+    source: docs/alpha-engine-prd.md §13.5
+    confidence: 0.95
+    span: Every score carries `(evaluator_hash, data_snapshot_hash, cost_model_hash)`. Mismatched
+      scores are never compared.
+    needs_review: false
+- text: Every node records agent_model_id, and M3 results are reported per model stratum as
+    well as pooled.
+  _provenance:
+    by: extracted
+    source: docs/alpha-engine-prd.md §13.5a
+    confidence: 0.95
+    span: Every node records `agent_model_id`. Provider aliases re-route silently; a pinned
+      snapshot or a self-hosted checkpoint hash is the only real guarantee. M3 results are
+      reported per model stratum as well as pooled.
+    needs_review: false
+- text: Regime labeling is causal — rolling-window fit only.
+  _provenance:
+    by: extracted
+    source: docs/alpha-engine-prd.md §13.6
+    confidence: 0.95
+    span: Regime labeling is causal. Rolling-window fit only.
+    needs_review: false
+- text: Promotion criteria are pre-registered and hashed before the evaluation that decides
+    them.
+  _provenance:
+    by: extracted
+    source: docs/alpha-engine-prd.md §13.7
+    confidence: 0.95
+    span: Promotion criteria are pre-registered and hashed before the evaluation that decides
+      them.
+    needs_review: false
+- text: 'The trial ledger is append-only: no UPDATE, no DELETE, enforced by role grants.'
+  _provenance:
+    by: extracted
+    source: docs/alpha-engine-prd.md §13.8 / docs/nullius-tech-architecture.md §8
+    confidence: 0.95
+    span: The trial ledger is append-only.
+    needs_review: false
+- text: Agents write to Z1 only; Z1 holds no credential for Z0, enforced with filesystem permissions
+    and network policy rather than prompt instructions.
+  _provenance:
+    by: extracted
+    source: docs/nullius-tech-architecture.md §2
+    confidence: 0.95
+    span: agents write to Z1 only, and Z1 has no credential for Z0. Enforce with filesystem
+      permissions and network policy, never with prompt instructions.
+    needs_review: false
+- text: Research compute and trading compute stay separate systems that share libraries, never
+    infrastructure.
+  _provenance:
+    by: extracted
+    source: docs/nullius-tech-architecture.md §1 P6
+    confidence: 0.95
+    span: They share libraries, never infrastructure.
+    needs_review: false
+- text: Exchange API keys are read + trade only, with withdrawal permanently disabled and
+    IP allowlisting.
+  _provenance:
+    by: extracted
+    source: docs/nullius-tech-architecture.md §17
+    confidence: 0.95
+    span: 'Exchange API keys: **read + trade only, withdrawal permanently disabled**, IP-allowlisted.'
+    needs_review: false
+- text: The top-line dashboard number is FDR_deploy, never a backtest Sharpe or an equity
+    curve.
+  _provenance:
+    by: extracted
+    source: docs/nullius-tech-architecture.md §16
+    confidence: 0.95
+    span: '**The top-line dashboard number is `FDR_deploy`, not Sharpe.** If the primary chart
+      is an equity curve, the system''s actual purpose has been quietly abandoned.'
+    needs_review: false
+- text: 'Campaigns are homogeneous in null type: Type-R and Type-D are never mixed within
+    one tree.'
+  _provenance:
+    by: extracted
+    source: docs/alpha-engine-prd.md §4.1.2
+    confidence: 0.95
+    span: '**Never mix the two within one tree.** Every policy version is scored on every
+      world, so worlds must be homogeneous in what they measure.'
+    needs_review: false
+- text: plan_grid enforces at least three distinct theme roots per campaign as a hard constraint,
+    not a preference.
+  _provenance:
+    by: extracted
+    source: docs/nullius-tech-architecture.md §11.1
+    confidence: 0.95
+    span: '# plan_grid: HARD constraint, not a preference. A single-theme campaign shows the'
+    needs_review: false
+- text: Dreaming is blocked below 20 worlds and M is capped at 8-10 between 20 and 50 worlds.
+  _provenance:
+    by: extracted
+    source: docs/alpha-engine-prd.md §12.1
+    confidence: 0.95
+    span: '| < 20 worlds | **Do not run dreaming.** Fixed exploration; accumulate history
+      |'
+    needs_review: false
+- text: Portfolio construction, execution and risk are human-authored, version-controlled,
+    and explicitly outside the search space.
+  _provenance:
+    by: extracted
+    source: docs/alpha-engine-prd.md §C8
+    confidence: 0.95
+    span: Version-controlled, human-authored, explicitly outside the search space. Changing
+      it is a human decision with a changelog entry, not a discovery.
+    needs_review: false
+- text: No GPU in the eval path; eval workers pin single-threaded BLAS, PYTHONHASHSEED=0 and
+    digest-pinned images.
+  _provenance:
+    by: extracted
+    source: docs/nullius-tech-architecture.md §12
+    confidence: 0.95
+    span: '| Float reproducibility | Fixed reduction order; no `fastmath`; no GPU in the eval
+      path |'
+    needs_review: false
+- text: Research stack is Python 3.12 with Polars, DuckDB, Parquet+Zstd and Postgres 16; Kubernetes
+    and Kafka are deliberately avoided.
+  _provenance:
+    by: extracted
+    source: docs/nullius-tech-architecture.md §18
+    confidence: 0.95
+    span: 'Deliberately avoided: Kubernetes (operational overhead exceeds the workload), Kafka
+      (Parquet append is sufficient at this volume)'
+    needs_review: false
+- text: A spec must validate with zero errors and zero warnings before claw-forge plan.
+  _provenance:
+    by: extracted
+    source: CLAUDE.md
+    confidence: 0.95
+    span: '**A spec must validate with zero errors and zero warnings before
+
+      `claw-forge plan`.**'
+    needs_review: false
+- text: Spec scope covers milestones M0 through M5 inclusive, including the Z2 live path (book
+    manager, execution engine, risk supervisor, forward-test service).
+  _provenance:
+    by: elicited
+    source: user interview 2026-09-19
+    confidence: 1.0
+    needs_review: false
+- text: The operator console specified in docs/design.md is out of scope for this spec; observability
+    ships as the Postgres metrics table with a Streamlit dashboard, the simpler option architecture
+    §16 already permits.
+  _provenance:
+    by: elicited
+    source: user interview 2026-09-19
+    confidence: 1.0
+    needs_review: false
+- text: The signal agent and the policy-development agent are built against a pinned provider
+    interface with a deterministic recorded-fixture backend, so the full loop is testable
+    without live API keys or per-run LLM spend.
+  _provenance:
+    by: elicited
+    source: user interview 2026-09-19
+    confidence: 1.0
+    needs_review: false
+- text: Live-path features (M4 and M5) land behind a default-off feature flag, and no live
+    exchange credentials are provisioned until the M3 gate has reported.
+  _provenance:
+    by: inferred
+    source: inferred from PRD §12 M3 ('If M3 fails, stop.'); scope itself was reaffirmed by
+      the user as full M0-M5
+    confidence: 0.6
+    needs_review: true
+policies:
+  overlap_resolution: serialize
+  plugin_partitioning: keep-serialized
+  unclassifiable_shape: core
+  gap13_repair: widen
+  manual_review: default-and-record
+  quality_tier: strict
+  confidence_floor: 0.9
+  _provenance:
+    by: defaulted
+    source: tier:strict
+    confidence: 0.0
+    needs_review: false

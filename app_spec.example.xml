@@ -1,0 +1,409 @@
+<!--
+  claw-forge Project Specification
+  =================================
+  This file drives autonomous agent implementation.
+  Use /create-spec in Claude Code to generate this interactively.
+
+  Features in <core_features> become individual agent tasks (commonly 150-400 for one
+  spec; a large system legitimately runs past that — see <core_features> below).
+  Write each bullet as a testable behavior: "User can...", "System returns...", "API validates..."
+-->
+<project_specification mode="greenfield">
+  <project_name>my-project</project_name>
+
+  <overview>
+    2-3 sentences: what you're building, what problem it solves, who it's for.
+  </overview>
+
+  <target_audience>
+    Who this app is built for — their role, goals, and context.
+  </target_audience>
+
+  <technology_stack>
+    <frontend>
+      <framework>React with Vite</framework>
+      <language>TypeScript</language>
+      <styling>Tailwind CSS</styling>
+      <state_management>React hooks and context</state_management>
+      <routing>React Router</routing>
+    </frontend>
+    <backend>
+      <framework>Python with FastAPI</framework>
+      <orm>SQLAlchemy 2.0 (async)</orm>
+      <validation>Pydantic v2</validation>
+      <auth>python-jose (JWT) + passlib (bcrypt)</auth>
+    </backend>
+    <database>
+      <primary>PostgreSQL</primary>
+      <dev>SQLite (via env toggle for local development)</dev>
+    </database>
+    <communication>
+      <api_style>REST</api_style>
+      <response_format>JSON envelope: { "data": ..., "error": null, "status": 200 }</response_format>
+    </communication>
+  </technology_stack>
+
+  <prerequisites>
+    - Python 3.12+ with uv installed
+    - Node.js 18+ for frontend
+    - Any required API keys (list here)
+    - Environment variables: DATABASE_URL, JWT_SECRET (document in .env.example)
+  </prerequisites>
+
+  <core_features>
+    <!--
+      Each <feature> = one agent task.
+      Start with action verb: "User can...", "System displays...", "API returns..."
+      Group by category using <category name="..."> tags.
+      Aim for 150-400 features for a full app — a guide, not a ceiling.
+      The count is an OUTPUT of how much the app does, not a budget it must
+      fit: never drop a capability to stay inside it.
+
+      Past roughly that range the limit is not the spec, it is the RUN.
+      Merge catch-up distance, footprint serialization and the absence of a
+      contract-freeze point all grow with tasks-per-run.  So decompose into
+      subsystem specs run in sequence against one repo, rather than
+      inflating a single spec — that is how a ~2,000-feature programme is
+      built, and each subsystem spec then sits comfortably in this range.
+
+      IMPORTANT: Use <category name="..."> with a descriptive human-readable name.
+      The name attribute becomes the task category shown in the Kanban board.
+      Never use bare snake_case tags like <authentication> or <core_functionality> —
+      those are the old format and won't render category names correctly.
+
+      ARCHITECTURAL SHAPE — annotate every <feature> so the dispatcher
+      can schedule it for parallel-safe execution:
+
+        shape="plugin"  — vertical feature owning its own directory under
+                          src/plugins/<plugin>/ . Plugin features dispatch
+                          in parallel; touches_files auto-derives from the
+                          plugin directory.
+        shape="core"    — cross-cutting change (middleware, error handlers,
+                          shared types). Core features serialize via the
+                          dispatcher's single-flight rule and require an
+                          explicit touches_files glob list.
+
+      Run `claw-forge validate-spec app_spec.xml` to enforce shape
+      annotations on every feature (strict shape is the default; pass
+      --soft-shape to opt out). Greenfield specs skip the brownfield
+      filesystem checks since the code does not exist yet.
+
+      Both forms (legacy bullets and <feature> elements) coexist within
+      the same <category>. Bullets remain supported for backward
+      compatibility but the validator's Layer 4 will warn on vertical-
+      looking unannotated bullets.
+
+      STACK LAYOUT (optional <layout> element, direct child of the spec
+      root) — tells the harness which directory convention plugin
+      footprints expand into. Omitted = single-package legacy default
+      (src/plugins/<plugin>/). Declared layouts also require a
+      shape="core" workspace-foundation feature (validator Gap 14).
+
+        Single-stack sugar:
+          <layout profile="pnpm-monorepo"/>
+        Polyglot zones (e.g. Python API + TS web):
+          <layout>
+            <zone root="apps/api" profile="uv-workspace"/>
+            <zone root="apps/web" profile="pnpm-single-app"/>
+            <contract path="packages/api-client/**"
+                      regen="pnpm --filter api-client generate"/>
+          </layout>
+
+        Profiles: single-package | pnpm-monorepo | pnpm-single-app |
+                  uv-workspace | go-service | maven-single-module
+        Inline <root template=".../{plugin}/**" optional="true"/> and
+        <seam tier="ordered">path</seam> children extend a profile.
+    -->
+    <category name="Authentication &amp; User Management">
+      <feature index="1" shape="plugin" plugin="auth">
+        <description>User can register with email and password (POST /api/auth/register, returns 201 with user_id)</description>
+      </feature>
+      <feature index="2" shape="plugin" plugin="auth">
+        <description>System validates email format and rejects duplicates with 409 error</description>
+      </feature>
+      <feature index="3" shape="plugin" plugin="auth">
+        <description>System hashes the password using bcrypt and persists it to the users table</description>
+      </feature>
+      <feature index="4" shape="plugin" plugin="auth">
+        <description>User can log in with email and password (POST /api/auth/login, returns a JWT access_token and refresh_token)</description>
+      </feature>
+      <feature index="5" shape="plugin" plugin="auth">
+        <description>System returns 401 with "Invalid credentials" on failed login</description>
+      </feature>
+      <feature index="6" shape="plugin" plugin="auth">
+        <description>User can log out; system invalidates the refresh_token in the refresh_tokens table (POST /api/auth/logout)</description>
+      </feature>
+      <feature index="7" shape="plugin" plugin="auth">
+        <description>System returns a new access_token from a valid refresh_token (POST /api/auth/refresh)</description>
+      </feature>
+      <feature index="8" shape="plugin" plugin="auth">
+        <description>System returns 401 on all protected endpoints when token is missing or expired</description>
+      </feature>
+      <feature index="9" shape="plugin" plugin="auth">
+        <description>User can view their profile: display name, email, account creation date (GET /api/auth/me)</description>
+      </feature>
+      <feature index="10" shape="plugin" plugin="auth">
+        <description>User can update their display name from the profile settings page</description>
+      </feature>
+      <feature index="11" shape="plugin" plugin="auth">
+        <description>User can change their password with the current and new password (returns 200)</description>
+      </feature>
+    </category>
+
+    <category name="Core Functionality">
+      <feature index="12" shape="plugin" plugin="items">
+        <description>User can create a new item with title and description</description>
+      </feature>
+      <feature index="13" shape="plugin" plugin="items">
+        <description>User can view a paginated list of their items (GET /api/items, returns 200)</description>
+      </feature>
+      <feature index="14" shape="plugin" plugin="items">
+        <description>User can update an item's title or description (PUT /api/items/{id}, returns 200)</description>
+      </feature>
+      <feature index="15" shape="plugin" plugin="items">
+        <description>User can delete an item via soft delete, which sets deleted_at (DELETE /api/items/{id}, returns 204)</description>
+      </feature>
+      <feature index="16" shape="plugin" plugin="items">
+        <description>System returns 403 if user tries to access another user's item</description>
+      </feature>
+      <feature index="17" shape="plugin" plugin="items">
+        <description>System returns 404 with descriptive message when item is not found</description>
+      </feature>
+    </category>
+
+    <category name="UI / UX">
+      <!-- UI features touch shared design-system files and are typically
+           cross-cutting. Use shape="core" with explicit touches_files. -->
+      <feature index="18" shape="core"
+               touches_files="src/components/skeleton/**,src/components/toast/**">
+        <description>UI displays loading skeleton while data is fetching</description>
+      </feature>
+      <feature index="19" shape="core"
+               touches_files="src/components/toast/**">
+        <description>UI shows success toast notification after create/update/delete</description>
+      </feature>
+      <feature index="20" shape="core"
+               touches_files="src/components/error-banner/**">
+        <description>UI shows error message when API request fails</description>
+      </feature>
+      <feature index="21" shape="core"
+               touches_files="src/styles/responsive.css,tailwind.config.js">
+        <description>UI displays a responsive layout at 375px, 768px, and 1280px breakpoints</description>
+      </feature>
+      <feature index="22" shape="core"
+               touches_files="src/components/confirm-dialog/**">
+        <description>UI shows a confirmation dialog before any destructive action</description>
+      </feature>
+      <feature index="23" shape="core"
+               touches_files="src/styles/dark-mode.css,src/lib/theme.ts">
+        <description>UI displays dark mode from system preference with a manual toggle in the header</description>
+      </feature>
+    </category>
+
+    <category name="API Layer">
+      <!-- API-layer features are middleware/contract concerns shared by
+           every plugin route. Use shape="core" with explicit touches_files. -->
+      <feature index="24" shape="core"
+               touches_files="src/api/middleware/envelope.py">
+        <description>API returns consistent JSON envelope: { "data": ..., "error": null, "status": 200 }</description>
+      </feature>
+      <feature index="25" shape="core"
+               touches_files="src/api/middleware/validation.py">
+        <description>API validates all request bodies with Pydantic v2 (returns 400 with field-level errors on invalid input)</description>
+      </feature>
+      <feature index="26" shape="core"
+               touches_files="src/api/middleware/jwt_auth.py">
+        <description>API requires valid JWT for all protected routes (returns 401 if missing or expired)</description>
+      </feature>
+      <feature index="27" shape="core"
+               touches_files="src/api/middleware/pagination.py">
+        <description>API returns paginated results with fields data, total, page, per_page, and has_next</description>
+      </feature>
+      <feature index="28" shape="core"
+               touches_files="src/api/middleware/authz.py">
+        <description>API returns 403 if authenticated user attempts to access another user's resource</description>
+      </feature>
+      <feature index="29" shape="core"
+               touches_files="src/api/middleware/error_handler.py">
+        <description>API returns 500 with unique error_id for unexpected server errors</description>
+      </feature>
+    </category>
+
+    <!-- REQUIRED: a final End-to-End Verification category. One shape="core"
+         feature per primary user journey, owning tests/e2e/** only. These
+         become terminal tasks (depend on the whole build via the matching
+         final phase) that write + run e2e tests against the assembled app —
+         the difference between "units pass" and "the app runs". -->
+    <category name="End-to-End Verification">
+      <feature index="30" shape="core" touches_files="tests/e2e/**">
+        <description>System passes an end-to-end test of the primary user journey (register, sign in, perform the main action) in which the app boots and displays the expected result (Playwright/pytest test under tests/e2e/)</description>
+      </feature>
+      <feature index="31" shape="core" touches_files="tests/e2e/**">
+        <description>System passes API integration tests where each documented endpoint returns 200 on the happy path and returns the documented 4xx error (e.g. 400, 409) on key error cases</description>
+      </feature>
+    </category>
+
+  </core_features>
+
+  <database_schema>
+    <tables>
+
+      <table name="users">
+        <column>id UUID PRIMARY KEY DEFAULT gen_random_uuid()</column>
+        <column>email VARCHAR(255) UNIQUE NOT NULL</column>
+        <column>password_hash VARCHAR(255) NOT NULL</column>
+        <column>display_name VARCHAR(100)</column>
+        <column>created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()</column>
+        <column>updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()</column>
+      </table>
+
+      <table name="refresh_tokens">
+        <column>id UUID PRIMARY KEY DEFAULT gen_random_uuid()</column>
+        <column>user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE</column>
+        <column>token_hash VARCHAR(255) NOT NULL UNIQUE</column>
+        <column>expires_at TIMESTAMP WITH TIME ZONE NOT NULL</column>
+        <column>created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()</column>
+      </table>
+
+      <!-- Add your domain tables here -->
+
+    </tables>
+  </database_schema>
+
+  <api_endpoints_summary>
+
+    <domain name="Authentication">
+      POST   /api/auth/register    - Register new user account
+      POST   /api/auth/login       - Login and receive JWT tokens
+      POST   /api/auth/logout      - Logout and invalidate refresh token
+      POST   /api/auth/refresh     - Refresh access token using refresh token
+      GET    /api/auth/me          - Get current user profile
+    </domain>
+
+    <domain name="Items">
+      GET    /api/items            - List items with pagination
+      POST   /api/items            - Create a new item
+      GET    /api/items/{id}       - Get single item
+      PUT    /api/items/{id}       - Update item
+      DELETE /api/items/{id}       - Delete item (soft delete)
+    </domain>
+
+  </api_endpoints_summary>
+
+  <ui_layout>
+    <structure>
+      Root layout:
+        - Header bar (logo, user avatar dropdown with Settings/Logout)
+        - Left sidebar (desktop): main navigation links
+        - Main content area (full width on mobile, fills remaining space on desktop)
+        - Toast notification portal (top-right)
+
+      Pages:
+        /              - Redirect to /dashboard if logged in, else /login
+        /login         - Email + password login form, link to register
+        /register      - Email + display name + password registration form
+        /dashboard     - Main content list with toolbar (search, filters)
+        /settings      - Profile settings and password change
+    </structure>
+  </ui_layout>
+
+  <design_system>
+    <color_palette>
+      Primary:    #f97316 (forge orange) - buttons, links, active states
+      Secondary:  #3b82f6 (blue) - secondary actions
+      Success:    #22c55e (green) - success toasts, saved states
+      Danger:     #ef4444 (red) - delete buttons, error messages
+      Warning:    #f59e0b (amber) - warning states
+      Background: #ffffff (light) / #0f172a (dark)
+      Surface:    #f8fafc (light) / #1e293b (dark)
+      Text:       #0f172a (light) / #f1f5f9 (dark)
+    </color_palette>
+    <typography>
+      Font family: Inter, system-ui, sans-serif
+      Headings:   font-semibold
+      Body:       font-normal, leading-relaxed
+      Code:       JetBrains Mono, monospace
+    </typography>
+    <animations>
+      Transitions: 150-200ms ease
+      Loading:     skeleton screens (not spinners)
+      Modals:      fade + scale in
+      Toasts:      slide-in from right, fade-out on dismiss
+    </animations>
+  </design_system>
+
+  <key_interactions>
+    <interaction number="1" name="Register and reach dashboard">
+      1. User navigates to /register
+      2. Fills email, display name, and password
+      3. System creates account and returns JWT tokens
+      4. Redirect to /dashboard with welcome toast
+    </interaction>
+    <interaction number="2" name="Create and manage an item">
+      1. User clicks "New Item" on /dashboard
+      2. Fills title and description in modal form
+      3. System creates item and shows it in the list
+      4. User clicks the item to view/edit detail
+      5. User clicks "Delete" — confirmation dialog appears
+      6. User confirms — item soft-deleted, removed from list
+    </interaction>
+  </key_interactions>
+
+  <implementation_steps>
+    <phase name="Phase 1: Project Setup &amp; Authentication">
+      Initialize frontend (React + Vite + Tailwind) and backend (FastAPI + SQLAlchemy)
+      Configure PostgreSQL and run initial migrations for users and refresh_tokens tables
+      Implement POST /api/auth/register with email validation and bcrypt hashing
+      Implement POST /api/auth/login returning JWT access and refresh tokens
+      Implement POST /api/auth/logout and POST /api/auth/refresh
+      Build /login and /register pages with form validation
+      Implement JWT middleware for protecting API routes
+      Set up CORS and rate limiting middleware
+    </phase>
+    <phase name="Phase 2: Core Features &amp; API Layer">
+      Create domain database tables and migrations
+      Implement CRUD API endpoints with pagination
+      Build main dashboard list view with loading skeleton
+      Implement search and filter controls
+      Build item detail/edit form
+      Add form validation and inline error display
+    </phase>
+    <phase name="Phase 3: UI Polish &amp; Testing">
+      Implement responsive design (mobile, tablet, desktop)
+      Add dark mode toggle with localStorage persistence
+      Implement toast notification system
+      Add confirmation dialogs for all destructive actions
+      Write API integration tests for all happy paths and key error cases
+      Write frontend component tests for critical UI flows
+      Ensure test coverage reaches 90% threshold
+    </phase>
+    <phase name="Phase 4: End-to-End Verification">
+      Write and run e2e/integration tests for the primary user journeys
+      Confirm the app boots and the happy paths pass end-to-end
+    </phase>
+  </implementation_steps>
+
+  <success_criteria>
+    <functionality>
+      All features in core_features are implemented and passing
+      No console errors in browser during normal use
+      Data persists correctly across sessions
+      All API endpoints return correct HTTP status codes and error envelopes
+    </functionality>
+    <ux>
+      Responsive on mobile (375px+), tablet (768px+), and desktop (1280px+)
+      All async operations show skeleton loading states
+      Clear feedback for every user action (toast notifications)
+      All destructive actions have confirmation dialogs
+      Dark mode works across all pages and persists after refresh
+    </ux>
+    <technical_quality>
+      Test coverage >= 90%
+      No TypeScript or mypy type errors
+      Proper error handling throughout
+      JWT authentication protects all /api/* routes except /api/auth/*
+      No secrets committed to source control (use .env files)
+    </technical_quality>
+  </success_criteria>
+
+</project_specification>
