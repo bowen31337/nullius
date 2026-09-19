@@ -43,6 +43,7 @@ The `ingest` workspace member: app_spec.xml feature 16 —
 | `nullius_ingest/gaps.py` | `GapDetector`, `GapDetected`, `GapEventLog` — the feature 25 gap detection |
 | `nullius_ingest/backfill.py` | `GapBackfiller`, `SealGate` — the feature 26 REST backfill and seal gate |
 | `nullius_ingest/exchange_info.py` | `ExchangeInfoVersionStore`, `DailyExchangeInfoWorker`, `parse_exchange_info` — the feature 24 versioned daily refresh |
+| `nullius_ingest/funding.py` | `FundingRateStore`, `FundingRateWorker`, `parse_funding` — the feature 23 60-second funding/borrow poll, retained permanently |
 
 Stdlib-only by design, except `staging` (which resolves its lake root via
 the factory's `find_workspace_root`, as the snapshot member does); stream
@@ -328,6 +329,87 @@ snapshot directory, so the history becomes part of the sealed,
 content-addressed record rather than a sidecar a replay would have to
 reconstruct from live requests — which it could not do honestly, since a
 version describes what the venue said on a day that has passed.
+
+## Funding rate and margin borrow rate, polled every 60 seconds, retained permanently (feature 23)
+
+§4.1's table gives this stream the row *"Funding / borrow rate | REST | 1m |
+forever"*, and its retention column is the load-bearing one: unlike the L2 book
+diffs, which §4.1 keeps for a rolling 90 days, the funding and borrow series are
+kept **forever**, because a borrow-cost adjustment (feature 309) and a
+funding-based crowding proxy (feature 30) reach back across the whole history,
+and a row dropped at ingest time is a row no replay can ever recover. Feature 23
+states the behaviour:
+
+> System ingests funding rate and margin borrow rate every 60 seconds,
+> persisting rows retained permanently.
+
+- **Each poll is a new record, structurally.** `FundingRateStore` appends
+  `<lake>/staging/funding/<sequence>.bin` via feature 28's `StagingArea`, so
+  record `n`'s bytes are frozen the moment `n + 1` lands — the batch store
+  refuses a second batch at a sequence it already holds. There is no code path
+  that could overwrite a prior record.
+- **Retained permanently, not expired.** The funding log is written once into
+  the same staging area as every other stream, but nothing in the system
+  expires it — the deliberate contrast with the 90-day book-diff window. A
+  record's rows are a permanent history a replay reaches back across.
+- **The two rates are kept verbatim in the venue's spelling.** `"0.0001"` stays
+  `"0.0001"`, never a `Decimal`: whether the venue said `"0.0001"` or
+  `"0.00010"` is a fact about the venue, and re-rendering it would make an audit
+  unable to tell a venue change from our own lossy parse. A reading carries
+  exactly the funding rate and the borrow rate; a `premiumIndex` response's mark
+  price, index price and next funding time are ignored.
+- **60 seconds means 60 seconds, decided from the durable log.** A poll is due
+  when the last persisted record was fetched at least 60 seconds before now, and
+  immediately when the log is empty — startup is just the first cycle over an
+  empty store. A restart inside the window does not re-poll; a process that was
+  down across a boundary polls on its next cycle rather than waiting for a
+  timer. The cadence lives in the store, not in process memory.
+- **A failed poll consumes no record.** The document is parsed and validated
+  *before* anything is written, so a rate-limit body, an error page or a
+  truncated response never appears in the log as a poll that happened.
+- **Damaged bytes are refused, not parsed around.** A record file whose recorded
+  hash disagrees with its document, or that is not readable as an envelope at
+  all, raises `FundingCorruptError`. A log the cost path trusts for its borrow
+  rate must not hand back a plausible-looking rate assembled from bytes that
+  changed.
+
+The fetch is injected (`FundingFetch`) — this member ships no HTTP client, so
+the venue's auth, rate limits and pagination stay the deployment's business and
+the module stays stdlib-only. It registers itself as the `funding` stream's
+worker, so importing the package is the whole wiring, and a deployment wires its
+REST client with `register_funding_worker(fetch, registry=default_worker_registry())`
+— passing the default registry explicitly, because the function defaults to a
+*private* one so that wiring a fetch never silently replaces the auto-discovered
+worker for every later composition in the process. Until then the worker still
+composes and its cycle reports that stream's own failure — feature 16's
+contract, where an unconfigured stream is a row in the report rather than a
+component that fails to load.
+
+```python
+from datetime import datetime, timezone
+from nullius_ingest import FundingRateStore, FundingRateWorker
+
+store = FundingRateStore.from_env()      # <lake>/staging/funding
+worker = FundingRateWorker(
+    store, lambda: rest_client.get("/fapi/v1/premiumIndex")
+)
+
+worker.is_due()                # True: empty log, startup poll owed
+result = worker.run_cycle()    # polls, persists record 1
+result.sequence                # 1 — the record, i.e. the log's watermark
+result.rows_written            # the readings the record carries
+
+store.current().rates("BTCUSDT")   # ('0.0001', '0.00003') — (funding, borrow)
+store.latest_reading("BTCUSDT").reading_time   # the instant the poll happened
+
+worker.is_due()                # False: still inside the 60-second window
+```
+
+The `records()` log is what a seal copies into §4.2's `borrow/` snapshot
+directory, so the permanent history becomes part of the sealed, content-addressed
+record rather than a sidecar a replay would have to reconstruct from live
+requests — which it could not do honestly, since a record describes rates the
+venue quoted at an instant that has passed.
 
 ## Adding a stream worker (features 17–29)
 

@@ -50,6 +50,12 @@ What lives where:
   row, §13.2's "never hardcoded" rule; feature 24).  It registers itself as
   the ``exchangeInfo`` stream's worker, so importing this package is the
   whole wiring.
+* :mod:`nullius_ingest.funding` — :class:`FundingRateStore`, the append-only
+  log each 60-second funding/borrow poll is persisted into and retained
+  permanently rather than expired, and :class:`FundingRateWorker`, the stream
+  worker that owns the 60-second cadence (§4.1's "Funding / borrow rate |
+  REST | 1m | forever" row; feature 23).  It registers itself as the
+  ``funding`` stream's worker, so importing this package is the whole wiring.
 
 The package self-registers with the application factory: scanning this
 workspace member runs this module, the ``@register`` decorator below
@@ -86,6 +92,24 @@ from .exchange_info import (
     build_exchange_info_worker,
     parse_exchange_info,
     register_exchange_info_worker,
+)
+from .funding import (
+    CADENCE,
+    FUNDING_STREAM,
+    FundingCorruptError,
+    FundingDocument,
+    FundingError,
+    FundingFetch,
+    FundingParseError,
+    FundingRateStore,
+    FundingRateWorker,
+    FundingReading,
+    FundingRecord,
+    SIXTY_SECONDS,
+    StampedReading,
+    build_funding_worker,
+    parse_funding,
+    register_funding_worker,
 )
 from .gaps import GAP_DETECTED_EVENT, GapDetected, GapDetector, GapEventLog
 from .registry import (
@@ -134,9 +158,20 @@ __all__ = [
     "ExchangeInfoError",
     "ExchangeInfoFetch",
     "ExchangeInfoParseError",
+    "CADENCE",
     "ExchangeInfoVersion",
     "ExchangeInfoVersionStore",
     "FilterType",
+    "FUNDING_STREAM",
+    "FundingCorruptError",
+    "FundingDocument",
+    "FundingError",
+    "FundingFetch",
+    "FundingParseError",
+    "FundingRateStore",
+    "FundingRateWorker",
+    "FundingReading",
+    "FundingRecord",
     "FunctionWorker",
     "GapBackfiller",
     "GapDetected",
@@ -156,6 +191,8 @@ __all__ = [
     "SchemaValidatingWorker",
     "SequenceStore",
     "SealGate",
+    "SIXTY_SECONDS",
+    "StampedReading",
     "StagedBatch",
     "StagingArea",
     "StagingRootError",
@@ -167,11 +204,14 @@ __all__ = [
     "WorkerRegistry",
     "build_default_workers",
     "build_exchange_info_worker",
+    "build_funding_worker",
     "build_ingest",
     "build_supervisor",
     "coerce_stream_class",
     "parse_exchange_info",
+    "parse_funding",
     "register_exchange_info_worker",
+    "register_funding_worker",
     "register_worker",
 ]
 
