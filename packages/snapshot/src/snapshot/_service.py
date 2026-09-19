@@ -28,7 +28,10 @@ once and enforced nowhere is a comment, not a guarantee:
    rename, say) or raises :class:`SnapshotAlreadySealedError` when the
    identity differs. There is no code path that edits, extends, or replaces
    a sealed directory, and the returned record is frozen with a read-only
-   file mapping (see ``_records``).
+   file mapping (see ``_records``). The refusal reaches one granularity
+   further than names: an *identity* already assigned to other bytes is
+   refused under any name (:class:`SnapshotHashReusedError`, feature 38 —
+   see the paragraph below).
 
 Staging is *copied*, never moved or emptied: the §4.1 contract keeps staging
 append-only and owned by the ingest workers, so a seal is a pure read from
@@ -65,9 +68,31 @@ schema, are a different snapshot by construction and seal under their own
 name rather than colliding with the old one. A caller who has already
 decided the identity — a seal retry replaying it, a test pinning a name —
 supplies the full hash via ``snapshot_hash=`` and the seal honours it,
-deriving the directory's prefix from it. Whatever hash names the directory,
-the seal verifies it against nothing else: the hash is the identity, and
-identity is the caller's to assert.
+deriving the directory's prefix from it. The hash is the identity and
+identity is the caller's to assert — *within what the lake has not already
+assigned* (see the paragraph below): a supplied hash is not verified
+against the staged content (a caller replaying a decision pins exactly the
+hash it decided, formula or no), but it is verified against the lake's
+prior assignments.
+
+**A snapshot_hash is assigned once, to one set of bytes (feature 38).**
+Extending the lake — ingest appends more bars, a symbol is added, the
+universe turns over a month — changes the staged content, and the formula
+over the changed content is a different hash: the extension is sealed under
+its own new identity, beside the snapshot it grew from. That new hash is
+the whole invalidation mechanism: scores and features are keyed by
+``snapshot_hash`` (§4.4, feature 48), so a new hash is a guaranteed cache
+miss — the scores cached under the old hash are invalidated (recomputed on
+demand) rather than silently reused for bytes they never saw. The seal
+enforces the assign-once half explicitly: before publishing, it reads the
+assignments the lake itself persists — every sealed snapshot's manifest
+binds its full hash to its file mapping — and refuses, with
+:class:`SnapshotHashReusedError`, to publish a hash already bound to
+different bytes under any name (``_assert_identity_is_fresh``). The same
+hash over the *same* bytes is the idempotent case and stays legal: a
+schedule that re-seals unchanged staging re-asserts one identity, and the
+scores cached under it remain exactly as valid as they were — invalidation
+tracks the lake's content, not the calendar.
 """
 
 from __future__ import annotations
@@ -88,6 +113,7 @@ from ._errors import (
     SnapshotAlreadySealedError,
     SnapshotContentError,
     SnapshotError,
+    SnapshotHashReusedError,
     SnapshotManifestError,
     SnapshotNotFoundError,
     SnapshotStagingRequestError,
@@ -208,11 +234,16 @@ class SnapshotService:
         caller asserts is part of the identity the directory is named by
         (feature 32); supply the full 64-hex hash instead to seal under an
         identity decided elsewhere, such as a retry replaying a prior
-        decision. ``universe`` is the universe definition the manifest
-        records (feature 31) and the default hash folds: a JSON object —
-        for the universe member's config, ``dataclasses.asdict(config)`` —
-        or ``None`` to record that none was asserted; the identity docstring
-        (``_identity``) states the exact treatment.
+        decision — but only an identity this lake has not yet assigned:
+        a hash some sealed snapshot already carries over *different*
+        bytes is refused with :class:`SnapshotHashReusedError` (feature 38),
+        because publishing it would make scores cached under that hash
+        silently stand for the extended content. ``universe`` is the
+        universe definition the manifest records (feature 31) and the
+        default hash folds: a JSON object — for the universe member's
+        config, ``dataclasses.asdict(config)`` — or ``None`` to record that
+        none was asserted; the identity docstring (``_identity``) states
+        the exact treatment.
 
         The seal publishes a ``MANIFEST.json`` beside the content (per-file
         sha256, row counts, the universe definition and the full snapshot
@@ -224,8 +255,12 @@ class SnapshotService:
         Re-sealing the *same* content under the same name is idempotent and
         returns the existing record; re-sealing *different* content under a
         name that exists raises :class:`SnapshotAlreadySealedError` and
-        leaves the existing directory untouched. The source is copied, not
-        consumed.
+        leaves the existing directory untouched. And when the lake has been
+        *extended* — the staged content grew since a prior seal — the
+        default identity is a new hash by construction, so the scores
+        cached under the prior snapshot's hash are invalidated (they key on
+        the old hash and no longer match) rather than silently reused
+        (feature 38). The source is copied, not consumed.
         """
         source_path = (
             self.staging_root if source is None else Path(source).expanduser()
@@ -260,6 +295,13 @@ class SnapshotService:
             return self._existing_or_conflict(
                 final, instant, full_hash, files, validated_universe
             )
+
+        # The name is fresh; the identity must be too (feature 38). This is
+        # the check that makes "assigns a new snapshot_hash when the lake is
+        # extended" enforced rather than hoped for: a hash this lake has
+        # already bound to other bytes cannot be published over this
+        # content, under this name or any other.
+        self._assert_identity_is_fresh(full_hash, files, name)
 
         manifest = build_manifest(
             files=files,
@@ -398,6 +440,78 @@ class SnapshotService:
             path=final,
             files=files,
         )
+
+    def _assert_identity_is_fresh(
+        self,
+        full_hash: str,
+        files: Mapping[str, str],
+        candidate_name: str,
+    ) -> None:
+        """Refuse a snapshot_hash this lake has already assigned to other bytes.
+
+        The identity-side twin of the name check above, and feature 38's
+        enforcement point. A directory name collides only with itself, but
+        a snapshot_hash is *content addressing*: everything downstream keys
+        on it — §4.4's feature rows, the trial ledger's provenance stamps —
+        so a hash published over one set of bytes and then re-published
+        over another makes every score cached under it silently describe
+        data it was never computed over. That reuse is exactly what the
+        feature refuses: when the lake is extended, the extension gets a
+        *new* hash (the formula over the new content produces one), the old
+        hash keeps naming the old bytes, and cached scores keyed by the old
+        hash miss rather than match.
+
+        The assignments are read from the lake itself — every sealed
+        snapshot's ``MANIFEST.json`` *is* its persisted assignment of a
+        full hash to a file mapping — so the check needs no memory or
+        registry of its own and cannot drift from what the lake actually
+        says. The candidate's own directory is skipped: its name was just
+        found fresh, and same-name identity questions belong to the checks
+        above. Three granularities of honest ignorance are skipped rather
+        than guessed: a directory with no manifest (sealed before feature
+        31 — the name-level checks still cover it), a manifest that cannot
+        be parsed (it proves no binding, and refusing every future seal
+        over one corrupt neighbour would brick the write path), and a
+        manifest bound to *identical* bytes (not a reuse at all: the same
+        identity over the same content is the idempotent case, however
+        many directories carry it — a schedule that re-seals unchanged
+        staging at a later instant legitimately re-asserts one identity).
+
+        Only a caller-supplied ``snapshot_hash=`` can reach this refusal in
+        practice — the computed digest differs whenever the content does,
+        so a computed collision is a sha256 break refused on principle —
+        which is precisely the reachable hole: a schedule replaying a stale
+        decision over a lake that has since grown.
+        """
+        for name in self.sealed():
+            if name == candidate_name:
+                continue
+            manifest_file = self.snapshots_root / name / MANIFEST_NAME
+            if not manifest_file.is_file():
+                continue
+            try:
+                persisted = SnapshotManifest.from_json_bytes(
+                    manifest_file.read_bytes()
+                )
+            except SnapshotManifestError:
+                continue
+            if persisted.snapshot_hash != full_hash:
+                continue
+            persisted_files = {
+                path: entry.sha256 for path, entry in persisted.files.items()
+            }
+            if persisted_files == dict(files):
+                continue
+            raise SnapshotHashReusedError(
+                f"snapshot_hash {full_hash} is already assigned to sealed "
+                f"snapshot {name} ({persisted.file_count} files); refusing "
+                f"to bind it to different staged content ({len(files)} "
+                "files). When the lake is extended the seal is assigned a "
+                "new snapshot_hash — the formula over the extended content — "
+                "so scores cached under the old one are invalidated rather "
+                "than silently reused; drop snapshot_hash= and let the "
+                "seal compute the extended lake's own identity"
+            )
 
     # -- Reading ------------------------------------------------------------
 

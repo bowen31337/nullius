@@ -2,7 +2,7 @@
 
 Seals staged lake content into **immutable, content-addressed snapshot
 directories**, each carrying its own **`MANIFEST.json`** — app_spec.xml
-features 30 and 31, on the layout of `docs/nullius-tech-architecture.md`
+features 30–32 and 38, on the layout of `docs/nullius-tech-architecture.md`
 §4.1–§4.2.
 
 ## What it does
@@ -61,6 +61,55 @@ so the same content, instant, hash and universe produce byte-identical
 manifests on any machine. Its presence also pins identity on re-seal: the
 recorded full hash must match, which closes the gap where two different
 hashes sharing the directory name's six-character prefix could alias.
+
+## When the lake is extended
+
+App_spec feature 38: *the lake grows, the identity moves* — and that is
+the whole cache-invalidation mechanism. Scores and features are keyed by
+`snapshot_hash` (§4.4), so an extension that seals under a genuinely new
+hash is a guaranteed cache miss: the scores cached under the old one are
+recomputed rather than handed back for bytes they never saw.
+
+```python
+first = service.seal(staging, sealed_at=at_1)          # hash H1
+# ingest appends a partition…
+second = service.seal(staging, sealed_at=at_2)         # hash H2 ≠ H1
+
+second.snapshot_hash != first.snapshot_hash            # a new identity
+first.path.is_dir() and second.path.is_dir()           # both answer, each its own
+```
+
+Every extension axis re-keys: a new file, more bytes in an existing file,
+a file duplicating another's bytes (the fold is a multiset), a universe
+that turned over a month. And an extension that is append-only leaves
+every previously sealed path hashing identically inside the new identity —
+the tree structure survives; the scores do not (§15).
+
+The identity is **assigned once, to one set of bytes**, and the seal
+enforces it against the lake itself: every sealed snapshot's manifest is
+its persisted assignment of a full hash to a file mapping, and a seal
+that would publish an already-assigned hash over *different* bytes is
+refused — whatever name it would land under:
+
+```python
+service.seal(staging, sealed_at=at_2, snapshot_hash=first.snapshot_hash)
+# SnapshotHashReusedError: snapshot_hash H1 is already assigned to sealed
+# snapshot <name> (3 files); refusing to bind it to different staged
+# content (4 files). When the lake is extended the seal is assigned a new
+# snapshot_hash — the formula over the extended content — so scores cached
+# under the old one are invalidated rather than silently reused; drop
+# snapshot_hash= and let the seal compute the extended lake's own identity
+```
+
+`SnapshotHashReusedError` subclasses `SnapshotAlreadySealedError`: a
+reassigned identity is the immutability refusal one granularity up from a
+taken name. The same hash over the *same* bytes stays legal at any
+instant — a schedule that re-seals an unchanged lake re-asserts one
+identity, and cached scores under it remain exactly as valid as they
+were. Invalidation tracks the lake's content, not the calendar. A
+snapshot whose manifest is missing or unreadable proves no assignment and
+does not block unrelated seals; the name-level checks still own that
+directory for seals that name it.
 
 ## The read-only mount
 

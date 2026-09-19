@@ -3,10 +3,12 @@
 Implements app_spec.xml feature 30, "System persists a sealed snapshot into
 an immutable directory named by sealed_at plus a hash prefix", feature
 31, "System persists a MANIFEST.json per snapshot recording per-file
-sha256, row counts and the universe definition", and feature 32, "System
+sha256, row counts and the universe definition", feature 32, "System
 persists snapshot_hash computed as a sha256 over sorted file hashes plus
-the universe definition plus the schema version", on the layout of
-docs/nullius-tech-architecture.md §4.1-§4.2: ingest workers append into
+the universe definition plus the schema version", and feature 38, "System
+assigns a new snapshot_hash when the lake is extended, which invalidates
+previously cached scores rather than silently reusing them", on the layout
+of docs/nullius-tech-architecture.md §4.1-§4.2: ingest workers append into
 ``<lake>/staging``, and sealing copies that content into an immutable
 directory ``<lake>/snapshots/<sealed_at>_<snapshot_hash[:6]>`` — for
 example ``2026-09-01T00:00:00Z_a3f91c`` — carrying its ``MANIFEST.json``,
@@ -33,7 +35,13 @@ snapshot — per-file sha256, row counts and the universe definition
 the full §4.2 hash formula (feature 32, :func:`snapshot_digest`): a sha256
 over the sorted per-file hashes plus the universe definition plus the lake
 schema version, so the same bytes under a different definition or schema
-are a different snapshot. The read-only mount and staging-rejection checks
+are a different snapshot. That identity is also assign-once (feature 38):
+extending the lake changes the content and therefore the hash, so a seal
+of the extended lake lands under a *new* snapshot_hash — the lever that
+invalidates scores cached under the old one (they key on the old hash and
+no longer match) — and a hash some sealed snapshot already carries over
+different bytes is refused with :class:`SnapshotHashReusedError` rather
+than published. The read-only mount and staging-rejection checks
 lean on the frozen modes and the strict name parser.
 
 The read side of the same boundary is :class:`SnapshotMount` (feature 34):
@@ -60,6 +68,7 @@ from ._errors import (
     SnapshotAlreadySealedError,
     SnapshotContentError,
     SnapshotError,
+    SnapshotHashReusedError,
     SnapshotManifestError,
     SnapshotNameError,
     SnapshotNotFoundError,
@@ -103,6 +112,7 @@ __all__ = [
     "SnapshotAlreadySealedError",
     "SnapshotContentError",
     "SnapshotError",
+    "SnapshotHashReusedError",
     "SnapshotManifest",
     "SnapshotManifestError",
     "SnapshotMount",

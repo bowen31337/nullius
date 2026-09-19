@@ -15,6 +15,14 @@ failure of the sealing path with a single ``except``. The subclasses split by
 * :class:`SnapshotAlreadySealedError` — the immutability contract. A sealed
   directory is forever; re-sealing different bytes under a name that already
   exists is refused, not overwritten.
+* :class:`SnapshotHashReusedError` — the assign-once contract on identities
+  (app_spec.xml feature 38). A ``snapshot_hash`` this lake has already
+  assigned to one set of bytes is never assigned to another: when the lake
+  is extended, the extension is sealed under a *new* hash, so scores cached
+  under the old one are invalidated rather than silently reused. A subclass
+  of :class:`SnapshotAlreadySealedError`, because a reassigned identity is
+  the same contract violated one directory over — an immutable thing is
+  being asked to stand for different bytes.
 * :class:`SnapshotManifestError` — the manifest contract. The
   ``MANIFEST.json`` a seal persists inside every snapshot is the snapshot's
   on-disk identity (feature 31), so a manifest that cannot be built, parsed
@@ -55,6 +63,7 @@ __all__ = [
     "SnapshotAlreadySealedError",
     "SnapshotContentError",
     "SnapshotError",
+    "SnapshotHashReusedError",
     "SnapshotManifestError",
     "SnapshotNameError",
     "SnapshotNotFoundError",
@@ -77,6 +86,31 @@ class SnapshotContentError(SnapshotError):
 
 class SnapshotAlreadySealedError(SnapshotError):
     """An immutable snapshot already exists under this name with other bytes."""
+
+
+class SnapshotHashReusedError(SnapshotAlreadySealedError):
+    """A snapshot_hash already assigned in this lake was asserted over other bytes.
+
+    app_spec.xml feature 38: *"System assigns a new snapshot_hash when the
+    lake is extended, which invalidates previously cached scores rather
+    than silently reusing them."* The invalidation half of that sentence is
+    a consequence of the addressing: scores and features are keyed by
+    ``snapshot_hash`` (§4.4), so a genuinely new hash is a guaranteed cache
+    miss and the scores are recomputed. This error is what keeps the
+    "genuinely" honest — the lake treats every ``snapshot_hash`` it has
+    ever published as *assigned* to exactly the bytes that snapshot sealed
+    (its ``MANIFEST.json`` is the persisted assignment), and refuses to
+    publish the same hash over different bytes, however the caller came by
+    it: computed (a digest collision — refused on principle) or supplied
+    via ``snapshot_hash=`` (a retry or a schedule replaying a stale
+    decision over a lake that has since grown — the reachable case).
+
+    A subclass of :class:`SnapshotAlreadySealedError` on purpose: the name
+    check refuses different bytes under an existing *directory name*, and
+    this refuses different bytes under an existing *identity* — one
+    contract (immutability), two granularities, so a caller catching the
+    parent catches both refusals.
+    """
 
 
 class SnapshotNotFoundError(SnapshotError):
