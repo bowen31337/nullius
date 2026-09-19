@@ -50,6 +50,24 @@ code failed:
   rather than defaulted, because the window is the thing every downstream
   number is computed over — a silently widened or fabricated window is
   look-ahead bias with a return value (see ``_window``).
+* :class:`EvaluatorSandboxError` — the sandbox runner contract (app_spec.xml
+  feature 73). The signal runs inside a resource-limited child process, so
+  the failures here are failures of *driving* that process rather than of
+  the signal it ran: the interpreter is missing, the child cannot be
+  spawned, the platform has no POSIX resource limits to enforce. A signal
+  that times out, runs out of memory or crashes is **not** here — those are
+  recorded outcomes (:class:`~evaluator._sandbox.SandboxResult.fail_class`),
+  because a failed run is a value the pipeline persists, not an exception
+  that aborts it (see ``_sandbox``).
+* :class:`EvaluatorSignalError` — the execution-orchestration contract
+  (app_spec.xml feature 73). Step 2 of §6.1's pipeline ties a resolved
+  window to raw scores per rebalance date, so the failures here are failures
+  of that tying: no rebalance grid to score at (a resolution with no
+  surviving bars and no explicit dates), or a materialize callable that
+  returns something that is not a materialized window. A signal that returns
+  a contract-violating vector is **not** here — that is a
+  ``contract_violation`` the caller decides on (feature 12), carried on the
+  vector's ``problems`` rather than raised (see ``_execute``).
 """
 
 from __future__ import annotations
@@ -59,6 +77,8 @@ __all__ = [
     "EvaluatorError",
     "EvaluatorIdentityError",
     "EvaluatorImageError",
+    "EvaluatorSandboxError",
+    "EvaluatorSignalError",
     "EvaluatorStoreError",
     "EvaluatorWindowError",
 ]
@@ -114,4 +134,31 @@ class EvaluatorWindowError(EvaluatorError):
     the sealed bars coverage, a snapshot carrying no bars partitions, and a
     partition date that does not parse as ISO — every failure of the slice
     itself, rather than of anything downstream of it.
+    """
+
+
+class EvaluatorSandboxError(EvaluatorError):
+    """The signal sandbox could not be driven at all.
+
+    Raised by :class:`evaluator._sandbox.SignalSandbox` when the runner
+    itself fails rather than the signal it ran: the interpreter is missing,
+    the child cannot be spawned, or the platform has no POSIX resource limits
+    to enforce. A signal that times out, runs out of memory or crashes is not
+    this error — those are recorded outcomes on the returned
+    :class:`~evaluator._sandbox.SandboxResult`, because a failed run is a
+    value the pipeline persists, not an exception that aborts it.
+    """
+
+
+class EvaluatorSignalError(EvaluatorError):
+    """The signal-execution orchestration failed.
+
+    Raised by :func:`evaluator.execute_signal` (app_spec.xml feature 73) when
+    step 2 of the §6.1 pipeline cannot tie a resolved window to raw scores:
+    there is no rebalance grid to score at (a resolution with no surviving
+    bars and no explicit dates), or the injected ``materialize`` callable
+    returned something that is not a materialized window. A signal that
+    returns a contract-violating vector is not this error — that is a
+    ``contract_violation`` the caller decides on (feature 12), carried on the
+    vector's ``problems`` rather than raised.
     """

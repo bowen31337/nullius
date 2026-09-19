@@ -61,22 +61,31 @@ no central file names it, and none may. All intra-package imports are
 relative, so the package imports identically under its own name and under
 the loader's scan-time name.
 
-*It resolves the window, but evaluates nothing.* This member owns the
+*It resolves the window, and executes the signal.* This member owns the
 evaluator's *identity* — the thing §14.1 calls the first third of the
 provenance triple — plus the host-side window resolution of feature 72: the
 sealed snapshot sliced to the decision time, returning the point-in-time
 universe and the partitions at or before it. Both are host-side, resolved
 before any sandbox exists, and both are cheap to import — the identity is
 what a score is stamped *with*, the window is what it is computed *over*,
-and neither touches the environment at import time. The rest of the pipeline
-(sandboxed execution, normalization, alignment, the null gate, purge and
+and neither touches the environment at import time. Feature 73 adds the
+sandboxed execution of step 2: :func:`execute_signal` runs a signal's
+``signal`` entrypoint inside a resource-limited child process, over a window
+materialized from the resolution and serialized over the payload channel,
+returning one raw score vector per rebalance date. It stays import-cheap — the sandbox is a stdlib-only
+process runner, and ``polars``/``pyarrow``/``contract`` are reached lazily on
+the child path, so composing the application (and the replay path §1 forbids
+from reaching the evaluator) pays no numerics cost for importing this member.
+The rest of the pipeline (normalization, alignment, the null gate, purge and
 embargo, costs, metrics) is the rest of this category's features, and each
-layers on this identity and this window rather than beside them: a score
-that cannot name its evaluator cannot be compared, and a score computed over
-a window that reaches past its decision time is look-ahead. Keeping the
-import this cheap also keeps the replay path importable — architecture §1
-forbids replay from reaching the evaluator at all, so the less this package
-does at import time, the less there is to accidentally invoke.
+layers on this identity, this window and this execution rather than beside
+them: a score that cannot name its evaluator cannot be compared, a score
+computed over a window that reaches past its decision time is look-ahead, and
+a raw score that is not validated against the contract cannot be trusted.
+Keeping the import this cheap also keeps the replay path importable —
+architecture §1 forbids replay from reaching the evaluator at all, so the
+less this package does at import time, the less there is to accidentally
+invoke.
 """
 
 from app.module_loader import register
@@ -93,6 +102,8 @@ from ._errors import (
     EvaluatorError,
     EvaluatorIdentityError,
     EvaluatorImageError,
+    EvaluatorSandboxError,
+    EvaluatorSignalError,
     EvaluatorStoreError,
     EvaluatorWindowError,
 )
@@ -110,6 +121,20 @@ from ._image import (
     coerce_image_ref,
     image_digest,
     parse_image_ref,
+)
+from ._sandbox import (
+    DEFAULT_CPU_S,
+    DEFAULT_MEM_MB,
+    DEFAULT_PIDS,
+    DEFAULT_WALL_S,
+    SandboxLimits,
+    SandboxResult,
+    SignalSandbox,
+)
+from ._execute import (
+    RawScoreVector,
+    SignalExecution,
+    execute_signal,
 )
 from ._service import ENV_IMAGE, EvaluatorService, build_evaluator_service
 from ._window import (
@@ -159,6 +184,8 @@ __all__ = [
     "EvaluatorError",
     "EvaluatorIdentityError",
     "EvaluatorImageError",
+    "EvaluatorSandboxError",
+    "EvaluatorSignalError",
     "EvaluatorStoreError",
     "EvaluatorWindowError",
     # Feature 72 — the host-side window resolution
@@ -166,6 +193,17 @@ __all__ = [
     "SLICED_STREAMS",
     "WindowResolution",
     "resolve_window",
+    # Feature 73 — the sandboxed signal execution
+    "DEFAULT_CPU_S",
+    "DEFAULT_MEM_MB",
+    "DEFAULT_PIDS",
+    "DEFAULT_WALL_S",
+    "SandboxLimits",
+    "SandboxResult",
+    "SignalSandbox",
+    "RawScoreVector",
+    "SignalExecution",
+    "execute_signal",
 ]
 
 __version__ = "0.1.0"
