@@ -83,14 +83,21 @@ against its cross-section's own mean and population standard deviation, so two
 authors who agree on order but disagree on scale land on the same footing. It
 stays import-cheap the same way: ``polars`` is reached only when a vector is
 actually normalized, so composing the application pays no numerics cost for
-importing this member. The rest of the pipeline (alignment, the null gate, purge and
+importing this member. Feature 75 adds pipeline step 4: :func:`align_targets`
+pairs forward returns with the score grid — one target series per horizon, at
+the five horizons :data:`HORIZONS` pins, stepping in bars on the market grid —
+and it is the cheapest import in this package so far, stdlib-only with no
+lazily-reached numerics at all, because a target series is keyed data, not a
+frame. The rest of the pipeline (the null gate, purge and
 embargo, costs, metrics) is the rest of this category's features, and each
-layers on this identity, this window, this execution and this normalization
+layers on this identity, this window, this execution, this normalization and
+this alignment
 rather than beside them: a score that cannot name its evaluator cannot be
 compared, a score computed over a window that reaches past its decision time
 is look-ahead, a raw score that is not validated against the contract cannot
-be trusted, and a score that has not been normalized to a common scale cannot
-be compared across authors.
+be trusted, a score that has not been normalized to a common scale cannot
+be compared across authors, and a metric computed against targets that were
+not aligned to the grid it scored on measures nothing.
 Keeping the import this cheap also keeps the replay path importable —
 architecture §1 forbids replay from reaching the evaluator at all, so the
 less this package does at import time, the less there is to accidentally
@@ -107,6 +114,7 @@ from ._config import (
     resolve_config,
 )
 from ._errors import (
+    EvaluatorAlignmentError,
     EvaluatorConfigError,
     EvaluatorError,
     EvaluatorIdentityError,
@@ -149,6 +157,12 @@ from ._normalize import (
     EvaluatorNormalizeError,
     normalize_scores,
 )
+from ._align import (
+    HORIZONS,
+    AlignedTargets,
+    TargetSeries,
+    align_targets,
+)
 from ._service import ENV_IMAGE, EvaluatorService, build_evaluator_service
 from ._window import (
     ROSTER_STREAM,
@@ -173,6 +187,12 @@ __all__ = [
     # Feature 74 — the normalization
     "EvaluatorNormalizeError",
     "normalize_scores",
+    # Feature 75 — the target alignment
+    "EvaluatorAlignmentError",
+    "HORIZONS",
+    "AlignedTargets",
+    "TargetSeries",
+    "align_targets",
     # Feature 70 — the first term: the pinned container image
     "DIGEST_ALGORITHM",
     "DIGEST_HEX_LENGTH",

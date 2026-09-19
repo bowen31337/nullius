@@ -68,6 +68,18 @@ code failed:
   a contract-violating vector is **not** here — that is a
   ``contract_violation`` the caller decides on (feature 12), carried on the
   vector's ``problems`` rather than raised (see ``_execute``).
+* :class:`EvaluatorAlignmentError` — the alignment contract (app_spec.xml
+  feature 75). Step 4 of §6.1's pipeline aligns forward returns to the
+  score grid at the five horizons the spec names, so the failures here are
+  failures of that pairing: closes that are not a well-formed fetch (a
+  malformed key, a non-finite or non-positive price), an execution with no
+  grid or no scored symbols, a scored symbol whose entry close is missing
+  on its own rebalance date (the roster guaranteed the bar; the fetch lost
+  it), an alignment with no computable target at any horizon, and a record
+  built by hand that violates the series' invariants. Each is refused
+  rather than defaulted, because a target is the label every downstream
+  metric is computed against — a zero-filled or truncated series would
+  read to the metrics as a measurement (see ``_align``).
 * :class:`EvaluatorStoreError` — the persistence contract (app_spec.xml
   feature 70). "System persists ``evaluator_hash``" is the feature's whole
   text, so a configured store whose write fails is an error rather than a
@@ -84,6 +96,7 @@ code failed:
 from __future__ import annotations
 
 __all__ = [
+    "EvaluatorAlignmentError",
     "EvaluatorConfigError",
     "EvaluatorError",
     "EvaluatorIdentityError",
@@ -150,6 +163,22 @@ class EvaluatorNormalizeError(EvaluatorError):
     would dress a "no preference" up as a measurement. Each is refused rather
     than defaulted, because a normalized vector is only comparable when there
     was a scale to remove, and these are the cases in which there was not.
+    """
+
+
+class EvaluatorAlignmentError(EvaluatorError):
+    """Forward returns could not be aligned into one target series per horizon.
+
+    Raised by :func:`evaluator.align_targets` (app_spec.xml feature 75) and
+    by a target record built by hand, when step 4 of the §6.1 pipeline
+    cannot pair forward returns to the score grid: the execution is not
+    one, the fetched closes are malformed (a bad key, a non-finite or
+    non-positive price), a scored symbol's entry close is missing on its
+    own rebalance date, no horizon has any computable target, or a series
+    violates the closed horizon set or the bundle's provenance coherence.
+    Each is refused rather than defaulted — a target is the label every
+    downstream metric is computed against, so a zero-filled or silently
+    narrowed series would reach the metrics dressed as a measurement.
     """
 
 
