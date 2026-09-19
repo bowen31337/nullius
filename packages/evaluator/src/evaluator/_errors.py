@@ -68,6 +68,17 @@ code failed:
   a contract-violating vector is **not** here — that is a
   ``contract_violation`` the caller decides on (feature 12), carried on the
   vector's ``problems`` rather than raised (see ``_execute``).
+* :class:`EvaluatorStoreError` — the persistence contract (app_spec.xml
+  feature 70). "System persists ``evaluator_hash``" is the feature's whole
+  text, so a configured store whose write fails is an error rather than a
+  shrug, and — unlike the snapshot member, where the sealed directory is a
+  complete record on its own and a missing row leaves a verifiable artifact
+  behind — the persisted row *is* the artifact here, so a service with no
+  store configured refuses to persist rather than degrading to a no-op that
+  a caller could mistake for success. The same error covers a stored row
+  that cannot be believed: a row read back whose terms do not fold to the
+  hash it is filed under is a tamper, and it surfaces here rather than
+  loading as a plausible-looking lie (see ``_store``).
 """
 
 from __future__ import annotations
@@ -77,6 +88,7 @@ __all__ = [
     "EvaluatorError",
     "EvaluatorIdentityError",
     "EvaluatorImageError",
+    "EvaluatorNormalizeError",
     "EvaluatorSandboxError",
     "EvaluatorSignalError",
     "EvaluatorStoreError",
@@ -123,6 +135,21 @@ class EvaluatorStoreError(EvaluatorError):
     Raised when no store is configured (feature 70 is a persistence feature,
     so there is nothing to degrade to), when ``DATABASE_URL`` names a scheme
     this store does not speak, and when an SQLite write fails.
+    """
+
+
+class EvaluatorNormalizeError(EvaluatorError):
+    """A raw score vector could not be normalized into a comparable score.
+
+    Raised by :func:`evaluator.normalize_scores` (app_spec.xml feature 74)
+    when the rank-then-z-score reduction cannot produce a comparable
+    cross-sectional score: the input is not a Polars ``Series`` of finite
+    floats, the vector holds a single symbol (one symbol is not a
+    cross-section to be relatively preferred within), or every raw score is
+    identical so the cross-sectional deviation is zero and dividing by it
+    would dress a "no preference" up as a measurement. Each is refused rather
+    than defaulted, because a normalized vector is only comparable when there
+    was a scale to remove, and these are the cases in which there was not.
     """
 
 

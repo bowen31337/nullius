@@ -76,12 +76,21 @@ returning one raw score vector per rebalance date. It stays import-cheap — the
 process runner, and ``polars``/``pyarrow``/``contract`` are reached lazily on
 the child path, so composing the application (and the replay path §1 forbids
 from reaching the evaluator) pays no numerics cost for importing this member.
-The rest of the pipeline (normalization, alignment, the null gate, purge and
+Feature 74 adds pipeline step 3: :func:`normalize_scores` turns a raw score
+vector into a comparable one by ranking then cross-sectional z-scoring — the
+magnitude an author chose is thrown away, and the symbol's rank is rescaled
+against its cross-section's own mean and population standard deviation, so two
+authors who agree on order but disagree on scale land on the same footing. It
+stays import-cheap the same way: ``polars`` is reached only when a vector is
+actually normalized, so composing the application pays no numerics cost for
+importing this member. The rest of the pipeline (alignment, the null gate, purge and
 embargo, costs, metrics) is the rest of this category's features, and each
-layers on this identity, this window and this execution rather than beside
-them: a score that cannot name its evaluator cannot be compared, a score
-computed over a window that reaches past its decision time is look-ahead, and
-a raw score that is not validated against the contract cannot be trusted.
+layers on this identity, this window, this execution and this normalization
+rather than beside them: a score that cannot name its evaluator cannot be
+compared, a score computed over a window that reaches past its decision time
+is look-ahead, a raw score that is not validated against the contract cannot
+be trusted, and a score that has not been normalized to a common scale cannot
+be compared across authors.
 Keeping the import this cheap also keeps the replay path importable —
 architecture §1 forbids replay from reaching the evaluator at all, so the
 less this package does at import time, the less there is to accidentally
@@ -136,6 +145,10 @@ from ._execute import (
     SignalExecution,
     execute_signal,
 )
+from ._normalize import (
+    EvaluatorNormalizeError,
+    normalize_scores,
+)
 from ._service import ENV_IMAGE, EvaluatorService, build_evaluator_service
 from ._window import (
     ROSTER_STREAM,
@@ -157,6 +170,9 @@ __all__ = [
     "evaluator_digest",
     "evaluator_identity",
     "normalize_evaluator_hash",
+    # Feature 74 — the normalization
+    "EvaluatorNormalizeError",
+    "normalize_scores",
     # Feature 70 — the first term: the pinned container image
     "DIGEST_ALGORITHM",
     "DIGEST_HEX_LENGTH",
