@@ -74,6 +74,7 @@ from typing import Optional
 
 from .bars import coerce_date
 from .monthly import MonthlyUniverse, month_key, month_start, next_month_start
+from .ordering import canonical_symbol_order
 
 __all__ = [
     "MembershipInterval",
@@ -279,9 +280,11 @@ def resolve_membership(
     refused loudly even against an empty table: a typo quietly returning
     "nothing tradable" would be a wrong answer wearing the shape of a
     right one. The result is the sorted *distinct* symbols — the stable
-    ordering feature 46 formalizes — so every consumer, from a
-    ``MarketWindow``'s universe tuple to a replay harness, can rely on it
-    without sorting again. The derivation never emits two intervals of one
+    ordering feature 46 owns, spelled once in
+    :func:`universe.ordering.canonical_symbol_order` and shared with every
+    other resolution path — so every consumer, from a ``MarketWindow``'s
+    universe tuple to a replay harness, can rely on it without sorting
+    again. The derivation never emits two intervals of one
     symbol that overlap, but resolution is defined regardless: a symbol is
     in or out, never in twice.
 
@@ -296,6 +299,6 @@ def resolve_membership(
     deserves.
     """
     moment = coerce_date(when)
-    return tuple(
-        sorted({interval.symbol for interval in intervals if interval.covers(moment)})
+    return canonical_symbol_order(
+        interval.symbol for interval in intervals if interval.covers(moment)
     )

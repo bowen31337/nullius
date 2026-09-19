@@ -35,8 +35,9 @@ left the universe: its rows simply stop accruing, and the span they cover is its
 listed period, queryable via :meth:`PriceHistoryStore.listed_range`.
 
 *A window returns a stable ordering.* :meth:`symbols_in_window` returns symbols
-sorted ascending, so the set a window hands back is the same set in the same
-order on every run — the bit-reproducibility every downstream reduction depends
+in the canonical order (:func:`universe.ordering.canonical_symbol_order`,
+feature 46), so the set a window hands back is the same set in the same order
+on every run — the bit-reproducibility every downstream reduction depends
 on starts with the symbols it is handed.
 """
 
@@ -51,6 +52,7 @@ from dataclasses import dataclass
 from typing import Iterable, Optional
 
 from .bars import coerce_date
+from .ordering import canonical_symbol_order
 from .store import DATABASE_URL_ENV
 
 __all__ = [
@@ -70,7 +72,12 @@ def symbols_on_connection(
     The single source of the window query: :meth:`PriceHistoryStore.symbols_in_window`
     and the survivorship audit's in-transaction derivation both go through it,
     so the set a window returns cannot drift between the reader and the audit.
-    Inclusive on both bounds, ordered ascending.
+    Inclusive on both bounds, and returned in the canonical order (feature 46):
+    the SQL ``ORDER BY`` does the work under SQLite's ``BINARY`` collation —
+    byte order over UTF-8, the same total order Python's ``str`` comparison
+    spells — and the routing through
+    :func:`~universe.ordering.canonical_symbol_order` makes that agreement a
+    construction, not a coincidence.
     """
     start = coerce_date(window_start).isoformat()
     end = coerce_date(window_end).isoformat()
@@ -82,7 +89,7 @@ def symbols_on_connection(
         """,
         (start, end),
     ).fetchall()
-    return tuple(row[0] for row in rows)
+    return canonical_symbol_order(row[0] for row in rows)
 
 
 @dataclass(frozen=True)
@@ -273,9 +280,9 @@ class PriceHistoryStore:
         return dt.date.fromisoformat(row[0]), dt.date.fromisoformat(row[1])
 
     def all_symbols(self, database_url: Optional[str] = None) -> tuple[str, ...]:
-        """Every symbol with any retained bar, sorted."""
+        """Every symbol with any retained bar, in the canonical order."""
         with closing(self._connect(database_url)) as connection:
             rows = connection.execute(
                 "SELECT DISTINCT symbol FROM universe_price_history ORDER BY symbol"
             ).fetchall()
-        return tuple(row[0] for row in rows)
+        return canonical_symbol_order(row[0] for row in rows)

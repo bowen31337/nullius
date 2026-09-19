@@ -1,7 +1,7 @@
 """The tradable universe, as a workspace component.
 
 Features (app_spec.xml, "Universe & Survivorship Integrity", features 40,
-41, 42, 43, 44, 45 and 47): persist a monthly tradable universe computed as top-N by
+41, 42, 43, 44, 45, 46 and 47): persist a monthly tradable universe computed as top-N by
 trailing 30-day median dollar volume, exclude symbols whose median falls
 below a configured liquidity floor — persisting each exclusion with its
 reason — persist the point-in-time ``universe_membership`` rows
@@ -11,9 +11,12 @@ symbols tradable *then* rather than now
 (:func:`universe.membership.resolve_membership`), retain
 every symbol's daily price history so a delisted name still answers to any
 window covering its listed period, audit each historical window for the
-delisted symbols still present in it, and reject a build whose window is
+delisted symbols still present in it, reject a build whose window is
 known to contain delistings yet counts ``delisted=0`` — the pruning
-signature the gate (:mod:`universe.gate`) refuses to persist.
+signature the gate (:mod:`universe.gate`) refuses to persist — and return
+every one of those answers in the one stable symbol ordering
+(:mod:`universe.ordering`, feature 46), so downstream reductions stay
+bit-reproducible.
 docs/nullius-tech-architecture.md §4.3
 fixes the definition; the module docstrings in this package record the mechanics.
 
@@ -70,6 +73,12 @@ from .monthly import (
     next_month_start,
 )
 from .membership import MembershipInterval, membership_intervals, resolve_membership
+from .ordering import (
+    UnstableSymbolOrder,
+    assert_stable_symbol_order,
+    canonical_symbol_order,
+    is_stable_symbol_order,
+)
 from .service import UniverseService, build_universe_service
 from .store import (
     load_all_monthly_universes,
@@ -104,6 +113,11 @@ __all__ = [
     "membership_intervals",
     # Feature 42 — resolve membership as of a requested decision time
     "resolve_membership",
+    # Feature 46 — the stable symbol ordering every resolution returns
+    "UnstableSymbolOrder",
+    "canonical_symbol_order",
+    "is_stable_symbol_order",
+    "assert_stable_symbol_order",
     "persist_monthly_universe",
     "persist_universe_membership",
     "load_monthly_universe",

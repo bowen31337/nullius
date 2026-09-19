@@ -68,6 +68,7 @@ from .bars import coerce_date
 from .history import PriceHistoryStore, symbols_on_connection
 from .membership import MembershipInterval
 from .monthly import MonthlyUniverse
+from .ordering import canonical_symbol_order
 
 __all__ = [
     "SurvivorshipGap",
@@ -127,21 +128,18 @@ def known_delistings(
     the period contained a name that left. Open intervals are current
     members, not delistings; a closed interval that ended at or before the
     window began is a departure the period does not contain, as is a
-    membership that started after it ended. Sorted, so the knowledge is
-    stated the same way every time.
+    membership that started after it ended. In the canonical order
+    (:func:`universe.ordering.canonical_symbol_order`, feature 46), so the
+    knowledge is stated the same way every time.
     """
     start = coerce_date(window_start)
     end = coerce_date(window_end)
-    return tuple(
-        sorted(
-            {
-                interval.symbol
-                for interval in intervals
-                if interval.valid_to is not None
-                and interval.valid_from <= end
-                and interval.valid_to > start
-            }
-        )
+    return canonical_symbol_order(
+        interval.symbol
+        for interval in intervals
+        if interval.valid_to is not None
+        and interval.valid_from <= end
+        and interval.valid_to > start
     )
 
 

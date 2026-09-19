@@ -30,6 +30,7 @@ from .config import UniverseConfig
 from .gate import SurvivorshipGap, reject_survivorship_gaps, survivorship_gaps
 from .history import PriceBar, PriceHistoryStore
 from .membership import MembershipInterval, resolve_membership
+from .ordering import assert_stable_symbol_order
 from .monthly import (
     MonthlyUniverse,
     UniverseBuildResult,
@@ -204,11 +205,19 @@ class UniverseService:
         current roster, so a symbol that has since left still answers when
         ``t`` was inside its interval — and a symbol that has since joined
         does not answer for a ``t`` before its interval opens.
+
+        The answer is asserted to be in the stable symbol ordering
+        (feature 46) before it leaves the facade — the boundary a
+        downstream reduction consumes — so an ordering that drifted from
+        the canonical one fails loudly here, at the seam, rather than
+        silently in the last bits of every float computed over it.
         """
         intervals = load_universe_membership(
             database_url if database_url is not None else self.database_url
         )
-        return resolve_membership(intervals, when)
+        return assert_stable_symbol_order(
+            resolve_membership(intervals, when), origin="UniverseService.resolve"
+        )
 
     def ingest_prices(
         self, bars: Iterable[PriceBar], database_url: Optional[str] = None

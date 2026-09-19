@@ -29,7 +29,10 @@ module answers exactly one question — *what is the composed universe
 component?* — and does not re-export the audit, its rendering, the gate
 or the point-in-time resolution: a caller who has the service can reach
 ``service.resolve(when)`` for the symbols tradable as of a decision time
-— *then*, never now; the resolution feature 42 owns —
+— *then*, never now; the resolution feature 42 owns — always in the one
+stable symbol ordering (feature 46), asserted at the facade before the
+answer leaves it, so a downstream reduction over the composed
+component's universe stays bit-reproducible;
 ``service.survivorship_audit()`` for the counted, listed names, the
 rendering for the report lines, and ``service.survivorship_gaps()`` for
 the windows the gate would refuse, and a second spelling of those APIs
