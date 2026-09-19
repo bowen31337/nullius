@@ -1,0 +1,28 @@
+# Workspace member: the point-in-time tradable universe.
+# (app_spec.xml, "Universe & Survivorship Integrity", feature 40;
+# docs/nullius-tech-architecture.md §4.3 for the definition.)
+#
+# Joins the uv workspace by convention — packages/<name> with its own
+# pyproject.toml — so the module loader (src/app/module_loader.py) discovers
+# this component by scanning the members the root pyproject.toml declares.
+# No edit to any central file is needed or wanted.
+#
+# Deliberately stdlib-only. The universe build is part of the data spine:
+# it must be importable in the factory scan, in test sandboxes and in the
+# replay path without resolving a single third-party wheel. Polars arrives
+# with the ingest/snapshot members that actually read the lake; this member
+# consumes daily bar records and owns none of that machinery.
+
+[project]
+name = "universe"
+version = "0.1.0"
+description = "Monthly tradable universe: top-N by trailing 30 day median dollar volume, persisted point-in-time."
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/universe"]
