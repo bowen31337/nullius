@@ -123,6 +123,63 @@ The composed component is reachable from the `app` package namespace at
 `app.modules.contract.contract_component()`, which returns the dict — or
 `None` when no contract component is registered.
 
+## Versions of the ABI (feature 15)
+
+`CONTRACT_VERSION` is declared in the package next to the ABI it versions, and
+`contract.version` is what a node writer actually reaches for. Feature 15's
+sentence — a `contract_version` constant that *every stored node persists
+alongside its code hash* — is two halves, and they answer different questions:
+
+- the **code hash** says *which source* was stored;
+- the **contract version** says *which ABI that source was written against* —
+  the entrypoint name, the window it is handed, the shape of the vector it
+  returns.
+
+Persisting both is what makes two nodes comparable. Without the stamp, an ABI
+change is invisible: two rows with different code hashes look like two
+experiments, when the truth may be that the same experiment was run twice
+against signatures that no longer agree — and every comparison downstream
+(paired ΔIR, dedup by `code_hash`, the replay path) silently assumes they are
+commensurable.
+
+```python
+from contract import compare, describe_contract_version, node_abi_record
+
+describe_contract_version()
+# {'contract_version': '0.1.0', 'market_window': 'contract:MarketWindow',
+#  'entrypoint': 'signal'}   — what "0.1.0" actually meant
+
+record = node_abi_record(code_hash=code_hash)   # the pair a writer persists
+record.as_dict()
+# {'contract_version': '0.1.0', 'code_hash': 'a3f1…'}
+
+compare(record.contract_version)
+# Compatibility(status='compatible', direction='same', …)
+compare("0.0.9").status, compare("0.0.9").direction   # ('stale', 'older')
+```
+
+Three things are deliberate:
+
+- **`compare` returns a value, it never raises.** `compatible` / `stale` /
+  `malformed`, with the direction (`older`/`newer`) alongside. An audit over a
+  five-month-old tree must be able to *describe* a row with a missing or
+  unreadable stamp, not abort on it. What a mismatch costs is the caller's
+  decision — a replay may refuse the node, an audit may only flag it.
+- **The predicate is equality, not a range.** Nothing in the ABI is
+  additive-only today, so a lower-bounded ">= 0.1.0" would be a promise this
+  package cannot keep and would read an ABI change as compatible. A future
+  compatible extension will be a deliberate edit here, with a test that says so.
+- **Version strings are dotted numeric, never a date or a git sha.** They have
+  to be *orderable* for "this node is older than the current ABI" to mean
+  anything; `parse_contract_version` refuses anything else, and components
+  compare numerically so `0.10.0` sorts after `0.9.0`.
+
+The strict counterpart is `require_supported_contract_version`, which raises —
+for the callers where proceeding on a mismatch is meaningless, most concretely
+a sandbox about to execute a node's code. The `node` table and the writer that
+persists a row are features 97–102; this feature owns the stamp, the record
+shape and the check.
+
 ## The signal entrypoint (feature 11)
 
 A node is a single function with a single, well-known name — the shape the
@@ -256,3 +313,12 @@ the survivorship/look-ahead failure, the `valid_from`/`valid_to` boundary
 convention, clock independence, stable ordering, the accepted row shapes, the
 refusals, and the structural seam against the universe member's real
 `MembershipInterval`).
+
+Feature 15 is pinned by `test_contract_version.py`: that the stamp resolves to
+the ABI it declares (rather than being a bare string), the persist/read round
+trip of the record's two fields and the refusal of either half going missing,
+numeric ordering (`0.10.0 > 0.9.0`), the refusals of an unorderable stamp, and —
+the property that makes an audit possible — that `compare` answers
+`compatible`/`stale`/`malformed` for *every* value a row might hold without
+raising. The last test in the file asserts the composed ABI record is
+unperturbed by any of it.

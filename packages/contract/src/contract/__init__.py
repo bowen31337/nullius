@@ -39,17 +39,36 @@ from .signal import (
     validate_signal_return,
     validate_signal_signature,
 )
+from .version import (
+    CONTRACT_VERSION_FIELD,
+    NODE_ABI_RECORD_FIELDS,
+    Compatibility,
+    ContractVersionError,
+    NodeAbiRecord,
+    compare,
+    contract_version,
+    describe_contract_version,
+    node_abi_record,
+    parse_contract_version,
+    read_node_abi_record,
+    require_supported_contract_version,
+)
 from .window import MarketWindow
 
 __all__ = [
     "CONTRACT_VERSION",
+    "CONTRACT_VERSION_FIELD",
     "MARKET_WINDOW_ABI",
+    "NODE_ABI_RECORD_FIELDS",
     "SIGNAL_ENTRYPOINT",
     "SIGNAL_SEED_ARG",
     "SIGNAL_SIGNATURE",
+    "Compatibility",
+    "ContractVersionError",
     "MarketWindow",
     "MarketWindowPayload",
     "NoPayloadError",
+    "NodeAbiRecord",
     "PAYLOAD_MAGIC",
     "PAYLOAD_VERSION",
     "PayloadChannel",
@@ -57,8 +76,15 @@ __all__ = [
     "SignalReturnProblem",
     "SignalSignature",
     "build_market_window_contract",
+    "compare",
+    "contract_version",
+    "describe_contract_version",
     "describe_signal_signature",
     "frames_alias_payload",
+    "node_abi_record",
+    "parse_contract_version",
+    "read_node_abi_record",
+    "require_supported_contract_version",
     "resolve_universe",
     "validate_signal_return",
     "validate_signal_signature",
@@ -71,6 +97,12 @@ __all__ = [
 # alongside its code hash") builds on this: the constant is declared here, next
 # to the ABI it versions, so a persisted node's contract_version can never
 # drift from the code it describes.
+#
+# :mod:`contract.version` is what a node writer actually reaches for — it turns
+# this constant into the pair that gets persisted (the stamp beside the code
+# hash), answers "is a stored stamp the ABI this build speaks", and refuses to
+# persist a stamp no reader could compare.  The constant stays here, one import
+# away from the ABI it versions, so the number has exactly one definition.
 CONTRACT_VERSION = "0.1.0"
 
 
