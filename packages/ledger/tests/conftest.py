@@ -44,7 +44,7 @@ for _root in (APP_SRC, PACKAGE_SRC):
 
 # Imported only after the bootstrap above has made both roots visible:
 # `ledger` itself, and `app.module_loader` for the component registration.
-from ledger import TrialLedger  # noqa: E402
+from ledger import DebitEndpoint, TrialLedger  # noqa: E402
 
 DATABASE_URL_ENV = "DATABASE_URL"
 TEST_DATABASE_URL_ENV = "TEST_DATABASE_URL"
@@ -93,3 +93,15 @@ def db_path(test_database_url: str) -> Path:
     prove the sequence does not depend on the rows it can see.
     """
     return TrialLedger(test_database_url).path
+
+
+@pytest.fixture
+def test_endpoint(test_ledger: TrialLedger) -> DebitEndpoint:
+    """The POST /ledger/debit endpoint over this test's isolated ledger.
+
+    Feature 95's seam (see :mod:`ledger.debit`): the idempotent charge
+    keyed by ``node_id``.  Bound to the same per-test database as
+    ``test_ledger``, so a test can assert through the endpoint and read
+    back through the store against one state.
+    """
+    return DebitEndpoint(test_ledger)

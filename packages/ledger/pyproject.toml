@@ -16,8 +16,9 @@
 # another member's resolution — the factory's scan imports this package,
 # so its import cost is every composition's cost.  Later features in this
 # category (the provenance stamps, the epoch accounting, the k-effective
-# derivation, the debit endpoint) layer on top of this package's append
-# seam rather than beside it.
+# derivation) layer on top of this package's append seam rather than
+# beside it — feature 95's debit endpoint already has, as the
+# ledger-debit component over the store's idempotent debit.
 
 [project]
 name = "ledger"

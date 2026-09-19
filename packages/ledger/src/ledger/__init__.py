@@ -16,13 +16,19 @@ epoch accounting of 88, the charge semantics of 89-90, the outcome of
 93-96 — each as a layer over the one table this member creates, never a
 second table beside it.
 
-Importing this package registers one component with the application
-factory: ``"ledger"``, the :class:`~ledger.store.TrialLedger` bound to
-the database ``DATABASE_URL`` names (or nothing, when it names nothing —
-an unconfigured store is a discoverable state, and the composed
-application simply carries no ledger component).  The registration is a
-deliberate import side effect: this is how a member announces itself to
-the factory without the factory knowing its name in advance.
+Importing this package registers two components with the application
+factory.  ``"ledger"`` is the :class:`~ledger.store.TrialLedger` bound
+to the database ``DATABASE_URL`` names (or nothing, when it names
+nothing — an unconfigured store is a discoverable state, and the
+composed application simply carries no ledger component).
+``"ledger-debit"`` is feature 95's POST /ledger/debit endpoint
+(:class:`~ledger.debit.DebitEndpoint`) over that same store — the
+idempotent charge keyed by ``node_id`` that §14's spot-reclaimed eval
+workers retry — resolved from the same environment so the endpoint and
+the store it debits can never point at different databases.  The
+registrations are a deliberate import side effect: this is how a member
+announces itself to the factory without the factory knowing its name in
+advance.
 
 **The ``@register`` decorator lives here, in this ``__init__``, and in
 no submodule.**  The factory's scan re-executes a package's ``__init__``
@@ -39,8 +45,12 @@ already says:
 
 * :class:`~ledger.record.TrialLedgerRecord` — one row as a value: the
   sequence the table assigned, the stamp, the two identities.
-* :class:`~ledger.store.TrialLedger` — the append, the ordered read, the
-  count; bound to one database URL.
+* :class:`~ledger.store.TrialLedger` — the append, the idempotent
+  debit, the ordered read, the count; bound to one database URL.
+* :class:`~ledger.debit.DebitEndpoint` with :class:`~ledger.debit.
+  DebitRequest` and :class:`~ledger.debit.DebitResponse` — feature 95's
+  route: POST /ledger/debit, appending one trial row idempotently keyed
+  by ``node_id`` and returning the prior sequence on a retry.
 * :class:`~ledger.record.utc_now` — the append's default clock.
 * The error taxonomy of :mod:`ledger.errors`, one base class wide.
 """
@@ -51,6 +61,7 @@ from typing import Optional
 
 from app.module_loader import register
 
+from .debit import DEBIT_ROUTE, DebitEndpoint, DebitRequest, DebitResponse
 from .errors import TrialLedgerError, TrialRecordError, TrialStoreError
 from .record import TrialLedgerRecord, utc_now
 from .store import DATABASE_URL_ENV, TRIAL_LEDGER_TABLE, TrialLedger
@@ -58,12 +69,18 @@ from .store import DATABASE_URL_ENV, TRIAL_LEDGER_TABLE, TrialLedger
 __all__ = [
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
+    "DEBIT_COMPONENT_NAME",
+    "DEBIT_ROUTE",
+    "DebitEndpoint",
+    "DebitRequest",
+    "DebitResponse",
     "TRIAL_LEDGER_TABLE",
     "TrialLedger",
     "TrialLedgerError",
     "TrialLedgerRecord",
     "TrialRecordError",
     "TrialStoreError",
+    "build_ledger_debit",
     "build_trial_ledger",
     "utc_now",
 ]
@@ -74,6 +91,31 @@ __all__ = [
 #: for.  Spelled once here so the member, the factory's registry and the
 #: seat cannot drift apart.
 COMPONENT_NAME = "ledger"
+
+#: The component name feature 95's endpoint registers under — the
+#: hyphenated satellite spelling the feature-store member's derived
+#: components established (``feature-materialiser``, ``regime-metrics``,
+#: …), so a composed deployment reaches the route as
+#: ``app.get("ledger-debit")``.
+DEBIT_COMPONENT_NAME = "ledger-debit"
+
+
+@register(DEBIT_COMPONENT_NAME)
+def build_ledger_debit() -> Optional[DebitEndpoint]:
+    """Component builder: the POST /ledger/debit endpoint (feature 95).
+
+    Takes no arguments — the factory's registration protocol — and
+    resolves the store from the environment exactly as
+    :func:`build_trial_ledger` does, so the endpoint composes over the
+    database the process is actually pointed at and can never debit a
+    different ledger than the composed ``"ledger"`` component names.
+    Returns ``None`` when no ``DATABASE_URL`` is set, the same stance
+    the store's own builder takes: an unconfigured store contributes no
+    endpoint either, while the evaluator whose step 11 must debit is the
+    caller that must not find itself composing in that state.
+    """
+    ledger = TrialLedger.resolve()
+    return None if ledger is None else DebitEndpoint(ledger)
 
 
 @register(COMPONENT_NAME)

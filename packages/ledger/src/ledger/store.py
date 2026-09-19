@@ -11,13 +11,23 @@ evaluation, and the number the table hands the row.
 **One row per evaluation.**  :meth:`TrialLedger.append` performs exactly
 one INSERT and returns exactly one
 :class:`~ledger.record.TrialLedgerRecord`; a caller debits once per
-evaluation and the table grows by one.  Two calls are two rows, even for
-the same node — at feature 86 the honest counter counts what it is told,
-and the idempotent debit keyed by ``node_id`` is feature 95's contract,
-layered on this seam when it arrives.  Nothing here updates, nothing
-deletes: the API offers no such spelling, and the *enforced* refusal
-(role grants that deny UPDATE and DELETE) is feature 92's, arriving with
-the database role that carries it.
+evaluation and the table grows by one.  Two ``append`` calls are two
+rows, even for the same node — at feature 86 the honest counter counts
+what it is told, and the idempotent debit keyed by ``node_id`` is a
+different operation, not a changed one: :meth:`TrialLedger.debit`
+(feature 95, exposed over the wire as POST /ledger/debit by
+:mod:`ledger.debit`) appends only when the node holds no row yet and is
+answered by the prior row when it does — the contract §14 states for
+spot-reclaimed eval workers ("Failures retry; ledger debits are
+idempotent by ``node_id``").  The idempotence lives at that seam and not
+in a UNIQUE constraint on the column because §8's own DDL declares none
+and the raw append must keep its two-calls-two-rows contract; the
+check-and-insert runs inside one transaction on one connection
+(``INSERT … SELECT … WHERE NOT EXISTS``), so a debit racing its own
+retry cannot double-charge.  Nothing here updates, nothing deletes: the
+API offers no such spelling, and the *enforced* refusal (role grants
+that deny UPDATE and DELETE) is feature 92's, arriving with the database
+role that carries it.
 
 **The sequence is monotonic because the table says so, not because the
 rows happen to accumulate.**  The column is SQLite's ``INTEGER PRIMARY
@@ -190,6 +200,39 @@ def _record_from_row(row: tuple[Any, ...]) -> TrialLedgerRecord:
         ) from exc
 
 
+def _validated_charge(
+    node_id: Any,
+    campaign_id: Any,
+    ts: Optional[datetime],
+    clock: Optional[Callable[[], datetime]],
+) -> tuple[str, str, datetime]:
+    """Validate a charge's arguments, returning the canonical triple.
+
+    The one spelling both write paths — :meth:`TrialLedger.append` and
+    :meth:`TrialLedger.debit` — share, so the two cannot drift on what
+    they accept: identities canonicalised to UUID text, the stamp resolved
+    from ``ts`` when the caller knows when the charge happened (a replay
+    debits the instant it reproduces, so the clock is never read when
+    ``ts`` is given) and from ``clock()`` otherwise, defaulting to
+    :func:`~ledger.record.utc_now`.  Every refusal lands here, *before*
+    the database is touched, so a refused charge spends no sequence
+    number and leaves the ledger exactly as it was.
+    """
+    node = _validated_uuid(node_id, "node_id")
+    campaign = _validated_uuid(campaign_id, "campaign_id")
+    if ts is not None:
+        instant = _validated_instant(ts, "ts")
+    else:
+        source = utc_now if clock is None else clock
+        if not callable(source):
+            raise TrialRecordError(
+                f"clock must be callable and return a datetime; got "
+                f"{type(source).__name__}"
+            )
+        instant = _validated_instant(source(), "ts")
+    return node, campaign, instant
+
+
 class TrialLedger:
     """Reads and appends the ``trial_ledger`` table for one database.
 
@@ -203,10 +246,13 @@ class TrialLedger:
     processes, two connections all draw from the same persisted
     high-water mark.
 
-    The write surface is exactly one method, :meth:`append`, and it
-    performs exactly one INSERT.  There is no update and no delete to
-    call, by design; feature 92's role grants make the same refusal at
-    the database itself, for every client this package never met.
+    The write surface is two spellings of one INSERT — :meth:`append`,
+    the raw feature-86 charge that counts what it is told, and
+    :meth:`debit`, feature 95's idempotent charge keyed by ``node_id`` —
+    and neither ever issues an UPDATE or a DELETE.  There is no such
+    method to call, by design; feature 92's role grants make the same
+    refusal at the database itself, for every client this package never
+    met.
     """
 
     def __init__(self, database_url: str) -> None:
@@ -307,18 +353,7 @@ class TrialLedger:
         and concurrent appends serialise on the database and receive
         distinct, increasing sequences.
         """
-        node = _validated_uuid(node_id, "node_id")
-        campaign = _validated_uuid(campaign_id, "campaign_id")
-        if ts is not None:
-            instant = _validated_instant(ts, "ts")
-        else:
-            source = utc_now if clock is None else clock
-            if not callable(source):
-                raise TrialRecordError(
-                    f"clock must be callable and return a datetime; got "
-                    f"{type(source).__name__}"
-                )
-            instant = _validated_instant(source(), "ts")
+        node, campaign, instant = _validated_charge(node_id, campaign_id, ts, clock)
         # Already aware-UTC (the validator normalises), so isoformat() ends
         # "+00:00" and the stored text is canonical and orderable.
         stamp = instant.isoformat()
@@ -344,6 +379,104 @@ class TrialLedger:
         return TrialLedgerRecord(
             seq=assigned, ts=instant, node_id=node, campaign_id=campaign
         )
+
+    def debit(
+        self,
+        node_id: Any,
+        campaign_id: Any,
+        *,
+        ts: Optional[datetime] = None,
+        clock: Optional[Callable[[], datetime]] = None,
+    ) -> tuple[TrialLedgerRecord, bool]:
+        """Charge one evaluation idempotently, keyed by ``node_id``.
+
+        Feature 95's store seam — the half the POST /ledger/debit
+        endpoint (:mod:`ledger.debit`) speaks for.  The node is the
+        idempotency key because the node *is* the evaluation's identity:
+        one evaluation is one charge is one row, so a second request for
+        a node that already holds a row is by construction a retry of
+        the same charge, never a new one.  Returns ``(record,
+        appended)`` — the node's row, and whether *this* call appended
+        it.  On a retry the record is the prior row and ``appended`` is
+        ``False``, so the caller is answered with the very sequence the
+        original request returned and the two accounts never diverge.
+
+        The check and the insert are one statement in one transaction —
+        ``INSERT … SELECT … WHERE NOT EXISTS (… node_id = ?)`` — on the
+        one connection the operation opens, so there is no window
+        between "the node has no row" and "the row is written" for a
+        retry to slip a second charge through: concurrent debits of one
+        node serialise on the database's write lock and every caller
+        after the first is answered by the first's row.  (A UNIQUE
+        constraint on ``node_id`` would move the guard into the schema,
+        but §8's DDL declares none and the raw :meth:`append` must keep
+        counting what it is told; the guarantee is the debit's to hold,
+        and it holds it at the seam.)
+
+        On a retry, nothing is written — not the stamp, not the
+        campaign: the prior row stands exactly as first written, because
+        this is append-only accounting and a charge is never restated.
+        A ``ts`` handed to a retry is silently the *loser* of that rule;
+        callers that need to know which stamp landed read it off the
+        returned record.  When several rows exist for the node — only
+        raw :meth:`append` calls can leave that — the earliest by
+        ``seq`` is the prior row: the first charge ever debited for the
+        node is the one whose retry this is.
+
+        Validation is the append's own (see :func:`_validated_charge`)
+        and happens before the database is touched, so a refused debit
+        spends no sequence number; a *skipped* one — the retry — spends
+        none either, which is the whole point: the next node's first
+        debit draws the very next number.
+        """
+        node, campaign, instant = _validated_charge(node_id, campaign_id, ts, clock)
+        stamp = instant.isoformat()
+        appended = False
+        assigned: Optional[int] = None
+        prior: Optional[tuple[Any, ...]] = None
+        try:
+            with closing(self._connect()) as connection:
+                with connection:
+                    cursor = connection.execute(
+                        f"INSERT INTO {TRIAL_LEDGER_TABLE} "
+                        "(ts, node_id, campaign_id) "
+                        "SELECT ?, ?, ? WHERE NOT EXISTS ("
+                        f"SELECT 1 FROM {TRIAL_LEDGER_TABLE} WHERE node_id = ?)",
+                        (stamp, node, campaign, node),
+                    )
+                    if cursor.rowcount == 1:
+                        appended = True
+                        assigned = cursor.lastrowid
+                    else:
+                        prior = connection.execute(
+                            f"SELECT {_COLUMNS} FROM {TRIAL_LEDGER_TABLE} "
+                            "WHERE node_id = ? ORDER BY seq LIMIT 1",
+                            (node,),
+                        ).fetchone()
+        except sqlite3.Error as exc:
+            raise TrialStoreError(
+                f"the trial ledger at {self._database_url} could not debit "
+                f"node {node!r}: {exc}"
+            ) from exc
+        if appended:
+            if assigned is None:  # pragma: no cover - sqlite assigns on INSERT
+                raise TrialStoreError(
+                    "sqlite assigned no sequence number to the debited trial "
+                    "row; the charge did not land and must be retried"
+                )
+            return (
+                TrialLedgerRecord(
+                    seq=assigned, ts=instant, node_id=node, campaign_id=campaign
+                ),
+                True,
+            )
+        if prior is None:  # pragma: no cover - NOT EXISTS saw what the SELECT misses
+            raise TrialStoreError(
+                f"the trial ledger at {self._database_url} holds no row for "
+                f"node {node!r} yet the debit was skipped; the ledger's state "
+                "changed under the charge and it must be retried"
+            )
+        return _record_from_row(prior), False
 
     # -- Reading ------------------------------------------------------------
 
