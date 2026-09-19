@@ -5,7 +5,9 @@ an immutable directory named by sealed_at plus a hash prefix", feature
 31, "System persists a MANIFEST.json per snapshot recording per-file
 sha256, row counts and the universe definition", feature 32, "System
 persists snapshot_hash computed as a sha256 over sorted file hashes plus
-the universe definition plus the schema version", feature 36, "System
+the universe definition plus the schema version", feature 33, "System
+persists each sealed snapshot into the snapshot_manifest record so a
+score can name the exact bytes it was computed over", feature 36, "System
 verifies a snapshot on open by recomputing file hashes, which emits a
 corruption alert when any recorded sha256 fails to match", feature 38,
 "System assigns a new snapshot_hash when the lake is extended, which
@@ -62,6 +64,28 @@ the sealed snapshots, so the flag one process sets is the flag another
 reads: a recomputation flag that vanished on restart would silently reuse
 the stale score it was meant to replace.
 
+The manifest is the snapshot's identity *inside its own directory*; the
+record of feature 33 is the same facts written where they can be **joined**
+to. Every seal also persists a row of the spec's ``snapshot_manifest``
+table — ``snapshot_hash``, ``sealed_at``, ``file_count``, ``row_count``,
+``universe_definition`` and ``schema_version``, plus the ``content_digest``
+that actually names the bytes — into the relational store ``DATABASE_URL``
+addresses (:class:`SnapshotManifestStore`), so a score holding a
+``snapshot_hash`` (§4.4's key) can be resolved to the exact bytes it was
+computed over without opening a directory. The row is written once, after
+the snapshot is published, and never edited: :meth:`SnapshotService.persisted`
+reads it back, :meth:`SnapshotService.manifest_records` sweeps the record
+set, :meth:`SnapshotService.unrecorded` names the sealed snapshots the
+store does not carry, and :meth:`SnapshotService.record_findings` compares
+the artifact against the row — which is what catches the one tamper the
+on-disk check of feature 36 admits it cannot, a manifest rewritten
+*wholesale*. Every seal is recorded — the feature says "each" — including
+one whose files carry no row concept, whose unknown total is stored as
+``NULL`` rather than skipped or fabricated (the one narrow deviation from
+the table's declared ``NOT NULL``, argued in ``_manifest_store``). The one
+limit stated rather than hidden is that a lake with no ``DATABASE_URL``
+records nothing, which is supported, not broken.
+
 The read side of the same boundary is :class:`SnapshotMount` (feature 34):
 ``service.mount(name)`` opens a sealed snapshot read-only, handing out
 :class:`ReadOnlyPath` handles that read freely and refuse every write with a
@@ -96,7 +120,7 @@ from typing import Optional, Union
 
 from app.module_loader import register
 
-from ._content import content_digest, sha256_file, walk_content
+from ._content import content_digest, files_digest, sha256_file, walk_content
 from ._errors import (
     SnapshotAlreadySealedError,
     SnapshotContentError,
@@ -109,6 +133,7 @@ from ._errors import (
     SnapshotReadOnlyError,
     SnapshotRecomputationError,
     SnapshotStagingRequestError,
+    SnapshotStoreError,
 )
 from ._identity import SCHEMA_VERSION, canonical_universe, snapshot_digest
 from ._manifest import (
@@ -117,6 +142,13 @@ from ._manifest import (
     ManifestFileEntry,
     SnapshotManifest,
     count_rows,
+)
+from ._manifest_store import (
+    DATABASE_URL_ENV,
+    MANIFEST_TABLE,
+    SnapshotManifestRecord,
+    SnapshotManifestStore,
+    verify_persisted,
 )
 from ._mount import (
     READ_ONLY_OPERATIONS,
@@ -154,9 +186,11 @@ from ._verification import (
 __all__ = [
     "CorruptionAlert",
     "CorruptionFinding",
+    "DATABASE_URL_ENV",
     "HASH_MISMATCH",
     "LAKE_ROOT_ENV",
     "MANIFEST_NAME",
+    "MANIFEST_TABLE",
     "MANIFEST_VERSION",
     "ManifestFileEntry",
     "MISSING_FILE",
@@ -175,6 +209,8 @@ __all__ = [
     "SnapshotHashReusedError",
     "SnapshotManifest",
     "SnapshotManifestError",
+    "SnapshotManifestRecord",
+    "SnapshotManifestStore",
     "SnapshotMount",
     "SnapshotNameError",
     "SnapshotNotFoundError",
@@ -183,13 +219,16 @@ __all__ = [
     "SnapshotRef",
     "SnapshotService",
     "SnapshotStagingRequestError",
+    "SnapshotStoreError",
     "SupersessionRecord",
     "UNRECORDED_NODE",
     "canonical_universe",
     "content_digest",
     "corruption_error",
     "count_rows",
+    "files_digest",
     "format_sealed_at",
+    "manifest_records",
     "manifest_snapshot",
     "materialize_read_only",
     "mount_snapshot",
@@ -202,6 +241,7 @@ __all__ = [
     "sha256_file",
     "snapshot_digest",
     "snapshot_name",
+    "verify_persisted",
     "verify_snapshot",
     "verify_tree",
     "walk_content",
@@ -309,6 +349,26 @@ def verify_snapshot(
         else SnapshotService.from_env()
     )
     return service.verify(name)
+
+
+def manifest_records(
+    lake_root: Optional[Union[str, Path]] = None
+) -> tuple[SnapshotManifestRecord, ...]:
+    """One-shot convenience around :meth:`SnapshotService.manifest_records`.
+
+    Returns every ``snapshot_manifest`` row the store holds for the lake at
+    ``lake_root`` (default: resolved from ``LAKE_ROOT`` and ``DATABASE_URL``
+    as above). Feature 33's record set as data, for a script, an audit or a
+    reconciliation against :meth:`SnapshotService.sealed`; an empty tuple is
+    an empty store or no configured store, and
+    :attr:`SnapshotService.manifest_store` tells the two apart.
+    """
+    service = (
+        SnapshotService(lake_root)
+        if lake_root is not None
+        else SnapshotService.from_env()
+    )
+    return service.manifest_records()
 
 
 def recomputation_registry(

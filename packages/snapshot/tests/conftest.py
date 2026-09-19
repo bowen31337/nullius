@@ -7,7 +7,10 @@ The isolation those shared fixtures guarantee for every repository-level
 suite is reproduced here deliberately: a fresh lake root per test, laid out
 per docs/nullius-tech-architecture.md §4.2, with ``LAKE_ROOT`` pointed at
 it. No test in this package can write into a real lake, and adjacent tests
-never share one.
+never share one. ``DATABASE_URL`` is isolated in the same breath, because
+the ``snapshot_manifest`` record feature 33 persists is written on every
+seal — a suite that redirected only the lake would still drop rows into
+whatever database the developer's shell names.
 
 The path bootstrap below puts the member's ``src/`` on ``sys.path`` — the
 same mechanism the module loader uses when it scans members — because the
@@ -18,6 +21,7 @@ packages/snapshot`` from the workspace root).
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -29,6 +33,9 @@ if str(_SRC) not in sys.path:
 
 from snapshot import SnapshotService
 
+DATABASE_URL_ENV = "DATABASE_URL"
+TEST_DATABASE_URL_ENV = "TEST_DATABASE_URL"
+
 
 @pytest.fixture
 def lake_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -38,6 +45,36 @@ def lake_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (root / "staging").mkdir()
     monkeypatch.setenv("LAKE_ROOT", str(root))
     return root
+
+
+@pytest.fixture(autouse=True)
+def _database_url_isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Point ``DATABASE_URL`` at a test-only database for every test.
+
+    Mirrors the repository-level conftest (and the universe member's), so
+    the ``snapshot_manifest`` record feature 33 persists can never land in
+    a real database. Without this a test that seals would write into
+    whatever ``DATABASE_URL`` the developer's shell happens to carry.
+
+    A per-test SQLite file rather than ``sqlite://`` (in-memory): an
+    in-memory database is per-connection, so a row written by one
+    connection would not be visible to the next — which would make every
+    read-path test vacuously empty instead of exercising the store.
+
+    ``TEST_DATABASE_URL`` wins when set and non-empty, exactly as at the
+    repository level.
+    """
+    url = os.environ.get(TEST_DATABASE_URL_ENV) or (
+        f"sqlite:///{tmp_path / 'nullius-snapshot-test.db'}"
+    )
+    monkeypatch.setenv(DATABASE_URL_ENV, url)
+    return url
+
+
+@pytest.fixture
+def test_database_url(_database_url_isolation: str) -> str:
+    """The isolated database URL for this test, as the code sees it."""
+    return _database_url_isolation
 
 
 @pytest.fixture

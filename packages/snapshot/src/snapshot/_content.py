@@ -47,6 +47,7 @@ from ._errors import SnapshotContentError
 __all__ = [
     "CHUNK_SIZE",
     "content_digest",
+    "files_digest",
     "sha256_file",
     "sorted_hash_concat",
     "walk_content",
@@ -139,3 +140,44 @@ def content_digest(file_hashes: Iterable[str] | Mapping[str, str]) -> str:
     legitimate, addressable thing.
     """
     return hashlib.sha256(sorted_hash_concat(file_hashes).encode("ascii")).hexdigest()
+
+
+def files_digest(files: Iterable[tuple[str, str]]) -> str:
+    """Fold ``(path, sha256)`` pairs into one digest over *named* content.
+
+    The sibling of :func:`content_digest`, differing in exactly one way:
+    the *paths* are folded in, not just the hashes. That is the whole
+    reason it exists. The §4.2 formula deliberately digests a multiset of
+    file hashes, so two snapshots whose files swapped names but kept the
+    same bytes are one identity — the right answer for content addressing,
+    and the wrong one for the persisted ``snapshot_manifest`` record
+    (app_spec.xml feature 33), whose job is to let a score name the exact
+    bytes it was computed over and *detect* that the manifest was rewritten
+    wholesale. A record keyed by the §4.2 hash alone cannot tell a
+    tampered manifest from the real one when the tamper swapped two files'
+    entries; one that also folds the paths can.
+
+    The preimage is the same shape the hash formula uses — each term its
+    own line, sorted, UTF-8 hashed once — so it inherits the separability
+    argument: paths are newline-free by construction (``walk_content``
+    builds them from directory entry names, which cannot contain ``/`` or a
+    NUL, and this refuses anything newline-bearing rather than folding it),
+    and each digest is fixed-width hex. Frames are not optional here: a
+    fold that concatenated paths and hashes without a separator could be
+    rearranged into another pair's preimage.
+    """
+    lines: list[str] = []
+    for path, file_hash in files:
+        if not isinstance(path, str) or not path:
+            raise SnapshotContentError(
+                f"content digest needs a non-empty path, got {path!r}"
+            )
+        if "\n" in path:
+            raise SnapshotContentError(
+                f"content path {path!r} carries a newline; the digest "
+                "preimage frames one term per line and a path that spans "
+                "lines would make it ambiguous"
+            )
+        lines.append(f"{path}\n{file_hash.lower()}")
+    payload = "\n".join(sorted(lines)).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()

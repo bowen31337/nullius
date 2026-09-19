@@ -39,6 +39,13 @@ failure of the sealing path with a single ``except``. The subclasses split by
 * :class:`SnapshotReadOnlyError` — the read-only mount contract. A write
   attempt through a mounted snapshot is refused with a permission error
   *message*, and this is that message made catchable by type.
+* :class:`SnapshotStoreError` — the persisted-record contract (app_spec.xml
+  feature 33). A seal writes its ``snapshot_manifest`` row so a score can
+  name the exact bytes it was computed over; a configured store whose write
+  fails is an error rather than a shrug, because a snapshot published
+  without its record is the gap the feature exists to close. A lake with
+  no store configured is not this error — it is a supported state in which
+  no record was asked for.
 * :class:`SnapshotRecomputationError` — the recomputation contract (app_spec.xml
   feature 39). A snapshot change is recorded against the snapshot hashes the
   lake actually persists: a change naming a hash that is not currently sealed
@@ -75,7 +82,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
-if TYPE_CHECKING:  # pragma: no cover - typing only; the record lives in _verification
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from ._records import SealedSnapshot
     from ._verification import CorruptionAlert
 
 __all__ = [
@@ -90,6 +98,7 @@ __all__ = [
     "SnapshotReadOnlyError",
     "SnapshotRecomputationError",
     "SnapshotStagingRequestError",
+    "SnapshotStoreError",
 ]
 
 
@@ -189,6 +198,40 @@ class SnapshotReadOnlyError(SnapshotError, PermissionError):
     a real ``PermissionError`` does. Use :func:`permission_denied` rather
     than constructing one directly.
     """
+
+
+class SnapshotStoreError(SnapshotError):
+    """The ``snapshot_manifest`` record could not be persisted (feature 33).
+
+    app_spec.xml feature 33: *"System persists each sealed snapshot into the
+    snapshot_manifest record so a score can name the exact bytes it was
+    computed over."* A lake with no relational store configured is a
+    supported state and raises nothing — the filesystem records (the sealed
+    directory and the manifest inside it) remain complete, and the
+    persistence is an added record rather than a precondition for them.
+    This error is for the other case: a store *was* configured and the
+    write failed. It is raised rather than swallowed, because a seal that
+    published bytes and silently failed to record them leaves exactly the
+    gap the feature exists to close — a score naming a ``snapshot_hash``
+    that nothing in the store can resolve.
+
+    Carries the :class:`~snapshot.SealedSnapshot` the seal already
+    published on its ``record`` attribute (``None`` only on a hand-built
+    error with no seal behind it). The snapshot is real and verifiable —
+    the failure is the record, not the bytes — so the caller decides
+    whether to serve the snapshot and repair the store, or unwound. A
+    subclass of :class:`SnapshotError`, so the sealing path's single
+    ``except`` catches it with everything else.
+    """
+
+    #: The seal that published the snapshot this record is missing for.
+    record: Optional["SealedSnapshot"]
+
+    def __init__(
+        self, message: str, record: Optional["SealedSnapshot"] = None
+    ) -> None:
+        super().__init__(message)
+        self.record = record
 
 
 class SnapshotRecomputationError(SnapshotError):

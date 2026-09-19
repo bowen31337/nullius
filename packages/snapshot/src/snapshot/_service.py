@@ -73,6 +73,28 @@ gap the re-seal check used to have — an existing directory's manifest
 pins its full hash, so the same bytes can no longer be re-sealed under a
 different identity that happens to share six characters.
 
+**The record is what a score names (feature 33).** A snapshot's own
+``MANIFEST.json`` travels with its bytes and is reachable only by opening
+that one directory; feature 33 asks for the *record* — the same facts,
+written to the relational store under the snapshot's full hash, so a score
+that stamps a ``snapshot_hash`` (§4.4) can be joined to the exact bytes it
+was computed over. Every seal writes that row (:meth:`persisted` reads it
+back, :meth:`manifest_records` sweeps them, :meth:`unrecorded` names the
+sealed snapshots the store does not carry). The row is written *after*
+publication, never before, so a crash can leave a snapshot without a
+record but never a record without a snapshot. *Every* seal is recorded,
+including one whose files carry no row concept: the feature says "each", and
+a snapshot skipped to protect the ``row_count`` column would be one whose
+bytes no score could name — so an unknown total is stored as ``NULL`` and
+mirrors the manifest's own ``None`` field for field (the deviation, and why
+it beats the alternatives, is stated in ``_manifest_store``). The one
+remaining limit is a lake with no ``DATABASE_URL``, which records nothing
+and is supported rather than broken. The second copy is also what
+:meth:`record_findings`
+compares against: a manifest rewritten *wholesale* is undetectable from
+inside its own directory, and detectable against a row written once at seal
+time and never edited.
+
 The default snapshot hash is the full §4.2 formula (feature 32,
 ``_identity.snapshot_digest``): a sha256 over the staged files' sorted
 hashes, the asserted universe definition, and the lake's schema version.
@@ -132,6 +154,7 @@ from ._errors import (
     SnapshotNotFoundError,
     SnapshotRecomputationError,
     SnapshotStagingRequestError,
+    SnapshotStoreError,
 )
 from ._identity import canonical_universe, snapshot_digest, validate_universe
 from ._manifest import (
@@ -139,6 +162,11 @@ from ._manifest import (
     SnapshotManifest,
     build_manifest,
     walk_sealed_content,
+)
+from ._manifest_store import (
+    SnapshotManifestRecord,
+    SnapshotManifestStore,
+    verify_persisted,
 )
 from ._mount import SnapshotMount, materialize_read_only
 from ._naming import (
@@ -177,13 +205,28 @@ class SnapshotService:
     need them.
     """
 
-    def __init__(self, lake_root: Union[str, os.PathLike[str]]) -> None:
+    def __init__(
+        self,
+        lake_root: Union[str, os.PathLike[str]],
+        *,
+        manifest_store: Optional[SnapshotManifestStore] = None,
+    ) -> None:
         if isinstance(lake_root, str) and not lake_root.strip():
             # Path("") would silently become "." — sealing into the current
             # directory is never what a caller meant.
             raise SnapshotError("lake root must be a non-empty path")
         self._lake_root = Path(lake_root).expanduser()
         self._recomputation: Optional[RecomputationRegistry] = None
+        # The persisted-record store of feature 33. Explicit wins over the
+        # environment, so a test or an operator can hand a service the store
+        # it wants; otherwise the environment decides at construction, the
+        # same way the lake root is resolved by ``from_env``. ``None``
+        # (nothing configured) is a supported state, not a broken one.
+        self._manifest_store = (
+            manifest_store
+            if manifest_store is not None
+            else SnapshotManifestStore.resolve()
+        )
 
     # -- Construction -------------------------------------------------------
 
@@ -201,14 +244,21 @@ class SnapshotService:
         so the default can never silently point somewhere the declaration
         does not cover. With neither available the service refuses to
         guess: raising a clear error beats sealing into ``/``.
+
+        The ``snapshot_manifest`` store (feature 33) is resolved from
+        ``DATABASE_URL`` at the same moment, so a composed application
+        carries the lake *and* the record store the process is actually
+        pointed at; ``env`` overrides both, which is how the shared test
+        fixtures redirect them together.
         """
         source = os.environ if env is None else env
         raw = source.get(LAKE_ROOT_ENV, "").strip()
+        store = SnapshotManifestStore.resolve(source)
         if raw:
-            return cls(Path(raw))
+            return cls(Path(raw), manifest_store=store)
         workspace_root = find_workspace_root()
         if workspace_root is not None:
-            return cls(workspace_root / "lake")
+            return cls(workspace_root / "lake", manifest_store=store)
         raise SnapshotError(
             f"{LAKE_ROOT_ENV} is not set and no uv workspace root was found "
             "above this package; set LAKE_ROOT to the lake root (§4.2)"
@@ -230,6 +280,19 @@ class SnapshotService:
     def staging_root(self) -> Path:
         """The writable staging area; the default seal source (§4.2)."""
         return self._lake_root / "staging"
+
+    @property
+    def manifest_store(self) -> Optional[SnapshotManifestStore]:
+        """The ``snapshot_manifest`` store this service persists rows into.
+
+        ``None`` when no ``DATABASE_URL`` names one — a lake without a
+        relational store, in which case a seal publishes and records
+        nothing beyond its own ``MANIFEST.json``. Not an error state: the
+        filesystem records are complete on their own, and this property is
+        how a caller tells "no record was asked for" from "the record is
+        missing" (:meth:`unrecorded`).
+        """
+        return self._manifest_store
 
     # -- Sealing ------------------------------------------------------------
 
@@ -328,10 +391,11 @@ class SnapshotService:
             sealed_at=instant,
             universe=validated_universe,
         )
+        manifest_bytes = manifest.to_json_bytes()
         self.snapshots_root.mkdir(parents=True, exist_ok=True)
         working = self.snapshots_root / f".sealing-{uuid.uuid4().hex}"
         try:
-            _publish_tree(source_path, files, working, manifest.to_json_bytes())
+            _publish_tree(source_path, files, working, manifest_bytes)
             try:
                 os.rename(working, final)
             except OSError as exc:
@@ -344,9 +408,246 @@ class SnapshotService:
                 )
         finally:
             _discard_working_tree(working)
-        return SealedSnapshot(
+        record = SealedSnapshot(
             sealed_at=instant, snapshot_hash=full_hash, path=final, files=files
         )
+        self._persist_manifest(manifest, manifest_bytes, record)
+        return record
+
+    def _persist_manifest(
+        self,
+        manifest: SnapshotManifest,
+        manifest_bytes: bytes,
+        record: SealedSnapshot,
+    ) -> None:
+        """Write the sealed snapshot into the ``snapshot_manifest`` record.
+
+        Feature 33: *"System persists each sealed snapshot into the
+        snapshot_manifest record so a score can name the exact bytes it was
+        computed over."* Called once per seal, *after* the rename — the row
+        describes a snapshot that exists, never one that might.
+
+        Ordering is the point. A crash between the rename and this write
+        leaves a sealed, verifiable snapshot with no row: recoverable by
+        re-sealing (idempotent) or by a backfill sweep, and honest — the
+        lake holds bytes nothing claims. The reverse order would leave a
+        row pointing at a directory that does not exist, which is the state
+        feature 33 exists to prevent, so the write follows the publish and
+        never precedes it.
+
+        A store that was never configured is not a failure: the seal
+        publishes, and :meth:`persisted` reports that no record was asked
+        for. A store that *is* configured and fails raises
+        :class:`~snapshot.SnapshotStoreError` carrying the published
+        ``record`` — the snapshot is real, its record is missing, and the
+        caller is told both rather than left with a silent gap.
+        """
+        if self._manifest_store is None:
+            return
+        try:
+            self._manifest_store.persist(manifest, manifest_bytes=manifest_bytes)
+        except SnapshotStoreError as exc:
+            # The store does not know which snapshot it failed to record —
+            # it was handed a manifest, not a seal — so the published record
+            # is attached here, where it is in hand. The caller then has
+            # both halves: the snapshot exists and is verifiable, and its
+            # record is what failed.
+            raise SnapshotStoreError(str(exc), record=record) from exc
+
+    def _reassert_record(
+        self, manifest_file: Path, record: SealedSnapshot
+    ) -> None:
+        """Re-persist the row for a sealed snapshot that already exists.
+
+        Called on the idempotent re-seal path so a missing row is repaired
+        by the very call that is already a no-op for the directory (see
+        :meth:`_existing_or_conflict` for why that matters). The manifest
+        is read back from disk rather than rebuilt, so the row is written
+        from exactly the bytes the snapshot carries — the same source the
+        read side would consult, which is what makes the two comparable.
+
+        The manifest's own content digest is *checked* on the way through
+        (``SnapshotManifest.from_json_bytes``), so a tree whose manifest
+        contradicts its entries cannot have a row written over it: the
+        parse refuses first, and the seal reports a manifest error rather
+        than persisting a record built from a document it could not believe.
+        """
+        if self._manifest_store is None:
+            return
+        manifest_bytes = manifest_file.read_bytes()
+        manifest = SnapshotManifest.from_json_bytes(manifest_bytes)
+        self._persist_manifest(manifest, manifest_bytes, record)
+
+    def persisted(self, name: str) -> tuple[SnapshotManifestRecord, ...]:
+        """The ``snapshot_manifest`` rows the store persists for ``name``.
+
+        Feature 33's read side, and deliberately a *tuple* rather than a
+        record or ``None``, because the interesting answers are several and
+        the empty ones are real:
+
+        * one row — the seal recorded this snapshot, and the row names the
+          exact bytes it was computed over (``record.exact_bytes``). This
+          is the answer for *every* snapshot sealed against a configured
+          store, including one whose ``row_count`` is ``None`` because its
+          files carry no row concept: the feature persists "each", so an
+          unknown total costs the total, never the row;
+        * an empty tuple *with a store configured* — this snapshot was not
+          recorded, because it was sealed before the store was pointed at
+          this lake or its row write failed. Re-sealing repairs either
+          (see :meth:`_reassert_record`), and :meth:`unrecorded` is the
+          report that names it;
+        * an empty tuple *with no store configured at all* — no record was
+          ever asked for. :attr:`manifest_store` tells the two apart;
+        * an empty tuple for a snapshot that carries no manifest — sealed
+          before feature 31, or built by hand. The row is keyed by a full
+          hash only the manifest states, so such a snapshot can never have
+          one; this is an absence, and :meth:`unrecorded` names it.
+
+        The snapshot is opened first, so the request goes through the same
+        verified door as every other read: staging requests are refused as
+        staging requests, malformed names by the strict parser, misses as
+        misses, and corrupt bytes are refused rather than resolved to a
+        row. A caller that only wants the row and not the rehash uses
+        :meth:`manifest_store` directly — the store is a plain table, and
+        this method exists to make the common case go through the door.
+        """
+        ref = self.open(name)
+        if self._manifest_store is None:
+            return ()
+        # The row is keyed by the full hash, which is the manifest's to
+        # state (the directory name carries only its prefix). Going through
+        # ``read_manifest`` would re-open and re-verify the tree a second
+        # time; ``open`` has already done that, so the manifest is read here
+        # from the path the verified door returned.
+        manifest_file = ref.path / MANIFEST_NAME
+        if not manifest_file.is_file():
+            # A snapshot sealed before feature 31 has no manifest, so it has
+            # no full hash and therefore no row, now or ever. The empty
+            # answer is the honest one; letting the read raise a bare
+            # ``FileNotFoundError`` would be a crash wearing another error's
+            # clothes, and ``read_manifest`` is the door that refuses this
+            # loudly for a caller who needs the manifest itself.
+            return ()
+        manifest = SnapshotManifest.from_json_bytes(manifest_file.read_bytes())
+        return self._manifest_store.rows_for(manifest.snapshot_hash)
+
+    def manifest_records(self) -> tuple[SnapshotManifestRecord, ...]:
+        """Every ``snapshot_manifest`` row this lake's store persists.
+
+        The sweep form: the whole record set as data, which is what an
+        operator, a dashboard or a backfill job wants — the store-side twin
+        of :meth:`sealed`. An empty tuple is either an empty store or no
+        configured store; :attr:`manifest_store` says which, and neither is
+        an error.
+        """
+        if self._manifest_store is None:
+            return ()
+        records: list[SnapshotManifestRecord] = []
+        for snapshot_hash in self._manifest_store.hashes():
+            records.extend(self._manifest_store.rows_for(snapshot_hash))
+        return tuple(records)
+
+    def unrecorded(self) -> tuple[str, ...]:
+        """Sealed snapshot names with no ``snapshot_manifest`` row.
+
+        The reconciliation report between the two stores: every directory
+        the lake holds whose full hash the record store does not carry.
+        For an operator after a crash between publish and persist, or after
+        pointing ``DATABASE_URL`` at a lake that predates it — the list is
+        the work a backfill has to do, named rather than described.
+
+        Every seal writes a row, so this list is narrow and worth reading:
+        a snapshot sealed before relational persistence, and one whose row
+        write failed. Both are the honest statement the method exists to
+        make — the lake holds bytes nothing recorded — and both are what a
+        backfill repairs by re-sealing (see :meth:`_reassert_record`). A
+        *pre-manifest* snapshot also appears here and cannot be repaired:
+        with no manifest it states no full hash, so there is no primary key
+        to write a row under. With no store configured every sealed
+        snapshot is unrecorded, which is true and is not a failure.
+        """
+        if self._manifest_store is None:
+            return tuple(self.sealed())
+        recorded = set(self._manifest_store.hashes())
+        return tuple(
+            name
+            for name in self.sealed()
+            if self._full_hash_of(name) not in recorded
+        )
+
+    def _full_hash_of(self, name: str) -> Optional[str]:
+        """The full hash a sealed directory's manifest records, if readable.
+
+        ``None`` for a snapshot that carries no manifest — sealed before
+        feature 31, or built by hand. Such a snapshot is not recorded and
+        cannot be, since the record's primary key is a hash the tree does
+        not state.
+        """
+        manifest_file = self.snapshots_root / name / MANIFEST_NAME
+        if not manifest_file.is_file():
+            return None
+        try:
+            manifest = SnapshotManifest.from_json_bytes(manifest_file.read_bytes())
+        except (SnapshotManifestError, OSError):
+            return None
+        return manifest.snapshot_hash
+
+    # -- Verifying the record (feature 33) -----------------------------------
+
+    def record_findings(self, name: str) -> tuple[str, ...]:
+        """Disagreements between a sealed manifest and its persisted row.
+
+        Feature 33's verification half, in the non-raising form: the
+        on-disk manifest (feature 31) and the row written at seal time are
+        two independent records of the same snapshot, so they can be
+        compared — and where they disagree, one of them was edited after
+        the fact. The comparison catches what feature 36's on-disk check
+        explicitly cannot: a manifest rewritten *wholesale*, every recorded
+        hash edited to match tampered bytes, is internally perfect and is
+        caught here against a row that was written once and never touched
+        (see ``_manifest_store.verify_persisted`` for the boundary this
+        still does not cross, stated rather than implied).
+
+        Returns one line per disagreement, empty when the two agree. Three
+        outcomes are *not* findings, because none of them is a mystery:
+
+        * no store configured — no row was ever asked for;
+        * a snapshot with no row — sealed before the store was pointed at
+          this lake, or its row write failed. :meth:`unrecorded` is the
+          report for that, and it names the snapshot rather than dressing
+          an absence up as a disagreement;
+        * a snapshot with no manifest — sealed before feature 31. There is
+          nothing on the artifact side to compare the row against.
+
+        A snapshot whose total rows are unknown *is* compared, like any
+        other: its row is written with ``row_count IS NULL`` and its
+        manifest records ``None``, so the two agree — and a row claiming an
+        integer for a snapshot whose manifest says otherwise is a finding,
+        which is exactly the disagreement this check is for.
+
+        The request goes through :meth:`open` — so staging requests are
+        refused as staging requests, malformed names by the strict parser,
+        and misses as misses — but with ``verify=False``, deliberately and
+        for a reason worth stating: the byte-level rehash of feature 36 is
+        *the other check*, and it raises on exactly the tamper this one is
+        meant to report. Rehashing first would make the record comparison
+        unreachable in the case it exists for. The two are complements, not
+        layers: :meth:`verify` answers "do the bytes match the manifest?",
+        this answers "do the manifest and the record agree?", and an
+        operator wants both answers, not the first one twice.
+        """
+        if self._manifest_store is None:
+            return ()
+        ref = self.open(name, verify=False)
+        manifest_file = ref.path / MANIFEST_NAME
+        if not manifest_file.is_file():
+            return ()
+        manifest_bytes = manifest_file.read_bytes()
+        manifest = SnapshotManifest.from_json_bytes(manifest_bytes)
+        record = self._manifest_store.record_for(manifest.snapshot_hash)
+        if record is None:
+            return ()
+        return verify_persisted(manifest, record, manifest_bytes=manifest_bytes)
 
     def _existing_or_conflict(
         self,
@@ -378,6 +679,18 @@ class SnapshotService:
         are the idempotent case; anything else is a genuine collision on
         an immutable name and is refused with the conflicting directory
         named in the error.
+
+        The idempotent path also *re-asserts the record* (feature 33). The
+        directory already exists, but the row may not: this is precisely
+        the state a crash between the rename and the row write leaves, and
+        it is also what a lake sealed before ``DATABASE_URL`` was pointed
+        at it looks like. Re-sealing is the repair — it returns early from
+        :meth:`seal` rather than reaching the publish path, so if the write
+        did not happen here it would not happen at all, and the documented
+        promise that a missed record is "recoverable by re-sealing" would
+        be empty. The assertion is idempotent in the same way the seal is:
+        a row that already exists is rewritten with the values it already
+        holds.
         """
         if not final.is_dir():
             raise SnapshotAlreadySealedError(
@@ -386,9 +699,11 @@ class SnapshotService:
             )
         manifest_file = final / MANIFEST_NAME
         if manifest_file.is_file():
-            return self._replay_or_conflict(
+            replay = self._replay_or_conflict(
                 final, manifest_file, full_hash, files, universe
             )
+            self._reassert_record(manifest_file, replay)
+            return replay
         existing = walk_sealed_content(final)
         if existing == files:
             return SealedSnapshot(

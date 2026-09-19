@@ -62,9 +62,9 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Optional, Union
 
-from ._content import CHUNK_SIZE, walk_content
+from ._content import CHUNK_SIZE, files_digest, walk_content
 from ._errors import SnapshotManifestError, SnapshotNameError
-from ._identity import validate_universe
+from ._identity import canonical_universe, validate_universe
 from ._naming import (
     format_sealed_at,
     normalize_snapshot_hash,
@@ -253,6 +253,36 @@ class SnapshotManifest:
         """How many content files the manifest describes."""
         return len(self.files)
 
+    @property
+    def content_digest(self) -> str:
+        """A digest over this manifest's entries, *including their paths*.
+
+        The manifest's own identity, distinct from :attr:`snapshot_hash` on
+        purpose (see ``_content.files_digest``). The §4.2 hash folds the
+        file hashes as a multiset, so it is blind to which path holds which
+        bytes; this digest folds each ``(path, sha256)`` pair, so it moves
+        when a manifest's entries are rearranged. Recomputed from the
+        entries rather than stored — it is a property of the record, and a
+        stored copy would be one more field that could drift from them.
+        """
+        return files_digest(
+            (path, entry.sha256) for path, entry in self.files.items()
+        )
+
+    @property
+    def universe_spelling(self) -> Optional[str]:
+        """The canonical JSON spelling of the recorded universe definition.
+
+        ``None`` when none was asserted (the column records SQL ``NULL``),
+        else key-sorted compact JSON — the same spelling the §4.2 formula
+        hashes (``_identity.canonical_universe``), so the persisted record
+        and the identity cannot disagree about what "the same definition"
+        means. This is what the ``universe_definition`` column of the
+        ``snapshot_manifest`` table carries: the JSON *text*, not a
+        language binding to it.
+        """
+        return canonical_universe(self.universe)
+
     # -- Serialisation ------------------------------------------------------
 
     def to_json_bytes(self) -> bytes:
@@ -268,6 +298,7 @@ class SnapshotManifest:
             "manifest_version": self.manifest_version,
             "sealed_at": format_sealed_at(self.sealed_at),
             "snapshot_hash": self.snapshot_hash,
+            "content_digest": self.content_digest,
             "universe": dict(self.universe) if self.universe is not None else None,
             "files": {
                 path: {"sha256": entry.sha256, "row_count": entry.row_count}
@@ -285,6 +316,15 @@ class SnapshotManifest:
         exact entry shapes, and totals that agree with the entries. A
         manifest that drifts from the format is a manifest the lake can
         no longer reason about, so drift is an error, not a warning.
+
+        ``content_digest`` is the one key a manifest may carry or omit —
+        it arrived with feature 33's persisted record and snapshots sealed
+        under it are all this version, while trees sealed in the same
+        version before it are still on disk and must still open. When it
+        is present it is *checked*, not taken on trust: a recorded digest
+        that does not match the entries it claims to summarise is refused,
+        because such a manifest is a record of one thing attached to
+        another's bytes and every reader downstream would inherit the lie.
         """
         try:
             payload = json.loads(data)
@@ -297,7 +337,7 @@ class SnapshotManifest:
                 "MANIFEST.json must be a JSON object at the top level, got "
                 f"{type(payload).__name__}"
             )
-        expected_keys = {
+        required_keys = {
             "manifest_version",
             "sealed_at",
             "snapshot_hash",
@@ -305,9 +345,10 @@ class SnapshotManifest:
             "files",
             "totals",
         }
-        if set(payload) != expected_keys:
-            missing = sorted(expected_keys - set(payload))
-            unexpected = sorted(set(payload) - expected_keys)
+        allowed_keys = required_keys | {"content_digest"}
+        if not required_keys <= set(payload) or not set(payload) <= allowed_keys:
+            missing = sorted(required_keys - set(payload))
+            unexpected = sorted(set(payload) - allowed_keys)
             raise SnapshotManifestError(
                 f"MANIFEST.json key set does not match manifest version "
                 f"{MANIFEST_VERSION} (missing {missing}, unexpected "
@@ -348,12 +389,51 @@ class SnapshotManifest:
             files=files,
             total_rows=_parse_totals(payload["totals"], files),
         )
+        _check_recorded_digest(payload.get("content_digest", _ABSENT), manifest)
         return manifest
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         return (
             f"SnapshotManifest(name={self.name!r}, "
             f"files={self.file_count}, rows={self.total_rows})"
+        )
+
+
+#: Sentinel for "this key was not in the document at all", distinct from a
+#: key that is present and ``null`` (which is a malformed digest, not an
+#: absent one).
+_ABSENT = object()
+
+
+def _check_recorded_digest(recorded: object, manifest: "SnapshotManifest") -> None:
+    """Refuse a recorded ``content_digest`` that contradicts the entries.
+
+    The digest is the record's own integrity claim about itself (feature
+    33): what makes a persisted row — or a manifest file — detectably
+    *this* manifest and not a rewrite that kept the §4.2 hash. A recorded
+    value that disagrees with the entries proves the document was edited
+    after the fact, so it is refused here rather than handed out.
+
+    An absent key is the older spelling of the same manifest version and
+    is accepted — those trees must keep opening. There is no compatibility
+    cost to that: the check is a self-consistency claim inside one
+    document, and a document that makes no claim cannot be caught by it.
+    """
+    if recorded is _ABSENT:
+        return
+    try:
+        expected = manifest.content_digest
+        value = normalize_snapshot_hash(recorded)  # type: ignore[arg-type]
+    except SnapshotNameError as exc:
+        raise SnapshotManifestError(
+            f"MANIFEST.json content_digest is not a 64-hex digest: {exc}"
+        ) from exc
+    if value != expected:
+        raise SnapshotManifestError(
+            f"MANIFEST.json records content_digest {value} but its entries "
+            f"digest to {expected}; the manifest disagrees with itself — "
+            "the document was edited after it was written, and a record "
+            "that describes bytes other than its own is refused"
         )
 
 
