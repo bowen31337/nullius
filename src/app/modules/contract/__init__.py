@@ -16,13 +16,13 @@ the component, and a module that cannot reach it (member not scanned,
 workspace empty) returns ``None`` rather than failing import, mirroring the
 factory's own "degrade, don't break" stance toward absent components.
 
-Like the window it exposes, this seat answers exactly one question — *what
-is the composed contract component?* It does not re-export
-:class:`~contract.MarketWindow` itself: the component advertises the ABI by
-name (see :data:`contract.MARKET_WINDOW_ABI` for why — a scanned package is
-imported under a synthetic module name, so a class object handed across the
-scan seam is not the class a normal import yields). A caller who wants the
-class imports it; a caller who wants the composed system asks here.
+This seat answers two questions, both about the market-window contract.  It
+does not re-export :class:`~contract.MarketWindow` itself: the component
+advertises the ABI by name (see :data:`contract.MARKET_WINDOW_ABI` for why —
+a scanned package is imported under a synthetic module name, so a class
+object handed across the scan seam is not the class a normal import yields).
+A caller who wants the class imports it; a caller who wants the composed
+system, or the window's accessor surface, asks here.
 """
 
 from __future__ import annotations
@@ -32,9 +32,13 @@ from typing import TYPE_CHECKING, Any
 from app.module_loader import Application, create_app
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a dependency
-    from contract import CONTRACT_VERSION, MARKET_WINDOW_ABI
+    from contract import (
+        CONTRACT_VERSION,
+        MARKET_WINDOW_ABI,
+        inspect_accessors,
+    )
 
-__all__ = ["COMPONENT_NAME", "contract_component"]
+__all__ = ["COMPONENT_NAME", "contract_component", "window_accessor_names"]
 
 #: The component name the contract member registers under. Kept here so
 #: anything asking the composed application for the market-window contract —
@@ -54,3 +58,23 @@ def contract_component(app: Application | None = None) -> dict | Any:
     """
     application = app if app is not None else create_app()
     return application.get(COMPONENT_NAME)
+
+
+def window_accessor_names() -> tuple[str, ...]:
+    """Return the MarketWindow's accessor names, asserting none takes a time.
+
+    The app-namespace seat for feature 10: it calls
+    :func:`contract.inspect_accessors`, which enumerates the window's public
+    accessors and *raises* the moment one accepts a timestamp argument.  This
+    returns the accessor names on success, so a caller learns both that the
+    window's surface is free of a widening accessor and what that surface is.
+
+    Unlike :func:`contract_component`, this does not degrade to ``None``: the
+    window class is the boundary every signal is evaluated against, so an
+    accessor that could widen it is a hard failure, not a discoverable absent
+    state.  The member is imported lazily, exactly as the component seat
+    already does, so importing this app module never pulls the member in.
+    """
+    from contract import inspect_accessors
+
+    return inspect_accessors()

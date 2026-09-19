@@ -20,6 +20,18 @@ Two properties follow, and this module enforces both at construction time:
   always timezone-aware and normalized to UTC.  Naive datetimes are accepted
   (naive in this system means UTC) and converted rather than trusted as-is, so
   no float- or zone-ambiguity can leak into point-in-time comparisons.
+* **No accessor takes a timestamp.**  The read-only ``t`` covers the
+  reassignment path; a method that took ``as_of`` would be a second,
+  independent widening path, so it is closed separately (feature 10) — and it
+  is closed *structurally*, at class-definition time.  The
+  :class:`_EnforceNoTimestampAccessor` metaclass refuses to define any window —
+  or a subclass a later feature module adds — whose accessors take a
+  timestamp, so a widening accessor never comes into being.  :func:`inspect_accessors`
+  is the explicit, callable form of the same rule, for a caller that wants to
+  introspect the surface rather than rely on the class failing to construct.
+  The one place a timestamp legitimately belongs is the :meth:`from_memberships`
+  constructor — a constructor, not an accessor — which resolves the universe
+  as of the window's own frozen ``t``.
 """
 
 from __future__ import annotations
@@ -99,6 +111,195 @@ def _as_universe(universe: Iterable[str]) -> Tuple[str, ...]:
     return tuple(seen)
 
 
+def _timestamp_param_names(method: Any) -> Tuple[str, ...]:
+    """The parameter names on ``method`` that read as a timestamp argument.
+
+    A MarketWindow accessor widens its window the moment it accepts a time:
+    ``ctx.bars("1m", lookback=3600, as_of=tomorrow)`` would return rows the
+    window was sliced to exclude, which is look-ahead bias entering through a
+    signature rather than a reassignment (architecture §5.1, feature 10).  So
+    the check is a signature check, not a behaviour check — it names the
+    parameters a caller *could* use to pass a time, which is precisely the
+    surface feature 10 forbids.
+
+    The names are the ones a caller would reach for to name an instant:
+    ``t``, ``as_of``, ``timestamp``, ``time``, ``when``, ``at``, ``upto``,
+    ``until`` and ``end``.  A parameter is matched on its normalized spelling —
+    lower-cased with underscores removed — so ``as_of``, ``AsOf``, ``asOf`` and
+    ``AS_OF`` all match, while ``lookback`` does not.  Matching on the
+    normalized form is the whole point of the check: a widening accessor that
+    spelled its argument ``AsOf`` would be the same bug as one that spelled it
+    ``as_of``, and the guard must not depend on the caller's casing.  Only
+    parameters that actually take a value participate — a ``*args`` catch-all
+    or keyword-only ``**kwargs`` is skipped, since it is not a named timestamp
+    slot a caller could fill.  ``self`` is never considered.
+    """
+    import inspect
+
+    try:
+        params = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        # A builtin or C function whose signature is opaque: it cannot be
+        # shown to take a timestamp argument, and refusing to assert on it
+        # keeps the check from failing on an implementation detail rather than
+        # a real widening.  The window's own accessors are all pure Python.
+        return ()
+
+    candidates = frozenset(
+        {
+            "t", "asof", "at", "time", "timestamp",
+            "when", "upto", "until", "end", "to",
+        }
+    )
+
+    def _normalize(name: str) -> str:
+        return name.lower().replace("_", "")
+
+    names: list[str] = []
+    for param in params.values():
+        if param.name == "self":
+            continue
+        if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+            # A catch-all is not a named slot a caller fills with a time; it
+            # is not the surface feature 10 is about.
+            continue
+        if _normalize(param.name) in candidates:
+            names.append(param.name)
+    return tuple(names)
+
+
+def _widening_accessors(cls: type) -> Tuple[Tuple[str, Tuple[str, ...]], ...]:
+    """The ``(accessor_name, timestamp_params)`` pairs on ``cls`` that widen it.
+
+    The shared core of both the automatic guard (:class:`_EnforceNoTimestamp
+    Accessor`) and the public :func:`inspect_accessors`: it enumerates the
+    public accessors of a class and reports the ones that declare a timestamp
+    parameter.  Enumerated over a class rather than an instance because an
+    accessor's signature is fixed at class-definition time, so one pass covers
+    every object the class will ever produce.
+
+    Two deliberate exclusions shape what counts as a widening accessor:
+
+    * **Constructors are not accessors.**  A ``classmethod`` is a constructor,
+      not an accessor a signal calls on ``ctx`` — and :meth:`from_memberships`
+      legitimately takes ``t`` as its first argument (feature 13's
+      point-in-time resolution path, which resolves the universe as of the
+      window's own frozen ``t``).  That is the one sanctioned place a
+      timestamp belongs, so classmethods are skipped.
+    * **Properties cannot widen.**  A ``property`` getter takes only ``self``
+      and has no setter (the read-only ``t`` guarantee), so it is structurally
+      incapable of taking a time; it is reported as part of the surface, not
+      as a widening accessor.
+
+    The result is a tuple so it is stable and hashable; an empty result means
+    the class has no widening accessor.
+    """
+    import inspect
+
+    widening: list[Tuple[str, Tuple[str, ...]]] = []
+    for name in dir(cls):
+        if name.startswith("_"):
+            continue
+        static = inspect.getattr_static(cls, name)
+        if isinstance(static, classmethod):
+            continue
+        if isinstance(static, property):
+            continue
+        attr = getattr(cls, name)
+        if not callable(attr):
+            continue
+        bad = _timestamp_param_names(attr)
+        if bad:
+            widening.append((name, bad))
+    return tuple(widening)
+
+
+def inspect_accessors() -> Tuple[str, ...]:
+    """Enumerate the MarketWindow's public accessors, refusing a widening one.
+
+    Feature 10 of app_spec.xml: "System rejects any MarketWindow accessor that
+    receives a timestamp argument, because no timestamp a caller passes may
+    widen the window."  The read-only ``t`` guard (feature 4) covers the
+    *assignment* path; an accessor that took ``as_of`` would be a second,
+    independent widening path, closed here at the signature level.
+
+    This enumerates every public accessor on the class — every attribute that
+    is a function or a property and not a dunder — and raises ``TypeError`` the
+    moment one declares a parameter that reads as a time (see
+    :func:`_timestamp_param_names`).  The check is over the *class*, not an
+    instance, so one inspection covers every window that will ever be built;
+    it is import-safe and clock-free, so it can run as a self-check wherever
+    the window class is loaded, including the factory's workspace scan.  On
+    success it returns the tuple of accessor names, so a caller (or the
+    composed application) can assert the surface it expected rather than
+    merely that nothing was rejected.
+
+    The automatic half of the guarantee lives on the class metaclass
+    (:class:`_EnforceNoTimestampAccessor`), which refuses to *define* a window
+    with a widening accessor at all — including a subclass added by a later
+    feature module.  This function is the explicit, callable form of the same
+    rule, for callers that want to introspect the surface rather than rely on
+    the class failing to construct.
+    """
+    widening = _widening_accessors(MarketWindow)
+    if widening:
+        for name, bad in widening:
+            raise TypeError(
+                f"MarketWindow.{name} accepts a timestamp argument "
+                f"({', '.join(bad)}), which would let a caller widen the "
+                "window past its decision time — no accessor may take one"
+            )
+    # The surface is the public accessors a signal can call on ``ctx``: public
+    # names that are functions or properties.  Classmethods are constructors
+    # (``from_memberships``), not accessors, so they are excluded — matching
+    # the enumeration core's view of what an accessor is.
+    import inspect
+
+    return tuple(
+        name
+        for name in dir(MarketWindow)
+        if not name.startswith("_")
+        and not isinstance(
+            inspect.getattr_static(MarketWindow, name), classmethod
+        )
+    )
+
+
+class _EnforceNoTimestampAccessor(type):
+    """Refuse to define a MarketWindow subclass with a widening accessor.
+
+    The automatic, structural half of feature 10.  :class:`MarketWindow`'s
+    read-only ``t`` guard refuses *assignment* at runtime, but a widening
+    accessor — ``bars(self, freq, as_of=...)`` — would widen the window without
+    ever touching ``t``, through a signature rather than a reassignment.  This
+    metaclass closes that path at *class-definition* time: after a subclass is
+    built, it scans the subclass's own accessors and raises ``TypeError`` if
+    any declares a timestamp parameter, so the offending class never comes into
+    being.
+
+    That timing is deliberate and stronger than a runtime check.  A widening
+    accessor added by a later feature module, a signal's attempted subclass,
+    or a monkeypatch that reaches for ``type(window)`` is rejected the instant
+    it is written, before any window carrying it can be built — and the error
+    names the accessor and the parameter, so the rejection is actionable.
+
+    The rule is shared with :func:`inspect_accessors` via
+    :func:`_widening_accessors`, which excludes classmethod constructors (the
+    one sanctioned place a timestamp belongs) and properties (structurally
+    incapable of taking one), so the metaclass only ever fires on a genuine
+    widening instance accessor.
+    """
+
+    def __init__(cls, name: str, bases: tuple, namespace: Mapping[str, Any]) -> None:
+        super().__init__(name, bases, namespace)
+        for accessor, bad in _widening_accessors(cls):
+            raise TypeError(
+                f"{cls.__name__} declares {accessor!r} with a timestamp argument "
+                f"({', '.join(bad)}), which would let a caller widen the window "
+                "past its decision time — no accessor may take one"
+            )
+
+
 def _as_frames(frames: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
     """Normalize materialized frames to a read-only mapping of Arrow tables.
 
@@ -149,7 +350,7 @@ def _as_frames(frames: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
     return normalized
 
 
-class MarketWindow:
+class MarketWindow(metaclass=_EnforceNoTimestampAccessor):
     """A point-in-time market view, pre-sliced to its decision time ``t``.
 
     The constructor is the only writer this object will ever have, and it is

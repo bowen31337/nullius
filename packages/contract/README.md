@@ -101,6 +101,70 @@ accessor taking no argument at all. Feature 10 requires that no accessor
 accept a timestamp — one that did would be a caller's chance to widen the
 window. Resolving once at construction keeps that door shut.
 
+## No accessor takes a timestamp (feature 10)
+
+The read-only `t` covers one of the two ways a window could be widened —
+reassignment.  The other is an accessor that takes a time: `ctx.bars("1m",
+as_of=tomorrow)` would return rows the window was sliced to exclude, which is
+look-ahead bias entering through a *signature* rather than an assignment
+(docs/nullius-tech-architecture.md §5.1).  Feature 10 forbids it: "System
+rejects any MarketWindow accessor that receives a timestamp argument, because
+no timestamp a caller passes may widen the window."
+
+The refusal is structural, enforced at *class-definition* time, not a comment
+and not a runtime check a caller could miss.  `MarketWindow` is built with the
+`_EnforceNoTimestampAccessor` metaclass, which scans every subclass as it is
+defined and raises `TypeError` the moment one declares an accessor that takes a
+timestamp — so a widening accessor added by a later feature module, a signal's
+attempted subclass, or a monkeypatch is rejected the instant it is written,
+before any window carrying it can be built:
+
+```python
+class WideningWindow(MarketWindow):
+    def bars(self, freq, lookback, as_of=None):   # TypeError: no accessor may take one
+        return None
+```
+
+A parameter is matched as a timestamp by its normalized spelling (lower-cased,
+underscores removed), so `as_of`, `AsOf`, `AS_OF` and `at` all match; a
+`*args`/`**kwargs` catch-all does not, since it is not a named slot a caller
+fills with a time.  The error names the offending accessor and the parameter,
+so the rejection is actionable.
+
+`inspect_accessors()` is the explicit, callable form of the same rule, for a
+caller that wants to introspect the surface rather than rely on the class
+failing to construct.  It enumerates every public accessor — every attribute
+that is a function or a property and not a dunder — raises on a widening one,
+and otherwise returns the accessor names:
+
+```python
+from contract import inspect_accessors
+
+inspect_accessors()   # ('frames', 't', 'to_arrow', 'universe') — none takes a time
+```
+
+The check is over the *class*, so one inspection covers every window that will
+ever be built, and it is import-safe and clock-free, so it can run as a
+self-check wherever the window is loaded — including the factory's workspace
+scan.
+
+**Scope, stated honestly.**  This is an *accessor* check, not a blanket "no
+method takes a time" check.  `MarketWindow.from_memberships(t, ...)`
+legitimately takes `t` as its first argument — that is feature 13's
+point-in-time construction path, which resolves the universe as of the
+window's own frozen `t`.  A constructor is not an accessor a signal calls on
+`ctx`; it is the sanctioned place a timestamp belongs.  Both the metaclass and
+`inspect_accessors` exclude classmethods for exactly that reason, so the
+constructor's `t` is never flagged.  The read-only `t` guard (feature 4) covers
+the assignment path; the metaclass covers the accessor path; between them a
+window has no widening surface at all.
+
+The composed application exposes the same surface from the `app` package
+namespace at `app.modules.contract.window_accessor_names()`, which calls
+`inspect_accessors()` and returns the accessor names — or raises, exactly as
+the member does, since a widening accessor is a hard failure of the boundary
+every signal is evaluated against, not a discoverable absent state.
+
 ## The ABI record
 
 Importing the package registers a builder with the application factory
@@ -362,8 +426,15 @@ need it installed — only the payload paths do, and they name it when missing.
 
 `tests/contract/` (repository-level tree) pins every half: the market-window
 contract (read-only `t`, UTC normalization, universe tuple, equality/hash),
-the composition wiring (workspace membership, scan-root resolution, factory
-composition, single-component registration, seat), the payload channel
+the accessor contract (`test_market_window_accessors.py`: the window's surface
+is enumerated and reported, no accessor takes a timestamp, the metaclass
+refuses to *define* a window with a widening accessor — including a subclass —
+every timestamp spelling a caller could reach for is detected, and the one
+sanctioned place a time belongs — the `from_memberships` constructor — is
+excluded; plus that the metaclass does not weaken the window's copy/pickle and
+immutability semantics), the composition wiring (workspace membership,
+scan-root resolution, factory composition, single-component registration,
+seat), the payload channel
 (`test_payload.py`: round-trip fidelity, zero-copy by buffer identity with a
 negative control, framing, and every malformed-payload refusal), and the
 point-in-time resolution (`test_universe_point_in_time.py`: both directions of

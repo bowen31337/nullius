@@ -65,7 +65,7 @@ from .violation import (
     return_index,
     universe_symbols,
 )
-from .window import MarketWindow
+from .window import MarketWindow, inspect_accessors
 
 __all__ = [
     "CONTRACT_VERSION",
@@ -100,6 +100,7 @@ __all__ = [
     "describe_contract_version",
     "describe_signal_signature",
     "frames_alias_payload",
+    "inspect_accessors",
     "is_symbol_label",
     "node_abi_record",
     "parse_contract_version",
