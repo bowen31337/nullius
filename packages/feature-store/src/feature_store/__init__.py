@@ -28,10 +28,6 @@ package's name:
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-from typing import Optional, Union
-
 from app.module_loader import register
 
 from .bars import DailyBar, coerce_date
@@ -112,7 +108,6 @@ from .regime_labeler_service import (
     build_regime_labeler_service,
 )
 from .service import RegimeService, build_regime_service
-from ._errors import VersionRecomputationError
 from .store import DuplicateFeatureKeyError, FeatureRecord, FeatureStore
 from .volatility import (
     ANNUALIZATION_PERIODS,
@@ -138,12 +133,6 @@ from .volatility_persistence import (
     decode_vol_of_vol,
     encode_realized_volatility,
     encode_vol_of_vol,
-)
-from .version_recomputation import (
-    DEPENDENT_RECOMPUTATION_NAME,
-    DependentScore,
-    VersionChange,
-    VersionRecomputationRegistry,
 )
 from .volatility_service import (
     VolatilityService,
@@ -199,8 +188,6 @@ __all__ = [
     "IncompleteDispersionMetricsError",
     "IncompleteLabelerMetricsError",
     "IncompleteRegimeMetricsError",
-    "DEPENDENT_RECOMPUTATION_NAME",
-    "DependentScore",
     "IncompleteVolatilityMetricsError",
     "LABELS_DEFINITION",
     "PricePanel",
@@ -212,10 +199,7 @@ __all__ = [
     "RegimeLabels",
     "RegimeMetrics",
     "RegimeService",
-    "VersionChange",
     "VersionMismatchError",
-    "VersionRecomputationError",
-    "VersionRecomputationRegistry",
     "VolOfVolResult",
     "VolatilityFeatureStore",
     "VolatilityMetrics",
@@ -321,37 +305,6 @@ def build_volatility_service() -> VolatilityService:
     this definition rebinds that name — calling it here would recurse.
     """
     return VolatilityService.from_env()
-
-
-def version_recomputation_registry(
-    lake_root: Optional[Union[str, Path]] = None
-) -> VersionRecomputationRegistry:
-    """One-shot convenience around feature 54's version-recomputation registry.
-
-    Returns the registry (feature 54) persisted at ``lake_root`` (default:
-    resolved from ``LAKE_ROOT`` as the services do) — the store that carries
-    every dependent score's ``recompute`` flag and the version-change audit.
-    A version bump (feature 53) is the feature-store counterpart of feature 39's
-    snapshot change: it flags every dependent score anchored to the old version
-    and emits the same recomputation signal an evaluator change produces,
-    leaving the prior-version rows untouched.  For a script or an audit that
-    wants the flags without holding a service; a long-lived consumer should hold
-    the service and use its registry instead.
-    """
-    from app.module_loader import find_workspace_root
-
-    if lake_root is not None:
-        return VersionRecomputationRegistry(lake_root)
-    raw = os.environ.get("LAKE_ROOT", "").strip()
-    if raw:
-        return VersionRecomputationRegistry(raw)
-    workspace_root = find_workspace_root()
-    if workspace_root is None:
-        raise VersionRecomputationError(
-            "version_recomputation_registry needs a lake root: set LAKE_ROOT, "
-            "pass lake_root=, or run from the workspace"
-        )
-    return VersionRecomputationRegistry(workspace_root / "lake")
 
 
 @register("regime-labeler")

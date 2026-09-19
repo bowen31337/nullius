@@ -41,6 +41,7 @@ The `ingest` workspace member: app_spec.xml feature 16 —
 | `nullius_ingest/staging.py` | `StagingArea` — the append-only staging area feature 28 writes into |
 | `nullius_ingest/schema.py` | `DeclaredSchema`, `ParquetBatch`, `SchemaDrift`, `SchemaValidatingWorker` — the feature 27 gate |
 | `nullius_ingest/gaps.py` | `GapDetector`, `GapDetected`, `GapEventLog` — the feature 25 gap detection |
+| `nullius_ingest/backfill.py` | `GapBackfiller`, `SealGate` — the feature 26 REST backfill and seal gate |
 
 Stdlib-only by design, except `staging` (which resolves its lake root via
 the factory's `find_workspace_root`, as the snapshot member does); stream
@@ -165,6 +166,71 @@ log.events("aggTrades")[0].render()
 The module stays stdlib-only: watching integers go up needs no
 websocket client. The stream workers of features 17–24 own the
 connections and call `observe`/`reconnect` from their own readers.
+
+## Gap backfill over REST and the seal gate (feature 26)
+
+§15's failure table names the feed-side failure this member must recover —
+*"WS gap / reconnect | Sequence-number gap | REST backfill the gap before
+sealing the next snapshot"* — and feature 26 states the recovery:
+*"System backfills a detected websocket gap over REST before the next
+snapshot seals, which rejects a seal attempt while any gap stays open."*
+Feature 25's detector has already named the hole (a `GapDetected` event in
+a `GapEventLog`); feature 26 fills it and refuses to seal over one that
+stays open. Two pieces, both seams:
+
+- **The backfiller.** `GapBackfiller` reads the gaps the log holds, and for
+  each still-open one fetches the missing rows over an injected REST call
+  (`fetch(stream, first, last) -> rows`) and appends them to the stream's
+  staging log — the same append-only area a live-feed cycle writes into.
+  The row serialisation is injected too (`serialize(stream, rows, first,
+  last) -> bytes`), so the member stays stdlib-only: the exchange's REST
+  client and wire format are the stream workers' business, not this
+  module's. A gap is filled by *exactly* the sequences it named: a short
+  fetch (fewer rows than the hole) or an out-of-range row raises
+  `GapNotFilledError` and leaves the gap open, so the seal is never gated
+  on a fill that did not fill. A filled gap is not re-filled, so a retry
+  over the same log does not re-fetch.
+
+- **The seal gate.** `SealGate` wraps the sealing service (the `snapshot`
+  member's `SnapshotService`) and forwards its `seal` — but refuses, with
+  the service's own `SnapshotError` naming the stream and the hole, while
+  the backfiller reports an open gap. Fill the gaps and the same gate lets
+  the seal through. The gate reads the backfiller's open gaps, so backfill
+  then seal is one flow: the §4.1 seal-on-schedule loop backfills, then
+  seals. A gate wired without a backfiller forwards unconditionally — the
+  honest "no gap tracking yet" default.
+
+```python
+from nullius_ingest import GapDetector, GapEventLog, GapBackfiller, SealGate
+from nullius_ingest import StagingArea
+from snapshot import SnapshotService
+
+log = GapEventLog()
+detector = GapDetector(on_event=log.record)
+
+detector.observe("aggTrades", 1)
+detector.reconnect("aggTrades")
+detector.observe("aggTrades", 6)   # gap 2..5 detected into the log
+
+staging = StagingArea.from_env()
+backfiller = GapBackfiller(
+    log=log,
+    staging=staging,
+    fetch=lambda stream, first, last: rest_client.fetch_range(stream, first, last),
+    serialize=lambda stream, rows, first, last: parquet.encode(rows),
+)
+gate = SealGate(service=SnapshotService.from_env(), backfiller=backfiller)
+
+gate.seal()                        # refuses: aggTrades 2..5 still open
+backfiller.fill_stream("aggTrades")  # fetches 2..5, appends to staging
+gate.seal()                        # seals: the hole is filled
+```
+
+The member stays stdlib-only: the arithmetic of "which holes are open and
+are they covered" needs no REST client and no Parquet writer. The fetch,
+the serialisation and the staging area are handed in; the seal gate is
+handed the service. What this module adds is the glue the feature names
+and no other module owns.
 
 ## Adding a stream worker (features 17–29)
 

@@ -37,6 +37,11 @@ What lives where:
   ``gap_detected`` event naming the affected stream (feature 25; §15's
   "WS gap / reconnect" row), and the :class:`GapEventLog` the backfill
   (feature 26) reads.
+* :mod:`nullius_ingest.backfill` — :class:`GapBackfiller`, which fills the
+  gaps that log records over an injected REST fetch into staging, and
+  :class:`SealGate`, which wraps the sealing service and refuses a seal
+  while any gap stays open (feature 26; §15's "REST backfill the gap
+  before sealing the next snapshot" row).
 
 The package self-registers with the application factory: scanning this
 workspace member runs this module, the ``@register`` decorator below
@@ -50,6 +55,14 @@ from __future__ import annotations
 
 from app.module_loader import register
 
+from .backfill import (
+    GAP_FILLED_EVENT,
+    GapBackfiller,
+    GapFetch,
+    GapFilled,
+    GapNotFilledError,
+    SealGate,
+)
 from .gaps import GAP_DETECTED_EVENT, GapDetected, GapDetector, GapEventLog
 from .registry import (
     WorkerFactory,
@@ -85,14 +98,19 @@ from .worker import (
 
 __all__ = [
     "GAP_DETECTED_EVENT",
+    "GAP_FILLED_EVENT",
     "Batch",
     "ColumnSpec",
     "CycleResult",
     "DeclaredSchema",
     "FunctionWorker",
+    "GapBackfiller",
     "GapDetected",
     "GapDetector",
     "GapEventLog",
+    "GapFetch",
+    "GapFilled",
+    "GapNotFilledError",
     "InMemorySequenceStore",
     "IngestReport",
     "IngestSupervisor",
@@ -103,6 +121,7 @@ __all__ = [
     "SchemaDrift",
     "SchemaValidatingWorker",
     "SequenceStore",
+    "SealGate",
     "StagedBatch",
     "StagingArea",
     "StagingRootError",
