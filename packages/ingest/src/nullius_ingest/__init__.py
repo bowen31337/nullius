@@ -20,6 +20,11 @@ What lives where:
   ingesting.
 * :mod:`nullius_ingest.registry` — the seam the later ingest features
   (features 17–29) register stream workers into.
+* :mod:`nullius_ingest.schema` — :class:`DeclaredSchema` and the drift
+  rejection (:class:`SchemaDrift`) that gates each incoming Parquet
+  batch on its stream's declared columns, plus the
+  :class:`SchemaValidatingWorker` that composes the gate into a cycle
+  (feature 27; §15's "exchange schema change" row).
 * :mod:`nullius_ingest.watermark` — :class:`SequenceStore`, the durable
   per-stream batch store feature 29 resumes from, and its in-memory
   stand-in.
@@ -47,6 +52,13 @@ from .registry import (
     build_supervisor,
     register_worker,
 )
+from .schema import (
+    ColumnSpec,
+    DeclaredSchema,
+    ParquetBatch,
+    SchemaDrift,
+    SchemaValidatingWorker,
+)
 from .staging import (
     StagedBatch,
     StagingArea,
@@ -67,14 +79,19 @@ from .worker import (
 
 __all__ = [
     "Batch",
+    "ColumnSpec",
     "CycleResult",
+    "DeclaredSchema",
     "FunctionWorker",
     "InMemorySequenceStore",
     "IngestReport",
     "IngestSupervisor",
     "IngestWorker",
+    "ParquetBatch",
     "ResumableFunctionWorker",
     "ResumableWorker",
+    "SchemaDrift",
+    "SchemaValidatingWorker",
     "SequenceStore",
     "StagedBatch",
     "StagingArea",

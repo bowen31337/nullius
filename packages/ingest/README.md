@@ -39,6 +39,7 @@ The `ingest` workspace member: app_spec.xml feature 16 —
 | `nullius_ingest/registry.py` | `WorkerRegistry`, `register_worker` — the seam for later features |
 | `nullius_ingest/watermark.py` | `SequenceStore` — the durable per-stream batch store feature 29 resumes from |
 | `nullius_ingest/staging.py` | `StagingArea` — the append-only staging area feature 28 writes into |
+| `nullius_ingest/schema.py` | `DeclaredSchema`, `ParquetBatch`, `SchemaDrift`, `SchemaValidatingWorker` — the feature 27 gate |
 
 Stdlib-only by design, except `staging` (which resolves its lake root via
 the factory's `find_workspace_root`, as the snapshot member does); stream
@@ -73,6 +74,41 @@ area = StagingArea.from_env()          # <lake>/staging, resolved from LAKE_ROOT
 batch = area.append(StreamClass.KLINES, payload=rows_bytes, rows=100)
 batch.sequence                          # 1, then 2, 3, ... per stream
 ```
+
+## The schema gate — rejecting drifted batches (feature 27)
+
+§15's failure table names the exchange-side failure this member must
+survive — *"Exchange schema change → Parquet schema validation → Halt
+ingest for that stream; alert; patch"* — and feature 27 states the
+detection: *"System rejects an incoming Parquet batch whose columns
+drifted from the declared schema."* The gate is
+`nullius_ingest/schema.py`:
+
+- **A declaration per stream.** `DeclaredSchema.from_mapping(stream,
+  {column: dtype})` fixes the columns that stream's batches must carry —
+  no more, no less. It is *ours*, so a malformed declaration (empty,
+  repeated, blank) is refused at construction, never at ingest time.
+- **Drift is rejected, precisely.** A batch missing a declared column,
+  carrying an undeclared one (an exchange *adding* a field is a schema
+  change too), typing one differently (dtypes compare verbatim — the
+  declaration is the canonical spelling), or naming one twice raises
+  `SchemaDrift`, which carries the missing/unexpected/retyped/duplicated
+  columns as structured data so the alert names exactly what changed.
+  Order is *not* drift: Parquet columns are addressed by name.
+- **The rejection happens before the write.** `SchemaValidatingWorker`
+  composes the gate into a cycle: fetch the next batch past the
+  watermark, gate it, and only then commit — a `StagingArea` is a batch
+  store, so drifted bytes never reach the append-only log and the
+  watermark never advances. After the schema is patched, the re-fetched
+  batch claims the very sequence the drifted one would have; the log
+  keeps no hole and no drift.
+- **The halt is per stream, by inheritance.** The worker raises; the
+  feature 16 boundary converts the `SchemaDrift` into that stream's
+  `StreamFailure` (the alert) while every other stream keeps ingesting.
+
+The gate needs no Parquet reader — it compares column sets, which is
+exactly what a footer exposes — so the member stays stdlib-only; the
+stream workers of features 17–24 feed it from their own readers.
 
 ## Adding a stream worker (features 17–29)
 
