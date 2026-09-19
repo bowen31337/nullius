@@ -18,6 +18,13 @@ load-bearing:
   batch-store mechanics (:class:`~nullius_ingest.watermark.SequenceStoreBase`)
   refuse a second batch at a sequence the store already holds, so an append
   either lands past the high-water mark or is refused — never an overwrite.
+  Append-only means *a committed batch's bytes are never rewritten*; it does
+  not mean a batch can never be removed, and :meth:`StagingArea.retire` is the
+  narrow, whole-batch exception a retention window needs. That distinction is
+  what keeps this area serving both kinds of stream in §4.1's table: the
+  funding, klines, aggTrades and exchangeInfo logs are never retired at all,
+  while the L2 book diffs — the one stream §4.1 keeps for *"rolling 90 days
+  only"* — give up whole batches that have fallen out of their window.
 
 * **Staging is a sibling of snapshots, never inside it.** The area is rooted
   at ``<lake>/staging`` — beside ``snapshots/``, not under it. That layout is
@@ -35,18 +42,22 @@ load-bearing:
   can copy byte-for-byte.
 
 Staging is *written* here and *copied* by the sealing service (feature 30);
-this module never moves, empties, or edits what it writes, exactly as §4.1
-keeps staging append-only and owned by the ingest workers. It reuses the
-durable batch-store mechanics rather than re-deriving them: the append-only
-log and the resume watermark are the same artifact — one file per committed
-batch — distinguished only by where it lives (``staging/``) and who reads it
-(the seal, not the evaluator).
+this module never moves or edits the bytes it writes, exactly as §4.1 keeps
+staging owned by the ingest workers. The one removal it performs —
+:meth:`StagingArea.retire` — takes a whole batch away rather than editing one,
+so every byte that survives is still a byte that was committed, and a seal
+running alongside a retention prune sees each batch present or absent, never
+torn. It reuses the durable batch-store mechanics rather than re-deriving
+them: the append-only log and the resume watermark are the same artifact — one
+file per committed batch — distinguished only by where it lives
+(``staging/``) and who reads it (the seal, not the evaluator).
 """
 
 from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Optional, Union
@@ -277,6 +288,107 @@ class StagingArea(SequenceStoreBase):
     def staged(self, stream: StreamClass | str) -> tuple[Batch, ...]:
         """The committed batches for ``stream``, in ascending sequence order."""
         return self.batches(stream)
+
+    # -- Retiring -----------------------------------------------------------
+
+    def retire(
+        self, stream: StreamClass | str, sequences: Iterable[int]
+    ) -> tuple[int, ...]:
+        """Remove whole committed batches from ``stream``'s log; return the ones removed.
+
+        The one removal this area performs, and the reason it is narrow enough
+        to sit beside :meth:`append` without weakening feature 28: a retention
+        window (§4.1 keeps the L2 book diffs for *"rolling 90 days only"*) has
+        to give data back, and a staging area that could only ever grow would
+        make that policy a lie. What is removed is always a **whole batch** —
+        its ``<seq>.bin`` is unlinked and it leaves the watermark view together
+        — so no surviving byte is rewritten, no batch is ever left half-present
+        for a seal to copy, and content addressing is untouched. Append-only is
+        preserved as *a committed batch is never rewritten*, which is the
+        property the seal and the resume watermark actually rely on.
+
+        Sequences are retired in ascending order and the directory is fsynced
+        once at the end, so the removal is as durable as the append that
+        preceded it. Missing files are tolerated (a batch already gone is a
+        batch already retired — this method is idempotent), but a sequence this
+        area never committed is refused: silently ignoring it would let a
+        caller believe it expired something that was never there, and the
+        caller is a retention policy deciding what a lake still holds.
+
+        Two refusals guard the sequence space, and both matter because the
+        watermark here is *derived from the files on disk* rather than kept in
+        a separate record:
+
+        * A non-positive sequence is refused, as everywhere else.
+        * The stream's **newest** committed batch is refused. Retiring it would
+          make a later :meth:`append` reuse a sequence this log has already
+          spent, so ``record_at(1)`` would begin answering with a different
+          record than it used to and the log would stop being a history. A
+          caller draining a window therefore keeps its most recent batch as the
+          anchor — a window that has outlived *everything*, newest batch
+          included, is a stream that should stop appending rather than one that
+          should silently restart its numbering.
+
+        Returns the sequences actually removed, ascending — the honest answer
+        to *what did this expire?*, which is what a retention report is built
+        from.
+        """
+        stream = coerce_stream_class(stream)
+        requested = self._validate_retirement(stream, sequences)
+        if not requested:
+            return ()
+
+        directory = self._stream_dir(stream)
+        removed: list[int] = []
+        for sequence in requested:
+            try:
+                (directory / f"{sequence}.bin").unlink()
+            except FileNotFoundError:
+                # Already gone: idempotent, not an error.  The batch is absent
+                # either way, which is the state being asked for.
+                pass
+            self._committed[stream].pop(sequence, None)
+            removed.append(sequence)
+        self._fsync_dir(directory)
+        return tuple(removed)
+
+    def _validate_retirement(
+        self, stream: StreamClass, sequences: Iterable[int]
+    ) -> tuple[int, ...]:
+        # Validate the whole request before touching any file, so a bad
+        # sequence fails the call without having half-retired the log — the
+        # same parse-then-write ordering the stream stores use, and the reason
+        # a retention bug cannot leave a stream's window in a state no report
+        # describes.
+        try:
+            requested = sorted(set(sequences))
+        except TypeError as exc:
+            raise TypeError(
+                f"retire takes an iterable of sequences for {stream}, "
+                f"got {type(sequences).__name__}: {exc}"
+            ) from exc
+        committed = self._committed[stream]
+        newest = max(committed, default=0)
+        for sequence in requested:
+            if not isinstance(sequence, int) or isinstance(sequence, bool):
+                raise TypeError(
+                    f"a sequence is an integer, not {type(sequence).__name__}"
+                )
+            if sequence <= 0:
+                raise ValueError(f"a sequence must be positive, got {sequence}")
+            if sequence not in committed:
+                raise ValueError(
+                    f"stream {stream} has no committed batch at sequence "
+                    f"{sequence}; refusing to retire what was never committed"
+                )
+            if sequence == newest:
+                raise ValueError(
+                    f"stream {stream} refuses to retire sequence {newest}, its "
+                    f"newest committed batch: the watermark is derived from the "
+                    f"files on disk, so retiring it would let a later append "
+                    f"reuse a sequence this log has already spent"
+                )
+        return tuple(requested)
 
     # -- Persistence --------------------------------------------------------
 

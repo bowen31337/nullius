@@ -56,6 +56,15 @@ What lives where:
   worker that owns the 60-second cadence (§4.1's "Funding / borrow rate |
   REST | 1m | forever" row; feature 23).  It registers itself as the
   ``funding`` stream's worker, so importing this package is the whole wiring.
+* :mod:`nullius_ingest.book_diffs` — :class:`BookDiffStore`, the append-only log
+  of raw L2 book diffs and the rolling 90 day window that retires whole records
+  out of it, and :class:`BookDiffWorker`, the stream worker that flushes diffs
+  onto the 100 millisecond grid and rolls the window each cycle (§4.1's "L2 book
+  diffs | WS @100ms | continuous | rolling 90 days only" row; feature 19).  It is
+  the one stream whose retention window *removes* data, which it does through
+  :meth:`~nullius_ingest.staging.StagingArea.retire` — whole batches only, so
+  append-only survives retention.  It registers itself as the ``bookDiffs``
+  stream's worker, so importing this package is the whole wiring.
 
 The package self-registers with the application factory: scanning this
 workspace member runs this module, the ``@register`` decorator below
@@ -76,6 +85,32 @@ from .backfill import (
     GapFilled,
     GapNotFilledError,
     SealGate,
+)
+from .book_diffs import (
+    BIDS,
+    ASKS,
+    BOOK_DIFFS_STREAM,
+    RETENTION,
+    RETENTION_DAYS,
+    SLICE,
+    SLICE_MILLISECONDS,
+    BookDiffBatch,
+    BookDiffCorruptError,
+    BookDiffError,
+    BookDiffFetch,
+    BookDiffParseError,
+    BookDiffRecord,
+    BookDiffRow,
+    BookDiffStore,
+    BookDiffWorker,
+    PriceLevel,
+    RetentionReport,
+    Side,
+    align_to_window,
+    build_book_diff_worker,
+    parse_book_diffs,
+    register_book_diff_worker,
+    window_start_for,
 )
 from .exchange_info import (
     EXCHANGE_INFO_STREAM,
@@ -145,10 +180,22 @@ from .worker import (
 )
 
 __all__ = [
+    "ASKS",
+    "BIDS",
+    "BOOK_DIFFS_STREAM",
     "EXCHANGE_INFO_STREAM",
     "GAP_DETECTED_EVENT",
     "GAP_FILLED_EVENT",
     "Batch",
+    "BookDiffBatch",
+    "BookDiffCorruptError",
+    "BookDiffError",
+    "BookDiffFetch",
+    "BookDiffParseError",
+    "BookDiffRecord",
+    "BookDiffRow",
+    "BookDiffStore",
+    "BookDiffWorker",
     "ColumnSpec",
     "CycleResult",
     "DailyExchangeInfoWorker",
@@ -185,12 +232,19 @@ __all__ = [
     "IngestSupervisor",
     "IngestWorker",
     "ParquetBatch",
+    "PriceLevel",
+    "RETENTION",
+    "RETENTION_DAYS",
     "ResumableFunctionWorker",
     "ResumableWorker",
+    "RetentionReport",
+    "SLICE",
+    "SLICE_MILLISECONDS",
     "SchemaDrift",
     "SchemaValidatingWorker",
     "SequenceStore",
     "SealGate",
+    "Side",
     "SIXTY_SECONDS",
     "StampedReading",
     "StagedBatch",
@@ -202,17 +256,22 @@ __all__ = [
     "SymbolFilters",
     "WorkerFactory",
     "WorkerRegistry",
+    "align_to_window",
+    "build_book_diff_worker",
     "build_default_workers",
     "build_exchange_info_worker",
     "build_funding_worker",
     "build_ingest",
     "build_supervisor",
     "coerce_stream_class",
+    "parse_book_diffs",
     "parse_exchange_info",
     "parse_funding",
+    "register_book_diff_worker",
     "register_exchange_info_worker",
     "register_funding_worker",
     "register_worker",
+    "window_start_for",
 ]
 
 __version__ = "0.1.0"

@@ -13,7 +13,11 @@ never appears on the evaluator mount path"* — read as behaviour of
 * staging is a *sibling* of snapshots, never inside one: a staging area
   rooted at, or beneath, a ``snapshots/`` directory is refused, which is
   feature 28's "never on the evaluator mount path" made structural on the
-  write side.
+  write side;
+* a batch may be *retired* — taken away whole, never rewritten — which is the
+  seam feature 19's rolling 90 day book-diff window needs and which leaves
+  append-only intact: every byte that survives is still a byte that was
+  committed.
 """
 
 from __future__ import annotations
@@ -206,3 +210,155 @@ def test_append_reports_sequence_zero_rows_without_a_batch(tmp_path) -> None:
     batch = area.append(StreamClass.FUNDING, b"", rows=0)
     assert batch.rows == 0
     assert batch.sequence == 1
+
+
+# -- Retiring a whole batch -------------------------------------------------
+#
+# Feature 19's L2 book diffs are the one §4.1 stream kept under a *rolling 90
+# day* window, so a staging area that could only ever grow would make that
+# policy a lie.  ``retire`` is the narrow removal that lets a retention window
+# exist without weakening append-only: a batch is taken away whole, so every
+# byte that survives is still a byte that was committed.
+
+
+def test_retire_removes_a_whole_batch(tmp_path) -> None:
+    area = StagingArea(tmp_path / "staging")
+    area.append(StreamClass.BOOK_DIFFS, b"a", rows=1)
+    second = area.append(StreamClass.BOOK_DIFFS, b"b", rows=1)
+    third = area.append(StreamClass.BOOK_DIFFS, b"c", rows=1)
+
+    removed = area.retire(StreamClass.BOOK_DIFFS, [1])
+
+    assert removed == (1,)
+    assert not (tmp_path / "staging" / "bookDiffs" / "1.bin").exists()
+    # The survivors are untouched, byte for byte — retirement takes a batch
+    # away, it never edits one.
+    assert second.path.read_bytes() == b"b"
+    assert third.path.read_bytes() == b"c"
+    assert [b.sequence for b in area.staged(StreamClass.BOOK_DIFFS)] == [2, 3]
+
+
+def test_retire_drops_the_batch_from_the_watermark_view(tmp_path) -> None:
+    area = StagingArea(tmp_path / "staging")
+    area.append(StreamClass.BOOK_DIFFS, b"a", rows=1)
+    area.append(StreamClass.BOOK_DIFFS, b"b", rows=1)
+
+    area.retire(StreamClass.BOOK_DIFFS, [1])
+
+    assert area.current(StreamClass.BOOK_DIFFS) == 2
+    assert [b.payload for b in area.staged(StreamClass.BOOK_DIFFS)] == [b"b"]
+
+
+def test_retire_never_lets_a_retired_sequence_be_reused(tmp_path) -> None:
+    # The watermark is derived from the files on disk, so the newest batch is
+    # kept as the anchor: retiring every file would let the next append reuse a
+    # sequence this log has already spent.
+    area = StagingArea(tmp_path / "staging")
+    area.append(StreamClass.BOOK_DIFFS, b"a", rows=1)
+    area.append(StreamClass.BOOK_DIFFS, b"b", rows=1)
+
+    area.retire(StreamClass.BOOK_DIFFS, [1])
+
+    assert area.append(StreamClass.BOOK_DIFFS, b"c", rows=1).sequence == 3
+
+
+def test_retire_refuses_the_newest_batch(tmp_path) -> None:
+    area = StagingArea(tmp_path / "staging")
+    area.append(StreamClass.BOOK_DIFFS, b"a", rows=1)
+    area.append(StreamClass.BOOK_DIFFS, b"b", rows=1)
+
+    with pytest.raises(ValueError, match="newest committed batch"):
+        area.retire(StreamClass.BOOK_DIFFS, [2])
+
+    # Refused before anything was unlinked.
+    assert (tmp_path / "staging" / "bookDiffs" / "2.bin").exists()
+
+
+def test_retire_refuses_a_sequence_that_was_never_committed(tmp_path) -> None:
+    # Silently ignoring it would let a caller believe it expired something that
+    # was never there — and the caller is a retention policy deciding what a
+    # lake still holds.
+    area = StagingArea(tmp_path / "staging")
+    area.append(StreamClass.BOOK_DIFFS, b"a", rows=1)
+    area.append(StreamClass.BOOK_DIFFS, b"b", rows=1)
+
+    with pytest.raises(ValueError, match="never committed"):
+        area.retire(StreamClass.BOOK_DIFFS, [9])
+
+    with pytest.raises(ValueError, match="must be positive"):
+        area.retire(StreamClass.BOOK_DIFFS, [0])
+
+
+def test_a_mixed_retirement_request_is_refused_wholesale(tmp_path) -> None:
+    # Validate the whole request before touching any file, so a bad sequence
+    # cannot half-retire a log into a state no report describes.
+    area = StagingArea(tmp_path / "staging")
+    area.append(StreamClass.BOOK_DIFFS, b"a", rows=1)
+    area.append(StreamClass.BOOK_DIFFS, b"b", rows=1)
+    area.append(StreamClass.BOOK_DIFFS, b"c", rows=1)
+
+    with pytest.raises(ValueError, match="never committed"):
+        area.retire(StreamClass.BOOK_DIFFS, [1, 9])
+
+    # Sequence 1 is still there: the refusal happened before any unlink.
+    assert (tmp_path / "staging" / "bookDiffs" / "1.bin").exists()
+
+
+def test_retiring_several_batches_removes_them_all(tmp_path) -> None:
+    area = StagingArea(tmp_path / "staging")
+    for payload in (b"a", b"b", b"c", b"d"):
+        area.append(StreamClass.BOOK_DIFFS, payload, rows=1)
+
+    removed = area.retire(StreamClass.BOOK_DIFFS, [1, 2, 3])
+
+    assert removed == (1, 2, 3)
+    assert [b.sequence for b in area.staged(StreamClass.BOOK_DIFFS)] == [4]
+
+
+def test_retiring_nothing_is_a_no_op(tmp_path) -> None:
+    area = StagingArea(tmp_path / "staging")
+    area.append(StreamClass.BOOK_DIFFS, b"a", rows=1)
+
+    assert area.retire(StreamClass.BOOK_DIFFS, []) == ()
+    assert area.current(StreamClass.BOOK_DIFFS) == 1
+
+
+def test_a_retirement_survives_a_restart(tmp_path) -> None:
+    area = StagingArea(tmp_path / "staging")
+    area.append(StreamClass.BOOK_DIFFS, b"a", rows=1)
+    area.append(StreamClass.BOOK_DIFFS, b"b", rows=1)
+    area.retire(StreamClass.BOOK_DIFFS, [1])
+
+    restarted = StagingArea(tmp_path / "staging")
+
+    assert [b.sequence for b in restarted.staged(StreamClass.BOOK_DIFFS)] == [2]
+    assert restarted.current(StreamClass.BOOK_DIFFS) == 2
+
+
+def test_retire_touches_only_the_named_stream(tmp_path) -> None:
+    # §4.1's retention column is per-stream: retiring one stream's log must
+    # never reach into another's.
+    area = StagingArea(tmp_path / "staging")
+    area.append(StreamClass.BOOK_DIFFS, b"diff-1", rows=1)
+    area.append(StreamClass.BOOK_DIFFS, b"diff-2", rows=1)
+    area.append(StreamClass.FUNDING, b"poll-1", rows=1)
+
+    area.retire(StreamClass.BOOK_DIFFS, [1])
+
+    assert [b.payload for b in area.staged(StreamClass.FUNDING)] == [b"poll-1"]
+    assert area.current(StreamClass.FUNDING) == 1
+
+
+def test_retire_accepts_a_streams_string_spelling(tmp_path) -> None:
+    area = StagingArea(tmp_path / "staging")
+    area.append(StreamClass.BOOK_DIFFS, b"a", rows=1)
+    area.append(StreamClass.BOOK_DIFFS, b"b", rows=1)
+
+    assert area.retire("bookDiffs", [1]) == (1,)
+
+
+def test_retire_rejects_an_unknown_stream(tmp_path) -> None:
+    area = StagingArea(tmp_path / "staging")
+
+    with pytest.raises(TypeError, match="unknown stream class"):
+        area.retire("notAStream", [1])

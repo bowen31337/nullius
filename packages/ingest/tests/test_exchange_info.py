@@ -690,12 +690,26 @@ def test_registering_an_explicit_fetch_revises_the_same_worker(tmp_path) -> None
     assert store.current().symbols == ("ETHUSDT",)
 
 
+def exchangeinfo_worker_from_default() -> DailyExchangeInfoWorker:
+    """The default registry's exchangeInfo worker, selected by stream class.
+
+    Selected rather than indexed: the registry builds one worker per registered
+    class in sorted order, so a positional ``[0]`` silently starts naming a
+    different stream the moment another ingest member lands — which feature 19's
+    bookDiffs worker did.
+    """
+    for worker in default_worker_registry().build_workers():
+        if worker.stream_class == EXCHANGE_INFO_STREAM:
+            return worker
+    raise AssertionError("the default registry has no exchangeInfo worker")
+
+
 def test_registering_an_explicit_fetch_does_not_pollute_the_default(tmp_path) -> None:
     # A registration is a deployment act, not a global side effect: wiring an
     # explicit fetch must not replace the auto-discovered worker for every
     # later composition in the process — which is exactly how a test would be
     # handed a worker bound to a store that has since been deleted.
-    auto_discovered = default_worker_registry().build_workers()[0]
+    auto_discovered = exchangeinfo_worker_from_default()
     store = make_store(tmp_path)
 
     factory = register_exchange_info_worker(
@@ -706,7 +720,7 @@ def test_registering_an_explicit_fetch_does_not_pollute_the_default(tmp_path) ->
     assert factory().store.staging.root == store.staging.root
     # ...while the default registry still composes the environment-resolved
     # one, untouched by the registration above.
-    still_default = default_worker_registry().build_workers()[0]
+    still_default = exchangeinfo_worker_from_default()
     assert still_default.store.staging.root == auto_discovered.store.staging.root
     assert still_default.store.staging.root != store.staging.root
 
