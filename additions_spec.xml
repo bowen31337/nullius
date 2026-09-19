@@ -1,0 +1,72 @@
+<project_specification mode="brownfield">
+  <project_name>nullius feature-store — feature 50 (cache_hit counter)</project_name>
+  <addition_summary>
+    Add feature 50 to the Point-in-Time feature-store plugin: the
+    FeatureMaterialiser counts how many requests reuse an already-materialised
+    feature instead of recomputing it, exposing a cache_hit counter so the
+    laziness of feature 49 is measurable. The counter is incremented on the
+    reuse path (a hit that returns the stored Parquet without calling the
+    definition) and reported on the MaterialisedFeature result, so a caller can
+    observe reuse without timing or comparing payloads.
+  </addition_summary>
+  <existing_context>
+    <stack>Python / uv-workspace / pytest (ruff + mypy conventions)</stack>
+    <test_baseline>feature-store suite under tests/feature-store/, run with pyarrow installed</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, docstrings that
+      cite app_spec.xml feature numbers and docs/nullius-tech-architecture.md
+      sections, stdlib-only keying/row layers, third-party imports (pyarrow)
+      deferred to first use, @register only in the package __init__ (never a
+      submodule), degrade-don't-break composition. Tests assert on observed
+      behaviour (call counts) rather than values, with long narrative docstrings
+      explaining the "why".
+    </conventions>
+  </existing_context>
+  <features_to_add>
+    <category name="Feature Store Caching">
+      <feature index="1" shape="core" touches_files="packages/feature-store/src/feature_store/materialise.py">
+        System exposes a cache_hit counter on the FeatureMaterialiser that is incremented every time a request reuses an already-materialised feature instead of recomputing it, returning a non-negative integer count so the laziness of feature 49 is measurable
+      </feature>
+      <feature index="2" shape="core" touches_files="packages/feature-store/src/feature_store/materialise.py" depends_on="1">
+        System reports the cache_hit count on each MaterialisedFeature result so a caller reads reuse off the return value rather than inferring it from timing
+      </feature>
+      <feature index="3" shape="core" touches_files="packages/feature-store/src/feature_store/materialise.py" depends_on="1">
+        System exposes a cache_hit_rate property (hits over total materialise calls) that returns a ratio in [0, 1], so the reuse depth of the lake is measurable
+      </feature>
+      <feature index="4" shape="core" touches_files="packages/feature-store/src/feature_store/materialise.py" depends_on="1">
+        System resets the cache_hit counters with an explicit reset method that returns both counters to zero, so a replay window or a test can bound the measurement
+      </feature>
+    </category>
+    <category name="Feature Store Caching Verification">
+      <feature index="5" shape="core" touches_files="tests/feature-store/test_materialise.py" depends_on="2">
+        System passes an end-to-end test in which the first materialise call computes and reports a miss, the second call reuses the stored file without calling the definition, increments cache_hit, and returns the identical rows
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Extends FeatureMaterialiser.materialise (packages/feature-store/src/feature_store/materialise.py) to increment the counter on the reuse path
+    Extends MaterialisedFeature with the observed hit/miss facts
+    Covered by tests/feature-store/test_materialise.py
+  </integration_points>
+  <constraints>
+    Must not change feature 49's observable behaviour: a hit still does not call compute, a miss still computes and writes, replace=True still recomputes deliberately, a corrupt lake is still refused not recomputed
+    Must not touch the FeatureKey, FeatureStore, or any shared file (src/app/middleware.py, src/app/settings.py, migrations/**, alembic/**)
+    The counter is a process-memory measurement, never persisted to the lake — a fresh materialiser over the same lake starts at zero, matching feature 49's disk-only persistence
+    Follow the existing docstring discipline: cite app_spec.xml feature 50 and the materialise module's existing cross-references to it
+    All existing feature-store tests must stay green
+  </constraints>
+  <implementation_steps>
+    <phase name="Feature Store Caching">
+      Add a cache_hit counter to FeatureMaterialiser, incremented on the reuse path in materialise()
+      Report the hit/miss fact on MaterialisedFeature and expose cache_hit / cache_hit_rate / reset accessors
+    </phase>
+    <phase name="Feature Store Caching Verification">
+      Add end-to-end tests asserting the counter increments on reuse and not on a miss, and that the reused rows are identical
+    </phase>
+  </implementation_steps>
+  <success_criteria>
+    Feature 50 implemented and measured at the materialise seam
+    cache_hit increments exactly once per reuse and never on a compute
+    All existing feature-store tests still green; new caching tests green
+  </success_criteria>
+</project_specification>

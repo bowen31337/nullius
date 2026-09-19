@@ -272,7 +272,9 @@ dependency (pyarrow, for the Parquet format §4.1 pins), so the import is
 deferred to first use (`feature_store.parquet.require_arrow`) and the package
 stays import-safe for the scan. Row-level stamping (51) has landed in
 `feature_store.rows`, and its `computed_as_of <= t` read filter (52) in
-`feature_store.point_in_time`; caching (50) layers on top of this seam.
+`feature_store.point_in_time`. Caching (50) — the `cache_hit` counter that
+measures the materialiser's reuse — lives in `feature_store.materialise`
+alongside feature 49, whose reuse path it counts.
 
 ### Parquet materialisation (feature 49)
 
@@ -303,3 +305,19 @@ never silently recomputed, because a corrupt artefact is a fact about the lake
 and a recompute would hide it. An absent file and a corrupt one are different
 states, and so are a file whose rows are all later than the query time and no
 file at all.
+
+### Measuring the reuse (feature 50)
+
+The laziness feature 49 provides is measurable. `FeatureMaterialiser` keeps a
+`cache_hit` counter that rises by one every time a request reuses an
+already-materialised feature instead of recomputing it, and a `cache_miss`
+counter for the calls that compute. Both are read with the `cache_hit`,
+`cache_miss`, `cache_hit_rate` (hits over total, in `[0, 1]`) and
+`reset_cache_stats` accessors. They are process-memory only — never written to
+the lake, so a fresh materialiser over the same lake starts at zero, matching
+feature 49's disk-only persistence. A hit is reported through
+`MaterialisedFeature.materialised is False` and its `cache_hit` field, which
+snapshots the running count onto the result so a caller can log the counter per
+request without reaching back into the materialiser. A deliberate `replace=True`
+recompute counts as a miss, because it does the work a miss does; a refused
+corrupt file is neither, and moves neither counter.

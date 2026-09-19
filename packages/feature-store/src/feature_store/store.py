@@ -11,9 +11,13 @@ Feature 48 deliberately fixes the *identity* contract and nothing else.
 The payload is opaque ``bytes`` — the Parquet representation is feature
 49's materialisation contract, and the keying layer must not leak
 assumptions about row schema into identity — and the backing store is a
-dictionary.  Features 49/50 (lazy Parquet materialisation and caching)
-extend this class with a lake-rooted backing and a ``cache_hit`` counter;
-the put/get/keys seam below is what they extend, not replace.  Row-level
+dictionary.  Feature 49 (lazy Parquet materialisation) is a separate,
+lake-rooted class — :class:`~feature_store.materialise.FeatureMaterialiser` —
+that reads and writes a feature's key-addressed Parquet file rather than this
+in-memory mapping; the two are peers addressed by the same key, and the
+materialiser is the one that extends the put/get/keys identity with a lake and,
+on it, feature 50's ``cache_hit`` counter (the reuse it measures is a
+materialiser fact — whether ``compute`` ran — not a store fact).  Row-level
 point-in-time stamping (``computed_as_of``, feature 51) lives in the
 payload layer that feature added: :mod:`feature_store.rows`, which this
 class still knows nothing about — the payload stays opaque bytes here,

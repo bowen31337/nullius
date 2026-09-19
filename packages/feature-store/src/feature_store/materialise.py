@@ -9,10 +9,12 @@ shared across thousands of signal nodes.  Recomputing them per node is the
 dominant avoidable cost."*
 
 This module is the "lazily on first request" and the "persisting the result for
-later reuse" halves of that; :mod:`feature_store.parquet` is the "Parquet".
-(Feature 50 measures the reuse with its ``cache_hit`` counter, on the seam this
-module exposes: :attr:`MaterialisedFeature.materialised` is the fact it counts,
-and this module deliberately does not keep the counter itself.)
+later reuse" halves of that; :mod:`feature_store.parquet` is the "Parquet", and
+this module is also feature 50's ``cache_hit`` counter — it rises by one on the
+reuse path, so the laziness feature 49 provides is measurable rather than
+inferred from timing.  :attr:`MaterialisedFeature.materialised` is the fact it
+counts, and :attr:`MaterialisedFeature.cache_hit` snapshots the running count
+onto each result so a caller can log it per request.
 
 **Lazy means: nothing is computed until something asks.**  There is no
 constructor that walks a manifest, no eager pass that materialises a feature
@@ -178,9 +180,11 @@ class MaterialisedFeature:
     ``materialised`` is the fact this feature's contract turns on, and it is
     spelled as a boolean rather than inferred: ``True`` when *this call*
     computed the feature and wrote the file, ``False`` when the call found an
-    existing file and reused it without computing.  A caller measuring the
-    laziness (feature 50's ``cache_hit`` counter) reads it directly instead of
-    guessing from timing or from comparing payloads.
+    existing file and reused it without computing.  Feature 50's ``cache_hit``
+    is the materialiser's running reuse count *as it stood after this call*,
+    snapshotted onto the result so a caller can log the counter per request
+    without reaching back into the materialiser — the reuse, measured, rather
+    than guessed from timing or from comparing payloads.
 
     ``rows`` are the decoded rows, identical in content either way — a reused
     materialisation and a fresh one return the same feature, which is what
@@ -193,6 +197,7 @@ class MaterialisedFeature:
     path: Path
     rows: tuple[FeatureRow, ...]
     materialised: bool
+    cache_hit: int = 0
 
     def __len__(self) -> int:
         """The number of rows materialised — the file's row count."""
@@ -208,6 +213,15 @@ class FeatureMaterialiser:
     that arrive unstamped — so a materialiser is safe to build at composition
     time in any environment, and directories are created on demand by the
     operation that needs one.
+
+    Feature 50 is the measurement half that feature 49 deliberately leaves out
+    (see the module docstring): the materialiser keeps a ``cache_hit`` counter
+    that rises by one every time a request reuses an already-materialised
+    feature instead of recomputing it, and a ``cache_miss`` counter for the
+    calls that compute.  Both are process-memory only — never written to the
+    lake, so a fresh materialiser over the same lake starts from zero, matching
+    feature 49's disk-only persistence — and are exposed with :meth:`cache_hit`,
+    :meth:`cache_miss`, :meth:`cache_hit_rate` and :meth:`reset_cache_stats`.
     """
 
     def __init__(
@@ -226,6 +240,12 @@ class FeatureMaterialiser:
         # ``None`` means ``utc_now`` at the moment a write needs it, so the
         # default stays a call at use rather than an instant frozen at build.
         self._clock = clock
+        # Feature 50's measurement.  Two counters, not one: the hit rate is
+        # hits / (hits + misses), and a single counter cannot yield both the
+        # numerator and the denominator.  Plain ints, not itertools.count —
+        # the counters are read by the accessors and reset wholesale.
+        self._cache_hit = 0
+        self._cache_miss = 0
 
     # -- Construction -------------------------------------------------------
 
@@ -271,6 +291,57 @@ class FeatureMaterialiser:
     def features_root(self) -> Path:
         """Where materialised features live (§4.4, beside ``snapshots/``)."""
         return self._lake_root / FEATURES_DIRECTORY
+
+    # -- Feature 50: measuring the reuse -----------------------------------
+
+    @property
+    def cache_hit(self) -> int:
+        """How many requests so far reused a stored feature (feature 50).
+
+        Rises by one on every :meth:`materialise` call that finds an existing
+        file and returns it without calling ``compute`` — the reuse path.  A
+        miss (a compute) or a deliberate ``replace=True`` does not move it, so
+        the counter counts *silent* reuse only, never the recomputations the
+        ordinary path never performs.  Process-memory only: a fresh
+        materialiser over the same lake starts at zero, exactly as feature 49's
+        persistence is disk-only.
+        """
+        return self._cache_hit
+
+    @property
+    def cache_miss(self) -> int:
+        """How many requests so far computed a feature that was not stored.
+
+        The denominator's other half: one per :meth:`materialise` call that
+        called ``compute`` and wrote a file.  A ``replace=True`` recompute
+        counts as a miss, because it did the work a miss does.  Exposed
+        alongside :attr:`cache_hit` so :attr:`cache_hit_rate` has both terms.
+        """
+        return self._cache_miss
+
+    @property
+    def cache_hit_rate(self) -> float:
+        """The fraction of requests that reused a stored feature.
+
+        ``cache_hit / (cache_hit + cache_miss)`` — the reuse depth of the lake
+        as a ratio in ``[0, 1]`` rather than a raw count, so two lakes of
+        different sizes can be compared.  Returns ``0.0`` before any request,
+        when there is no reuse to measure, rather than dividing by zero.
+        """
+        total = self._cache_hit + self._cache_miss
+        return self._cache_hit / total if total else 0.0
+
+    def reset_cache_stats(self) -> None:
+        """Return both counters to zero, bounding the measurement window.
+
+        A replay that must reproduce one window's hit rate, or a test that
+        measures a single scenario in isolation, resets before it begins so an
+        earlier scenario's counts cannot bleed in.  Deliberate and explicit —
+        the counters otherwise accumulate for the life of the materialiser,
+        which is what makes a long-running process's rate meaningful.
+        """
+        self._cache_hit = 0
+        self._cache_miss = 0
 
     def path_for(self, key: FeatureKey) -> Path:
         """The Parquet path ``key``'s materialisation lives at.
@@ -351,21 +422,35 @@ class FeatureMaterialiser:
         """
         path = self.path_for(key)
         if not replace and path.is_file():
+            # Feature 50's reuse path: a stored file is found and returned
+            # without calling compute (feature 49's "later reuse"), and the
+            # hit counter rises to record that this request was served from
+            # the cache rather than recomputed.  The count is snapshotted onto
+            # the result so the caller can log the counter at this request
+            # without reaching back into the materialiser.
+            self._cache_hit += 1
             return MaterialisedFeature(
                 key=key,
                 path=path,
                 rows=self._read(path),
                 materialised=False,
+                cache_hit=self._cache_hit,
             )
         if not callable(compute):
             raise MaterialisationError(
                 "materialise needs a zero-argument callable returning the "
                 f"feature's rows; got {type(compute).__name__}"
             )
+        # A miss: compute did the work the cache could not spare.  Counted
+        # separately from a hit so the hit rate has both terms; a
+        # replace=True recompute lands here too, because it did the work a
+        # miss does rather than reusing a stored result.
+        self._cache_miss += 1
         rows = self._stamped(compute())
         self._write(path, encode_parquet(rows))
         return MaterialisedFeature(
-            key=key, path=path, rows=rows, materialised=True
+            key=key, path=path, rows=rows, materialised=True,
+            cache_hit=self._cache_hit,
         )
 
     def load(self, key: FeatureKey) -> Optional[tuple[FeatureRow, ...]]:

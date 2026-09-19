@@ -446,3 +446,189 @@ def test_the_result_reports_its_own_row_count(
     assert len(result) == 2
     assert isinstance(result, MaterialisedFeature)
     assert result.key == make_key()
+
+
+# ---------------------------------------------------------------------------
+# Feature 50 — the reuse is measured, not merely performed
+# ---------------------------------------------------------------------------
+
+
+def test_a_miss_does_not_move_the_cache_hit_counter(
+    materialiser: FeatureMaterialiser,
+) -> None:
+    # Feature 50 counts reuse, and a first request is not a reuse: it computes
+    # and writes.  The counter stays at zero, and the miss is counted instead,
+    # so the hit rate has both its terms from the very first request.
+    result = materialiser.materialise(make_key(), Compute())
+    assert result.materialised is True
+    assert materialiser.cache_hit == 0
+    assert materialiser.cache_miss == 1
+
+
+def test_a_reuse_increments_the_cache_hit_counter(
+    materialiser: FeatureMaterialiser,
+) -> None:
+    # The whole of feature 50 in one assertion: the second request finds the
+    # stored file and returns it without calling compute, and the counter that
+    # was zero is now one.  Asserted on the counter AND on the call count,
+    # because a cache that recomputed and merely reported a hit would move the
+    # call count but a counter incremented in the wrong place would not.
+    key = make_key()
+    definition = Compute()
+    materialiser.materialise(key, definition)
+    result = materialiser.materialise(key, definition)
+    assert definition.calls == 1  # reused, not recomputed
+    assert result.materialised is False
+    assert materialiser.cache_hit == 1
+    assert materialiser.cache_miss == 1
+
+
+def test_the_counter_counts_reuse_across_many_requests(
+    materialiser: FeatureMaterialiser,
+) -> None:
+    # A counter that saturates at one would pass a single-reuse test; counting
+    # every reuse is the point of a counter.  Five further requests over the
+    # same key, none of them calling compute, move it to five.
+    key = make_key()
+    definition = Compute()
+    materialiser.materialise(key, definition)
+    for _ in range(5):
+        materialiser.materialise(key, definition)
+    assert definition.calls == 1
+    assert materialiser.cache_hit == 5
+    assert materialiser.cache_miss == 1
+
+
+def test_each_distinct_key_is_its_own_cache(
+    materialiser: FeatureMaterialiser,
+) -> None:
+    # The counter is per-materialiser, not per-key, but the reuse it measures
+    # is per-key: a hit on one key does not credit a miss on another.  Two keys
+    # each computed once, then one reused once — the counter is one, not two.
+    a, b = make_key(), make_key(symbol="ETHUSDT")
+    definition = Compute()
+    materialiser.materialise(a, definition)
+    materialiser.materialise(b, definition)
+    assert materialiser.cache_hit == 0
+    materialiser.materialise(a, definition)
+    assert materialiser.cache_hit == 1
+    assert definition.calls == 2  # a and b each computed once
+
+
+def test_the_result_snapshots_the_counter_at_that_request(
+    materialiser: FeatureMaterialiser,
+) -> None:
+    # The counter keeps rising for the life of the materialiser, so a caller
+    # that must attribute a hit to a particular request reads it off the
+    # result, which carries the count as it stood after that call — not the
+    # current, later value.
+    key = make_key()
+    definition = Compute()
+    materialiser.materialise(key, definition)
+    first = materialiser.materialise(key, definition)
+    second = materialiser.materialise(key, definition)
+    assert first.cache_hit == 1
+    assert second.cache_hit == 2
+    assert materialiser.cache_hit == 2
+
+
+def test_a_replace_true_recompute_is_a_miss_not_a_hit(
+    materialiser: FeatureMaterialiser,
+) -> None:
+    # replace=True deliberately recomputes over a stored feature, so it does
+    # the work a miss does and must not be credited as a reuse.  The hit
+    # counter is untouched; the miss counter records the deliberate recompute.
+    key = make_key()
+    definition = Compute()
+    materialiser.materialise(key, definition)
+    materialiser.materialise(key, definition, replace=True)
+    assert materialiser.cache_hit == 0
+    assert materialiser.cache_miss == 2
+
+
+def test_a_corrupt_lake_refused_is_not_credited_as_a_hit(
+    materialiser: FeatureMaterialiser,
+) -> None:
+    # A corrupt materialisation is refused, not reused, so the reuse counter
+    # must not move — a refused read is neither a hit nor a served request.
+    key = make_key()
+    path = materialiser.path_for(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"junk")
+    with pytest.raises(MaterialisationError, match="damaged"):
+        materialiser.load(key)
+    assert materialiser.cache_hit == 0
+    assert materialiser.cache_miss == 0
+
+
+def test_the_cache_hit_rate_is_hits_over_total(
+    materialiser: FeatureMaterialiser,
+) -> None:
+    # The ratio, not just the count: one miss then three hits is 3 / (1 + 3).
+    key = make_key()
+    definition = Compute()
+    materialiser.materialise(key, definition)
+    for _ in range(3):
+        materialiser.materialise(key, definition)
+    assert materialiser.cache_hit == 3
+    assert materialiser.cache_miss == 1
+    assert materialiser.cache_hit_rate == pytest.approx(0.75)
+
+
+def test_the_cache_hit_rate_is_zero_before_any_request(
+    materialiser: FeatureMaterialiser,
+) -> None:
+    # No requests means no reuse to measure; the rate is defined as 0.0 rather
+    # than a division by zero, so a freshly composed materialiser reports a
+    # sane number instead of raising.
+    assert materialiser.cache_hit == 0
+    assert materialiser.cache_miss == 0
+    assert materialiser.cache_hit_rate == 0.0
+
+
+def test_reset_cache_stats_bounds_the_measurement_window(
+    materialiser: FeatureMaterialiser,
+) -> None:
+    # A replay or a test that must measure one window in isolation resets both
+    # counters to zero, so an earlier scenario's counts do not bleed into a
+    # later one.  After the reset the counters start again from a clean slate.
+    key = make_key()
+    definition = Compute()
+    materialiser.materialise(key, definition)
+    for _ in range(4):
+        materialiser.materialise(key, definition)
+    assert materialiser.cache_hit == 4
+    materialiser.reset_cache_stats()
+    assert materialiser.cache_hit == 0
+    assert materialiser.cache_miss == 0
+    assert materialiser.cache_hit_rate == 0.0
+    # The stored file still exists, so a plain request after the reset would be
+    # a hit; a deliberate recompute (replace=True) is the miss that proves the
+    # two counters climb again from the clean slate.
+    materialiser.materialise(key, definition, replace=True)
+    assert materialiser.cache_hit == 0
+    assert materialiser.cache_miss == 1
+    materialiser.materialise(key, definition)
+    assert materialiser.cache_hit == 1
+    assert materialiser.cache_miss == 1
+
+
+def test_the_counter_is_process_memory_not_persisted(
+    materialiser: FeatureMaterialiser, lake_root: Path
+) -> None:
+    # Feature 50 measures a running process, and feature 49 persists the bytes.
+    # The two must not be confused: a second materialiser over the same lake
+    # finds the stored file and reuses it, but its own counter starts at zero,
+    # because the count is never written to the lake — a fresh process has no
+    # history to report.
+    key = make_key()
+    materialiser.materialise(key, Compute())
+    for _ in range(3):
+        materialiser.materialise(key, Compute())
+    assert materialiser.cache_hit == 3
+    other = FeatureMaterialiser(lake_root)
+    assert other.cache_hit == 0
+    assert other.cache_miss == 0
+    result = other.materialise(key, Compute())
+    assert result.materialised is False  # the file IS reused across processes
+    assert other.cache_hit == 1  # but this process's count is its own
