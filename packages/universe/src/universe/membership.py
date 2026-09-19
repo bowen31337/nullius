@@ -11,7 +11,10 @@ it. This module turns that series of snapshots into intervals — the form a
 decision time can be *resolved* against without walking a history of
 monthly tables, and the form an auditor reads to see that a symbol which
 left the universe left a row behind rather than silently vanishing from
-every later window (the survivorship bias §4.3 is written against).
+every later window (the survivorship bias §4.3 is written against). The
+resolution itself lives here too (:func:`resolve_membership`, feature 42):
+the question "who was tradable at ``t``" has one answer spelled once,
+next to the intervals it is answered from.
 
 Derivation rules, stated once so every consumer agrees on them:
 
@@ -75,6 +78,7 @@ from .monthly import MonthlyUniverse, month_key, month_start, next_month_start
 __all__ = [
     "MembershipInterval",
     "membership_intervals",
+    "resolve_membership",
 ]
 
 
@@ -250,4 +254,48 @@ def _end_reason(
     return (
         f"not admitted to the {closing_month} universe: not among the "
         "symbols its build admitted"
+    )
+
+
+def resolve_membership(
+    intervals: Iterable[MembershipInterval],
+    when: "str | dt.date | dt.datetime",
+) -> tuple[str, ...]:
+    """The symbols tradable as of ``when`` — membership resolved at a decision time.
+
+    This is feature 42's contract, and architecture §4.3's sentence made
+    executable: resolution answers *who was tradable then*, never *who is
+    tradable now*. A symbol is in the answer exactly when one of
+    ``intervals`` covers ``when`` — inclusive at ``valid_from``, exclusive
+    at ``valid_to`` — so a name that has since left still answers for a
+    decision time inside its interval, and a name that has since joined
+    does not answer for a time before its interval opens. ``when`` is the
+    only time consulted: nothing here reads a clock, which is the property
+    a replay depends on — the same table and the same decision time give
+    the same answer today and in a year, whatever the roster has since
+    become.
+
+    The decision time is coerced once, up front, so a malformed one is
+    refused loudly even against an empty table: a typo quietly returning
+    "nothing tradable" would be a wrong answer wearing the shape of a
+    right one. The result is the sorted *distinct* symbols — the stable
+    ordering feature 46 formalizes — so every consumer, from a
+    ``MarketWindow``'s universe tuple to a replay harness, can rely on it
+    without sorting again. The derivation never emits two intervals of one
+    symbol that overlap, but resolution is defined regardless: a symbol is
+    in or out, never in twice.
+
+    Walking the rows here rather than pushing the predicate into SQL is
+    deliberate: :meth:`MembershipInterval.covers` is the one statement of
+    what an interval means, and the store that reads a table and the
+    function that resolves a decision time against it cannot disagree if
+    there is only one of it. The open-interval horizon caveat in this
+    module's docstring applies verbatim: past the newest build, an open
+    interval answers for its symbol because nothing observed has closed
+    it — the caller decides what a decision time beyond the evidence
+    deserves.
+    """
+    moment = coerce_date(when)
+    return tuple(
+        sorted({interval.symbol for interval in intervals if interval.covers(moment)})
     )

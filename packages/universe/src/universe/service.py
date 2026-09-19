@@ -29,7 +29,7 @@ from .bars import DailyBar
 from .config import UniverseConfig
 from .gate import SurvivorshipGap, reject_survivorship_gaps, survivorship_gaps
 from .history import PriceBar, PriceHistoryStore
-from .membership import MembershipInterval
+from .membership import MembershipInterval, resolve_membership
 from .monthly import (
     MonthlyUniverse,
     UniverseBuildResult,
@@ -197,21 +197,18 @@ class UniverseService:
     ) -> tuple[str, ...]:
         """The symbols tradable as of ``when`` — membership resolved at a decision time.
 
-        Reads the point-in-time membership table and returns every interval
-        that covers ``when``, sorted. This is feature 43's "resolves membership
-        as of a decision time" and feature 42's intent, surfaced through the
-        same facade: a window built at ``t`` asks this, not the current roster,
-        so a symbol that has since left still answers when ``t`` was inside its
-        interval.
+        Reads the point-in-time membership table and resolves ``when``
+        against it (feature 42; the pure resolution lives in
+        :func:`universe.membership.resolve_membership`, and this facade
+        binds it to the store). A window built at ``t`` asks this, not the
+        current roster, so a symbol that has since left still answers when
+        ``t`` was inside its interval — and a symbol that has since joined
+        does not answer for a ``t`` before its interval opens.
         """
         intervals = load_universe_membership(
             database_url if database_url is not None else self.database_url
         )
-        return tuple(
-            interval.symbol
-            for interval in intervals
-            if interval.covers(when)
-        )
+        return resolve_membership(intervals, when)
 
     def ingest_prices(
         self, bars: Iterable[PriceBar], database_url: Optional[str] = None

@@ -173,7 +173,9 @@ class TestServiceEndToEnd:
 
 
 class TestResolveAsOfDecisionTime:
-    """Feature 43's resolution: membership as of a decision time, not now."""
+    """Feature 42's resolution through the facade: membership as of a
+    decision time, not now (an acceptance bullet of feature 43 rides it).
+    The semantics themselves are pinned in test_resolution.py."""
 
     def _service(self, url: str) -> UniverseService:
         return UniverseService(config=UniverseConfig(top_n=1), database_url=url)
