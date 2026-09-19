@@ -39,6 +39,11 @@ failure of the sealing path with a single ``except``. The subclasses split by
 * :class:`SnapshotReadOnlyError` — the read-only mount contract. A write
   attempt through a mounted snapshot is refused with a permission error
   *message*, and this is that message made catchable by type.
+* :class:`SnapshotRecomputationError` — the recomputation contract (app_spec.xml
+  feature 39). A snapshot change is recorded against the snapshot hashes the
+  lake actually persists: a change naming a hash that is not currently sealed
+  is refused rather than applied, because a recomputation flag anchored to a
+  hash the lake does not hold would flag scores that do not exist.
 
 Every message names the offending value and the contract it broke, because
 these errors are operational signals for a seal-on-schedule pipeline
@@ -68,6 +73,7 @@ __all__ = [
     "SnapshotNameError",
     "SnapshotNotFoundError",
     "SnapshotReadOnlyError",
+    "SnapshotRecomputationError",
     "SnapshotStagingRequestError",
 ]
 
@@ -167,4 +173,22 @@ class SnapshotReadOnlyError(SnapshotError, PermissionError):
     and ``str()`` leads with ``[Errno 13] Permission denied:`` exactly as
     a real ``PermissionError`` does. Use :func:`permission_denied` rather
     than constructing one directly.
+    """
+
+
+class SnapshotRecomputationError(SnapshotError):
+    """A snapshot change was recorded against a hash the lake does not hold.
+
+    app_spec.xml feature 39: *"System persists a recomputation flag on every
+    score affected by a snapshot change, while the discovery tree structure
+    survives intact."* A snapshot change is the event that turns feature 38's
+    new hash into a recomputation signal: it flags every score the lake
+    persisted under the old hash and records the supersession in the audit,
+    leaving the discovery tree's nodes and edges untouched. The flag is only
+    honest if both hashes name snapshots the lake actually seals — a change
+    naming a hash that is not currently sealed (a typo, a hash from another
+    lake, a superseded hash applied twice) is refused rather than recorded,
+    because a recomputation flag anchored to a hash the lake does not hold
+    would flag scores that do not exist. A subclass of :class:`SnapshotError`
+    so callers catching the sealing path's single vocabulary catch it too.
     """

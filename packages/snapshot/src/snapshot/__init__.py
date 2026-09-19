@@ -5,10 +5,12 @@ an immutable directory named by sealed_at plus a hash prefix", feature
 31, "System persists a MANIFEST.json per snapshot recording per-file
 sha256, row counts and the universe definition", feature 32, "System
 persists snapshot_hash computed as a sha256 over sorted file hashes plus
-the universe definition plus the schema version", and feature 38, "System
+the universe definition plus the schema version", feature 38, "System
 assigns a new snapshot_hash when the lake is extended, which invalidates
-previously cached scores rather than silently reusing them", on the layout
-of docs/nullius-tech-architecture.md §4.1-§4.2: ingest workers append into
+previously cached scores rather than silently reusing them", and feature
+39, "System persists a recomputation flag on every score affected by a
+snapshot change, while the discovery tree structure survives intact", on
+the layout of docs/nullius-tech-architecture.md §4.1-§4.2: ingest workers append into
 ``<lake>/staging``, and sealing copies that content into an immutable
 directory ``<lake>/snapshots/<sealed_at>_<snapshot_hash[:6]>`` — for
 example ``2026-09-01T00:00:00Z_a3f91c`` — carrying its ``MANIFEST.json``,
@@ -44,6 +46,19 @@ different bytes is refused with :class:`SnapshotHashReusedError` rather
 than published. The read-only mount and staging-rejection checks
 lean on the frozen modes and the strict name parser.
 
+The invalidation that new hash triggers is made durable by feature 39:
+:attr:`SnapshotService.recomputation` returns the
+:class:`RecomputationRegistry` that anchors every score to the
+discovery-tree node it decorates and the ``snapshot_hash`` it was computed
+over, and :meth:`SnapshotService.record_snapshot_change` — verified against
+the lake so both hashes name snapshots it actually seals — flips the
+``recompute`` flag on every score the old hash held and records the
+supersession in an append-only audit, leaving the tree's nodes and edges
+untouched. The registry persists to ``<lake>/recomputation.json`` beside
+the sealed snapshots, so the flag one process sets is the flag another
+reads: a recomputation flag that vanished on restart would silently reuse
+the stale score it was meant to replace.
+
 The read side of the same boundary is :class:`SnapshotMount` (feature 34):
 ``service.mount(name)`` opens a sealed snapshot read-only, handing out
 :class:`ReadOnlyPath` handles that read freely and refuse every write with a
@@ -73,6 +88,7 @@ from ._errors import (
     SnapshotNameError,
     SnapshotNotFoundError,
     SnapshotReadOnlyError,
+    SnapshotRecomputationError,
     SnapshotStagingRequestError,
 )
 from ._identity import SCHEMA_VERSION, canonical_universe, snapshot_digest
@@ -97,6 +113,13 @@ from ._naming import (
     resolve_sealed_at,
     snapshot_name,
 )
+from ._recomputation import (
+    RECOMPUTATION_NAME,
+    NodeRecord,
+    RecomputationRegistry,
+    ScoreRecord,
+    SupersessionRecord,
+)
 from ._records import SealedSnapshot, SnapshotRef
 from ._service import LAKE_ROOT_ENV, SnapshotService
 
@@ -107,7 +130,11 @@ __all__ = [
     "ManifestFileEntry",
     "READ_ONLY_OPERATIONS",
     "ReadOnlyPath",
+    "RECOMPUTATION_NAME",
+    "NodeRecord",
+    "RecomputationRegistry",
     "SCHEMA_VERSION",
+    "ScoreRecord",
     "SealedSnapshot",
     "SnapshotAlreadySealedError",
     "SnapshotContentError",
@@ -119,9 +146,11 @@ __all__ = [
     "SnapshotNameError",
     "SnapshotNotFoundError",
     "SnapshotReadOnlyError",
+    "SnapshotRecomputationError",
     "SnapshotRef",
     "SnapshotService",
     "SnapshotStagingRequestError",
+    "SupersessionRecord",
     "canonical_universe",
     "content_digest",
     "count_rows",
@@ -132,6 +161,7 @@ __all__ = [
     "normalize_snapshot_hash",
     "parse_snapshot_name",
     "permission_denied",
+    "recomputation_registry",
     "resolve_sealed_at",
     "seal_snapshot",
     "sha256_file",
@@ -220,3 +250,23 @@ def manifest_snapshot(
         else SnapshotService.from_env()
     )
     return service.read_manifest(name)
+
+
+def recomputation_registry(
+    lake_root: Optional[Union[str, Path]] = None
+) -> RecomputationRegistry:
+    """One-shot convenience around :attr:`SnapshotService.recomputation`.
+
+    Returns the recomputation registry (feature 39) persisted at the lake
+    ``lake_root`` (default: resolved from ``LAKE_ROOT`` as above) — the store
+    that carries every score's ``recompute`` flag and the supersession audit.
+    For a script or an audit that wants the flags without holding a service;
+    a long-lived consumer should hold the service and use its
+    ``recomputation`` instead.
+    """
+    service = (
+        SnapshotService(lake_root)
+        if lake_root is not None
+        else SnapshotService.from_env()
+    )
+    return service.recomputation

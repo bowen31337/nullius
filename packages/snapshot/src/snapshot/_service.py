@@ -116,6 +116,7 @@ from ._errors import (
     SnapshotHashReusedError,
     SnapshotManifestError,
     SnapshotNotFoundError,
+    SnapshotRecomputationError,
     SnapshotStagingRequestError,
 )
 from ._identity import canonical_universe, snapshot_digest, validate_universe
@@ -132,6 +133,7 @@ from ._naming import (
     resolve_sealed_at,
     snapshot_name,
 )
+from ._recomputation import RecomputationRegistry, SupersessionRecord
 from ._records import SealedSnapshot, SnapshotRef
 
 __all__ = ["LAKE_ROOT_ENV", "SnapshotService"]
@@ -166,6 +168,7 @@ class SnapshotService:
             # directory is never what a caller meant.
             raise SnapshotError("lake root must be a non-empty path")
         self._lake_root = Path(lake_root).expanduser()
+        self._recomputation: Optional[RecomputationRegistry] = None
 
     # -- Construction -------------------------------------------------------
 
@@ -670,6 +673,112 @@ class SnapshotService:
             if entry.is_dir() and _parses(entry.name)
         ]
         return sorted(names)
+
+    # -- Recomputation (feature 39) -----------------------------------------
+
+    @property
+    def recomputation(self) -> RecomputationRegistry:
+        """The recomputation registry persisted at this lake's root.
+
+        Feature 39's store: it holds every score the lake knows, each
+        anchored to the discovery-tree node it decorates and the
+        ``snapshot_hash`` it was computed over, with the ``recompute`` flag a
+        snapshot change flips. It lives at ``<lake>/recomputation.json``
+        beside ``snapshots/`` and ``staging/`` (§4.2), so a flag one process
+        sets is the flag another reads. The registry holds only the
+        addressing and the flag — never a score's value or a node's meaning —
+        it is the invalidation signal, and the derived zone owns the
+        recomputation the signal points at.
+
+        One instance is held for the life of the service, so registering a
+        score and then recording a change over it act on the same in-memory
+        state; the flag is still persisted to disk on every write, so a
+        separate process reading the file sees it too.
+        """
+        if self._recomputation is None:
+            self._recomputation = RecomputationRegistry(self._lake_root)
+        return self._recomputation
+
+    def record_snapshot_change(
+        self,
+        old_hash: str,
+        new_hash: str,
+    ) -> SupersessionRecord:
+        """Flag every score under ``old_hash`` as superseded by ``new_hash``.
+
+        The event feature 39 is about, grounded in this lake. Feature 38
+        produces the new hash when the lake is extended; this turns it into a
+        recomputation signal: every score the lake persisted under the old
+        hash is flagged ``recompute=True`` and the supersession is written to
+        the audit, while the discovery tree's nodes and edges are left exactly
+        as they were — the tree structure survives; the scores under it do
+        not.
+
+        The change is verified against the lake before it is applied, because
+        a recomputation flag anchored to a hash the lake does not hold would
+        flag scores that do not exist: both hashes must name snapshots this
+        lake actually seals (``open``), and the old hash must hold scores the
+        registry was told about. A hash that names nothing, or a hash the
+        registry holds no scores under, is refused with
+        :class:`SnapshotRecomputationError`, leaving the registry untouched.
+
+        Returns the :class:`~snapshot.SupersessionRecord` — the audit entry
+        carrying the old and new hashes, when the change was recorded, and how
+        many scores it flagged.
+        """
+        # Both hashes must name a snapshot this lake actually seals. A change
+        # anchored to a hash the lake does not hold — a typo, a hash from
+        # another lake, a superseded hash applied twice — is refused rather
+        # than applied, so a recomputation flag never names a snapshot that
+        # is not here.
+        self._assert_sealed(old_hash, "old_hash")
+        self._assert_sealed(new_hash, "new_hash")
+        return self.recomputation.record_snapshot_change(old_hash, new_hash)
+
+    def _assert_sealed(self, snapshot_hash: str, role: str) -> None:
+        """Refuse a hash that does not name a snapshot this lake seals.
+
+        The registry is agnostic to which hashes are real — it only knows the
+        scores it was told about — so the lake-side check lives here: a
+        snapshot change is only honest if both hashes name snapshots the lake
+        actually seals. The name is the directory's six-character prefix; the
+        full hash is confirmed against the directory's manifest, which records
+        it in full (feature 31). A prefix that names nothing, or a manifest
+        whose full hash does not match, is a hash the lake does not hold.
+        """
+        if not isinstance(snapshot_hash, str) or len(snapshot_hash) < 6:
+            raise SnapshotRecomputationError(
+                f"{role} must be a snapshot hash this lake seals, got "
+                f"{snapshot_hash!r}"
+            )
+        prefix = snapshot_hash[:6]
+        matches = [
+            name
+            for name in self.sealed()
+            if name.endswith(f"_{prefix}")
+        ]
+        if not matches:
+            raise SnapshotRecomputationError(
+                f"{role} {snapshot_hash!r} does not name a sealed snapshot in "
+                f"this lake; a snapshot change relates two snapshots the lake "
+                "actually holds"
+            )
+        for name in matches:
+            manifest_file = self.snapshots_root / name / "MANIFEST.json"
+            if manifest_file.is_file():
+                try:
+                    persisted = SnapshotManifest.from_json_bytes(
+                        manifest_file.read_bytes()
+                    )
+                except SnapshotManifestError:
+                    continue
+                if persisted.snapshot_hash == snapshot_hash:
+                    return
+        raise SnapshotRecomputationError(
+            f"{role} {snapshot_hash!r} does not match the full hash of any "
+            "sealed snapshot sharing its prefix; a snapshot change relates two "
+            "snapshots the lake actually holds"
+        )
 
 
 def _parses(name: str) -> bool:

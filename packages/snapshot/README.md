@@ -2,7 +2,7 @@
 
 Seals staged lake content into **immutable, content-addressed snapshot
 directories**, each carrying its own **`MANIFEST.json`** — app_spec.xml
-features 30–32 and 38, on the layout of `docs/nullius-tech-architecture.md`
+features 30–32, 38 and 39, on the layout of `docs/nullius-tech-architecture.md`
 §4.1–§4.2.
 
 ## What it does
@@ -110,6 +110,53 @@ were. Invalidation tracks the lake's content, not the calendar. A
 snapshot whose manifest is missing or unreadable proves no assignment and
 does not block unrelated seals; the name-level checks still own that
 directory for seals that name it.
+
+## Recomputation flags
+
+App-spec feature 39: *the lake grows, the identity moves, and every score
+the old identity held is flagged for recomputation* — while the discovery
+tree that those scores decorate is left untouched. Feature 38's new hash is
+the invalidation *trigger*; this is the durable, visible *signal*.
+
+The lake holds a `RecomputationRegistry` at `<lake>/recomputation.json`,
+beside `snapshots/` and `staging/` (§4.2). It anchors every score to the
+discovery-tree node it decorates and the `snapshot_hash` it was computed
+over, and carries the `recompute` flag a snapshot change flips:
+
+```python
+registry = service.recomputation
+
+# The derived zone registers a score against the snapshot it was computed over.
+registry.register_score("score-42", first.snapshot_hash, node_id="node-a")
+
+# The lake is extended (feature 38): a new snapshot seals under a new hash.
+second = service.seal(staging, sealed_at=at_2)
+
+# The snapshot change flags every score the old hash held, and records the
+# supersession in the audit — the tree's nodes and edges are untouched.
+supersession = service.record_snapshot_change(
+    first.snapshot_hash, second.snapshot_hash
+)
+supersession.flagged_scores        # how many scores it reached
+
+registry.needs_recomputation("score-42")   # True — flagged
+registry.score("score-42").superseded_by   # second.snapshot_hash
+registry.edges()                           # the tree structure, intact
+```
+
+The registry is **persisted**, so a flag one process sets is the flag
+another reads — a recomputation flag that vanished on restart would silently
+reuse the stale score it was meant to replace. It holds only the addressing
+and the flag, never a score's value or a node's meaning: it is the
+invalidation signal, and the derived zone owns the recomputation it points at.
+
+A snapshot change is **verified against the lake**: both hashes must name
+snapshots this lake actually seals (the manifest records the full hash in
+full, so a hash sharing only a prefix is refused), and the old hash must hold
+scores the registry was told about. A change naming a hash the lake does not
+hold is refused with `SnapshotRecomputationError`, leaving the registry
+untouched — a recomputation flag anchored to a hash the lake does not hold
+would flag scores that do not exist.
 
 ## The read-only mount
 
