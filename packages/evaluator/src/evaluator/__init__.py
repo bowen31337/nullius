@@ -119,6 +119,7 @@ from ._errors import (
     EvaluatorError,
     EvaluatorIdentityError,
     EvaluatorImageError,
+    EvaluatorPurgeError,
     EvaluatorSandboxError,
     EvaluatorSignalError,
     EvaluatorStoreError,
@@ -163,6 +164,10 @@ from ._align import (
     TargetSeries,
     align_targets,
 )
+from ._purge import (
+    PurgeCheck,
+    check_fold_purged,
+)
 from ._service import ENV_IMAGE, EvaluatorService, build_evaluator_service
 from ._window import (
     ROSTER_STREAM,
@@ -193,6 +198,10 @@ __all__ = [
     "AlignedTargets",
     "TargetSeries",
     "align_targets",
+    # Feature 77 — the cross-validation purge
+    "EvaluatorPurgeError",
+    "PurgeCheck",
+    "check_fold_purged",
     # Feature 70 — the first term: the pinned container image
     "DIGEST_ALGORITHM",
     "DIGEST_HEX_LENGTH",

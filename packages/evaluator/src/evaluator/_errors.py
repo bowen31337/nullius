@@ -91,6 +91,18 @@ code failed:
   that cannot be believed: a row read back whose terms do not fold to the
   hash it is filed under is a tamper, and it surfaces here rather than
   loading as a plausible-looking lie (see ``_store``).
+* :class:`EvaluatorPurgeError` — the cross-validation purge contract
+  (app_spec.xml feature 77). Step 6 of §6.1's pipeline keeps a fold's
+  holding period out of training at its split boundary, so the failures
+  here are failures of that certification: a holding period that is not a
+  positive bar count, a split that is itself one of the training dates (a
+  boundary is not a bar to train on), a training half whose last bar falls
+  after the split, and a training half whose last bar is within the holding
+  period of the split — the fold is un-purged, and the refusal names how
+  many bars it falls short. Each is refused rather than silently trimmed,
+  because a label's forward return is realised in the test set, and a
+  training bar inside its holding period leaks that test-set return into the
+  model (see ``_purge``).
 """
 
 from __future__ import annotations
@@ -102,6 +114,7 @@ __all__ = [
     "EvaluatorIdentityError",
     "EvaluatorImageError",
     "EvaluatorNormalizeError",
+    "EvaluatorPurgeError",
     "EvaluatorSandboxError",
     "EvaluatorSignalError",
     "EvaluatorStoreError",
@@ -163,6 +176,23 @@ class EvaluatorNormalizeError(EvaluatorError):
     would dress a "no preference" up as a measurement. Each is refused rather
     than defaulted, because a normalized vector is only comparable when there
     was a scale to remove, and these are the cases in which there was not.
+    """
+
+
+class EvaluatorPurgeError(EvaluatorError):
+    """A cross-validation fold's holding period is not purged at its split.
+
+    Raised by :func:`evaluator.check_fold_purged` (app_spec.xml feature 77)
+    when step 6 of the §6.1 pipeline cannot certify that a fold keeps the
+    split's holding period out of training: a holding period that is not a
+    positive bar count, a split that is itself one of the training dates (a
+    boundary is not a bar to train on), a training half whose last bar falls
+    after the split, and a training half whose last bar is within the holding
+    period of the split — the fold is un-purged, and the refusal names how
+    many bars it falls short. Each is refused rather than silently trimmed,
+    because a label's forward return is realised in the test set, and a
+    training bar inside its holding period leaks that test-set return into
+    the model.
     """
 
 
