@@ -236,8 +236,8 @@ from .funding import (
 from .gaps import GAP_DETECTED_EVENT, GapDetected, GapDetector, GapEventLog
 from .l1_book import (
     L1_BOOK_STREAM,
-    SLICE,
-    SLICE_MILLISECONDS,
+    L1_SLICE,
+    L1_SLICE_MILLISECONDS,
     L1BookBatch,
     L1BookCorruptError,
     L1BookError,
@@ -247,11 +247,9 @@ from .l1_book import (
     L1BookRow,
     L1BookStore,
     L1BookWorker,
-    align_to_window,
     build_l1_book_worker,
     parse_l1_book,
     register_l1_book_worker,
-    window_start_for,
 )
 from .microstructure import (
     MAX_OFI_WINDOW,
@@ -336,8 +334,8 @@ __all__ = [
     "GAP_DETECTED_EVENT",
     "GAP_FILLED_EVENT",
     "L1_BOOK_STREAM",
-    "SLICE",
-    "SLICE_MILLISECONDS",
+    "L1_SLICE",
+    "L1_SLICE_MILLISECONDS",
     "Batch",
     "BookDiffBatch",
     "BookDiffCorruptError",

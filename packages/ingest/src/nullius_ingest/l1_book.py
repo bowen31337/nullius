@@ -24,8 +24,8 @@ together, set this stream apart from every other in the table:
   at their native 100 ms cadence, and unlike aggTrades, which keeps every
   trade, this stream is a *resolution* stream: the venue's book-ticker feed
   fires on every quote change, which for a liquid book is many times a second,
-  and this module floors each snapshot onto the 1 second grid —
-  :func:`align_to_window` — so the persisted series is one best bid/ask per
+  and this module floors each snapshot onto the 1 second grid — the feature
+  tier's shared lattice — so the persisted series is one best bid/ask per
   second per symbol, whatever the venue's tick rate.  This is the deliberate
   contrast with the L2 stream: the raw tier keeps the market at full fidelity
   for the 90 days a feature can be revised against it, and this stream keeps the
@@ -90,6 +90,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Final, Optional, Union
 
+from .book_features import (
+    FEATURE_SLICE,
+    FEATURE_SLICE_MILLISECONDS,
+    _floor_to_second,
+)
 from .registry import WorkerRegistry, register_worker
 from .staging import StagingArea
 from .streams import StreamClass
@@ -97,8 +102,8 @@ from .worker import CycleResult
 
 __all__ = [
     "L1_BOOK_STREAM",
-    "SLICE",
-    "SLICE_MILLISECONDS",
+    "L1_SLICE",
+    "L1_SLICE_MILLISECONDS",
     "L1BookBatch",
     "L1BookCorruptError",
     "L1BookError",
@@ -108,11 +113,9 @@ __all__ = [
     "L1BookRow",
     "L1BookStore",
     "L1BookWorker",
-    "align_to_window",
     "build_l1_book_worker",
     "parse_l1_book",
     "register_l1_book_worker",
-    "window_start_for",
 ]
 
 #: The stream class this module serves.  §4.1's table row for the L1 best
@@ -123,13 +126,13 @@ __all__ = [
 L1_BOOK_STREAM = StreamClass.L1_BOOK
 
 #: The resolution §4.1's table records for this stream: one snapshot every
-#: second.  Carried as a constant so the fact is named where it is decided, and
-#: so the grid the snapshots are floored onto is computed from a named interval
-#: rather than a literal.
-SLICE_MILLISECONDS: Final[int] = 1000
-SLICE: Final[timedelta] = timedelta(seconds=SLICE_MILLISECONDS // 1000)
-
-_SLICE_MICROS: Final[int] = SLICE_MILLISECONDS * 1000
+#: second.  This is the feature tier's 1 second lattice — the same one
+#: :func:`~nullius_ingest.book_features._floor_to_second` floors the derived
+#: book features onto — carried under this module's own name so the fact is
+#: named where it is decided, and so the grid the snapshots are floored onto
+#: cannot drift from the shared lattice.
+L1_SLICE_MILLISECONDS: Final[int] = FEATURE_SLICE_MILLISECONDS
+L1_SLICE: Final[timedelta] = FEATURE_SLICE
 
 #: The envelope keys a record file carries around its rows — named so a reader
 #: of a record file (an operator, a seal, a later audit) does not have to import
@@ -219,60 +222,6 @@ def _scalar_field(value: object, where: str) -> str:
         f"{where} is {type(value).__name__}; price and quantity values must be "
         f"scalars (the venue's own spelling is kept verbatim)"
     )
-
-
-def align_to_window(moment: datetime) -> datetime:
-    """Floor ``moment`` onto the 1 second grid, as an aware UTC instant.
-
-    The lattice is exact: the instant's epoch microseconds are integer-divided
-    by the slice width, so ``...12:00:00`` stays put and ``...12:00:00.999``
-    floors to ``...12:00:00`` — on every platform, because the arithmetic is
-    over whole microseconds and no float is involved.  Two snapshots in the same
-    second therefore always land on the same value, which is the whole of "1
-    second resolution" as a reader will rely on it.
-
-    A naive datetime is refused.  The grid is a lattice over honest instants and
-    a naive one has no offset to floor against; assuming UTC here would silently
-    place a snapshot in a second that is wrong by the offset, which is exactly
-    the kind of quiet error the permanent series cannot afford.
-    """
-    if not isinstance(moment, datetime):
-        raise TypeError(f"moment must be a datetime, not {type(moment).__name__}")
-    if moment.tzinfo is None or moment.tzinfo.utcoffset(moment) is None:
-        raise ValueError(
-            f"moment must be timezone-aware; a naive timestamp cannot be placed "
-            f"on the 1 second grid"
-        )
-    since_epoch = moment.astimezone(_UTC) - _EPOCH
-    micros = (
-        since_epoch.days * 86_400_000_000
-        + since_epoch.seconds * 1_000_000
-        + since_epoch.microseconds
-    )
-    return _EPOCH + timedelta(microseconds=(micros // _SLICE_MICROS) * _SLICE_MICROS)
-
-
-def window_start_for(event_time_ms: int) -> datetime:
-    """The 1 second window a venue event time falls in.
-
-    The convenience a fetch implementation and a test share: epoch milliseconds
-    in, the window's inclusive start out, on the same exact lattice
-    :func:`align_to_window` defines.  Kept as its own function rather than left
-    to the caller because the venue's event time is the *only* instant a raw row
-    is placed by, and it should take one call to place one.
-
-    Strict about its argument, unlike the parser: a venue's payload may spell a
-    time as a float or a string and is coerced where it arrives
-    (:func:`parse_l1_book`), but this is *our* grid API and a fractional
-    millisecond is not an instant at this resolution.  Refusing it here keeps
-    the coercion at the boundary where the venue's sloppiness is a fact, rather
-    than letting it leak into the arithmetic the grid is computed with.
-    """
-    if isinstance(event_time_ms, bool) or not isinstance(event_time_ms, int):
-        raise TypeError(
-            f"event_time_ms must be an integer, not {type(event_time_ms).__name__}"
-        )
-    return align_to_window(_millis_to_utc(event_time_ms))
 
 
 def _millis_to_utc(millis: int) -> datetime:
@@ -387,10 +336,10 @@ class L1BookRow:
 
     * ``symbol`` — which book the snapshot is for.
     * ``window_start`` — the 1 second window the venue's event time fell in,
-      from :func:`align_to_window`.  This is the row's resolution: several
-      snapshots may share it only if the venue delivered more than one inside
-      the same second, and a reader unions by it, so a window is a *set* of
-      snapshots rather than a slot one occupies.
+      floored onto the feature tier's shared 1 second lattice.  This is the
+      row's resolution: several snapshots may share it only if the venue
+      delivered more than one inside the same second, and a reader unions by it,
+      so a window is a *set* of snapshots rather than a slot one occupies.
     * ``bid_price`` / ``ask_price`` — the venue's best bid and best ask, kept
       **verbatim** in the venue's own string spelling.  A reader never has to
       guess whether a rounding in the record was the exchange's or ours.
@@ -514,7 +463,7 @@ def _parse_snapshot(entry: object, index: int) -> L1BookRow:
 
     return L1BookRow(
         symbol=symbol,
-        window_start=align_to_window(_event_time_field(raw_time, f"{where}.event_time")),
+        window_start=_floor_to_second(_event_time_field(raw_time, f"{where}.event_time")),
         bid_price=_scalar_field(raw_bid, f"{where}.bid"),
         ask_price=_scalar_field(raw_ask, f"{where}.ask"),
         bid_quantity=_scalar_field(raw_bid_qty, f"{where}.bid_quantity"),
@@ -1126,7 +1075,7 @@ def register_l1_book_worker(
     # later composition in the process — including tests, which would then be
     # handed a worker bound to a store that has since been deleted.  A caller
     # that genuinely means to reconfigure the running process passes the default
-    registry explicitly, which is the same opt-in
+    # registry explicitly, which is the same opt-in
     # :func:`~nullius_ingest.registry.register_worker` already asks for.
     register_worker(
         L1_BOOK_STREAM,

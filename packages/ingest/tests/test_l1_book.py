@@ -36,10 +36,9 @@ from nullius_ingest import (
     L1BookWorker,
     StagingArea,
     StreamClass,
-    align_to_window,
     parse_l1_book,
-    window_start_for,
 )
+from nullius_ingest.book_features import _floor_to_second
 from nullius_ingest.l1_book import register_l1_book_worker
 from nullius_ingest.registry import WorkerRegistry, default_worker_registry
 
@@ -145,27 +144,20 @@ def row(
 # -- The 1 second grid ------------------------------------------------------
 
 
-def test_align_to_window_floors_onto_the_second() -> None:
-    assert align_to_window(T0) == T0
-    assert align_to_window(T_PLUS_500MS) == T0
-    assert align_to_window(T_PLUS_1S) == T_PLUS_1S
+def test_the_l1_grid_is_the_feature_tiers_shared_second_lattice() -> None:
+    # The L1 snapshots are floored onto the feature tier's shared 1 second
+    # lattice, so a reader that unions them with the derived book features by
+    # their window start sees them agree on which second a window is — there is
+    # not one 100 ms grid and a second, drifting 1 s grid.
+    assert _floor_to_second(T0) == T0
+    assert _floor_to_second(T_PLUS_500MS) == T0
+    assert _floor_to_second(T_PLUS_1S) == T_PLUS_1S
 
 
-def test_window_start_for_places_an_epoch_millisecond_on_the_grid() -> None:
-    # 1_772_366_400_500 ms is half a second past T0, so it floors to T0.
-    assert window_start_for(1_772_366_400_500) == T0
-    # 1_772_366_401_000 ms is exactly the next second.
-    assert window_start_for(1_772_366_401_000) == T_PLUS_1S
-
-
-def test_window_start_for_refuses_a_non_integer() -> None:
-    with pytest.raises(TypeError, match="must be an integer"):
-        window_start_for(1_772_366_400.5)  # type: ignore[arg-type]
-
-
-def test_align_to_window_refuses_a_naive_instant() -> None:
-    with pytest.raises(ValueError, match="timezone-aware"):
-        align_to_window(datetime(2026, 3, 1, 12, 0, 0))
+def test_a_snapshot_half_a_second_in_floors_to_the_window_start() -> None:
+    # A snapshot delivered half a second into the window floors to the window's
+    # start — the whole of "1 second resolution" as a reader will rely on it.
+    assert _floor_to_second(T_PLUS_500MS) == T0
 
 
 # -- Parsing the venue's document -------------------------------------------
