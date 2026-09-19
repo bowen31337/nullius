@@ -26,6 +26,50 @@ never disagree.
 complete key, leave only under the identical key, and an exact-key
 duplicate is an error (`DuplicateFeatureKeyError`), not a replacement.
 
+## Feature 51 — row-level `computed_as_of` stamping
+
+app_spec.xml feature 51: *System stamps every feature row with
+computed_as_of at write time.* §4.4 gives the reason the stamp exists:
+
+> **Point-in-time correct by construction:** every row carries
+> `computed_as_of`, and a query at `t` may only return rows with
+> `computed_as_of <= t`.
+
+Feature 48 deliberately left a record's payload opaque `bytes` and deferred
+row-level stamping to "the payload layer those features add", so
+`feature_store.rows` supplies it:
+
+- `FeatureRow` — one row of a feature's payload: a frozen, validated
+  `computed_as_of` plus its named values. The stamp is a **field**, read
+  back as what was written rather than restamped on access, because it
+  records when the row was *computed*.
+- `stamp_rows(values, *, computed_as_of=None, clock=None)` — the write-time
+  seam. It reads the clock **once per write** and applies that single
+  instant to every row in the batch: a batch straddling a clock tick would
+  otherwise carry two stamps, and a `<= t` query landing between them would
+  return *part of one write* — half a batch a reader cannot tell from a
+  complete one. One write, one instant.
+- `encode_rows` / `decode_rows` — the deterministic JSON envelope that
+  bridges this layer to feature 48's opaque-`bytes` seam, so the stamp
+  travels in the payload and survives a store round-trip.
+
+**The stamp is timezone-aware UTC.** A naive datetime is refused at write
+time rather than accepted and detonated later: feature 52 compares the stamp
+with `<=`, and a naive/aware comparison raises `TypeError` — deep inside a
+query, far from the write that could have named the missing offset. An aware
+instant in another offset is *normalised* to UTC rather than rejected, since
+it names the same moment either way.
+
+**The clock is injected, never reached for.** `computed_as_of` may be passed
+explicitly (a backfill stamps the historical instant; a replay stamps the
+instant it is reproducing), and otherwise comes from a `clock` callable
+supplied at the call site, defaulting to `utc_now()`. Nothing reads a global
+clock, so the deterministic replay path can reproduce a write exactly.
+
+Feature 52's read filter — the `computed_as_of <= t` query — is **not**
+implemented here. This module stamps rows and carries them; that filter is
+the next feature's contract, built on this seam.
+
 ## Feature 57 — mean pairwise correlation + breadth
 
 Beyond the keying contract, this member implements feature 57: *System
@@ -148,9 +192,12 @@ conflated.
 - distribution: `nullius-feature-store` (this directory, `packages/feature-store/`)
 - import package: `feature_store` (under `src/`)
 - registered components: `"feature-store"` (feature 48), `"regime-metrics"`
-  (feature 57), `"dispersion-metrics"` (feature 56) and
-  `"volatility-metrics"` (feature 55), all via `@register`, discovered by
-  `app.module_loader`’s workspace scan
+  (feature 57), `"dispersion-metrics"` (feature 56), `"volatility-metrics"`
+  (feature 55) and `"regime-labeler"` (feature 58), all via `@register`,
+  discovered by `app.module_loader`’s workspace scan. Feature 51's row
+  stamping registers nothing: it is a pure function over rows — the payload
+  layer of the store's own contract — not an orchestration service, so it
+  has no composed state for the factory to own
 - app-package seat: `app.modules.feature-store` (`src/app/modules/feature-store/`),
   which exposes `feature_store_component()`, `regime_metrics_component()`,
   `dispersion_metrics_component()` and `volatility_metrics_component()`
@@ -158,5 +205,6 @@ conflated.
 
 Stdlib-only by design — the identity contract stays import-safe in any
 environment, deterministic replay included. Parquet materialisation
-(feature 49), caching (50) and point-in-time row filters (51/52) layer on
-top of this seam.
+(feature 49) and caching (50) layer on top of this seam; row-level
+stamping (51) has landed in `feature_store.rows`, and feature 52's
+`computed_as_of <= t` read filter builds on that.

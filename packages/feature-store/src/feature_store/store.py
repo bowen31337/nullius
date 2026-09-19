@@ -14,8 +14,10 @@ assumptions about row schema into identity — and the backing store is a
 dictionary.  Features 49/50 (lazy Parquet materialisation and caching)
 extend this class with a lake-rooted backing and a ``cache_hit`` counter;
 the put/get/keys seam below is what they extend, not replace.  Row-level
-point-in-time stamping (``computed_as_of``, features 51/52) likewise
-lives in the payload layer those features add.
+point-in-time stamping (``computed_as_of``, feature 51) lives in the
+payload layer that feature added: :mod:`feature_store.rows`, which this
+class still knows nothing about — the payload stays opaque bytes here,
+and the row representation is the interpretation layer's.
 
 Stdlib-only, like ``keys.py``: import-safe everywhere, replay included.
 """

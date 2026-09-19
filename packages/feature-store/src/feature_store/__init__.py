@@ -6,14 +6,24 @@ stored feature is keyed by ``feature_name``, ``feature_version``,
 ``snapshot_hash``, ``symbol`` and ``frequency``
 (docs/nullius-tech-architecture.md §4.4) — and is the foundation the rest
 of the category builds on: lazy Parquet materialisation (49), caching
-(50), point-in-time reads (51/52), versioned definitions (53) and the
-regime features themselves (55–58).
+(50), point-in-time row stamping (51) and reads (52), versioned
+definitions (53) and the regime features themselves (55–58).
 
-Importing this package registers four components with the application
+Feature 51 is the row layer (:mod:`feature_store.rows`): feature 48 left a
+record's payload opaque and deferred row-level stamping to "the payload
+layer those features add", so ``rows`` supplies it — a frozen
+:class:`~feature_store.rows.FeatureRow` carrying ``computed_as_of``, and
+:func:`~feature_store.rows.stamp_rows`, which reads the clock once per
+write so every row in a batch shares one instant.  Feature 52's
+``computed_as_of <= t`` read filter builds on that seam.
+
+Importing this package registers five components with the application
 factory — a deliberate import side effect, per the factory's registration
 protocol (``app.module_loader``) — so ``create_app()`` discovers them by
 scanning the declared workspace without the factory ever knowing this
-package's name:
+package's name.  Feature 51's row layer registers nothing: it is a pure
+function over rows, not an orchestration service with composed state, so
+it stays a module plus its package re-exports.
 
 * ``feature-store`` — the five-component-keyed store itself (feature 48);
 * ``regime-metrics`` — feature 57's mean pairwise correlation plus breadth;
@@ -107,6 +117,15 @@ from .regime_labeler_service import (
     RegimeLabelerService,
     build_regime_labeler_service,
 )
+from .rows import (
+    COMPUTED_AS_OF_FIELD,
+    FeatureRow,
+    FeatureRowError,
+    decode_rows,
+    encode_rows,
+    stamp_rows,
+    utc_now,
+)
 from .service import RegimeService, build_regime_service
 from .store import DuplicateFeatureKeyError, FeatureRecord, FeatureStore
 from .volatility import (
@@ -147,6 +166,7 @@ from .volatility_service import (
 __all__ = [
     "ANNUALIZATION_PERIODS",
     "AUTOCORRELATION_DEFINITION",
+    "COMPUTED_AS_OF_FIELD",
     "DEFAULT_BASE_WINDOW",
     "DEFAULT_BREADTH_WINDOW",
     "DEFAULT_HORIZONS",
@@ -182,6 +202,8 @@ __all__ = [
     "FeatureKey",
     "FeatureKeyError",
     "FeatureRecord",
+    "FeatureRow",
+    "FeatureRowError",
     "FeatureStore",
     "Frequency",
     "FullHistoryFitError",
@@ -222,6 +244,7 @@ __all__ = [
     "decode_dispersion",
     "decode_labels",
     "decode_realized_volatility",
+    "decode_rows",
     "decode_vol_of_vol",
     "definition_parameters",
     "encode_autocorrelation",
@@ -230,6 +253,7 @@ __all__ = [
     "encode_dispersion",
     "encode_labels",
     "encode_realized_volatility",
+    "encode_rows",
     "encode_vol_of_vol",
     "feature_version",
     "market_return_series",
@@ -238,6 +262,8 @@ __all__ = [
     "regime_feature_matrix",
     "return_autocorrelation",
     "rolling_realized_volatility",
+    "stamp_rows",
+    "utc_now",
     "volatility_of_volatility",
 ]
 

@@ -20,7 +20,8 @@ address the feature store with a partial key, because there is no way to
 construct one that skips a component or slips an unnormalised value past
 validation.  The rest of this category layers on top of that identity —
 lazy Parquet materialisation (49), caching (50), point-in-time row
-filtering (51/52), versioned definitions (53) — none of it replaces it.
+stamping and filtering (51/52, in :mod:`feature_store.rows`), versioned
+definitions (53) — none of it replaces it.
 
 This module is stdlib-only by design, mirroring ``app.module_loader``:
 the identity contract must stay import-safe in any environment,
