@@ -22,12 +22,13 @@ once and enforced nowhere is a comment, not a guarantee:
    filesystem itself. (An owner can chmod this away; this layer is tripwire
    and contract, with the API layer doing the structural work.)
 3. *The API has no mutating surface and refuses overwrites.* Sealing a name
-   that already exists re-reads the existing tree and either returns the
+   that already exists re-reads what the directory persists — its manifest,
+   or for a pre-manifest snapshot its bytes — and either returns the
    identical record (an idempotent re-seal — the schedule crashed after the
-   rename, say) or raises :class:`SnapshotAlreadySealedError` when the bytes
-   differ. There is no code path that edits, extends, or replaces a sealed
-   directory, and the returned record is frozen with a read-only file
-   mapping (see ``_records``).
+   rename, say) or raises :class:`SnapshotAlreadySealedError` when the
+   identity differs. There is no code path that edits, extends, or replaces
+   a sealed directory, and the returned record is frozen with a read-only
+   file mapping (see ``_records``).
 
 Staging is *copied*, never moved or emptied: the §4.1 contract keeps staging
 append-only and owned by the ingest workers, so a seal is a pure read from
@@ -38,6 +39,22 @@ contract and pointing the evaluator at the sealed snapshots it may open. That
 refusal is the read-side twin of feature 28's layout guarantee, and it is the
 mount's door: ``mount`` goes through ``open``, so a request for staging never
 reaches a mount either.
+
+**The manifest is the snapshot's on-disk identity (feature 31).** Every seal
+writes a ``MANIFEST.json`` into the published tree — the per-file sha256
+mapping this service already computes, each file's row count read from its
+own format (Parquet footers; line counts; explicit ``null`` where a format
+carries no rows), and the universe definition the caller asserts via
+``universe=`` — so the lake itself, not any caller's memory, holds the full
+64-character snapshot hash and everything it covers
+(:meth:`read_manifest` reads it back, through the same strict door as
+``open``). The manifest *describes* content and therefore is not content:
+it never enters the seal's file mapping or the content digest, and staging
+that already contains a root ``MANIFEST.json`` is refused rather than
+overwritten (see ``_manifest``). Its persistence also closes the prefix
+gap the re-seal check used to have — an existing directory's manifest
+pins its full hash, so the same bytes can no longer be re-sealed under a
+different identity that happens to share six characters.
 
 The default snapshot hash is the content digest of the staged files (the
 ``sorted(file_hashes)`` term of the §4.2 formula — see ``_content``); a
@@ -64,9 +81,18 @@ from app.module_loader import find_workspace_root
 from ._content import content_digest, walk_content
 from ._errors import (
     SnapshotAlreadySealedError,
+    SnapshotContentError,
     SnapshotError,
+    SnapshotManifestError,
     SnapshotNotFoundError,
     SnapshotStagingRequestError,
+)
+from ._manifest import (
+    MANIFEST_NAME,
+    SnapshotManifest,
+    _universe_key,
+    build_manifest,
+    walk_sealed_content,
 )
 from ._mount import SnapshotMount, materialize_read_only
 from ._naming import (
@@ -164,6 +190,7 @@ class SnapshotService:
         *,
         sealed_at: Optional[Union[datetime, str]] = None,
         snapshot_hash: Optional[str] = None,
+        universe: Optional[Mapping[str, object]] = None,
     ) -> SealedSnapshot:
         """Persist ``source`` as a sealed snapshot and return its record.
 
@@ -173,7 +200,18 @@ class SnapshotService:
         ``snapshot_hash`` defaults to the content digest of the staged
         files; supply the full 64-hex hash to seal under an identity decided
         elsewhere (the manifest feature's formula, or a retry replaying a
-        prior decision).
+        prior decision). ``universe`` is the universe definition the
+        manifest records (feature 31): a JSON object — for the universe
+        member's config, ``dataclasses.asdict(config)`` — or ``None`` to
+        record that none was asserted; the manifest feature docstrings
+        (``_manifest``) state the exact treatment.
+
+        The seal publishes a ``MANIFEST.json`` beside the content (per-file
+        sha256, row counts, the universe definition and the full snapshot
+        hash); :meth:`read_manifest` reads it back. Everything a bad
+        argument can break — an unserialisable universe, a staged file
+        whose rows cannot be read — is validated *before* any directory is
+        created, so a refused seal leaves the lake exactly as it was.
 
         Re-sealing the *same* content under the same name is idempotent and
         returns the existing record; re-sealing *different* content under a
@@ -185,6 +223,15 @@ class SnapshotService:
             self.staging_root if source is None else Path(source).expanduser()
         )
         files = walk_content(source_path)
+        if MANIFEST_NAME in files:
+            # The published tree gets exactly one manifest: the one this
+            # seal writes. Copying a staged manifest would either overwrite
+            # staged bytes or publish a file the identity does not cover.
+            raise SnapshotContentError(
+                f"staged content already contains a {MANIFEST_NAME} at its "
+                "root; a seal writes the snapshot's manifest itself — move "
+                "or rename the staged file before sealing"
+            )
         full_hash = (
             content_digest(files)
             if snapshot_hash is None
@@ -197,12 +244,19 @@ class SnapshotService:
         if final.exists():
             # The name is taken: identical bytes make this an idempotent
             # re-seal, different bytes an immutability violation.
-            return self._existing_or_conflict(final, instant, full_hash, files)
+            return self._existing_or_conflict(final, instant, full_hash, files, universe)
 
+        manifest = build_manifest(
+            files=files,
+            source=source_path,
+            snapshot_hash=full_hash,
+            sealed_at=instant,
+            universe=universe,
+        )
         self.snapshots_root.mkdir(parents=True, exist_ok=True)
         working = self.snapshots_root / f".sealing-{uuid.uuid4().hex}"
         try:
-            _publish_tree(source_path, files, working)
+            _publish_tree(source_path, files, working, manifest.to_json_bytes())
             try:
                 os.rename(working, final)
             except OSError as exc:
@@ -211,7 +265,7 @@ class SnapshotService:
                 # Lost a race for the name: fall through to the same
                 # identity check the pre-flight path performs.
                 return self._existing_or_conflict(
-                    final, instant, full_hash, files
+                    final, instant, full_hash, files, universe
                 )
         finally:
             _discard_working_tree(working)
@@ -225,28 +279,41 @@ class SnapshotService:
         instant: datetime,
         full_hash: str,
         files: Mapping[str, str],
+        universe: Optional[Mapping[str, object]],
     ) -> SealedSnapshot:
         """Decide an already-named directory: idempotent return or refusal.
 
-        The existing tree is re-read and compared file-for-file. Identical
-        mappings mean the very seal the caller is retrying already happened,
-        so the caller gets its record back. Anything else — different bytes,
-        different file set — is a genuine collision on an immutable name and
-        is refused with the conflicting directory named in the error.
+        A directory sealed since manifests landed (feature 31) carries its
+        own identity on disk, and that is what decides: the persisted
+        manifest's full snapshot hash must equal this call's (the manifest
+        is what closed the prefix-only gap — two hashes sharing six
+        characters are two identities, and the second is refused), its
+        per-file mapping must match the staged content, and a caller
+        asserting a *different* universe definition against a sealed one is
+        refused rather than humoured. On all three counts matching, the
+        retry is the very seal that already happened and the caller gets
+        its record back. The manifest is trusted rather than re-walking
+        the bytes: it was written by the seal that published them, and
+        full verification-on-open is feature 36's contract.
 
-        One documented limit: until manifests persist the full hash, an
-        existing directory only proves its *prefix* through its name. Two
-        calls supplying different full hashes that share six characters and
-        identical bytes are therefore treated as the same snapshot, and the
-        current call's hash is the one recorded. The manifest feature pins
-        identity to bytes on disk and closes this gap.
+        A directory *without* a manifest — sealed before feature 31, or
+        built by hand — falls back to comparing the tree's content bytes
+        against the staged mapping, manifest excluded. Identical mappings
+        are the idempotent case; anything else is a genuine collision on
+        an immutable name and is refused with the conflicting directory
+        named in the error.
         """
         if not final.is_dir():
             raise SnapshotAlreadySealedError(
                 f"{final} exists but is not a snapshot directory; refusing "
                 "to seal over it"
             )
-        existing = walk_content(final)
+        manifest_file = final / MANIFEST_NAME
+        if manifest_file.is_file():
+            return self._replay_or_conflict(
+                final, manifest_file, full_hash, files, universe
+            )
+        existing = walk_sealed_content(final)
         if existing == files:
             return SealedSnapshot(
                 sealed_at=instant,
@@ -258,6 +325,58 @@ class SnapshotService:
             f"immutable snapshot {final.name} already exists with different "
             f"content ({len(existing)} files sealed vs {len(files)} staged); "
             "sealed directories are never overwritten"
+        )
+
+    def _replay_or_conflict(
+        self,
+        final: Path,
+        manifest_file: Path,
+        full_hash: str,
+        files: Mapping[str, str],
+        universe: Optional[Mapping[str, object]],
+    ) -> SealedSnapshot:
+        """Compare a retrying seal against the manifest already on disk."""
+        try:
+            persisted = SnapshotManifest.from_json_bytes(manifest_file.read_bytes())
+        except SnapshotManifestError as exc:
+            # Not silently re-sealable and not overwritable: both halves of
+            # that sentence are the immutability contract.
+            raise SnapshotAlreadySealedError(
+                f"immutable snapshot {final.name} exists but its manifest "
+                f"cannot be read ({exc}); sealed directories are never "
+                "overwritten — verify the snapshot and deal with it "
+                "deliberately, not by re-sealing over it"
+            ) from exc
+        if persisted.snapshot_hash != full_hash:
+            raise SnapshotAlreadySealedError(
+                f"immutable snapshot {final.name} is already sealed under "
+                f"full hash {persisted.snapshot_hash}; refusing to seal the "
+                f"same bytes as {full_hash} — the manifest pins the "
+                "identity and sealed directories are never overwritten"
+            )
+        persisted_files = {
+            path: entry.sha256 for path, entry in persisted.files.items()
+        }
+        if persisted_files != dict(files):
+            raise SnapshotAlreadySealedError(
+                f"immutable snapshot {final.name} already exists with "
+                f"different content ({persisted.file_count} files sealed "
+                f"vs {len(files)} staged); sealed directories are never "
+                "overwritten"
+            )
+        if universe is not None and _universe_key(universe) != _universe_key(
+            persisted.universe
+        ):
+            raise SnapshotAlreadySealedError(
+                f"immutable snapshot {final.name} is already sealed with a "
+                "different universe definition; sealed directories are "
+                "never overwritten"
+            )
+        return SealedSnapshot(
+            sealed_at=persisted.sealed_at,
+            snapshot_hash=full_hash,
+            path=final,
+            files=files,
         )
 
     # -- Reading ------------------------------------------------------------
@@ -300,6 +419,47 @@ class SnapshotService:
                 f"no sealed snapshot named {name!r} under {self.snapshots_root}"
             )
         return SnapshotRef(name=name, path=path)
+
+    def read_manifest(self, name: str) -> SnapshotManifest:
+        """Read the MANIFEST.json of the sealed snapshot called ``name``.
+
+        The manifest is what the lake persists about a snapshot beyond its
+        directory name (feature 31): the full snapshot hash, the per-file
+        sha256 entries with their row counts, and the universe definition
+        asserted at seal time. The request goes through :meth:`open`'s
+        door — staging requests are refused as staging requests, malformed
+        names by the strict parser, misses as misses — because a manifest
+        read is a read of a sealed snapshot like any other.
+
+        Two integrity cross-checks come free with the door: the manifest's
+        recorded hash must carry the prefix the directory was named under,
+        and its ``sealed_at`` must be the instant the name encodes. A
+        manifest that disagrees with its own directory is refused with
+        :class:`SnapshotManifestError` rather than returned half-believed.
+        """
+        ref = self.open(name)
+        manifest_file = ref.path / MANIFEST_NAME
+        if not manifest_file.is_file():
+            raise SnapshotManifestError(
+                f"sealed snapshot {name!r} carries no {MANIFEST_NAME}; it "
+                "was sealed before manifests were persisted or its tree is "
+                "incomplete"
+            )
+        manifest = SnapshotManifest.from_json_bytes(manifest_file.read_bytes())
+        if manifest.hash_prefix != ref.hash_prefix:
+            raise SnapshotManifestError(
+                f"the manifest of {name!r} records full hash "
+                f"{manifest.snapshot_hash}, whose prefix does not match the "
+                "directory name; the manifest and the directory disagree"
+            )
+        if manifest.sealed_at != ref.sealed_at:
+            raise SnapshotManifestError(
+                f"the manifest of {name!r} records sealed_at "
+                f"{manifest.sealed_at.isoformat()}, which is not the "
+                "instant the directory name encodes; the manifest and the "
+                "directory disagree"
+            )
+        return manifest
 
     def _names_staging(self, name: str) -> bool:
         """Whether a request resolves onto the lake's staging area.
@@ -387,12 +547,18 @@ def _parses(name: str) -> bool:
 
 
 def _publish_tree(
-    source: Path, files: Mapping[str, str], working: Path
+    source: Path,
+    files: Mapping[str, str],
+    working: Path,
+    manifest_bytes: bytes,
 ) -> None:
-    """Copy staged files into ``working`` and freeze them read-only.
+    """Copy staged files into ``working``, write the manifest, freeze all.
 
     Copies by content (``copyfile``), not metadata: a staged file's mode is
     staging's business; a sealed file's mode is the contract (``0444``).
+    The manifest is written beside the copied content — inside the working
+    tree, so the rename publishes content and its record as one atomic
+    unit, and frozen under the same ``0444`` contract as everything else.
     Directories are made read-only only after their contents are complete,
     and the working root itself is frozen last, so the tree that the rename
     publishes is already non-writable at every level the moment it appears
@@ -404,6 +570,9 @@ def _publish_tree(
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source / relative, destination)
         os.chmod(destination, _FILE_MODE)
+    manifest = working / MANIFEST_NAME
+    manifest.write_bytes(manifest_bytes)
+    os.chmod(manifest, _FILE_MODE)
     for directory, _subdirs, _files in os.walk(working):
         os.chmod(directory, _DIRECTORY_MODE)
 

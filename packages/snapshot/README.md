@@ -1,8 +1,9 @@
 # snapshot
 
 Seals staged lake content into **immutable, content-addressed snapshot
-directories** — app_spec.xml feature 30, on the layout of
-`docs/nullius-tech-architecture.md` §4.1–§4.2.
+directories**, each carrying its own **`MANIFEST.json`** — app_spec.xml
+features 30 and 31, on the layout of `docs/nullius-tech-architecture.md`
+§4.1–§4.2.
 
 ## What it does
 
@@ -14,6 +15,8 @@ write side of the boundary that follows:
         └─ seal() ─────────────────────────────────────────────┐
                                                               ▼
 <lake>/snapshots/2026-09-01T00:00:00Z_a3f91c/   immutable: <sealed_at>_<snapshot_hash[:6]>
+          MANIFEST.json                        # per-file sha256, row counts, universe
+          bars/symbol=…/date=…/*.parquet
 ```
 
 A seal copies the staged tree into a hidden working directory, freezes
@@ -28,6 +31,36 @@ The default snapshot hash is the content digest of the staged files — the
 `sha256(sorted(file_hashes) + universe_definition + schema_version)`. The
 universe and schema terms are the manifest/hash features of this category;
 they fold the same per-file hashes this seal computes.
+
+## The per-snapshot manifest
+
+Every seal persists a `MANIFEST.json` *inside* the snapshot it publishes
+(feature 31), so the record travels with the bytes it describes:
+
+```python
+record = service.seal(staging, sealed_at=at, universe=asdict(config))
+manifest = service.read_manifest(record.name)
+
+manifest.snapshot_hash        # the full 64-char hash — not just the name's prefix
+manifest.files                # {path: ManifestFileEntry(sha256, row_count)}
+manifest.total_rows           # sum of per-file rows; None if any file's are unknown
+manifest.universe             # the definition asserted at seal time (JSON object)
+```
+
+Row counts come from each file's own format: the Parquet footer's
+`num_rows` (parsed from its Thrift metadata, stdlib-only) for the lake's
+data files, a line count for line-oriented text, and an explicit `null`
+for opaque binary — never a guess, and a `total_rows` over any unknown is
+`null` rather than a partial sum. The manifest describes content and is
+therefore not content: it is excluded from the seal's file mapping and
+digest, and staging that already contains a root `MANIFEST.json` is
+refused rather than overwritten.
+
+The manifest's bytes are deterministic (sorted keys, fixed indentation),
+so the same content, instant, hash and universe produce byte-identical
+manifests on any machine. Its presence also pins identity on re-seal: the
+recorded full hash must match, which closes the gap where two different
+hashes sharing the directory name's six-character prefix could alias.
 
 ## The read-only mount
 

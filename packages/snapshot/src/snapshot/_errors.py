@@ -15,6 +15,12 @@ failure of the sealing path with a single ``except``. The subclasses split by
 * :class:`SnapshotAlreadySealedError` — the immutability contract. A sealed
   directory is forever; re-sealing different bytes under a name that already
   exists is refused, not overwritten.
+* :class:`SnapshotManifestError` — the manifest contract. The
+  ``MANIFEST.json`` a seal persists inside every snapshot is the snapshot's
+  on-disk identity (feature 31), so a manifest that cannot be built, parsed
+  or believed — an unserialisable universe definition, a corrupt JSON
+  document, a recorded hash that contradicts the directory name — is an
+  error, not a warning: a manifest nobody can trust addresses nothing.
 * :class:`SnapshotNotFoundError` — the addressing contract on read: a name
   that parses but names no sealed snapshot in this lake.
 * :class:`SnapshotStagingRequestError` — the mount-path contract: a request
@@ -49,6 +55,7 @@ __all__ = [
     "SnapshotAlreadySealedError",
     "SnapshotContentError",
     "SnapshotError",
+    "SnapshotManifestError",
     "SnapshotNameError",
     "SnapshotNotFoundError",
     "SnapshotReadOnlyError",
@@ -74,6 +81,20 @@ class SnapshotAlreadySealedError(SnapshotError):
 
 class SnapshotNotFoundError(SnapshotError):
     """A well-formed name that names no sealed snapshot in this lake."""
+
+
+class SnapshotManifestError(SnapshotError):
+    """The MANIFEST.json contract of a snapshot was violated.
+
+    Raised on both sides of the manifest's life: *writing* (a universe
+    definition that is not a JSON object, or holds values JSON cannot
+    carry) and *reading* (a manifest that is not valid JSON for this
+    manifest version, whose entries do not type-check, or whose recorded
+    snapshot hash contradicts the sealed directory it lives in). The
+    manifest is what lets the lake — not any caller's memory — answer
+    *"which exact bytes is this snapshot?"*, so a manifest that cannot be
+    built or believed is refused loudly rather than recorded loosely.
+    """
 
 
 class SnapshotStagingRequestError(SnapshotNotFoundError):

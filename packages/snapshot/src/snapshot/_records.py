@@ -5,16 +5,17 @@ Two shapes, because the lake persists two levels of knowledge:
 * :class:`SealedSnapshot` — everything a *sealing* knows. The seal computes
   every file's hash to build the snapshot's identity, so the record carries
   the full snapshot hash, the ``sealed_at`` instant, the directory path, and
-  the read-only ``{relative path: sha256}`` mapping. The per-file mapping is
-  groundwork, not gold-plating: the MANIFEST feature of this category
-  (app_spec.xml feature 31) persists exactly these entries, and the full
-  hash formula (feature 32) folds exactly these values — no re-walk needed.
+  the read-only ``{relative path: sha256}`` mapping. That mapping is exactly
+  what the seal persists as the snapshot's ``MANIFEST.json`` (app_spec.xml
+  feature 31) — see ``manifest_path`` — and what the full hash formula
+  (feature 32) folds — no re-walk needed.
 * :class:`SnapshotRef` — everything a *directory name* knows. Once a seal
-  has finished, the only thing the lake persists is the name
-  ``<sealed_at>_<hash prefix>``; until manifests land, that is all any
-  reader can recover. The ref exposes exactly that, parsed: name, path,
-  ``sealed_at``, ``hash_prefix``. It is honest about what the filesystem
-  knows rather than guessing a full hash from six characters.
+  has finished, the name ``<sealed_at>_<hash prefix>`` is the only address
+  the lake's *filesystem layout* persists; the manifest beside it is the
+  record that goes further (``SnapshotService.read_manifest``). The ref
+  deliberately exposes only what the name itself proves — name, path,
+  ``sealed_at``, ``hash_prefix`` — and stays honest about that boundary
+  rather than guessing a full hash from six characters.
 
 Both are frozen dataclasses with no mutating surface — not because a
 determined process cannot violate that (it can violate anything), but
@@ -32,6 +33,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
 
+from ._manifest import MANIFEST_NAME
 from ._naming import normalize_snapshot_hash, parse_snapshot_name, snapshot_name
 
 __all__ = ["SealedSnapshot", "SnapshotRef"]
@@ -95,6 +97,18 @@ class SealedSnapshot:
     def hash_prefix(self) -> str:
         """The first six characters of the snapshot hash."""
         return self.snapshot_hash[:6]
+
+    @property
+    def manifest_path(self) -> Path:
+        """Where this snapshot's MANIFEST.json lives — inside its directory.
+
+        A pure path derivation: the seal published the manifest (feature
+        31), so the location is a property of the record, while the
+        manifest's *contents* are read through
+        :meth:`snapshot.SnapshotService.read_manifest`, which validates
+        them against the name.
+        """
+        return self.path / MANIFEST_NAME
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         return f"SealedSnapshot(name={self.name!r}, files={len(self.files)})"

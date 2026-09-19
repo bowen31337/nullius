@@ -106,8 +106,9 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Optional, Union
 
-from ._content import CHUNK_SIZE, sha256_file, walk_content
+from ._content import CHUNK_SIZE, sha256_file
 from ._errors import SnapshotContentError, SnapshotReadOnlyError
+from ._manifest import walk_sealed_content
 from ._naming import parse_snapshot_name
 
 __all__ = [
@@ -804,14 +805,17 @@ class SnapshotMount:
         return (self.root / relative).read_text(encoding=encoding, errors=errors)
 
     def files(self) -> Mapping[str, str]:
-        """The sealed tree as ``{relative POSIX path: sha256}``.
+        """The sealed tree's content as ``{relative POSIX path: sha256}``.
 
-        Exactly the mapping the seal computed and persisted, re-walked on
+        Exactly the mapping the seal computed and persisted — re-walked on
         the mount side, so a reader can compare the bytes it is about to
         consume against the identity the snapshot was sealed under (the
-        corruption check of feature 36) without opening files itself.
+        corruption check of feature 36) without opening files itself. The
+        walk excludes the snapshot's own ``MANIFEST.json``: the manifest
+        *describes* the content and is not part of it, so it must never
+        leak into a content identity.
         """
-        return walk_content(self.path)
+        return walk_sealed_content(self.path)
 
     def paths(self) -> tuple[ReadOnlyPath, ...]:
         """Every file in the snapshot as a read-only path, sorted by path."""
@@ -825,8 +829,16 @@ class SnapshotMount:
         return len(self.files())
 
     def total_bytes(self) -> int:
-        """The total size of the sealed bytes, for operator visibility."""
-        return sum(entry.stat().st_size for entry in self.root.glob("**/*") if entry.is_file())
+        """The total size of the sealed content, for operator visibility.
+
+        Sums the files :meth:`files` maps — the content the snapshot
+        addresses — so the figure agrees with ``file_count`` and with the
+        manifest's per-file entries rather than counting the manifest
+        itself among the bytes it describes.
+        """
+        return sum(
+            (self.path / relative).stat().st_size for relative in self.files()
+        )
 
     # -- Partition queries (§4.2 layout, feature 37's pruning) --------------
 

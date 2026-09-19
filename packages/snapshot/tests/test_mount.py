@@ -640,8 +640,19 @@ class TestReadingThroughTheMount:
         assert str(part).endswith("borrow/rates.parquet")
 
     def test_the_mount_lists_the_sealed_tree(self, mount: SnapshotMount) -> None:
-        assert [entry.name for entry in mount.root.children()] == ["bars", "borrow"]
-        assert [entry.relative for entry in mount.root.iterdir()] == ["bars", "borrow"]
+        # The listing is filesystem truth, so the manifest the seal
+        # published is right there beside the content it describes; the
+        # *content* mapping (files(), below) is where it is excluded.
+        assert [entry.name for entry in mount.root.children()] == [
+            "MANIFEST.json",
+            "bars",
+            "borrow",
+        ]
+        assert [entry.relative for entry in mount.root.iterdir()] == [
+            "MANIFEST.json",
+            "bars",
+            "borrow",
+        ]
 
     def test_file_mapping_matches_what_was_sealed(self, mount: SnapshotMount) -> None:
         files = mount.files()
