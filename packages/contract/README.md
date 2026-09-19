@@ -242,6 +242,64 @@ but it is imported lazily — `validate_signal_return` reaches for it only when
 a return is actually inspected — so the factory's workspace scan does not need
 it installed, exactly as pyarrow stays deferred behind `require_arrow`.
 
+## The absent-symbol rejection (feature 12)
+
+Feature 11 checks a return's *values*; feature 12 checks the *claim* the return
+makes about which symbol each value belongs to, and emits the outcome a run
+records:
+
+```python
+import polars as pl
+from contract import check_signal_return
+
+check_signal_return(pl.Series("score", [0.1, -0.2, 0.5]), window.universe)
+# SignalReturnOutcome(outcome='ok', index=(), absent_symbols=(), problems=())
+
+check_signal_return(pl.Series("DOGEUSDT", [0.3]), ("BTCUSDT",))
+# outcome='contract_violation', absent_symbols=('DOGEUSDT',),
+#   problems=(SignalReturnProblem(kind='absent_symbol', symbol='DOGEUSDT', ...),)
+```
+
+**Why "the index" needs defining.** Polars has no index: a `Series` has no
+`.index`, no `index=` keyword, and `series["A"]` raises — which is why feature
+11's *conforming* return is a bare series paired positionally. A return that
+claims labels anyway does so through whichever carrier Polars offers, and
+`return_index` reads all of them:
+
+| carrier | claim |
+| --- | --- |
+| `pl.DataFrame({"symbol": [...], "score": [...]})` | the `symbol` column |
+| `pl.Series([{"symbol": ..., "score": ...}])` | the `symbol` struct field |
+| `{"BTCUSDT": 0.5, ...}` | the mapping's keys |
+| `pl.Series("DOGEUSDT", [0.3])` | the series' name |
+
+**A series' name is read as an index claim only when it is ticker-shaped**
+(upper case, alphanumeric, ending in a known quote asset — `is_symbol_label`,
+`QUOTE_ASSETS`). `"DOGEUSDT"` is a claim; `"score"`, `"VOL"`, `"S1"` and
+`"momentum"` are names, and a bare series named `"score"` conforms exactly as
+feature 11 says it should. The rule defaults to "name", because a false
+rejection of a correct signal is the worse error in both directions.
+
+**Why reject rather than tolerate.** A one-symbol window scored with
+`pl.Series("DOGEUSDT", [0.3])` is length-conforming, finite and float — and
+attributes DOGE's score to BTCUSDT. Nothing downstream could notice: the
+evaluation succeeds and the number is wrong. Feature 11 cannot see it, because
+it is a claim about *labels*, not values.
+
+`check_signal_return(result, window)` composes both halves — this feature's
+label check and feature 11's value check — into one frozen, JSON-serializable
+`SignalReturnOutcome` whose `outcome` is `"ok"` or `"contract_violation"`. It
+is a **value, never a raise**: a bad return is a hypothesis that produced a
+bad artifact, not a programming error, and the caller decides what it costs
+(a retry, a trial charge, a discard). Both checks always run, so a mislabeled
+`DataFrame` reports `absent_symbol` *and* `not_a_series` — telling the author
+that fixing the labels alone will not make it conform. `problems` is in return
+order with the symbol claims first (they name *which* score is wrong);
+`absent_symbols` is sorted and de-duplicated for the at-a-glance read, and a
+label that is not a non-empty string is reported as `non_string_symbol_label`
+rather than as an absent symbol, so nobody hunts for a spelling mistake that
+is not there.
+
 ## The Arrow IPC payload channel (feature 14)
 
 A materialized window travels to the sandbox as Arrow IPC — one self-describing
@@ -322,3 +380,18 @@ the property that makes an audit possible — that `compare` answers
 `compatible`/`stale`/`malformed` for *every* value a row might hold without
 raising. The last test in the file asserts the composed ABI record is
 unperturbed by any of it.
+
+Feature 12 is pinned by `test_contract_violation.py` in three parts: reading
+the index (all four carriers, the struct field winning over the series name,
+the nested field deliberately *not* read, and — the case that matters most —
+that a conforming bare series claims **nothing**, since a checker that read a
+series' name as an index would reject correct signals); the rejection
+(`absent_symbol` carrying the symbol and its position, one problem per
+offending label, present symbols silent, and a non-string label reported as
+malformed rather than absent); and the outcome (`ok` vs `contract_violation`
+as a value that never raises, both halves firing on a mislabeled `DataFrame`,
+`absent_symbols` sorted and de-duplicated, the record serializing to JSON, and
+determinism). Two of its tests reach past the module: one drives a real
+`MarketWindow` to prove the window-universe seam is duck-typed rather than
+`isinstance`-based, and one imports the package in a subprocess to prove
+polars is still deferred — the layering guarantee the whole member rests on.
