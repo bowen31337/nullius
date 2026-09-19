@@ -42,6 +42,7 @@ The `ingest` workspace member: app_spec.xml feature 16 —
 | `nullius_ingest/schema.py` | `DeclaredSchema`, `ParquetBatch`, `SchemaDrift`, `SchemaValidatingWorker` — the feature 27 gate |
 | `nullius_ingest/gaps.py` | `GapDetector`, `GapDetected`, `GapEventLog` — the feature 25 gap detection |
 | `nullius_ingest/backfill.py` | `GapBackfiller`, `SealGate` — the feature 26 REST backfill and seal gate |
+| `nullius_ingest/exchange_info.py` | `ExchangeInfoVersionStore`, `DailyExchangeInfoWorker`, `parse_exchange_info` — the feature 24 versioned daily refresh |
 
 Stdlib-only by design, except `staging` (which resolves its lake root via
 the factory's `find_workspace_root`, as the snapshot member does); stream
@@ -231,6 +232,102 @@ are they covered" needs no REST client and no Parquet writer. The fetch,
 the serialisation and the staging area are handed in; the seal gate is
 handed the service. What this module adds is the glue the feature names
 and no other module owns.
+
+## Daily exchangeInfo filters, versioned (feature 24)
+
+§4.1's table gives this stream the row *"`exchangeInfo` filters | REST |
+daily | forever, versioned"*, and §13.2 states why the order path depends
+on it — *"`exchangeInfo` filters (`LOT_SIZE`, `NOTIONAL`, `PRICE_FILTER`,
+`stepSize`, `tickSize`) refreshed at startup and daily. Never hardcoded."*
+A rule that says *never hardcode* is only enforceable if the fetched
+constants are somewhere to be read, and only trustworthy if a later fetch
+cannot quietly rewrite what an earlier one said. Feature 24 states both:
+
+> System ingests exchangeInfo filters daily, persisting each fetch as a
+> new version rather than overwriting the prior one.
+
+- **Each fetch is a new version, structurally.** `ExchangeInfoVersionStore`
+  appends `<lake>/staging/exchangeInfo/<version>.bin` via feature 28's
+  `StagingArea`, so version `n`'s bytes are frozen the moment `n + 1`
+  lands — the batch store refuses a second batch at a sequence it already
+  holds. There is no code path that could overwrite a prior version.
+- **A repeated fetch is still a new version.** The feature says *each*
+  fetch is persisted, and suppressing an unchanged one would erase the
+  difference between *the refresh ran and nothing changed* and *the
+  refresh never ran* — exactly the distinction an operator needs when
+  orders start being rejected for a stale tick size. `source_sha256` (over
+  the filters) answers "did anything change?"; `carries_same_filters_as`
+  answers it without diffing two documents.
+- **Values are kept verbatim in the venue's spelling.** `"0.001"` stays
+  `"0.001"`, never a `Decimal`: whether the venue said `"0.001"` or
+  `"0.0010"` is a fact about the venue, and re-rendering it would make an
+  audit unable to tell a venue change from our own lossy parse. The
+  §13.2 constants read back off a version via `step_size`, `tick_size`,
+  `min_qty`, `min_notional`.
+- **Daily means a UTC calendar day, decided from the durable log.** A fetch
+  is due when the last persisted version was fetched on an earlier UTC date,
+  and immediately when the log is empty — §13.2's *"at startup and daily"*,
+  where startup is just the first cycle over an empty store. A restart
+  mid-day does not re-fetch; a process that was down across a boundary
+  fetches on its next cycle rather than waiting for a timer. The cadence
+  lives in the store, not in process memory, which is what makes it
+  survive the restarts the deployment table calls *restart-safe*.
+- **A failed fetch consumes no version.** The document is parsed and
+  validated *before* anything is written, so a rate-limit body, an error
+  page or a truncated response never appears in the log as a refresh that
+  happened — and the next honest fetch still claims the same version
+  number, leaving no hole.
+- **Damaged bytes are refused, not parsed around.** A version file whose
+  recorded hash disagrees with its document, or that is not readable as an
+  envelope at all, raises `ExchangeInfoCorruptError`. A log the order path
+  trusts for venue constants must not hand back a plausible-looking tick
+  size assembled from bytes that changed.
+
+The fetch is injected (`ExchangeInfoFetch`) — this member ships no HTTP
+client, so the venue's auth, weight budget and pagination stay the
+deployment's business and the module stays stdlib-only. It registers
+itself as the `exchangeInfo` stream's worker, so importing the package is
+the whole wiring, and a deployment wires its REST client with
+`register_exchange_info_worker(fetch, registry=default_worker_registry())`
+— passing the default registry explicitly, because the function defaults to
+a *private* one so that wiring a fetch never silently replaces the
+auto-discovered worker for every later composition in the process. Until
+then the worker still composes and its cycle reports that stream's own
+failure — feature 16's contract, where an unconfigured stream is a row in
+the report rather than a component that fails to load.
+
+```python
+from datetime import datetime, timezone
+from nullius_ingest import (
+    DailyExchangeInfoWorker, ExchangeInfoVersionStore, parse_exchange_info,
+)
+
+store = ExchangeInfoVersionStore.from_env()      # <lake>/staging/exchangeInfo
+worker = DailyExchangeInfoWorker(
+    store, lambda: rest_client.get("/fapi/v1/exchangeInfo")
+)
+
+worker.is_due()                # True: empty log, startup fetch owed
+result = worker.run_cycle()    # fetches, persists version 1
+result.sequence                # 1 — the version, i.e. the log's watermark
+
+store.current().render()
+# 'exchangeInfo version 1 fetched 2026-03-01T06:30:00+00:00 carries 1
+#  symbol(s) [BTCUSDT] sha256=...'
+
+btc = store.latest_filters("BTCUSDT")
+btc.step_size                  # '0.001'  — the venue's own spelling
+btc.tick_size                  # '0.10'
+btc.min_notional               # '10.00000000'
+
+worker.is_due()                # False: today's version is already durable
+```
+
+The `versions()` log is what a seal copies into §4.2's `exchangeinfo/`
+snapshot directory, so the history becomes part of the sealed,
+content-addressed record rather than a sidecar a replay would have to
+reconstruct from live requests — which it could not do honestly, since a
+version describes what the venue said on a day that has passed.
 
 ## Adding a stream worker (features 17–29)
 

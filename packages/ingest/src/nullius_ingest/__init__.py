@@ -42,6 +42,14 @@ What lives where:
   :class:`SealGate`, which wraps the sealing service and refuses a seal
   while any gap stays open (feature 26; §15's "REST backfill the gap
   before sealing the next snapshot" row).
+* :mod:`nullius_ingest.exchange_info` — :class:`ExchangeInfoVersionStore`,
+  the append-only version log each daily ``exchangeInfo`` fetch is persisted
+  into as a *new* version rather than an overwrite, and
+  :class:`DailyExchangeInfoWorker`, the stream worker that owns the daily
+  cadence (§4.1's "exchangeInfo filters | REST | daily | forever, versioned"
+  row, §13.2's "never hardcoded" rule; feature 24).  It registers itself as
+  the ``exchangeInfo`` stream's worker, so importing this package is the
+  whole wiring.
 
 The package self-registers with the application factory: scanning this
 workspace member runs this module, the ``@register`` decorator below
@@ -62,6 +70,22 @@ from .backfill import (
     GapFilled,
     GapNotFilledError,
     SealGate,
+)
+from .exchange_info import (
+    EXCHANGE_INFO_STREAM,
+    DailyExchangeInfoWorker,
+    ExchangeInfoCorruptError,
+    ExchangeInfoDocument,
+    ExchangeInfoError,
+    ExchangeInfoFetch,
+    ExchangeInfoParseError,
+    ExchangeInfoVersion,
+    ExchangeInfoVersionStore,
+    FilterType,
+    SymbolFilters,
+    build_exchange_info_worker,
+    parse_exchange_info,
+    register_exchange_info_worker,
 )
 from .gaps import GAP_DETECTED_EVENT, GapDetected, GapDetector, GapEventLog
 from .registry import (
@@ -97,12 +121,22 @@ from .worker import (
 )
 
 __all__ = [
+    "EXCHANGE_INFO_STREAM",
     "GAP_DETECTED_EVENT",
     "GAP_FILLED_EVENT",
     "Batch",
     "ColumnSpec",
     "CycleResult",
+    "DailyExchangeInfoWorker",
     "DeclaredSchema",
+    "ExchangeInfoCorruptError",
+    "ExchangeInfoDocument",
+    "ExchangeInfoError",
+    "ExchangeInfoFetch",
+    "ExchangeInfoParseError",
+    "ExchangeInfoVersion",
+    "ExchangeInfoVersionStore",
+    "FilterType",
     "FunctionWorker",
     "GapBackfiller",
     "GapDetected",
@@ -128,12 +162,16 @@ __all__ = [
     "StreamClass",
     "StreamFailure",
     "StreamOutcome",
+    "SymbolFilters",
     "WorkerFactory",
     "WorkerRegistry",
     "build_default_workers",
+    "build_exchange_info_worker",
     "build_ingest",
     "build_supervisor",
     "coerce_stream_class",
+    "parse_exchange_info",
+    "register_exchange_info_worker",
     "register_worker",
 ]
 

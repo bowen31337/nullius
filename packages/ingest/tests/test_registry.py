@@ -88,15 +88,24 @@ def test_registry_rejects_non_callable_factory() -> None:
 
 
 def test_a_private_registry_never_leaks_into_the_default() -> None:
-    # Tests (and isolated compositions) register into their own registry
-    # and cannot pollute what the component builder reads.
+    # Tests (and isolated compositions) register into their own registry and
+    # cannot pollute what the component builder reads.  An isolated
+    # registration is visible only in its own registry: the default carries
+    # exactly the stream modules that have actually landed (feature 24's
+    # exchangeInfo worker today) and never a test's or a composition's.
     registry = WorkerRegistry()
     registry.register(StreamClass.EXCHANGE_INFO, factory(StreamClass.EXCHANGE_INFO))
 
     assert StreamClass.EXCHANGE_INFO in registry
-    assert StreamClass.EXCHANGE_INFO not in default_worker_registry()
     assert build_default_workers(registry=registry) != []
-    # The default registry stays empty until a stream module registers.
+    # The default registry holds the registered stream modules and nothing
+    # else — a private registry's factory never appears in it.
+    assert default_worker_registry().build_workers()[0] is not (
+        registry.build_workers()[0]
+    )
+    assert set(default_worker_registry().stream_classes()) == {
+        StreamClass.EXCHANGE_INFO
+    }
 
 
 def test_build_supervisor_composes_one_worker_per_class() -> None:

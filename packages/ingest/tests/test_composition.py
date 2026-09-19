@@ -54,14 +54,36 @@ def test_composed_app_builds_an_ingest_supervisor() -> None:
     assert "ingest" in app.order
 
 
-def test_composed_supervisor_reports_a_clean_empty_cycle() -> None:
-    # No stream modules registered workers yet, and that composes fine:
-    # an idle ingest layer is a valid running state.
-    app = create_app(MEMBER_SRC, registry=Registration())
-    component = app.get("ingest")
-    report = component.run_cycle()
+def test_supervisor_over_no_registered_streams_reports_a_clean_empty_cycle() -> None:
+    # An ingest layer with no stream modules is a valid, running (if idle)
+    # state — the stance composition is built on.  Composed from an isolated
+    # empty registry, because the default one carries whatever stream modules
+    # have landed (feature 24's exchangeInfo worker, below).
+    from nullius_ingest import WorkerRegistry
+    from nullius_ingest.registry import build_supervisor
+
+    report = build_supervisor(registry=WorkerRegistry()).run_cycle()
+
     assert report.ok
     assert len(report) == 0
+
+
+def test_composed_supervisor_carries_the_exchangeinfo_stream_worker() -> None:
+    # Feature 24's stream module registers itself by being imported, so the
+    # composed supervisor already supervises the exchangeInfo stream — the
+    # whole wiring story, with no shared file naming this package's stream.
+    from nullius_ingest import StreamClass
+
+    app = create_app(MEMBER_SRC, registry=Registration())
+    component = app.get("ingest")
+
+    assert StreamClass.EXCHANGE_INFO in component
+    worker = component.worker_for(StreamClass.EXCHANGE_INFO)
+    # Compared by stream-class value, not identity: the scan imports the
+    # member under an alias module, so the composed worker's StreamClass is a
+    # second copy of the enum (the same caveat the duck-checked component
+    # test above notes).  The persisted spelling is the stable contract.
+    assert str(worker.stream_class) == StreamClass.EXCHANGE_INFO.value
 
 
 def test_composed_supervisor_isolates_a_registered_stream_failure() -> None:
