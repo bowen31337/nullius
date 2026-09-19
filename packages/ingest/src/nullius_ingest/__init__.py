@@ -20,6 +20,9 @@ What lives where:
   ingesting.
 * :mod:`nullius_ingest.registry` — the seam the later ingest features
   (features 17–29) register stream workers into.
+* :mod:`nullius_ingest.watermark` — :class:`SequenceStore`, the durable
+  per-stream batch store feature 29 resumes from, and its in-memory
+  stand-in.
 
 The package self-registers with the application factory: scanning this
 workspace member runs this module, the ``@register`` decorator below
@@ -42,20 +45,28 @@ from .registry import (
 )
 from .streams import StreamClass, coerce_stream_class
 from .supervisor import IngestReport, IngestSupervisor
+from .watermark import Batch, InMemorySequenceStore, SequenceStore
 from .worker import (
     CycleResult,
     FunctionWorker,
     IngestWorker,
+    ResumableFunctionWorker,
+    ResumableWorker,
     StreamFailure,
     StreamOutcome,
 )
 
 __all__ = [
+    "Batch",
     "CycleResult",
     "FunctionWorker",
+    "InMemorySequenceStore",
     "IngestReport",
     "IngestSupervisor",
     "IngestWorker",
+    "ResumableFunctionWorker",
+    "ResumableWorker",
+    "SequenceStore",
     "StreamClass",
     "StreamFailure",
     "StreamOutcome",

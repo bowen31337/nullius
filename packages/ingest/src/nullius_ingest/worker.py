@@ -22,6 +22,18 @@ Workers therefore need no error handling of their own to keep the system
 up: raise, and the boundary does the rest.  What a worker *must not* do
 is mutate shared state belonging to another stream class — the class
 boundary only isolates failures, not badly written workers.
+
+Feature 29 — *"System restarts an ingest worker safely after a crash,
+resuming from the last persisted sequence with no duplicate rows"* —
+adds a second worker shape on top of this one: a :class:`ResumableWorker`
+is an :class:`IngestWorker` that also owns a durable
+:class:`~nullius_ingest.watermark.SequenceStore` and commits each batch to
+it before returning.  The store's atomic commit is what makes the worker
+resumable, and it is layered on the same boundary — a resumable worker
+still raises on failure and is still caught per stream — so crash-safety
+and failure-isolation compose rather than compete.  The two worker shapes
+share one stream-class boundary and one ``run_cycle`` signature, so the
+supervisor runs either without change.
 """
 
 from __future__ import annotations
@@ -32,11 +44,14 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from .streams import StreamClass, coerce_stream_class
+from .watermark import Batch, SequenceStore, SequenceStoreBase
 
 __all__ = [
     "CycleResult",
     "FunctionWorker",
     "IngestWorker",
+    "ResumableFunctionWorker",
+    "ResumableWorker",
     "StreamFailure",
     "StreamOutcome",
 ]
@@ -50,12 +65,17 @@ class CycleResult:
     websocket flush, one REST poll, one batch write.  ``rows_written``
     is the honest count of rows that cycle appended; the supervisor
     sums it into the report so ingest progress stays observable per
-    stream.  Later features extend this record (sequence watermarks for
-    crash-safe resume, gap counters) rather than widening the worker
-    signature.
+    stream.
+
+    ``sequence`` is the batch's position in the stream's append-only log
+    — the value a crash-safe worker persists before returning, and the
+    point a restarted worker resumes from (feature 29).  It is ``0`` for
+    a cycle that wrote no batch: the honest "no progress" watermark, and
+    the value a stream with no committed batch starts from.
     """
 
     rows_written: int = 0
+    sequence: int = 0
 
 
 @dataclass(frozen=True)
@@ -180,3 +200,118 @@ class FunctionWorker:
         if produced is None:
             return CycleResult()
         return CycleResult(rows_written=int(produced))
+
+
+@runtime_checkable
+class ResumableWorker(Protocol):
+    """The crash-safe worker contract: one batch per cycle, committed durably.
+
+    A :class:`ResumableWorker` is an :class:`IngestWorker` that owns a
+    :class:`~nullius_ingest.watermark.SequenceStore` and, each cycle,
+    fetches the next batch of rows *after* its last committed sequence and
+    commits it to the store before returning.  The store's atomic commit is
+    what makes the worker resumable (feature 29): the batch's presence in
+    the store *is* its commit, so a crash either leaves the batch fully
+    committed — and the worker resumes past it, never rewriting it — or
+    leaves it absent — and the worker resumes from that sequence and
+    re-fetches it, writing it once with no duplicate rows.
+
+    ``sequence`` on the returned :class:`CycleResult` is the batch's
+    sequence: the point the next cycle — or a restarted worker — resumes
+    from.  A zero-row cycle reports ``sequence=0``: no batch, no progress.
+    """
+
+    @property
+    def stream_class(self) -> StreamClass:
+        """The one stream class this worker owns."""
+        ...
+
+    @property
+    def sequence_store(self) -> SequenceStore:
+        """The durable store this worker commits batches into."""
+        ...
+
+    def run_cycle(self) -> CycleResult:
+        """Fetch the next batch after the last committed sequence and commit it."""
+        ...
+
+
+@dataclass(frozen=True)
+class ResumableFunctionWorker:
+    """A resumable worker built from a factory, one stream class, one store.
+
+    The crash-safe analogue of :class:`FunctionWorker`: hand in the stream
+    it serves, a :class:`~nullius_ingest.watermark.SequenceStore` to commit
+    into, and a factory that, given the sequence to resume from, returns
+    the next :class:`~nullius_ingest.watermark.Batch` (or ``None`` for an
+    empty cycle).  Each cycle the worker asks the store for its current
+    watermark, calls the factory with the next sequence, and commits the
+    returned batch — so the store's durable watermark is the single source
+    of truth for where the stream has reached, and a restart resumes from
+    exactly there.
+
+    The factory takes the resume sequence rather than holding one, so the
+    same worker, reconstructed after a crash over the same store, resumes
+    from the sequence the store reports — not from a value frozen at
+    construction.  This is why the factory, not a prebuilt batch, is the
+    unit of composition: a fresh worker over a durable store is a restart.
+    """
+
+    stream_class: StreamClass
+    store: SequenceStore
+    build_batch: "Callable[[int], Batch | None]"
+
+    def __post_init__(self) -> None:
+        # Validate at construction, exactly as FunctionWorker does: a
+        # mis-wired worker must fail here, not inside a cycle.
+        object.__setattr__(
+            self, "stream_class", coerce_stream_class(self.stream_class)
+        )
+        if not isinstance(self.store, SequenceStoreBase):
+            raise TypeError(
+                f"resumable worker for {self.stream_class} needs a "
+                f"SequenceStore, got {type(self.store).__name__}"
+            )
+        if not callable(self.build_batch):
+            raise TypeError(
+                f"resumable worker for {self.stream_class} needs a callable "
+                f"batch factory, got {type(self.build_batch).__name__}"
+            )
+
+    @property
+    def sequence_store(self) -> SequenceStore:
+        """The durable store this worker commits batches into."""
+        return self.store
+
+    def run_cycle(self) -> CycleResult:
+        """Resume from the store's watermark, fetch the next batch, commit it.
+
+        The sequence the batch is committed under is one past the store's
+        current watermark, so batches form a gap-free ``1, 2, 3, ...`` log
+        and a restart — which reads the watermark from the store — resumes
+        at exactly the next uncommitted sequence.  This is what makes the
+        resume safe: because the store commits a batch atomically (its
+        file is either fully present or fully absent), a crash leaves the
+        watermark either advanced past the batch — so the worker resumes
+        after it and never rewrites it — or unadvanced — so the worker
+        resumes at that sequence and re-fetches it, writing it once.  The
+        store's ``commit`` refusing a duplicate sequence is the belt-and-
+        braces guard for the same-sequence case within one process; across
+        a restart the atomic commit alone guarantees no batch is written
+        twice.
+        """
+        stream = self.stream_class
+        sequence = self.store.current(stream) + 1
+        produced = self.build_batch(sequence)
+        if produced is None:
+            return CycleResult(sequence=0)
+        if not isinstance(produced, Batch):
+            raise TypeError(
+                f"build_batch for {stream} returned {type(produced).__name__}; "
+                f"the contract is a Batch or None"
+            )
+        self.store.commit(stream, produced)
+        return CycleResult(
+            rows_written=produced.rows,
+            sequence=produced.sequence,
+        )
