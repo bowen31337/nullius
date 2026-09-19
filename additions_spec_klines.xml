@@ -1,0 +1,128 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 17 (klines ingest: 1m/1h/1d REST backfill + websocket tail)</project_name>
+  <addition_summary>
+    Implement the klines stream class (app_spec.xml feature 17): the system
+    ingests 1m, 1h and 1d klines from a REST backfill plus a websocket tail,
+    persisting each candle into the append-only staging area retained forever.
+    The module mirrors the landed ingest streams (funding, aggTrades) — a
+    frozen row type, a content-hashed record, an append-only store under
+    staging/klines, and one worker owning the klines stream class — and adds
+    the two properties §4.1's row assigns this stream and no sibling has: a
+    1m/1h/1d interval dimension, and a REST backfill that fills a historical
+    range alongside the live websocket tail.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/ingest member, import nullius_ingest) / pytest (ruff + mypy conventions)</stack>
+    <test_baseline>ingest suite under packages/ingest/tests/, stdlib-only modules plus pyarrow where the schema layer is exercised</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, docstrings that
+      cite app_spec.xml feature numbers and docs/nullius-tech-architecture.md
+      §4.1/§4.2, stdlib-only row/record/store/worker layers, injected fetch and
+      injected clock (no REST/WS client and no wall-clock read in checked code,
+      §12/§15), prices and quantities kept verbatim in the venue's own string
+      spelling, instants exact on the epoch lattice (integer microseconds, no
+      float, no timestamp() round trip), @register only in the package __init__
+      (never a submodule), degrade-don't-break composition. Tests assert on
+      observed behaviour with long narrative docstrings explaining the "why".
+    </conventions>
+  </existing_context>
+  <!-- Layout mirrors the clean main app_spec.xml: uv-workspace is what makes
+       plugin="ingest" resolve to the real packages/ingest/ tree rather than the
+       single-package src/plugins/ingest/ default. Parsed before features. -->
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Klines Ingest">
+      <feature index="1" shape="plugin" plugin="ingest">
+        <description>System constructs a frozen KlineRow for one 1m, 1h or 1d candle with snake_case fields open_time, close_time, trade_count, high_price, low_price and volume kept verbatim in the venue's own string spelling and the open and close instants kept as timezone-aware datetimes on the epoch lattice</description>
+      </feature>
+      <feature index="2" shape="plugin" plugin="ingest" depends_on="1">
+        <description>System refuses a malformed kline payload in parse_klines, raising a parse error message before any sequence is consumed so a rate-limit body, a truncated frame or a wrong-interval candle never lands in the log as a candle that happened</description>
+      </feature>
+      <feature index="3" shape="plugin" plugin="ingest" depends_on="1">
+        <description>System persists each kline flush or backfill page as a content-hashed KlineRecord into an append-only KlineStore under staging/klines, retained forever with no retention window, appending at current + 1 into feature 28's staging area so a candle's bytes are frozen the moment the next batch lands and no candle is ever dropped by a retention window</description>
+      </feature>
+      <feature index="4" shape="plugin" plugin="ingest" depends_on="3">
+        <description>System tails live klines one flush per cycle as the KlineWorker for the klines stream class, using an injected fetch and reporting a quiet cycle as zero rows rather than a failure, with a failed flush becoming that stream's per-stream StreamFailure with an error message and a traceback while every other stream keeps ingesting</description>
+      </feature>
+      <feature index="5" shape="plugin" plugin="ingest" depends_on="3">
+        <description>System backfills historical 1m, 1h and 1d klines for a symbol over an injected REST fetch, paging across a requested inclusive range and appending each page into the store with the returned range verified against the requested one so a short page raises a not-filled error with an error message naming the covered range and leaves the backfill open rather than silently claiming coverage</description>
+      </feature>
+      <feature index="6" shape="plugin" plugin="ingest" depends_on="1">
+        <description>System registers the klines worker so importing the module composes it into the ingest supervisor as the klines stream's worker, with register_kline_worker wiring an injected fetch and an unconfigured worker reporting that stream's own failure rather than failing to compose</description>
+      </feature>
+    </category>
+    <category name="Klines Verification">
+      <feature index="7" shape="plugin" plugin="ingest" depends_on="4,5,6">
+        <description>System passes an end-to-end test in which klines parse and persist into the append-only store, a restarted store resumes from the last persisted sequence with no duplicate rows, a REST backfill covers a requested range, and the websocket tail appends a live flush alongside the backfilled history</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    New module packages/ingest/src/nullius_ingest/klines.py owning the klines
+    stream class (StreamClass.KLINES, already declared)
+    Adds the klines worker to the ingest supervisor through the WorkerRegistry
+    (packages/ingest/src/nullius_ingest/registry.py), registered from the
+    package __init__ like every other stream module
+    Writes into feature 28's append-only staging area
+    (packages/ingest/src/nullius_ingest/staging.py) under staging/klines
+    Covered by packages/ingest/tests/test_klines.py
+  </integration_points>
+  <constraints>
+    Must not modify existing stream modules, the registry, staging, the
+    supervisor, or any shared file (src/app/middleware.py, src/app/settings.py,
+    migrations/**, alembic/**)
+    The klines store is retained forever with no retention window, matching
+    §4.1's "Klines 1m/1h/1d | REST backfill + WS | continuous | forever" row —
+    there is deliberately no prune, unlike the L2 book-diff stream
+    Klines are not compressed: §4.1 marks only aggTrades "compressed", so the
+    klines store writes plain envelopes like funding and exchangeInfo
+    Prices, sizes and volumes are kept verbatim in the venue's own string
+    spelling; instants are exact on the epoch lattice (integer microseconds, no
+    float, no timestamp() round trip)
+    The REST fetch and the websocket fetch are injected — the member ships no
+    exchange client, so auth, rate limits and pagination stay the deployment's
+    business and the module stays stdlib-only
+    The clock is injected; §12 keeps wall-clock reads out of checked code
+    The interval set is restricted to 1m, 1h and 1d; a candle of any other
+    interval is refused rather than persisted
+    Follow the existing docstring discipline: cite app_spec.xml feature 17 and
+    docs/nullius-tech-architecture.md §4.1/§4.2
+    All existing ingest tests must stay green
+  </constraints>
+  <implementation_steps>
+    <phase name="Phase 1: Klines Ingest">
+      Add the frozen KlineRow value type (interval restricted to 1m/1h/1d, OHLCV
+      kept verbatim, open/close instants exact on the epoch lattice, trade count
+      an integer) and parse_klines, which refuses a malformed payload before any
+      sequence is consumed
+      Add the content-hashed KlineRecord and the append-only KlineStore under
+      staging/klines, retained forever with no retention window, appending at
+      current + 1 into feature 28's staging area
+      Add the KlineWorker that tails live klines one flush per cycle over an
+      injected fetch, reporting a quiet cycle as zero rows
+      Add the REST backfill that pages historical 1m/1h/1d klines for a symbol
+      over an injected fetch and appends each page with the returned range
+      verified against the requested one
+      Register the klines worker from the package __init__ so importing the
+      module composes it into the ingest supervisor, with register_kline_worker
+      wiring an injected fetch
+    </phase>
+    <phase name="Phase 2: Klines Verification">
+      Add end-to-end tests asserting klines parse, persist into the append-only
+      store, resume after a restart with no duplicate rows, a REST backfill
+      covers a requested range, and the websocket tail appends a live flush
+      alongside the backfilled history
+    </phase>
+  </implementation_steps>
+  <success_criteria>
+    Feature 17 implemented: 1m/1h/1d klines ingest from REST backfill plus a
+    websocket tail, persisted into the staging area retained forever
+    The klines worker composes into the ingest supervisor as the klines stream's
+    worker, and a failed flush is that stream's per-stream failure
+    A malformed payload or a wrong-interval candle is refused before any
+    sequence is consumed
+    A REST backfill verifies the returned range against the requested one and
+    leaves the backfill open on a short page
+    All existing ingest tests still green; new klines tests green
+  </success_criteria>
+</project_specification>
