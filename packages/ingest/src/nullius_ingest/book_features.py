@@ -148,6 +148,7 @@ _ENVELOPE_KEYS = (
 _DOCUMENT_KEY = "rows"
 _CLOSING_KEY = "closing_books"
 
+_ZERO: Final[Decimal] = Decimal(0)
 _ONE: Final[Decimal] = Decimal(1)
 _TEN_THOUSAND: Final[Decimal] = Decimal(10000)
 
@@ -269,6 +270,24 @@ class BookState:
         """Whether the book has at least one level on each side — a mid exists."""
         return bool(self._bids) and bool(self._asks)
 
+    def has_price(self, side: str, price: str) -> bool:
+        """Whether ``price`` has a live level on ``side`` right now.
+
+        The read seam feature 22 stands on: classifying a raw level as an *add*
+        or an *update* means asking whether the price was already standing
+        before the level was folded in, and only the reconstructed book knows.
+        Asked by the venue's own string spelling, exactly as the levels are
+        keyed, so the question is the one :meth:`apply` answers.
+
+        ``side`` is ``"bids"`` or ``"asks"``; anything else is a wiring bug and
+        is refused rather than silently answering about the wrong side.
+        """
+        if side == "bids":
+            return price in self._bids
+        if side == "asks":
+            return price in self._asks
+        raise ValueError(f"a book side is 'bids' or 'asks', got {side!r}")
+
     def copy(self) -> "BookState":
         """A fresh book with the same levels — the seed a resume starts from.
 
@@ -307,15 +326,29 @@ class BookState:
         ``reference * (1 + bps/10000)``.  The bands are nested — widening ``bps``
         only ever adds levels — so a 50 bps depth is never below a 25 bps one on
         the same side.  Quantities are summed as exact :class:`~decimal.Decimal`.
+
+        The accumulator is seeded with ``Decimal(0)`` rather than left to
+        :func:`sum`'s default: an empty band is the normal state of a wide
+        market — a book whose spread exceeds 10 bps has nothing inside its 5 bps
+        bands — and a bare ``sum`` over an empty generator returns builtin
+        ``int`` 0, which :class:`BookFeatureRow` rightly refuses as a depth.
+        The seeding keeps an empty band an exact ``Decimal("0")``, which is a
+        measurement ("nothing rests this close"), not an absence.
         """
         if side == "bids":
             levels = self._bids
             threshold = reference * (_TEN_THOUSAND - Decimal(bps)) / _TEN_THOUSAND
-            return sum(qty for price, qty in levels.items() if Decimal(price) >= threshold)
+            return sum(
+                (qty for price, qty in levels.items() if Decimal(price) >= threshold),
+                _ZERO,
+            )
         if side == "asks":
             levels = self._asks
             threshold = reference * (_TEN_THOUSAND + Decimal(bps)) / _TEN_THOUSAND
-            return sum(qty for price, qty in levels.items() if Decimal(price) <= threshold)
+            return sum(
+                (qty for price, qty in levels.items() if Decimal(price) <= threshold),
+                _ZERO,
+            )
         raise ValueError(f"a book side is 'bids' or 'asks', got {side!r}")
 
     def snapshot(self) -> dict[str, list[list[str]]]:

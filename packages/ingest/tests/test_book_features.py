@@ -271,6 +271,47 @@ def test_an_ask_band_is_measured_above_the_mid() -> None:
     assert state.depth_within("asks", Decimal("100.45"), 50) == Decimal("2")
 
 
+def test_an_empty_band_is_an_exact_zero_not_a_bare_int() -> None:
+    # A book whose spread is wider than the band has *nothing* inside it — the
+    # normal state of a wide market, not an error.  The depth is then an exact
+    # ``Decimal("0")``: a measurement ("nothing rests this close"), and the type
+    # the row requires.  A bare ``sum`` over an empty generator would return
+    # builtin ``int`` 0 here, which the row rightly refuses as a depth — so this
+    # pins the accumulator, not just the value.
+    state = BookState()
+    state.apply(
+        _row("BTCUSDT", T0, bids=[["100.00", "1"]], asks=[["101.00", "1"]])
+    )
+    # A spread of 100 bps against a mid of 100.50 puts nothing within 5 bps.
+    for side in ("bids", "asks"):
+        depth = state.depth_within(side, Decimal("100.50"), 5)
+
+        assert depth == 0
+        assert isinstance(depth, Decimal)
+        assert not isinstance(depth, int)
+
+
+def test_a_wide_book_still_produces_a_row_with_empty_bands() -> None:
+    # The consequence that matters: a symbol trading wider than 10 bps — where
+    # the 5 bps bands are genuinely empty — must still snapshot a row rather
+    # than failing the worker.  Nothing resting close to the mid is a feature
+    # value, not a reason to emit no feature.
+    state = BookState()
+    state.apply(
+        _row("BTCUSDT", T0, bids=[["100.00", "1"]], asks=[["101.00", "1"]])
+    )
+
+    from nullius_ingest.book_features import _depth_row
+
+    row = _depth_row("BTCUSDT", T0, state)
+
+    assert row is not None
+    assert row.bid_depth[5] == Decimal(0)
+    assert row.ask_depth[5] == Decimal(0)
+    assert row.bid_depth[50] == Decimal("1")  # the level is inside the wide band
+    assert row.canonical()["bid_depth"]["5"] == "0"
+
+
 def test_a_bad_side_is_refused() -> None:
     state = BookState()
     with pytest.raises(ValueError, match="bids.*asks"):
@@ -635,6 +676,29 @@ def test_a_one_sided_book_emits_no_row(tmp_path) -> None:
     assert result.rows_written == 0
     assert result.sequence == 1
     assert worker.store.current().batch.rows == ()
+
+
+def test_a_wide_spread_symbol_still_snapshots(tmp_path) -> None:
+    # End to end: a symbol whose book is wider than 10 bps has genuinely empty
+    # 5 bps bands, and the cycle must persist a row for it rather than failing.
+    # This is the ordinary state of a thin or volatile market, and it used to
+    # abort the whole cycle — the empty bands came back as builtin ``int`` 0,
+    # which the row refuses as a depth.
+    diffs = make_diff_store(
+        tmp_path,
+        # A mid of 101.10 with a 100 bps spread: nothing within 5 bps of the mid.
+        flush(diff(event_time_ms=T0_MS, bids=[["100.60", "1"]], asks=[["101.60", "1"]])),
+    )
+    worker = BookFeatureWorker(make_store(tmp_path), diffs, clock=clock_at(T0))
+
+    result = worker.run_cycle()
+
+    assert result.rows_written == 1
+    row = worker.store.current().batch.rows[0]
+    assert row.reference_price == Decimal("101.10")
+    assert row.bid_depth[5] == Decimal(0)
+    assert row.ask_depth[5] == Decimal(0)
+    assert row.canonical()["bid_depth"]["5"] == "0"
 
 
 def test_a_second_is_emitted_only_when_a_diff_landed_in_it(tmp_path) -> None:

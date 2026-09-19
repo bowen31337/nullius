@@ -8,12 +8,26 @@ isolation: it names the worker that owns it, the failure that comes back
 when that worker fails, and nothing else.  A failure of one value never
 mentions, blocks, or halts any other value.
 
-The values are deliberately a closed set taken verbatim from §4.1 — the
-later ingest features (klines, aggTrades, L2 diffs, derived book
-features, funding, exchangeInfo) each attach one worker to one value
-here.  A stream class nobody has implemented yet simply has no worker;
-it is not an error state, exactly like an empty workspace is not an
-error state for the module loader.
+The values are a closed set drawn from §4.1 — the later ingest features
+(klines, aggTrades, L2 diffs, derived book features, funding,
+exchangeInfo) each attach one worker to one value here.  A stream class
+nobody has implemented yet simply has no worker; it is not an error
+state, exactly like an empty workspace is not an error state for the
+module loader.
+
+One deliberate departure from a literal one-value-per-table-row reading:
+§4.1 gives the data layer **one** "Book features (derived)" row, but that
+row is a *family* of derived features (depth, microprice, OFI,
+cancel-replace rate, trade-size moments) rather than a single stream, and
+this enum is the unit of isolation rather than the unit of documentation
+— one class, one worker, enforced by the supervisor.  So each derived
+family that lands takes its own value (``bookFeatures`` for feature 20's
+depth ladder, ``tradeFlow`` for feature 22's cancel-replace rate and
+trade-size moments) instead of sharing one and having the second
+registration silently *replace* the first.  Splitting a derived family
+into its own worker is also the isolation §4.1 asks for one level up: a
+failure in the trade-size reduction does not take the depth ladder down
+with it.
 
 The string values are persisted identifiers (log lines, failure records,
 staging layouts), so they use the exchange-facing spellings from §4.1
@@ -42,6 +56,9 @@ class StreamClass(StrEnum):
 
     BOOK_FEATURES = "bookFeatures"
     """Derived 1s book features computed from the L2 diffs."""
+
+    TRADE_FLOW = "tradeFlow"
+    """Derived 1s cancel-replace rate and trade-size moments (§4.1, feature 22)."""
 
     FUNDING = "funding"
     """Funding rate and margin borrow rate, polled every 60s."""

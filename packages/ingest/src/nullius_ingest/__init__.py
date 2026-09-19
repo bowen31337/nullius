@@ -8,8 +8,11 @@ restates: *"separate worker per stream class."*
 
 What lives where:
 
-* :mod:`nullius_ingest.streams` — :class:`StreamClass`, the six stream
-  classes from §4.1 and the unit of isolation.
+* :mod:`nullius_ingest.streams` — :class:`StreamClass`, the stream classes
+  from §4.1 and the unit of isolation.  One value per wire stream, plus one
+  per derived *family* (§4.1 documents the derived tier in a single row, but
+  the enum is the isolation unit — see that module for why each derived family
+  takes its own value rather than sharing one).
 * :mod:`nullius_ingest.worker` — the :class:`IngestWorker` contract, a
   worker's result types, and :class:`StreamFailure` (a failure as data,
   never an escaping exception).
@@ -77,6 +80,19 @@ What lives where:
   derived log rather than re-deriving it from raw diffs that may since have left
   the 90-day window.  It registers itself as the ``bookFeatures`` stream's worker,
   so importing this package is the whole wiring.
+* :mod:`nullius_ingest.trade_flow` — :class:`TradeFlowStore`, the append-only log
+  of *derived* cancel-replace rates and trade-size distribution moments at 1
+  second resolution, persisted permanently for the same reason feature 20's
+  depths are — §4.1 lists both among the features the 90-day raw-diff window
+  exists to make permanent — and :class:`TradeFlowWorker`, the stream worker that
+  classifies each raw level as an add, an update or a removal against the
+  reconstructed book, counts the cancel-replaces per second, and measures the
+  second's trade sizes off an injected tape seam (§4.1's "Derived book features |
+  WS @1s | continuous | permanent" row; feature 22).  A cancel-replace is a
+  removal plus an add on one side inside one diff; the trade tape belongs to
+  feature 18's ``aggTrades`` stream and is injected rather than owned, so this
+  member ships no client.  It registers itself as the ``tradeFlow`` stream's
+  worker, so importing this package is the whole wiring.
 
 The package self-registers with the application factory: scanning this
 workspace member runs this module, the ``@register`` decorator below
@@ -198,6 +214,26 @@ from .staging import (
 )
 from .streams import StreamClass, coerce_stream_class
 from .supervisor import IngestReport, IngestSupervisor
+from .trade_flow import (
+    CANCEL_REPLACE,
+    TRADE_FLOW_STREAM,
+    TradeFlowBatch,
+    TradeFlowCorruptError,
+    TradeFlowError,
+    TradeFlowParseError,
+    TradeFlowRecord,
+    TradeFlowRow,
+    TradeFlowStore,
+    TradeFlowWorker,
+    TradePrint,
+    TradeTape,
+    build_trade_flow_worker,
+    cancel_replace_events,
+    classify_levels,
+    parse_trade_prints,
+    register_trade_flow_worker,
+    size_moments,
+)
 from .watermark import Batch, InMemorySequenceStore, SequenceStore
 from .worker import (
     CycleResult,
@@ -303,6 +339,24 @@ __all__ = [
     "build_book_diff_worker",
     "build_book_feature_worker",
     "build_default_workers",
+    "build_trade_flow_worker",
+    "cancel_replace_events",
+    "CANCEL_REPLACE",
+    "classify_levels",
+    "parse_trade_prints",
+    "register_trade_flow_worker",
+    "size_moments",
+    "TradeFlowBatch",
+    "TradeFlowCorruptError",
+    "TradeFlowError",
+    "TradeFlowParseError",
+    "TradeFlowRecord",
+    "TradeFlowRow",
+    "TradeFlowStore",
+    "TradeFlowWorker",
+    "TRADE_FLOW_STREAM",
+    "TradePrint",
+    "TradeTape",
     "build_exchange_info_worker",
     "build_funding_worker",
     "build_ingest",

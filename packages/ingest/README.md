@@ -33,7 +33,7 @@ The `ingest` workspace member: app_spec.xml feature 16 —
 
 | Module | Contents |
 |---|---|
-| `nullius_ingest/streams.py` | `StreamClass` — the six §4.1 stream classes; the unit of isolation |
+| `nullius_ingest/streams.py` | `StreamClass` — the §4.1 stream classes; the unit of isolation. One value per wire stream, plus one per derived family (see that module) |
 | `nullius_ingest/worker.py` | `IngestWorker` protocol, `CycleResult`, `StreamFailure`, `StreamOutcome`, `FunctionWorker` |
 | `nullius_ingest/supervisor.py` | `IngestSupervisor`, `IngestReport` |
 | `nullius_ingest/registry.py` | `WorkerRegistry`, `register_worker` — the seam for later features |
@@ -44,6 +44,7 @@ The `ingest` workspace member: app_spec.xml feature 16 —
 | `nullius_ingest/backfill.py` | `GapBackfiller`, `SealGate` — the feature 26 REST backfill and seal gate |
 | `nullius_ingest/exchange_info.py` | `ExchangeInfoVersionStore`, `DailyExchangeInfoWorker`, `parse_exchange_info` — the feature 24 versioned daily refresh |
 | `nullius_ingest/funding.py` | `FundingRateStore`, `FundingRateWorker`, `parse_funding` — the feature 23 60-second funding/borrow poll, retained permanently |
+| `nullius_ingest/trade_flow.py` | `TradeFlowStore`, `TradeFlowWorker`, `TradePrint`, `classify_levels`, `size_moments` — the feature 22 derived 1s cancel-replace rate and trade-size distribution moments, retained permanently beside the 90-day raw diffs they come from |
 
 Stdlib-only by design, except `staging` (which resolves its lake root via
 the factory's `find_workspace_root`, as the snapshot member does); stream

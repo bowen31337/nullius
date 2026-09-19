@@ -1,4 +1,4 @@
-"""The stream classes: the closed §4.1 table, and nothing invented."""
+"""The stream classes: a closed set drawn from §4.1, and nothing invented."""
 
 from __future__ import annotations
 
@@ -7,16 +7,38 @@ import pytest
 from nullius_ingest import StreamClass, coerce_stream_class
 
 
-def test_stream_classes_are_the_section_4_1_table() -> None:
-    # One value per row of the §4.1 stream table; no more, no fewer.
+def test_stream_classes_are_the_section_4_1_streams() -> None:
+    # One value per §4.1 stream, plus one per *derived family* — §4.1's single
+    # "Book features (derived)" row is a family, and the enum is the isolation
+    # unit rather than the documentation unit, so each derived family that lands
+    # takes its own value.  The set stays closed either way: nothing here is
+    # invented, and a wire-format stream still maps one-to-one onto a row.
     assert {member.value for member in StreamClass} == {
         "klines",
         "aggTrades",
         "bookDiffs",
-        "bookFeatures",
+        "bookFeatures",  # §4.1 "Book features (derived)" — feature 20's depth ladder
+        "tradeFlow",  # §4.1 same row — feature 22's cancel-replace rate and moments
         "funding",
         "exchangeInfo",
     }
+
+
+def test_every_wire_stream_maps_onto_exactly_one_section_4_1_row() -> None:
+    # The one-to-one direction that must never drift: each venue-fed stream is
+    # exactly one row of §4.1's table, with the exchange-facing spelling.  The
+    # derived families are the documented exception, and only they.
+    wire = {
+        "klines",
+        "aggTrades",
+        "bookDiffs",
+        "funding",
+        "exchangeInfo",
+    }
+    derived = {"bookFeatures", "tradeFlow"}
+
+    assert {member.value for member in StreamClass} == wire | derived
+    assert not (wire & derived)
 
 
 def test_stream_class_values_are_persistable_strings() -> None:

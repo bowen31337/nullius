@@ -26,7 +26,12 @@ from nullius_ingest.supervisor import WORKER_TIMEOUT_ERROR_TYPE
 
 
 def all_six_streams(sleep_klines: float | None = None) -> list[FunctionWorker]:
-    """One healthy worker per §4.1 stream class; klines optional sleeps."""
+    """Six healthy workers, one per wire stream; klines optional sleeps.
+
+    Six rather than every :class:`StreamClass`: these tests exercise the
+    supervisor's mechanics, not the stream table, so the count stays fixed as
+    derived families land their own classes.
+    """
     def klines() -> int:
         if sleep_klines is not None:
             time.sleep(sleep_klines)
