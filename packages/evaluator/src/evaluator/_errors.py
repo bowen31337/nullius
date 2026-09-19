@@ -103,6 +103,19 @@ code failed:
   because a label's forward return is realised in the test set, and a
   training bar inside its holding period leaks that test-set return into the
   model (see ``_purge``).
+* :class:`EvaluatorEmbargoError` — the cross-validation embargo contract
+  (app_spec.xml feature 78). Step 6 of §6.1's pipeline keeps training out of
+  the embargo periods after every split boundary, so the failures here are
+  failures of that certification: an embargo that is not a positive integer
+  count of periods (``0`` named explicitly — a fold configuration whose
+  embargo is 0 periods is the feature's own refusal), a lookback that is
+  not a positive bar count, and an embargo that falls short of the
+  lookback — the configuration is un-embargoed, and the refusal names how
+  many periods it falls short. Each is refused rather than silently
+  widened, because every bar the pipeline scores is scored from a window of
+  the trailing lookback bars, and a training bar within that span of a
+  boundary is scored from features built out of test-half bars — the model
+  reads the test set through its inputs (see ``_embargo``).
 """
 
 from __future__ import annotations
@@ -110,6 +123,7 @@ from __future__ import annotations
 __all__ = [
     "EvaluatorAlignmentError",
     "EvaluatorConfigError",
+    "EvaluatorEmbargoError",
     "EvaluatorError",
     "EvaluatorIdentityError",
     "EvaluatorImageError",
@@ -193,6 +207,25 @@ class EvaluatorPurgeError(EvaluatorError):
     because a label's forward return is realised in the test set, and a
     training bar inside its holding period leaks that test-set return into
     the model.
+    """
+
+
+class EvaluatorEmbargoError(EvaluatorError):
+    """A fold configuration's embargo does not cover the lookback length.
+
+    Raised by :func:`evaluator.check_fold_embargoed` (app_spec.xml feature
+    78) when step 6 of the §6.1 pipeline cannot certify that a fold
+    configuration embargoes the lookback length after every split boundary:
+    an embargo that is not a positive integer count of periods (``0`` named
+    explicitly — a fold configuration whose embargo is 0 periods is the
+    feature's own refusal), a lookback that is not a positive bar count,
+    and an embargo that falls short of the lookback — the configuration is
+    un-embargoed, and the refusal names how many periods it falls short.
+    Each is refused rather than silently widened, because every bar the
+    pipeline scores is scored from a window of the trailing lookback bars,
+    and a training bar within that span of a boundary is scored from
+    features built out of test-half bars — the model reads the test set
+    through its inputs.
     """
 
 

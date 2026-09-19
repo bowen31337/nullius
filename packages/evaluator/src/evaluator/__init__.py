@@ -116,6 +116,7 @@ from ._config import (
 from ._errors import (
     EvaluatorAlignmentError,
     EvaluatorConfigError,
+    EvaluatorEmbargoError,
     EvaluatorError,
     EvaluatorIdentityError,
     EvaluatorImageError,
@@ -168,6 +169,10 @@ from ._purge import (
     PurgeCheck,
     check_fold_purged,
 )
+from ._embargo import (
+    EmbargoCheck,
+    check_fold_embargoed,
+)
 from ._service import ENV_IMAGE, EvaluatorService, build_evaluator_service
 from ._window import (
     ROSTER_STREAM,
@@ -202,6 +207,10 @@ __all__ = [
     "EvaluatorPurgeError",
     "PurgeCheck",
     "check_fold_purged",
+    # Feature 78 — the cross-validation embargo
+    "EvaluatorEmbargoError",
+    "EmbargoCheck",
+    "check_fold_embargoed",
     # Feature 70 — the first term: the pinned container image
     "DIGEST_ALGORITHM",
     "DIGEST_HEX_LENGTH",
