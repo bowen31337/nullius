@@ -140,7 +140,7 @@ and otherwise returns the accessor names:
 ```python
 from contract import inspect_accessors
 
-inspect_accessors()   # ('borrow', 'feature', 'frames', 't', 'to_arrow', 'universe') — none takes a time
+inspect_accessors()   # ('bookfeat', 'borrow', 'feature', 'frames', 't', 'to_arrow', 'trades', 'universe') — none takes a time
 ```
 
 The check is over the *class*, so one inspection covers every window that will
@@ -417,6 +417,93 @@ seam as every accessor.  Note the signature:
 timestamp (feature 10) — `name` names a feature and `lookback` an amount of
 data, neither an instant, and the 1 second resolution behind the rows is a
 fact about the stream, not a clock this method reads.
+
+## `trades(lookback_s)` — the aggregated trade tape (feature 6)
+
+§5.1 declares `trades(self, lookback_s: int) -> pl.DataFrame`, §4.1 fixes
+the stream behind it — `aggTrades | WS | continuous | forever, compressed`,
+the tape feature 18's workers persist — and §4.2's snapshot layout carries
+it under `trades/` partitions.  Every trade-flow, momentum and impact
+quantity a signal computes is computed over these rows: the market's own
+record of what actually traded, as fresh to the decision instant as the
+sealed lake can be.
+
+```python
+from contract import MarketWindow, TRADES_FRAME_NAME
+
+window = MarketWindow(
+    t="2026-09-01T12:00:00+00:00",
+    universe=("BTCUSDT", "ETHUSDT"),
+    frames={
+        TRADES_FRAME_NAME: tape_table,   # symbol, event_time, price, … per trade
+        "bars": bars_table,              # the window's other frames
+    },
+)
+
+window.trades()            # every trade row the window carries, truncated at t
+window.trades(lookback_s=60)  # the trades of the last 60 seconds before t
+window.trades(lookback_s=0)   # the instant t itself — normally 0 rows
+```
+
+**The lookback is in seconds, not rows — the one accessor whose is.**
+`feature`, `borrow` and `bookfeat` count rows because their streams are
+bucketed; the tape is not bucketed at all, and a liquid book's print rate is
+the market's own, so "the last 500 trades" is a different amount of market
+every minute while "the last 500 seconds" is the quantity the caller means.
+A duration cannot be honoured positionally, so it is computed against the
+decision time on the `event_time` column each row carries: the closed
+interval `[t - lookback_s, t]`, both ends inclusive (a trade exactly
+`lookback_s` seconds old is within it; a trade exactly at `t` is not
+*after* it), over the whole multi-symbol tape at once — the span is a wall
+clock, not a per-symbol budget.  `lookback_s=0` is therefore the instant
+`t` itself: normally no rows, and deliberately not the whole history.
+
+**Truncated at the decision time — checked, not assumed.**  An
+honestly-built window carries no post-`t` rows at all (feature 4's physical
+guarantee: constructed host-side from a sealed snapshot, already sliced),
+so on honest data the truncation is a no-op that costs one comparison per
+row.  It runs anyway, on every call, lookback or not: feature 6 puts the
+truncation in the accessor's own sentence, and a promise about rows that
+*can* be checked — these rows carry `event_time` by requirement, which is
+why that column is required — is checked.  A host bug or a hand-built
+window cannot leak a future print through this accessor.
+
+**The frame name is fixed, not versioned.**  An aggregated trade is an
+*observed* fact of the market — the property that makes the tape's
+retention *forever* — and an observation has no definition whose revision a
+version would name.  The frame name is the stream's own name,
+`TRADES_FRAME_NAME` (`"trades"`, matching §4.2's partition), exported so the
+host materializing a window and the accessor reading one share one
+spelling.  The namespaces cannot collide: a frame literally named
+`feature:trades:1` is feature 9's address for a *computed* feature called
+"trades", which `trades()` never reads — and `feature()` never returns the
+tape's rows.
+
+**The promise is about rows and about instants, so both are checked.**  A
+present trades frame must carry `symbol` and `event_time` — which book,
+which instant: the two columns the accessor's own mechanics turn on.  The
+tape's further columns (`agg_id`, `price`, `quantity`, the trade-id range,
+`is_buyer_maker`) pass through untouched, and column *types* are the host's:
+the venue's own string spellings (`"61234.50"`, not `61234.5`) come back
+verbatim.  `event_time` itself must *carry instants*: a tz-aware column is
+compared as instants (whatever zone it displays in), a naive one is read as
+UTC — the system-wide convention — and a string or epoch-integer spelling
+is refused with a `TradesAccessError` naming the actual type, because the
+truncation and the seconds lookback are promises about instants, not
+spellings, and a lexicographic comparison would be right until the first
+month boundary.
+
+**A miss is an empty frame, never a substitute.**  A window carrying no
+trades frame answers with an empty `DataFrame` (no columns, so the miss is
+distinguishable from an empty read the same way features 7, 8 and 9's are).
+
+The frame-name, row-shape, lookback and truncation core lives in
+`contract/trades.py`, which is **stdlib-only**: pyarrow compute is reached
+once per call (the slice is Arrow compute over the table the window stores)
+and polars once per call, on the same lazy seams as every accessor.  Note
+the signature: `trades(self, lookback_s=None)` has no parameter that reads
+as a timestamp (feature 10) — `lookback_s` names a *duration*, an amount of
+time before the window's own frozen `t`, not an instant a caller chooses.
 
 ## The ABI record
 
@@ -757,6 +844,39 @@ sorted). It also pins the pure core (`check_bookfeat_frame` over both column
 spellings, `validate_bookfeat_lookback` over the same domain as
 `validate_lookback`), that the rows survive the feature 14 payload channel
 verbatim, and that the new accessor still takes no timestamp parameter
+(feature 10).
+
+Feature 6 is pinned by `test_market_window_trades.py`, in six halves: that
+the rows are *the tape's rows* (read from the stream's own fixed frame name,
+returned verbatim — the venue's string spellings of price and quantity come
+back as the venue spelled them, the tape's own order is preserved, and the
+accessor never reaches into feature 9's `feature:` namespace in either
+direction); that the rows are *truncated at the decision time* (the half the
+feature is named for — a frame carrying prints after `t` never answers with
+them, whatever the lookback, while a trade exactly *at* `t` comes back and
+an honest window returns its whole tape unchanged); that the *lookback is in
+seconds, not rows* (the closed interval `[t - lookback_s, t]` against `t` on
+`event_time` — the boundary print exactly `lookback_s` old included, the
+span wall-clock and not per-symbol, `None` the whole truncated tape, an
+over-long span the whole tape, `0` the instant `t` itself rather than the
+history, and negative / `bool` / non-int refused even against an empty
+window, as `TradesAccessError` — this accessor's own); that the *row promise
+is kept or refused* (a present frame missing `symbol` or `event_time`
+raises naming the missing columns, whatever the lookback, a frame of only
+the required columns is answerable, and a present `event_time` that does not
+carry instants — a string or epoch-integer column — is refused by name,
+because the seconds lookback and the truncation are promises about instants);
+that a *miss is empty, never a substitute* (a window with no trades frame
+answers `(0, 0)`, distinguishable by columns from an empty read, and a
+miss's column raises rather than handing back a silent zero); and that the
+*truncation core is instant-exact* (`truncate_trades_frame` pinned apart
+from the window — the closed-interval boundaries, a naive `event_time`
+column read as UTC, an aware column in a foreign zone compared *as instants*,
+coarser units sliced exactly, and the non-instant column refused by name).
+It also pins the pure core (`check_trades_frame` over both column spellings,
+`validate_trades_lookback` over the same domain as `validate_lookback`),
+that the rows survive the feature 14 payload channel verbatim — truncation
+included — and that the new accessor still takes no timestamp parameter
 (feature 10).
 
 Feature 15 is pinned by `test_contract_version.py`: that the stamp resolves to

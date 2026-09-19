@@ -56,8 +56,10 @@ def test_inspect_accessors_reports_the_window_surface():
     # window exposes its three read-only properties, its serialization method,
     # the feature accessor feature 9 adds — which takes a name, a version
     # and a lookback, and no time — the borrow accessor feature 8 adds,
-    # which takes a lookback and no time, and the bookfeat accessor feature
-    # 7 adds, which takes a name and a lookback and no time.
+    # which takes a lookback and no time, the bookfeat accessor feature 7
+    # adds, which takes a name and a lookback and no time, and the trades
+    # accessor feature 6 adds, which takes a lookback in seconds and no
+    # time.
     assert set(inspect_accessors()) == {
         "t",
         "universe",
@@ -66,6 +68,7 @@ def test_inspect_accessors_reports_the_window_surface():
         "feature",
         "borrow",
         "bookfeat",
+        "trades",
     }
 
 

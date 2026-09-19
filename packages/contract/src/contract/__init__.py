@@ -55,6 +55,14 @@ from .bookfeat import (
     select_bookfeat_frame,
     validate_bookfeat_lookback,
 )
+from .trades import (
+    TRADES_FRAME_NAME,
+    TRADES_REQUIRED_COLUMNS,
+    TradesAccessError,
+    check_trades_frame,
+    truncate_trades_frame,
+    validate_trades_lookback,
+)
 from .resolution import resolve_universe
 from .signal import (
     SIGNAL_ENTRYPOINT,
@@ -112,8 +120,11 @@ __all__ = [
     "SIGNAL_ENTRYPOINT",
     "SIGNAL_SEED_ARG",
     "SIGNAL_SIGNATURE",
+    "TRADES_FRAME_NAME",
+    "TRADES_REQUIRED_COLUMNS",
     "BookfeatAccessError",
     "BorrowAccessError",
+    "TradesAccessError",
     "Compatibility",
     "ContractVersionError",
     "MarketWindow",
@@ -134,6 +145,7 @@ __all__ = [
     "check_bookfeat_frame",
     "check_borrow_frame",
     "check_signal_return",
+    "check_trades_frame",
     "compare",
     "contract_version",
     "describe_contract_version",
@@ -146,9 +158,11 @@ __all__ = [
     "parse_bookfeat_frame_name",
     "select_feature_frame",
     "select_bookfeat_frame",
+    "truncate_trades_frame",
     "validate_borrow_lookback",
     "validate_bookfeat_lookback",
     "validate_lookback",
+    "validate_trades_lookback",
     "is_symbol_label",
     "node_abi_record",
     "parse_contract_version",

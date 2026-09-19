@@ -870,6 +870,145 @@ class MarketWindow(metaclass=_EnforceNoTimestampAccessor):
             frame = frame.slice(offset, rows)
         return pl.from_arrow(frame)
 
+    def trades(
+        self,
+        lookback_s: Optional[int] = None,
+    ):
+        """The aggregated trade rows this window carries, sliced by seconds.
+
+        app_spec.xml feature 6: *System exposes MarketWindow.trades over a
+        lookback in seconds, which returns aggregated trade rows truncated
+        at the decision time.*  §5.1 declares it as
+        ``trades(lookback_s: int) -> pl.DataFrame``.  The rows are the tape
+        feature 18's workers persist — every aggregated trade the venue
+        printed, off the websocket feed, compressed, retained forever
+        (§4.1's ``aggTrades | WS | continuous | forever, compressed``) —
+        carried by the sealed snapshot's ``trades/`` partitions (§4.2),
+        which is what a host materialized into this window's frames.
+
+        **The lookback is in *seconds*, not rows — the one accessor whose
+        is.**  :meth:`feature`, :meth:`borrow` and :meth:`bookfeat` count
+        rows because their streams are bucketed; the tape is not bucketed
+        at all, and a liquid book's print rate is the market's own, so
+        "the last 500 trades" is a different amount of market every minute
+        while "the last 500 seconds" is the quantity the caller means.  A
+        duration cannot be honoured positionally, so it is computed against
+        the decision time on the ``event_time`` column each row carries:
+        the rows returned are those in the closed interval
+        ``[t - lookback_s, t]``.  Both ends inclusive — a trade exactly
+        ``lookback_s`` seconds old is within the lookback, a trade exactly
+        at ``t`` is not *after* it — so ``lookback_s=0`` is the instant
+        ``t`` itself: normally no rows, and deliberately not the whole
+        frame.
+
+        **Truncated at the decision time, checked rather than assumed.**
+        An honestly-built window carries no post-``t`` rows at all — that
+        is the physical guarantee this class exists to make — so on honest
+        data the truncation is a no-op verification.  It runs anyway, on
+        every call: feature 6 puts it in this accessor's own sentence, and
+        a promise about rows that *can* be checked (these rows carry
+        ``event_time`` by requirement) is checked —
+        :func:`contract.trades.truncate_trades_frame` enforces
+        ``event_time <= t`` whether or not a lookback was given, so a host
+        bug or a hand-built window cannot leak a future print through this
+        method.  It can only ever return a subset of the tape at or before
+        ``t``, never a row the window's slicing was meant to exclude.
+
+        The rows live under one fixed frame name,
+        :data:`contract.trades.TRADES_FRAME_NAME` — not versioned the way
+        :meth:`feature`'s addresses are, because an aggregated trade is an
+        *observed* fact of the market (the property that makes the tape's
+        retention *forever*), and an observation has no definition whose
+        revision a version would name.  A present trades frame must carry
+        ``symbol`` and ``event_time`` — which book, which instant: the two
+        columns this accessor's own mechanics turn on (see
+        :func:`contract.trades.check_trades_frame`) — while the tape's
+        further columns pass through untouched, and column *types* are the
+        host's: the venue's own string spellings (``"61234.50"``) come back
+        verbatim, never re-rendered into a float whose rounding an audit
+        could not tell from the exchange's own.  ``event_time`` itself must
+        carry instants — a tz-aware column is compared as instants, a naive
+        one is read as UTC, and anything else is refused by name.
+
+        Parameters
+        ----------
+        lookback_s:
+            ``None`` (the default) for every row the window carries — still
+            truncated at ``t`` — or a non-negative ``int`` for the trades
+            of the trailing ``lookback_s`` *seconds*, counted on the wall
+            clock against the decision time, not per symbol and not as a
+            row count: over a multi-symbol tape the span is the same
+            instant window for every symbol.  The same numeric discipline
+            :meth:`feature`, :meth:`borrow` and :meth:`bookfeat` apply,
+            via :func:`contract.trades.validate_trades_lookback` — a
+            negative value or a ``bool`` is refused rather than clamped.
+
+        Returns
+        -------
+        polars.DataFrame
+            The aggregated trade rows as carried by this window, in the
+            frame's own (tape) order, converted from the stored Arrow
+            table.  A window that carries no trades frame returns a frame
+            with *no columns* (``shape == (0, 0)``) — the miss, reported
+            as nothing rather than as a substitute frame; a present frame
+            read down to nothing (an empty tape, or a lookback covering no
+            trades) returns *0 rows with the frame's columns*
+            (``shape == (0, n)``).  So the columns say whether the tape
+            was there at all, exactly as :meth:`feature`'s,
+            :meth:`borrow`'s and :meth:`bookfeat`'s do.
+
+        Raises
+        ------
+        TradesAccessError
+            A malformed ``lookback_s`` (the request was invalid), a
+            present trades frame missing a required column (the host
+            materialized something that is not trade rows under the tape's
+            name), or a present ``event_time`` that does not carry instants
+            (not a timestamp column — the seconds lookback and the
+            truncation are promises about instants).  The *absence* of the
+            frame is none of these: that is the empty answer above.
+
+        Note the signature: no parameter reads as a timestamp, which is
+        feature 10's requirement and the reason this accessor can exist at
+        all.  ``lookback_s`` names a *duration* — an amount of time before
+        the window's own frozen ``t``, not an instant a caller chooses —
+        so no caller can widen the window through this method; the upper
+        bound of every slice it returns is the ``t`` fixed at construction,
+        and the truncation enforces it.
+        """
+        from .features import require_polars
+        from .trades import (
+            TRADES_FRAME_NAME,
+            check_trades_frame,
+            truncate_trades_frame,
+            validate_trades_lookback,
+        )
+
+        # Validated before the mapping is consulted, so a malformed request is
+        # reported as such even against a window carrying nothing — the same
+        # ordering discipline :meth:`feature`, :meth:`borrow` and
+        # :meth:`bookfeat` apply.
+        seconds = validate_trades_lookback(lookback_s)
+        # An exact match on the tape's own name: never the ``feature:``
+        # namespace, never a neighbour, never a fallback.
+        frame = self._frames.get(TRADES_FRAME_NAME)
+        pl = require_polars()
+        if frame is None:
+            # The window carries no trades. An empty frame is the honest
+            # answer and the safe one: it cannot be mistaken for another
+            # stream's rows the way a substitute could.
+            return pl.DataFrame()
+        # The frame is present, so the accessor's row promise is checkable —
+        # and checked before any slicing, so a frame that is not trade rows
+        # is refused however much of it the caller asked for.
+        check_trades_frame(frame)
+        # The truncation at the frozen ``t`` runs on every call, lookback or
+        # not — feature 6's own sentence, made structural: the tape this
+        # frame carries is sliced to [t - lookback_s, t] and can never answer
+        # with a print after the decision time.
+        frame = truncate_trades_frame(frame, self._t, seconds)
+        return pl.from_arrow(frame)
+
     def to_arrow(self):
         """Serialize this window to an Arrow IPC payload (feature 14).
 
