@@ -29,11 +29,24 @@ from .payload import (
     serialize_window,
 )
 from .resolution import resolve_universe
+from .signal import (
+    SIGNAL_ENTRYPOINT,
+    SIGNAL_SEED_ARG,
+    SIGNAL_SIGNATURE,
+    SignalReturnProblem,
+    SignalSignature,
+    describe_signal_signature,
+    validate_signal_return,
+    validate_signal_signature,
+)
 from .window import MarketWindow
 
 __all__ = [
     "CONTRACT_VERSION",
     "MARKET_WINDOW_ABI",
+    "SIGNAL_ENTRYPOINT",
+    "SIGNAL_SEED_ARG",
+    "SIGNAL_SIGNATURE",
     "MarketWindow",
     "MarketWindowPayload",
     "NoPayloadError",
@@ -41,9 +54,14 @@ __all__ = [
     "PAYLOAD_VERSION",
     "PayloadChannel",
     "PayloadFormatError",
+    "SignalReturnProblem",
+    "SignalSignature",
     "build_market_window_contract",
+    "describe_signal_signature",
     "frames_alias_payload",
     "resolve_universe",
+    "validate_signal_return",
+    "validate_signal_signature",
     "window_from_payload",
     "serialize_window",
 ]

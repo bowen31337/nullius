@@ -13,17 +13,21 @@
 # itself be a package. An `src/nullius/` level has no __init__.py, so the
 # scan would stop one directory too high and find nothing.
 
-# Dependencies: pyarrow, and deliberately only pyarrow. Arrow IPC is the
-# format a materialized window travels in (feature 14; §5.2's
-# `payload=window.to_arrow()`), so this member owns the Arrow dependency
-# rather than inheriting it from whichever member happens to write Parquet.
+# Dependencies: pyarrow and polars, and deliberately only those two. Arrow IPC
+# is the format a materialized window travels in (feature 14; §5.2's
+# `payload=window.to_arrow()`), so this member owns the Arrow dependency rather
+# than inheriting it from whichever member happens to write Parquet. Polars is
+# the signal return type (feature 11: the entrypoint returns a ``pl.Series``),
+# so the member that declares the signal ABI owns the polars dependency too,
+# rather than inheriting it from the evaluator that consumes the series.
 #
-# The import is deferred to first use (`contract._arrow.require_arrow`), so
-# the factory's workspace scan — which imports this package to fire its
-# @register — does not require pyarrow to be installed. That keeps the member
-# import-safe in the environments the workspace contract promises one will be
-# (factory scan, test sandbox, replay path); only the payload paths that
-# genuinely need Arrow raise, and they name the missing dependency when they do.
+# Both imports are deferred to first use (`contract._arrow.require_arrow`,
+# `contract.signal.validate_signal_return`), so the factory's workspace scan —
+# which imports this package to fire its @register — requires neither to be
+# installed. That keeps the member import-safe in the environments the
+# workspace contract promises one will be (factory scan, test sandbox, replay
+# path); only the paths that genuinely need Arrow or polars raise, and they
+# name the missing dependency when they do.
 
 [project]
 name = "nullius-contract"
@@ -36,6 +40,11 @@ dependencies = [
     # than `==` because nothing here depends on an Arrow version's behaviour,
     # only on the format.
     "pyarrow>=14.0",
+    # A signal returns a polars.Series (feature 11), so the contract that
+    # declares the ABI owns the polars dependency. `>=` for the same reason as
+    # pyarrow: the validator inspects a series' dtype and finiteness, neither
+    # of which depends on a polars version's behaviour.
+    "polars>=1.0",
 ]
 
 [build-system]

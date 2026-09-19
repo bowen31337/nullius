@@ -123,6 +123,68 @@ The composed component is reachable from the `app` package namespace at
 `app.modules.contract.contract_component()`, which returns the dict — or
 `None` when no contract component is registered.
 
+## The signal entrypoint (feature 11)
+
+A node is a single function with a single, well-known name — the shape the
+sandbox executes it under (`entrypoint="signal"`, architecture §5.2):
+
+```python
+def signal(ctx: MarketWindow, seed: int) -> pl.Series:
+    """Pure. Returns index=symbol, value=float score. Sign and scale are free."""
+```
+
+The two parameters are the whole surface a signal may reach for: the window
+(the only thing carrying data) and the seed (the only thing carrying
+randomness). The seed is **required**, not defaulted — a signal that sampled
+randomness with a default would look identical at the call site to one that
+did not, and determinism would be a hope rather than a signature. The
+entrypoint name and the seed argument's name are declared once, so the agent,
+the sandbox and the validator cannot drift apart over a spelling:
+
+```python
+from contract import SIGNAL_ENTRYPOINT, SIGNAL_SEED_ARG, describe_signal_signature
+
+SIGNAL_ENTRYPOINT           # 'signal'
+SIGNAL_SEED_ARG             # 'seed'
+describe_signal_signature() # SignalSignature(entrypoint='signal', window_arg='ctx', seed_arg='seed')
+```
+
+**"A Polars series indexed by symbol" is positional, not a labelled axis.**
+Polars has no string index — a `Series` has no `.index` attribute, no
+`index=` constructor keyword, and `series["A"]` raises. So the *i*-th value is
+the score for the *i*-th symbol of `ctx.universe`: the window carries the
+labels, the series carries the values, in the window's stable ordering
+(feature 13's sorted universe, feature 46's stable ordering). That is exactly
+the pairing `validate_signal_return` checks.
+
+Two validators make the contract checkable, and both return problem lists
+rather than raising, so the caller (the authoring loop, the evaluator) keeps
+the decision about what a non-conformance costs:
+
+```python
+from contract import validate_signal_signature, validate_signal_return
+
+# The source half (feature 205): does the agent's code expose signal(ctx, seed)?
+validate_signal_signature(code)   # -> [] when the source declares a conforming entrypoint
+
+# The value half (feature 11's return): is this a well-formed signal vector?
+validate_signal_return(result, window.universe)   # -> [] when result is a finite float series of the right length
+```
+
+`validate_signal_signature` compiles the source and inspects the resulting
+function's parameters — it does **not** run it (running untrusted code is the
+sandbox's job, under its limits). `validate_signal_return` checks that the
+return is a `polars.Series`, that its dtype is floating point, that its length
+matches the universe, and that every value is a finite float. Each names the
+failure; feature 12 (which depends on this one) is the consumer that maps a
+failure — e.g. a return naming a symbol absent from the universe — onto a
+`contract_violation` outcome.
+
+polars is a declared dependency of this member (it is the signal return type),
+but it is imported lazily — `validate_signal_return` reaches for it only when
+a return is actually inspected — so the factory's workspace scan does not need
+it installed, exactly as pyarrow stays deferred behind `require_arrow`.
+
 ## The Arrow IPC payload channel (feature 14)
 
 A materialized window travels to the sandbox as Arrow IPC — one self-describing
