@@ -216,6 +216,42 @@ def test_a_one_sided_book_has_no_mid() -> None:
     assert state.has_both_sides() is False
 
 
+def test_the_best_level_carries_its_size_with_its_price() -> None:
+    # The read seam feature 21 stands on: the microprice weights each side's
+    # price by the *other* side's resting size and the best-level OFI counts the
+    # change in the best level's size, so the size at the top is a fact the
+    # derived tier asks for — and it is the size *at the best price*, not a sum
+    # over the side.
+    state = BookState()
+    state.apply(
+        _row(
+            "BTCUSDT",
+            T0,
+            bids=[["100.50", "1"], ["100.40", "7"]],
+            asks=[["101.50", "3"], ["101.60", "9"]],
+        )
+    )
+
+    assert state.best_bid_quantity() == Decimal("1")
+    assert state.best_ask_quantity() == Decimal("3")
+
+
+def test_an_empty_side_has_neither_its_best_price_nor_its_size() -> None:
+    # The pair describes one side: ``None`` for both or neither, so a caller can
+    # never weight a price by a size the book never had.
+    state = BookState()
+    state.apply(_row("BTCUSDT", T0, bids=[["100.50", "1"]]))
+
+    assert state.best_bid() == Decimal("100.50")
+    assert state.best_bid_quantity() == Decimal("1")
+    assert state.best_ask() is None
+    assert state.best_ask_quantity() is None
+
+    empty = BookState()
+    assert empty.best_bid_quantity() is None
+    assert empty.best_ask_quantity() is None
+
+
 # -- Depth at bps -------------------------------------------------------------
 
 

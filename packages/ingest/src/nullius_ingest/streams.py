@@ -22,7 +22,8 @@ cancel-replace rate, trade-size moments) rather than a single stream, and
 this enum is the unit of isolation rather than the unit of documentation
 — one class, one worker, enforced by the supervisor.  So each derived
 family that lands takes its own value (``bookFeatures`` for feature 20's
-depth ladder, ``tradeFlow`` for feature 22's cancel-replace rate and
+depth ladder, ``microstructure`` for feature 21's microprice, spread and
+windowed OFI, ``tradeFlow`` for feature 22's cancel-replace rate and
 trade-size moments) instead of sharing one and having the second
 registration silently *replace* the first.  Splitting a derived family
 into its own worker is also the isolation §4.1 asks for one level up: a
@@ -56,6 +57,9 @@ class StreamClass(StrEnum):
 
     BOOK_FEATURES = "bookFeatures"
     """Derived 1s book features computed from the L2 diffs."""
+
+    MICROSTRUCTURE = "microstructure"
+    """Derived 1s microprice, spread and windowed OFI (§4.1, feature 21)."""
 
     TRADE_FLOW = "tradeFlow"
     """Derived 1s cancel-replace rate and trade-size moments (§4.1, feature 22)."""

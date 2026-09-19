@@ -80,6 +80,21 @@ What lives where:
   derived log rather than re-deriving it from raw diffs that may since have left
   the 90-day window.  It registers itself as the ``bookFeatures`` stream's worker,
   so importing this package is the whole wiring.
+* :mod:`nullius_ingest.microstructure` — :class:`MicrostructureStore`, the
+  append-only log of *derived* microstructure features at 1 second resolution —
+  the microprice and the spread at each closed boundary and the best-level
+  order-flow imbalance over several windows (the slice, 5 s, 10 s and the
+  klines minute) — persisted permanently for the same reason feature 20's
+  depths are, and :class:`MicrostructureWorker`, the stream worker that
+  reconstructs the L2 book through feature 20's :class:`BookState` and takes
+  each second's snapshot when the second *closes*, so the windows on a row
+  compose exactly (§4.1's "Derived book features | WS @1s | continuous |
+  permanent" row; feature 21).  Each record carries its closing book *and* its
+  per-symbol OFI trail — the per-second increments and the first observed
+  second — because a 60 s window reaches further back than any single cycle
+  and further than the 90-day raw window, so the derived log alone must be
+  able to answer it.  It registers itself as the ``microstructure`` stream's
+  worker, so importing this package is the whole wiring.
 * :mod:`nullius_ingest.trade_flow` — :class:`TradeFlowStore`, the append-only log
   of *derived* cancel-replace rates and trade-size distribution moments at 1
   second resolution, persisted permanently for the same reason feature 20's
@@ -193,6 +208,27 @@ from .funding import (
     register_funding_worker,
 )
 from .gaps import GAP_DETECTED_EVENT, GapDetected, GapDetector, GapEventLog
+from .microstructure import (
+    MAX_OFI_WINDOW,
+    MICROSTRUCTURE_SLICE,
+    MICROSTRUCTURE_SLICE_MILLISECONDS,
+    MICROSTRUCTURE_STREAM,
+    OFI_WINDOWS,
+    MicrostructureBatch,
+    MicrostructureCorruptError,
+    MicrostructureError,
+    MicrostructureParseError,
+    MicrostructureRecord,
+    MicrostructureRow,
+    MicrostructureStore,
+    MicrostructureWorker,
+    OfiTrail,
+    TopOfBook,
+    build_microstructure_worker,
+    ofi_increment,
+    parse_microstructure,
+    register_microstructure_worker,
+)
 from .registry import (
     WorkerFactory,
     WorkerRegistry,
@@ -310,6 +346,25 @@ __all__ = [
     "IngestReport",
     "IngestSupervisor",
     "IngestWorker",
+    "MAX_OFI_WINDOW",
+    "MICROSTRUCTURE_SLICE",
+    "MICROSTRUCTURE_SLICE_MILLISECONDS",
+    "MICROSTRUCTURE_STREAM",
+    "OFI_WINDOWS",
+    "MicrostructureBatch",
+    "MicrostructureCorruptError",
+    "MicrostructureError",
+    "MicrostructureParseError",
+    "MicrostructureRecord",
+    "MicrostructureRow",
+    "MicrostructureStore",
+    "MicrostructureWorker",
+    "OfiTrail",
+    "TopOfBook",
+    "build_microstructure_worker",
+    "ofi_increment",
+    "parse_microstructure",
+    "register_microstructure_worker",
     "ParquetBatch",
     "PriceLevel",
     "RETENTION",

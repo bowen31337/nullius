@@ -44,6 +44,7 @@ The `ingest` workspace member: app_spec.xml feature 16 —
 | `nullius_ingest/backfill.py` | `GapBackfiller`, `SealGate` — the feature 26 REST backfill and seal gate |
 | `nullius_ingest/exchange_info.py` | `ExchangeInfoVersionStore`, `DailyExchangeInfoWorker`, `parse_exchange_info` — the feature 24 versioned daily refresh |
 | `nullius_ingest/funding.py` | `FundingRateStore`, `FundingRateWorker`, `parse_funding` — the feature 23 60-second funding/borrow poll, retained permanently |
+| `nullius_ingest/microstructure.py` | `MicrostructureStore`, `MicrostructureWorker`, `TopOfBook`, `ofi_increment`, `OfiTrail` — the feature 21 derived 1s microprice, spread and best-level OFI over the 1/5/10/60s windows, retained permanently beside the 90-day raw diffs they come from |
 | `nullius_ingest/trade_flow.py` | `TradeFlowStore`, `TradeFlowWorker`, `TradePrint`, `classify_levels`, `size_moments` — the feature 22 derived 1s cancel-replace rate and trade-size distribution moments, retained permanently beside the 90-day raw diffs they come from |
 
 Stdlib-only by design, except `staging` (which resolves its lake root via

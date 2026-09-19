@@ -18,6 +18,7 @@ def test_stream_classes_are_the_section_4_1_streams() -> None:
         "aggTrades",
         "bookDiffs",
         "bookFeatures",  # §4.1 "Book features (derived)" — feature 20's depth ladder
+        "microstructure",  # §4.1 same row — feature 21's microprice, spread and OFI
         "tradeFlow",  # §4.1 same row — feature 22's cancel-replace rate and moments
         "funding",
         "exchangeInfo",
@@ -35,7 +36,7 @@ def test_every_wire_stream_maps_onto_exactly_one_section_4_1_row() -> None:
         "funding",
         "exchangeInfo",
     }
-    derived = {"bookFeatures", "tradeFlow"}
+    derived = {"bookFeatures", "microstructure", "tradeFlow"}
 
     assert {member.value for member in StreamClass} == wire | derived
     assert not (wire & derived)

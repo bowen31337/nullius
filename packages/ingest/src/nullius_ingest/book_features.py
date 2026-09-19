@@ -305,6 +305,29 @@ class BookState:
         """The lowest ask price, or ``None`` for an empty ask side."""
         return min((Decimal(price) for price in self._asks), default=None)
 
+    def best_bid_quantity(self) -> Decimal | None:
+        """The size resting at the best bid, or ``None`` for an empty bid side.
+
+        The read seam feature 21 stands on: the microprice weights each side's
+        price by the *other* side's resting size and the best-level OFI measures
+        the change in the best level's size, so the derived tier needs the size
+        at the top as a fact, not just the price.  ``None`` exactly when
+        :meth:`best_bid` is ``None`` — the pair describes one side, and an empty
+        side has neither its price nor its size.
+        """
+        price = max(self._bids, key=Decimal, default=None)
+        return None if price is None else self._bids[price]
+
+    def best_ask_quantity(self) -> Decimal | None:
+        """The size resting at the best ask, or ``None`` for an empty ask side.
+
+        The ask-side twin of :meth:`best_bid_quantity` — the weight the bid's
+        price carries in the microprice, and the level the ask-side OFI counts.
+        ``None`` exactly when :meth:`best_ask` is ``None``.
+        """
+        price = min(self._asks, key=Decimal, default=None)
+        return None if price is None else self._asks[price]
+
     def mid(self) -> Decimal | None:
         """The mid ``(best_bid + best_ask) / 2``, or ``None`` if a side is empty.
 
