@@ -78,6 +78,40 @@ reachable only by import is a check the factory's scan cannot discover: the
 tripwires member's probe and the evaluator's service take the same stance
 for their own pure functions.
 
+*Feature 139 is the import allowlist — a screen over the searched code
+itself.* The category's tenth feature states §12's "No wall clock in
+searched code | ``time``, ``datetime.now``, ``random`` without seed
+blocked by the import allowlist" row: the code the loop dreams up is
+refused at admission when it reaches for the clock, before it ever
+runs — a score that read the wall clock is a score no frozen pair can
+reproduce, which is the canary drift every other feature here polices
+from the deployment side. :mod:`canary._allowlist` is that screen:
+:class:`ImportAllowlist` (the deployment's ceiling of importable
+modules, resolved from ``NULLIUS_SEARCHED_IMPORTS``, defaulted to the
+deterministic stdlib working set — and refused at construction when a
+configured term tries to lift the floor, because the allowlist is how
+the contract is enforced, not a way around it), :func:`classify_import`
+(the floor's verdict on one term: the ``time`` module in every
+spelling, the ``datetime`` clock constructors, the module-level
+``random`` stream — with the seeded ``random.Random(seed)`` spelling
+sanctioned, per §12's own next row), and :func:`screen_imports` (the
+verb: parse the submission, judge every import against floor and
+ceiling, resolve every import-bound call to a term so an alias cannot
+launder the clock, and either raise one collective
+:class:`~canary.CanaryImportError` naming every offender with its line
+and reason, or return the :class:`SearchedImports` the clean
+submission earned). Like the pin and device sweeps it is a pure parser
+— ``ast`` and ``re``, stdlib only, reading no environment at import —
+but its subject is the *search's* output rather than the deployment's
+declaration, so the refusal fires at a different moment (admission,
+before anything executes) and names a different author (the loop's
+submission, not the operator's environment). The composed service
+carries the resolved ceiling at ``service.allowlist`` with the same
+laziness as the pin and device sweeps — resolved on first use, so
+composition never fails on a deployment's allowlist configuration —
+and ``service.allowlist.screen(source)`` is the seam a submitter is
+screened through.
+
 *Feature 140 is the GPU refusal, over both paths, as the sweep's own
 assertion.* The category's sixteenth feature states §12's "Float
 reproducibility | Fixed reduction order; no ``fastmath``; no GPU in the eval
@@ -278,6 +312,20 @@ from typing import Optional
 
 from app.module_loader import register
 
+from ._allowlist import (
+    ALLOWED,
+    CLOCK_CONSTRUCTORS,
+    DEFAULT_IMPORT_ALLOWLIST,
+    IMPORT_ALLOWLIST_ENV,
+    REFUSED,
+    SEEDED_RANDOM_CONSTRUCTORS,
+    WALL_CLOCK_MODULES,
+    ImportAllowlist,
+    SearchedImports,
+    allowlist_from_env,
+    classify_import,
+    screen_imports,
+)
 from ._containers import (
     EVALUATOR_ROLE,
     IMAGE_ENV_VARS,
@@ -299,6 +347,7 @@ from ._device import (
 from ._errors import (
     CanaryError,
     CanaryImageError,
+    CanaryImportError,
     CanaryInferenceError,
     CanaryReproducibilityError,
 )
@@ -395,6 +444,19 @@ __all__ = [
     "PinnedContainers",
     "pin_containers",
     "pinned_containers_from_env",
+    # Feature 139 — no wall clock in searched code: the import allowlist
+    "ALLOWED",
+    "CLOCK_CONSTRUCTORS",
+    "DEFAULT_IMPORT_ALLOWLIST",
+    "IMPORT_ALLOWLIST_ENV",
+    "REFUSED",
+    "SEEDED_RANDOM_CONSTRUCTORS",
+    "WALL_CLOCK_MODULES",
+    "ImportAllowlist",
+    "SearchedImports",
+    "allowlist_from_env",
+    "classify_import",
+    "screen_imports",
     # Feature 140 — no GPU in the eval or replay path
     "CPU",
     "DEVICE_ENV_VARS",
@@ -472,6 +534,7 @@ __all__ = [
     # Errors
     "CanaryError",
     "CanaryImageError",
+    "CanaryImportError",
     "CanaryInferenceError",
     "CanaryReproducibilityError",
     "CanaryReplayScoreError",

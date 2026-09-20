@@ -42,6 +42,7 @@ import os
 from collections.abc import Mapping
 from typing import Optional
 
+from ._allowlist import ImportAllowlist, allowlist_from_env
 from ._containers import (
     PinnedContainers,
     pin_containers,
@@ -85,6 +86,7 @@ class CanaryService:
             None if images is None else pin_containers(images)
         )
         self._devices: Optional[DevicePaths] = None
+        self._allowlist: Optional[ImportAllowlist] = None
         self._env = env
 
     # -- Construction -------------------------------------------------------
@@ -228,6 +230,38 @@ class CanaryService:
         if self._devices is None:
             self._devices = reject_gpus_from_env(self._environment())
         return self._devices
+
+    @property
+    def allowlist(self) -> ImportAllowlist:
+        """The searched-code import allowlist — feature 139's ceiling.
+
+        :data:`~canary.IMPORT_ALLOWLIST_ENV` resolved from the environment
+        the service was constructed with: the dotted module terms searched
+        code may import, defaulting to the deterministic stdlib working set
+        when the deployment declared nothing. A configured allowlist that
+        tries to admit a term the determinism floor refuses — ``time``, a
+        ``datetime`` clock constructor, an unseeded ``random`` spelling —
+        is refused here, naming the variable and every offending term,
+        because the allowlist is the mechanism §12's "No wall clock in
+        searched code" row is enforced through, not a way around it. The
+        floor itself is applied per submission, in
+        ``allowlist.screen(source)``, which is the seam a searched module
+        is screened at. Resolved once and cached, like :attr:`containers`
+        and :attr:`devices`: a deployment that re-read its allowlist
+        mid-run could screen two submissions under two different ceilings
+        and never know which one spoke.
+
+        Deliberately lazy, exactly like the device sweep: the resolution
+        reads the environment and can refuse, and the refusal names the
+        deployment's own misconfiguration rather than taking composition
+        down — the factory builds this component on every
+        ``create_app()``, in a bare test process and on paths with no
+        searched code to screen. The refusal lands at the first call that
+        asks for the ceiling, where it is informative.
+        """
+        if self._allowlist is None:
+            self._allowlist = allowlist_from_env(self._environment())
+        return self._allowlist
 
     def _environment(self) -> Mapping[str, str]:
         """The environment mapping this service resolves against.

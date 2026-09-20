@@ -30,7 +30,11 @@ The isolation also clears the device variables feature 140 reads
 sweep reads the process environment by default, so a developer shell
 carrying one would leak into the tests that assert the CPU is the
 passing case, and the "unset variable is the CPU" tests would depend
-on the shell not having one.
+on the shell not having one. And it clears the allowlist variable
+feature 139 reads (``NULLIUS_SEARCHED_IMPORTS``) for the same reason:
+the allowlist resolution defaults when the variable is unset, so a
+shell carrying one would silently change which ceiling the screen
+tests judge under.
 """
 
 from __future__ import annotations
@@ -77,12 +81,17 @@ def _image_env_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
     ``NULLIUS_EVAL_DEVICE`` and ``NULLIUS_REPLAY_DEVICE`` — because the
     device sweep reads the process environment by default, so a
     developer shell carrying one would leak into the tests that assert
-    the CPU is the passing case.
+    the CPU is the passing case. And it clears the allowlist variable
+    feature 139 reads — ``NULLIUS_SEARCHED_IMPORTS`` — because the
+    allowlist resolution falls back to its default when the variable is
+    unset, so a shell carrying one would silently change which ceiling
+    the screen tests judge under.
     """
     for variable in (
         "NULLIUS_EVALUATOR_IMAGE",
         "NULLIUS_EVAL_DEVICE",
         "NULLIUS_REPLAY_DEVICE",
+        "NULLIUS_SEARCHED_IMPORTS",
     ):
         monkeypatch.delenv(variable, raising=False)
 

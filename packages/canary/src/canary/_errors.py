@@ -72,6 +72,7 @@ __all__ = [
     "CanaryError",
     "CanaryDeviceError",
     "CanaryImageError",
+    "CanaryImportError",
     "CanaryInferenceError",
     "CanaryReproducibilityError",
 ]
@@ -120,6 +121,45 @@ class CanaryImageError(CanaryError):
     a declared container. The refusal names the role — and the environment
     variable, when the declaration came from one — for every offender at
     once, because the feature's word is *every*.
+    """
+
+
+class CanaryImportError(CanaryError):
+    """Searched code reaches for the wall clock or the unseeded stream.
+
+    Raised by :func:`~canary.screen_imports` (and the allowlist's own
+    :meth:`~canary.ImportAllowlist.screen`) when a submission imports
+    ``time``, resolves a call onto a ``datetime`` clock constructor, or
+    draws from the module-level ``random`` stream — and by
+    :func:`~canary.allowlist_from_env` and :class:`~canary.ImportAllowlist`
+    construction when a *configured* allowlist tries to admit one of
+    those terms. This is app_spec.xml feature 139: "System rejects a
+    searched-code import of time, datetime.now or unseeded random
+    through the import allowlist", which is §12's "No wall clock in
+    searched code | ``time``, ``datetime.now``, ``random`` without seed
+    blocked by the import allowlist" row made into something a
+    submission fails at admission, before it ever runs.
+
+    Deliberately its own subclass rather than folded into
+    :class:`CanaryImageError` (a moved pin), :class:`CanaryDeviceError`
+    (a GPU in the path) or :class:`CanaryInferenceError` (a model call
+    from the replay path): those three refuse a *deployment's* state or
+    a *runtime* call, while this one refuses *the code the search wrote*
+    — a different author (the loop, not the operator), a different
+    repair (fix the submission: read time as an argument, draw
+    randomness through a seeded ``random.Random``), and a different
+    moment (admission, before anything executes). §15's failure table
+    files the drift this refusal prevents as the same canary drift the
+    whole category exists to catch, because a score that read the clock
+    is a score no frozen pair can reproduce. A caller catching
+    :class:`CanaryError` still gets all of them.
+
+    The refusal is collective: one error names every refused import and
+    call with its line and the reason the term is refused, because a
+    screen that reported only the first would be resubmitted to learn
+    the rest. Unparseable source raises this class too — a screen that
+    silently passed what it could not read would be the vacuous green
+    the nightly canary must never allow.
     """
 
 
