@@ -40,7 +40,7 @@ only.").  The sentence lands as four modules, one per claim:
   could widen it.
 
 The category's other features join this tree as siblings of these
-modules, and two have:
+modules, and four have:
 
 * :mod:`infra.security.key_backup` — feature 155's *two independent
   stores*, the sealed sidecar-key backup and the reconciliation
@@ -48,6 +48,13 @@ modules, and two have:
 * :mod:`infra.security.audit_log` — feature 154's *access audit
   record per read of the null sidecar key*, the append-only chained
   log and the chokepoint that writes to it before serving a key.
+* :mod:`infra.security.credential_isolation` — feature 153's
+  *separate credentials per environment*, the binding that classifies
+  a key by the environment the exchange stamped into it.
+* :mod:`infra.security.exchange_keys` — feature 152's *trade
+  permission with withdrawal permanently disabled*, the permission
+  set a provisioned key may carry, the account-side switch, and the
+  validation that refuses every other shape.
 
 The exports below are feature 156's alone, deliberately: this module's
 ``__all__`` is the zone-policy vocabulary, and a caller reaching for
