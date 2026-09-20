@@ -9,8 +9,10 @@ the charges_budget directive of 90 has landed on this row
 (:mod:`ledger.budget`), the outcome of 91 (:mod:`ledger.outcome`), and
 feature 89's charge unit (:mod:`ledger.units`) — how much the trial
 *cost*, which a cross-validated evaluation states as more than the
-ordinary one unit — while the provenance triple of 87 and the epoch of
-88 are still to arrive.  This module is the row those columns make: the
+ordinary one unit — and feature 88's epoch (:mod:`ledger.epoch`) —
+*which sequestered epoch* it charged, the depleting holdout the spend
+is booked against — while the provenance triple of 87 is still to
+arrive.  This module is the row those columns make: the
 value a debit writes, and the value a read hands back.  A record read from the ledger equals the record
 the append returned — the row is a statement about a past charge, and a
 re-read must not restate it.
@@ -80,6 +82,27 @@ a corruption) is refused rather than served.  The directive is what
 whether it charged budget is a charge no audit can classify, and this
 layer does not build one.
 
+**The epoch names the holdout the trial spent, and is required at the
+write (feature 88).**  The column §8 declares ``epoch_id TEXT NOT NULL``
+carries *which sequestered epoch was charged* — §8's own comment on the
+column — and the write seams refuse a charge whose epoch is absent,
+because the epoch is a depleting resource counted in ``epoch_ledger``
+and ``K_effective`` is derived *per epoch* (feature 93), so a charge
+that cannot name its holdout is a charge no audit can place.  The
+validation runs through :func:`ledger.epoch.validated_epoch_id`: a
+non-empty, non-blank :class:`str` is carried in its own spelling (the
+epoch namespace is the sealing process's, shared with the epoch
+ledger's primary key — this layer holds the name to being a name, it
+coins none), and an absent, empty or non-string value is refused.  The
+record layer itself accepts ``None`` for it, and deliberately: the
+record is also the read, and a row written before the stamp landed —
+on a table the store's legacy upgrade brings forward — honestly names
+no epoch.  ``None`` reads back as the un-named epoch
+(:data:`ledger.keffective.UNNAMED_EPOCH`), a statement about the
+ledger's history rather than an epoch a caller named; the write's
+``required`` refusal lives at the store's seams, exactly where the
+feature's sentence puts it.
+
 Instances are frozen: this is append-only accounting, and editing a
 persisted charge in place would rewrite the account rather than
 superseding it.  Supersession, where the category needs it, is a new row.
@@ -94,9 +117,10 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from dataclasses import dataclass
-from typing import Any, Union
+from typing import Any, Optional, Union
 
 from .budget import validated_charges_budget
+from .epoch import validated_epoch_id
 from .errors import TrialRecordError
 from .outcome import validated_outcome
 from .units import DEFAULT_CHARGE_UNITS, validated_charge_units
@@ -228,7 +252,14 @@ class TrialLedgerRecord:
     :data:`~ledger.units.DEFAULT_CHARGE_UNITS`, mirroring the column's
     own ``DEFAULT``.  It prices the evaluation; it is a different fact
     from ``charges_budget``, which says whether the evaluation spent
-    statistical degrees of freedom at all.
+    statistical degrees of freedom at all.  ``epoch_id`` is the
+    sequestered epoch the trial charged (§8: ``epoch_id TEXT NOT NULL``
+    with the comment *"which sequestered epoch was charged"*; feature
+    88's stamp) — the holdout the spend is booked against, in the
+    sealing process's own spelling.  The write seams refuse a charge
+    whose epoch is absent (see :func:`ledger.epoch.validated_epoch_id`);
+    the record accepts ``None`` for it because the record is also the
+    read, and a row that predates the stamp honestly names no epoch.
 
     Construction validates and canonicalises, so an instance is
     trustworthy by construction: the store's append builds its return
@@ -263,6 +294,12 @@ class TrialLedgerRecord:
     #: a fit against the same forward returns states the folds' count
     #: instead.  Validated as a positive finite real.
     charge_units: float = DEFAULT_CHARGE_UNITS
+    #: The sequestered epoch the trial charged (§8: ``epoch_id TEXT NOT
+    #: NULL`` — *"which sequestered epoch was charged"*; feature 88's
+    #: stamp), in the sealing process's own spelling.  ``None`` is the
+    #: read's spelling for a row that predates the stamp — the un-named
+    #: epoch — and is refused at the write seams, never here.
+    epoch_id: Optional[str] = None
 
     def __post_init__(self) -> None:
         # frozen+slots forbids plain assignment, so canonicalisation writes
@@ -293,19 +330,31 @@ class TrialLedgerRecord:
         object.__setattr__(
             self, "charge_units", validated_charge_units(self.charge_units)
         )
+        # Carried in the sealing process's own spelling, or None for a row
+        # that predates the stamp — the write's required-epoch refusal is
+        # the store's and the endpoint's, not the read's.  A blank or
+        # non-string value is refused here too: the read revalidates
+        # through this same check, which is how a row whose epoch wandered
+        # into a name that names no epoch is refused rather than served.
+        object.__setattr__(
+            self, "epoch_id", validated_epoch_id(self.epoch_id)
+        )
 
-    def row(self) -> tuple[Union[int, float, str], ...]:
+    def row(self) -> tuple[Union[int, float, str, None], ...]:
         """The record as the store's column tuple, in table order.
 
         ``seq, ts, node_id, campaign_id, outcome, charges_budget,
-        charge_units`` — the order the table's columns are declared in and
-        the order the read path unpacks, kept in one method so the two
-        cannot drift apart and silently swap an identity for a stamp.
-        ``ts`` serialises as canonical ISO-8601 UTC with an explicit
-        offset, the exact text the table stores; ``charges_budget``
-        serialises as the ``0``/``1`` the SQLite ``BOOLEAN`` column
-        stores; ``charge_units`` serialises as the ``float`` the ``REAL``
-        column holds.
+        charge_units, epoch_id`` — the order the table's columns are
+        declared in and the order the read path unpacks, kept in one
+        method so the two cannot drift apart and silently swap an
+        identity for a stamp.  ``ts`` serialises as canonical ISO-8601
+        UTC with an explicit offset, the exact text the table stores;
+        ``charges_budget`` serialises as the ``0``/``1`` the SQLite
+        ``BOOLEAN`` column stores; ``charge_units`` serialises as the
+        ``float`` the ``REAL`` column holds; ``epoch_id`` serialises as
+        the text the sealing process coined, or ``None`` for a row that
+        predates the stamp (the NULL a brought-forward table's upgrade
+        column holds).
         """
         return (
             self.seq,
@@ -315,4 +364,5 @@ class TrialLedgerRecord:
             self.outcome,
             1 if self.charges_budget else 0,
             self.charge_units,
+            self.epoch_id,
         )

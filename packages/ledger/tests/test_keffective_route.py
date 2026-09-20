@@ -66,6 +66,12 @@ STAMP = datetime(2026, 9, 20, 5, 0, 0, tzinfo=timezone.utc)
 # route's count is deliberately indifferent to it.
 OUTCOME = "ok"
 
+# The sequestered epoch these tests charge against: any name would do,
+# and 'epoch-7' is the spelling the sealing tests coin.  The epoch's own
+# behaviour — required at the write, refused when absent, ``None`` on a
+# pre-stamp read — is test_epoch.py's subject.
+EPOCH = "epoch-7"
+
 MEMBER_SRC = Path(ledger.__file__).resolve().parent.parent
 
 
@@ -74,23 +80,35 @@ def _node() -> uuid.UUID:
     return uuid.uuid4()
 
 
-def _stamp_epochs(db_path: Path, epochs: dict[int, str]) -> None:
-    """Give feature 88's stamp to chosen rows: add the column, then set it.
+def _legacy_unnamed_row(db_path: Path, budget: int = 1) -> None:
+    """Write one pre-epoch row directly: a charge that names no epoch.
 
-    Simulates the sibling feature's write seam landing on this table —
-    the column arrives with feature 88, and this is what the route's read
-    must already handle.  Reached for directly because feature 88 owns the
-    write path; features 93-94 own only the read.
+    A fresh row cannot be written epoch-less any more — feature 88's
+    stamp is required at every write seam this store offers — so the one
+    way to hold a row in the un-named epoch is the way the ledger itself
+    came by them: the row predates the stamp.  The seven-column table is
+    the schema this member wrote through features 86-91, and the row is
+    inserted with raw SQL on purpose, exactly as the store's legacy
+    upgrade finds such rows in the wild.
     """
     with sqlite3.connect(db_path) as connection:
+        connection.executescript(f"""
+        CREATE TABLE IF NOT EXISTS {TRIAL_LEDGER_TABLE} (
+            seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts              TEXT NOT NULL,
+            node_id         TEXT NOT NULL,
+            campaign_id     TEXT NOT NULL,
+            outcome         TEXT NOT NULL,
+            charges_budget  BOOLEAN NOT NULL,
+            charge_units    REAL NOT NULL DEFAULT 1.0
+        );
+        """)
         connection.execute(
-            f"ALTER TABLE {TRIAL_LEDGER_TABLE} ADD COLUMN epoch_id TEXT"
+            f"INSERT INTO {TRIAL_LEDGER_TABLE} "
+            "(ts, node_id, campaign_id, outcome, charges_budget, charge_units) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (STAMP.isoformat(), str(_node()), str(CAMPAIGN), "ok", budget, 1.0),
         )
-        for seq, epoch in epochs.items():
-            connection.execute(
-                f"UPDATE {TRIAL_LEDGER_TABLE} SET epoch_id = ? WHERE seq = ?",
-                (epoch, seq),
-            )
 
 
 @pytest.fixture
@@ -110,13 +128,12 @@ def test_k_endpoint(test_ledger: TrialLedger) -> KEffectiveEndpoint:
 def test_the_route_returns_the_budget_charging_counts_per_epoch(
     test_k_endpoint: KEffectiveEndpoint,
     test_ledger: TrialLedger,
-    db_path: Path,
 ) -> None:
     # The whole sentence at once: two epochs, counted by the directive
-    # that was stamped on each row, with the stamp deciding the grouping.
+    # that was stamped on each row, with the epoch the row charged
+    # deciding the grouping.
     for budget, epoch in ((True, "epoch-7"), (False, "epoch-7"), (True, "epoch-8")):
-        test_ledger.append(_node(), CAMPAIGN, OUTCOME, budget, ts=STAMP)
-    _stamp_epochs(db_path, {1: "epoch-7", 2: "epoch-7", 3: "epoch-8"})
+        test_ledger.append(_node(), CAMPAIGN, OUTCOME, budget, ts=STAMP, epoch_id=epoch)
 
     response = test_k_endpoint.get()
     assert response.counts == (("epoch-7", 1), ("epoch-8", 1))
@@ -125,16 +142,16 @@ def test_the_route_returns_the_budget_charging_counts_per_epoch(
     assert response.total == 2
 
 
-def test_the_route_groups_under_the_unnamed_epoch_before_feature_88_lands(
-    test_k_endpoint: KEffectiveEndpoint, test_ledger: TrialLedger
+def test_a_pre_stamp_table_answers_one_unnamed_bucket(
+    test_k_endpoint: KEffectiveEndpoint, test_ledger: TrialLedger, db_path: Path
 ) -> None:
-    # The table carries no epoch_id column until feature 88's stamp
-    # arrives, so the route answers one honest bucket — labelled as naming
-    # no epoch rather than pretending to be one — and becomes a genuine
-    # per-epoch view the moment the column appears, with no edit to the
-    # route.
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP)
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP)
+    # A table written before feature 88's stamp landed holds rows that
+    # name no epoch, so the route answers one honest bucket — labelled as
+    # naming no epoch rather than pretending to be one — and answers a
+    # genuine per-epoch view over the rows the store writes now, with no
+    # edit to the route.
+    _legacy_unnamed_row(db_path, budget=1)
+    _legacy_unnamed_row(db_path, budget=0)
 
     response = test_k_endpoint.get()
     assert response.counts == ((None, 1),)
@@ -143,16 +160,15 @@ def test_the_route_groups_under_the_unnamed_epoch_before_feature_88_lands(
 
 
 def test_an_all_null_epoch_is_reported_at_zero_not_omitted(
-    test_k_endpoint: KEffectiveEndpoint, test_ledger: TrialLedger, db_path: Path
+    test_k_endpoint: KEffectiveEndpoint, test_ledger: TrialLedger
 ) -> None:
     # The deflation term must be *told* that an epoch contributed no
     # degrees of freedom.  A route that listed only the epochs that
     # charged budget would leave that fact to be inferred from a missing
     # key — and a key a reader has to infer is a key a reader can silently
     # get wrong.
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP)
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP)
-    _stamp_epochs(db_path, {1: "epoch-7", 2: "epoch-8"})
+    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id="epoch-7")
+    test_ledger.append(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP, epoch_id="epoch-8")
 
     response = test_k_endpoint.get()
     assert response.of("epoch-8") == 0
@@ -165,12 +181,12 @@ def test_the_route_orders_the_unnamed_epoch_first(
 ) -> None:
     # One order, stated by the derivation and passed through by the route:
     # the un-named epoch first, then ascending epoch spelling — so two
-    # reads over the same log are equal values and read back alike.
-    for _ in range(3):
-        test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP)
-    # Rows 1 and 2 are stamped into the later-spelled epochs; row 3 keeps
-    # no stamp, so it is the un-named epoch — and it is listed first.
-    _stamp_epochs(db_path, {1: "epoch-8", 2: "epoch-7"})
+    # reads over the same log are equal values and read back alike.  The
+    # un-named bucket needs a pre-stamp row: every row the store writes
+    # now names its epoch.
+    _legacy_unnamed_row(db_path)
+    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id="epoch-8")
+    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id="epoch-7")
 
     assert test_k_endpoint.get().counts == ((None, 1), ("epoch-7", 1), ("epoch-8", 1))
 
@@ -201,7 +217,7 @@ def test_the_route_returns_k_effective_and_not_the_row_count(
     # route disagrees with the plain count by exactly the null nodes, and
     # a route that had reached for the count could not pass.
     for budget in (True, False, False, True, False):
-        test_ledger.append(_node(), CAMPAIGN, OUTCOME, budget, ts=STAMP)
+        test_ledger.append(_node(), CAMPAIGN, OUTCOME, budget, ts=STAMP, epoch_id=EPOCH)
 
     response = test_k_endpoint.get()
     assert response.total == 2
@@ -217,7 +233,7 @@ def test_a_ledger_of_nothing_but_null_nodes_answers_zero_not_its_rows(
     # inflate the deflation term by every null node a campaign ran —
     # silently, under a route name that promises the opposite.
     for _ in range(4):
-        test_ledger.append(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP)
+        test_ledger.append(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP, epoch_id=EPOCH)
 
     response = test_k_endpoint.get()
     assert response.total == 0
@@ -230,10 +246,10 @@ def test_null_nodes_never_move_the_routes_figure(
 ) -> None:
     # The feature's own point, as arithmetic on the route's answer:
     # charging any number of null nodes leaves it exactly where it was.
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP)
+    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id=EPOCH)
     before = test_k_endpoint.get().total
     for _ in range(25):
-        test_ledger.append(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP)
+        test_ledger.append(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP, epoch_id=EPOCH)
 
     assert before == 1
     assert test_k_endpoint.get().total == 1
@@ -247,19 +263,22 @@ def test_the_routes_count_is_of_outcomes_not_of_successes(
     # §6.1's step 11 debits even when the node fails, so a failed trial
     # consumed a hypothesis exactly as a successful one did.  Only
     # charges_budget decides this filter; the outcome never does.
-    test_ledger.append(_node(), CAMPAIGN, outcome, True, ts=STAMP)
+    test_ledger.append(_node(), CAMPAIGN, outcome, True, ts=STAMP, epoch_id=EPOCH)
     assert test_k_endpoint.get().total == 1
 
 
 def test_the_same_epoch_across_two_campaigns_is_one_epoch_on_the_route(
-    test_k_endpoint: KEffectiveEndpoint, test_ledger: TrialLedger, db_path: Path
+    test_k_endpoint: KEffectiveEndpoint, test_ledger: TrialLedger
 ) -> None:
     # Sequestered epochs are a global, non-renewable resource (§6.1), so
     # two campaigns' trials in one epoch spend the same degrees of freedom
     # and the route counts them together.
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP)
-    test_ledger.append(_node(), OTHER_CAMPAIGN, OUTCOME, True, ts=STAMP)
-    _stamp_epochs(db_path, {1: "epoch-7", 2: "epoch-7"})
+    test_ledger.append(
+        _node(), CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id="epoch-7"
+    )
+    test_ledger.append(
+        _node(), OTHER_CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id="epoch-7"
+    )
     assert test_k_endpoint.get().of("epoch-7") == 2
 
 
@@ -270,9 +289,9 @@ def test_the_route_answers_the_ledgers_state_at_the_moment_it_is_asked(
     # move the second answer.  A memoised total would make the deflation
     # term depend on when the scoring process happened to start.
     assert test_k_endpoint.get().total == 0
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP)
+    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id=EPOCH)
     assert test_k_endpoint.get().total == 1
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP)
+    test_ledger.append(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP, epoch_id=EPOCH)
     assert test_k_endpoint.get().total == 1
 
 
@@ -282,10 +301,10 @@ def test_a_debit_charges_budget_the_same_way_through_the_route(
     # The two routes are two views of one table: feature 95's charge lands
     # on the row, and the row is what feature 94's read counts.
     test_endpoint.post(
-        ledger.DebitRequest(_node(), CAMPAIGN, OUTCOME, True)
+        ledger.DebitRequest(_node(), CAMPAIGN, OUTCOME, True, epoch_id=EPOCH)
     )
     test_endpoint.post(
-        ledger.DebitRequest(_node(), CAMPAIGN, OUTCOME, False)
+        ledger.DebitRequest(_node(), CAMPAIGN, OUTCOME, False, epoch_id=EPOCH)
     )
     assert KEffectiveEndpoint(test_ledger).get().total == 1
 
@@ -300,7 +319,7 @@ def test_the_response_agrees_with_the_store_read(
     # cannot disagree — asserted against the store rather than through the
     # route alone.
     for budget in (True, False, True):
-        test_ledger.append(_node(), CAMPAIGN, OUTCOME, budget, ts=STAMP)
+        test_ledger.append(_node(), CAMPAIGN, OUTCOME, budget, ts=STAMP, epoch_id=EPOCH)
 
     response = test_k_endpoint.get()
     view = test_ledger.k_effective()
@@ -311,14 +330,13 @@ def test_the_response_agrees_with_the_store_read(
 
 
 def test_the_response_hands_back_the_derivations_rest(
-    test_k_endpoint: KEffectiveEndpoint, test_ledger: TrialLedger, db_path: Path
+    test_k_endpoint: KEffectiveEndpoint, test_ledger: TrialLedger
 ) -> None:
     # Everything feature 93 states is reachable through the response's
     # view rather than respelled on the route: by_epoch, epochs, and the
     # per-epoch read.
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP)
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP)
-    _stamp_epochs(db_path, {1: "epoch-7", 2: "epoch-8"})
+    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id="epoch-7")
+    test_ledger.append(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP, epoch_id="epoch-8")
 
     view = test_k_endpoint.get().view
     assert isinstance(view, KEffective)
@@ -327,23 +345,21 @@ def test_the_response_hands_back_the_derivations_rest(
 
 
 def test_the_response_reports_how_many_epochs_it_carries(
-    test_k_endpoint: KEffectiveEndpoint, test_ledger: TrialLedger, db_path: Path
+    test_k_endpoint: KEffectiveEndpoint, test_ledger: TrialLedger
 ) -> None:
     # The size of the breakdown — the "per epoch" dimension of the
     # clause, readable without walking the pairs.
-    for _ in range(3):
-        test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP)
-    _stamp_epochs(db_path, {1: "epoch-7", 2: "epoch-8", 3: "epoch-8"})
+    for epoch in ("epoch-7", "epoch-8", "epoch-8"):
+        test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id=epoch)
     assert len(test_k_endpoint.get()) == 2
 
 
 def test_the_total_cannot_drift_from_the_pairs_it_sums(
-    test_k_endpoint: KEffectiveEndpoint, test_ledger: TrialLedger, db_path: Path
+    test_k_endpoint: KEffectiveEndpoint, test_ledger: TrialLedger
 ) -> None:
-    for _ in range(2):
-        test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP)
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP)
-    _stamp_epochs(db_path, {1: "epoch-7", 2: "epoch-8", 3: "epoch-8"})
+    for epoch in ("epoch-7", "epoch-8"):
+        test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id=epoch)
+    test_ledger.append(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP, epoch_id="epoch-8")
 
     response = test_k_endpoint.get()
     assert response.total == sum(count for _, count in response.counts) == 2
@@ -382,7 +398,7 @@ def test_a_corrupted_directive_is_refused_by_the_route(
     # rather than under-count.  The alternative — skipping it, or treating
     # it as "not true" — silently shrinks the deflation input, the one
     # direction the honest counter must never move by accident.
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP)
+    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id=EPOCH)
     with sqlite3.connect(db_path) as connection:
         connection.execute(
             f"UPDATE {TRIAL_LEDGER_TABLE} SET charges_budget = 2 WHERE seq = 1"
@@ -401,7 +417,7 @@ def test_the_route_never_answers_a_read_that_failed(
     # that lets a false discovery through.  The failure is real (the file
     # is no longer a database), so an endpoint that swallowed it and
     # answered 0 could not pass.
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP)
+    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id=EPOCH)
     db_path.write_bytes(b"this is not a database")
 
     with pytest.raises(sqlite3.Error):
@@ -512,8 +528,8 @@ def test_the_route_the_debit_and_the_store_compose_over_one_database(
     assert endpoint.ledger.database_url == store.database_url
     assert endpoint.ledger.database_url == debiter.ledger.database_url
 
-    debiter.post(ledger.DebitRequest(_node(), CAMPAIGN, OUTCOME, True))
-    debiter.post(ledger.DebitRequest(_node(), CAMPAIGN, OUTCOME, False))
+    debiter.post(ledger.DebitRequest(_node(), CAMPAIGN, OUTCOME, True, epoch_id=EPOCH))
+    debiter.post(ledger.DebitRequest(_node(), CAMPAIGN, OUTCOME, False, epoch_id=EPOCH))
     assert endpoint.get().total == 1
     assert store.count() == 2
 
@@ -552,7 +568,7 @@ def test_the_endpoint_duck_accepts_the_composed_component(
     app = create_app(MEMBER_SRC, registry=Registration())
     composed = ledger_seat.ledger_component(app)
     endpoint = KEffectiveEndpoint(composed)  # type: ignore[arg-type]
-    composed.append(_node(), CAMPAIGN, OUTCOME, True)
+    composed.append(_node(), CAMPAIGN, OUTCOME, True, epoch_id=EPOCH)
     response = endpoint.get()
     assert response.total == 1
-    assert KEffectiveResponse(response.view).counts == ((None, 1),)
+    assert KEffectiveResponse(response.view).counts == ((EPOCH, 1),)

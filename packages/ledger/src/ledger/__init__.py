@@ -12,7 +12,11 @@ increasing sequence number.*  The append seam
 are this member's contribution; the features that follow add their own
 stamps and derivations on top of it — the provenance triple of 87,
 the
-epoch accounting of 88, the charge semantics of 89-90, the outcome of
+epoch accounting of 88 (:mod:`ledger.epoch`: the sequestered epoch a
+trial charged, required at the write and refused when absent — the
+epoch is a depleting resource counted in ``epoch_ledger``, and a charge
+that cannot name its holdout is a charge no audit can place), the
+charge semantics of 89-90, the outcome of
 91 (:mod:`ledger.outcome`: one of 'ok', 'timeout', 'error',
 'tripwire_fail' persisted on every appended row, refused when absent or
 misspelled), the charge unit of 89
@@ -65,7 +69,7 @@ already says:
 
 * :class:`~ledger.record.TrialLedgerRecord` — one row as a value: the
   sequence the table assigned, the stamp, the two identities, the
-  outcome, the budget directive and the charge unit.
+  outcome, the budget directive, the charge unit and the epoch.
 * :class:`~ledger.store.TrialLedger` — the append, the idempotent
   debit, the ordered read, the count; bound to one database URL.
 * :class:`~ledger.debit.DebitEndpoint` with :class:`~ledger.debit.
@@ -90,6 +94,11 @@ already says:
   validated through, and the ``1.0`` §8's DDL declares as the column's
   default, so an ordinary evaluation costs one unit and a cross-validated
   one states its folds' count.
+* :func:`~ledger.epoch.validated_epoch_id` — feature 88's stamp: the
+  charged-epoch check every appended row's ``epoch_id`` is validated
+  through, required at the write seams (an absent epoch is refused
+  before the ledger is touched) and ``None``-tolerant on the read,
+  where a row that predates the stamp honestly names no epoch.
 * :class:`~ledger.keffective.KEffective` with
   :func:`~ledger.keffective.derive_k_effective` and
   :data:`~ledger.keffective.UNNAMED_EPOCH` — feature 93's derivation:
@@ -115,6 +124,7 @@ from app.module_loader import register
 
 from .budget import validated_charges_budget
 from .debit import DEBIT_ROUTE, DebitEndpoint, DebitRequest, DebitResponse
+from .epoch import validated_epoch_id
 from .epochusage import EpochUsage, derive_epoch_usage
 from .errors import (
     TrialImmutableError,
@@ -171,6 +181,7 @@ __all__ = [
     "utc_now",
     "validated_charge_units",
     "validated_charges_budget",
+    "validated_epoch_id",
 ]
 
 #: The component name this member registers under — the key a composed

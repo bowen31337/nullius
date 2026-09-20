@@ -8,7 +8,9 @@ contract: identities are UUIDs and are canonicalised, the stamp is
 aware-UTC and a naive instant is refused, the sequence number is a
 positive integer the ledger could have assigned, the outcome is one of
 the four a trial can end in (the vocabulary's own refusal cases live in
-test_outcome.py), and the value is frozen once built.
+test_outcome.py), the epoch is a name carried in its own spelling or
+``None`` for a row that predates the stamp (the write's required-epoch
+refusal is test_epoch.py's subject), and the value is frozen once built.
 """
 
 from __future__ import annotations
@@ -150,8 +152,11 @@ def test_a_record_is_frozen() -> None:
 
 def test_the_column_tuple_is_in_table_order() -> None:
     # The record's column tuple is the table's declaration order, and
-    # after feature 89 the unit closes the row — the reader that unpacks
-    # it cannot mistake a cost for an identity, a stamp or the directive.
+    # after feature 88 the epoch closes the row — the reader that unpacks
+    # it cannot mistake a holdout's name for an identity, a stamp or the
+    # unit.  ``None`` here is the read's spelling for a row that predates
+    # the stamp; the write's required-epoch refusal is the store's and
+    # the endpoint's (test_epoch.py pins both).
     record = _record(seq=7)
     assert record.row() == (
         7,
@@ -161,4 +166,35 @@ def test_the_column_tuple_is_in_table_order() -> None:
         "ok",
         1,
         1.0,
+        None,
     )
+
+
+# -- The epoch ---------------------------------------------------------------
+
+
+def test_the_epoch_is_carried_in_its_own_spelling() -> None:
+    # The epoch namespace is the sealing process's — this layer holds the
+    # name to being a name, it coins and canonicalises none of it — so
+    # what the caller named is what the record carries, what the row
+    # stores and what epoch_ledger keys on.
+    assert _record(epoch_id="epoch-7").epoch_id == "epoch-7"
+    assert _record(epoch_id="holdout-2026-09").epoch_id == "holdout-2026-09"
+
+
+def test_none_is_the_pre_stamp_reads_spelling() -> None:
+    # The record is also the read, and a row written before the stamp
+    # landed — on a table the legacy upgrade brought forward — honestly
+    # names no epoch.  ``None`` is that statement; it is refused at the
+    # write seams, never here.
+    assert _record(epoch_id=None).epoch_id is None
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "\t", 7, True, [], object()])
+def test_an_epoch_that_names_no_epoch_is_refused(bad: object) -> None:
+    # Blank is a name no sealing process coined, and a non-string is not
+    # a name at all.  The read revalidates through this same check, which
+    # is how a row whose epoch wandered into a value that names no epoch
+    # is refused rather than served.
+    with pytest.raises(TrialRecordError, match="epoch_id must be a non-empty string"):
+        _record(epoch_id=bad)

@@ -60,6 +60,12 @@ STAMP = datetime(2026, 9, 20, 5, 0, 0, tzinfo=timezone.utc)
 OUTCOME = "ok"
 CHARGES_BUDGET = True
 
+# The sequestered epoch these tests charge against: any name would do,
+# and 'epoch-7' is the spelling the sealing tests coin.  The epoch's own
+# behaviour — required at the write, refused when absent, ``None`` on a
+# pre-stamp read — is test_epoch.py's subject.
+EPOCH = "epoch-7"
+
 # The schema this member wrote before feature 90 landed — the table as it
 # was through features 86-91, recreated verbatim so a test can hand the
 # store a database that genuinely predates the budget directive.
@@ -95,7 +101,7 @@ def test_every_append_persists_the_directive_it_was_given(
     # The feature's own clause, one pass per directive value: the row the
     # append returns, the row the read hands back, and the row the table
     # holds all say the same directive.
-    record = test_ledger.append(NODE, CAMPAIGN, OUTCOME, charges_budget, ts=STAMP)
+    record = test_ledger.append(NODE, CAMPAIGN, OUTCOME, charges_budget, ts=STAMP, epoch_id=EPOCH)
     assert record.charges_budget is charges_budget
     assert test_ledger.get(record.seq) == record
     assert [row.charges_budget for row in test_ledger.rows()] == [charges_budget]
@@ -108,7 +114,7 @@ def test_the_stored_directive_is_the_0_or_1_the_column_stores(
     # What the table holds, not what the record reports: the SQLite
     # BOOLEAN column stores the bit as 0 or 1, and a genuine bool at the
     # write lands as exactly that integer — True as 1, False as 0.
-    record = test_ledger.append(NODE, CAMPAIGN, OUTCOME, charges_budget, ts=STAMP)
+    record = test_ledger.append(NODE, CAMPAIGN, OUTCOME, charges_budget, ts=STAMP, epoch_id=EPOCH)
     with sqlite3.connect(db_path) as connection:
         (stored,) = connection.execute(
             f"SELECT charges_budget FROM {TRIAL_LEDGER_TABLE} WHERE seq = ?",
@@ -125,8 +131,8 @@ def test_a_real_trial_and_a_null_node_land_side_by_side(
     # budget-charging one.
     real = uuid.uuid4()
     null = uuid.uuid4()
-    test_ledger.append(real, CAMPAIGN, OUTCOME, True, ts=STAMP)
-    test_ledger.append(null, CAMPAIGN, OUTCOME, False, ts=STAMP)
+    test_ledger.append(real, CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id=EPOCH)
+    test_ledger.append(null, CAMPAIGN, OUTCOME, False, ts=STAMP, epoch_id=EPOCH)
     assert [row.charges_budget for row in test_ledger.rows()] == [True, False]
 
 
@@ -136,7 +142,7 @@ def test_the_debit_persists_the_directive_of_the_charge(
     # The idempotent half of the write surface carries the directive too:
     # the failure path §6.1 debits through the debit, and its charge must
     # be able to say whether it consumed statistical budget.
-    record, appended = test_ledger.debit(NODE, CAMPAIGN, OUTCOME, False, ts=STAMP)
+    record, appended = test_ledger.debit(NODE, CAMPAIGN, OUTCOME, False, ts=STAMP, epoch_id=EPOCH)
     assert appended is True
     assert record.charges_budget is False
     assert test_ledger.get(record.seq) == record
@@ -148,7 +154,7 @@ def test_the_endpoint_carries_the_directive_of_the_request(
     # POST /ledger/debit's body names the directive; the response's
     # record carries it; the table holds it.
     response = test_endpoint.post(
-        DebitRequest(NODE, CAMPAIGN, OUTCOME, False, ts=STAMP)
+        DebitRequest(NODE, CAMPAIGN, OUTCOME, False, ts=STAMP, epoch_id=EPOCH)
     )
     assert response.record.charges_budget is False
     assert test_ledger.get(response.seq) == response.record
@@ -160,8 +166,9 @@ def test_the_column_tuple_carries_the_directive(
     # The record's column tuple is the table's declaration order — the
     # directive sits where §8 declares it, and the reader that unpacks it
     # cannot mistake it for an identity, a stamp or the outcome.  Feature
-    # 89's unit follows it (its own tests pin that end of the tuple).
-    record = test_ledger.append(NODE, CAMPAIGN, OUTCOME, True, ts=STAMP)
+    # 89's unit (its own tests pin its place) and feature 88's epoch
+    # follow it.
+    record = test_ledger.append(NODE, CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id=EPOCH)
     assert record.row()[5] == 1
     assert record.row() == (
         record.seq,
@@ -171,6 +178,7 @@ def test_the_column_tuple_carries_the_directive(
         "ok",
         1,
         1.0,
+        EPOCH,
     )
 
 
@@ -198,11 +206,11 @@ def test_a_non_bool_directive_is_refused_at_every_write_seam(
     # request.  (The record constructor is the read path, and coerces the
     # stored 0/1 rather than refusing it — see the coercion test below.)
     with pytest.raises(TrialRecordError, match="charges_budget must be a bool"):
-        test_ledger.append(NODE, CAMPAIGN, OUTCOME, bad)  # type: ignore[arg-type]
+        test_ledger.append(NODE, CAMPAIGN, OUTCOME, bad, epoch_id=EPOCH)  # type: ignore[arg-type]
     with pytest.raises(TrialRecordError, match="charges_budget must be a bool"):
-        test_ledger.debit(NODE, CAMPAIGN, OUTCOME, bad)  # type: ignore[arg-type]
+        test_ledger.debit(NODE, CAMPAIGN, OUTCOME, bad, epoch_id=EPOCH)  # type: ignore[arg-type]
     with pytest.raises(TrialRecordError, match="charges_budget must be a bool"):
-        DebitRequest(NODE, CAMPAIGN, OUTCOME, bad)  # type: ignore[arg-type]
+        DebitRequest(NODE, CAMPAIGN, OUTCOME, bad, epoch_id=EPOCH)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -219,17 +227,14 @@ def test_the_record_read_path_coerces_0_or_1_but_refuses_any_other_non_bool(
     # served, exactly as a hand-edited stamp or outcome is.
     assert TrialLedgerRecord(
         seq=1, ts=STAMP, node_id=NODE, campaign_id=CAMPAIGN,
-        outcome=OUTCOME, charges_budget=0,
-    ).charges_budget is False
+        outcome=OUTCOME, charges_budget=0, epoch_id=EPOCH).charges_budget is False
     assert TrialLedgerRecord(
         seq=1, ts=STAMP, node_id=NODE, campaign_id=CAMPAIGN,
-        outcome=OUTCOME, charges_budget=1,
-    ).charges_budget is True
+        outcome=OUTCOME, charges_budget=1, epoch_id=EPOCH).charges_budget is True
     with pytest.raises(TrialRecordError, match="charges_budget must be a bool"):
         TrialLedgerRecord(
             seq=1, ts=STAMP, node_id=NODE, campaign_id=CAMPAIGN,
-            outcome=OUTCOME, charges_budget=bad,
-        )  # type: ignore[arg-type]
+            outcome=OUTCOME, charges_budget=bad, epoch_id=EPOCH)  # type: ignore[arg-type]
 
 
 def test_a_1_or_0_is_not_a_directive(test_ledger: TrialLedger) -> None:
@@ -239,9 +244,9 @@ def test_a_1_or_0_is_not_a_directive(test_ledger: TrialLedger) -> None:
     # derive the meaning of, which is exactly the derivation the feature
     # forbids.
     with pytest.raises(TrialRecordError, match="charges_budget must be a bool"):
-        test_ledger.append(NODE, CAMPAIGN, OUTCOME, 1)  # type: ignore[arg-type]
+        test_ledger.append(NODE, CAMPAIGN, OUTCOME, 1, epoch_id=EPOCH)  # type: ignore[arg-type]
     with pytest.raises(TrialRecordError, match="charges_budget must be a bool"):
-        test_ledger.append(NODE, CAMPAIGN, OUTCOME, 0)  # type: ignore[arg-type]
+        test_ledger.append(NODE, CAMPAIGN, OUTCOME, 0, epoch_id=EPOCH)  # type: ignore[arg-type]
 
 
 def test_an_absent_directive_is_refused_not_defaulted(
@@ -253,11 +258,11 @@ def test_an_absent_directive_is_refused_not_defaulted(
     # charges_budget none — because a default would be the ledger
     # deciding the answer the oracle must supply.
     with pytest.raises(TrialRecordError, match="got None"):
-        test_ledger.append(NODE, CAMPAIGN, OUTCOME)
+        test_ledger.append(NODE, CAMPAIGN, OUTCOME, epoch_id=EPOCH)
     with pytest.raises(TrialRecordError, match="got None"):
-        test_ledger.debit(NODE, CAMPAIGN, OUTCOME)
+        test_ledger.debit(NODE, CAMPAIGN, OUTCOME, epoch_id=EPOCH)
     with pytest.raises(TrialRecordError, match="got None"):
-        DebitRequest(NODE, CAMPAIGN, OUTCOME)
+        DebitRequest(NODE, CAMPAIGN, OUTCOME, epoch_id=EPOCH)
     assert test_ledger.count() == 0
 
 
@@ -269,9 +274,9 @@ def test_a_refused_directive_spends_no_sequence_number(
     # cannot state its directive costs nothing: the next honest append
     # draws the very first number.
     with pytest.raises(TrialRecordError):
-        test_ledger.append(NODE, CAMPAIGN, OUTCOME, bad)  # type: ignore[arg-type]
+        test_ledger.append(NODE, CAMPAIGN, OUTCOME, bad, epoch_id=EPOCH)  # type: ignore[arg-type]
     assert test_ledger.count() == 0
-    assert test_ledger.append(NODE, CAMPAIGN, OUTCOME, True, ts=STAMP).seq == 1
+    assert test_ledger.append(NODE, CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id=EPOCH).seq == 1
 
 
 # -- The retry keeps the original directive -------------------------------------
@@ -286,10 +291,10 @@ def test_a_retry_does_not_restate_the_directive(
     # are never restated; the response's record says which directive
     # landed, exactly as it says which stamp and which outcome landed.
     original = test_endpoint.post(
-        DebitRequest(NODE, CAMPAIGN, OUTCOME, False, ts=STAMP)
+        DebitRequest(NODE, CAMPAIGN, OUTCOME, False, ts=STAMP, epoch_id=EPOCH)
     )
     retry = test_endpoint.post(
-        DebitRequest(NODE, CAMPAIGN, OUTCOME, True, ts=STAMP)
+        DebitRequest(NODE, CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id=EPOCH)
     )
 
     assert retry.seq == original.seq == 1
@@ -308,14 +313,15 @@ def test_the_directive_column_is_boolean_not_null_with_no_default(
     # §8's DDL for the column is BOOLEAN NOT NULL with no default — the
     # shape that makes the directive the caller's to state, not the
     # table's to presume.  The column sits in the declaration order the
-    # record's row() tuple mirrors, just before feature 89's unit.
-    test_ledger.append(NODE, CAMPAIGN, OUTCOME, True, ts=STAMP)
+    # record's row() tuple mirrors, before feature 89's unit and feature
+    # 88's epoch.
+    test_ledger.append(NODE, CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id=EPOCH)
     with sqlite3.connect(db_path) as connection:
         info = connection.execute(f"PRAGMA table_info({TRIAL_LEDGER_TABLE})")
         rows = {row[1]: row for row in info}
     assert list(rows) == [
         "seq", "ts", "node_id", "campaign_id", "outcome", "charges_budget",
-        "charge_units",
+        "charge_units", "epoch_id",
     ]
     # (cid, name, type, notnull, dflt_value, pk) for the charges_budget column.
     # SQLite preserves the declared type name; the value is still stored as
@@ -334,7 +340,7 @@ def test_a_row_whose_directive_wandered_off_the_bit_is_refused(
     # directive — like a hand-edited stamp or outcome — is refused rather
     # than served: in an append-only log, one unreadable row is evidence,
     # not noise.  A stored value that is neither 0 nor 1 is corruption.
-    test_ledger.append(NODE, CAMPAIGN, OUTCOME, True, ts=STAMP)
+    test_ledger.append(NODE, CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id=EPOCH)
     with sqlite3.connect(db_path) as connection:
         connection.execute(
             f"UPDATE {TRIAL_LEDGER_TABLE} SET charges_budget = ? WHERE seq = 1",
@@ -350,7 +356,7 @@ def test_the_read_path_coerces_a_stored_0_or_1_to_a_bool(
     # A row read back arrives as the 0/1 the column stores; the read path
     # coerces it to its bool, so a row written by another writer that
     # stored the bit as an integer reads as a genuine bool.
-    test_ledger.append(NODE, CAMPAIGN, OUTCOME, True, ts=STAMP)
+    test_ledger.append(NODE, CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id=EPOCH)
     with sqlite3.connect(db_path) as connection:
         connection.execute(
             f"UPDATE {TRIAL_LEDGER_TABLE} SET charges_budget = 0 WHERE seq = 1"
@@ -376,11 +382,12 @@ def test_a_pre_directive_database_is_upgraded_in_place(
     with sqlite3.connect(db_path) as connection:
         info = connection.execute(f"PRAGMA table_info({TRIAL_LEDGER_TABLE})")
         columns = [row[1] for row in info]
-    # The legacy table held outcome alone; the upgrade adds the directive
-    # and the unit after it, so every column a reader needs exists.
+    # The legacy table held outcome alone; the upgrade adds every stamp
+    # the rows predate — the directive, the unit and the epoch — so
+    # every column a reader needs exists.
     assert columns == [
         "seq", "ts", "node_id", "campaign_id", "outcome", "charges_budget",
-        "charge_units",
+        "charge_units", "epoch_id",
     ]
 
 
@@ -405,7 +412,7 @@ def test_the_upgrade_continues_the_sequence_above_the_legacy_rows(
     # first post-upgrade charge draws the number after the legacy maximum.
     _legacy_database(db_path)
     ledger = TrialLedger(test_database_url)
-    record = ledger.append(NODE, CAMPAIGN, OUTCOME, False, ts=STAMP)
+    record = ledger.append(NODE, CAMPAIGN, OUTCOME, False, ts=STAMP, epoch_id=EPOCH)
     assert record.seq == 2
     assert [row.seq for row in ledger.rows()] == [1, 2]
     assert [row.charges_budget for row in ledger.rows()] == [True, False]

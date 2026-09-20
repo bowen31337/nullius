@@ -37,7 +37,6 @@ import pytest
 
 from ledger import (
     EPOCH_LEDGER_TABLE,
-    TRIAL_LEDGER_TABLE,
     EpochUsage,
     TrialLedger,
     TrialRecordError,
@@ -47,6 +46,12 @@ from ledger import (
 CAMPAIGN = uuid.uuid4()
 STAMP = datetime(2026, 9, 20, 5, 0, 0, tzinfo=timezone.utc)
 OUTCOME = "ok"
+
+# The sequestered epoch these tests charge against: any name would do,
+# and 'epoch-7' is the spelling the sealing tests coin.  The epoch's own
+# behaviour — required at the write, refused when absent, ``None`` on a
+# pre-stamp read — is test_epoch.py's subject.
+EPOCH = "epoch-7"
 
 #: Feature 105's DDL, spelled as ``migrations/versions/0110_epoch_ledger.py``
 #: spells it.  Re-stated here rather than imported so the suite states the
@@ -262,7 +267,7 @@ def test_trial_charges_do_not_move_the_epoch_usage(
     _seal(db_path, "epoch-7")
     before = test_ledger.epoch_usage().of("epoch-7")
     for budget in (True, False, True, True):
-        test_ledger.append(_node(), CAMPAIGN, OUTCOME, budget, ts=STAMP)
+        test_ledger.append(_node(), CAMPAIGN, OUTCOME, budget, ts=STAMP, epoch_id=EPOCH)
     assert before == 0
     assert test_ledger.epoch_usage().of("epoch-7") == 0
     assert test_ledger.count() == 4
@@ -276,11 +281,11 @@ def test_the_two_views_read_different_tables(
     # epoch usage reads epoch_ledger and reports stored counts.  Built
     # together so neither can drift into the other: a trial charged in
     # epoch-7 does not appear in the usage view, and an epoch sealed with
-    # three decisions served does not appear in K_effective.
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP)  # creates the table
-    with sqlite3.connect(db_path) as connection:
-        connection.execute(f"ALTER TABLE {TRIAL_LEDGER_TABLE} ADD COLUMN epoch_id TEXT")
-        connection.execute(f"UPDATE {TRIAL_LEDGER_TABLE} SET epoch_id = 'epoch-7'")
+    # three decisions served does not appear in K_effective.  The trial
+    # names its epoch at the append itself (feature 88's stamp is on
+    # every charge this store writes), so there is no hand-stamping to
+    # do here — the epoch dimension is the write's, not the test's.
+    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id="epoch-7")
     _seal(db_path, "epoch-8", served=3)
 
     k = test_ledger.k_effective()

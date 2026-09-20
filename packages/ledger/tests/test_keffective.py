@@ -11,9 +11,11 @@ sentence to each clause:
   therefore *not* the ledger's row count, and the tests assert the
   difference explicitly rather than through the derivation alone;
 * **per epoch**: the grouping key is the row's ``epoch_id`` (feature 88's
-  stamp) when the table carries that column, and the un-named epoch when
-  it does not — so the derivation is correct before feature 88 lands and
-  becomes a genuine per-epoch view after, with no edit to the derivation;
+  stamp, required at every write this store makes), and the un-named
+  epoch for the rows that predate the stamp — a table the legacy upgrade
+  brought forward holds NULL epochs, and the derivation reads them as
+  one honest bucket labelled as naming no epoch rather than pretending
+  to be one;
 * **so null nodes never inflate the trial count**: the feature's whole
   point, tested as an arithmetic fact — charging any number of null nodes
   leaves ``K_effective`` untouched — and as the reason ``charges_budget``
@@ -52,28 +54,57 @@ OTHER_CAMPAIGN = uuid.uuid4()
 STAMP = datetime(2026, 9, 20, 5, 0, 0, tzinfo=timezone.utc)
 OUTCOME = "ok"
 
+# The epoch the filter tests charge against — any name would do.  The
+# per-epoch grouping tests spell their own epochs ('epoch-7', 'epoch-8')
+# because which epoch a row charged is their subject; the epoch's own
+# behaviour is test_epoch.py's subject.
+EPOCH = "epoch-7"
+
+# The schema this member wrote before feature 88 landed — the table as it
+# was through features 86-91, holding every stamp but the epoch, recreated
+# verbatim so a test can hand the store a database whose rows genuinely
+# predate the epoch stamp.
+LEGACY_SCHEMA = f"""
+CREATE TABLE {TRIAL_LEDGER_TABLE} (
+    seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts              TEXT NOT NULL,
+    node_id         TEXT NOT NULL,
+    campaign_id     TEXT NOT NULL,
+    outcome         TEXT NOT NULL,
+    charges_budget  BOOLEAN NOT NULL,
+    charge_units    REAL NOT NULL DEFAULT 1.0
+);
+"""
+
 
 def _node() -> uuid.UUID:
     """A fresh node identity — one evaluation, one charge, one row."""
     return uuid.uuid4()
 
 
-def _stamp_epochs(db_path: Path, epochs: dict[int, str]) -> None:
-    """Give feature 88's stamp to chosen rows: add the column, then set it.
+def _legacy_database(db_path: Path, rows: list[tuple[str, int]]) -> None:
+    """Write a pre-epoch ledger: the seven-column table, holding rows.
 
-    Simulates the sibling feature's write seam landing on this table —
-    the column arrives with feature 88, and this is what the derivation's
-    read must already handle.  Reached for directly because feature 88
-    owns the write path; feature 93 owns only the read.
+    Each row is ``(node_id, charges_budget bit)`` — the derivation's
+    whole input, stamped the way the pre-88 writer stamped it, which is
+    to say not at all: no epoch on any row, because the write seam that
+    requires one did not exist yet.
     """
     with sqlite3.connect(db_path) as connection:
-        connection.execute(
-            f"ALTER TABLE {TRIAL_LEDGER_TABLE} ADD COLUMN epoch_id TEXT"
-        )
-        for seq, epoch in epochs.items():
+        connection.executescript(LEGACY_SCHEMA)
+        for node, directive in rows:
             connection.execute(
-                f"UPDATE {TRIAL_LEDGER_TABLE} SET epoch_id = ? WHERE seq = ?",
-                (epoch, seq),
+                f"INSERT INTO {TRIAL_LEDGER_TABLE} "
+                "(ts, node_id, campaign_id, outcome, charges_budget, "
+                "charge_units) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    STAMP.isoformat(),
+                    node,
+                    str(CAMPAIGN),
+                    "ok",
+                    directive,
+                    1.0,
+                ),
             )
 
 
@@ -88,9 +119,9 @@ def test_only_budget_charging_rows_are_counted(
     # plain count of 5, which is exactly the inflation the feature exists
     # to prevent.
     for _ in range(2):
-        test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP)
+        test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id=EPOCH)
     for _ in range(3):
-        test_ledger.append(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP)
+        test_ledger.append(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP, epoch_id=EPOCH)
     assert test_ledger.k_effective().total == 2
     assert test_ledger.count() == 5
 
@@ -102,10 +133,10 @@ def test_null_nodes_never_inflate_the_trial_count(
     # null nodes leaves K_effective exactly where it was.  A campaign
     # running a thousand null nodes has spent compute and no degrees of
     # freedom, and the deflation input must read that way.
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP)
+    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id=EPOCH)
     before = test_ledger.k_effective().total
     for _ in range(50):
-        test_ledger.append(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP)
+        test_ledger.append(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP, epoch_id=EPOCH)
     assert before == 1
     assert test_ledger.k_effective().total == 1
     assert test_ledger.count() == 51
@@ -118,7 +149,7 @@ def test_a_ledger_of_nothing_but_null_nodes_counts_zero(
     # and the view is falsy — the deflation term adds nothing — while the
     # ledger is demonstrably not empty.
     for _ in range(3):
-        test_ledger.append(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP)
+        test_ledger.append(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP, epoch_id=EPOCH)
     view = test_ledger.k_effective()
     assert view.total == 0
     assert bool(view) is False
@@ -143,7 +174,7 @@ def test_the_count_is_of_outcomes_not_of_successes(
     # §6.1's step 11 debits even when the node fails, so a failed trial
     # consumed a hypothesis exactly as a successful one did.  Only
     # charges_budget decides this filter; the outcome never does.
-    test_ledger.append(_node(), CAMPAIGN, outcome, True, ts=STAMP)
+    test_ledger.append(_node(), CAMPAIGN, outcome, True, ts=STAMP, epoch_id=EPOCH)
     assert test_ledger.k_effective().total == 1
 
 
@@ -152,22 +183,23 @@ def test_a_debit_charges_budget_the_same_as_an_append(
 ) -> None:
     # The idempotent write path feeds the same derivation: the debit's
     # directive lands on the row, and the row is what is counted.
-    test_ledger.debit(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP)
-    test_ledger.debit(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP)
+    test_ledger.debit(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id=EPOCH)
+    test_ledger.debit(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP, epoch_id=EPOCH)
     assert test_ledger.k_effective().total == 1
 
 
 # -- The count is per epoch -----------------------------------------------------
 
 
-def test_the_unnamed_epoch_groups_every_row_before_feature_88_lands(
-    test_ledger: TrialLedger,
+def test_a_pre_stamp_table_groups_every_row_under_the_unnamed_epoch(
+    test_ledger: TrialLedger, db_path: Path
 ) -> None:
-    # The table has no epoch_id column until feature 88's stamp arrives,
-    # so every row groups under the un-named epoch: one honest bucket,
-    # labelled as naming no epoch rather than pretending to be one.
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP)
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, False, ts=STAMP)
+    # A table written before feature 88's stamp landed holds rows that
+    # name no epoch — the legacy upgrade brings the column forward, but
+    # no value could honestly fill it — so every row groups under the
+    # un-named epoch: one honest bucket, labelled as naming no epoch
+    # rather than pretending to be one.
+    _legacy_database(db_path, [(str(_node()), 1), (str(_node()), 0)])
     view = test_ledger.k_effective()
     assert view.counts == ((UNNAMED_EPOCH, 1),)
     assert view.epochs == (UNNAMED_EPOCH,)
@@ -175,18 +207,17 @@ def test_the_unnamed_epoch_groups_every_row_before_feature_88_lands(
     assert UNNAMED_EPOCH is None
 
 
-def test_the_derivation_groups_by_epoch_once_the_stamp_lands(
-    test_ledger: TrialLedger, db_path: Path
+def test_the_derivation_groups_by_the_epoch_each_row_charged(
+    test_ledger: TrialLedger,
 ) -> None:
-    # Feature 88's column appears and the derivation becomes a genuine
-    # per-epoch view with no edit to the derivation itself: rows are
-    # counted into the epoch each one charged, and the filter still holds
-    # inside each epoch.
+    # Feature 88's stamp is on every row the store writes now, and the
+    # derivation is a genuine per-epoch view over them: rows are counted
+    # into the epoch each one charged, and the filter still holds inside
+    # each epoch.
     first, second, third = _node(), _node(), _node()
-    test_ledger.append(first, CAMPAIGN, OUTCOME, True, ts=STAMP)
-    test_ledger.append(second, CAMPAIGN, OUTCOME, False, ts=STAMP)
-    test_ledger.append(third, CAMPAIGN, OUTCOME, True, ts=STAMP)
-    _stamp_epochs(db_path, {1: "epoch-7", 2: "epoch-7", 3: "epoch-8"})
+    test_ledger.append(first, CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id="epoch-7")
+    test_ledger.append(second, CAMPAIGN, OUTCOME, False, ts=STAMP, epoch_id="epoch-7")
+    test_ledger.append(third, CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id="epoch-8")
 
     view = test_ledger.k_effective()
     assert view.of("epoch-7") == 1
@@ -196,7 +227,7 @@ def test_the_derivation_groups_by_epoch_once_the_stamp_lands(
 
 
 def test_an_all_null_epoch_is_reported_at_zero_not_omitted(
-    test_ledger: TrialLedger, db_path: Path
+    test_ledger: TrialLedger,
 ) -> None:
     # An epoch whose every trial was a null node charged no degrees of
     # freedom, and the deflation term must be *told* that rather than
@@ -204,9 +235,8 @@ def test_an_all_null_epoch_is_reported_at_zero_not_omitted(
     # is a key a reader can silently get wrong.  So the epoch is listed,
     # at zero.
     charged, nulled = _node(), _node()
-    test_ledger.append(charged, CAMPAIGN, OUTCOME, True, ts=STAMP)
-    test_ledger.append(nulled, CAMPAIGN, OUTCOME, False, ts=STAMP)
-    _stamp_epochs(db_path, {1: "epoch-7", 2: "epoch-8"})
+    test_ledger.append(charged, CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id="epoch-7")
+    test_ledger.append(nulled, CAMPAIGN, OUTCOME, False, ts=STAMP, epoch_id="epoch-8")
 
     view = test_ledger.k_effective()
     assert view.of("epoch-8") == 0
@@ -220,20 +250,21 @@ def test_an_epoch_never_observed_answers_zero(test_ledger: TrialLedger) -> None:
     # answer, because it is the same honest count — were they to differ,
     # a reader's arithmetic would depend on whether a campaign had
     # bothered to run the epoch's null nodes.
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP)
+    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id=EPOCH)
     assert test_ledger.k_effective().of("never-run") == 0
 
 
 def test_the_same_epoch_across_two_campaigns_is_one_epoch(
-    test_ledger: TrialLedger, db_path: Path
+    test_ledger: TrialLedger,
 ) -> None:
     # The grouping key is the epoch, not the campaign: sequestered epochs
     # are a global, non-renewable resource (§6.1), so two campaigns'
     # trials in one epoch spend the same degrees of freedom and are
     # counted together.
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP)
-    test_ledger.append(_node(), OTHER_CAMPAIGN, OUTCOME, True, ts=STAMP)
-    _stamp_epochs(db_path, {1: "epoch-7", 2: "epoch-7"})
+    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id="epoch-7")
+    test_ledger.append(
+        _node(), OTHER_CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id="epoch-7"
+    )
     assert test_ledger.k_effective().of("epoch-7") == 2
 
 
@@ -316,7 +347,7 @@ def test_a_corrupted_directive_on_disk_is_refused_by_the_store_read(
     # corruption, so the refusal is asserted end to end: a row whose
     # stored directive wandered off the bit makes the derivation refuse
     # rather than under-count.
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP)
+    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id=EPOCH)
     with sqlite3.connect(db_path) as connection:
         connection.execute(
             f"UPDATE {TRIAL_LEDGER_TABLE} SET charges_budget = 2 WHERE seq = 1"
@@ -361,13 +392,13 @@ def test_the_gap_between_the_two_reads_is_exactly_the_null_nodes(
     # exceeds K_effective by exactly the null nodes that ran, no more
     # and no less.
     for budget in (True, False, False, True, False):
-        test_ledger.append(_node(), CAMPAIGN, OUTCOME, budget, ts=STAMP)
+        test_ledger.append(_node(), CAMPAIGN, OUTCOME, budget, ts=STAMP, epoch_id=EPOCH)
     view = test_ledger.k_effective()
     null_nodes = 3
     assert view.total == 2
     assert test_ledger.count() == 5
     assert test_ledger.count() - view.total == null_nodes
-    assert view.of(UNNAMED_EPOCH) == view.total
+    assert view.of(EPOCH) == view.total
 
 
 def test_the_derivation_reads_the_log_in_sequence_order(
@@ -378,6 +409,6 @@ def test_the_derivation_reads_the_log_in_sequence_order(
     # happened to sit.  Asserted over a ragged interleaving so a
     # first-row-wins bug could not pass.
     for budget in (True, False, True, False, False, True):
-        test_ledger.append(_node(), CAMPAIGN, OUTCOME, budget, ts=STAMP)
+        test_ledger.append(_node(), CAMPAIGN, OUTCOME, budget, ts=STAMP, epoch_id=EPOCH)
     assert test_ledger.k_effective().total == 3
     assert test_ledger.count() == 6

@@ -40,8 +40,10 @@ endpoint's to say, and neither reaches into the other's half.
 **The request is a frozen value, validated at construction.**  A request
 whose ``node_id`` is not a UUID, whose ``ts`` is naive, whose ``outcome``
 is not one of the four a trial can end in
-(:data:`~ledger.outcome.OUTCOMES`, feature 91), or whose
-``charge_units`` is not a positive finite real (feature 89), is refused
+(:data:`~ledger.outcome.OUTCOMES`, feature 91), whose
+``charge_units`` is not a positive finite real (feature 89), or whose
+``epoch_id`` does not name the sequestered epoch the trial charged
+(feature 88 — absent, blank or not a string, all refused), is refused
 before the
 store is touched — a malformed body spends no sequence number — and the
 canonical spellings (UUID text, aware-UTC stamps) mean two requests for
@@ -49,9 +51,15 @@ the same evaluation compare equal however the caller came by the
 identities.  The outcome is required with no default: the retry this
 endpoint exists to answer is the failure path's own charge, and a body
 that cannot say how the evaluation ended would debit it unclassified.
+The epoch is required on the same terms and for the same reason as at
+the store: the holdout a charge is booked against is a depleting
+resource (§13 item 4 retires an epoch after three promotion decisions)
+and the key ``K_effective`` is derived per (feature 93), so a body that
+cannot name it would debit a charge no audit could place.
 The unit is the one term on this body that *does* default — to §8's own
 ``1.0`` — because an ordinary evaluation's cost is a fact the spec
-already states, while the outcome and the directive are the caller's to
+already states, while the outcome, the directive and the epoch are the
+caller's to
 supply and have no honest presumption.
 
 **The response is a fact, not a receipt to reinterpret.**  ``seq`` is
@@ -79,6 +87,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from .budget import validated_charges_budget
+from .epoch import validated_epoch_id
 from .outcome import validated_outcome
 from .record import TrialLedgerRecord, _validated_instant, _validated_uuid
 from .store import TrialLedger
@@ -115,7 +124,12 @@ class DebitRequest:
     must be able to say whether it consumed statistical budget), the
     ``charge_units`` the evaluation cost (feature 89's stamp: what the
     trial cost, ``1.0`` for an ordinary evaluation and the folds' count
-    for a cross-validated one, defaulting to §8's own ``1.0``), plus an
+    for a cross-validated one, defaulting to §8's own ``1.0``), the
+    ``epoch_id`` of the sequestered epoch the trial charged (feature
+    88's stamp: the holdout the spend is booked against, in the sealing
+    process's own spelling, required, because the epoch is a depleting
+    resource counted in ``epoch_ledger`` and a charge that cannot name
+    it is a charge no audit can place), plus an
     optional ``ts`` for the replay path, which debits the instant it is
     reproducing rather than the instant it ran.  Construction
     canonicalises the identities to UUID text, refuses anything that is
@@ -124,7 +138,9 @@ class DebitRequest:
     is not the oracle's directive — the directive is supplied, never
     derived), holds the unit to a positive finite real (refused rather
     than clamped, so the ledger never *derives* a weight the caller did
-    not state), and normalises a given ``ts`` to aware-UTC while refusing
+    not state), holds the epoch to a name that names one (absent,
+    blank and non-string all refused — feature 88's own clause, at the
+    wire), and normalises a given ``ts`` to aware-UTC while refusing
     a naive instant, the same row contract
     :class:`~ledger.record.TrialLedgerRecord` states: a charge that
     cannot be joined, ranged or classified is a charge no audit can
@@ -155,6 +171,11 @@ class DebitRequest:
     #: evaluation, and the folds' count for a cross-validated one.  A
     #: positive finite real; refused otherwise.
     charge_units: float = DEFAULT_CHARGE_UNITS
+    #: The sequestered epoch the trial charged (§8: ``epoch_id TEXT NOT
+    #: NULL`` — *"which sequestered epoch was charged"*; feature 88), in
+    #: the sealing process's own spelling.  Required: a body that names
+    #: no epoch is refused before the store is touched.
+    epoch_id: Optional[str] = None
     #: When the charge was debited, aware-UTC; ``None`` stamps at the
     #: store's default clock when the row is appended.
     ts: Optional[dt.datetime] = None
@@ -182,6 +203,12 @@ class DebitRequest:
         # a body that says nothing about units is an ordinary trial.
         object.__setattr__(
             self, "charge_units", validated_charge_units(self.charge_units)
+        )
+        # Required at the wire exactly as at the store: the epoch is the
+        # depleting holdout the charge is booked against, and a body that
+        # cannot name it would debit a charge no audit could place.
+        object.__setattr__(
+            self, "epoch_id", validated_epoch_id(self.epoch_id, required=True)
         )
         if self.ts is not None:
             object.__setattr__(self, "ts", _validated_instant(self.ts, "ts"))
@@ -307,12 +334,12 @@ class DebitEndpoint:
         """Answer one POST /ledger/debit: append the charge, or return the prior row.
 
         The whole of feature 95 at its seam, carrying feature 91's
-        outcome stamp, feature 90's budget directive and feature 89's
-        charge unit.  The request's
+        outcome stamp, feature 90's budget directive, feature 89's
+        charge unit and feature 88's epoch.  The request's
         node is the idempotency key: when the node holds no row the
         charge is appended — one row, one fresh sequence, the outcome it
-        ended with, the budget directive the oracle supplied and the unit
-        the evaluation cost — and
+        ended with, the budget directive the oracle supplied, the unit
+        the evaluation cost and the epoch it charged — and
         when it holds one (the worker died after the row landed; the
         response was lost; the retry fired) nothing is written and the
         response carries the *prior* sequence and the *prior* row, so the
@@ -321,7 +348,8 @@ class DebitEndpoint:
         the request carries no ``ts`` (tests and replays route their own
         time through it).
 
-        Refusals are the request's own (a malformed body never reaches
+        Refusals are the request's own (a malformed body — an absent
+        epoch among the rest — never reaches
         the store) and the store's (a configured store whose write fails
         raises :class:`~ledger.errors.TrialStoreError` rather than
         letting a debit silently not land).
@@ -332,6 +360,7 @@ class DebitEndpoint:
             request.outcome,
             request.charges_budget,
             request.charge_units,
+            request.epoch_id,
             ts=request.ts,
             clock=clock,
         )
