@@ -154,6 +154,39 @@ operator's — and the *first* break is the fact on record, because feature
 after a detected determinism break"), and a refresh that moved the instant
 forward would quietly shrink the window that feature exists to widen.
 
+*A break costs the data it was measured over, and that is a
+persistence step of its own.* Feature 144 (app_spec.xml) answers the
+closing clause of §12's canary paragraph — "halts dreaming and marks
+scores produced in the affected window as void" — and it is the one
+feature of this package that *reads another member's table*. Feature
+143 detects and records; feature 144 takes what the detection cost:
+every ``replay_score`` row produced after the break is persisted with a
+void marker, so the pool stops serving it. The reach is the one
+``tripwires.excise`` makes for feature 132 and for the same reason —
+the pool is a table this member does not own, and members here do not
+import each other (the canary is imported on every factory scan and on
+the replay path §1 keeps free of moving parts), so the shape is
+restated once with a provenance comment rather than imported. Nothing
+is ever written *to* the pool: the score rows are evidence, the marker
+is a row in this member's own ``canary_void_marker`` table, and the
+refusal is *derived* from the marker plus the window, so a score
+written after the break is refused even before a sweep has run over it
+— no lag in which bad data is served, which is the "does not age into
+good data" half of the sentence made structural. The window's edge is
+the **earliest** break on record (:meth:`CanaryHaltStore.first_halt`,
+added here for this feature rather than a second reader of the halt
+table), strictly compared, so a later break on another pair can only
+widen the affected window and a score once void stays void. Voiding a
+score whose canary held is refused outright: the feature is about bad
+data, not about its absence. Like features 141 and 143 this is a
+*persistence* step, so it is a fourth registered component —
+:data:`VOID_MARKER_COMPONENT_NAME`, ``canary-void-marker`` — beside the
+pin sweep, the reference store and the halt store: the pin sweep
+answers *is the deployment pinned?*, the reference store *what is the
+frozen pair?*, the halt store *is dreaming halted?*, and this one *may
+this score still be used?* — a fourth question on a fourth lifecycle,
+composed independently of the other three.
+
 *What this package deliberately does not do.* It does not resolve
 tags or consult a registry: feature 135 is an assertion, not a
 resolution, so the pin sweep is a pure parser over strings a deployment
@@ -256,6 +289,21 @@ from ._reproducibility import (
     require_identical,
 )
 from ._service import CanaryService, build_canary_service
+from ._void import (
+    VOID_MARKER_COMPONENT_NAME,
+    VOID_STATUS,
+    VOID_TABLE,
+    CanaryVoidMarkerError,
+    CanaryVoidMarkerStore,
+    VoidMarker,
+    VoidSweep,
+    VoidWindow,
+    build_void_marker_store,
+    mark_void_score,
+    require_score_usable,
+    unvoided_scores,
+    void_scores_after_break,
+)
 
 __all__ = [
     # Feature 135 — the pin vocabulary
@@ -312,6 +360,20 @@ __all__ = [
     "determinism_broken_error",
     "halt_dreaming",
     "require_dreaming_allowed",
+    # Feature 144 — the void marker on every score after a break
+    "VOID_MARKER_COMPONENT_NAME",
+    "VOID_STATUS",
+    "VOID_TABLE",
+    "CanaryVoidMarkerError",
+    "CanaryVoidMarkerStore",
+    "VoidMarker",
+    "VoidSweep",
+    "VoidWindow",
+    "build_void_marker_store",
+    "mark_void_score",
+    "require_score_usable",
+    "unvoided_scores",
+    "void_scores_after_break",
     # The composed component
     "CanaryService",
     "build_canary_service",
@@ -377,3 +439,24 @@ def _registered_halt_store() -> Optional[CanaryHaltStore]:
     that wants the store pointed at a URL uses :class:`CanaryHaltStore`.
     """
     return build_halt_store()
+
+
+@register(VOID_MARKER_COMPONENT_NAME)
+def _registered_void_marker_store() -> Optional[CanaryVoidMarkerStore]:
+    """Component builder: the void-marker store, from the environment.
+
+    Feature 144's store half, composed under a fourth name for the same reason
+    the halt store took a third: the pin sweep, the reference store, the halt
+    store and this one are four different things on four different lifecycles —
+    one asserts the deployment's pins, one persists the frozen pair, one holds
+    the halt of dreaming, and this one holds which scores the break voided —
+    and a deployment configured for any three composes the fourth
+    independently.  Resolves rather than strict, exactly as the other two
+    stores do: the factory builds every component on every ``create_app()``, so
+    a deployment with no ``DATABASE_URL`` composes ``None`` — a discoverable
+    state, not an exception — and the nightly runner that must void the affected
+    window is the caller :func:`canary.void_scores_after_break` refuses by name,
+    not the factory.  A caller that wants the store pointed at a URL uses
+    :class:`CanaryVoidMarkerStore`.
+    """
+    return build_void_marker_store()

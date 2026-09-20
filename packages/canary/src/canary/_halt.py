@@ -745,6 +745,23 @@ class CanaryHaltStore:
 
     # -- Feature 143: the reads ---------------------------------------------
 
+    def ensure_schema(self) -> None:
+        """Bring the database to the shape this store reads, idempotently.
+
+        Public so a caller that reaches this store through another store's
+        composition — feature 144's void store reads its window edge here, the
+        way :meth:`tripwires.ReplayPool.ensure_schema` reaches feature 131's
+        store — can prepare the halt table without reaching for the private
+        :meth:`_connect`.  An operator pointing this member at a database the
+        orchestrator has not migrated yet runs it once, and a test seeds a halt
+        into exactly the schema the store will read.
+
+        Every statement is ``CREATE TABLE IF NOT EXISTS``, so a fresh database,
+        a migrated one and one this member already prepared all take the same
+        path and leave the same schema.
+        """
+        self._connect().close()
+
     def halted(self) -> bool:
         """Whether dreaming is halted — §12's state, as one bit.
 
@@ -780,6 +797,35 @@ class CanaryHaltStore:
             cursor = connection.execute(
                 f"SELECT {_COLUMNS} FROM {HALT_TABLE} "
                 "ORDER BY halted_at DESC, detected_at DESC, code_hash LIMIT 1"
+            )
+            try:
+                row = cursor.fetchone()
+            finally:
+                cursor.close()
+        if row is None:
+            return None
+        return self._record_from_row(row, changed=False)
+
+    def first_halt(self) -> Optional[DreamHalt]:
+        """The *earliest* break on record — the window feature 144 voids from.
+
+        Deliberately not :meth:`current_halt`.  That read answers the operator's
+        question — *what is the halt in force?* — and returns the latest write,
+        which is right for a page and wrong for a window: feature 144 voids
+        "every score produced **after** a detected determinism break", and the
+        break that first stopped dreaming is the one whose instant bounds the
+        affected window.  Returning the latest would let a second, later break
+        on another pair pull the boundary *forward* and quietly shrink the set
+        of scores the system refuses — the exact aging of bad data into good
+        data that feature exists to prevent.  So the ordering is by
+        ``detected_at`` ascending (and by ``code_hash`` to break a tie the
+        second-resolution stamps can genuinely produce), not by ``halted_at``.
+        ``changed`` is ``False`` on every read-back; a read wrote nothing.
+        """
+        with closing(self._connect()) as connection:
+            cursor = connection.execute(
+                f"SELECT {_COLUMNS} FROM {HALT_TABLE} "
+                "ORDER BY detected_at, code_hash LIMIT 1"
             )
             try:
                 row = cursor.fetchone()

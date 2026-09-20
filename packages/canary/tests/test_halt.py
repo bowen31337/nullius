@@ -375,6 +375,59 @@ class TestTheStorePersistsTheHalt:
         assert read.detected_at == written.detected_at
         assert read.changed is False  # a read wrote nothing
 
+    def test_first_halt_answers_the_window_question_not_the_page_question(
+        self, store: CanaryHaltStore
+    ) -> None:
+        # Two reads, two questions, and feature 144 turns on the difference:
+        # ``current_halt`` answers the operator's *what is the halt in force?*
+        # and returns the latest write, while ``first_halt`` answers *when did
+        # this deployment's determinism break?* and returns the earliest.  A
+        # window keyed on the latest would let a second break on another pair
+        # pull its boundary forward and quietly shrink the set of scores the
+        # system refuses — bad data aging into good data.
+        first_pair = _broken_pair(offset=0.5)
+        second_pair = CanaryReferencePair(
+            policy=CanaryPolicy.freeze(
+                version="canary-v2",
+                policy={"scoring": {"weights": {"a": 0.25, "b": 0.75}}},
+            ),
+            tree=_tree(),
+            recorded_score=EXPECTED_SCORE - 0.25,
+            id=None,
+            is_active=True,
+            created_at=datetime(2025, 1, 2, tzinfo=timezone.utc),
+        )
+        assert second_pair.policy.code_hash != first_pair.policy.code_hash
+        # Written *latest* first, so neither read can agree with the other by
+        # accident of insertion order.
+        store.halt(
+            second_pair,
+            replay_pair(second_pair),
+            detected_at=DETECTED_AT + timedelta(days=7),
+            halted_at=HALTED_AT + timedelta(days=7),
+        )
+        store.halt(
+            first_pair,
+            replay_pair(first_pair),
+            detected_at=DETECTED_AT,
+            halted_at=HALTED_AT,
+        )
+        earliest = store.first_halt()
+        latest = store.current_halt()
+        assert earliest is not None and latest is not None
+        assert earliest.detected_at == DETECTED_AT
+        assert earliest.code_hash == first_pair.policy.code_hash
+        assert latest.detected_at == DETECTED_AT + timedelta(days=7)
+        assert earliest.changed is False  # a read wrote nothing
+
+    def test_first_halt_is_none_when_nothing_has_broken(
+        self, store: CanaryHaltStore
+    ) -> None:
+        # An empty store is not an empty window: ``None`` is how feature 144
+        # tells "the canary held" from "the canary broke and nothing was
+        # produced after it".
+        assert store.first_halt() is None
+
     def test_a_later_observation_does_not_move_the_break(
         self, store: CanaryHaltStore
     ) -> None:

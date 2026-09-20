@@ -206,3 +206,73 @@ def test_the_halt_store_seat_is_a_third_module_beside_the_other_two() -> None:
     ]
     assert halt_seat.__all__ == ["COMPONENT_NAME", "halt_store_component"]
     assert halt_seat.__name__ != reference_seat.__name__
+
+
+def test_the_void_marker_seat_exposes_its_component_name() -> None:
+    # The seat spells its own component name, so the three spellings — the
+    # member's (:data:`canary.VOID_MARKER_COMPONENT_NAME`), the seat's and the
+    # one the factory composes under — cannot drift apart silently.
+    from app.modules.canary.void import COMPONENT_NAME
+
+    assert COMPONENT_NAME == "canary-void-marker"
+
+
+def test_the_void_marker_seat_reads_from_an_application_it_is_handed() -> None:
+    from app.modules.canary.void import void_marker_component
+
+    application = Application(
+        components={"canary-void-marker": "sentinel"},
+        order=("canary-void-marker",),
+    )
+    assert void_marker_component(application) == "sentinel"
+
+
+def test_the_void_marker_seat_degrades_rather_than_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A deployment without a ``DATABASE_URL`` composes no void-marker store —
+    # degrade, don't break — and the seat answers ``None`` rather than raising,
+    # exactly as the other three seats do for the same deployment fact.
+    from app.modules.canary.void import void_marker_component
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    assert void_marker_component() is None
+
+
+def test_the_void_marker_seat_reaches_the_composed_store(
+    test_database_url: str,
+) -> None:
+    # Feature 144's store, through the seat: the composed void-marker store the
+    # factory built, pointed at the deployment's database — the store every
+    # score produced after a determinism break is marked in.
+    from app.modules.canary.void import void_marker_component
+
+    store = void_marker_component()
+    assert store is not None
+    assert store.database_url == test_database_url
+
+
+def test_the_void_marker_seat_is_a_fourth_module_beside_the_other_three() -> None:
+    # Four components, four seats — and the older three keep exactly the
+    # surfaces they promised: a fourth accessor crowded into any of them would
+    # be a caller-visible change to a feature that already shipped.
+    import app.modules.canary as pin_seat
+    import app.modules.canary.halt as halt_seat
+    import app.modules.canary.reference_store as reference_seat
+    import app.modules.canary.void as void_seat
+
+    assert pin_seat.__all__ == ["COMPONENT_NAME", "canary_component"]
+    assert reference_seat.__all__ == [
+        "COMPONENT_NAME",
+        "reference_store_component",
+    ]
+    assert halt_seat.__all__ == ["COMPONENT_NAME", "halt_store_component"]
+    assert void_seat.__all__ == ["COMPONENT_NAME", "void_marker_component"]
+    assert len(
+        {
+            pin_seat.__name__,
+            reference_seat.__name__,
+            halt_seat.__name__,
+            void_seat.__name__,
+        }
+    ) == 4
