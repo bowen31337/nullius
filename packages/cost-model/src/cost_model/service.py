@@ -50,6 +50,10 @@ from .config import (
     read_cost_model_document,
 )
 from .errors import CostModelConfigError
+from .fill_probability import (
+    FillProbabilityModel,
+    resolve_fill_probability_model,
+)
 from .latency import EmpiricalLatencyDistribution
 from .latency_store import (
     load_latest_latency_distribution,
@@ -274,6 +278,31 @@ class CostModelService:
         feature's sentence rules out.
         """
         return resolve_passive_fill_model(self.document)
+
+    def fill_probability(self) -> FillProbabilityModel:
+        """Resolve the passive fill-probability decay from the loaded document.
+
+        Feature 65's configuration half: §6.2's document names the behaviour
+        (``fill_model.passive.fill_probability_model:
+        exp_decay_vs_queue_depth``), and this is the caller's handle on it —
+        the evaluator and the live execution engine both reach the decay
+        through the composed service, so the two cannot each grow their own
+        fill-probability model (feature 69's promise, and §6.2's ``β₄``
+        invariant).  The model is resolved from the one cached parse (see
+        :attr:`document`), so it is the behaviour of the document the
+        resolved identity was loaded from — the same parse the two fill
+        gates read (:meth:`passive`, :meth:`aggressive`), so the passive
+        half's gate and its fraction cannot disagree about which document
+        was loaded.
+
+        Raises :class:`~cost_model.errors.CostModelConfigError` when the
+        document names no fill-probability model or names one that is not
+        exactly ``exp_decay_vs_queue_depth`` — the shared library implements
+        the exponential decay and nothing else, because a second model
+        behind a string is how the two implementations feature 69 forbids
+        grow back.
+        """
+        return resolve_fill_probability_model(self.document)
 
     def persist_latency(
         self,

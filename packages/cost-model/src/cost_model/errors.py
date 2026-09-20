@@ -21,16 +21,18 @@ not by which line of code failed:
   configured at all is not this error — see :mod:`cost_model.service` for
   the stance that separates the two.
 * :class:`CostModelFillError` — the fill-input contract
-  (:mod:`cost_model.book_walk`, feature 66, and
-  :mod:`cost_model.passive_fill`, feature 63).  A recorded book, an
-  aggressive order or a walk over them, or a recorded tape, a passive order
-  or a gate over them, that the fill model cannot price: a ladder whose
-  levels are out of order, a book with an empty or crossed side, an order
-  the recorded depth cannot fill, a tape that carries a non-trade, a
-  decision that asserts a fill with no triggering trade.  Each is refused
-  rather than smoothed over, because the alternative — pricing the
-  unpriceable — is exactly the unrealistic fill figure the feature's
-  sentence rules out.
+  (:mod:`cost_model.book_walk`, feature 66,
+  :mod:`cost_model.passive_fill`, feature 63, and
+  :mod:`cost_model.fill_probability`, feature 65).  A recorded book, an
+  aggressive order or a walk over them; a recorded tape, a passive order or
+  a gate over them; or a rebalance's queue observation or the fraction
+  decayed from it, that the fill model cannot price: a ladder whose levels
+  are out of order, a book with an empty or crossed side, an order the
+  recorded depth cannot fill, a tape that carries a non-trade, a decision
+  that asserts a fill with no triggering trade, a negative queue depth.  Each
+  is refused rather than smoothed over, because the alternative — pricing the
+  unpriceable — is exactly the unrealistic fill figure the feature's sentence
+  rules out.
 
 Every message names the offending value and the contract it broke, because
 these are operational signals for a pipeline that loads a Z0 artifact on
@@ -110,6 +112,18 @@ class CostModelFillError(ValueError, CostModelError):
     answer *filled* anyway, because a fill produced by smoothing over a
     broken tape or a mere touch would be *unrealistic by construction*,
     which is precisely the defect the feature exists to remove.
+
+    Feature 65: *"System models passive fill probability as exponential
+    decay against queue depth, which returns a fill fraction per
+    rebalance."*  This is the same contract on the fraction: a rebalance's
+    queue observation — a negative depth, a non-positive order size, a
+    non-finite volume — that the decay cannot honestly fraction, where the
+    one thing it must not do is return a fraction anyway, because a fill
+    fraction produced from an impossible queue would be *unrealistic by
+    construction*, which is precisely the defect the feature exists to
+    remove.  (A level that traded *nothing* is not this error: that is a
+    recorded fact the decay answers with an honest zero, the way an empty
+    tape is an honest no-fill for feature 63.)
 
     Dual-inherited for the same reason :class:`CostModelConfigError` is: a
     caller catching this package's single vocabulary catches a refused fill

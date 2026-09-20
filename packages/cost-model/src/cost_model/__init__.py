@@ -41,6 +41,22 @@ touch-fill the sentence rules out and this library does not carry it.  It
 is the gate features 64 and 65 build on: the queue-position penalty and the
 fill-probability decay price a fill this feature has already granted.
 
+Feature 65 layers onto that gate from the fill model's passive half:
+*System models passive fill probability as exponential decay against queue
+depth, which returns a fill fraction per rebalance.*  It is §6.2's
+``passive.fill_probability_model: exp_decay_vs_queue_depth`` made concrete,
+and :mod:`cost_model.fill_probability` holds it — the rebalance's view of
+the queue as a value (:class:`~cost_model.fill_probability.QueueObservation`,
+the depth ahead of the order, the order's size and the volume the level
+traded), and the fraction that decays it
+(:class:`~cost_model.fill_probability.FillProbability`).  The decay answers
+the question feature 63's gate leaves open — a resting order that filled at
+all filled *how much* — with ``exp(-queue_ahead / rebalance_volume)``,
+multiplied by the volume bound ``min(1, volume / order_quantity)`` so the
+fraction can never claim more of the order than the tape printed at its
+price.  A document whose ``fill_probability_model`` names anything else is
+refused, because the field names a model and this library carries one.
+
 Feature 66 layers onto that identity from the fill model's aggressive
 half: *System walks the recorded L2 book for an aggressive order rather
 than crossing at the midpoint, which returns a realistic slippage
@@ -124,6 +140,16 @@ from .errors import (
     CostModelFillError,
     CostModelStoreError,
 )
+from .fill_probability import (
+    EXP_DECAY_MODEL,
+    FILL_PROBABILITY_KEY,
+    HALF_LIFE_REBALANCES,
+    FillProbability,
+    FillProbabilityModel,
+    QueueObservation,
+    passive_fill_fraction,
+    resolve_fill_probability_model,
+)
 from .latency import (
     DEFAULT_QUANTILES,
     QUANTILE_METHOD,
@@ -165,7 +191,10 @@ __all__ = [
     "DATABASE_URL_ENV",
     "DEFAULT_COST_MODEL_PATH",
     "DEFAULT_QUANTILES",
+    "EXP_DECAY_MODEL",
     "FILL_MODEL_KEY",
+    "FILL_PROBABILITY_KEY",
+    "HALF_LIFE_REBALANCES",
     "LATENCY_TABLE",
     "PASSIVE_KEY",
     "QUANTILE_METHOD",
@@ -183,9 +212,12 @@ __all__ = [
     "CostModelService",
     "CostModelStoreError",
     "EmpiricalLatencyDistribution",
+    "FillProbability",
+    "FillProbabilityModel",
     "PassiveFillDecision",
     "PassiveFillModel",
     "PassiveOrder",
+    "QueueObservation",
     "RecordedBook",
     "RecordedTape",
     "Trade",
@@ -195,12 +227,14 @@ __all__ = [
     "load_latency_distributions",
     "load_latest_latency_distribution",
     "load_persisted_cost_model",
+    "passive_fill_fraction",
     "persist_cost_model",
     "persist_latency_distribution",
     "quantile",
     "read_cost_model_document",
     "require_yaml",
     "resolve_aggressive_fill_model",
+    "resolve_fill_probability_model",
     "resolve_passive_fill_model",
     "walk_recorded_book",
 ]
