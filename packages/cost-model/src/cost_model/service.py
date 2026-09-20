@@ -50,6 +50,7 @@ from .config import (
     read_cost_model_document,
 )
 from .errors import CostModelConfigError
+from .fees import FeeSchedule, resolve_fee_schedule
 from .fill_probability import (
     FillProbabilityModel,
     resolve_fill_probability_model,
@@ -330,6 +331,36 @@ class CostModelService:
         document that omits the field has not named the behaviour.
         """
         return resolve_queue_position_penalty_model(self.document)
+
+    def fees(self) -> FeeSchedule:
+        """Resolve the venue's taker and maker fee schedule from the loaded document.
+
+        Feature 61's configuration half: §6.2's document carries the fee
+        schedule (``fees.taker_bps`` and ``fees.maker_bps``), and this is the
+        caller's handle on it — the evaluator and the live execution engine
+        both deduct the fee through the composed service, so the two cannot
+        each grow their own fee schedule (feature 69's promise, and §6.2's
+        ``β₄`` invariant).  The schedule is resolved from the one cached
+        parse (see :attr:`document`), so it is the schedule of the document
+        the resolved identity was loaded from — the same parse the fill
+        gates, the fill-probability decay, the aggressive walk and the queue
+        penalty read, so the fee axis and the fill axis cannot disagree about
+        which document was loaded.
+
+        This is the seam feature 62's discount token substitutes into: the
+        discount resolves a *different rate* and hands it to
+        :meth:`FeeSchedule.apply` (or :func:`~cost_model.fees.apply_fee`)
+        rather than re-deriving the charge, so the discount is a change to
+        one input rather than a second implementation of the fee.
+
+        Raises :class:`~cost_model.errors.CostModelConfigError` when the
+        document names no ``fees`` block, or names one whose taker or maker
+        rate is absent or not a non-negative finite real, or whose venue is
+        missing or blank — a fee defaulted to zero silently is the floored
+        simulator `docs/alpha-engine-prd.md` §10 warns about, and a cost
+        model that cannot price one side of a fill is not a cost model.
+        """
+        return resolve_fee_schedule(self.document)
 
     def persist_latency(
         self,
