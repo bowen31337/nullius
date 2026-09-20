@@ -117,6 +117,22 @@ violated, not by which line of code failed:
   signal inside a world planted to have none.  Both read as ordinary
   answers downstream, which is exactly why the refusal must be loud here.
 
+* :class:`IsNullColumnError` — the storage barrier's contract (app_spec.xml
+  feature 110, docs/nullius-tech-architecture.md §7.1).  A node column
+  proposed for the tree store is named ``is_null``, or the tree store's
+  ``node`` table is found carrying one, and §7.1 states the rule as a fact
+  about the schema rather than a policy about its use: *"There is no
+  ``is_null`` column anywhere in the tree store.  Not hidden, not nulled
+  out, not ``SELECT``-excluded.  Absent."*  Every message this class carries
+  begins with the code :data:`nulloracle.schemaguard.NULL_COLUMN`
+  (``is_null_column``), so an operator grepping a log for the rejection
+  finds it by the offender's own name — the same discipline
+  :class:`HeterogeneousWorldError` applies to its code.  Kept outside
+  :class:`KsGuardError` deliberately: a caller catching this refusal is
+  rejecting a *schema* (or learning a barrier is already broken), not
+  handling a broken store, and conflating the two would let the one column
+  the whole method forbids be retried as a database hiccup.
+
 Every message names the offending value and the contract it broke, in the
 same discipline as the ledger member's taxonomy: these errors are
 operational signals for a system whose whole FDR claim rests on the labels
@@ -128,6 +144,7 @@ from __future__ import annotations
 
 __all__ = [
     "HeterogeneousWorldError",
+    "IsNullColumnError",
     "KsGuardError",
     "KsTestError",
     "NullOracleError",
@@ -373,4 +390,50 @@ class TargetPayloadError(NullOracleError):
     unwrapped: a sidecar that will not open is not a payload that cannot be
     built, and a caller that conflated the two would go looking for a missing
     seam when the key was wrong.
+    """
+
+
+class IsNullColumnError(NullOracleError):
+    """A node column named ``is_null`` was proposed, or found, on the tree store.
+
+    app_spec.xml feature 110 is the rule — *System keeps ``is_null`` absent
+    from the tree store entirely, which rejects any proposed node column
+    named ``is_null``* — and docs/nullius-tech-architecture.md §7.1 states it
+    as a fact about the schema rather than a policy about its use: *"There is
+    no ``is_null`` column anywhere in the tree store.  Not hidden, not nulled
+    out, not ``SELECT``-excluded.  Absent.  The only way to learn a node's
+    status is to hold the sidecar key."*  The refusal exists because the
+    column is the one leak that pays for itself: §1's priority list puts it
+    second — *"`is_null` is not a column in the tree store.  It lives in an
+    encrypted sidecar whose key is held by one process.  A leak here silently
+    voids every calibration number the system has ever produced, and you
+    would not notice."*
+
+    Two moments, one class:
+
+    * **a proposal** — :func:`nulloracle.schemaguard.review_node_columns` and
+      :func:`nulloracle.schemaguard.review_ddl` refuse a column list or a
+      migration's DDL that names ``is_null`` for the ``node`` table, *before*
+      anything is applied, so the column never lands;
+    * **the standing audit** —
+      :meth:`nulloracle.schemaguard.TreeStoreGuard.audit` reads the live
+      store's declared columns and refuses when one is present, because
+      *"keeps absent"* is a maintained state, not a one-time claim, and a
+      column can arrive by a path that skipped the review (a hand-run
+      ``ALTER``, a store written by an older deployment).
+
+    Every message begins with the code ``is_null_column``
+    (:data:`nulloracle.schemaguard.NULL_COLUMN`) and names the offending
+    spelling, so the failure is greppable by the offender's own name — an
+    uppercase ``IS_NULL`` lands identically in SQLite (column names are
+    case-insensitive there), so the comparison is casefolded and a message
+    that only ever said ``is_null`` would hide which spelling to drop.
+
+    Kept outside :class:`KsGuardError` for the same reason
+    :class:`HeterogeneousWorldError` is: a caller catching the store's error
+    is investigating a *row* or a *connection*, and a caller catching this
+    one is rejecting a *schema* — or learning the barrier is already broken,
+    which is a fact no retry changes.  A migration runner that retried the
+    forbidden column as a transient failure would plant exactly the leak
+    §1 says nobody would notice.
     """

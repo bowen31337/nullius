@@ -21,6 +21,24 @@ seeds this member stores), 117's ``φ`` and 118-122's campaign assignment
 (the writers of the map this member seals), and 123-124's KS guard (which
 needs the labels, not merely their count).
 
+**Feature 110 is the rule about the store this member stands beside.** §7.1
+states it as a fact about the schema: *"There is no ``is_null`` column
+anywhere in the tree store.  Not hidden, not nulled out, not
+``SELECT``-excluded.  Absent."*  :mod:`nulloracle.schemaguard` is that
+sentence as a refusal rather than a convention — §4.2 closes its own
+statement of the barrier with *"enforce it with a type-level barrier, not a
+code review"*, and a column nobody may name is exactly the thing a code
+review misses.  Three spellings share one decision: the reviews refuse a
+proposed column (names as data, or a migration's DDL read as data) before
+it lands, and the standing audit reads the live store's *declared* schema —
+read-only, so a check never mutates what it checks — and refuses when the
+column is present, because *"keeps absent"* is a maintained state and a
+column can arrive by a path that skipped the reviews.  The comparison is
+casefolded (``IS_NULL`` is ``is_null`` in every SQLite query), the refusal
+is :class:`~nulloracle.errors.IsNullColumnError` with the greppable
+``is_null_column`` code, and the boundary is the ``node`` table the spec's
+own words name — a column elsewhere is §4.2's and feature 354's to police.
+
 **Feature 123 is where the labels are finally *used*, and it is the one
 place they may be.**  §7.4 states the test — *"a job holding the sidecar key
 runs a two-sample KS test on in-sample score distributions, null nodes vs.
@@ -253,6 +271,18 @@ already says:
   campaign's ``calibration_status`` to ``VOID``.  The test measures, the
   verdict decides, and the verdict pronounces on the number the guard
   persisted rather than on one a caller hands in.
+* :class:`~nulloracle.schemaguard.TreeStoreGuard` with
+  :class:`~nulloracle.schemaguard.SchemaAudit` and
+  :func:`~nulloracle.schemaguard.audit_tree_store` — feature 110's standing
+  audit: the guard reads the tree store's ``node`` table read-only and
+  answers whether §7.1's rule holds over it, refusing by name when the one
+  forbidden column is declared.
+* :func:`~nulloracle.schemaguard.review_node_columns` and
+  :func:`~nulloracle.schemaguard.review_ddl` (over
+  :func:`~nulloracle.schemaguard.node_columns_from_ddl`) — feature 110's
+  proposal reviews, the halves that need no store at all: the names a
+  caller would give the ``node`` table, or a migration's DDL read as data,
+  refused before anything is applied.
 * The error taxonomy of :mod:`nulloracle.errors`, one base class wide —
   and its central distinction is that an unopenable sidecar raises rather
   than reading as an empty one.
@@ -286,6 +316,7 @@ from .envelope import (
 )
 from .errors import (
     HeterogeneousWorldError,
+    IsNullColumnError,
     KsGuardError,
     KsTestError,
     NullOracleError,
@@ -441,6 +472,16 @@ from .selection import (
     perm_seed_for,
     persist_type_r_selection,
 )
+from .schemaguard import (
+    FORBIDDEN_COLUMN,
+    NULL_COLUMN,
+    SchemaAudit,
+    TreeStoreGuard,
+    audit_tree_store,
+    node_columns_from_ddl,
+    review_ddl,
+    review_node_columns,
+)
 from .sidecar import (
     SIDECAR_DIRECTORY,
     SIDECAR_FILE_MODE,
@@ -482,6 +523,7 @@ __all__ = [
     "FLIP_DEPTH_COLUMN",
     "FLIP_DEPTH_COMPONENT_NAME",
     "FORMAT_VERSION",
+    "FORBIDDEN_COLUMN",
     "FRACTION_COMPONENT_NAME",
     "HETEROGENEOUS_WORLD",
     "HORIZONS",
@@ -503,6 +545,7 @@ __all__ = [
     "NODE_TABLE",
     "NONCE_BYTES",
     "NOT_FOUND",
+    "NULL_COLUMN",
     "NULL_FRACTION_COLUMN",
     "OK",
     "PHI_CEILING",
@@ -528,6 +571,7 @@ __all__ = [
     "TAG_BYTES",
     "TARGET_COMPONENT_NAME",
     "TARGET_ROUTE",
+    "TREE_STORE_COMPONENT_NAME",
     "TRUE_IR_FLIP_DEPTH_COMPONENT_NAME",
     "TRUE_IR_MIDPOINT",
     "TRUE_IR_SCALE",
@@ -543,6 +587,7 @@ __all__ = [
     "FlipDepth",
     "FlipDepthDistribution",
     "HeterogeneousWorldError",
+    "IsNullColumnError",
     "KeyAlertJournal",
     "KeyBackend",
     "KeyReference",
@@ -558,6 +603,7 @@ __all__ = [
     "PlantedNullFraction",
     "PreservationReport",
     "RootSelection",
+    "SchemaAudit",
     "SidecarAccessError",
     "SidecarDecryptionError",
     "SidecarError",
@@ -571,6 +617,7 @@ __all__ = [
     "TargetResponse",
     "TargetRouteError",
     "TrueIRFlipDepth",
+    "TreeStoreGuard",
     "TypeDOracle",
     "TypeDResolution",
     "TypeRSelection",
@@ -578,6 +625,7 @@ __all__ = [
     "UnrecoverableStateError",
     "Verdict",
     "assignments_digest",
+    "audit_tree_store",
     "autocorrelation",
     "block_indices",
     "block_permute",
@@ -613,6 +661,7 @@ __all__ = [
     "load_ks_guard",
     "load_verdict",
     "node_as_seed",
+    "node_columns_from_ddl",
     "normalize_node_id",
     "null_fraction",
     "null_root_count",
@@ -635,6 +684,8 @@ __all__ = [
     "resolve_sidecar_key",
     "resolve_type_d",
     "review_campaign_plan",
+    "review_ddl",
+    "review_node_columns",
     "seal",
     "service_account",
     "signal_to_target_correlation",
@@ -778,6 +829,26 @@ TARGET_COMPONENT_NAME = "nulloracle-target-route"
 #: ``nulloracle-plan-gate`` and before ``nulloracle-target-route``, leaving the
 #: adjacency untouched.
 KEY_ALERT_COMPONENT_NAME = "nulloracle-sidecar-key-alert"
+
+#: The component name feature 110's tree-store guard registers under — the
+#: key a composed :class:`~app.module_loader.Application` carries the guard
+#: at.  A twelfth name rather than a twelfth component under any of the
+#: other eleven, because the guard is a different thing on its own
+#: lifecycle: it holds no data and no labels at all — it is the standing
+#: audit over a *schema*, run by the deployment that must be able to ask
+#: *does the tree store still carry no ``is_null`` column?* — so a
+#: deployment can carry every writer and reader of the bit without the
+#: guard, and the guard without a single one of them.
+#:
+#: The ``tree-`` prefix is load-bearing the way the ``sidecar-`` one is.
+#: ``app.order`` is name-sorted and tests pin feature 123's guard landing
+#: immediately after the sidecar (``nulloracle`` + 1 ==
+#: ``nulloracle-ks-guard``), so a name sorting into that pair would break a
+#: rule this member has held since feature 123.  ``nulloracle-tree-store-
+#: guard`` sorts after ``nulloracle-target-route`` (``tar`` < ``tre``) and
+#: before ``nulloracle-true-ir-flip-depth`` (``tre`` < ``tru``), so the
+#: adjacency is untouched on both sides.
+TREE_STORE_COMPONENT_NAME = "nulloracle-tree-store-guard"
 
 
 @register(FRACTION_COMPONENT_NAME)
@@ -1245,3 +1316,48 @@ def build_key_alert_journal() -> KeyAlertJournal | None:
     feature 111 emits is emitted by the caller that asked for the key.
     """
     return KeyAlertJournal.resolve()
+
+
+@register(TREE_STORE_COMPONENT_NAME)
+def build_tree_store_guard() -> TreeStoreGuard | None:
+    """Component builder: §7.1's schema barrier, bound to the environment.
+
+    Feature 110's standing half as a component, so a deployment that must be
+    able to ask *does the tree store still carry no ``is_null`` column?* —
+    an operator script, a nightly job, a CI step over a live store — asks
+    the composed application for the guard rather than reading
+    ``DATABASE_URL`` itself, the same seam the member's other satellites
+    expose.
+
+    Takes no arguments — that is the factory's registration protocol — and
+    resolves its path from the environment at build time.
+
+    Returns ``None`` when nothing names a relational store, the
+    degrade-don't-break stance every store in this workspace takes toward an
+    absent ``DATABASE_URL``: an unconfigured guard is a discoverable state,
+    and a deployment whose tree store must be auditable is the caller that
+    must not find itself in it.  Note what the state does *not* mean: it is
+    a statement about the deployment, never *"the barrier holds"* — that is
+    a fact about a store, and a caller that read ``None`` as a passing audit
+    would have the exact silence this feature exists to remove.
+
+    Like :func:`build_ks_guard`, this never raises, including for a URL
+    whose scheme this guard cannot speak.  The factory builds every
+    registered component on every :func:`~app.module_loader.create_app` call,
+    so a builder that raised would take composition down for every unrelated
+    feature; a process that *requires* the audit asks
+    :meth:`nulloracle.schemaguard.TreeStoreGuard.audit` or calls
+    :func:`nulloracle.schemaguard.audit_tree_store` directly, where a named
+    :class:`~nulloracle.errors.KsGuardError` is the right answer.
+    Construction performs no I/O — the path is resolved on first use and the
+    store is opened read-only at the first ``audit()`` — so composing the
+    application never opens a database, and the audit never mutates the
+    store it audits.
+
+    The proposal half of the feature needs no component and gets none: the
+    reviews (:func:`nulloracle.schemaguard.review_node_columns`,
+    :func:`nulloracle.schemaguard.review_ddl`) hold no path and no state, so
+    a caller imports them directly — a component whose builder ran them
+    would have nothing to run them *on*.
+    """
+    return TreeStoreGuard.resolve()
