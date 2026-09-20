@@ -59,6 +59,20 @@ at or beyond it.  The permutation arrives as a seam — §7.2's
 feature 121's and the *permutation* is not; what the oracle refuses to do is
 serve the permuted branch without one.
 
+**Feature 122 is the gate the two writers answer to.**  §7.3 fixes the rule
+in one sentence — *"Campaigns are homogeneous in null type.  Mixed trees make
+a bad FDR unattributable between selection failure and stopping failure"* —
+and :mod:`nulloracle.plan` is that sentence as a refusal:
+:class:`~nulloracle.plan.CampaignPlan` is one campaign's planned null world
+(the declared regime, the roots a selection lands on, the branches a flip
+lands on) and a plan that mixes the two regimes within one tree refuses to
+*exist*, raising :class:`~nulloracle.errors.HeterogeneousWorldError` with the
+``heterogeneous_world`` message the spec names.  The writers each decline the
+regime they are not on their own row; this is the check above them, and
+:class:`~nulloracle.plan.CampaignPlanGate.review` reads the plan they left
+behind — flip depths off the tree, root selections off §7.1's sealed file —
+so a world that went mixed by any path is caught by the one decision.
+
 **The three halves, and why they are three modules.**  A sidecar entry is a
 schema (:mod:`nulloracle.assignment`), a cipher (:mod:`nulloracle.envelope`)
 and a file (:mod:`nulloracle.sidecar`), and each is separately arguable.
@@ -154,6 +168,7 @@ from .envelope import (
     seal,
 )
 from .errors import (
+    HeterogeneousWorldError,
     KsGuardError,
     KsTestError,
     NullOracleError,
@@ -235,6 +250,13 @@ from .phi import (
     null_fraction,
     persist_null_fraction,
 )
+from .plan import (
+    HETEROGENEOUS_WORLD,
+    REGIMES,
+    CampaignPlan,
+    CampaignPlanGate,
+    review_campaign_plan,
+)
 from .resolution import (
     TYPE_D_CAMPAIGN_TYPE,
     TypeDOracle,
@@ -282,6 +304,7 @@ __all__ = [
     "FLIP_DEPTH_COMPONENT_NAME",
     "FORMAT_VERSION",
     "FRACTION_COMPONENT_NAME",
+    "HETEROGENEOUS_WORLD",
     "KEY_REF_ENV",
     "KS_ASYMPTOTIC",
     "KS_ASYMPTOTIC_FLOOR",
@@ -297,6 +320,7 @@ __all__ = [
     "NULL_FRACTION_COLUMN",
     "PHI_CEILING",
     "PHI_FLOOR",
+    "PLAN_COMPONENT_NAME",
     "P_MAX",
     "P_MIN",
     "RESOLUTION_COMPONENT_NAME",
@@ -311,9 +335,12 @@ __all__ = [
     "VERDICT_COMPONENT_NAME",
     "VOID_THRESHOLD",
     "WORKSPACE_COUNT_COLUMN",
+    "CampaignPlan",
+    "CampaignPlanGate",
     "EnsureKeyResult",
     "FlipDepth",
     "FlipDepthDistribution",
+    "HeterogeneousWorldError",
     "KeyReference",
     "KolmogorovSmirnov",
     "KsGuard",
@@ -325,6 +352,7 @@ __all__ = [
     "NullSidecar",
     "PROBABILITY_CEILING",
     "PROBABILITY_FLOOR",
+    "REGIMES",
     "PlantedNullFraction",
     "RootSelection",
     "SidecarAccessError",
@@ -344,6 +372,7 @@ __all__ = [
     "TypeRSelection",
     "Verdict",
     "assignments_digest",
+    "build_campaign_plan_gate",
     "build_flip_depth",
     "build_null_sidecar",
     "build_true_ir_flip_depth",
@@ -380,6 +409,7 @@ __all__ = [
     "require_cryptography",
     "resolve_key",
     "resolve_type_d",
+    "review_campaign_plan",
     "seal",
     "service_account",
     "two_sample_statistic",
@@ -473,6 +503,20 @@ TRUE_IR_FLIP_DEPTH_COMPONENT_NAME = "nulloracle-true-ir-flip-depth"
 #: name-sorted ``app.order``, so feature 123's guard-immediately-after-sidecar
 #: adjacency is untouched.
 TYPE_R_COMPONENT_NAME = "nulloracle-type-r-selection"
+
+#: The component name feature 122's planning gate registers under — the key a
+#: composed :class:`~app.module_loader.Application` carries the gate at.  A
+#: ninth name rather than a ninth component under any of the other eight,
+#: because the gate is a different thing on its own lifecycle: it reads the
+#: two writers' artifacts (the tree's flip depths and §7.1's sealed file) and
+#: refuses the world they would jointly make, so a deployment can carry the
+#: writers without the gate and the gate without... nothing, in fact — it
+#: composes only where both of the halves it reads resolve, the same pair
+#: feature 118's selection composes from.  The ``plan-`` prefix sorts after
+#: the ``ks-*`` and ``null-*`` families and before the ``true-ir-*`` and
+#: ``type-*`` families in the name-sorted ``app.order``, so feature 123's
+#: guard-immediately-after-sidecar adjacency is untouched.
+PLAN_COMPONENT_NAME = "nulloracle-plan-gate"
 
 
 @register(FRACTION_COMPONENT_NAME)
@@ -737,3 +781,44 @@ def build_type_r_selection() -> TypeRSelection | None:
     composing the application never opens a database or touches the labels.
     """
     return TypeRSelection.resolve()
+
+
+@register(PLAN_COMPONENT_NAME)
+def build_campaign_plan_gate() -> CampaignPlanGate | None:
+    """Component builder: §7.3's planning gate, bound to the environment.
+
+    Feature 122's gate as a component, so the campaign loop that is about to
+    plant a world — and the operator auditing one that was already planted —
+    can ask the composed application for the gate the deployment configured
+    rather than resolving ``DATABASE_URL`` and the sidecar itself, the same
+    seam the selection's, the resolution's and the guard's stores expose.
+
+    Takes no arguments — that is the factory's registration protocol — and
+    resolves both halves from the environment at build time.  Like feature
+    118's selection, this one needs **both**: the relational store the tree
+    and its flip depths live in, and §7.1's sidecar the root selections live
+    in — the one artifact allowed to hold the bit (feature 110).  A gate
+    holding only the database could see flips but not selections, and would
+    answer ``homogeneous`` for worlds it never looked at, so a deployment
+    carrying one without the other composes no gate at all.
+
+    Returns ``None`` when nothing names a relational store, or when nothing
+    names a usable sidecar location and key, the degrade-don't-break stance
+    every store in this workspace takes: an unconfigured gate is a
+    discoverable state, and a deployment whose campaign loop must review
+    §7.3's homogeneity before planting is the caller that must not find
+    itself in it.
+
+    Like :func:`build_type_r_selection`, this never raises, including for a
+    URL whose scheme this store cannot speak or a ``kms:`` reference this
+    member does not resolve.  The factory builds every registered component
+    on every :func:`~app.module_loader.create_app` call, so a builder that
+    raised would take composition down for every unrelated feature; a process
+    that *requires* the gate asks :meth:`nulloracle.plan.CampaignPlanGate.
+    resolve` or calls the store directly, where a named
+    :class:`~nulloracle.errors.KsGuardError` is the right answer.
+    Construction performs no I/O — the path is resolved on first use and the
+    sidecar opens nothing until the first ``review`` — so composing the
+    application never opens a database or touches the labels.
+    """
+    return CampaignPlanGate.resolve()

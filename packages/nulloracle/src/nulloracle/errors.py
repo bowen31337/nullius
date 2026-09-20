@@ -67,6 +67,19 @@ violated, not by which line of code failed:
   *the measurement could not be recorded* are different facts, and only
   the first is about the numbers.
 
+* :class:`HeterogeneousWorldError` — the homogeneity contract (app_spec.xml
+  feature 122).  A campaign plan mixes Type-R and Type-D assignment within
+  one tree, and §7.3 forbids that outright: *"Campaigns are homogeneous in
+  null type.  Mixed trees make a bad FDR unattributable between selection
+  failure and stopping failure."*  Every message this class carries begins
+  with the code :data:`nulloracle.plan.HETEROGENEOUS_WORLD`
+  (``heterogeneous_world``), the one spelling the spec names, so an
+  operator grepping a log for the rejection finds it by the feature's own
+  word.  Kept outside :class:`KsGuardError` deliberately: a planner that
+  catches this refusal is rejecting a *document*, not handling a broken
+  store, and conflating the two would let a mixed world be retried as a
+  database hiccup.
+
 Every message names the offending value and the contract it broke, in the
 same discipline as the ledger member's taxonomy: these errors are
 operational signals for a system whose whole FDR claim rests on the labels
@@ -77,6 +90,7 @@ merely loggable.
 from __future__ import annotations
 
 __all__ = [
+    "HeterogeneousWorldError",
     "KsGuardError",
     "KsTestError",
     "NullOracleError",
@@ -210,4 +224,33 @@ class KsGuardError(NullOracleError):
     draws beside :class:`SidecarError`, and the one
     :class:`~nulloracle.errors.SidecarKeyError` draws beside
     :class:`SidecarDecryptionError`.
+    """
+
+
+class HeterogeneousWorldError(NullOracleError):
+    """A campaign plan mixes Type-R and Type-D assignment within one tree.
+
+    app_spec.xml feature 122 is the gate, and docs/nullius-tech-
+    architecture.md §7.3 states the rule it enforces in one sentence:
+    *"Campaigns are **homogeneous in null type**.  Mixed trees make a bad
+    FDR unattributable between selection failure and stopping failure."*
+    The two regimes keep their null-ness in different places — a Type-R
+    node's is a root selection sealed in §7.1's sidecar and inherited by
+    the subtree (feature 118), a Type-D node's is a flip depth on the
+    branch (feature 119) resolved by feature 121's depth rule — so a tree
+    carrying both would hold nulls no single read path serves: the sidecar
+    would answer for some nodes and the depth rule for others, and a
+    campaign that scored badly could blame neither failure mode.
+
+    Every message begins with the code ``heterogeneous_world``
+    (:data:`nulloracle.plan.HETEROGENEOUS_WORLD`), the spec's own word for
+    the rejection, so the failure is greppable by the feature that defines
+    it — the same discipline :data:`contract.violation.CONTRACT_VIOLATION`
+    applies to the outcome it names.
+
+    Kept outside :class:`KsGuardError` deliberately.  A planner catching
+    this refusal is rejecting a *plan* — a document it wrote or a world it
+    found — and a caller that caught the store's error instead would treat
+    a heterogeneous world as a deployment fault to retry rather than a
+    design to fix.
     """
