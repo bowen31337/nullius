@@ -191,6 +191,7 @@ from ._config import (
 )
 from ._errors import (
     EvaluatorAlignmentError,
+    EvaluatorArtifactError,
     EvaluatorCapacityError,
     EvaluatorConfigError,
     EvaluatorCostError,
@@ -348,6 +349,21 @@ from ._debit import (
     debit_trial,
     failure_outcome,
 )
+from ._artifact import (
+    PERSIST_STEP,
+    ArtifactPayload,
+    ArtifactWriter,
+    render_decay_profile,
+    render_exec_trace,
+    render_regime_attribution,
+    render_turnover_series,
+)
+from ._persist_store import (
+    NODE_PERSIST_TABLE,
+    NodeArtifactStore,
+    NodePersistence,
+    persist_node,
+)
 from ._service import ENV_IMAGE, EvaluatorService, build_evaluator_service
 from ._window import (
     ROSTER_STREAM,
@@ -444,6 +460,19 @@ __all__ = [
     "charge_failure",
     "debit_trial",
     "failure_outcome",
+    # Feature 85 — the final pipeline step: artifact to ART, scalars to TREE
+    "PERSIST_STEP",
+    "EvaluatorArtifactError",
+    "ArtifactPayload",
+    "ArtifactWriter",
+    "NODE_PERSIST_TABLE",
+    "NodeArtifactStore",
+    "NodePersistence",
+    "persist_node",
+    "render_decay_profile",
+    "render_exec_trace",
+    "render_regime_attribution",
+    "render_turnover_series",
     # Feature 79 — persisting the post-cost signal returns
     "SIGNAL_RETURNS_GRID_TABLE",
     "SIGNAL_RETURNS_TABLE",

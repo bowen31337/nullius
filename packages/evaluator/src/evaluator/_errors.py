@@ -194,6 +194,7 @@ from __future__ import annotations
 
 __all__ = [
     "EvaluatorAlignmentError",
+    "EvaluatorArtifactError",
     "EvaluatorCapacityError",
     "EvaluatorConfigError",
     "EvaluatorDecayError",
@@ -215,6 +216,30 @@ __all__ = [
 
 class EvaluatorError(Exception):
     """Base class for every failure of the frozen-evaluator identity path."""
+
+
+class EvaluatorArtifactError(EvaluatorError):
+    """The §9.2 artifact content could not be rendered, or the persist step's
+    record set could not be assembled.
+
+    Raised by the artifact renderers (:mod:`evaluator._artifact`) and the
+    persist store (:mod:`evaluator._persist_store`) when step 12 of the §6.1
+    pipeline cannot turn the measured records into the node's artifact files and
+    node row: a record of the wrong type handed to a renderer, a payload in an
+    unknown medium, a turnover series over two different nodes' panels, an exec
+    trace missing a provenance field, a record set that disagrees on node or
+    cost model, a record the evaluator's own store does not hold, a seam that
+    does not answer in the expected shape, or a half-written node. Each is
+    refused rather than defaulted, because the artifact and the node row are the
+    durable record of one evaluation, and a half or a mismatch would read to
+    replay as a node no evaluation produced.
+
+    Deliberately *not* here: the Parquet encoding or the on-disk path — those
+    are the artifacts member's, reached through the injected ``ArtifactWriter``,
+    and a writer that fails propagates its own error, the same stance the oracle
+    and cost-schedule seams take — dressing it as an artifact error would hide
+    which side of the seam failed.
+    """
 
 
 class EvaluatorImageError(EvaluatorError):
