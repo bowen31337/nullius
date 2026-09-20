@@ -49,6 +49,7 @@ from .config import (
     load_cost_model,
     read_cost_model_document,
 )
+from .discount import FeeDiscount, resolve_fee_discount
 from .errors import CostModelConfigError
 from .fee_library import FeeImplementation, install_fee_implementation
 from .fees import FeeSchedule
@@ -361,6 +362,9 @@ class CostModelService:
         :meth:`FeeSchedule.apply` (or :func:`~cost_model.fees.apply_fee`)
         rather than re-deriving the charge, so the discount is a change to
         one input rather than a second implementation of the fee.
+        :meth:`fee_discount` resolves the token; a caller wanting the
+        discounted charge itself reduces this schedule through
+        :meth:`FeeDiscount.reduce` and applies *that*.
 
         Raises :class:`~cost_model.errors.CostModelConfigError` when the
         document names no ``fees`` block, or names one whose taker or maker
@@ -373,6 +377,41 @@ class CostModelService:
         implementation that is not the shared library's.
         """
         return self.fee_implementation().resolve(self.document)
+
+    def fee_discount(self) -> FeeDiscount:
+        """Resolve the discount-token fee reduction from the loaded document.
+
+        Feature 62's configuration half: §6.2's document carries the
+        ``fees.discount_token`` field (``discount_token: BNB  # → 7.5 bps``),
+        and this is the caller's handle on it — the evaluator and the live
+        execution engine both reduce their fee through the composed service,
+        so the two cannot each grow their own discount (feature 69's promise,
+        and §6.2's ``β₄`` invariant).  The discount is resolved from the one
+        cached parse (see :attr:`document`), so it is the reduction of the
+        document the resolved identity was loaded from — the same parse
+        :meth:`fees` reads, so a schedule and the token that reduces it cannot
+        disagree about which document was loaded.
+
+        The reduction is applied to the schedule, not instead of it: a caller
+        holds ``self.fees()`` for the venue's rates and this for the token,
+        and multiplies the two through :meth:`FeeDiscount.reduce` — the fee
+        charge itself stays feature 61's single implementation.
+
+        The *"when configured"* clause is answered here rather than raised: a
+        document with no ``discount_token`` resolves to an *unconfigured*
+        :class:`~cost_model.discount.FeeDiscount` whose effective rate is the
+        schedule's own, because a venue whose fees are paid in the quote
+        currency has no token and that is not a defect.  The shipped §6.2
+        document *is* configured, so the composed service answers ``BNB``.
+
+        Raises :class:`~cost_model.errors.CostModelConfigError` when the
+        document names no ``fees`` block, names one that is not a mapping, or
+        carries a ``discount_token`` that is blank or not a string — a token
+        that names nothing is a typo in a signed Z0 artifact rather than an
+        absent field, which is why it is refused while the absent field is
+        not.
+        """
+        return resolve_fee_discount(self.document)
 
     def fee_implementation(self) -> FeeImplementation:
         """Claim and return the one implementation of the fee schedule this process prices through.

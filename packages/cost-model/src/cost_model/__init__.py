@@ -124,6 +124,30 @@ module with the factory's scan prefix stripped, so one source imported
 twice (directly and through the factory's mangled name) is still one
 implementation, never two.
 
+Feature 62 layers onto feature 61's fee schedule: *System applies a
+discount-token fee reduction when configured, which returns an effective
+7.5 bps rate in place of 10 bps.*  It is §6.2's ``fees.discount_token:
+BNB  # → 7.5 bps`` made concrete, and :mod:`cost_model.discount` holds it —
+the token the document names and the fraction it takes off the rate
+(:class:`~cost_model.discount.FeeDiscount`), and the reduced schedule that
+fraction produces (:meth:`~cost_model.discount.FeeDiscount.reduce`).  It
+changes one *input* of feature 61's charge rather than adding a charge of its
+own: the reduced :class:`~cost_model.fees.FeeSchedule` goes through the very
+:meth:`~cost_model.fees.FeeSchedule.apply` an undiscounted one goes through,
+so the post-cost series is produced by the one subtraction there is and the
+discount cannot drift from the fee it discounts (feature 69's promise, from
+the discount side).  *"When configured"* is the condition and it is answered
+rather than demanded — a document with no ``discount_token`` resolves to an
+unconfigured discount whose effective rate is the schedule's own, because a
+venue whose fees are paid in the quote currency has no token and that is not
+a defect — while a token that is present but *names nothing* is refused,
+because a typo in a signed Z0 artifact is not an absent field.  The reduction
+is the shared library's constant rather than a document field (§6.2 names the
+token and writes the arithmetic only as a comment), and it lands on both
+sides, because `docs/alpha-engine-prd.md` §10 states one deduction on the
+fee — *"0.1% maker/taker; 0.075% with BNB deduction"* — not a side-selective
+one.
+
 This package also *is* a component of the composed application: importing
 it registers a builder with the application factory
 (``app.module_loader.register``), so the module loader discovers it by
@@ -172,6 +196,13 @@ from .config import (
     load_cost_model,
     read_cost_model_document,
     require_yaml,
+)
+from .discount import (
+    DEFAULT_DISCOUNT_FRACTION,
+    DISCOUNT_TOKEN_KEY,
+    FeeDiscount,
+    discount_fee_schedule,
+    resolve_fee_discount,
 )
 from .errors import (
     CostModelConfigError,
@@ -254,7 +285,9 @@ __all__ = [
     "COST_MODEL_TABLE",
     "DATABASE_URL_ENV",
     "DEFAULT_COST_MODEL_PATH",
+    "DEFAULT_DISCOUNT_FRACTION",
     "DEFAULT_QUANTILES",
+    "DISCOUNT_TOKEN_KEY",
     "EXP_DECAY_MODEL",
     "FEES_KEY",
     "FILL_MODEL_KEY",
@@ -284,6 +317,7 @@ __all__ = [
     "CostModelStoreError",
     "DuplicateFeeImplementationError",
     "EmpiricalLatencyDistribution",
+    "FeeDiscount",
     "FeeImplementation",
     "FeeSchedule",
     "FillProbability",
@@ -301,6 +335,7 @@ __all__ = [
     "apply_fee",
     "build_cost_model_service",
     "charge_queue_position_penalty",
+    "discount_fee_schedule",
     "fill_passive_order",
     "install_fee_implementation",
     "installed_fee_implementation",
@@ -315,6 +350,7 @@ __all__ = [
     "read_cost_model_document",
     "require_yaml",
     "resolve_aggressive_fill_model",
+    "resolve_fee_discount",
     "resolve_fee_schedule",
     "resolve_fill_probability_model",
     "resolve_passive_fill_model",

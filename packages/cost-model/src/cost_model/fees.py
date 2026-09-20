@@ -13,7 +13,7 @@ schedule in the document itself, under its own ``fees`` block:
       fees:
         taker_bps: 10.0
         maker_bps: 10.0
-        discount_token: BNB        # → 7.5 bps  (feature 62, not read here)
+        discount_token: BNB        # → 7.5 bps  (feature 62: cost_model.discount)
 
 The sentence has four separable claims, and this module owns all four:
 
@@ -70,7 +70,10 @@ hands this module a *different rate* (an effective ``7.5`` bps in place of
 discount is a change to one input rather than a second implementation of
 the charge (feature 69's promise, and §6.2's ``β₄`` — the evaluator and
 the live engine deduct the fee the same way because they call
-:func:`apply_fee` on the same :class:`FeeSchedule`).
+:func:`apply_fee` on the same :class:`FeeSchedule`).  That substitution is
+:mod:`cost_model.discount`'s: it reads the section's ``discount_token`` and
+returns a :class:`FeeSchedule` whose rates are already reduced, so the charge
+below stays the only arithmetic there is.
 
 **No blended rate, no direction waiver.**  :func:`resolve_fee_schedule`
 reads §6.2's ``fees.taker_bps`` and ``fees.maker_bps`` and refuses a
@@ -82,7 +85,9 @@ be a different fee behind configuration, and a library that carried them
 would let research evaluation and live execution drift apart — exactly the
 divergence §6.2's ``β₄`` penalizes and feature 69 forbids.  The section's
 ``discount_token`` field belongs to feature 62 — it is tolerated here and
-not read, because this resolver answers for the two plain rates only.
+not read, because this resolver answers for the two plain rates only and
+:func:`cost_model.discount.resolve_fee_discount` is the resolver that reads
+the token and reduces the rates this one returns.
 
 The module holds no state and no third-party import: the schedule arrives
 as a value, the return series arrives as values, the post-cost series
@@ -486,7 +491,9 @@ def resolve_fee_schedule(model: Mapping[str, object] | None = None) -> FeeSchedu
     cost model.  The venue is read from the block's own ``venue`` and
     travels with the schedule.  The section's ``discount_token`` field
     belongs to feature 62 — it is tolerated here and not read, because this
-    resolver answers for the two plain rates only.
+    resolver answers for the two plain rates only;
+    :func:`cost_model.discount.resolve_fee_discount` is what reads it and
+    reduces the rates this resolver returns.
 
     Raises:
         CostModelConfigError: For every document defect — the ``fees``

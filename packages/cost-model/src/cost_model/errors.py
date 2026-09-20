@@ -12,7 +12,10 @@ not by which line of code failed:
   mapping (or holds several), a missing ``cost_model`` block, or a block
   whose ``version``/``venue`` is absent, blank, or not even a string.  Each
   is a misconfiguration — a caller bug or a corrupt signed artifact — and
-  never a runtime condition to retry.
+  never a runtime condition to retry.  A ``fees.discount_token`` that is
+  present but names nothing (:mod:`cost_model.discount`, feature 62) belongs
+  here too: it is a typo in the signed artifact rather than the *absence* of
+  a discount, which the feature tolerates.
 * :class:`CostModelStoreError` — the persisted-record contract.  Feature 59
   says the resolved version and venue are *persisted*, so a store that was
   configured and then failed to take the row is an error rather than a
@@ -159,6 +162,20 @@ class CostModelFillError(ValueError, CostModelError):
     along with a bad document, and ``except ValueError`` keeps working for
     every caller that already treats this package's refusals as value
     errors.
+
+    Feature 62: *"System applies a discount-token fee reduction when
+    configured, which returns an effective 7.5 bps rate in place of 10
+    bps."*  This is the same contract on the reduction
+    (:mod:`cost_model.discount`): a reduction fraction that is not a real in
+    ``[0, 1]``, a rate in basis points that is not a non-negative finite
+    real, or something offered as a fee schedule that is not one, where the
+    one thing the discount must not do is return a rate anyway — a rate
+    produced from an impossible reduction would be *unrealistic by
+    construction*, which is precisely the defect the feature exists to
+    remove.  (A *missing* ``discount_token`` is not this error and not an
+    error at all: that is the "when configured" clause's ordinary case, and
+    the honest answer is the schedule's undiscounted rate.  A *blank* one is
+    the document's defect and is :class:`CostModelConfigError`.)
 
     Raised for defects of the *inputs* to the fill model — a ladder out of
     order, a zero-quantity level, an empty or crossed side, a non-positive
