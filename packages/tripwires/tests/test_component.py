@@ -61,14 +61,21 @@ MEMBER_SRC = Path(tripwires.__file__).resolve().parent.parent
 def _assert_is_the_tripwire_component(component: object) -> None:
     assert type(component).__name__ == "TimeShuffleTripwire"
     assert type(component).__module__.endswith("tripwires")
-    # The probe's five verbs, duck-checked across the loader's module copy
+    # The probe's six verbs, duck-checked across the loader's module copy
     # seam: feature 125's run, the pairing and threshold a reader auditing a
-    # persisted rejection rebuilds from the record's own terms, and the two
+    # persisted rejection rebuilds from the record's own terms, and the three
     # perturbation re-runs the family reaches through the same component —
-    # feature 127's ``rerun`` and feature 129's ``subsample``, each a method
-    # here rather than a component of its own because a re-run is this probe
-    # taken twice.
-    for operation in ("run", "pairing", "threshold", "rerun", "subsample"):
+    # feature 127's ``rerun``, feature 129's ``subsample`` and feature 130's
+    # ``lookback``, each a method here rather than a component of its own
+    # because a re-run is this probe taken twice.
+    for operation in (
+        "run",
+        "pairing",
+        "threshold",
+        "rerun",
+        "subsample",
+        "lookback",
+    ):
         assert callable(getattr(component, operation)), operation
     # The probe's own name, not the component's: a persisted failure names
     # which tripwire fired (feature 131).
@@ -93,26 +100,31 @@ def test_scanning_the_member_registers_exactly_the_components_it_owns() -> None:
     # the current registry, so reading it back here would assert accumulated
     # process state, not this package's contribution.
     #
-    # The member contributes four components since feature 129: the probe
+    # The member contributes five components since feature 130: the probe
     # (``tripwires``, feature 125, stateless and ready the instant it is built),
     # the store a failure is persisted to (``tripwires-poison``, feature 131,
     # which resolves ``DATABASE_URL`` and may legitimately not exist), the pool a
     # poisoned branch is excised from (``tripwires-excise``, feature 132, which
-    # resolves the same variable to *read* what the store wrote), and the store
+    # resolves the same variable to *read* what the store wrote), the store
     # a stability figure is persisted to (``tripwires-stability``, feature 129,
     # which resolves the same variable again into a different table with a
-    # different refusal). The list is pinned exactly rather than by membership,
-    # so a *fifth* component arriving unnoticed fails here the way the fourth
-    # one would have — which is the property this test has always been for.
+    # different refusal), and the store a node metric is persisted to
+    # (``tripwires-node-metric``, feature 130, which resolves it once more into
+    # a column on the node row rather than a table of its own). The list is
+    # pinned exactly rather than by membership, so a *sixth* component arriving
+    # unnoticed fails here the way the fourth one would have — which is the
+    # property this test has always been for.
     #
-    # The fourth arriving is why the stability store is spelled here rather
-    # than folded into ``tripwires-poison``: both resolve ``DATABASE_URL``, and
-    # a member that answered the two questions with one component would have
-    # made this list a list of three and left the distinction untested.
+    # The fifth arriving is why the node metric store is spelled here rather
+    # than folded into ``tripwires-stability``: both resolve ``DATABASE_URL``
+    # and both persist the same verdict's figure, and a member that answered
+    # the two questions with one component would have made this list a list of
+    # four and left the ledger-row-versus-node-column distinction untested.
     components = scan_components(MEMBER_SRC, registry=Registration())
     assert sorted(component.name for component in components) == [
         "tripwires",
         "tripwires-excise",
+        "tripwires-node-metric",
         "tripwires-poison",
         "tripwires-stability",
     ]
@@ -143,6 +155,34 @@ def test_the_stability_store_is_its_own_component() -> None:
         assert type(stability).__name__ == "StabilityStore"
         assert type(poison).__name__ == "PoisonStore"
         assert stability is not poison
+    finally:
+        monkeypatch.undo()
+
+
+def test_the_node_metric_store_is_its_own_component() -> None:
+    # Feature 130's store is composed beside feature 129's, not inside it —
+    # the sharper collapse to rule out, because the two persist the *same*
+    # verdict's figure and differ only in where: 129 appends a keyed row to a
+    # table it owns, 130 updates a column on the node row another feature
+    # owns.  In a bare process both builders return ``None``, so the two are
+    # asked for through their composed types, the same way the stability test
+    # above rules out its collapse into the poison store.
+    builders = {
+        component.name: component.builder
+        for component in scan_components(MEMBER_SRC, registry=Registration())
+    }
+    assert builders["tripwires-node-metric"] is not builders["tripwires-stability"]
+    assert builders["tripwires-node-metric"].__name__ == "build_node_metric_store"
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
+        app = create_app(MEMBER_SRC, registry=Registration())
+        metric = app.get("tripwires-node-metric")
+        stability = app.get("tripwires-stability")
+        assert type(metric).__name__ == "NodeMetricStore"
+        assert type(stability).__name__ == "StabilityStore"
+        assert metric is not stability
     finally:
         monkeypatch.undo()
 

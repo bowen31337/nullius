@@ -1,6 +1,6 @@
 """The tripwires member's error vocabulary.
 
-Every refusal in this package raises one of three errors, and each names a
+Every refusal in this package raises one of six errors, and each names a
 *reason* rather than a bare fact, because a tripwire suite runs unattended
 inside a frozen evaluator (docs/nullius-tech-architecture.md §5) whose
 failures travel as trial outcomes (§8's ``ok | timeout | error |
@@ -47,6 +47,14 @@ pipeline's own step boundaries already draw:
   branch" and "this branch was never poisoned" are different sentences, and
   collapsing them into a silent no-op is the failure §C6 exists to prevent.
 
+Two later siblings arrive beside those four rather than in this list, each
+the persistence half of a feature whose sentence says *persisting*:
+:class:`TripwireStabilityError` (feature 129, the stability ledger) and
+:class:`TripwireNodeMetricError` (feature 130, the node metric column).  They
+follow the same split by *where the refusal happens*, and their own
+docstrings state what separates each from the poisoning error whose
+validators they share.
+
 There is deliberately no ``TripwireVerdictError``.  A verdict is stated,
 not raised: the two things a tripwire can say about a node are *pass* and
 *leakage indicated*, and both are values (:class:`~tripwires.time_shuffle.
@@ -64,8 +72,10 @@ from __future__ import annotations
 __all__ = [
     "TripwireError",
     "TripwireExcisionError",
+    "TripwireNodeMetricError",
     "TripwirePanelError",
     "TripwirePoisonError",
+    "TripwireStabilityError",
     "TripwireStatisticError",
 ]
 
@@ -151,4 +161,31 @@ class TripwireExcisionError(TripwireError):
     here was ever excised" are different sentences, and a store that answered
     the second with an empty success would let a caller report an excision it
     never performed.
+    """
+
+
+class TripwireNodeMetricError(TripwireError):
+    """Feature 130's refusals — the node metric could not be persisted.
+
+    The fourth sibling of :class:`TripwirePoisonError`, beside
+    :class:`TripwireExcisionError` and :class:`TripwireStabilityError`, and
+    deliberately not a subclass of any of them.  Feature 130's sentence —
+    *"persisting perturbation_stability as a node metric"* — names a write to
+    the ``node`` table's own column (0114's ``perturb_stability REAL``), which
+    is a different act from 129's ledger row and from 131's mark, and a caller
+    in the evaluation loop catches this one because the node metric is what it
+    asked to persist.  Folding them together would make "the lookback figure
+    never reached the node row" and "the poisoning could not be written" and
+    "the subsample row never landed" one indistinguishable failure at exactly
+    the point where the difference says which feature never ran.
+
+    Raised for a store nothing names, a ``DATABASE_URL`` this member cannot
+    speak, a producer whose terms the store cannot read, a verdict from an
+    axis the node column does not hold, and — the one worth naming, and the
+    store's own reason to exist beside 129's — a node the discovery tree does
+    not hold.  That last refusal is the deliberate opposite of the stability
+    ledger's stance: 129 requires no node row because a figure is known
+    before the tree is handed the node, while a *column* write needs the row
+    it updates, and an ``UPDATE`` against nothing would report a metric
+    persisted that no node carries.
     """

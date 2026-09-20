@@ -142,6 +142,7 @@ from .corpus import (
 from .errors import (
     TripwireError,
     TripwireExcisionError,
+    TripwireNodeMetricError,
     TripwirePanelError,
     TripwirePoisonError,
     TripwireStabilityError,
@@ -158,6 +159,7 @@ from .excise import (
 )
 from .layout import (
     DATABASE_URL_ENV,
+    NODE_METRIC_COLUMN,
     NODE_POISONED_COLUMN,
     NODE_TABLE,
     REPLAY_SCORE_TABLE,
@@ -167,6 +169,23 @@ from .layout import (
     replay_pool_bootstrap_schema,
     stability_bootstrap_schema,
     validated_node_id,
+)
+from .lookback import (
+    DEFAULT_LOOKBACK_JITTER,
+    DEFAULT_LOOKBACK_STABILITY_THRESHOLD,
+    LOOKBACK_AXIS,
+    LookbackRerunVerdict,
+    jittered_lookback,
+    lookback_figure,
+    lookback_stability_threshold,
+    run_lookback_rerun,
+)
+from .node_metric import COMPONENT_NAME as NODE_METRIC_COMPONENT_NAME
+from .node_metric import (
+    NodeMetricRecord,
+    NodeMetricStore,
+    node_metric_of,
+    record_node_metric,
 )
 from .normal import NORMAL_QUANTILE_SWITCH, normal_quantile
 from .poison import COMPONENT_NAME as POISON_COMPONENT_NAME
@@ -225,6 +244,8 @@ __all__ = [
     "CORPUS_SYMBOLS",
     "DATABASE_URL_ENV",
     "DEFAULT_DEGRADATION_THRESHOLD",
+    "DEFAULT_LOOKBACK_JITTER",
+    "DEFAULT_LOOKBACK_STABILITY_THRESHOLD",
     "DEFAULT_RERUN_SEED",
     "DEFAULT_SHUFFLE_LEVEL",
     "DEFAULT_SHUFFLE_SEED",
@@ -234,6 +255,9 @@ __all__ = [
     "EXCISE_COMPONENT_NAME",
     "HORIZONS",
     "LEAK_KINDS",
+    "LOOKBACK_AXIS",
+    "NODE_METRIC_COLUMN",
+    "NODE_METRIC_COMPONENT_NAME",
     "NODE_POISONED_COLUMN",
     "NODE_TABLE",
     "NORMAL_QUANTILE_SWITCH",
@@ -252,6 +276,9 @@ __all__ = [
     "CorpusSignal",
     "ExcisedBranch",
     "ExcisedScore",
+    "LookbackRerunVerdict",
+    "NodeMetricRecord",
+    "NodeMetricStore",
     "PoisonRecord",
     "PoisonStore",
     "PoisonedSubtree",
@@ -265,22 +292,30 @@ __all__ = [
     "TimeShuffleVerdict",
     "TripwireError",
     "TripwireExcisionError",
+    "TripwireNodeMetricError",
     "TripwirePanelError",
     "TripwirePoisonError",
     "TripwireStabilityError",
     "TripwireStatisticError",
+    "build_node_metric_store",
     "build_poison_store",
     "build_replay_pool",
     "build_stability_store",
     "build_time_shuffle_tripwire",
     "excise_subtree",
+    "jittered_lookback",
+    "lookback_figure",
+    "lookback_stability_threshold",
     "node_bootstrap_schema",
+    "node_metric_of",
     "normal_quantile",
     "planted_signals",
     "poison_node",
     "poisoned_node_ids",
+    "record_node_metric",
     "record_stability",
     "replay_pool_bootstrap_schema",
+    "run_lookback_rerun",
     "run_seed_rerun",
     "run_subsample_rerun",
     "run_time_shuffle_tripwire",
@@ -326,8 +361,8 @@ class TimeShuffleTripwire:
     statistic, the shuffle or the threshold is exactly what this member's
     one-provenance rule forbids.  What this class adds is discoverability (the
     factory's scan composes it) and a single duck-checkable seam
-    (``run``/``pairing``/``threshold``/``rerun``/``subsample``) for the app seat
-    and the features that follow, not arithmetic.
+    (``run``/``pairing``/``threshold``/``rerun``/``subsample``/``lookback``)
+    for the app seat and the features that follow, not arithmetic.
 
     **``rerun`` is the fourth verb and the family's first axis.**  Feature 127
     perturbs the one knob this probe deliberately holds fixed — the seed — so
@@ -345,6 +380,19 @@ class TimeShuffleTripwire:
     ``rerun``'s: that one is signed, one-sided and judged against ``0.77``,
     this one is a magnitude, two-sided and judged against ``1.05``, and the
     two numbers mean nothing against each other's bar.
+
+    **``lookback`` is the sixth verb and the family's fourth axis.**  Feature
+    130 perturbs the *window* — how much history the re-run sees — and holds
+    both the seed and the universe fixed, so it is a method here for the
+    reason the two above are.  Its bar is the family's *widest*
+    (``√(1 + 1/(1 + jitter))``, ≈ 1.453 at the pinned minus tenth) because its
+    two runs share no noise: the derangement is a function of the whole date
+    list, so a truncated window re-dates every date and the two statistics
+    are independent — the fact whose *converse* gave ``subsample`` its bar.
+    And its figure is the one this feature's persistence half
+    (:func:`~tripwires.node_metric.record_node_metric`) writes to the node's
+    own ``perturb_stability`` column, 0114's last metric column, beside the
+    stability-ledger row the same verdict may also land in.
     """
 
     __slots__ = ()
@@ -479,7 +527,8 @@ class TimeShuffleTripwire:
         It is a method on this component for the reason :meth:`rerun` is: the
         re-run is not a second probe but this probe taken twice, and a caller
         holding the composed probe already has the statistic, the shuffle and
-        the threshold it needs.  Features 128 and 130 arrive the same way.
+        the threshold it needs.  Feature 128 arrives the same way, and
+        :meth:`lookback` below is the axis that already did.
         """
         return run_subsample_rerun(
             scores,
@@ -487,6 +536,58 @@ class TimeShuffleTripwire:
             node_id=node_id,
             fraction=fraction,
             subsample_seed=subsample_seed,
+            seed=seed,
+            level=level,
+            threshold=threshold,
+        )
+
+    def lookback(
+        self,
+        scores: Mapping[dt.date | str, Mapping[str, float]],
+        targets: Mapping[int, Mapping[dt.date | str, Mapping[str, float]]],
+        *,
+        node_id: str,
+        lookback: int | None = None,
+        jitter: float = DEFAULT_LOOKBACK_JITTER,
+        seed: int = DEFAULT_SHUFFLE_SEED,
+        level: float = DEFAULT_SHUFFLE_LEVEL,
+        threshold: float = DEFAULT_LOOKBACK_STABILITY_THRESHOLD,
+    ) -> LookbackRerunVerdict:
+        """Re-run the probe over a jittered lookback — feature 130's whole answer.
+
+        The same candidate and bundle :meth:`run` takes, plus the declared
+        lookback — ``None`` meaning the panel's own full measured span, which
+        makes the reference run exactly :meth:`run`'s — and the signed jitter
+        taken on it (the spec's *plus or minus 10 percent*, minus by default
+        because the minus side is always runnable while the plus side needs
+        history the panel may not carry).  Returns the
+        :class:`~tripwires.lookback.LookbackRerunVerdict` — whose ``stability``
+        is the figure this feature's persistence half writes to the node's own
+        ``perturb_stability`` column
+        (:func:`~tripwires.node_metric.record_node_metric`), and whose
+        ``rejected`` unions the stability cause with either run's own
+        detection.
+
+        **``seed`` is one parameter and there is no subsample seed at all**,
+        and together those two absences are the axis' definition: 127 perturbs
+        the derangement, 129 the universe, and this feature perturbs the
+        *window* holding both fixed.  The pairing still differs between the
+        runs — the derangement is a function of the whole date list, so the
+        jittered window draws its own — but that is a consequence of the
+        perturbation rather than a knob, and it is why the axis' bar is
+        derived for independent runs where 129's is not.
+
+        It is a method on this component for the reason :meth:`rerun` and
+        :meth:`subsample` are: the re-run is not a second probe but this probe
+        taken twice, and a caller holding the composed probe already has the
+        statistic, the shuffle and the threshold it needs.
+        """
+        return run_lookback_rerun(
+            scores,
+            targets,
+            node_id=node_id,
+            lookback=lookback,
+            jitter=jitter,
             seed=seed,
             level=level,
             threshold=threshold,
@@ -606,3 +707,38 @@ def build_stability_store() -> StabilityStore | None:
     the refusal deferred to first use.
     """
     return StabilityStore.resolve()
+
+
+@register(NODE_METRIC_COMPONENT_NAME)
+def build_node_metric_store() -> NodeMetricStore | None:
+    """Component builder: the store a node metric is persisted to (feature 130).
+
+    Takes no arguments — that is the factory's registration protocol — and
+    resolves ``DATABASE_URL`` at build time, so a composed application carries
+    the store for the deployment the process is actually running in.  It is
+    the sixth component this member contributes and the fifth that may
+    legitimately be ``None``, for the reason :func:`build_poison_store`
+    states: the factory builds every registered component on every
+    ``create_app()`` call, a builder that raised would take composition down
+    for every unrelated feature, and a deployment without a relational store
+    is a discoverable state rather than a failure.  A process that *requires*
+    one is the caller that must not find itself in it — which is why
+    :func:`~tripwires.node_metric.record_node_metric` and
+    :func:`~tripwires.node_metric.node_metric_of` refuse by name where they
+    resolve no store, while this builder stays silent.
+
+    It is a **separate component from the stability store** even though both
+    resolve the same variable and both persist the same verdict's figure, and
+    that is the point rather than an oversight: feature 129's store appends a
+    keyed row to a table it owns and requires no node row; this one updates a
+    column on the node row the discovery tree owns and refuses a node the
+    tree does not hold.  A caller asking the composed application for one and
+    handed the other would get an object whose every method means the other
+    feature's persistence — and the mistake would surface only as a figure
+    missing from the ledger or a node row never written.
+
+    Construction performs no I/O, so composing the application never opens a
+    database; a URL whose scheme this member cannot speak still composes, with
+    the refusal deferred to first use.
+    """
+    return NodeMetricStore.resolve()

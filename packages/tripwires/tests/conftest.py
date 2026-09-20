@@ -182,3 +182,28 @@ def stability_store(database_url: str):
     from tripwires import StabilityStore
 
     return StabilityStore(database_url)
+
+
+# -- Feature 130's reach: a third store, over the same file -------------------
+
+
+@pytest.fixture
+def node_metric_store(database_url: str):
+    """Feature 130's node metric store, beside the two stores above.
+
+    Derived from the same ``database_url`` for the neighbour-store reason
+    ``stability_store`` states, with one sharper edge: this store writes a
+    *column on the node row itself* (0114's ``perturb_stability``) rather than
+    a table of its own, so sharing the file is what makes the non-crossing
+    assertions possible — a figure recorded here must not appear in the
+    stability table, a figure recorded there must not touch the node's
+    column, and a poisoning must leave both metrics alone.  Separate files
+    would make each of those pass vacuously.
+
+    Asked for by name, like the four above, and never autouse: a probe test
+    must not acquire a database by accident, and a node-metric test must not
+    acquire a *poisoned* one.
+    """
+    from tripwires import NodeMetricStore
+
+    return NodeMetricStore(database_url)

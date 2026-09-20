@@ -97,6 +97,7 @@ __all__ = [
     "DATABASE_URL_ENV",
     "NODE_CAMPAIGN_COLUMN",
     "NODE_ID_COLUMN",
+    "NODE_METRIC_COLUMN",
     "NODE_PARENT_COLUMN",
     "NODE_POISONED_COLUMN",
     "NODE_TABLE",
@@ -164,6 +165,30 @@ NODE_POISONED_COLUMN = "poisoned_at"
 #: The Postgres default for an ``id`` column: the spec's own spelling, and the
 #: reason a Postgres ``id`` needs no value supplied.  0118's constant, restated.
 _POSTGRES_UUID_DEFAULT = "gen_random_uuid()"
+
+# -- Feature 130: the node metric column ---------------------------------------
+
+#: The ``node`` column feature 130 writes — 0114's seventh and last metric
+#: column, ``perturb_stability REAL``, nullable with no default, named by
+#: app_spec.xml feature 130's own sentence (*"persisting
+#: perturbation_stability as a node metric"*).  Spelled once here for the
+#: reason every column name in this module is: the probe, the ``ALTER TABLE``
+#: and the ``UPDATE`` that write it must not be able to drift apart on what
+#: the column is called, and 0114's own ``COLUMNS`` tuple is the migration's
+#: to own, not this member's to import.
+#:
+#: **Why it is added by an ``ALTER`` and not by the bootstrap.**  The node
+#: bootstrap above creates 0118's five columns plus ``poisoned_at``, which is
+#: feature 131's column; this one deliberately does not join it, because the
+#: restraint the bootstrap states is *what some feature of this member reads
+#: or writes*, and the writer that owns this column brings it itself —
+#: :mod:`tripwires.node_metric` probes ``PRAGMA table_info`` and issues the
+#: ``ALTER TABLE ... ADD COLUMN perturb_stability REAL``, the same path
+#: feature 131 paves for a table the migration made without its column.  The
+#: end state either way is the table 0114 leaves: a node whose
+#: ``perturb_stability`` is ``NULL`` until the lookback-jitter axis measures
+#: it, which is the absent-versus-zero distinction the read refuses to blur.
+NODE_METRIC_COLUMN = "perturb_stability"
 
 # -- Feature 132: the replay pool's shape --------------------------------------
 
