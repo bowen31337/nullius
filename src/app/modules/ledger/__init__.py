@@ -24,12 +24,13 @@ stance toward absent components.
 The helpers below are deliberately the *composition* accessors and
 nothing more.  They do not re-export the append or the read paths: a
 caller who has the ledger can reach ``ledger.append(node_id,
-campaign_id)`` for the raw debit of feature 86 and ``ledger.rows()``
-for the ordered read, and a second spelling of those APIs here would be
-a second thing to keep in sync.  This module answers exactly two
-questions — *what is the composed ledger component?* and *what is the
-composed debit endpoint?* — so the evaluator-facing features of this
-category can ask them without importing the member directly.
+campaign_id, outcome)`` for the raw debit of feature 86 carrying
+feature 91's outcome stamp, and ``ledger.rows()`` for the ordered
+read, and a second spelling of those APIs here would be a second thing
+to keep in sync.  This module answers exactly two questions — *what is
+the composed ledger component?* and *what is the composed debit
+endpoint?* — so the evaluator-facing features of this category can ask
+them without importing the member directly.
 """
 
 from __future__ import annotations

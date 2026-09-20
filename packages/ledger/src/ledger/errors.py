@@ -7,15 +7,16 @@ subclasses split by *which contract* was violated, not by which line of
 code failed:
 
 * :class:`TrialRecordError` — the row contract (app_spec.xml feature 86).
-  A trial row's identity or stamp is malformed at the write — a
+  A trial row's identity, stamp or outcome is malformed at the write — a
   ``node_id`` that is not a UUID, a naive ``ts``, a ``clock`` that is not
-  callable — or a row read back from the table cannot be rebuilt into a
-  trustworthy record.  Either way the row is a caller bug or a corrupted
-  account, never a runtime condition to catch and continue past: a ledger
-  that shrugs off a malformed charge is a ledger whose count of ``K`` is
-  fiction, and ``K`` fiction is the one failure this whole category
-  exists to make impossible (docs/nullius-tech-architecture.md §8: "The
-  honest ``K`` counter").
+  callable, an ``outcome`` that is absent or outside the four §8 names
+  (feature 91) — or a row read back from the table cannot be rebuilt
+  into a trustworthy record.  Either way the row is a caller bug or a
+  corrupted account, never a runtime condition to catch and continue
+  past: a ledger that shrugs off a malformed charge is a ledger whose
+  count of ``K`` is fiction, and ``K`` fiction is the one failure this
+  whole category exists to make impossible
+  (docs/nullius-tech-architecture.md §8: "The honest ``K`` counter").
 * :class:`TrialStoreError` — the store contract.  The relational store is
   misrouted (a ``DATABASE_URL`` this member cannot speak) or configured
   and broken (the append's write failed).  A store that is *absent* — no
@@ -53,16 +54,19 @@ class TrialLedgerError(Exception):
 
 
 class TrialRecordError(TrialLedgerError):
-    """A trial_ledger row's identity or stamp was malformed.
+    """A trial_ledger row's identity, stamp or outcome was malformed.
 
     Raised at the write, where the cause can still be named (a ``node_id``
     that is not a UUID cannot be joined to the tree store later, so it is
-    refused before any sequence number is spent on it), and at the read,
-    where a row that cannot be rebuilt into a :class:`~ledger.record.
-    TrialLedgerRecord` is refused rather than served — an unreadable row
-    in an append-only log is evidence of tampering or corruption, and
-    papering over it would silently under-count the trials the deflation
-    term is computed over.
+    refused before any sequence number is spent on it; an ``outcome``
+    outside the four §8 names — 'ok', 'timeout', 'error',
+    'tripwire_fail' — is a charge no audit could classify, so feature 91
+    refuses it the same way), and at the read, where a row that cannot
+    be rebuilt into a :class:`~ledger.record.TrialLedgerRecord` is
+    refused rather than served — an unreadable row in an append-only
+    log is evidence of tampering or corruption, and papering over it
+    would silently under-count the trials the deflation term is computed
+    over.
     """
 
 

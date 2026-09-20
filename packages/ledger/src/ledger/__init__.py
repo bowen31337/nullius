@@ -12,9 +12,11 @@ increasing sequence number.*  The append seam
 are this member's contribution; the features that follow add their own
 stamps and derivations on top of it — the provenance triple of 87, the
 epoch accounting of 88, the charge semantics of 89-90, the outcome of
-91, the enforced immutability of 92, the ``K_effective`` family of
-93-96 — each as a layer over the one table this member creates, never a
-second table beside it.
+91 (:mod:`ledger.outcome`: one of 'ok', 'timeout', 'error',
+'tripwire_fail' persisted on every appended row, refused when absent or
+misspelled), the enforced immutability of 92, the ``K_effective``
+family of 93-96 — each as a layer over the one table this member
+creates, never a second table beside it.
 
 Importing this package registers two components with the application
 factory.  ``"ledger"`` is the :class:`~ledger.store.TrialLedger` bound
@@ -44,13 +46,17 @@ feature composes rather than a second spelling of something the store
 already says:
 
 * :class:`~ledger.record.TrialLedgerRecord` — one row as a value: the
-  sequence the table assigned, the stamp, the two identities.
+  sequence the table assigned, the stamp, the two identities, the
+  outcome.
 * :class:`~ledger.store.TrialLedger` — the append, the idempotent
   debit, the ordered read, the count; bound to one database URL.
 * :class:`~ledger.debit.DebitEndpoint` with :class:`~ledger.debit.
   DebitRequest` and :class:`~ledger.debit.DebitResponse` — feature 95's
   route: POST /ledger/debit, appending one trial row idempotently keyed
   by ``node_id`` and returning the prior sequence on a retry.
+* :data:`~ledger.outcome.OUTCOMES` — feature 91's vocabulary: the four
+  outcomes a trial can end in, the one closed set every appended row's
+  ``outcome`` is drawn from.
 * :class:`~ledger.record.utc_now` — the append's default clock.
 * The error taxonomy of :mod:`ledger.errors`, one base class wide.
 """
@@ -68,6 +74,7 @@ from .errors import (
     TrialRecordError,
     TrialStoreError,
 )
+from .outcome import OUTCOMES
 from .record import TrialLedgerRecord, utc_now
 from .store import DATABASE_URL_ENV, TRIAL_LEDGER_TABLE, TrialLedger
 
@@ -79,6 +86,7 @@ __all__ = [
     "DebitEndpoint",
     "DebitRequest",
     "DebitResponse",
+    "OUTCOMES",
     "TRIAL_LEDGER_TABLE",
     "TrialImmutableError",
     "TrialLedger",

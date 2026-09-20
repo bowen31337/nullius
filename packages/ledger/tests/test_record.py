@@ -6,8 +6,9 @@ read (rows are rebuilt through it, which is how a malformed row on disk
 is refused rather than served).  These tests pin the constructor's
 contract: identities are UUIDs and are canonicalised, the stamp is
 aware-UTC and a naive instant is refused, the sequence number is a
-positive integer the ledger could have assigned, and the value is frozen
-once built.
+positive integer the ledger could have assigned, the outcome is one of
+the four a trial can end in (the vocabulary's own refusal cases live in
+test_outcome.py), and the value is frozen once built.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ def _record(**overrides: object) -> TrialLedgerRecord:
         "ts": dt.datetime(2026, 9, 20, 5, 0, 0, tzinfo=timezone.utc),
         "node_id": NODE,
         "campaign_id": CAMPAIGN,
+        "outcome": "ok",
     }
     fields.update(overrides)
     return TrialLedgerRecord(**fields)  # type: ignore[arg-type]
@@ -151,4 +153,5 @@ def test_the_column_tuple_is_in_table_order() -> None:
         "2026-09-20T05:00:00+00:00",
         "00000000-0000-4000-8000-000000000001",
         CAMPAIGN,
+        "ok",
     )

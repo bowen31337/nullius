@@ -61,17 +61,42 @@ Feature 103's versioned migration writes the Postgres DDL and adopts
 this statement's shape; both spellings agree that the number is the
 table's to assign, never the writer's to choose.
 
-**The columns are the four the append itself owns.**  ``seq``, ``ts``,
-``node_id``, ``campaign_id`` — §8's first four, the ones that say *which
-evaluation was charged, when, in what order*.  The provenance triple
-(feature 87), the epoch (88), the charge semantics (89-90) and the
-outcome (91) are their features' stamps and land as columns on this same
-table as they arrive, the way the universe member's store upgrades its
-own tables in place.  ``ts`` is stored as ISO-8601 UTC text with an
-explicit offset — canonical, lexicographically ordered for a single
-offset, and revalidated through the record constructor on read, so a row
-that wandered in from outside cannot smuggle a naive stamp past the
-write-time check.
+**The columns are the five the append itself owns.**  ``seq``, ``ts``,
+``node_id``, ``campaign_id``, ``outcome`` — §8's first four, the ones
+that say *which evaluation was charged, when, in what order*, plus the
+outcome (feature 91), the one that says *how it ended*: 'ok',
+'timeout', 'error' or 'tripwire_fail', the closed vocabulary of
+:mod:`ledger.outcome`, refused at the write when absent or misspelled
+because a failed evaluation still consumed a hypothesis and its charge
+must be classifiable.  The provenance triple (feature 87), the epoch
+(88) and the charge semantics (89-90) are their features' stamps and
+land as columns on this same table as they arrive, the way this store
+upgraded in place for the outcome.  ``ts`` is stored as ISO-8601 UTC
+text with an explicit offset — canonical, lexicographically ordered for
+a single offset, and revalidated through the record constructor on
+read, so a row that wandered in from outside cannot smuggle a naive
+stamp past the write-time check.
+
+**A pre-outcome database is upgraded in place, not refused.**  ``CREATE
+TABLE IF NOT EXISTS`` cannot evolve a table that already exists, so a
+database written by the four-column schema of features 86-95 would
+otherwise reject every append with "no column named outcome".  The
+store brings such a table forward the way the universe member's store
+brings a pre-floor build table forward: ``PRAGMA table_info`` names the
+columns it holds, and an ``outcome`` that is missing is added by
+``ALTER TABLE … ADD COLUMN outcome TEXT NOT NULL DEFAULT 'ok'`` — the
+one value among the four a row that predates outcome recording can
+carry honestly.  Those rows recorded no failure (the outcome-bearing
+charge of feature 84 arrives with this column), so 'timeout',
+'error' and 'tripwire_fail' would fabricate a failure the ledger never
+observed, while 'ok' asserts only the absence of a recorded failure —
+the same reasoning that gave the universe's legacy builds
+``min_dollar_volume = 0``.  The ``ALTER`` is neither an ``UPDATE`` nor
+a ``DELETE`` — it restates no past charge, adds no charge, and spends
+no sequence number — so it passes feature 92's wall and runs on the
+same guarded connection every other statement does: the wall is a
+mutation wall, not a schema freeze, and this is the upgrade that proves
+it.
 
 **Storage is the workspace's relational store**, addressed by
 ``DATABASE_URL`` exactly as the universe and snapshot members' tables
@@ -87,9 +112,10 @@ would start the sequence over at 1.  A ledger that silently restarts its
 count is the exact failure this category exists to make impossible; a
 caller who wants a scratch ledger points at a temporary *file*.
 
-The schema is created idempotently on connect, so a fresh database's
-first debit brings the table into being and no migration step is needed
-for this member.
+The schema is created idempotently on connect — and an older one
+upgraded in place, as the previous paragraph states — so a fresh
+database's first debit brings the table into being and no migration
+step is needed for this member.
 
 **A configured store that fails is loud; an absent one is discoverable.**
 :meth:`TrialLedger.resolve` returns ``None`` when no ``DATABASE_URL`` is
@@ -113,6 +139,7 @@ from typing import Any, Optional
 from urllib.parse import unquote, urlparse
 
 from .errors import TrialImmutableError, TrialRecordError, TrialStoreError
+from .outcome import validated_outcome
 from .record import TrialLedgerRecord, _validated_instant, _validated_uuid, utc_now
 
 __all__ = [
@@ -131,8 +158,8 @@ DATABASE_URL_ENV = "DATABASE_URL"
 TRIAL_LEDGER_TABLE = "trial_ledger"
 
 #: The table's DDL.  See the module docstring for why ``AUTOINCREMENT``
-#: is the load-bearing word and why these four columns are this feature's
-#: whole column set.
+#: is the load-bearing word and why these five columns are this store's
+#: whole column set — §8's first four plus feature 91's outcome.
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS {TRIAL_LEDGER_TABLE} (
     -- The monotonically increasing sequence number, assigned by the
@@ -146,7 +173,14 @@ CREATE TABLE IF NOT EXISTS {TRIAL_LEDGER_TABLE} (
     -- The evaluated node, canonical UUID spelling.
     node_id     TEXT NOT NULL,
     -- The campaign the node belongs to, canonical UUID spelling.
-    campaign_id TEXT NOT NULL
+    campaign_id TEXT NOT NULL,
+    -- How the evaluation ended (feature 91): one of the closed
+    -- vocabulary 'ok' | 'timeout' | 'error' | 'tripwire_fail', §8's own
+    -- comment on this column.  NOT NULL with no default — unlike
+    -- charge_units (feature 89, DEFAULT 1.0) there is no honest
+    -- presumption: the caller must say how the trial ended, and the
+    -- write is refused when it does not.
+    outcome     TEXT NOT NULL
 );
 """
 
@@ -154,7 +188,7 @@ CREATE TABLE IF NOT EXISTS {TRIAL_LEDGER_TABLE} (
 # string shared by every SELECT so the reader and the record cannot drift
 # apart in column order — the failure that would silently swap an
 # identity for a stamp.
-_COLUMNS = "seq, ts, node_id, campaign_id"
+_COLUMNS = "seq, ts, node_id, campaign_id, outcome"
 
 # Feature 92's seam: refuse an UPDATE or DELETE against trial_ledger before
 # it runs.  The check is by statement shape, not by trust — it names the
@@ -274,6 +308,7 @@ def guarded(database_url: str) -> Iterator[_GuardedConnection]:
     try:
         with connection:
             connection.executescript(_SCHEMA)
+            _upgrade_legacy_ledger_table(connection)
         yield connection
     finally:
         connection.close()
@@ -319,6 +354,36 @@ def _sqlite_path(database_url: str) -> Path:
     return Path(path)
 
 
+def _upgrade_legacy_ledger_table(connection: sqlite3.Connection) -> None:
+    """Bring a pre-outcome ledger table up to the current schema, in place.
+
+    ``CREATE TABLE IF NOT EXISTS`` cannot evolve a table that already
+    exists, so a database written by the four-column schema of features
+    86-95 would otherwise reject every append with "no column named
+    outcome".  The upgrade adds the missing column with the default
+    'ok' — which is exactly what those rows can honestly carry: they
+    predate outcome recording, so they recorded no failure, and among
+    the four outcomes only 'ok' asserts the absence of a recorded
+    failure rather than fabricating one the ledger never observed.
+
+    The ``ALTER`` is issued on the caller's connection (the guarded one
+    every store operation opens) and passes feature 92's wall by its
+    own terms: it is neither an ``UPDATE`` nor a ``DELETE``, restates
+    no past charge and spends no sequence number — the wall is a
+    mutation wall, not a schema freeze.  Idempotent by construction:
+    a table that already holds the column is left untouched, so every
+    connect after the first takes the same cheap path.
+    """
+    columns = {
+        row[1] for row in connection.execute(f"PRAGMA table_info({TRIAL_LEDGER_TABLE})")
+    }
+    if "outcome" not in columns:
+        connection.execute(
+            f"ALTER TABLE {TRIAL_LEDGER_TABLE} "
+            "ADD COLUMN outcome TEXT NOT NULL DEFAULT 'ok'"
+        )
+
+
 def _record_from_row(row: tuple[Any, ...]) -> TrialLedgerRecord:
     """Rebuild one row as a record, refusing a malformed row by its seq.
 
@@ -330,7 +395,11 @@ def _record_from_row(row: tuple[Any, ...]) -> TrialLedgerRecord:
     """
     try:
         return TrialLedgerRecord(
-            seq=row[0], ts=row[1], node_id=row[2], campaign_id=row[3]
+            seq=row[0],
+            ts=row[1],
+            node_id=row[2],
+            campaign_id=row[3],
+            outcome=row[4],
         )
     except TrialRecordError as exc:
         raise TrialRecordError(
@@ -342,23 +411,27 @@ def _record_from_row(row: tuple[Any, ...]) -> TrialLedgerRecord:
 def _validated_charge(
     node_id: Any,
     campaign_id: Any,
+    outcome: Any,
     ts: Optional[datetime],
     clock: Optional[Callable[[], datetime]],
-) -> tuple[str, str, datetime]:
-    """Validate a charge's arguments, returning the canonical triple.
+) -> tuple[str, str, str, datetime]:
+    """Validate a charge's arguments, returning the canonical quadruple.
 
     The one spelling both write paths — :meth:`TrialLedger.append` and
     :meth:`TrialLedger.debit` — share, so the two cannot drift on what
-    they accept: identities canonicalised to UUID text, the stamp resolved
-    from ``ts`` when the caller knows when the charge happened (a replay
-    debits the instant it reproduces, so the clock is never read when
-    ``ts`` is given) and from ``clock()`` otherwise, defaulting to
-    :func:`~ledger.record.utc_now`.  Every refusal lands here, *before*
-    the database is touched, so a refused charge spends no sequence
-    number and leaves the ledger exactly as it was.
+    they accept: identities canonicalised to UUID text, the outcome held
+    to feature 91's closed vocabulary (:func:`~ledger.outcome.
+    validated_outcome` refuses an absent or misspelled one), and the
+    stamp resolved from ``ts`` when the caller knows when the charge
+    happened (a replay debits the instant it reproduces, so the clock is
+    never read when ``ts`` is given) and from ``clock()`` otherwise,
+    defaulting to :func:`~ledger.record.utc_now`.  Every refusal lands
+    here, *before* the database is touched, so a refused charge spends
+    no sequence number and leaves the ledger exactly as it was.
     """
     node = _validated_uuid(node_id, "node_id")
     campaign = _validated_uuid(campaign_id, "campaign_id")
+    ended = validated_outcome(outcome)
     if ts is not None:
         instant = _validated_instant(ts, "ts")
     else:
@@ -369,7 +442,7 @@ def _validated_charge(
                 f"{type(source).__name__}"
             )
         instant = _validated_instant(source(), "ts")
-    return node, campaign, instant
+    return node, campaign, ended, instant
 
 
 class TrialLedger:
@@ -450,10 +523,11 @@ class TrialLedger:
     def _connect(self) -> sqlite3.Connection:
         """Open the database, ensure the ledger's table, and arm the guard.
 
-        The schema is created idempotently on every connect, so a fresh
-        database and an existing one take the same path and no migration
-        step is needed for this member — the same contract the universe
-        member's ``connect`` states.  The connection is a
+        The schema is created idempotently on every connect — upgrading a
+        pre-outcome table in place, so a fresh database and an existing
+        one take the same path and no migration step is needed for this
+        member, the same contract the universe member's ``connect``
+        states.  The connection is a
         :class:`_GuardedConnection`, so every statement the store issues —
         the append's INSERT, the debit's check-and-insert, the read paths'
         SELECT — runs through feature 92's wall: an UPDATE or DELETE
@@ -475,6 +549,7 @@ class TrialLedger:
         connection = sqlite3.connect(path, factory=_GuardedConnection)
         with connection:
             connection.executescript(_SCHEMA)
+            _upgrade_legacy_ledger_table(connection)
         return connection
 
     # -- Writing ------------------------------------------------------------
@@ -483,22 +558,30 @@ class TrialLedger:
         self,
         node_id: Any,
         campaign_id: Any,
+        outcome: Any = None,
         *,
         ts: Optional[datetime] = None,
         clock: Optional[Callable[[], datetime]] = None,
     ) -> TrialLedgerRecord:
         """Debit one evaluation: one INSERT, one sequence number, one row.
 
-        The whole of feature 86 at its seam.  The evaluation is named by
-        ``node_id`` and ``campaign_id`` (a :class:`~uuid.UUID` or its text
-        spelling, canonicalised on the way in); the stamp is ``ts`` when
-        the caller knows when the charge happened — a replay debits the
-        instant it is reproducing, so it does not depend on when it ran —
-        and otherwise ``clock()`` (defaulting to :func:`~ledger.record.
-        utc_now`, aware UTC at second resolution).  The sequence number is
-        not a parameter and never will be: the table assigns it, and the
-        returned :class:`~ledger.record.TrialLedgerRecord` carries what
-        was assigned.
+        The whole of feature 86 at its seam, carrying feature 91's
+        stamp.  The evaluation is named by ``node_id`` and
+        ``campaign_id`` (a :class:`~uuid.UUID` or its text spelling,
+        canonicalised on the way in) and by ``outcome`` — how it ended,
+        one of 'ok', 'timeout', 'error', 'tripwire_fail'
+        (:data:`~ledger.outcome.OUTCOMES`).  The outcome has no default
+        and is refused when absent: §6.1's step 11 debits *even when the
+        node fails*, so the append must be told which of the four it is
+        recording, and a row that could not say would be a charge no
+        audit could classify.  The stamp is ``ts`` when the caller knows
+        when the charge happened — a replay debits the instant it is
+        reproducing, so it does not depend on when it ran — and
+        otherwise ``clock()`` (defaulting to :func:`~ledger.record.
+        utc_now`, aware UTC at second resolution).  The sequence number
+        is not a parameter and never will be: the table assigns it, and
+        the returned :class:`~ledger.record.TrialLedgerRecord` carries
+        what was assigned.
 
         Every argument is validated *before* the database is touched, so
         a refused append spends no sequence number and leaves the ledger
@@ -508,7 +591,9 @@ class TrialLedger:
         and concurrent appends serialise on the database and receive
         distinct, increasing sequences.
         """
-        node, campaign, instant = _validated_charge(node_id, campaign_id, ts, clock)
+        node, campaign, ended, instant = _validated_charge(
+            node_id, campaign_id, outcome, ts, clock
+        )
         # Already aware-UTC (the validator normalises), so isoformat() ends
         # "+00:00" and the stored text is canonical and orderable.
         stamp = instant.isoformat()
@@ -517,8 +602,8 @@ class TrialLedger:
                 with connection:
                     cursor = connection.execute(
                         f"INSERT INTO {TRIAL_LEDGER_TABLE} "
-                        "(ts, node_id, campaign_id) VALUES (?, ?, ?)",
-                        (stamp, node, campaign),
+                        "(ts, node_id, campaign_id, outcome) VALUES (?, ?, ?, ?)",
+                        (stamp, node, campaign, ended),
                     )
                     assigned = cursor.lastrowid
         except sqlite3.Error as exc:
@@ -532,13 +617,18 @@ class TrialLedger:
                 "row; the debit did not land and must be retried"
             )
         return TrialLedgerRecord(
-            seq=assigned, ts=instant, node_id=node, campaign_id=campaign
+            seq=assigned,
+            ts=instant,
+            node_id=node,
+            campaign_id=campaign,
+            outcome=ended,
         )
 
     def debit(
         self,
         node_id: Any,
         campaign_id: Any,
+        outcome: Any = None,
         *,
         ts: Optional[datetime] = None,
         clock: Optional[Callable[[], datetime]] = None,
@@ -556,6 +646,11 @@ class TrialLedger:
         ``False``, so the caller is answered with the very sequence the
         original request returned and the two accounts never diverge.
 
+        The charge carries feature 91's outcome — one of 'ok',
+        'timeout', 'error', 'tripwire_fail', refused when absent for
+        the same reason :meth:`append` refuses it: the failure the
+        debit is charged *for* is the fact the row exists to record.
+
         The check and the insert are one statement in one transaction —
         ``INSERT … SELECT … WHERE NOT EXISTS (… node_id = ?)`` — on the
         one connection the operation opens, so there is no window
@@ -569,14 +664,17 @@ class TrialLedger:
         and it holds it at the seam.)
 
         On a retry, nothing is written — not the stamp, not the
-        campaign: the prior row stands exactly as first written, because
-        this is append-only accounting and a charge is never restated.
-        A ``ts`` handed to a retry is silently the *loser* of that rule;
-        callers that need to know which stamp landed read it off the
-        returned record.  When several rows exist for the node — only
-        raw :meth:`append` calls can leave that — the earliest by
-        ``seq`` is the prior row: the first charge ever debited for the
-        node is the one whose retry this is.
+        campaign, not the outcome: the prior row stands exactly as first
+        written, because this is append-only accounting and a charge is
+        never restated.  A ``ts`` or an ``outcome`` handed to a retry is
+        silently the *loser* of that rule — the outcome of the charge
+        is the one the evaluation ended with when it was first debited,
+        not the one a later retry would guess; callers that need to
+        know which landed read them off the returned record.  When
+        several rows exist for the node — only raw :meth:`append` calls
+        can leave that — the earliest by ``seq`` is the prior row: the
+        first charge ever debited for the node is the one whose retry
+        this is.
 
         Validation is the append's own (see :func:`_validated_charge`)
         and happens before the database is touched, so a refused debit
@@ -584,7 +682,9 @@ class TrialLedger:
         none either, which is the whole point: the next node's first
         debit draws the very next number.
         """
-        node, campaign, instant = _validated_charge(node_id, campaign_id, ts, clock)
+        node, campaign, ended, instant = _validated_charge(
+            node_id, campaign_id, outcome, ts, clock
+        )
         stamp = instant.isoformat()
         appended = False
         assigned: Optional[int] = None
@@ -594,10 +694,10 @@ class TrialLedger:
                 with connection:
                     cursor = connection.execute(
                         f"INSERT INTO {TRIAL_LEDGER_TABLE} "
-                        "(ts, node_id, campaign_id) "
-                        "SELECT ?, ?, ? WHERE NOT EXISTS ("
+                        "(ts, node_id, campaign_id, outcome) "
+                        "SELECT ?, ?, ?, ? WHERE NOT EXISTS ("
                         f"SELECT 1 FROM {TRIAL_LEDGER_TABLE} WHERE node_id = ?)",
-                        (stamp, node, campaign, node),
+                        (stamp, node, campaign, ended, node),
                     )
                     if cursor.rowcount == 1:
                         appended = True
@@ -621,7 +721,11 @@ class TrialLedger:
                 )
             return (
                 TrialLedgerRecord(
-                    seq=assigned, ts=instant, node_id=node, campaign_id=campaign
+                    seq=assigned,
+                    ts=instant,
+                    node_id=node,
+                    campaign_id=campaign,
+                    outcome=ended,
                 ),
                 True,
             )

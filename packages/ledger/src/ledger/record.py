@@ -4,12 +4,14 @@ app_spec.xml, "Trial Ledger Append-Only Accounting", feature 86: *System
 persists one trial_ledger row per evaluation under a monotonically
 increasing sequence number.*  docs/nullius-tech-architecture.md §8 fixes
 the row's first four columns — ``seq``, ``ts``, ``node_id``,
-``campaign_id`` — and leaves the rest (the provenance triple of feature
-87, the epoch of 88, the charge semantics of 89-90, the outcome of 91) to
-the features that own them.  This module is the row those columns make:
-the value a debit writes, and the value a read hands back.  A record read
-from the ledger equals the record the append returned — the row is a
-statement about a past charge, and a re-read must not restate it.
+``campaign_id`` — and leaves the rest to the features that own them:
+the outcome of 91 has landed on this row (:mod:`ledger.outcome`), while
+the provenance triple of 87, the epoch of 88 and the charge semantics
+of 89-90 are still to arrive.  This module is the row those columns
+make: the value a debit writes, and the value a read hands back.  A
+record read from the ledger equals the record the append returned — the
+row is a statement about a past charge, and a re-read must not restate
+it.
 
 **The sequence number is the table's to assign, and the record's to
 carry.**  ``seq`` is assigned by the store's append
@@ -45,6 +47,19 @@ cannot be joined to the node that incurred it is a charge no audit can
 attribute, and spending a sequence number on it would make the ledger's
 count honest and its contents useless.
 
+**The outcome is one of the four ways a trial ends (feature 91).**  The
+column §8 declares ``outcome TEXT NOT NULL`` with the vocabulary fixed
+in its own comment — ``ok | timeout | error | tripwire_fail`` — is a
+required stamp on this record, validated through
+:func:`ledger.outcome.validated_outcome` exactly as the identities and
+the stamp are: a value outside the four is refused at the write, and a
+row read back whose outcome has wandered outside them (a hand-edit, a
+corruption) is refused rather than served.  The outcome is what the
+count is *of* — a failed evaluation still consumed a hypothesis (§6.1,
+step 11 debits even then) — so a row that cannot say how its trial
+ended is a charge no audit can classify, and this layer does not build
+one.
+
 Instances are frozen: this is append-only accounting, and editing a
 persisted charge in place would rewrite the account rather than
 superseding it.  Supersession, where the category needs it, is a new row.
@@ -62,6 +77,7 @@ from dataclasses import dataclass
 from typing import Any, Union
 
 from .errors import TrialRecordError
+from .outcome import validated_outcome
 
 __all__ = ["TrialLedgerRecord", "utc_now"]
 
@@ -173,6 +189,10 @@ class TrialLedgerRecord:
     ``node_id`` and ``campaign_id`` name the evaluation that was charged:
     the node the evaluator ran and the campaign it belongs to, both in
     canonical UUID spelling so the row joins against the tree store.
+    ``outcome`` is how that evaluation ended — one of the four
+    :data:`~ledger.outcome.OUTCOMES` — carried on every row because the
+    honest count is a count of *outcomes*, and a failed trial is as
+    chargeable a fact as a successful one.
 
     Construction validates and canonicalises, so an instance is
     trustworthy by construction: the store's append builds its return
@@ -193,6 +213,9 @@ class TrialLedgerRecord:
     node_id: str
     #: The campaign the node belongs to, canonical UUID spelling.
     campaign_id: str
+    #: How the evaluation ended — one of 'ok', 'timeout', 'error',
+    #: 'tripwire_fail' (§8's vocabulary; feature 91's stamp).
+    outcome: str
 
     def __post_init__(self) -> None:
         # frozen+slots forbids plain assignment, so canonicalisation writes
@@ -206,19 +229,24 @@ class TrialLedgerRecord:
         object.__setattr__(
             self, "campaign_id", _validated_uuid(self.campaign_id, "campaign_id")
         )
+        object.__setattr__(
+            self, "outcome", validated_outcome(self.outcome)
+        )
 
     def row(self) -> tuple[Union[int, str], ...]:
         """The record as the store's column tuple, in table order.
 
-        ``seq, ts, node_id, campaign_id`` — the order the table's columns
-        are declared in and the order the read path unpacks, kept in one
-        method so the two cannot drift apart and silently swap an identity
-        for a stamp.  ``ts`` serialises as canonical ISO-8601 UTC with an
-        explicit offset, the exact text the table stores.
+        ``seq, ts, node_id, campaign_id, outcome`` — the order the
+        table's columns are declared in and the order the read path
+        unpacks, kept in one method so the two cannot drift apart and
+        silently swap an identity for a stamp.  ``ts`` serialises as
+        canonical ISO-8601 UTC with an explicit offset, the exact text
+        the table stores.
         """
         return (
             self.seq,
             self.ts.astimezone(dt.timezone.utc).isoformat(),
             self.node_id,
             self.campaign_id,
+            self.outcome,
         )

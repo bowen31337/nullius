@@ -49,6 +49,10 @@ from ledger.store import guarded
 NODE_A = uuid.uuid4()
 NODE_B = uuid.uuid4()
 CAMPAIGN = uuid.uuid4()
+# The outcome these feature-92 tests append with — the wall this suite
+# pins is orthogonal to the outcome, whose own behaviour is
+# test_outcome.py's subject.
+OUTCOME = "ok"
 
 
 # -- The store's own connection refuses a mutation --------------------------
@@ -60,7 +64,7 @@ def test_an_update_through_the_store_is_refused_and_changes_nothing(
     # An UPDATE reached through the store's own connection — the way a bug,
     # a second package or an operator script would reach it — is refused
     # before it runs, so the row keeps the stamp it was appended with.
-    record = test_ledger.append(NODE_A, CAMPAIGN)
+    record = test_ledger.append(NODE_A, CAMPAIGN, OUTCOME)
     original_ts = record.ts
 
     with pytest.raises(TrialImmutableError):
@@ -78,7 +82,7 @@ def test_a_delete_through_the_store_is_refused_and_leaves_every_row(
     # A DELETE reached through the store's connection is refused, and every
     # row the ledger held is still present — the honest count is unchanged.
     for node in (NODE_A, NODE_B, NODE_A):
-        test_ledger.append(node, CAMPAIGN)
+        test_ledger.append(node, CAMPAIGN, OUTCOME)
     assert test_ledger.count() == 3
 
     with pytest.raises(TrialImmutableError):
@@ -94,7 +98,7 @@ def test_a_delete_matching_nothing_is_still_refused(test_ledger: TrialLedger) ->
     # The denial is about the attempt, not its effect: a DELETE whose WHERE
     # matches no row is refused all the same, exactly as a denied privilege
     # refuses the statement regardless of what it would have matched.
-    test_ledger.append(NODE_A, CAMPAIGN)
+    test_ledger.append(NODE_A, CAMPAIGN, OUTCOME)
 
     with pytest.raises(TrialImmutableError):
         test_ledger._connect().execute(
@@ -109,7 +113,7 @@ def test_a_delete_matching_nothing_is_still_refused(test_ledger: TrialLedger) ->
 def test_an_update_matching_nothing_is_still_refused(test_ledger: TrialLedger) -> None:
     # The same rule for UPDATE: a mutation that would touch no row is still
     # a mutation attempt, and is refused before the WHERE is ever evaluated.
-    test_ledger.append(NODE_A, CAMPAIGN)
+    test_ledger.append(NODE_A, CAMPAIGN, OUTCOME)
 
     with pytest.raises(TrialImmutableError):
         test_ledger._connect().execute(
@@ -124,7 +128,7 @@ def test_the_error_names_the_table_and_the_verb(test_ledger: TrialLedger) -> Non
     # An operator reading the stack trace must understand what was refused
     # and why: the message names the table, the verb, and that the refusal
     # is enforced.
-    test_ledger.append(NODE_A, CAMPAIGN)
+    test_ledger.append(NODE_A, CAMPAIGN, OUTCOME)
 
     with pytest.raises(TrialImmutableError) as excinfo:
         test_ledger._connect().execute(
@@ -143,12 +147,13 @@ def test_the_error_names_the_table_and_the_verb(test_ledger: TrialLedger) -> Non
 def test_guarded_refuses_an_update(test_database_url: str) -> None:
     with guarded(test_database_url) as connection:
         connection.execute(
-            f"INSERT INTO {TRIAL_LEDGER_TABLE} (ts, node_id, campaign_id) "
-            "VALUES (?, ?, ?)",
+            f"INSERT INTO {TRIAL_LEDGER_TABLE} (ts, node_id, campaign_id, outcome) "
+            "VALUES (?, ?, ?, ?)",
             (
                 datetime(2026, 9, 20, 5, 0, 0, tzinfo=timezone.utc).isoformat(),
                 str(NODE_A),
                 str(CAMPAIGN),
+                OUTCOME,
             ),
         )
         with pytest.raises(TrialImmutableError):
@@ -168,12 +173,13 @@ def test_guarded_lets_a_select_through(test_database_url: str) -> None:
     # a CREATE/INSERT against another table runs too.
     with guarded(test_database_url) as connection:
         connection.execute(
-            f"INSERT INTO {TRIAL_LEDGER_TABLE} (ts, node_id, campaign_id) "
-            "VALUES (?, ?, ?)",
+            f"INSERT INTO {TRIAL_LEDGER_TABLE} (ts, node_id, campaign_id, outcome) "
+            "VALUES (?, ?, ?, ?)",
             (
                 datetime(2026, 9, 20, 5, 0, 0, tzinfo=timezone.utc).isoformat(),
                 str(NODE_A),
                 str(CAMPAIGN),
+                OUTCOME,
             ),
         )
         rows = connection.execute(
@@ -207,7 +213,7 @@ def test_a_select_that_mentions_the_table_is_not_refused(
 ) -> None:
     # A statement that merely names trial_ledger in a read is not a
     # mutation: SELECT runs, and the ledger reads what it holds.
-    test_ledger.append(NODE_A, CAMPAIGN)
+    test_ledger.append(NODE_A, CAMPAIGN, OUTCOME)
     connection = test_ledger._connect()
     with connection:
         rows = connection.execute(
@@ -222,8 +228,8 @@ def test_a_select_that_mentions_the_table_is_not_refused(
 def test_append_still_writes_under_the_enforcement(test_ledger: TrialLedger) -> None:
     # The enforcement lets INSERT through: an append after it is in force
     # still writes exactly one row and draws the next sequence number.
-    first = test_ledger.append(NODE_A, CAMPAIGN)
-    second = test_ledger.append(NODE_B, CAMPAIGN)
+    first = test_ledger.append(NODE_A, CAMPAIGN, OUTCOME)
+    second = test_ledger.append(NODE_B, CAMPAIGN, OUTCOME)
     assert [first.seq, second.seq] == [1, 2]
     assert test_ledger.count() == 2
 
@@ -232,7 +238,7 @@ def test_reads_still_work_under_the_enforcement(test_ledger: TrialLedger) -> Non
     # The read paths issue SELECT only, which the enforcement lets through,
     # so rows() and get(seq) return the rows the ledger holds.
     for node in (NODE_A, NODE_B):
-        test_ledger.append(node, CAMPAIGN)
+        test_ledger.append(node, CAMPAIGN, OUTCOME)
     assert [row.seq for row in test_ledger.rows()] == [1, 2]
     assert test_ledger.get(1) is not None
     assert test_ledger.get(2) is not None
@@ -243,8 +249,8 @@ def test_debit_still_works_under_the_enforcement(test_ledger: TrialLedger) -> No
     # The idempotent debit (feature 95) is a check-and-insert; the INSERT
     # and its NOT EXISTS SELECT both run, so a first debit appends and a
     # retry is answered by the prior row.
-    first_record, first_appended = test_ledger.debit(NODE_A, CAMPAIGN)
-    second_record, second_appended = test_ledger.debit(NODE_A, CAMPAIGN)
+    first_record, first_appended = test_ledger.debit(NODE_A, CAMPAIGN, OUTCOME)
+    second_record, second_appended = test_ledger.debit(NODE_A, CAMPAIGN, OUTCOME)
     assert first_appended is True
     assert second_appended is False
     assert second_record.seq == first_record.seq
@@ -260,7 +266,7 @@ def test_the_immutability_error_is_a_ledger_error(
     # TrialImmutableError joins the one-base-class-wide taxonomy, so a
     # caller can catch every ledger failure — including a refused mutation
     # — with the single base class.
-    test_ledger.append(NODE_A, CAMPAIGN)
+    test_ledger.append(NODE_A, CAMPAIGN, OUTCOME)
     with pytest.raises(TrialLedgerError):
         test_ledger._connect().execute(f"DELETE FROM {TRIAL_LEDGER_TABLE}")
     assert issubclass(TrialImmutableError, TrialLedgerError)
@@ -271,7 +277,7 @@ def test_a_refused_mutation_leaves_no_half_written_state(
 ) -> None:
     # Refusing a mutation spends no sequence number and leaves the ledger
     # exactly as it was — no half-written row, no gap in the count.
-    test_ledger.append(NODE_A, CAMPAIGN)
+    test_ledger.append(NODE_A, CAMPAIGN, OUTCOME)
     before = test_ledger.count()
 
     with pytest.raises(TrialImmutableError):
@@ -303,7 +309,7 @@ def test_the_refusal_is_case_and_whitespace_insensitive(
     # lowercase, uppercased, doubled whitespace and leading newlines all
     # resolve to the same refusal, because the wall must meet the attempt
     # however it is written.
-    test_ledger.append(NODE_A, CAMPAIGN)
+    test_ledger.append(NODE_A, CAMPAIGN, OUTCOME)
     with pytest.raises(TrialImmutableError):
         test_ledger._connect().execute(statement)
     assert test_ledger.count() == 1
@@ -313,7 +319,7 @@ def test_a_cte_prefixed_mutation_is_still_refused(test_ledger: TrialLedger) -> N
     # A statement prefixed with a common table expression that does not
     # touch the ledger is still caught: the verb that follows the CTE is
     # the one inspected, so a WITH … DELETE FROM trial_ledger is refused.
-    test_ledger.append(NODE_A, CAMPAIGN)
+    test_ledger.append(NODE_A, CAMPAIGN, OUTCOME)
     with pytest.raises(TrialImmutableError):
         test_ledger._connect().execute(
             f"WITH keeper AS (SELECT 1 AS x) "
@@ -337,10 +343,10 @@ def test_the_monotonicity_probe_still_deletes_via_a_bare_connection(
 
     ledger = TrialLedger(test_database_url)
     for _ in range(3):
-        ledger.append(NODE_A, CAMPAIGN)
+        ledger.append(NODE_A, CAMPAIGN, OUTCOME)
     path = ledger.path
     with sqlite3.connect(path) as connection:
         connection.execute(f"DELETE FROM {TABLE}")
     assert ledger.count() == 0
     # And the next append still draws a number above every spent one.
-    assert ledger.append(NODE_B, CAMPAIGN).seq == 4
+    assert ledger.append(NODE_B, CAMPAIGN, OUTCOME).seq == 4

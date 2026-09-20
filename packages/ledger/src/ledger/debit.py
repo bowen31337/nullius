@@ -38,11 +38,15 @@ the atomicity is the store's to keep, the request/response shape is the
 endpoint's to say, and neither reaches into the other's half.
 
 **The request is a frozen value, validated at construction.**  A request
-whose ``node_id`` is not a UUID, or whose ``ts`` is naive, is refused
-before the store is touched — a malformed body spends no sequence
-number — and the canonical spellings (UUID text, aware-UTC stamps) mean
-two requests for the same evaluation compare equal however the caller
-came by the identities.
+whose ``node_id`` is not a UUID, whose ``ts`` is naive, or whose
+``outcome`` is not one of the four a trial can end in
+(:data:`~ledger.outcome.OUTCOMES`, feature 91), is refused before the
+store is touched — a malformed body spends no sequence number — and the
+canonical spellings (UUID text, aware-UTC stamps) mean two requests for
+the same evaluation compare equal however the caller came by the
+identities.  The outcome is required with no default: the retry this
+endpoint exists to answer is the failure path's own charge, and a body
+that cannot say how the evaluation ended would debit it unclassified.
 
 **The response is a fact, not a receipt to reinterpret.**  ``seq`` is
 the row's own sequence — fresh on the first POST, prior on every retry —
@@ -68,6 +72,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from .outcome import validated_outcome
 from .record import TrialLedgerRecord, _validated_instant, _validated_uuid
 from .store import TrialLedger
 
@@ -92,15 +97,19 @@ class DebitRequest:
     """The body of one POST /ledger/debit: the charge to append.
 
     Two identities — the evaluated ``node_id`` (the idempotency key: the
-    node is the evaluation) and the ``campaign_id`` it belongs to — plus
-    an optional ``ts`` for the replay path, which debits the instant it
-    is reproducing rather than the instant it ran.  Construction
-    canonicalises the identities to UUID text and refuses anything that
-    is not one, and normalises a given ``ts`` to aware-UTC while
+    node is the evaluation) and the ``campaign_id`` it belongs to — the
+    ``outcome`` the evaluation ended in (feature 91's stamp: one of
+    'ok', 'timeout', 'error', 'tripwire_fail', required, because §6.1's
+    step 11 debits even when the node fails and the charge must record
+    which failure it is), plus an optional ``ts`` for the replay path,
+    which debits the instant it is reproducing rather than the instant
+    it ran.  Construction canonicalises the identities to UUID text and
+    refuses anything that is not one, holds the outcome to the closed
+    vocabulary, and normalises a given ``ts`` to aware-UTC while
     refusing a naive instant, the same row contract
     :class:`~ledger.record.TrialLedgerRecord` states: a charge that
-    cannot be joined or ranged is a charge no audit can use, and it is
-    refused before the store is ever touched.
+    cannot be joined, ranged or classified is a charge no audit can
+    use, and it is refused before the store is ever touched.
 
     Frozen, because a request is a fact the caller stated; editing one
     in flight would be posting a different charge than was validated.
@@ -110,6 +119,8 @@ class DebitRequest:
     node_id: str
     #: The campaign the node belongs to, canonical UUID spelling.
     campaign_id: str
+    #: How the evaluation ended — one of :data:`~ledger.outcome.OUTCOMES`.
+    outcome: Optional[str] = None
     #: When the charge was debited, aware-UTC; ``None`` stamps at the
     #: store's default clock when the row is appended.
     ts: Optional[dt.datetime] = None
@@ -124,6 +135,9 @@ class DebitRequest:
         )
         object.__setattr__(
             self, "campaign_id", _validated_uuid(self.campaign_id, "campaign_id")
+        )
+        object.__setattr__(
+            self, "outcome", validated_outcome(self.outcome)
         )
         if self.ts is not None:
             object.__setattr__(self, "ts", _validated_instant(self.ts, "ts"))
@@ -248,15 +262,17 @@ class DebitEndpoint:
     ) -> DebitResponse:
         """Answer one POST /ledger/debit: append the charge, or return the prior row.
 
-        The whole of feature 95 at its seam.  The request's node is the
-        idempotency key: when the node holds no row the charge is
-        appended — one row, one fresh sequence — and when it holds one
+        The whole of feature 95 at its seam, carrying feature 91's
+        stamp.  The request's node is the idempotency key: when the
+        node holds no row the charge is appended — one row, one fresh
+        sequence, the outcome it ended with — and when it holds one
         (the worker died after the row landed; the response was lost;
-        the retry fired) nothing is written and the response carries the
-        *prior* sequence, so the caller accounts with the number the
-        original POST returned.  ``clock`` overrides the default stamp
-        the store would use when the request carries no ``ts`` (tests
-        and replays route their own time through it).
+        the retry fired) nothing is written and the response carries
+        the *prior* sequence and the *prior* row, so the caller
+        accounts with the number the original POST returned.  ``clock``
+        overrides the default stamp the store would use when the
+        request carries no ``ts`` (tests and replays route their own
+        time through it).
 
         Refusals are the request's own (a malformed body never reaches
         the store) and the store's (a configured store whose write fails
@@ -266,6 +282,7 @@ class DebitEndpoint:
         record, appended = self._ledger.debit(
             request.node_id,
             request.campaign_id,
+            request.outcome,
             ts=request.ts,
             clock=clock,
         )
