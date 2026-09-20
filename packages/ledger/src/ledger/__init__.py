@@ -10,8 +10,7 @@ persists one trial_ledger row per evaluation under a monotonically
 increasing sequence number.*  The append seam
 (:class:`ledger.store.TrialLedger.append`) and the never-reused sequence
 are this member's contribution; the features that follow add their own
-stamps and derivations on top of it — the provenance triple of 87,
-the
+stamps and derivations on top of it — the
 epoch accounting of 88 (:mod:`ledger.epoch`: the sequestered epoch a
 trial charged, required at the write and refused when absent — the
 epoch is a depleting resource counted in ``epoch_ledger``, and a charge
@@ -25,7 +24,14 @@ so an ordinary evaluation costs one unit and a cross-validated one whose
 folds each compare a fit against the same forward returns costs more),
 the opaque budget directive of 90
 (:mod:`ledger.budget`: a genuine bool supplied by the caller, never
-derived), the enforced immutability of 92, and the two derived views of
+derived), the provenance triple of 87
+(:mod:`ledger.provenance`: ``evaluator_hash``, ``snapshot_hash`` and
+``cost_model_hash`` on every appended row — the frozen evaluator that
+scored the trial, the sealed snapshot it was scored against and the
+cost model that priced it, each the sha256 hexdigest its owning
+feature computed, required at the write and refused when absent or not
+64 hex characters, because a charge that cannot name its provenance is
+a charge no replay can reproduce), the enforced immutability of 92, and the two derived views of
 93-96 — §8's ``K_effective`` per epoch (feature 93, counting the
 budget-charging rows of this member's own ``trial_ledger``) and the
 epoch-usage counts (feature 96, reading ``epoch_ledger``, the table the
@@ -69,7 +75,8 @@ already says:
 
 * :class:`~ledger.record.TrialLedgerRecord` — one row as a value: the
   sequence the table assigned, the stamp, the two identities, the
-  outcome, the budget directive, the charge unit and the epoch.
+  outcome, the budget directive, the charge unit, the epoch and the
+  provenance triple.
 * :class:`~ledger.store.TrialLedger` — the append, the idempotent
   debit, the ordered read, the count; bound to one database URL.
 * :class:`~ledger.debit.DebitEndpoint` with :class:`~ledger.debit.
@@ -99,6 +106,13 @@ already says:
   through, required at the write seams (an absent epoch is refused
   before the ledger is touched) and ``None``-tolerant on the read,
   where a row that predates the stamp honestly names no epoch.
+* :func:`~ledger.provenance.validated_provenance_hash` with
+  :data:`~ledger.provenance.PROVENANCE_COLUMNS` — feature 87's stamp:
+  the hexdigest check every appended row's ``evaluator_hash``,
+  ``snapshot_hash`` and ``cost_model_hash`` are validated through,
+  required at the write seams (an absent or malformed term is refused
+  before the ledger is touched) and ``None``-tolerant on the read,
+  where a row that predates the triple honestly names no provenance.
 * :class:`~ledger.keffective.KEffective` with
   :func:`~ledger.keffective.derive_k_effective` and
   :data:`~ledger.keffective.UNNAMED_EPOCH` — feature 93's derivation:
@@ -139,6 +153,7 @@ from .keffective_route import (
     KEffectiveResponse,
 )
 from .outcome import OUTCOMES
+from .provenance import PROVENANCE_COLUMNS, validated_provenance_hash
 from .record import TrialLedgerRecord, utc_now
 from .store import (
     DATABASE_URL_ENV,
@@ -165,6 +180,7 @@ __all__ = [
     "KEffectiveEndpoint",
     "KEffectiveResponse",
     "OUTCOMES",
+    "PROVENANCE_COLUMNS",
     "TRIAL_LEDGER_TABLE",
     "TrialImmutableError",
     "TrialLedger",
@@ -182,6 +198,7 @@ __all__ = [
     "validated_charge_units",
     "validated_charges_budget",
     "validated_epoch_id",
+    "validated_provenance_hash",
 ]
 
 #: The component name this member registers under — the key a composed

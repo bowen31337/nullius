@@ -77,6 +77,23 @@ CHARGES_BUDGET = True
 # pre-stamp read — is test_epoch.py's subject.
 EPOCH = "epoch-7"
 
+# The provenance triple these tests charge under (feature 87): the frozen
+# evaluator, the sealed snapshot and the cost model the trial ran against,
+# each the sha256 hexdigest its owning feature computes.  The triple's own
+# behaviour -- required at the write, refused when absent or malformed,
+# normalised to lowercase hex, ``None`` on a pre-stamp read -- is
+# test_provenance.py's subject; here it is spelled once as a mapping and
+# handed to every charge with ``**``.
+EVALUATOR_HASH = "27f6343f980c4c0ab821d9c72d211d0eb76b0853825cefd80476a05e43cab27e"
+SNAPSHOT_HASH = "16a0eeb0791b6c92451fd284dd9f599e0a7dbe7f6ebea6e2d2d06c7f74aec112"
+COST_MODEL_HASH = "7ceff1a68ddd995b2e87790bad3d75edd4bd42da19cf19039af8888851a7f520"
+PROVENANCE = {
+    "evaluator_hash": EVALUATOR_HASH,
+    "snapshot_hash": SNAPSHOT_HASH,
+    "cost_model_hash": COST_MODEL_HASH,
+}
+
+
 # The schema this member wrote before feature 89 landed — the table as it
 # was through features 86-91, recreated verbatim so a test can hand the
 # store a database that genuinely predates the charge unit.  The columns
@@ -118,7 +135,7 @@ def test_every_append_persists_the_unit_it_was_given(
     # returns, the row the read hands back, and the row the table holds
     # all say the same unit.
     record = test_ledger.append(
-        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, units, ts=STAMP, epoch_id=EPOCH)
+        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, units, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     assert record.charge_units == units
     assert test_ledger.get(record.seq) == record
     assert [row.charge_units for row in test_ledger.rows()] == [units]
@@ -132,7 +149,7 @@ def test_the_stored_unit_is_the_real_the_column_holds(
     # stores the unit as a real number, so the value a caller stated is
     # the value on disk.
     record = test_ledger.append(
-        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, units, ts=STAMP, epoch_id=EPOCH)
+        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, units, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     with sqlite3.connect(db_path) as connection:
         stored, kind = connection.execute(
             f"SELECT charge_units, typeof(charge_units) FROM {TRIAL_LEDGER_TABLE} "
@@ -150,7 +167,7 @@ def test_an_integer_unit_lands_as_the_float_the_column_holds(
     # as one that spells it 5.0: REAL affinity stores both as 5.0, and the
     # record normalises both to the float, so a unit of 5 and a unit of
     # 5.0 are one value and one row rather than two spellings of a cost.
-    record = test_ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, 5, ts=STAMP, epoch_id=EPOCH)
+    record = test_ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, 5, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     assert record.charge_units == 5.0
     assert isinstance(record.charge_units, float)
     with sqlite3.connect(db_path) as connection:
@@ -170,9 +187,9 @@ def test_an_ordinary_trial_and_a_cross_validated_one_land_side_by_side(
     # larger charge back to one.
     ordinary = uuid.uuid4()
     cross_validated = uuid.uuid4()
-    test_ledger.append(ordinary, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH)
+    test_ledger.append(ordinary, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     test_ledger.append(
-        cross_validated, CAMPAIGN, OUTCOME, CHARGES_BUDGET, 5.0, ts=STAMP, epoch_id=EPOCH)
+        cross_validated, CAMPAIGN, OUTCOME, CHARGES_BUDGET, 5.0, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     assert [row.charge_units for row in test_ledger.rows()] == [1.0, 5.0]
 
 
@@ -183,7 +200,7 @@ def test_the_debit_persists_the_unit_of_the_charge(
     # failure path §6.1 debits through the debit, and a cross-validated
     # evaluation that failed still cost its folds.
     record, appended = test_ledger.debit(
-        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, 3.0, ts=STAMP, epoch_id=EPOCH)
+        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, 3.0, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     assert appended is True
     assert record.charge_units == 3.0
     assert test_ledger.get(record.seq) == record
@@ -195,7 +212,7 @@ def test_the_endpoint_carries_the_unit_of_the_request(
     # POST /ledger/debit's body names the unit; the response's record
     # carries it; the table holds it.
     response = test_endpoint.post(
-        DebitRequest(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, 5.0, ts=STAMP, epoch_id=EPOCH)
+        DebitRequest(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, 5.0, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     )
     assert response.record.charge_units == 5.0
     assert test_ledger.get(response.seq) == response.record
@@ -208,9 +225,10 @@ def test_the_column_tuple_carries_the_unit_seventh(
     # unit sits seventh, after the directive it is easy to confuse it
     # with, and the reader that unpacks it cannot mistake a cost for an
     # identity, a stamp, the outcome or the directive.  Feature 88's
-    # epoch closes the tuple; its own tests pin that end.
+    # epoch and feature 87's triple follow; the triple closes the tuple,
+    # and its own tests pin that end.
     record = test_ledger.append(
-        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, 4.0, ts=STAMP, epoch_id=EPOCH)
+        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, 4.0, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     assert record.row()[6] == 4.0
     assert record.row() == (
         record.seq,
@@ -221,6 +239,9 @@ def test_the_column_tuple_carries_the_unit_seventh(
         1,
         4.0,
         EPOCH,
+        EVALUATOR_HASH,
+        SNAPSHOT_HASH,
+        COST_MODEL_HASH,
     )
 
 
@@ -236,11 +257,11 @@ def test_the_default_is_1_0_at_every_write_seam(
     # omitting it at any seam lands the same honest unit.
     assert DEFAULT_CHARGE_UNITS == 1.0
     assert test_ledger.append(
-        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH).charge_units == 1.0
+        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH, **PROVENANCE).charge_units == 1.0
     assert test_ledger.debit(
-        uuid.uuid4(), CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH)[0].charge_units == 1.0
+        uuid.uuid4(), CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)[0].charge_units == 1.0
     assert test_endpoint.post(
-        DebitRequest(uuid.uuid4(), CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH)
+        DebitRequest(uuid.uuid4(), CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     ).record.charge_units == 1.0
 
 
@@ -252,16 +273,21 @@ def test_the_default_mirrors_the_columns_own_default(
     # all spell it from one constant.  The schema test below pins the DDL
     # half; this pins that a row written through the store with no unit
     # stated reads back as the same 1.0 the column would have supplied to
-    # a writer that is not this store.  (The raw INSERT names an epoch —
-    # that column has no default to lean on, which is feature 88's own
-    # point — but the unit is left to the column's DEFAULT, the subject.)
-    test_ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH)
+    # a writer that is not this store.  (The raw INSERT names the epoch
+    # and the provenance triple — those columns have no default to lean
+    # on, which is features 88's and 87's own point — but the unit is
+    # left to the column's DEFAULT, the subject.)
+    test_ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     with sqlite3.connect(db_path) as connection:
         connection.execute(
             f"INSERT INTO {TRIAL_LEDGER_TABLE} "
-            "(ts, node_id, campaign_id, outcome, charges_budget, epoch_id) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (STAMP.isoformat(), str(uuid.uuid4()), str(CAMPAIGN), "ok", 1, EPOCH),
+            "(ts, node_id, campaign_id, outcome, charges_budget, epoch_id, "
+            "evaluator_hash, snapshot_hash, cost_model_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                STAMP.isoformat(), str(uuid.uuid4()), str(CAMPAIGN), "ok", 1, EPOCH,
+                EVALUATOR_HASH, SNAPSHOT_HASH, COST_MODEL_HASH,
+            ),
         )
     assert [row.charge_units for row in test_ledger.rows()] == [1.0, 1.0]
 
@@ -273,7 +299,7 @@ def test_the_record_defaults_to_the_unit_an_ordinary_trial_costs() -> None:
     # no column could hold.
     record = TrialLedgerRecord(
         seq=1, ts=STAMP, node_id=NODE, campaign_id=CAMPAIGN,
-        outcome=OUTCOME, charges_budget=CHARGES_BUDGET, epoch_id=EPOCH)
+        outcome=OUTCOME, charges_budget=CHARGES_BUDGET, epoch_id=EPOCH, **PROVENANCE)
     assert record.charge_units == 1.0
 
 
@@ -281,7 +307,7 @@ def test_the_request_defaults_to_the_unit_an_ordinary_trial_costs() -> None:
     # The wire's default: a body that says nothing about units is an
     # ordinary evaluation, and the request carries 1.0 rather than
     # refusing a caller for omitting a term the spec defaults.
-    request = DebitRequest(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, epoch_id=EPOCH)
+    request = DebitRequest(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, epoch_id=EPOCH, **PROVENANCE)
     assert request.charge_units == 1.0
 
 
@@ -311,15 +337,15 @@ def test_a_non_number_unit_is_refused_at_every_write_seam(
     # refused explicitly because ``isinstance(True, int)``: a unit of
     # ``True`` is a flag that wandered into a numeric column.
     with pytest.raises(TrialRecordError, match="charge_units must be a real number"):
-        test_ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, bad, epoch_id=EPOCH)
+        test_ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, bad, epoch_id=EPOCH, **PROVENANCE)
     with pytest.raises(TrialRecordError, match="charge_units must be a real number"):
-        test_ledger.debit(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, bad, epoch_id=EPOCH)
+        test_ledger.debit(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, bad, epoch_id=EPOCH, **PROVENANCE)
     with pytest.raises(TrialRecordError, match="charge_units must be a real number"):
-        DebitRequest(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, bad, epoch_id=EPOCH)
+        DebitRequest(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, bad, epoch_id=EPOCH, **PROVENANCE)
     with pytest.raises(TrialRecordError, match="charge_units must be a real number"):
         TrialLedgerRecord(
             seq=1, ts=STAMP, node_id=NODE, campaign_id=CAMPAIGN,
-            outcome=OUTCOME, charges_budget=CHARGES_BUDGET, charge_units=bad, epoch_id=EPOCH)  # type: ignore[arg-type]
+            outcome=OUTCOME, charges_budget=CHARGES_BUDGET, charge_units=bad, epoch_id=EPOCH, **PROVENANCE)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
@@ -330,15 +356,15 @@ def test_a_non_finite_unit_is_refused_at_every_write_seam(
     # unit of NaN makes every later sum of the column NaN, and an infinity
     # swallows it.
     with pytest.raises(TrialRecordError, match="charge_units must be finite"):
-        test_ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, bad, epoch_id=EPOCH)
+        test_ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, bad, epoch_id=EPOCH, **PROVENANCE)
     with pytest.raises(TrialRecordError, match="charge_units must be finite"):
-        test_ledger.debit(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, bad, epoch_id=EPOCH)
+        test_ledger.debit(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, bad, epoch_id=EPOCH, **PROVENANCE)
     with pytest.raises(TrialRecordError, match="charge_units must be finite"):
-        DebitRequest(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, bad, epoch_id=EPOCH)
+        DebitRequest(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, bad, epoch_id=EPOCH, **PROVENANCE)
     with pytest.raises(TrialRecordError, match="charge_units must be finite"):
         TrialLedgerRecord(
             seq=1, ts=STAMP, node_id=NODE, campaign_id=CAMPAIGN,
-            outcome=OUTCOME, charges_budget=CHARGES_BUDGET, charge_units=bad, epoch_id=EPOCH)  # type: ignore[arg-type]
+            outcome=OUTCOME, charges_budget=CHARGES_BUDGET, charge_units=bad, epoch_id=EPOCH, **PROVENANCE)  # type: ignore[arg-type]
 
 
 def test_a_nan_is_refused_because_sqlite_would_store_it_as_null(
@@ -361,7 +387,7 @@ def test_a_nan_is_refused_because_sqlite_would_store_it_as_null(
     # And the append refuses that value rather than creating such a row.
     with pytest.raises(TrialRecordError, match="charge_units must be finite"):
         test_ledger.append(
-            NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, float("nan"), epoch_id=EPOCH)
+            NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, float("nan"), epoch_id=EPOCH, **PROVENANCE)
     assert test_ledger.count() == 0
 
 
@@ -375,11 +401,11 @@ def test_a_non_positive_unit_is_refused(
     # subtract from the count.  A caller whose trial should not count
     # states charges_budget=False (feature 90) instead.
     with pytest.raises(TrialRecordError, match="charge_units must be greater than zero"):
-        test_ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, bad, epoch_id=EPOCH)
+        test_ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, bad, epoch_id=EPOCH, **PROVENANCE)
     with pytest.raises(TrialRecordError, match="charge_units must be greater than zero"):
-        test_ledger.debit(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, bad, epoch_id=EPOCH)
+        test_ledger.debit(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, bad, epoch_id=EPOCH, **PROVENANCE)
     with pytest.raises(TrialRecordError, match="charge_units must be greater than zero"):
-        DebitRequest(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, bad, epoch_id=EPOCH)
+        DebitRequest(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, bad, epoch_id=EPOCH, **PROVENANCE)
     assert test_ledger.count() == 0
 
 
@@ -391,7 +417,7 @@ def test_a_negative_unit_is_refused_rather_than_clamped(
     # inflates K — a negative charge silently becoming a full unit.  The
     # refusal is the clause made concrete: the unit is supplied.
     with pytest.raises(TrialRecordError, match="charge_units must be greater than zero"):
-        test_ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, -5.0, epoch_id=EPOCH)
+        test_ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, -5.0, epoch_id=EPOCH, **PROVENANCE)
     assert test_ledger.count() == 0
 
 
@@ -404,10 +430,10 @@ def test_a_refused_unit_spends_no_sequence_number(
     for bad in (None, float("nan"), 0.0, -1.0, "1.0"):
         with pytest.raises(TrialRecordError):
             test_ledger.append(
-                NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, bad, epoch_id=EPOCH)  # type: ignore[arg-type]
+                NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, bad, epoch_id=EPOCH, **PROVENANCE)  # type: ignore[arg-type]
     assert test_ledger.count() == 0
     assert test_ledger.append(
-        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH).seq == 1
+        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH, **PROVENANCE).seq == 1
 
 
 # -- The retry keeps the original unit -------------------------------------------
@@ -421,10 +447,10 @@ def test_a_retry_does_not_restate_the_unit(
     # first debited — five units — and facts are never restated, exactly
     # as the stamp, the outcome and the directive are not.
     original = test_endpoint.post(
-        DebitRequest(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, 5.0, ts=STAMP, epoch_id=EPOCH)
+        DebitRequest(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, 5.0, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     )
     retry = test_endpoint.post(
-        DebitRequest(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, 1.0, ts=STAMP, epoch_id=EPOCH)
+        DebitRequest(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, 1.0, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     )
 
     assert retry.seq == original.seq == 1
@@ -456,7 +482,7 @@ def test_the_unit_and_the_directive_are_independent_facts(
     ]
     for budget, units in rows:
         test_ledger.append(
-            uuid.uuid4(), CAMPAIGN, OUTCOME, budget, units, ts=STAMP, epoch_id=EPOCH)
+            uuid.uuid4(), CAMPAIGN, OUTCOME, budget, units, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     assert [
         (row.charges_budget, row.charge_units) for row in test_ledger.rows()
     ] == rows
@@ -474,7 +500,7 @@ def test_the_unit_column_is_real_not_null_defaulting_to_1_0(
     # because an ordinary evaluation's cost is a fact the spec states
     # rather than one the writer must repeat.  SQLite reports a REAL
     # column's declared type verbatim.
-    test_ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH)
+    test_ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     with sqlite3.connect(db_path) as connection:
         info = connection.execute(f"PRAGMA table_info({TRIAL_LEDGER_TABLE})")
         rows = {row[1]: row for row in info}
@@ -497,7 +523,7 @@ def test_a_row_whose_unit_wandered_off_the_real_line_is_refused(
     # SQLite's affinity does not coerce a non-numeric string, so text can
     # genuinely be stored in this column by a writer that reached past the
     # append — which is exactly the case the read-side check exists for.
-    test_ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH)
+    test_ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     with sqlite3.connect(db_path) as connection:
         connection.execute(
             f"UPDATE {TRIAL_LEDGER_TABLE} SET charge_units = ? WHERE seq = 1",
@@ -516,7 +542,7 @@ def test_a_stored_non_positive_unit_is_refused_on_read(
     # cannot state through the store but a raw UPDATE can still leave.
     # 2.5 is the control: a legitimate unit that a raw write may hold and
     # the read must accept.
-    test_ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH)
+    test_ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     with sqlite3.connect(db_path) as connection:
         connection.execute(
             f"UPDATE {TRIAL_LEDGER_TABLE} SET charge_units = ? WHERE seq = 1",
@@ -536,7 +562,7 @@ def test_a_stored_integer_unit_reads_back_as_the_float_it_is():
     # one type at the write and another at the read.
     record = TrialLedgerRecord(
         seq=1, ts=STAMP, node_id=NODE, campaign_id=CAMPAIGN,
-        outcome=OUTCOME, charges_budget=CHARGES_BUDGET, charge_units=3, epoch_id=EPOCH)
+        outcome=OUTCOME, charges_budget=CHARGES_BUDGET, charge_units=3, epoch_id=EPOCH, **PROVENANCE)
     assert record.charge_units == 3.0
     assert isinstance(record.charge_units, float)
 
@@ -560,11 +586,13 @@ def test_a_pre_unit_database_is_upgraded_in_place(
         info = connection.execute(f"PRAGMA table_info({TRIAL_LEDGER_TABLE})")
         columns = [row[1] for row in info]
     # The legacy table held every stamp but the unit; the upgrade adds
-    # the unit and the epoch — the one stamp whose legacy rows carry no
-    # value at all (test_epoch.py pins that half of the upgrade).
+    # the unit, the epoch and the provenance triple — the stamps whose
+    # legacy rows carry no value at all (test_epoch.py and
+    # test_provenance.py pin those halves of the upgrade).
     assert columns == [
         "seq", "ts", "node_id", "campaign_id", "outcome", "charges_budget",
-        "charge_units", "epoch_id",
+        "charge_units", "epoch_id", "evaluator_hash", "snapshot_hash",
+        "cost_model_hash",
     ]
 
 
@@ -589,7 +617,7 @@ def test_the_upgrade_continues_the_sequence_above_the_legacy_rows(
     # first post-upgrade charge draws the number after the legacy maximum.
     _legacy_database(db_path)
     ledger = TrialLedger(test_database_url)
-    record = ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, 5.0, ts=STAMP, epoch_id=EPOCH)
+    record = ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, 5.0, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     assert record.seq == 2
     assert [row.seq for row in ledger.rows()] == [1, 2]
     assert [row.charge_units for row in ledger.rows()] == [1.0, 5.0]
@@ -624,7 +652,7 @@ def test_the_upgrade_is_idempotent_across_repeated_connects(
     # value already stored is never reset to the default.
     _legacy_database(db_path)
     ledger = TrialLedger(test_database_url)
-    ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, 5.0, ts=STAMP, epoch_id=EPOCH)
+    ledger.append(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, 5.0, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     # Several more connects, each re-running the upgrade.
     for _ in range(3):
         assert ledger.count() == 2
@@ -662,8 +690,8 @@ def test_k_effective_still_counts_rows_rather_than_units(
     # move K_effective by five, and this test exists so a later reader who
     # expects units to weight the deflation input finds the current
     # behaviour stated rather than assumed either way.
-    test_ledger.append(uuid.uuid4(), CAMPAIGN, OUTCOME, True, 5.0, ts=STAMP, epoch_id=EPOCH)
-    test_ledger.append(uuid.uuid4(), CAMPAIGN, OUTCOME, False, 5.0, ts=STAMP, epoch_id=EPOCH)
+    test_ledger.append(uuid.uuid4(), CAMPAIGN, OUTCOME, True, 5.0, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
+    test_ledger.append(uuid.uuid4(), CAMPAIGN, OUTCOME, False, 5.0, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     assert test_ledger.k_effective().total == 1
 
 

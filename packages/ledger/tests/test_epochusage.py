@@ -53,6 +53,23 @@ OUTCOME = "ok"
 # pre-stamp read — is test_epoch.py's subject.
 EPOCH = "epoch-7"
 
+# The provenance triple these tests charge under (feature 87): the frozen
+# evaluator, the sealed snapshot and the cost model the trial ran against,
+# each the sha256 hexdigest its owning feature computes.  The triple's own
+# behaviour -- required at the write, refused when absent or malformed,
+# normalised to lowercase hex, ``None`` on a pre-stamp read -- is
+# test_provenance.py's subject; here it is spelled once as a mapping and
+# handed to every charge with ``**``.
+EVALUATOR_HASH = "27f6343f980c4c0ab821d9c72d211d0eb76b0853825cefd80476a05e43cab27e"
+SNAPSHOT_HASH = "16a0eeb0791b6c92451fd284dd9f599e0a7dbe7f6ebea6e2d2d06c7f74aec112"
+COST_MODEL_HASH = "7ceff1a68ddd995b2e87790bad3d75edd4bd42da19cf19039af8888851a7f520"
+PROVENANCE = {
+    "evaluator_hash": EVALUATOR_HASH,
+    "snapshot_hash": SNAPSHOT_HASH,
+    "cost_model_hash": COST_MODEL_HASH,
+}
+
+
 #: Feature 105's DDL, spelled as ``migrations/versions/0110_epoch_ledger.py``
 #: spells it.  Re-stated here rather than imported so the suite states the
 #: sibling feature's contract it reads against; the migration's own
@@ -267,7 +284,7 @@ def test_trial_charges_do_not_move_the_epoch_usage(
     _seal(db_path, "epoch-7")
     before = test_ledger.epoch_usage().of("epoch-7")
     for budget in (True, False, True, True):
-        test_ledger.append(_node(), CAMPAIGN, OUTCOME, budget, ts=STAMP, epoch_id=EPOCH)
+        test_ledger.append(_node(), CAMPAIGN, OUTCOME, budget, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     assert before == 0
     assert test_ledger.epoch_usage().of("epoch-7") == 0
     assert test_ledger.count() == 4
@@ -285,7 +302,7 @@ def test_the_two_views_read_different_tables(
     # names its epoch at the append itself (feature 88's stamp is on
     # every charge this store writes), so there is no hand-stamping to
     # do here — the epoch dimension is the write's, not the test's.
-    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id="epoch-7")
+    test_ledger.append(_node(), CAMPAIGN, OUTCOME, True, ts=STAMP, epoch_id="epoch-7", **PROVENANCE)
     _seal(db_path, "epoch-8", served=3)
 
     k = test_ledger.k_effective()

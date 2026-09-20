@@ -70,6 +70,23 @@ CHARGES_BUDGET = True
 EPOCH = "epoch-7"
 OTHER_EPOCH = "epoch-8"
 
+# The provenance triple these tests charge under (feature 87): the frozen
+# evaluator, the sealed snapshot and the cost model the trial ran against,
+# each the sha256 hexdigest its owning feature computes.  The triple's own
+# behaviour -- required at the write, refused when absent or malformed,
+# normalised to lowercase hex, ``None`` on a pre-stamp read -- is
+# test_provenance.py's subject; here it is spelled once as a mapping and
+# handed to every charge with ``**``.
+EVALUATOR_HASH = "27f6343f980c4c0ab821d9c72d211d0eb76b0853825cefd80476a05e43cab27e"
+SNAPSHOT_HASH = "16a0eeb0791b6c92451fd284dd9f599e0a7dbe7f6ebea6e2d2d06c7f74aec112"
+COST_MODEL_HASH = "7ceff1a68ddd995b2e87790bad3d75edd4bd42da19cf19039af8888851a7f520"
+PROVENANCE = {
+    "evaluator_hash": EVALUATOR_HASH,
+    "snapshot_hash": SNAPSHOT_HASH,
+    "cost_model_hash": COST_MODEL_HASH,
+}
+
+
 # The schema this member wrote before feature 88 landed — the table as
 # it was through features 86-91, holding every stamp but the epoch,
 # recreated verbatim so a test can hand the store a database that
@@ -109,7 +126,7 @@ def test_every_append_persists_the_epoch_it_was_given(
     # read hands back, and the row the table holds all name the epoch the
     # trial charged.
     record = test_ledger.append(
-        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH
+        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH, **PROVENANCE
     )
     assert record.epoch_id == EPOCH
     assert test_ledger.get(record.seq) == record
@@ -123,7 +140,7 @@ def test_the_stored_epoch_is_the_text_the_sealing_process_coined(
     # name verbatim — no folding, no normalising — because the namespace
     # is the sealing process's and epoch_ledger keys on exactly it.
     record = test_ledger.append(
-        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH
+        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH, **PROVENANCE
     )
     with sqlite3.connect(db_path) as connection:
         stored, kind = connection.execute(
@@ -141,11 +158,11 @@ def test_two_epochs_land_side_by_side(
     # A campaign that spent two holdouts: two charges, two epochs, each
     # row its own — the dimension feature 93's derivation groups by.
     first = test_ledger.append(
-        uuid.uuid4(), CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH
+        uuid.uuid4(), CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH, **PROVENANCE
     )
     second = test_ledger.append(
         uuid.uuid4(), CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP,
-        epoch_id=OTHER_EPOCH,
+        epoch_id=OTHER_EPOCH, **PROVENANCE,
     )
     assert [row.epoch_id for row in test_ledger.rows()] == [
         first.epoch_id,
@@ -160,7 +177,7 @@ def test_the_debit_persists_the_epoch_of_the_charge(
     # failure path §6.1 debits through the debit, and its charge must be
     # able to say which holdout it spent.
     record, appended = test_ledger.debit(
-        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH
+        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH, **PROVENANCE
     )
     assert appended is True
     assert record.epoch_id == EPOCH
@@ -173,23 +190,25 @@ def test_the_endpoint_carries_the_epoch_of_the_request(
     # POST /ledger/debit's body names the epoch; the response's record
     # carries it; the table holds it.
     response = test_endpoint.post(
-        DebitRequest(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH)
+        DebitRequest(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     )
     assert response.record.epoch_id == EPOCH
     assert test_ledger.get(response.seq) == response.record
 
 
-def test_the_column_tuple_closes_with_the_epoch(
+def test_the_column_tuple_carries_the_epoch_eighth(
     test_ledger: TrialLedger,
 ) -> None:
     # The record's column tuple is the table's declaration order — the
-    # epoch closes the row (§8's DDL declares it last), and the reader
-    # that unpacks it cannot mistake a holdout's name for an identity, a
-    # stamp, the outcome, the directive or the unit.
+    # epoch sits eighth, after every stamp that describes the trial, and
+    # the reader that unpacks it cannot mistake a holdout's name for an
+    # identity, a stamp, the outcome, the directive or the unit.  The
+    # provenance triple (feature 87) now closes the row; its own tests
+    # pin that end.
     record = test_ledger.append(
-        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH
+        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH, **PROVENANCE
     )
-    assert record.row()[-1] == EPOCH
+    assert record.row()[7] == EPOCH
     assert record.row() == (
         record.seq,
         STAMP.isoformat(),
@@ -199,6 +218,9 @@ def test_the_column_tuple_closes_with_the_epoch(
         1,
         1.0,
         EPOCH,
+        EVALUATOR_HASH,
+        SNAPSHOT_HASH,
+        COST_MODEL_HASH,
     )
 
 
@@ -211,11 +233,11 @@ def test_a_retry_never_restates_the_epoch_of_the_charge(
     # restated.  The retry's epoch is the loser of that rule; callers
     # that need to know which landed read it off the returned record.
     first = test_endpoint.post(
-        DebitRequest(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH)
+        DebitRequest(NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH, **PROVENANCE)
     )
     retry = test_endpoint.post(
         DebitRequest(
-            NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=OTHER_EPOCH
+            NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=OTHER_EPOCH, **PROVENANCE
         )
     )
     assert retry.appended is False
@@ -237,7 +259,7 @@ def test_an_absent_or_unnamed_epoch_is_refused_at_the_append(
     # refused charge spends no sequence number.
     with pytest.raises(TrialRecordError, match="epoch_id"):
         test_ledger.append(
-            NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=bad
+            NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=bad, **PROVENANCE
         )  # type: ignore[arg-type]
     assert test_ledger.count() == 0
 
@@ -251,7 +273,7 @@ def test_an_absent_or_unnamed_epoch_is_refused_at_the_debit(
     # place — the same refusal, at the store's second write seam.
     with pytest.raises(TrialRecordError, match="epoch_id"):
         test_ledger.debit(
-            NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=bad
+            NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=bad, **PROVENANCE
         )  # type: ignore[arg-type]
     assert test_ledger.count() == 0
 
@@ -266,7 +288,7 @@ def test_an_absent_or_unnamed_epoch_is_refused_at_the_wire(
     # what they were.
     with pytest.raises(TrialRecordError, match="epoch_id"):
         DebitRequest(
-            NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=bad
+            NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=bad, **PROVENANCE
         )  # type: ignore[arg-type]
 
 
@@ -279,11 +301,11 @@ def test_a_refused_epoch_spends_no_sequence_number(
     for bad in (None, "", "  ", 7, object()):
         with pytest.raises(TrialRecordError, match="epoch_id"):
             test_ledger.append(
-                NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=bad
+                NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=bad, **PROVENANCE
             )  # type: ignore[arg-type]
     assert test_ledger.count() == 0
     landed = test_ledger.append(
-        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH
+        NODE, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH, **PROVENANCE
     )
     assert landed.seq == 1
 
@@ -332,7 +354,7 @@ def test_the_record_accepts_none_because_the_record_is_also_the_read(
         outcome=OUTCOME, charges_budget=CHARGES_BUDGET,
     )
     assert record.epoch_id is None
-    assert record.row()[-1] is None
+    assert record.row()[7] is None
 
 
 # -- A pre-epoch database is upgraded in place -------------------------------------
@@ -346,7 +368,8 @@ def test_a_pre_epoch_table_is_brought_forward_with_a_nullable_column(
     # legacy row ('ok', TRUE, 1.0), while for the epoch the only true
     # statement a pre-stamp row can make is *no epoch was named* — NULL,
     # the spelling SQLite's plain ADD COLUMN lands on and the one the
-    # read already understands.
+    # read already understands.  The provenance triple (87) rides the
+    # same upgrade, in the columns that follow the epoch's.
     _legacy_database(db_path)
     with sqlite3.connect(db_path) as connection:
         columns = [
@@ -369,7 +392,9 @@ def test_a_pre_epoch_table_is_brought_forward_with_a_nullable_column(
         (stored,) = connection.execute(
             f"SELECT epoch_id FROM {TRIAL_LEDGER_TABLE} WHERE seq = 1"
         ).fetchone()
-    assert columns[-1] == "epoch_id"
+    assert columns[-4:] == [
+        "epoch_id", "evaluator_hash", "snapshot_hash", "cost_model_hash",
+    ]
     assert stored is None
 
 
@@ -399,7 +424,7 @@ def test_a_brought_forward_table_still_requires_the_epoch_at_the_write(
             uuid.uuid4(), CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP
         )
     landed = test_ledger.append(
-        uuid.uuid4(), CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH
+        uuid.uuid4(), CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP, epoch_id=EPOCH, **PROVENANCE
     )
     assert landed.seq == 2
     assert [row.epoch_id for row in test_ledger.rows()] == [None, EPOCH]

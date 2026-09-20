@@ -41,14 +41,17 @@ endpoint's to say, and neither reaches into the other's half.
 whose ``node_id`` is not a UUID, whose ``ts`` is naive, whose ``outcome``
 is not one of the four a trial can end in
 (:data:`~ledger.outcome.OUTCOMES`, feature 91), whose
-``charge_units`` is not a positive finite real (feature 89), or whose
+``charge_units`` is not a positive finite real (feature 89), whose
 ``epoch_id`` does not name the sequestered epoch the trial charged
-(feature 88 — absent, blank or not a string, all refused), is refused
+(feature 88 — absent, blank or not a string, all refused), or whose
+provenance triple is absent or malformed (feature 87 — a term that is
+not 64 hex characters, refused), is refused
 before the
 store is touched — a malformed body spends no sequence number — and the
-canonical spellings (UUID text, aware-UTC stamps) mean two requests for
-the same evaluation compare equal however the caller came by the
-identities.  The outcome is required with no default: the retry this
+canonical spellings (UUID text, aware-UTC stamps, lowercase-hex
+digests) mean two requests for the same evaluation compare equal however
+the caller came by the identities.  The outcome is required with no
+default: the retry this
 endpoint exists to answer is the failure path's own charge, and a body
 that cannot say how the evaluation ended would debit it unclassified.
 The epoch is required on the same terms and for the same reason as at
@@ -56,9 +59,15 @@ the store: the holdout a charge is booked against is a depleting
 resource (§13 item 4 retires an epoch after three promotion decisions)
 and the key ``K_effective`` is derived per (feature 93), so a body that
 cannot name it would debit a charge no audit could place.
+The triple is required on the same terms: the evaluator that scored the
+charge, the snapshot it was scored against and the cost model that
+priced it are three facts about the evaluation nothing else on the body
+states, so a body that cannot name them would debit a charge no replay
+could reproduce.
 The unit is the one term on this body that *does* default — to §8's own
 ``1.0`` — because an ordinary evaluation's cost is a fact the spec
-already states, while the outcome, the directive and the epoch are the
+already states, while the outcome, the directive, the epoch and the
+triple are the
 caller's to
 supply and have no honest presumption.
 
@@ -84,11 +93,12 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Optional
 
 from .budget import validated_charges_budget
 from .epoch import validated_epoch_id
 from .outcome import validated_outcome
+from .provenance import validated_provenance_hash
 from .record import TrialLedgerRecord, _validated_instant, _validated_uuid
 from .store import TrialLedger
 from .units import DEFAULT_CHARGE_UNITS, validated_charge_units
@@ -129,7 +139,13 @@ class DebitRequest:
     88's stamp: the holdout the spend is booked against, in the sealing
     process's own spelling, required, because the epoch is a depleting
     resource counted in ``epoch_ledger`` and a charge that cannot name
-    it is a charge no audit can place), plus an
+    it is a charge no audit can place), and the provenance triple
+    (feature 87's stamp: ``evaluator_hash``, ``snapshot_hash`` and
+    ``cost_model_hash`` — the frozen evaluator that scored the trial,
+    the sealed snapshot it was scored against and the cost model that
+    priced it, each the sha256 hexdigest its owning feature computed,
+    required, because a charge that cannot name its provenance is a
+    charge no replay can reproduce), plus an
     optional ``ts`` for the replay path, which debits the instant it is
     reproducing rather than the instant it ran.  Construction
     canonicalises the identities to UUID text, refuses anything that is
@@ -140,7 +156,10 @@ class DebitRequest:
     than clamped, so the ledger never *derives* a weight the caller did
     not state), holds the epoch to a name that names one (absent,
     blank and non-string all refused — feature 88's own clause, at the
-    wire), and normalises a given ``ts`` to aware-UTC while refusing
+    wire), holds each provenance term to the hexdigest's own spelling
+    (absent, prefixed, short and non-hex all refused — feature 87's own
+    clause, at the wire), and normalises a given ``ts`` to aware-UTC
+    while refusing
     a naive instant, the same row contract
     :class:`~ledger.record.TrialLedgerRecord` states: a charge that
     cannot be joined, ranged or classified is a charge no audit can
@@ -176,6 +195,22 @@ class DebitRequest:
     #: the sealing process's own spelling.  Required: a body that names
     #: no epoch is refused before the store is touched.
     epoch_id: Optional[str] = None
+    #: The frozen evaluator that scored the trial (§8:
+    #: ``evaluator_hash CHAR(64) NOT NULL``; feature 87's stamp) —
+    #: feature 70's sha256 over the container image digest plus the
+    #: resolved configuration.  Required, in canonical lowercase hex: a
+    #: body that names no evaluator is refused before the store is
+    #: touched.
+    evaluator_hash: Optional[str] = None
+    #: The sealed snapshot the trial was scored against (§8:
+    #: ``snapshot_hash CHAR(64) NOT NULL``) — §4.2's sha256 over the
+    #: sorted file hashes, the universe definition and the schema
+    #: version.  Required, in canonical lowercase hex.
+    snapshot_hash: Optional[str] = None
+    #: The cost model that priced the trial (§8: ``cost_model_hash
+    #: CHAR(64) NOT NULL``) — feature 60's sha256 over the loaded §6.2
+    #: document.  Required, in canonical lowercase hex.
+    cost_model_hash: Optional[str] = None
     #: When the charge was debited, aware-UTC; ``None`` stamps at the
     #: store's default clock when the row is appended.
     ts: Optional[dt.datetime] = None
@@ -209,6 +244,32 @@ class DebitRequest:
         # cannot name it would debit a charge no audit could place.
         object.__setattr__(
             self, "epoch_id", validated_epoch_id(self.epoch_id, required=True)
+        )
+        # And the triple, on the same terms: the evaluator, the snapshot
+        # and the cost model are what make the charge reproducible, and a
+        # body that cannot name them would debit a charge no replay could
+        # reproduce.  Each term is normalised to the lowercase hex the
+        # CHAR(64) columns hold.
+        object.__setattr__(
+            self,
+            "evaluator_hash",
+            validated_provenance_hash(
+                self.evaluator_hash, "evaluator_hash", required=True
+            ),
+        )
+        object.__setattr__(
+            self,
+            "snapshot_hash",
+            validated_provenance_hash(
+                self.snapshot_hash, "snapshot_hash", required=True
+            ),
+        )
+        object.__setattr__(
+            self,
+            "cost_model_hash",
+            validated_provenance_hash(
+                self.cost_model_hash, "cost_model_hash", required=True
+            ),
         )
         if self.ts is not None:
             object.__setattr__(self, "ts", _validated_instant(self.ts, "ts"))
@@ -335,11 +396,13 @@ class DebitEndpoint:
 
         The whole of feature 95 at its seam, carrying feature 91's
         outcome stamp, feature 90's budget directive, feature 89's
-        charge unit and feature 88's epoch.  The request's
+        charge unit, feature 88's epoch and feature 87's provenance
+        triple.  The request's
         node is the idempotency key: when the node holds no row the
         charge is appended — one row, one fresh sequence, the outcome it
         ended with, the budget directive the oracle supplied, the unit
-        the evaluation cost and the epoch it charged — and
+        the evaluation cost, the epoch it charged and the provenance it
+        ran under — and
         when it holds one (the worker died after the row landed; the
         response was lost; the retry fired) nothing is written and the
         response carries the *prior* sequence and the *prior* row, so the
@@ -349,7 +412,7 @@ class DebitEndpoint:
         time through it).
 
         Refusals are the request's own (a malformed body — an absent
-        epoch among the rest — never reaches
+        epoch or provenance term among the rest — never reaches
         the store) and the store's (a configured store whose write fails
         raises :class:`~ledger.errors.TrialStoreError` rather than
         letting a debit silently not land).
@@ -361,6 +424,9 @@ class DebitEndpoint:
             request.charges_budget,
             request.charge_units,
             request.epoch_id,
+            request.evaluator_hash,
+            request.snapshot_hash,
+            request.cost_model_hash,
             ts=request.ts,
             clock=clock,
         )

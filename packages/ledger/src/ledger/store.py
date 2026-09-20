@@ -63,7 +63,8 @@ table's to assign, never the writer's to choose.
 
 **The columns are the ones the append itself owns.**  ``seq``, ``ts``,
 ``node_id``, ``campaign_id``, ``outcome``, ``charges_budget``,
-``charge_units``, ``epoch_id`` — §8's
+``charge_units``, ``epoch_id``, ``evaluator_hash``, ``snapshot_hash``,
+``cost_model_hash`` — §8's
 first four, the ones that say *which evaluation was charged, when, in
 what order*, plus the outcome (feature 91), the one that says *how it
 ended*: 'ok', 'timeout', 'error' or 'tripwire_fail', the closed
@@ -77,7 +78,7 @@ the write when it is not a bool because a ``1`` or a ``0`` or an absent
 89), the one that says *what it cost*: a positive finite real defaulting
 to ``1.0`` — §8's own ``DEFAULT`` — because an ordinary evaluation is
 worth one unit while a cross-validated one whose folds each compare a
-fit against the same forward returns states its own count; and the
+fit against the same forward returns states its own count; the
 epoch (feature 88), the one that says *against which holdout*: the name
 of the sequestered epoch the trial charged, required at the write and
 refused when absent — §8's own comment on the column is *"which
@@ -85,14 +86,19 @@ sequestered epoch was charged"*, and the versioned migration that
 writes the production DDL (feature 103) restates the reason: the epoch
 is a depleting resource counted in ``epoch_ledger``, and a write whose
 epoch is absent is a charge no audit can attribute to a holdout
-(:mod:`ledger.epoch` states the stamp's whole contract).  The unit and
-the directive are the two halves of the charge that are easy to confuse
-and are deliberately not the same fact: the directive says whether the
-trial spent statistical degrees of freedom at all, the unit says how
-much evaluation it took.  The provenance triple (feature 87) is its
-feature's stamp and lands as columns on this same table when it
-arrives, the way this store upgraded in place for the outcome, the
-directive, the unit and the epoch.
+(:mod:`ledger.epoch` states the stamp's whole contract); and the
+provenance triple (feature 87), the one that says *under what
+configuration the trial ran at all*: ``evaluator_hash``,
+``snapshot_hash`` and ``cost_model_hash``, §8's three ``CHAR(64) NOT
+NULL`` columns, required at the write and refused when absent exactly as
+the epoch is, because a charge that cannot name the evaluator that
+scored it, the snapshot it was scored against and the cost model that
+priced it is a charge no replay can reproduce
+(:mod:`ledger.provenance` states the triple's whole contract).  The unit
+and the directive are the two halves of the charge that are easy to
+confuse and are deliberately not the same fact: the directive says
+whether the trial spent statistical degrees of freedom at all, the unit
+says how much evaluation it took.
 
 ``ts`` is stored as ISO-8601 UTC text with an explicit
 offset — canonical, lexicographically ordered for a single offset, and
@@ -100,10 +106,12 @@ revalidated through the record constructor on read, so a row that
 wandered in from outside cannot smuggle a naive stamp past the write-time
 check.  ``charges_budget`` is stored as the ``0``/``1`` a SQLite
 ``BOOLEAN`` column stores, ``charge_units`` as the ``REAL`` the column
-holds, and ``epoch_id`` as the text the sealing process coined — all
-three revalidated through the same constructor, so a stored directive
-that is neither bit, a unit that is not a positive finite real, or an
-epoch that names no epoch, is refused rather than served.  The stamps
+holds, ``epoch_id`` as the text the sealing process coined, and the
+provenance triple as the lowercase hex the ``CHAR(64)`` columns hold —
+all revalidated through the same constructor, so a stored directive
+that is neither bit, a unit that is not a positive finite real, an
+epoch that names no epoch, or a provenance term that is not 64 hex
+characters, is refused rather than served.  The stamps
 are written explicitly by both write paths even where a column carries
 a ``DEFAULT``, so the row the append returns and the row the table
 holds are one value however the caller reached the append; the
@@ -124,13 +132,16 @@ charge of feature 84 arrives with this column), so 'timeout',
 'error' and 'tripwire_fail' would fabricate a failure the ledger never
 observed, while 'ok' asserts only the absence of a recorded failure —
 the same reasoning that gave the universe's legacy builds
-``min_dollar_volume = 0``.  The ``epoch_id`` upgrade is the one that
-cannot carry a value at all: SQLite refuses ``ADD COLUMN … NOT NULL``
-without a non-NULL default, and every other stamp's legacy default
+``min_dollar_volume = 0``.  The ``epoch_id`` and provenance-triple
+upgrades are the ones that cannot carry a value at all: SQLite refuses
+``ADD COLUMN … NOT NULL`` without a non-NULL default, and every other
+stamp's legacy default
 asserted something true of every legacy row, while for the epoch the
 only true statement a row that predates the stamp can make is *no epoch
 was named* — NULL, the un-named epoch feature 93's derivation already
-groups pre-88 rows under.  The ``ALTER`` is neither an ``UPDATE`` nor
+groups pre-88 rows under — and for the triple it is *no provenance was
+recorded* — NULL, the pre-87 spelling the read understands.  The
+``ALTER`` is neither an ``UPDATE`` nor
 a ``DELETE`` — it restates no past charge, adds no charge, and spends
 no sequence number — so it passes feature 92's wall and runs on the
 same guarded connection every other statement does: the wall is a
@@ -183,6 +194,7 @@ from .epochusage import EpochUsage, derive_epoch_usage
 from .errors import TrialImmutableError, TrialRecordError, TrialStoreError
 from .keffective import KEffective, derive_k_effective
 from .outcome import validated_outcome
+from .provenance import PROVENANCE_COLUMNS, validated_provenance_hash
 from .record import TrialLedgerRecord, _validated_instant, _validated_uuid, utc_now
 from .units import DEFAULT_CHARGE_UNITS, validated_charge_units
 
@@ -217,8 +229,8 @@ _EPOCH_LEDGER_COLUMNS = "epoch_id, promotion_decisions_served"
 #: The table's DDL.  See the module docstring for why ``AUTOINCREMENT``
 #: is the load-bearing word and why these columns are this store's whole
 #: column set — §8's first four plus the outcome (feature 91), the
-#: charges_budget directive (feature 90), the charge unit (feature 89)
-#: and the epoch (feature 88).
+#: charges_budget directive (feature 90), the charge unit (feature
+#: 89), the epoch (feature 88) and the provenance triple (feature 87).
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS {TRIAL_LEDGER_TABLE} (
     -- The monotonically increasing sequence number, assigned by the
@@ -272,15 +284,40 @@ CREATE TABLE IF NOT EXISTS {TRIAL_LEDGER_TABLE} (
     -- deliberately NULLable — see _upgrade_legacy_ledger_table — because
     -- the one honest statement a pre-stamp row can make is that it named
     -- no epoch; every row this store writes names one.)
+    epoch_id        TEXT NOT NULL,
+    -- The provenance triple (feature 87): the frozen evaluator that
+    -- scored the trial, the sealed snapshot it was scored against and
+    -- the cost model that priced it — §8's three CHAR(64) NOT NULL
+    -- columns, declared together between the identities and the booking.
+    -- NOT NULL with no default, on the epoch's ground and for the same
+    -- reason: the configuration a trial ran under is a fact about the
+    -- evaluation that nothing else on the row states (feature 70 computed
+    -- the evaluator's hash, §4.2's seal the snapshot's, feature 60 the
+    -- cost model's), and defaulting it would fabricate provenance no
+    -- feature computed — a charge no replay could reproduce, wearing a
+    -- charge's stamp.  A write whose triple is absent is refused at the
+    -- store's seams before the ledger is touched.
     --
-    -- The column closes the declaration: this table's columns follow the
+    -- CHAR(64) is §8's own spelling, kept verbatim so the fresh schema
+    -- and the production DDL the migration member writes (feature 103)
+    -- read the same; SQLite gives it TEXT affinity and enforces no
+    -- length, so the shape is held where it can be — at the write seams
+    -- and the read, through validated_provenance_hash, which holds each
+    -- term to the sha256 hexdigest's own 64-lowercase-hex spelling.  The
+    -- type documents; the seam enforces.  (A brought-forward table's
+    -- spelling is deliberately NULLable, like its epoch — see
+    -- _upgrade_legacy_ledger_table.)
+    --
+    -- The triple closes the declaration: this table's columns follow the
     -- order the features that own them *landed* — §8's first four, then
-    -- the outcome, the directive, the unit and now the epoch — which is
-    -- the order the record's row() tuple mirrors and the order every
-    -- reader unpacks.  SQLite appends an ALTER's column after whatever
-    -- the table already held, so a fresh table and a brought-forward one
-    -- agree on it.
-    epoch_id        TEXT NOT NULL
+    -- the outcome, the directive, the unit, the epoch and now the triple
+    -- — which is the order the record's row() tuple mirrors and the
+    -- order every reader unpacks.  SQLite appends an ALTER's column
+    -- after whatever the table already held, so a fresh table and a
+    -- brought-forward one agree on it.
+    evaluator_hash   CHAR(64) NOT NULL,
+    snapshot_hash    CHAR(64) NOT NULL,
+    cost_model_hash  CHAR(64) NOT NULL
 );
 """
 
@@ -290,7 +327,7 @@ CREATE TABLE IF NOT EXISTS {TRIAL_LEDGER_TABLE} (
 # identity for a stamp.
 _COLUMNS = (
     "seq, ts, node_id, campaign_id, outcome, charges_budget, charge_units, "
-    "epoch_id"
+    "epoch_id, evaluator_hash, snapshot_hash, cost_model_hash"
 )
 
 # Feature 88's epoch stamp, read by feature 93's derivation when the table
@@ -513,6 +550,23 @@ def _upgrade_legacy_ledger_table(connection: sqlite3.Connection) -> None:
       writes: the epoch is required at the write seams (feature 88's
       own refusal), so on a brought-forward table, as on a fresh one,
       no append ever lands without one.
+    * the provenance triple (feature 87: ``evaluator_hash``,
+      ``snapshot_hash``, ``cost_model_hash``) is added with *no* value,
+      on exactly the epoch's ground and for exactly its reason: the
+      evaluator that scored a legacy row, the snapshot it was scored
+      against and the cost model that priced it are facts about the
+      evaluation that nothing else on the row says, and the only true
+      statement a row that predates the triple can make is *no
+      provenance was recorded*.  NULL is that statement, and the read
+      understands it — ``None`` for all three, refused neither at the
+      record nor anywhere else, because it is a statement about the
+      ledger's history rather than provenance a feature computed.  The
+      columns keep §8's ``CHAR(64)`` spelling so a brought-forward
+      column and a fresh one read the same through ``PRAGMA
+      table_info``.  NOT NULL still holds for every row this store
+      writes, on the epoch's own terms: the triple is required at the
+      write seams (feature 87's refusal), so no append ever lands
+      without it, on a brought-forward table as on a fresh one.
 
     Each ``ALTER`` is issued on the caller's connection (the guarded one
     every store operation opens) and passes feature 92's wall by its own
@@ -522,7 +576,8 @@ def _upgrade_legacy_ledger_table(connection: sqlite3.Connection) -> None:
     already holds the column is left untouched, so every connect after
     the first takes the same cheap path.  The columns are added in the
     order the features that own them landed — outcome, then the budget
-    directive, then the unit, then the epoch — so a table written between any two of them
+    directive, then the unit, then the epoch, then the provenance
+    triple — so a table written between any two of them
     (say one holding outcome but not charges_budget, a database written
     between features 91 and 90) is brought forward correctly rather than
     skipped.  That order is this upgrade's own and deliberately not the
@@ -574,6 +629,23 @@ def _upgrade_legacy_ledger_table(connection: sqlite3.Connection) -> None:
         connection.execute(
             f"ALTER TABLE {TRIAL_LEDGER_TABLE} ADD COLUMN epoch_id TEXT"
         )
+    # Feature 87's provenance triple, added with no value on exactly the
+    # epoch's ground: which evaluator scored a legacy row, which snapshot
+    # it was sliced against and which cost model priced it are facts the
+    # row nowhere states, and the only true statement a pre-triple row can
+    # make is "no provenance was recorded" — NULL, which the read passes
+    # through as None for all three.  The columns keep §8's CHAR(64)
+    # spelling so a brought-forward column reads the same as a fresh one,
+    # and the one loop covers the three of them because they are one
+    # feature's stamp: whatever the upgrade does for evaluator_hash it
+    # does for snapshot_hash and cost_model_hash, in §8's declaration
+    # order.  As with the epoch, no row this store writes ever lands
+    # without the triple — the write seams refuse a charge that omits it.
+    for column in PROVENANCE_COLUMNS:
+        if column not in columns:
+            connection.execute(
+                f"ALTER TABLE {TRIAL_LEDGER_TABLE} ADD COLUMN {column} CHAR(64)"
+            )
 
 
 def _has_epoch_column(connection: sqlite3.Connection) -> bool:
@@ -638,6 +710,9 @@ def _record_from_row(row: tuple[Any, ...]) -> TrialLedgerRecord:
             charges_budget=row[5],
             charge_units=row[6],
             epoch_id=row[7],
+            evaluator_hash=row[8],
+            snapshot_hash=row[9],
+            cost_model_hash=row[10],
         )
     except TrialRecordError as exc:
         raise TrialRecordError(
@@ -653,10 +728,13 @@ def _validated_charge(
     charges_budget: Any,
     charge_units: Any,
     epoch_id: Any,
+    evaluator_hash: Any,
+    snapshot_hash: Any,
+    cost_model_hash: Any,
     ts: Optional[datetime],
     clock: Optional[Callable[[], datetime]],
-) -> tuple[str, str, str, bool, float, Optional[str], datetime]:
-    """Validate a charge's arguments, returning the canonical septuple.
+) -> tuple[str, str, str, bool, float, Optional[str], str, str, str, datetime]:
+    """Validate a charge's arguments, returning the canonical ten-tuple.
 
     The one spelling both write paths — :meth:`TrialLedger.append` and
     :meth:`TrialLedger.debit` — share, so the two cannot drift on what
@@ -672,13 +750,21 @@ def _validated_charge(
     one (:func:`~ledger.epoch.validated_epoch_id` with ``required=True``
     refuses the absent epoch outright — feature 88's own clause, because
     the epoch is a depleting resource the charge is booked against and a
-    write that cannot name it is a charge no audit can place), and the
-    stamp resolved from ``ts`` when the caller knows when the charge
-    happened (a replay debits the instant it reproduces, so the clock is
-    never read when ``ts`` is given) and from ``clock()`` otherwise,
-    defaulting to :func:`~ledger.record.utc_now`.  Every refusal lands
-    here, *before* the database is touched, so a refused charge spends no
-    sequence number and leaves the ledger exactly as it was.
+    write that cannot name it is a charge no audit can place), the
+    provenance triple held to the hexdigest's own spelling
+    (:func:`~ledger.provenance.validated_provenance_hash` with
+    ``required=True`` refuses an absent term outright — feature 87's own
+    clause, because the evaluator that scored the charge, the snapshot
+    it was scored against and the cost model that priced it are three
+    facts about the evaluation nothing else on the row states, and a
+    write that cannot name them is a charge no replay can reproduce),
+    and the stamp resolved from ``ts`` when the caller knows when the
+    charge happened (a replay debits the instant it reproduces, so the
+    clock is never read when ``ts`` is given) and from ``clock()``
+    otherwise, defaulting to :func:`~ledger.record.utc_now`.  Every
+    refusal lands here, *before* the database is touched, so a refused
+    charge spends no sequence number and leaves the ledger exactly as it
+    was.
     """
     node = _validated_uuid(node_id, "node_id")
     campaign = _validated_uuid(campaign_id, "campaign_id")
@@ -686,6 +772,11 @@ def _validated_charge(
     directive = validated_charges_budget(charges_budget, strict=True)
     units = validated_charge_units(charge_units)
     epoch = validated_epoch_id(epoch_id, required=True)
+    evaluator = validated_provenance_hash(evaluator_hash, "evaluator_hash", required=True)
+    snapshot = validated_provenance_hash(snapshot_hash, "snapshot_hash", required=True)
+    cost_model = validated_provenance_hash(
+        cost_model_hash, "cost_model_hash", required=True
+    )
     if ts is not None:
         instant = _validated_instant(ts, "ts")
     else:
@@ -696,7 +787,18 @@ def _validated_charge(
                 f"{type(source).__name__}"
             )
         instant = _validated_instant(source(), "ts")
-    return node, campaign, ended, directive, units, epoch, instant
+    return (
+        node,
+        campaign,
+        ended,
+        directive,
+        units,
+        epoch,
+        evaluator,
+        snapshot,
+        cost_model,
+        instant,
+    )
 
 
 class TrialLedger:
@@ -816,6 +918,9 @@ class TrialLedger:
         charges_budget: Any = None,
         charge_units: Any = DEFAULT_CHARGE_UNITS,
         epoch_id: Any = None,
+        evaluator_hash: Any = None,
+        snapshot_hash: Any = None,
+        cost_model_hash: Any = None,
         *,
         ts: Optional[datetime] = None,
         clock: Optional[Callable[[], datetime]] = None,
@@ -824,7 +929,8 @@ class TrialLedger:
 
         The whole of feature 86 at its seam, carrying feature 91's
         outcome stamp, feature 90's budget directive, feature 89's
-        charge unit and feature 88's epoch.  The evaluation
+        charge unit, feature 88's epoch and feature 87's provenance
+        triple.  The evaluation
         is named by ``node_id`` and ``campaign_id`` (a
         :class:`~uuid.UUID` or its text spelling, canonicalised on the
         way in) and by ``outcome`` — how it ended, one of 'ok',
@@ -856,7 +962,17 @@ class TrialLedger:
         depleting resource counted in ``epoch_ledger`` (§13 item 4
         retires one after three promotion decisions) and the grouping
         key ``K_effective`` is derived by (feature 93), so a charge that
-        cannot name its holdout is a charge no audit can place.  The
+        cannot name its holdout is a charge no audit can place.
+        ``evaluator_hash``, ``snapshot_hash`` and ``cost_model_hash``
+        are the provenance triple (feature 87) — the frozen evaluator
+        that scored the trial, the sealed snapshot it was scored against
+        and the cost model that priced it, each the sha256 hexdigest its
+        owning feature computed (feature 70, §4.2's seal, feature 60) —
+        and they are refused when absent or not 64 hex characters on the
+        epoch's own ground: the configuration a trial ran under is a
+        fact about the evaluation nothing else on the row states, and a
+        charge that cannot name it is a charge no replay can reproduce.
+        The
         stamp is ``ts`` when the
         caller knows when the charge happened — a replay debits the
         instant it is reproducing, so it does not depend on when it ran —
@@ -874,8 +990,29 @@ class TrialLedger:
         and concurrent appends serialise on the database and receive
         distinct, increasing sequences.
         """
-        node, campaign, ended, directive, units, epoch, instant = _validated_charge(
-            node_id, campaign_id, outcome, charges_budget, charge_units, epoch_id, ts, clock
+        (
+            node,
+            campaign,
+            ended,
+            directive,
+            units,
+            epoch,
+            evaluator,
+            snapshot,
+            cost_model,
+            instant,
+        ) = _validated_charge(
+            node_id,
+            campaign_id,
+            outcome,
+            charges_budget,
+            charge_units,
+            epoch_id,
+            evaluator_hash,
+            snapshot_hash,
+            cost_model_hash,
+            ts,
+            clock,
         )
         # Already aware-UTC (the validator normalises), so isoformat() ends
         # "+00:00" and the stored text is canonical and orderable.
@@ -886,7 +1023,8 @@ class TrialLedger:
                     cursor = connection.execute(
                         f"INSERT INTO {TRIAL_LEDGER_TABLE} "
                         "(ts, node_id, campaign_id, outcome, charges_budget, "
-                        "charge_units, epoch_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        "charge_units, epoch_id, evaluator_hash, snapshot_hash, "
+                        "cost_model_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             stamp,
                             node,
@@ -895,6 +1033,9 @@ class TrialLedger:
                             1 if directive else 0,
                             units,
                             epoch,
+                            evaluator,
+                            snapshot,
+                            cost_model,
                         ),
                     )
                     assigned = cursor.lastrowid
@@ -917,6 +1058,9 @@ class TrialLedger:
             charges_budget=directive,
             charge_units=units,
             epoch_id=epoch,
+            evaluator_hash=evaluator,
+            snapshot_hash=snapshot,
+            cost_model_hash=cost_model,
         )
 
     def debit(
@@ -927,6 +1071,9 @@ class TrialLedger:
         charges_budget: Any = None,
         charge_units: Any = DEFAULT_CHARGE_UNITS,
         epoch_id: Any = None,
+        evaluator_hash: Any = None,
+        snapshot_hash: Any = None,
+        cost_model_hash: Any = None,
         *,
         ts: Optional[datetime] = None,
         clock: Optional[Callable[[], datetime]] = None,
@@ -958,7 +1105,13 @@ class TrialLedger:
         the trial charged, refused when absent exactly as the append
         refuses it, because the idempotent spelling of the charge is
         still a charge, and a charge that cannot name its holdout is a
-        charge no audit can place.
+        charge no audit can place — and feature 87's provenance triple:
+        the evaluator that scored the charge, the snapshot it was scored
+        against and the cost model that priced it, refused when absent
+        or malformed exactly as the append refuses them, because the
+        idempotent spelling of the charge is still a charge, and a
+        charge that cannot name its provenance is a charge no replay can
+        reproduce.
 
         The check and the insert are one statement in one transaction —
         ``INSERT … SELECT … WHERE NOT EXISTS (… node_id = ?)`` — on the
@@ -974,13 +1127,15 @@ class TrialLedger:
 
         On a retry, nothing is written — not the stamp, not the
         campaign, not the outcome, not the directive, not the unit, not
-        the epoch: the
+        the epoch, not the triple: the
         prior row stands exactly as first written, because this is
         append-only accounting and a charge is never restated.  A ``ts``,
-        an ``outcome``, a ``charges_budget``, a ``charge_units`` or an
-        ``epoch_id`` handed to a retry is silently the *loser* of that
-        rule — the outcome, the directive, the unit and the epoch of
-        the charge are the ones the
+        an ``outcome``, a ``charges_budget``, a ``charge_units``, an
+        ``epoch_id`` or a provenance term handed to a retry is silently
+        the *loser* of that
+        rule — the outcome, the directive, the unit, the epoch and the
+        triple of the
+        charge are the ones the
         evaluation ended with when it was first debited, not the ones a
         later retry would guess; callers that need to know which landed
         read them off the returned record.  When several rows exist for
@@ -994,8 +1149,29 @@ class TrialLedger:
         none either, which is the whole point: the next node's first
         debit draws the very next number.
         """
-        node, campaign, ended, directive, units, epoch, instant = _validated_charge(
-            node_id, campaign_id, outcome, charges_budget, charge_units, epoch_id, ts, clock
+        (
+            node,
+            campaign,
+            ended,
+            directive,
+            units,
+            epoch,
+            evaluator,
+            snapshot,
+            cost_model,
+            instant,
+        ) = _validated_charge(
+            node_id,
+            campaign_id,
+            outcome,
+            charges_budget,
+            charge_units,
+            epoch_id,
+            evaluator_hash,
+            snapshot_hash,
+            cost_model_hash,
+            ts,
+            clock,
         )
         stamp = instant.isoformat()
         appended = False
@@ -1007,8 +1183,9 @@ class TrialLedger:
                     cursor = connection.execute(
                         f"INSERT INTO {TRIAL_LEDGER_TABLE} "
                         "(ts, node_id, campaign_id, outcome, charges_budget, "
-                        "charge_units, epoch_id) "
-                        "SELECT ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS ("
+                        "charge_units, epoch_id, evaluator_hash, snapshot_hash, "
+                        "cost_model_hash) "
+                        "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS ("
                         f"SELECT 1 FROM {TRIAL_LEDGER_TABLE} WHERE node_id = ?)",
                         (
                             stamp,
@@ -1018,6 +1195,9 @@ class TrialLedger:
                             1 if directive else 0,
                             units,
                             epoch,
+                            evaluator,
+                            snapshot,
+                            cost_model,
                             node,
                         ),
                     )
@@ -1051,6 +1231,9 @@ class TrialLedger:
                     charges_budget=directive,
                     charge_units=units,
                     epoch_id=epoch,
+                    evaluator_hash=evaluator,
+                    snapshot_hash=snapshot,
+                    cost_model_hash=cost_model,
                 ),
                 True,
             )

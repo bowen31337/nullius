@@ -9,10 +9,12 @@ the charges_budget directive of 90 has landed on this row
 (:mod:`ledger.budget`), the outcome of 91 (:mod:`ledger.outcome`), and
 feature 89's charge unit (:mod:`ledger.units`) — how much the trial
 *cost*, which a cross-validated evaluation states as more than the
-ordinary one unit — and feature 88's epoch (:mod:`ledger.epoch`) —
+ordinary one unit — feature 88's epoch (:mod:`ledger.epoch`) —
 *which sequestered epoch* it charged, the depleting holdout the spend
-is booked against — while the provenance triple of 87 is still to
-arrive.  This module is the row those columns make: the
+is booked against — and feature 87's provenance triple
+(:mod:`ledger.provenance`): *which frozen evaluator scored it, against
+which sealed snapshot, under which cost model*.  This module is the
+row those columns make: the
 value a debit writes, and the value a read hands back.  A record read from the ledger equals the record
 the append returned — the row is a statement about a past charge, and a
 re-read must not restate it.
@@ -103,6 +105,27 @@ ledger's history rather than an epoch a caller named; the write's
 ``required`` refusal lives at the store's seams, exactly where the
 feature's sentence puts it.
 
+**The provenance triple is required at the write and carried, never
+computed (feature 87).**  The three columns §8 declares together —
+``evaluator_hash``, ``snapshot_hash``, ``cost_model_hash``, all
+``CHAR(64) NOT NULL`` — name the evaluation's provenance: the frozen
+evaluator that scored the trial (feature 70's sha256 over the image
+digest plus the resolved configuration), the sealed snapshot it was
+scored against (§4.2's sha256 over the file hashes, the universe
+definition and the schema version) and the cost model that priced it
+(feature 60's sha256 over the loaded §6.2 document).  Each is validated
+through :func:`ledger.provenance.validated_provenance_hash`, which
+holds it to the hexdigest's own spelling — 64 characters, folded to
+lowercase — and refuses a ``sha256:``-prefixed image reference, a short
+hash and a non-hex token on the same ground: a term that names nothing
+is not provenance.  The write seams refuse a charge whose triple is
+absent, because a charge that cannot name its evaluator, its snapshot
+and its cost model is a charge no replay can reproduce.  The record
+layer itself accepts ``None`` for all three, and deliberately, on the
+same ground as the epoch: the record is also the read, and a row
+written before the stamp landed — on a table the store's legacy
+upgrade brings forward — honestly names no provenance.
+
 Instances are frozen: this is append-only accounting, and editing a
 persisted charge in place would rewrite the account rather than
 superseding it.  Supersession, where the category needs it, is a new row.
@@ -123,6 +146,7 @@ from .budget import validated_charges_budget
 from .epoch import validated_epoch_id
 from .errors import TrialRecordError
 from .outcome import validated_outcome
+from .provenance import validated_provenance_hash
 from .units import DEFAULT_CHARGE_UNITS, validated_charge_units
 
 __all__ = ["TrialLedgerRecord", "utc_now"]
@@ -260,6 +284,17 @@ class TrialLedgerRecord:
     whose epoch is absent (see :func:`ledger.epoch.validated_epoch_id`);
     the record accepts ``None`` for it because the record is also the
     read, and a row that predates the stamp honestly names no epoch.
+    ``evaluator_hash``, ``snapshot_hash`` and ``cost_model_hash`` are
+    the provenance triple (§8: three ``CHAR(64) NOT NULL`` columns;
+    feature 87's stamp) — the frozen evaluator that scored the trial,
+    the sealed snapshot it was scored against and the cost model that
+    priced it, each the sha256 hexdigest its owning feature computed,
+    in canonical lowercase hex (see :mod:`ledger.provenance`).  Like the
+    epoch they have no default and are refused at the write seams when
+    absent — a charge that cannot name its provenance is a charge no
+    replay can reproduce — and like the epoch the record accepts
+    ``None`` for them, because a row that predates the stamp honestly
+    names none.
 
     Construction validates and canonicalises, so an instance is
     trustworthy by construction: the store's append builds its return
@@ -300,6 +335,24 @@ class TrialLedgerRecord:
     #: read's spelling for a row that predates the stamp — the un-named
     #: epoch — and is refused at the write seams, never here.
     epoch_id: Optional[str] = None
+    #: The frozen evaluator that scored the trial (§8:
+    #: ``evaluator_hash CHAR(64) NOT NULL``; feature 87's stamp) —
+    #: feature 70's sha256 over the container image digest plus the
+    #: resolved configuration, in canonical lowercase hex.  ``None`` is
+    #: the read's spelling for a row that predates the stamp, refused at
+    #: the write seams, never here.
+    evaluator_hash: Optional[str] = None
+    #: The sealed snapshot the trial was scored against (§8:
+    #: ``snapshot_hash CHAR(64) NOT NULL``) — §4.2's sha256 over the
+    #: sorted file hashes, the universe definition and the schema
+    #: version.  ``None`` is the pre-stamp read's spelling, as above.
+    snapshot_hash: Optional[str] = None
+    #: The cost model that priced the trial (§8: ``cost_model_hash
+    #: CHAR(64) NOT NULL``) — feature 60's sha256 over the loaded §6.2
+    #: document, so the score's costs name the fee-and-fill regime that
+    #: produced them.  ``None`` is the pre-stamp read's spelling, as
+    #: above.
+    cost_model_hash: Optional[str] = None
 
     def __post_init__(self) -> None:
         # frozen+slots forbids plain assignment, so canonicalisation writes
@@ -339,12 +392,36 @@ class TrialLedgerRecord:
         object.__setattr__(
             self, "epoch_id", validated_epoch_id(self.epoch_id)
         )
+        # The provenance triple (feature 87), normalised to the lowercase
+        # hex the CHAR(64) columns hold — or None for a row that predates
+        # the stamp, exactly as the epoch above.  The write's required-
+        # triple refusal is the store's and the endpoint's, not the read's;
+        # a value that is not 64 hex characters is refused here too,
+        # because the read revalidates through this same check, which is
+        # how a row whose provenance wandered into a term that names
+        # nothing is refused rather than served.
+        object.__setattr__(
+            self,
+            "evaluator_hash",
+            validated_provenance_hash(self.evaluator_hash, "evaluator_hash"),
+        )
+        object.__setattr__(
+            self,
+            "snapshot_hash",
+            validated_provenance_hash(self.snapshot_hash, "snapshot_hash"),
+        )
+        object.__setattr__(
+            self,
+            "cost_model_hash",
+            validated_provenance_hash(self.cost_model_hash, "cost_model_hash"),
+        )
 
     def row(self) -> tuple[Union[int, float, str, None], ...]:
         """The record as the store's column tuple, in table order.
 
         ``seq, ts, node_id, campaign_id, outcome, charges_budget,
-        charge_units, epoch_id`` — the order the table's columns are
+        charge_units, epoch_id, evaluator_hash, snapshot_hash,
+        cost_model_hash`` — the order the table's columns are
         declared in and the order the read path unpacks, kept in one
         method so the two cannot drift apart and silently swap an
         identity for a stamp.  ``ts`` serialises as canonical ISO-8601
@@ -352,8 +429,10 @@ class TrialLedgerRecord:
         ``charges_budget`` serialises as the ``0``/``1`` the SQLite
         ``BOOLEAN`` column stores; ``charge_units`` serialises as the
         ``float`` the ``REAL`` column holds; ``epoch_id`` serialises as
-        the text the sealing process coined, or ``None`` for a row that
-        predates the stamp (the NULL a brought-forward table's upgrade
+        the text the sealing process coined; and the provenance triple
+        serialises as the lowercase hex the ``CHAR(64)`` columns hold —
+        ``epoch_id`` and the triple each as ``None`` for a row that
+        predates their stamp (the NULL a brought-forward table's upgrade
         column holds).
         """
         return (
@@ -365,4 +444,7 @@ class TrialLedgerRecord:
             1 if self.charges_budget else 0,
             self.charge_units,
             self.epoch_id,
+            self.evaluator_hash,
+            self.snapshot_hash,
+            self.cost_model_hash,
         )

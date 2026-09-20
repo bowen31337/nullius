@@ -10,7 +10,10 @@ positive integer the ledger could have assigned, the outcome is one of
 the four a trial can end in (the vocabulary's own refusal cases live in
 test_outcome.py), the epoch is a name carried in its own spelling or
 ``None`` for a row that predates the stamp (the write's required-epoch
-refusal is test_epoch.py's subject), and the value is frozen once built.
+refusal is test_epoch.py's subject), the provenance triple is carried in
+canonical lowercase hex or ``None`` for a row that predates the stamp
+(the write's required-triple refusal is test_provenance.py's subject),
+and the value is frozen once built.
 """
 
 from __future__ import annotations
@@ -151,12 +154,14 @@ def test_a_record_is_frozen() -> None:
 
 
 def test_the_column_tuple_is_in_table_order() -> None:
-    # The record's column tuple is the table's declaration order, and
-    # after feature 88 the epoch closes the row — the reader that unpacks
-    # it cannot mistake a holdout's name for an identity, a stamp or the
+    # The record's column tuple is the table's declaration order: after
+    # feature 88's epoch comes feature 87's provenance triple, which
+    # closes the row — the reader that unpacks it cannot mistake a
+    # holdout's name or a provenance hash for an identity, a stamp or the
     # unit.  ``None`` here is the read's spelling for a row that predates
-    # the stamp; the write's required-epoch refusal is the store's and
-    # the endpoint's (test_epoch.py pins both).
+    # the stamps; the write's required-epoch and required-triple
+    # refusals are the store's and the endpoint's (test_epoch.py and
+    # test_provenance.py pin both).
     record = _record(seq=7)
     assert record.row() == (
         7,
@@ -166,6 +171,9 @@ def test_the_column_tuple_is_in_table_order() -> None:
         "ok",
         1,
         1.0,
+        None,
+        None,
+        None,
         None,
     )
 
@@ -198,3 +206,80 @@ def test_an_epoch_that_names_no_epoch_is_refused(bad: object) -> None:
     # is refused rather than served.
     with pytest.raises(TrialRecordError, match="epoch_id must be a non-empty string"):
         _record(epoch_id=bad)
+
+
+# -- The provenance triple -----------------------------------------------------
+
+
+EVALUATOR_HASH = "27f6343f980c4c0ab821d9c72d211d0eb76b0853825cefd80476a05e43cab27e"
+SNAPSHOT_HASH = "16a0eeb0791b6c92451fd284dd9f599e0a7dbe7f6ebea6e2d2d06c7f74aec112"
+COST_MODEL_HASH = "7ceff1a68ddd995b2e87790bad3d75edd4bd42da19cf19039af8888851a7f520"
+
+
+def test_the_triple_is_carried_in_the_hexdigests_own_spelling() -> None:
+    # The three columns hold the sha256 hexdigests their owning features
+    # computed — feature 70's evaluator, §4.2's snapshot, feature 60's
+    # cost model — and this layer holds each to being that digest, in its
+    # canonical lowercase spelling, coin and canonicalise none of it.
+    record = _record(
+        evaluator_hash=EVALUATOR_HASH,
+        snapshot_hash=SNAPSHOT_HASH,
+        cost_model_hash=COST_MODEL_HASH,
+    )
+    assert record.evaluator_hash == EVALUATOR_HASH
+    assert record.snapshot_hash == SNAPSHOT_HASH
+    assert record.cost_model_hash == COST_MODEL_HASH
+
+
+def test_uppercase_hex_is_folded_to_the_digests_own_case() -> None:
+    # A hash pasted from a report or a log line is commonly uppercase and
+    # means the same value; the record carries the one spelling the
+    # CHAR(64) columns hold, the same fold the evaluator and snapshot
+    # members give the sibling columns this row joins against.
+    record = _record(evaluator_hash=EVALUATOR_HASH.upper())
+    assert record.evaluator_hash == EVALUATOR_HASH
+
+
+def test_none_is_the_pre_stamp_reads_spelling_for_the_triple() -> None:
+    # The record is also the read, and a row written before the triple
+    # landed — on a table the legacy upgrade brought forward — honestly
+    # names no provenance.  ``None`` is that statement for all three
+    # terms; it is refused at the write seams, never here.
+    record = _record()
+    assert record.evaluator_hash is None
+    assert record.snapshot_hash is None
+    assert record.cost_model_hash is None
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "27f6343f980c4c0ab821d9c72d211d0eb76b0853825cefd80476a05e43cab27",  # 63
+        "27f6343f980c4c0ab821d9c72d211d0eb76b0853825cefd80476a05e43cab27ef",  # 65
+        "sha256:27f6343f980c4c0ab821d9c72d211d0eb76b0853825cefd80476a05e43cab27e",
+        "z7f6343f980c4c0ab821d9c72d211d0eb76b0853825cefd80476a05e43cab27e",
+        "   ",
+        7,
+        1.5,
+        True,
+        [],
+        object(),
+    ],
+)
+def test_a_term_that_is_not_64_hex_characters_is_refused(bad: object) -> None:
+    # Short, long, prefixed, non-hex, blank and non-string all name no
+    # evaluator, snapshot or cost model this system recorded.  The read
+    # revalidates through this same check, which is how a hand-edited row
+    # whose provenance wandered into a value that names nothing is
+    # refused rather than served.
+    with pytest.raises(TrialRecordError, match="evaluator_hash"):
+        _record(evaluator_hash=bad)
+
+
+def test_an_image_reference_is_refused_on_its_own_ground() -> None:
+    # The prefixed spelling is the one refusal with its own message: a
+    # sha256:<hex> digest is an *image reference*, and a row stamped with
+    # one would name no evaluator this system recorded while looking
+    # exactly like a row that does.
+    with pytest.raises(TrialRecordError, match="image reference"):
+        _record(snapshot_hash=f"sha256:{EVALUATOR_HASH}")

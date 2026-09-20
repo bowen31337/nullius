@@ -34,9 +34,14 @@ caller who has the ledger can reach ``ledger.append(node_id,
 campaign_id, outcome)`` for the raw debit of feature 86 carrying
 feature 91's outcome stamp — and, like the other stamps on that row,
 feature 89's ``charge_units``, which defaults to one unit for an
-ordinary evaluation and is stated higher by a cross-validated one, and
+ordinary evaluation and is stated higher by a cross-validated one,
 feature 88's ``epoch_id``, which names the sequestered epoch the trial
 charged and is required — a write whose epoch is absent is refused —
+and feature 87's provenance triple, ``evaluator_hash``,
+``snapshot_hash`` and ``cost_model_hash``, which name the frozen
+evaluator, the sealed snapshot and the cost model the trial ran under
+and are required on the same terms — a charge that cannot name its
+provenance is a charge no replay can reproduce —
 and
 ``ledger.rows()`` for the ordered read, and
 ``ledger.epoch_usage()`` for feature 96's promotion-decision counts per
