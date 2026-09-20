@@ -27,12 +27,18 @@ deferred refusal to be surprised by on first use.
 
 This seat answers exactly one question — *what is the composed tripwire
 component?* — and does not re-export the probe's vocabulary.  The verdict
-record, the default seed and level, the horizon set and the probe's own name
+records, the default seeds and levels, the horizon set and the probes' own names
 live in the member, which is where they are pinned; a caller who has the
-component calls ``run``/``pairing``/``threshold`` on it, and those return the
-member's types.  A second spelling of any of that here would be a second thing
-to keep in sync, and the member's one-provenance rule is the reason the
-category restates its vocabularies rather than sharing them by import.
+component calls its verbs — step 10's two probes (feature 125's ``run`` and
+feature 126's ``label``), the ``pairing`` and ``threshold`` a reader auditing a
+persisted rejection rebuilds from the record's own terms, and the four
+perturbation re-runs (features 127 through 130) — and each returns the member's
+type.  A second spelling of any of that here would be a second thing to keep in
+sync, and the member's one-provenance rule is the reason the category restates
+its vocabularies rather than sharing them by import.  This list is illustrative
+of the seam and deliberately not exhaustive: the member is where the verbs are
+enumerated, and an enumeration kept here as well would go stale the next time
+the category adds one.
 
 **The member's other components have their own seats beside this one.**  Feature
 131 makes a tripwire failure a fact about the discovery tree, and the store that

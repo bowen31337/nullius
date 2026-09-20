@@ -176,6 +176,16 @@ from .excise import (
     excise_subtree,
     surviving_scores,
 )
+from .label_permute import (
+    DEFAULT_LABEL_LEVEL,
+    DEFAULT_LABEL_SEED,
+    LABEL_PERMUTE_NAME,
+    LabelPermuteVerdict,
+    label_permute_pairing,
+    label_permute_threshold,
+    permuted_book_sharpe,
+    run_label_permute_tripwire,
+)
 from .layout import (
     DATABASE_URL_ENV,
     NODE_METRIC_COLUMN,
@@ -288,6 +298,8 @@ __all__ = [
     "CORPUS_SYMBOLS",
     "DATABASE_URL_ENV",
     "DEFAULT_DEGRADATION_THRESHOLD",
+    "DEFAULT_LABEL_LEVEL",
+    "DEFAULT_LABEL_SEED",
     "DEFAULT_LOOKBACK_JITTER",
     "DEFAULT_LOOKBACK_STABILITY_THRESHOLD",
     "DEFAULT_RERUN_SEED",
@@ -300,6 +312,7 @@ __all__ = [
     "DEFAULT_WINDOW_STABILITY_THRESHOLD",
     "EXCISE_COMPONENT_NAME",
     "HORIZONS",
+    "LABEL_PERMUTE_NAME",
     "LEAK_KINDS",
     "LOOKBACK_AXIS",
     "NODE_METRIC_COLUMN",
@@ -330,6 +343,7 @@ __all__ = [
     "CorpusSignal",
     "ExcisedBranch",
     "ExcisedScore",
+    "LabelPermuteVerdict",
     "LookbackRerunVerdict",
     "NodeMetricRecord",
     "NodeMetricStore",
@@ -362,11 +376,14 @@ __all__ = [
     "excise_subtree",
     "instability_of",
     "jittered_lookback",
+    "label_permute_pairing",
+    "label_permute_threshold",
     "lookback_figure",
     "lookback_stability_threshold",
     "node_bootstrap_schema",
     "node_metric_of",
     "normal_quantile",
+    "permuted_book_sharpe",
     "planted_nulls",
     "planted_signals",
     "poison_node",
@@ -375,6 +392,7 @@ __all__ = [
     "record_node_metric",
     "record_stability",
     "replay_pool_bootstrap_schema",
+    "run_label_permute_tripwire",
     "run_lookback_rerun",
     "run_seed_rerun",
     "run_subsample_rerun",
@@ -426,11 +444,25 @@ class TimeShuffleTripwire:
     statistic, the shuffle or the threshold is exactly what this member's
     one-provenance rule forbids.  What this class adds is discoverability (the
     factory's scan composes it) and a single duck-checkable seam
-    (``run``/``pairing``/``threshold``/``rerun``/``subsample``/``lookback``/
-    ``window``)
+    (``run``/``pairing``/``threshold``/``label``/``rerun``/``subsample``/
+    ``lookback``/``window``)
     for the app seat and the features that follow, not arithmetic.
 
-    **``rerun`` is the fourth verb and the family's first axis.**  Feature 127
+    **``label`` is the fourth verb and step 10's second probe.**  Feature 126
+    scores the same candidate against **label-permuted** targets — the labels
+    move within each date where ``run`` re-dates whole cross-sections — and it
+    is a method here rather than a second component for the mirror of
+    ``rerun``'s reason: it is the same level test over the same book, so it
+    wants the statistic, the threshold and the panel validators this class
+    already fronts, while what it contributes is a different *permutation* and
+    not a different arithmetic.  The two are complementary: a whole-sample
+    per-symbol leak (feature 133's corpus, all four kinds) escapes ``label``
+    and is rejected by ``run``, and a date-local cross-sectional leak escapes
+    ``run`` and is rejected by ``label``.  Its knobs are its own
+    (:data:`DEFAULT_LABEL_SEED`, :data:`DEFAULT_LABEL_LEVEL`), so neither
+    probe's default is a function of the other's.
+
+    **``rerun`` is the fifth verb and the family's first axis.**  Feature 127
     perturbs the one knob this probe deliberately holds fixed — the seed — so
     the re-run is a *method here* rather than a fifth component: it needs the
     statistic, the shuffle and the threshold, all three of which already live
@@ -438,7 +470,7 @@ class TimeShuffleTripwire:
     for every one of them.  Features 128 through 130 add the same method's
     later axes, beside this one.
 
-    **``subsample`` is the fifth verb and the family's third axis.**  Feature
+    **``subsample`` is the sixth verb and the family's third axis.**  Feature
     129 perturbs the *universe* — the names the panel scores — and holds the
     derangement fixed, so it is a method here for the same reason ``rerun`` is,
     and its single shared ``seed`` parameter is what makes the pair of axes
@@ -447,7 +479,7 @@ class TimeShuffleTripwire:
     this one is a magnitude, two-sided and judged against ``1.05``, and the
     two numbers mean nothing against each other's bar.
 
-    **``lookback`` is the sixth verb and the family's fourth axis.**  Feature
+    **``lookback`` is the seventh verb and the family's fourth axis.**  Feature
     130 perturbs the *window* — how much history the re-run sees — and holds
     both the seed and the universe fixed, so it is a method here for the
     reason the two above are.  Its bar is the family's *widest*
@@ -460,7 +492,7 @@ class TimeShuffleTripwire:
     own ``perturb_stability`` column, 0114's last metric column, beside the
     stability-ledger row the same verdict may also land in.
 
-    **``window`` is the seventh verb and the family's second axis.**  Feature
+    **``window`` is the eighth verb and the family's second axis.**  Feature
     128 perturbs the window's *position* — which stretch of the measured grid
     the re-run scores — holding the seed, the universe and the length all
     fixed, so it is a method here for the reason the three above are.  It is
@@ -536,6 +568,55 @@ class TimeShuffleTripwire:
         cannot disagree.
         """
         return time_shuffle_threshold(dates, level=level)
+
+    def label(
+        self,
+        scores: Mapping[dt.date | str, Mapping[str, float]],
+        targets: Mapping[int, Mapping[dt.date | str, Mapping[str, float]]],
+        *,
+        node_id: str,
+        seed: int = DEFAULT_LABEL_SEED,
+        level: float = DEFAULT_LABEL_LEVEL,
+    ) -> LabelPermuteVerdict:
+        """Run the label-permutation probe — feature 126's whole answer.
+
+        The same candidate and bundle :meth:`run` takes, plus the node's id and
+        this probe's own two knobs.  Returns the
+        :class:`~tripwires.label_permute.LabelPermuteVerdict` — whose
+        ``rejected`` is the probe's detection, ``outcome`` its translation into
+        §8's trial vocabulary, and ``pairing`` the per-date label derangement it
+        scored against.
+
+        **A *method*, not a component, and for the mirror of ``rerun``'s
+        reason.**  Feature 126 is step 10's *second probe* rather than a
+        perturbation of the first: it needs the statistic, the threshold and
+        the panel validators this class already fronts, and it is the same
+        two-sided level test over a Sharpe of the same book — *"same test,
+        different permutation"* — so a component of its own would reach back
+        through this one for all of it.  What it does *not* share is the probe
+        itself, and the two are therefore complementary rather than redundant:
+        this method permutes the **labels within each date** where ``run``
+        re-dates **whole cross-sections**, so a whole-sample per-symbol leak
+        escapes this one and is caught by ``run``, while a date-local
+        cross-sectional leak escapes ``run`` and is caught by this.  A caller
+        probing a node honestly runs both; neither subsumes the other.
+
+        The two knobs are this probe's own, deliberately: ``DEFAULT_LABEL_SEED``
+        is not ``DEFAULT_SHUFFLE_SEED``, because a pairing shared with the first
+        probe would make this one's draw a function of that probe's default, and
+        ``DEFAULT_LABEL_LEVEL`` is pinned here rather than imported, because
+        tightening one probe's bar must not silently tighten the other's.
+
+        A *detected leak is not an exception* here either — the refusals (a
+        malformed panel, a bundle sharing no horizon, fewer than two dates whose
+        joined cross-section carries two or more symbols, a pairing that fixes a
+        symbol, a statistic with zero dispersion) all mean the probe could not
+        measure, which a ledger must be able to tell apart from a probe that
+        *did* measure and found leakage.
+        """
+        return run_label_permute_tripwire(
+            scores, targets, node_id=node_id, seed=seed, level=level
+        )
 
     def rerun(
         self,
@@ -745,8 +826,9 @@ def build_time_shuffle_tripwire() -> TimeShuffleTripwire:
 
     It returns a :class:`TimeShuffleTripwire` rather than the bare function so
     the composed component is duck-checkable and extensible: the category's
-    later probes (features 126 through 130) attach to the same member, and a
-    caller that has the component has the seam they will arrive on.
+    later probes attach to the same member — feature 126's label-permutation
+    probe, step 10's second, and features 127 through 130's re-run axes behind
+    it — and a caller that has the component has the seam they arrive on.
     """
     return TimeShuffleTripwire()
 
