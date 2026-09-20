@@ -52,12 +52,13 @@ step 10's first question.  The label-permutation probe (feature 126) is a
 second, independent probe deliberately not built on this one's shuffle; the
 seed/offset/subsample/lookback re-runs are features 127 through 130; feature
 131 poisons the failing node and its subtree, feature 132 excises it from the
-replay pool, and feature 133 maintains the planted-leak corpus the whole suite
-must score 0 escapes against — and feature 133 lives *in this member*, as
-:mod:`tripwires.corpus`, because the corpus is a set of score panels and the
-verdicts they produce, both of them values this package already owns the
-vocabulary for.  Later features of the category extend this member; they do
-not replace it.
+replay pool, feature 133 maintains the planted-leak corpus the whole suite
+must score 0 escapes against, and feature 134 emits the triage figure the
+family exists to answer — and features 133 and 134 live *in this member*, as
+:mod:`tripwires.corpus` and :mod:`tripwires.triage`, because both are made of
+score panels and the verdicts those panels produce, values this package
+already owns the vocabulary for.  Later features of the category extend this
+member; they do not replace it.
 
 **Feature 131 broke the "this package persists nothing" rule, and that is the
 honest way to say it.**  The note above used to end there — a verdict is a
@@ -108,6 +109,24 @@ feature 125's scope note makes from the other side: a re-run is this probe
 taken twice, so a component of its own would have to reach back through this
 one for the statistic, the shuffle and the threshold — three second spellings
 of an arithmetic that already has one home.
+
+**Feature 134 is the question the family was built to answer, and it adds
+no component.**  app_spec.xml's *"System computes the area under the curve
+for perturbation stability separating planted nulls from real signals, which
+emits the triage figure"* is the M1 triage gate (docs/alpha-engine-prd.md
+§4.5): one number that says whether the stability family separates honest
+books from aligned ones *on its own*, with a decision rule hung on its size.
+:mod:`tripwires.triage` plants the two labelled populations, runs the three
+implemented axes over every candidate through their own runners, and reduces
+the two classes' figures to one exact Mann-Whitney AUC per axis and their
+macro-mean — a pure function of (``seed``, ``count``) that emits a
+:class:`~tripwires.triage.TriageFigure` and nothing else.  It is not a
+seventh component and adds no verb to :class:`TimeShuffleTripwire`, for the
+corpus's own reason: it is an experiment rather than a service, nothing in a
+deployment resolves at composition time, so there is nothing for a builder
+to build — and the seam a deployment *does* want (the AUC of its own books,
+read back from feature 129's ledger and feature 130's columns) is the pure
+:func:`~tripwires.triage.triage_auc` function, not a store or a facade.
 
 **The layering note, restated because it is a constraint on every import
 below.**  This package is stdlib-only — dates, mappings, sorting, square roots
@@ -236,6 +255,22 @@ from .time_shuffle import (
     time_shuffle_pairing,
     time_shuffle_threshold,
 )
+from .triage import (
+    TRIAGE_AXES,
+    TRIAGE_KINDS,
+    TRIAGE_PERSISTENCE,
+    TRIAGE_POPULATION,
+    TRIAGE_SEED,
+    TRIAGE_SIGNAL_HORIZON,
+    TRIAGE_TRUE_IC,
+    TriageCandidate,
+    TriageFigure,
+    instability_of,
+    planted_nulls,
+    real_signals,
+    run_triage,
+    triage_auc,
+)
 
 __all__ = [
     "COMPONENT_NAME",
@@ -272,6 +307,13 @@ __all__ = [
     "STABILITY_TABLE",
     "SUBSAMPLE_AXIS",
     "TIME_SHUFFLE_NAME",
+    "TRIAGE_AXES",
+    "TRIAGE_KINDS",
+    "TRIAGE_PERSISTENCE",
+    "TRIAGE_POPULATION",
+    "TRIAGE_SEED",
+    "TRIAGE_SIGNAL_HORIZON",
+    "TRIAGE_TRUE_IC",
     "TRIPWIRE_OUTCOMES",
     "CorpusSignal",
     "ExcisedBranch",
@@ -290,6 +332,8 @@ __all__ = [
     "SubsampleRerunVerdict",
     "TimeShuffleTripwire",
     "TimeShuffleVerdict",
+    "TriageCandidate",
+    "TriageFigure",
     "TripwireError",
     "TripwireExcisionError",
     "TripwireNodeMetricError",
@@ -303,15 +347,18 @@ __all__ = [
     "build_stability_store",
     "build_time_shuffle_tripwire",
     "excise_subtree",
+    "instability_of",
     "jittered_lookback",
     "lookback_figure",
     "lookback_stability_threshold",
     "node_bootstrap_schema",
     "node_metric_of",
     "normal_quantile",
+    "planted_nulls",
     "planted_signals",
     "poison_node",
     "poisoned_node_ids",
+    "real_signals",
     "record_node_metric",
     "record_stability",
     "replay_pool_bootstrap_schema",
@@ -319,6 +366,7 @@ __all__ = [
     "run_seed_rerun",
     "run_subsample_rerun",
     "run_time_shuffle_tripwire",
+    "run_triage",
     "seed_rerun_degradation",
     "stability_bootstrap_schema",
     "stability_of",
@@ -328,6 +376,7 @@ __all__ = [
     "surviving_sharpe",
     "time_shuffle_pairing",
     "time_shuffle_threshold",
+    "triage_auc",
     "validated_node_id",
 ]
 
