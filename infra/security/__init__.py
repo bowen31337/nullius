@@ -40,7 +40,7 @@ only.").  The sentence lands as four modules, one per claim:
   could widen it.
 
 The category's other features join this tree as siblings of these
-modules, and four have:
+modules, and five have:
 
 * :mod:`infra.security.key_backup` — feature 155's *two independent
   stores*, the sealed sidecar-key backup and the reconciliation
@@ -55,6 +55,10 @@ modules, and four have:
   permission with withdrawal permanently disabled*, the permission
   set a provisioned key may carry, the account-side switch, and the
   validation that refuses every other shape.
+* :mod:`infra.security.provider_boundary` — feature 150's *provider
+  API call outside the sandbox*, the zone-stamped call whose client
+  refuses the sandbox's side, and the conduit that sends code in and
+  takes code out.
 
 The exports below are feature 156's alone, deliberately: this module's
 ``__all__`` is the zone-policy vocabulary, and a caller reaching for
@@ -62,7 +66,10 @@ the audit log or the backup names its own submodule
 (``from infra.security.audit_log import AuditLog``) rather than
 finding it here beside the zone's gate.  One namespace per feature
 keeps the gate's ``Channel`` from sitting next to an unrelated
-``Channel`` a later member grows.
+``Channel`` a later member grows — the discipline feature 150's
+:class:`~infra.security.provider_boundary.CodeChannel` is the most
+recent instance of, and the reason it is not re-exported here beside
+the gate's ``Channel``.
 """
 
 from __future__ import annotations
