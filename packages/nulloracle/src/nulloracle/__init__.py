@@ -119,8 +119,6 @@ already says:
 
 from __future__ import annotations
 
-from typing import Optional
-
 from app.module_loader import register
 
 from .assignment import (
@@ -151,6 +149,16 @@ from .errors import (
     SidecarError,
     SidecarKeyError,
     SidecarStoreError,
+)
+from .flipdepth import (
+    FLIP_DEPTH_COLUMN,
+    NODE_TABLE,
+    P_MAX,
+    P_MIN,
+    FlipDepth,
+    flip_depth,
+    node_as_seed,
+    persist_flip_depth,
 )
 from .keyref import (
     KEY_REF_ENV,
@@ -224,8 +232,10 @@ __all__ = [
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
     "DEFAULT_BLOCK_DAYS",
-    "FRACTION_COMPONENT_NAME",
+    "FLIP_DEPTH_COLUMN",
+    "FLIP_DEPTH_COMPONENT_NAME",
     "FORMAT_VERSION",
+    "FRACTION_COMPONENT_NAME",
     "KEY_REF_ENV",
     "KS_ASYMPTOTIC",
     "KS_ASYMPTOTIC_FLOOR",
@@ -236,21 +246,25 @@ __all__ = [
     "KS_MIN_SAMPLE",
     "KS_SERIES_TERMS",
     "MAGIC",
+    "NODE_TABLE",
     "NONCE_BYTES",
     "NULL_FRACTION_COLUMN",
     "PHI_CEILING",
     "PHI_FLOOR",
+    "P_MAX",
+    "P_MIN",
+    "SERVICE_ACCOUNT_ENV",
     "SIDECAR_DIRECTORY",
-    "WORKSPACE_COUNT_COLUMN",
     "SIDECAR_FILENAME",
     "SIDECAR_FILE_MODE",
     "SIDECAR_KEY_BYTES",
     "SIDECAR_PATH_ENV",
-    "SERVICE_ACCOUNT_ENV",
     "TAG_BYTES",
     "VERDICT_COMPONENT_NAME",
     "VOID_THRESHOLD",
+    "WORKSPACE_COUNT_COLUMN",
     "EnsureKeyResult",
+    "FlipDepth",
     "KeyReference",
     "KolmogorovSmirnov",
     "KsGuard",
@@ -269,6 +283,7 @@ __all__ = [
     "SidecarStoreError",
     "Verdict",
     "assignments_digest",
+    "build_flip_depth",
     "build_null_sidecar",
     "build_verdict",
     "canonical_assignments",
@@ -276,14 +291,17 @@ __all__ = [
     "encode_assignments",
     "ensure_key",
     "envelope_digest",
+    "flip_depth",
     "guard_record_from_row",
     "ks_pvalue",
     "ks_two_sample",
     "load_ks_guard",
     "load_verdict",
+    "node_as_seed",
     "normalize_node_id",
     "null_fraction",
     "open_envelope",
+    "persist_flip_depth",
     "persist_ks_pvalue",
     "persist_null_fraction",
     "require_cryptography",
@@ -330,9 +348,18 @@ VERDICT_COMPONENT_NAME = "nulloracle-ks-verdict"
 #: several names the same way.
 FRACTION_COMPONENT_NAME = "nulloracle-null-fraction"
 
+#: The component name feature 119's flip-depth store registers under — the key
+#: a composed :class:`~app.module_loader.Application` carries it at.  A fifth
+#: name rather than a second component under :data:`COMPONENT_NAME` because the
+#: sidecar, the guard journal, the verdict, the fraction and the flip depth are
+#: five different things on five different lifecycles, and a deployment can
+#: legitimately have one without the others.  The ledger member registers
+#: several names the same way.
+FLIP_DEPTH_COMPONENT_NAME = "nulloracle-null-flip-depth"
+
 
 @register(FRACTION_COMPONENT_NAME)
-def build_null_fraction() -> Optional[PlantedNullFraction]:
+def build_null_fraction() -> PlantedNullFraction | None:
     """Component builder: §4.1.1's fraction store, bound to the environment.
 
     Feature 117's *store* half as a component, so the campaign planner that
@@ -365,8 +392,36 @@ def build_null_fraction() -> Optional[PlantedNullFraction]:
     return PlantedNullFraction.resolve()
 
 
+@register(FLIP_DEPTH_COMPONENT_NAME)
+def build_flip_depth() -> FlipDepth | None:
+    """Component builder: §7.3's Type-D flip-depth store, bound to the environment.
+
+    Feature 119's *store* half as a component, so the campaign job that draws a
+    Type-D branch's flip depth can ask the composed application for the store
+    the deployment configured rather than reading ``DATABASE_URL`` itself — the
+    same seam the fraction's, the guard's and the verdict's stores expose.
+
+    Returns ``None`` when nothing names a relational store, the
+    degrade-don't-break stance every store in this workspace takes toward an
+    absent ``DATABASE_URL``: an unconfigured flip depth is a discoverable state,
+    and a deployment whose campaign loop must draw §7.3's flip depths is the
+    caller that must not find itself in it.
+
+    Like :func:`build_null_fraction`, this never raises, including for a URL
+    whose scheme this store cannot speak.  The factory builds every registered
+    component on every :func:`~app.module_loader.create_app` call, so a builder
+    that raised would take composition down for every unrelated feature; a
+    process that *requires* a flip-depth store asks
+    :meth:`~nulloracle.flipdepth.FlipDepth.resolve` or calls the store directly,
+    where a named :class:`~nulloracle.errors.KsGuardError` is the right answer.
+    Construction performs no I/O — the path is resolved on first use — so
+    composing the application never opens a database.
+    """
+    return FlipDepth.resolve()
+
+
 @register(VERDICT_COMPONENT_NAME)
-def build_verdict() -> Optional[CampaignVerdict]:
+def build_verdict() -> CampaignVerdict | None:
     """Component builder: §7.4's verdict store, bound to the environment.
 
     Feature 124's *decision* half as a component, so the campaign job that
@@ -395,7 +450,7 @@ def build_verdict() -> Optional[CampaignVerdict]:
 
 
 @register(KS_GUARD_COMPONENT_NAME)
-def build_ks_guard() -> Optional[KsGuard]:
+def build_ks_guard() -> KsGuard | None:
     """Component builder: §7.4's guard journal, bound to the environment.
 
     Feature 123's *store* half as a component, so the campaign job that runs
@@ -424,7 +479,7 @@ def build_ks_guard() -> Optional[KsGuard]:
 
 
 @register(COMPONENT_NAME)
-def build_null_sidecar() -> Optional[NullSidecar]:
+def build_null_sidecar() -> NullSidecar | None:
     """Component builder: §7.1's sidecar, bound to the environment.
 
     Takes no arguments — that is the factory's registration protocol — and
