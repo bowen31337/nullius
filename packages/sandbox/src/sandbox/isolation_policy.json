@@ -1,0 +1,41 @@
+{
+  "policy": "sandbox-isolation",
+  "_comment": [
+    "The committed isolation policy of the sandboxes.",
+    "app_spec.xml, Untrusted Code Sandbox, feature 157:",
+    "System rejects a run of agent-authored code configured without",
+    "gVisor isolation",
+    "(docs/nullius-tech-architecture.md section 5.2: LLM-authored code is",
+    "untrusted code, treat it that way; the isolation row of that",
+    "section's control table is 'gVisor (runsc) or Firecracker microVM';",
+    "section 18: Sandbox | gVisor runsc | container-native, far lighter",
+    "than a VM per call; section 17: Z1 sandboxes, egress denied by",
+    "default).",
+    "The compile in packages/sandbox/src/sandbox/isolation.py refuses this",
+    "file and any change to it that gives a component a mechanism other",
+    "than gvisor, or a runtime other than runsc - so the two strings below",
+    "are not a convention the next edit can forget: they are the law,",
+    "checked, and every component Z1 runs is listed here rather than",
+    "named at a call site.",
+    "The two components are the same two boxes feature 148's committed",
+    "credential grant and feature 149's committed egress policy carry, so",
+    "the isolation law, the credential law and the egress posture cover",
+    "exactly one membership."
+  ],
+  "components": [
+    {
+      "name": "signal-sandbox",
+      "isolation": {
+        "mechanism": "gvisor",
+        "runtime": "runsc"
+      }
+    },
+    {
+      "name": "policy-runtime",
+      "isolation": {
+        "mechanism": "gvisor",
+        "runtime": "runsc"
+      }
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+# nullius workspace member: the untrusted-code sandbox plugin
+# (app_spec.xml, "Untrusted Code Sandbox", feature 157;
+# docs/nullius-tech-architecture.md §5.2 for the box it configures).
+#
+# Joins the uv workspace by convention — packages/sandbox with this file —
+# so the module loader (src/app/module_loader.py) discovers it by scanning
+# the members the root pyproject.toml declares.  No edit to any central
+# registry, router table or app factory is needed or wanted to wire this
+# package in.
+#
+# Dependencies: the workspace root, for the factory's registration
+# protocol (`import app.module_loader`), and nothing else.  Feature 157's
+# subject is the isolation a run *declares* — a mechanism and a runtime
+# read out of a policy document — so the law is a pure function of its
+# inputs and this member owns no third-party dependency at all.  That is
+# not frugality for its own sake: the sandbox is the box agent-authored
+# code is put inside, and the evaluator that runs it is frozen and
+# digest-pinned (§5, §12's "Immutable, containerized, hash-pinned"), so a
+# member whose import pulled a dependency graph would be a box whose own
+# determinism story has a moving part it cannot name.
+
+[project]
+name = "sandbox"
+version = "0.1.0"
+description = "The untrusted-code sandbox: a run of agent-authored code configured without gVisor isolation is refused, checked against a committed isolation policy."
+requires-python = ">=3.12"
+dependencies = ["nullius"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sandbox"]
