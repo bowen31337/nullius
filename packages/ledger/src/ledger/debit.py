@@ -72,6 +72,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from .budget import validated_charges_budget
 from .outcome import validated_outcome
 from .record import TrialLedgerRecord, _validated_instant, _validated_uuid
 from .store import TrialLedger
@@ -101,12 +102,18 @@ class DebitRequest:
     ``outcome`` the evaluation ended in (feature 91's stamp: one of
     'ok', 'timeout', 'error', 'tripwire_fail', required, because §6.1's
     step 11 debits even when the node fails and the charge must record
-    which failure it is), plus an optional ``ts`` for the replay path,
-    which debits the instant it is reproducing rather than the instant
-    it ran.  Construction canonicalises the identities to UUID text and
-    refuses anything that is not one, holds the outcome to the closed
-    vocabulary, and normalises a given ``ts`` to aware-UTC while
-    refusing a naive instant, the same row contract
+    which failure it is), the ``charges_budget`` directive (feature 90's
+    stamp: a genuine bool, the opaque budget directive the null oracle
+    returned alongside the target series, required, because a charge
+    must be able to say whether it consumed statistical budget), plus an
+    optional ``ts`` for the replay path, which debits the instant it is
+    reproducing rather than the instant it ran.  Construction
+    canonicalises the identities to UUID text, refuses anything that is
+    not one, holds the outcome to the closed vocabulary, holds the
+    directive to a genuine bool (a ``1``, a ``0`` or an absent ``None``
+    is not the oracle's directive — the directive is supplied, never
+    derived), and normalises a given ``ts`` to aware-UTC while refusing a
+    naive instant, the same row contract
     :class:`~ledger.record.TrialLedgerRecord` states: a charge that
     cannot be joined, ranged or classified is a charge no audit can
     use, and it is refused before the store is ever touched.
@@ -121,6 +128,10 @@ class DebitRequest:
     campaign_id: str
     #: How the evaluation ended — one of :data:`~ledger.outcome.OUTCOMES`.
     outcome: Optional[str] = None
+    #: The opaque budget directive — ``True`` when the trial consumed
+    #: statistical budget, ``False`` for a null node (§7.2's directive;
+    #: feature 90).  Supplied by the caller, never derived by the ledger.
+    charges_budget: Optional[bool] = None
     #: When the charge was debited, aware-UTC; ``None`` stamps at the
     #: store's default clock when the row is appended.
     ts: Optional[dt.datetime] = None
@@ -138,6 +149,9 @@ class DebitRequest:
         )
         object.__setattr__(
             self, "outcome", validated_outcome(self.outcome)
+        )
+        object.__setattr__(
+            self, "charges_budget", validated_charges_budget(self.charges_budget, strict=True)
         )
         if self.ts is not None:
             object.__setattr__(self, "ts", _validated_instant(self.ts, "ts"))
@@ -263,15 +277,16 @@ class DebitEndpoint:
         """Answer one POST /ledger/debit: append the charge, or return the prior row.
 
         The whole of feature 95 at its seam, carrying feature 91's
-        stamp.  The request's node is the idempotency key: when the
-        node holds no row the charge is appended — one row, one fresh
-        sequence, the outcome it ended with — and when it holds one
-        (the worker died after the row landed; the response was lost;
-        the retry fired) nothing is written and the response carries
-        the *prior* sequence and the *prior* row, so the caller
-        accounts with the number the original POST returned.  ``clock``
-        overrides the default stamp the store would use when the
-        request carries no ``ts`` (tests and replays route their own
+        outcome stamp and feature 90's budget directive.  The request's
+        node is the idempotency key: when the node holds no row the
+        charge is appended — one row, one fresh sequence, the outcome it
+        ended with and the budget directive the oracle supplied — and
+        when it holds one (the worker died after the row landed; the
+        response was lost; the retry fired) nothing is written and the
+        response carries the *prior* sequence and the *prior* row, so the
+        caller accounts with the number the original POST returned.
+        ``clock`` overrides the default stamp the store would use when
+        the request carries no ``ts`` (tests and replays route their own
         time through it).
 
         Refusals are the request's own (a malformed body never reaches
@@ -283,6 +298,7 @@ class DebitEndpoint:
             request.node_id,
             request.campaign_id,
             request.outcome,
+            request.charges_budget,
             ts=request.ts,
             clock=clock,
         )

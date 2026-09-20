@@ -24,6 +24,7 @@ from ledger import TrialLedgerRecord, TrialRecordError, utc_now
 
 NODE = uuid.UUID("00000000-0000-4000-8000-000000000001")
 CAMPAIGN = "00000000-0000-4000-8000-0000000000c9"
+CHARGES_BUDGET = True
 
 
 def _record(**overrides: object) -> TrialLedgerRecord:
@@ -34,6 +35,7 @@ def _record(**overrides: object) -> TrialLedgerRecord:
         "node_id": NODE,
         "campaign_id": CAMPAIGN,
         "outcome": "ok",
+        "charges_budget": True,
     }
     fields.update(overrides)
     return TrialLedgerRecord(**fields)  # type: ignore[arg-type]
@@ -154,4 +156,5 @@ def test_the_column_tuple_is_in_table_order() -> None:
         "00000000-0000-4000-8000-000000000001",
         CAMPAIGN,
         "ok",
+        1,
     )

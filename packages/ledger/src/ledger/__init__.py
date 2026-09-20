@@ -14,9 +14,11 @@ stamps and derivations on top of it — the provenance triple of 87, the
 epoch accounting of 88, the charge semantics of 89-90, the outcome of
 91 (:mod:`ledger.outcome`: one of 'ok', 'timeout', 'error',
 'tripwire_fail' persisted on every appended row, refused when absent or
-misspelled), the enforced immutability of 92, the ``K_effective``
-family of 93-96 — each as a layer over the one table this member
-creates, never a second table beside it.
+misspelled), the opaque budget directive of 90
+(:mod:`ledger.budget`: a genuine bool supplied by the caller, never
+derived), the enforced immutability of 92, the ``K_effective`` family
+of 93-96 — each as a layer over the one table this member creates, never
+a second table beside it.
 
 Importing this package registers two components with the application
 factory.  ``"ledger"`` is the :class:`~ledger.store.TrialLedger` bound
@@ -57,6 +59,10 @@ already says:
 * :data:`~ledger.outcome.OUTCOMES` — feature 91's vocabulary: the four
   outcomes a trial can end in, the one closed set every appended row's
   ``outcome`` is drawn from.
+* :func:`~ledger.budget.validated_charges_budget` — feature 90's
+  directive: the genuine-bool check every appended row's
+  ``charges_budget`` is validated through, supplied by the caller and
+  never derived.
 * :class:`~ledger.record.utc_now` — the append's default clock.
 * The error taxonomy of :mod:`ledger.errors`, one base class wide.
 """
@@ -67,6 +73,7 @@ from typing import Optional
 
 from app.module_loader import register
 
+from .budget import validated_charges_budget
 from .debit import DEBIT_ROUTE, DebitEndpoint, DebitRequest, DebitResponse
 from .errors import (
     TrialImmutableError,
@@ -97,6 +104,7 @@ __all__ = [
     "build_ledger_debit",
     "build_trial_ledger",
     "utc_now",
+    "validated_charges_budget",
 ]
 
 #: The component name this member registers under — the key a composed

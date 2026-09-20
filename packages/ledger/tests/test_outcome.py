@@ -51,6 +51,7 @@ from ledger.store import guarded
 NODE = uuid.uuid4()
 CAMPAIGN = uuid.uuid4()
 STAMP = datetime(2026, 9, 20, 5, 0, 0, tzinfo=timezone.utc)
+CHARGES_BUDGET = True
 
 # The schema this member wrote before feature 91 landed — the four
 # columns of features 86-95, recreated verbatim so a test can hand the
@@ -86,7 +87,7 @@ def test_every_append_persists_the_outcome_it_was_given(
     # The feature's own clause, one pass per vocabulary entry: the row
     # the append returns, the row the read hands back, and the row the
     # table holds all say the same outcome.
-    record = test_ledger.append(NODE, CAMPAIGN, outcome, ts=STAMP)
+    record = test_ledger.append(NODE, CAMPAIGN, outcome, CHARGES_BUDGET, ts=STAMP)
     assert record.outcome == outcome
     assert test_ledger.get(record.seq) == record
     assert [row.outcome for row in test_ledger.rows()] == [outcome]
@@ -99,7 +100,7 @@ def test_the_stored_outcome_is_the_exactly_spelled_text(
     # What the table holds, not what the record reports: the column's
     # text is the canonical spelling, untransformed — the closed
     # vocabulary is a storage contract, not a display convention.
-    record = test_ledger.append(NODE, CAMPAIGN, outcome, ts=STAMP)
+    record = test_ledger.append(NODE, CAMPAIGN, outcome, CHARGES_BUDGET, ts=STAMP)
     with sqlite3.connect(db_path) as connection:
         (stored,) = connection.execute(
             f"SELECT outcome FROM {TRIAL_LEDGER_TABLE} WHERE seq = ?",
@@ -115,7 +116,7 @@ def test_a_mixture_of_outcomes_persists_row_by_row(
     # had one trip the leakage wires: four charges, four outcomes, each
     # row its own — the count stays honest about *what* it counted.
     for outcome in OUTCOMES:
-        test_ledger.append(NODE, CAMPAIGN, outcome, ts=STAMP)
+        test_ledger.append(NODE, CAMPAIGN, outcome, CHARGES_BUDGET, ts=STAMP)
     assert [row.outcome for row in test_ledger.rows()] == list(OUTCOMES)
 
 
@@ -125,7 +126,7 @@ def test_the_debit_persists_the_outcome_of_the_charge(
     # The idempotent half of the write surface carries the stamp too:
     # the failure path §6.1 debits through the debit, not the raw
     # append, and its charge must be classifiable like any other.
-    record, appended = test_ledger.debit(NODE, CAMPAIGN, "error", ts=STAMP)
+    record, appended = test_ledger.debit(NODE, CAMPAIGN, "error", CHARGES_BUDGET, ts=STAMP)
     assert appended is True
     assert record.outcome == "error"
     assert test_ledger.get(record.seq) == record
@@ -137,26 +138,27 @@ def test_the_endpoint_carries_the_outcome_of_the_request(
     # POST /ledger/debit's body names the outcome; the response's
     # record carries it; the table holds it.
     response = test_endpoint.post(
-        DebitRequest(NODE, CAMPAIGN, "tripwire_fail", ts=STAMP)
+        DebitRequest(NODE, CAMPAIGN, "tripwire_fail", CHARGES_BUDGET, ts=STAMP)
     )
     assert response.record.outcome == "tripwire_fail"
     assert test_ledger.get(response.seq) == response.record
 
 
-def test_the_column_tuple_carries_the_outcome_last(
+def test_the_column_tuple_closes_with_the_directive(
     test_ledger: TrialLedger,
 ) -> None:
     # The record's column tuple is the table's declaration order — the
-    # outcome closes the row, and the reader that unpacks it cannot
-    # mistake it for an identity or a stamp.
-    record = test_ledger.append(NODE, CAMPAIGN, "timeout", ts=STAMP)
-    assert record.row()[-1] == "timeout"
+    # directive closes the row, and the reader that unpacks it cannot
+    # mistake it for an identity, a stamp or the outcome.
+    record = test_ledger.append(NODE, CAMPAIGN, "timeout", CHARGES_BUDGET, ts=STAMP)
+    assert record.row()[-1] == 1
     assert record.row() == (
         record.seq,
         STAMP.isoformat(),
         str(NODE),
         str(CAMPAIGN),
         "timeout",
+        1,
     )
 
 
@@ -191,7 +193,8 @@ def test_an_outcome_outside_the_four_is_refused_at_every_seam(
         DebitRequest(NODE, CAMPAIGN, bad)  # type: ignore[arg-type]
     with pytest.raises(TrialRecordError, match="outcome must be one of"):
         TrialLedgerRecord(
-            seq=1, ts=STAMP, node_id=NODE, campaign_id=CAMPAIGN, outcome=bad
+            seq=1, ts=STAMP, node_id=NODE, campaign_id=CAMPAIGN, outcome=bad,
+            charges_budget=CHARGES_BUDGET,
         )  # type: ignore[arg-type]
 
 
@@ -233,7 +236,7 @@ def test_a_refused_outcome_spends_no_sequence_number(
     with pytest.raises(TrialRecordError):
         test_ledger.append(NODE, CAMPAIGN, bad)  # type: ignore[arg-type]
     assert test_ledger.count() == 0
-    assert test_ledger.append(NODE, CAMPAIGN, "ok", ts=STAMP).seq == 1
+    assert test_ledger.append(NODE, CAMPAIGN, "ok", CHARGES_BUDGET, ts=STAMP).seq == 1
 
 
 # -- The retry keeps the original outcome --------------------------------------
@@ -248,9 +251,9 @@ def test_a_retry_does_not_restate_the_outcome(
     # the response's record says which outcome landed, exactly as it
     # says which stamp landed.
     original = test_endpoint.post(
-        DebitRequest(NODE, CAMPAIGN, "error", ts=STAMP)
+        DebitRequest(NODE, CAMPAIGN, "error", CHARGES_BUDGET, ts=STAMP)
     )
-    retry = test_endpoint.post(DebitRequest(NODE, CAMPAIGN, "ok", ts=STAMP))
+    retry = test_endpoint.post(DebitRequest(NODE, CAMPAIGN, "ok", CHARGES_BUDGET, ts=STAMP))
 
     assert retry.seq == original.seq == 1
     assert retry.appended is False
@@ -269,11 +272,11 @@ def test_the_outcome_column_is_not_null_with_no_default(
     # shape that makes the outcome the caller's to state, not the
     # table's to presume.  The column closes the declaration order the
     # record's row() tuple mirrors.
-    test_ledger.append(NODE, CAMPAIGN, "ok", ts=STAMP)
+    test_ledger.append(NODE, CAMPAIGN, "ok", CHARGES_BUDGET, ts=STAMP)
     with sqlite3.connect(db_path) as connection:
         info = connection.execute(f"PRAGMA table_info({TRIAL_LEDGER_TABLE})")
         rows = {row[1]: row for row in info}
-    assert list(rows) == ["seq", "ts", "node_id", "campaign_id", "outcome"]
+    assert list(rows) == ["seq", "ts", "node_id", "campaign_id", "outcome", "charges_budget"]
     # (cid, name, type, notnull, dflt_value, pk) for the outcome column.
     _, _, kind, notnull, default, pk = rows["outcome"]
     assert kind == "TEXT"
@@ -289,7 +292,7 @@ def test_a_row_whose_outcome_wandered_outside_the_four_is_refused(
     # hand-edited outcome — like a hand-edited stamp — is refused
     # rather than served: in an append-only log, one unreadable row is
     # evidence, not noise.
-    test_ledger.append(NODE, CAMPAIGN, "ok", ts=STAMP)
+    test_ledger.append(NODE, CAMPAIGN, "ok", CHARGES_BUDGET, ts=STAMP)
     with sqlite3.connect(db_path) as connection:
         connection.execute(
             f"UPDATE {TRIAL_LEDGER_TABLE} SET outcome = ? WHERE seq = 1",
@@ -317,7 +320,7 @@ def test_a_pre_outcome_database_is_upgraded_in_place(
     with sqlite3.connect(db_path) as connection:
         info = connection.execute(f"PRAGMA table_info({TRIAL_LEDGER_TABLE})")
         columns = [row[1] for row in info]
-    assert columns == ["seq", "ts", "node_id", "campaign_id", "outcome"]
+    assert columns == ["seq", "ts", "node_id", "campaign_id", "outcome", "charges_budget"]
 
 
 def test_the_legacy_default_is_the_no_recorded_failure_spelling(
@@ -342,7 +345,7 @@ def test_the_upgrade_continues_the_sequence_above_the_legacy_rows(
     # maximum, exactly as it would have without the outcome.
     _legacy_database(db_path)
     ledger = TrialLedger(test_database_url)
-    record = ledger.append(NODE, CAMPAIGN, "timeout", ts=STAMP)
+    record = ledger.append(NODE, CAMPAIGN, "timeout", CHARGES_BUDGET, ts=STAMP)
     assert record.seq == 2
     assert [row.seq for row in ledger.rows()] == [1, 2]
     assert [row.outcome for row in ledger.rows()] == ["ok", "timeout"]

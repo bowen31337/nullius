@@ -5,13 +5,14 @@ persists one trial_ledger row per evaluation under a monotonically
 increasing sequence number.*  docs/nullius-tech-architecture.md §8 fixes
 the row's first four columns — ``seq``, ``ts``, ``node_id``,
 ``campaign_id`` — and leaves the rest to the features that own them:
-the outcome of 91 has landed on this row (:mod:`ledger.outcome`), while
-the provenance triple of 87, the epoch of 88 and the charge semantics
-of 89-90 are still to arrive.  This module is the row those columns
-make: the value a debit writes, and the value a read hands back.  A
-record read from the ledger equals the record the append returned — the
-row is a statement about a past charge, and a re-read must not restate
-it.
+the charges_budget directive of 90 has landed on this row
+(:mod:`ledger.budget`), and the outcome of 91
+(:mod:`ledger.outcome`), while the provenance triple of 87, the epoch of
+88 and the remaining charge semantics of 89 are still to arrive.  This
+module is the row those columns make: the value a debit writes, and the
+value a read hands back.  A record read from the ledger equals the record
+the append returned — the row is a statement about a past charge, and a
+re-read must not restate it.
 
 **The sequence number is the table's to assign, and the record's to
 carry.**  ``seq`` is assigned by the store's append
@@ -60,6 +61,24 @@ step 11 debits even then) — so a row that cannot say how its trial
 ended is a charge no audit can classify, and this layer does not build
 one.
 
+**The budget directive is a bit supplied, never derived (feature 90).**
+The column §8 declares ``charges_budget BOOLEAN NOT NULL`` carries the
+opaque directive the null oracle returns alongside the target series —
+``True`` when the trial consumed statistical budget, ``False`` when it
+did not (a null node).  It is a required stamp on this record,
+validated through :func:`ledger.budget.validated_charges_budget`: a
+genuine :class:`bool` is carried through untouched (the directive is
+canonical, so there is nothing to normalise), and anything that is not
+a bool is refused at the write — a ``1`` or a ``0`` or an absent
+``None`` is not the oracle's directive, and accepting one would be the
+ledger beginning to *derive* the bit it is only meant to *carry*.  A
+row read back arrives as the ``0``/``1`` the SQLite column stores and
+is coerced to its bool; a stored value that is neither bit (a hand-edit,
+a corruption) is refused rather than served.  The directive is what
+``K_effective`` (feature 93) filters on, so a row that cannot say
+whether it charged budget is a charge no audit can classify, and this
+layer does not build one.
+
 Instances are frozen: this is append-only accounting, and editing a
 persisted charge in place would rewrite the account rather than
 superseding it.  Supersession, where the category needs it, is a new row.
@@ -76,6 +95,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Union
 
+from .budget import validated_charges_budget
 from .errors import TrialRecordError
 from .outcome import validated_outcome
 
@@ -192,7 +212,13 @@ class TrialLedgerRecord:
     ``outcome`` is how that evaluation ended — one of the four
     :data:`~ledger.outcome.OUTCOMES` — carried on every row because the
     honest count is a count of *outcomes*, and a failed trial is as
-    chargeable a fact as a successful one.
+    chargeable a fact as a successful one.  ``charges_budget`` is whether
+    the trial consumed statistical budget — ``True`` for a real trial,
+    ``False`` for a null node — the opaque directive §7.2's null oracle
+    returns alongside the target series, carried on every row because
+    ``K_effective`` (feature 93) is a count of *budget-charging* trials,
+    and a null node must never inflate it.  Supplied by the caller, never
+    derived by the ledger.
 
     Construction validates and canonicalises, so an instance is
     trustworthy by construction: the store's append builds its return
@@ -216,6 +242,10 @@ class TrialLedgerRecord:
     #: How the evaluation ended — one of 'ok', 'timeout', 'error',
     #: 'tripwire_fail' (§8's vocabulary; feature 91's stamp).
     outcome: str
+    #: Whether the trial consumed statistical budget — ``True`` for a real
+    #: trial, ``False`` for a null node (§7.2's opaque directive; feature
+    #: 90's stamp).  Supplied by the caller, never derived by the ledger.
+    charges_budget: bool
 
     def __post_init__(self) -> None:
         # frozen+slots forbids plain assignment, so canonicalisation writes
@@ -232,16 +262,23 @@ class TrialLedgerRecord:
         object.__setattr__(
             self, "outcome", validated_outcome(self.outcome)
         )
+        # A bool is carried through untouched; a 0/1 read back from disk is
+        # coerced to its bool.  A value that is neither is refused — the
+        # read path revalidates through this same check.
+        object.__setattr__(
+            self, "charges_budget", validated_charges_budget(self.charges_budget)
+        )
 
     def row(self) -> tuple[Union[int, str], ...]:
         """The record as the store's column tuple, in table order.
 
-        ``seq, ts, node_id, campaign_id, outcome`` — the order the
-        table's columns are declared in and the order the read path
-        unpacks, kept in one method so the two cannot drift apart and
+        ``seq, ts, node_id, campaign_id, outcome, charges_budget`` — the
+        order the table's columns are declared in and the order the read
+        path unpacks, kept in one method so the two cannot drift apart and
         silently swap an identity for a stamp.  ``ts`` serialises as
         canonical ISO-8601 UTC with an explicit offset, the exact text
-        the table stores.
+        the table stores; ``charges_budget`` serialises as the ``0``/``1``
+        the SQLite ``BOOLEAN`` column stores.
         """
         return (
             self.seq,
@@ -249,4 +286,5 @@ class TrialLedgerRecord:
             self.node_id,
             self.campaign_id,
             self.outcome,
+            1 if self.charges_budget else 0,
         )

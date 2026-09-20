@@ -64,6 +64,7 @@ LATER = datetime(2026, 9, 20, 6, 0, 0, tzinfo=timezone.utc)
 # The outcome these feature-95 tests charge with — any of the four
 # would do; the outcome's own behaviour is test_outcome.py's subject.
 OUTCOME = "ok"
+CHARGES_BUDGET = True
 
 MEMBER_SRC = Path(ledger.__file__).resolve().parent.parent
 
@@ -72,19 +73,19 @@ MEMBER_SRC = Path(ledger.__file__).resolve().parent.parent
 
 
 def test_the_first_post_appends_one_row(test_endpoint: DebitEndpoint) -> None:
-    response = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME))
+    response = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET))
     assert response.appended is True
     assert response.retry is False
     assert response.seq == 1
     assert response.record == TrialLedgerRecord(
-        seq=1, ts=response.record.ts, node_id=NODE_A, campaign_id=CAMPAIGN, outcome=OUTCOME
+        seq=1, ts=response.record.ts, node_id=NODE_A, campaign_id=CAMPAIGN, outcome=OUTCOME, charges_budget=CHARGES_BUDGET
     )
 
 
 def test_the_first_post_spends_exactly_one_row_and_number(
     test_endpoint: DebitEndpoint, test_ledger: TrialLedger
 ) -> None:
-    test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME))
+    test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET))
     assert test_ledger.count() == 1
     assert test_ledger.get(1) is not None
 
@@ -92,8 +93,8 @@ def test_the_first_post_spends_exactly_one_row_and_number(
 def test_distinct_nodes_append_distinct_rows(
     test_endpoint: DebitEndpoint, test_ledger: TrialLedger
 ) -> None:
-    first = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME))
-    second = test_endpoint.post(DebitRequest(NODE_B, CAMPAIGN, OUTCOME))
+    first = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET))
+    second = test_endpoint.post(DebitRequest(NODE_B, CAMPAIGN, OUTCOME, CHARGES_BUDGET))
     assert (first.seq, second.seq) == (1, 2)
     assert test_ledger.count() == 2
 
@@ -101,7 +102,7 @@ def test_distinct_nodes_append_distinct_rows(
 def test_the_response_record_is_the_row_the_table_holds(
     test_endpoint: DebitEndpoint, test_ledger: TrialLedger
 ) -> None:
-    response = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME))
+    response = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET))
     assert test_ledger.get(response.seq) == response.record
     assert test_ledger.rows() == (response.record,)
 
@@ -114,8 +115,8 @@ def test_a_retry_returns_the_prior_sequence(
 ) -> None:
     # The worker died after the row landed but before the response made
     # it back; the worker that takes over posts the same charge again.
-    original = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME))
-    retry = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME))
+    original = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET))
+    retry = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET))
 
     assert retry.seq == original.seq == 1
     assert retry.appended is False
@@ -130,9 +131,9 @@ def test_a_retry_spends_no_sequence_number(
     # The property that makes the retry free rather than merely
     # invisible: the skipped charge burns nothing, so the next node's
     # first debit draws the very next number.
-    test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME))
-    test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME))
-    other = test_endpoint.post(DebitRequest(NODE_B, CAMPAIGN, OUTCOME))
+    test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET))
+    test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET))
+    other = test_endpoint.post(DebitRequest(NODE_B, CAMPAIGN, OUTCOME, CHARGES_BUDGET))
 
     assert other.seq == 2
     assert [row.seq for row in test_ledger.rows()] == [1, 2]
@@ -141,9 +142,9 @@ def test_a_retry_spends_no_sequence_number(
 def test_repeated_retries_keep_returning_the_prior_sequence(
     test_endpoint: DebitEndpoint, test_ledger: TrialLedger
 ) -> None:
-    first = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME))
+    first = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET))
     for _ in range(5):
-        retry = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME))
+        retry = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET))
         assert retry.seq == first.seq
         assert retry.appended is False
     assert test_ledger.count() == 1
@@ -156,10 +157,10 @@ def test_the_idempotence_survives_the_process_that_debited(
     # of what was charged.  A brand-new store and endpoint — the next
     # process, as far as the ledger is concerned — recognises the retry.
     first = DebitEndpoint(TrialLedger(test_database_url))
-    original = first.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME))
+    original = first.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET))
 
     second = DebitEndpoint(TrialLedger(test_database_url))
-    retry = second.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME))
+    retry = second.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET))
 
     assert retry.seq == original.seq
     assert retry.appended is False
@@ -169,9 +170,9 @@ def test_the_idempotence_survives_the_process_that_debited(
 def test_a_retry_interleaved_with_other_charges_still_finds_its_row(
     test_endpoint: DebitEndpoint, test_ledger: TrialLedger
 ) -> None:
-    a = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME))
-    test_endpoint.post(DebitRequest(NODE_B, CAMPAIGN, OUTCOME))
-    retry = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME))
+    a = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET))
+    test_endpoint.post(DebitRequest(NODE_B, CAMPAIGN, OUTCOME, CHARGES_BUDGET))
+    retry = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET))
 
     assert retry.seq == a.seq == 1
     assert test_ledger.count() == 2
@@ -192,7 +193,7 @@ def test_concurrent_posts_of_one_node_append_exactly_one_row(
     # statement in one transaction, so the posts serialise on the
     # database's write lock: exactly one appends, every other caller is
     # answered by its row.
-    request = DebitRequest(NODE_A, CAMPAIGN, OUTCOME)
+    request = DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET)
     with ThreadPoolExecutor(max_workers=8) as pool:
         responses = [
             pool.submit(test_endpoint.post, request).result()
@@ -210,7 +211,7 @@ def test_concurrent_posts_of_one_node_append_exactly_one_row(
 def test_an_explicit_stamp_is_persisted_on_the_first_post(
     test_endpoint: DebitEndpoint, test_ledger: TrialLedger
 ) -> None:
-    response = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, ts=STAMP))
+    response = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP))
     assert response.record.ts == STAMP
     assert test_ledger.get(response.seq) == response.record
 
@@ -222,8 +223,8 @@ def test_a_retry_does_not_restate_the_charge(
     # written.  A retry carrying a different stamp loses — silently, by
     # design, because the row is a fact and facts are never restated;
     # the response's record says which stamp landed.
-    test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, ts=STAMP))
-    retry = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, ts=LATER))
+    test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP))
+    retry = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=LATER))
 
     assert retry.record.ts == STAMP
     assert test_ledger.get(1).ts == STAMP
@@ -234,7 +235,7 @@ def test_the_default_clock_stamps_the_first_post(test_endpoint: DebitEndpoint) -
     from ledger import utc_now
 
     before = utc_now()
-    response = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME))
+    response = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET))
     after = utc_now()
     assert before <= response.record.ts <= after
 
@@ -246,7 +247,7 @@ def test_the_endpoint_routes_its_own_clock_to_the_store(
         return STAMP
 
     response = test_endpoint.post(
-        DebitRequest(NODE_A, CAMPAIGN, OUTCOME), clock=frozen
+        DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET), clock=frozen
     )
     assert response.record.ts == STAMP
 
@@ -257,7 +258,7 @@ def test_the_endpoint_routes_its_own_clock_to_the_store(
 def test_the_request_canonicalises_whatever_spelled_the_identities(
     test_endpoint: DebitEndpoint,
 ) -> None:
-    request = DebitRequest(str(NODE_A).upper(), CAMPAIGN.hex, OUTCOME)
+    request = DebitRequest(str(NODE_A).upper(), CAMPAIGN.hex, OUTCOME, CHARGES_BUDGET)
     assert request.node_id == str(NODE_A)
     assert request.campaign_id == str(CAMPAIGN)
     assert request.key == str(NODE_A)
@@ -271,10 +272,10 @@ def test_equal_requests_are_one_charge(
     test_endpoint: DebitEndpoint, test_ledger: TrialLedger
 ) -> None:
     # However the caller came by the identities, one key is one charge.
-    first = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME))
-    retry = test_endpoint.post(DebitRequest(str(NODE_A), str(CAMPAIGN), OUTCOME))
-    assert DebitRequest(NODE_A, CAMPAIGN, OUTCOME) == DebitRequest(
-        str(NODE_A), CAMPAIGN, OUTCOME
+    first = test_endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET))
+    retry = test_endpoint.post(DebitRequest(str(NODE_A), str(CAMPAIGN), OUTCOME, CHARGES_BUDGET))
+    assert DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET) == DebitRequest(
+        str(NODE_A), CAMPAIGN, OUTCOME, CHARGES_BUDGET
     )
     assert retry.seq == first.seq
     assert test_ledger.count() == 1
@@ -304,7 +305,7 @@ def test_a_naive_stamp_is_refused_at_the_request(
     test_endpoint: DebitEndpoint, test_ledger: TrialLedger
 ) -> None:
     with pytest.raises(TrialRecordError, match="timezone-aware"):
-        DebitRequest(NODE_A, CAMPAIGN, OUTCOME, ts=datetime(2026, 9, 20, 5, 0, 0))
+        DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=datetime(2026, 9, 20, 5, 0, 0))
     assert test_ledger.count() == 0
 
 
@@ -315,7 +316,7 @@ def test_a_request_stamp_in_another_offset_is_normalised(
 
     aedt = timezone(timedelta(hours=10))
     request = DebitRequest(
-        NODE_A, CAMPAIGN, OUTCOME, ts=datetime(2026, 9, 20, 15, 0, 0, tzinfo=aedt)
+        NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=datetime(2026, 9, 20, 15, 0, 0, tzinfo=aedt)
     )
     assert request.ts == STAMP
 
@@ -324,11 +325,11 @@ def test_a_request_stamp_in_another_offset_is_normalised(
 
 
 def test_the_response_and_request_are_frozen() -> None:
-    request = DebitRequest(NODE_A, CAMPAIGN, OUTCOME)
+    request = DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET)
     response = DebitResponse(
         appended=True,
         record=TrialLedgerRecord(
-            seq=1, ts=STAMP, node_id=NODE_A, campaign_id=CAMPAIGN, outcome=OUTCOME
+            seq=1, ts=STAMP, node_id=NODE_A, campaign_id=CAMPAIGN, outcome=OUTCOME, charges_budget=CHARGES_BUDGET
         ),
     )
     with pytest.raises(AttributeError):
@@ -341,7 +342,7 @@ def test_the_response_seq_cannot_drift_from_the_record() -> None:
     response = DebitResponse(
         appended=False,
         record=TrialLedgerRecord(
-            seq=7, ts=STAMP, node_id=NODE_A, campaign_id=CAMPAIGN, outcome=OUTCOME
+            seq=7, ts=STAMP, node_id=NODE_A, campaign_id=CAMPAIGN, outcome=OUTCOME, charges_budget=CHARGES_BUDGET
         ),
     )
     assert response.seq == 7
@@ -354,11 +355,11 @@ def test_the_response_seq_cannot_drift_from_the_record() -> None:
 def test_the_store_debit_appends_then_answers_with_the_prior_row(
     test_ledger: TrialLedger,
 ) -> None:
-    record, appended = test_ledger.debit(NODE_A, CAMPAIGN, OUTCOME, ts=STAMP)
+    record, appended = test_ledger.debit(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP)
     assert appended is True
     assert record.seq == 1
 
-    prior, appended_again = test_ledger.debit(NODE_A, CAMPAIGN, OUTCOME, ts=LATER)
+    prior, appended_again = test_ledger.debit(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=LATER)
     assert appended_again is False
     assert prior == record
     assert test_ledger.count() == 1
@@ -371,10 +372,10 @@ def test_the_store_debit_picks_the_earliest_row_when_raw_appends_left_several(
     # rows.  When it has, the debit is answered by the earliest — the
     # first charge ever debited for the node is the one whose retry this
     # is — and appends nothing.
-    test_ledger.append(NODE_A, CAMPAIGN, OUTCOME, ts=STAMP)
-    test_ledger.append(NODE_A, CAMPAIGN, OUTCOME, ts=LATER)
+    test_ledger.append(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=STAMP)
+    test_ledger.append(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=LATER)
 
-    prior, appended = test_ledger.debit(NODE_A, CAMPAIGN, OUTCOME)
+    prior, appended = test_ledger.debit(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET)
 
     assert appended is False
     assert prior.seq == 1
@@ -388,7 +389,7 @@ def test_the_store_debit_validates_before_the_database_is_touched(
     with pytest.raises(TrialRecordError):
         test_ledger.debit("not-a-uuid", CAMPAIGN)
     with pytest.raises(TrialRecordError):
-        test_ledger.debit(NODE_A, CAMPAIGN, OUTCOME, ts=datetime(2026, 9, 20, 5, 0, 0))
+        test_ledger.debit(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET, ts=datetime(2026, 9, 20, 5, 0, 0))
     assert test_ledger.count() == 0
 
 
@@ -399,8 +400,8 @@ def test_the_raw_append_still_counts_what_it_is_told(
     # is not idempotent and never was — two calls are two rows — because
     # idempotence is the *debit's* contract, not the log's write
     # primitive's.
-    test_ledger.append(NODE_A, CAMPAIGN, OUTCOME)
-    test_ledger.append(NODE_A, CAMPAIGN, OUTCOME)
+    test_ledger.append(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET)
+    test_ledger.append(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET)
     assert test_ledger.count() == 2
 
 
@@ -422,7 +423,7 @@ def test_the_endpoint_duck_accepts_the_composed_component(
     app = create_app(MEMBER_SRC, registry=Registration())
     composed = ledger_seat.ledger_component(app)
     endpoint = DebitEndpoint(composed)  # type: ignore[arg-type]
-    assert endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME)).seq == 1
+    assert endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET)).seq == 1
 
 
 def test_from_env_resolves_the_configured_ledger(
@@ -498,7 +499,7 @@ def test_the_endpoint_and_the_store_compose_over_one_database(
     store = app.get("ledger")
     assert endpoint.ledger.database_url == store.database_url
 
-    response = endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME))
+    response = endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET))
     assert store.get(response.seq) == response.record
 
 
