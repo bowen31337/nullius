@@ -432,6 +432,33 @@ class EvaluatorDecayError(EvaluatorError):
     """
 
 
+class EvaluatorMetricsError(EvaluatorError):
+    """The node metrics could not be computed or stored.
+
+    Raised by :func:`evaluator.compute_node_metrics`,
+    :func:`evaluator.persist_node_metrics` and the node-metrics store
+    (app_spec.xml feature 80) when step 8 of the §6.1 pipeline cannot compute
+    ``ic_mean``, ``ic_tstat``, ``ir_standalone`` and ``turnover``: a bundle
+    that is not step 7's own result (the four scalars are measured from the
+    post-cost returns, and the gross series alone cannot say which schedule
+    priced them), a normalized score series that is malformed, empty, or does
+    not live on the priced grid (a score nobody aligned is not a pair), a score
+    or return that is not a finite number, a panel that covers no horizon at
+    any of the spec's horizons (nothing measured), a metrics horizon with fewer
+    than two dates (``ic_tstat`` over one date names a zero standard error and
+    a fabricated infinity), an equal-weight book whose per-date return never
+    varies (``ir_standalone`` would divide by zero), a scored date the priced
+    panel never reaches (neither side is zero-filled to become a pair), and a
+    record built by hand whose scalars do not reduce from their own terms.
+
+    Deliberately *not* here: any metric of its own invention.  The coefficient
+    pinned here is the Spearman rank correlation — the *same* rank transform
+    feature 74 pins for the scores and feature 81 measures — so ``ic_mean`` is
+    the mean of the very series the artifact files as ``ic_series.parquet``
+    rather than a second definition of agreement (see ``_metrics``).
+    """
+
+
 class EvaluatorGateError(EvaluatorError):
     """A target series was supplied outside the null gate, or the ask is malformed.
 

@@ -109,8 +109,19 @@ contribution is the pairing rather than the prices. The step also *forwards*
 §7.2's opaque budget directive untouched, because the steps that consume it
 (features 80, 83 and 84) receive step 7's record rather than the gate's, and
 feature 84's trial charge has to be written even when an evaluation failed —
-so a bit dropped here is one no later step can go back for. Feature 82 adds the first two of step
-8's metrics: :func:`estimate_capacity` sizes the largest equal-weight book
+so a bit dropped here is one no later step can go back for. Feature 80 adds the first of
+step 8's metrics: :func:`compute_node_metrics` reduces step 7's post-cost returns, over the
+shortest horizon the priced panel covers and the *same* per-date Spearman coefficient feature
+81 measures, into four scalars — ``ic_mean`` (the mean information coefficient), ``ic_tstat``
+(the mean over the standard error of the mean of the per-date coefficients), ``ir_standalone``
+(the equal-weight book's information ratio) and ``turnover`` (the equal-weight book's mean
+per-date fractional turnover) — and :func:`persist_node_metrics` writes them down, one row per
+evaluation per cost model, beside the per-date IC series they reduce from, so the tree member's
+node row (feature 85) and the live loop read back a scalar that is checked against its own
+series. The two stay import-cheap the way the whole step does: stdlib-only, with the returns
+and the scores arriving as *values* — the Polars boundary stays at the edge of the package —
+so no member is imported and no return is repriced. Feature 82 adds the first two of step 8's
+metrics: :func:`estimate_capacity` sizes the largest equal-weight book
 whose square-root-law impact drag leaves half of the measured post-cost
 edge — the dollar answer to the PRD's "works on $50k but not $50M" — and
 :func:`attribute_regimes` splits that same edge across the named strata of
@@ -174,6 +185,7 @@ from ._errors import (
     EvaluatorGateError,
     EvaluatorIdentityError,
     EvaluatorImageError,
+    EvaluatorMetricsError,
     EvaluatorPurgeError,
     EvaluatorSandboxError,
     EvaluatorSignalError,
@@ -287,6 +299,18 @@ from ._decay_store import (
     load_decay_profile,
     persist_decay_profile,
 )
+from ._metrics import (
+    METRICS_HORIZON,
+    METRICS_STEP,
+    NodeMetrics,
+    compute_node_metrics,
+)
+from ._metrics_store import (
+    NODE_METRICS_TABLE,
+    NodeMetricsStore,
+    load_node_metrics,
+    persist_node_metrics,
+)
 from ._service import ENV_IMAGE, EvaluatorService, build_evaluator_service
 from ._window import (
     ROSTER_STREAM,
@@ -356,6 +380,16 @@ __all__ = [
     "DecayStore",
     "load_decay_profile",
     "persist_decay_profile",
+    # Feature 80 — the four node metrics
+    "METRICS_HORIZON",
+    "METRICS_STEP",
+    "NodeMetrics",
+    "compute_node_metrics",
+    # Feature 80 — persisting the four scalars
+    "NODE_METRICS_TABLE",
+    "NodeMetricsStore",
+    "load_node_metrics",
+    "persist_node_metrics",
     # Feature 79 — persisting the post-cost signal returns
     "SIGNAL_RETURNS_GRID_TABLE",
     "SIGNAL_RETURNS_TABLE",
@@ -409,6 +443,7 @@ __all__ = [
     "EvaluatorGateError",
     "EvaluatorIdentityError",
     "EvaluatorImageError",
+    "EvaluatorMetricsError",
     "EvaluatorSandboxError",
     "EvaluatorSignalError",
     "EvaluatorStoreError",
