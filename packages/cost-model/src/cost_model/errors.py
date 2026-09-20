@@ -20,6 +20,13 @@ not by which line of code failed:
   the state the feature exists to rule out.  A store that was never
   configured at all is not this error — see :mod:`cost_model.service` for
   the stance that separates the two.
+* :class:`CostModelFillError` — the fill-input contract
+  (:mod:`cost_model.book_walk`, feature 66).  A recorded book, an aggressive
+  order or a walk over them that the fill model cannot price: a ladder whose
+  levels are out of order, a book with an empty or crossed side, an order
+  the recorded depth cannot fill.  Each is refused rather than smoothed
+  over, because the alternative — pricing the unpriceable — is exactly the
+  unrealistic slippage figure the feature's sentence rules out.
 
 Every message names the offending value and the contract it broke, because
 these are operational signals for a pipeline that loads a Z0 artifact on
@@ -31,6 +38,7 @@ from __future__ import annotations
 __all__ = [
     "CostModelConfigError",
     "CostModelError",
+    "CostModelFillError",
     "CostModelStoreError",
 ]
 
@@ -74,4 +82,31 @@ class CostModelStoreError(CostModelError):
     configured" as a supported state and refuses the persist with this error
     only at the moment a caller actually asks for one, naming the variable
     that would have named the store.
+    """
+
+
+class CostModelFillError(ValueError, CostModelError):
+    """A recorded book, an aggressive order or a walk the fill model refuses to price.
+
+    Feature 66: *"System walks the recorded L2 book for an aggressive order
+    rather than crossing at the midpoint, which returns a realistic
+    slippage figure."*  This is the failure of that sentence's noun phrase:
+    the walk was handed a book or an order it cannot honestly walk, and the
+    one thing it must not do in that state is return a figure anyway — a
+    slippage number produced by smoothing over a broken ladder or an
+    unfilled remainder would be *unrealistic by construction*, which is
+    precisely the defect the feature exists to remove.
+
+    Dual-inherited for the same reason :class:`CostModelConfigError` is: a
+    caller catching this package's single vocabulary catches a refused fill
+    along with a bad document, and ``except ValueError`` keeps working for
+    every caller that already treats this package's refusals as value
+    errors.
+
+    Raised for defects of the *inputs* to the fill model — a ladder out of
+    order, a zero-quantity level, an empty or crossed side, a non-positive
+    order, an order the recorded depth cannot fill — and never for defects
+    of the *document*, which are :class:`CostModelConfigError` (a
+    ``walk_book: false`` is a configuration the library refuses to resolve,
+    not a broken book).
     """

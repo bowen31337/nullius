@@ -40,13 +40,17 @@ conflated.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from typing import Optional, Union
 
+from .book_walk import AggressiveFillModel, resolve_aggressive_fill_model
 from .config import (
     COST_MODEL_PATH_ENV,
     CostModelConfig,
     load_cost_model,
+    read_cost_model_document,
 )
+from .errors import CostModelConfigError
 from .latency import EmpiricalLatencyDistribution
 from .latency_store import (
     load_latest_latency_distribution,
@@ -95,6 +99,7 @@ class CostModelService:
                 "path would be silently ignored"
             )
         self._config = config
+        self._document = None
         self.config_path = config_path
         self.database_url = (
             database_url
@@ -141,14 +146,52 @@ class CostModelService:
 
         With ``path`` given the document is read fresh from that path and
         the result replaces the cached value, so one service can resolve
-        several documents in sequence.  With no path, an already-resolved
-        config is returned as-is — the service was constructed with a value,
-        and re-reading a document it was explicitly told not to read would
-        be a surprise.
+        several documents in sequence — the path is rebound too, because
+        the cached parse (:attr:`document`) belongs to the document that
+        produced it, and a service that had kept reading the first path
+        would resolve the new identity against the old document's fill
+        model.  With no path, an already-resolved config is returned
+        as-is — the service was constructed with a value, and re-reading
+        a document it was explicitly told not to read would be a
+        surprise.
         """
         if path is not None:
             self._config = load_cost_model(path)
+            self.config_path = str(path)
+            self._document = None
         return self.config
+
+    @property
+    def document(self) -> "Mapping[str, object]":
+        """The parsed cost model document, read once and cached.
+
+        The service-level spelling of the single-parse seam
+        (:func:`~cost_model.config.read_cost_model_document`): the whole
+        §6.2 document — the fee schedule, the fill model, latency and
+        borrow — as a read-only mapping, resolved from the one parse so
+        every section-bearing consumer of this service (feature 66's
+        aggressive fill model here; feature 60's hash when it lands)
+        reads the configuration the resolved identity was loaded from,
+        not a re-read of whatever the file says now.
+
+        Refused for a service bound to an already-resolved config: that
+        service was explicitly told never to read a document, and it has
+        none to parse — the refusal names the constructor pair that
+        would carry one.  The parse is cached with the config and
+        invalidated by :meth:`load`, so one service can resolve several
+        documents in sequence exactly as it already could several
+        identities.
+        """
+        if self._document is None:
+            if self._config is not None and self.config_path is None:
+                raise CostModelConfigError(
+                    "a service bound to an already-resolved config carries "
+                    "no document to read sections from; construct the "
+                    "service with a config_path (or nothing, for the "
+                    "shipped default) to resolve a fill model"
+                )
+            self._document, _origin = read_cost_model_document(self.config_path)
+        return self._document
 
     def resolved(
         self, database_url: Optional[str] = None
@@ -187,6 +230,26 @@ class CostModelService:
             version,
             database_url if database_url is not None else self.database_url,
         )
+
+    def aggressive(self) -> AggressiveFillModel:
+        """Resolve the aggressive fill model from the loaded document.
+
+        Feature 66's configuration half: §6.2's document names the
+        behaviour (``fill_model.aggressive.walk_book: true``), and this is
+        the caller's handle on it — the evaluator and the live execution
+        engine both reach the walk through the composed service, so the
+        two cannot each grow their own fill model (feature 69's promise,
+        and §6.2's ``β₄`` invariant).  The model is resolved from the one
+        cached parse (see :attr:`document`), so it is the behaviour of the
+        document the resolved identity was loaded from.
+
+        Raises :class:`~cost_model.errors.CostModelConfigError` when the
+        document names no fill model or names one whose ``walk_book`` is
+        not exactly ``true`` — the shared library implements the walk and
+        nothing else, because the only alternative the flag could name is
+        the midpoint crossing the feature's sentence rules out.
+        """
+        return resolve_aggressive_fill_model(self.document)
 
     def persist_latency(
         self,

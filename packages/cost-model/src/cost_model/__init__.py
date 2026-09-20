@@ -21,6 +21,21 @@ latency distribution of 67, the borrow series of 68) layer on top of this
 package's resolved value rather than beside it, which is what keeps one
 schedule from becoming two.
 
+Feature 66 layers onto that identity from the fill model's aggressive
+half: *System walks the recorded L2 book for an aggressive order rather
+than crossing at the midpoint, which returns a realistic slippage
+figure.*  It is §6.2's ``aggressive.walk_book: true`` made concrete, and
+:mod:`cost_model.book_walk` holds it — the recorded ladder as a value
+(:class:`~cost_model.book_walk.RecordedBook`), the crossing order as a
+value (:class:`~cost_model.book_walk.AggressiveOrder`), and the walk that
+consumes the ladder best-first to return the volume-weighted fill and the
+slippage figure measured against the midpoint the naive model would have
+filled at (:class:`~cost_model.book_walk.BookWalk`).  It refuses what the
+tape did not record — an order beyond the recorded depth is refused, not
+extrapolated, and a document whose ``walk_book`` is not ``true`` is
+refused, because the only alternative behaviour is the midpoint crossing
+the sentence rules out and this library does not carry it.
+
 Feature 67 layers onto that identity: *System persists an empirical p50,
 p95 and p99 latency distribution measured from shadow runs rather than an
 assumed constant.*  It is the ``latency`` section of §6.2's document made
@@ -60,6 +75,20 @@ from __future__ import annotations
 
 from app.module_loader import register
 
+from .book_walk import (
+    AGGRESSIVE_KEY,
+    BUY,
+    FILL_MODEL_KEY,
+    SELL,
+    WALK_BOOK_KEY,
+    AggressiveFillModel,
+    AggressiveOrder,
+    BookLevel,
+    BookWalk,
+    RecordedBook,
+    resolve_aggressive_fill_model,
+    walk_recorded_book,
+)
 from .config import (
     COST_MODEL_KEY,
     COST_MODEL_PATH_ENV,
@@ -72,6 +101,7 @@ from .config import (
 from .errors import (
     CostModelConfigError,
     CostModelError,
+    CostModelFillError,
     CostModelStoreError,
 )
 from .latency import (
@@ -95,6 +125,8 @@ from .store import (
 )
 
 __all__ = [
+    "AGGRESSIVE_KEY",
+    "BUY",
     "COMPONENT_NAME",
     "COST_MODEL_KEY",
     "COST_MODEL_PATH_ENV",
@@ -102,14 +134,23 @@ __all__ = [
     "DATABASE_URL_ENV",
     "DEFAULT_COST_MODEL_PATH",
     "DEFAULT_QUANTILES",
+    "FILL_MODEL_KEY",
     "LATENCY_TABLE",
     "QUANTILE_METHOD",
+    "SELL",
+    "WALK_BOOK_KEY",
+    "AggressiveFillModel",
+    "AggressiveOrder",
+    "BookLevel",
+    "BookWalk",
     "CostModelConfig",
     "CostModelConfigError",
     "CostModelError",
+    "CostModelFillError",
     "CostModelService",
     "CostModelStoreError",
     "EmpiricalLatencyDistribution",
+    "RecordedBook",
     "build_cost_model_service",
     "load_cost_model",
     "load_latency_distributions",
@@ -120,6 +161,8 @@ __all__ = [
     "quantile",
     "read_cost_model_document",
     "require_yaml",
+    "resolve_aggressive_fill_model",
+    "walk_recorded_book",
 ]
 
 __version__ = "0.1.0"
