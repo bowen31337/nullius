@@ -80,6 +80,20 @@ violated, not by which line of code failed:
   store, and conflating the two would let a mixed world be retried as a
   database hiccup.
 
+* :class:`TargetRouteError` — the route contract (app_spec.xml feature 112,
+  docs/nullius-tech-architecture.md §7.2's interface).  A ``POST /target``
+  body that cannot say what it is asking for: an identity that is not a
+  UUID, a depth that is not a non-negative integer, a horizon outside the
+  five the spec aligns, a symbols list that is not a non-empty list of
+  names, or a date range that is not a first-to-last pair of calendar
+  dates.  Refused before the sidecar is opened, because a malformed ask
+  spends no read of the one file in the system worth controlling.  Kept
+  apart from the route's *answer* for an unknown node — a 404 is a fact
+  about the world the route reports, not a failure — and from the
+  sidecar's own errors, which propagate unwrapped: a missing or unopenable
+  sidecar is a deployment failure, and dressing it as either a refusal or
+  a 404 would read "no such node" off a world the route never saw.
+
 Every message names the offending value and the contract it broke, in the
 same discipline as the ledger member's taxonomy: these errors are
 operational signals for a system whose whole FDR claim rests on the labels
@@ -99,6 +113,7 @@ __all__ = [
     "SidecarError",
     "SidecarKeyError",
     "SidecarStoreError",
+    "TargetRouteError",
 ]
 
 
@@ -253,4 +268,39 @@ class HeterogeneousWorldError(NullOracleError):
     found — and a caller that caught the store's error instead would treat
     a heterogeneous world as a deployment fault to retry rather than a
     design to fix.
+    """
+
+
+class TargetRouteError(NullOracleError):
+    """A ``POST /target`` request could not be answered as §7.2 shapes it.
+
+    app_spec.xml feature 112 is the route — *System exposes POST /target
+    accepting node_id, campaign_id, depth, horizon, symbols and a date
+    range* — and this refusal is the route's own half of that sentence: a
+    body whose six terms are malformed.  An identity that is not a UUID
+    cannot be joined to the tree store's ``node.id``; a depth that is not
+    a genuine non-negative integer is a claim nobody placed the node at; a
+    horizon outside {1, 2, 5, 10, 20} is a question no evaluation asks; a
+    symbols value that is not a non-empty list of names is an ask with
+    nobody to answer for; and a date range that is not a first-to-last
+    pair of calendar dates bounds nothing.
+
+    Refused before the sidecar is opened — a malformed ask spends no read
+    of the one file in the system worth controlling.
+
+    Deliberately neither of the two answers this class is *not*:
+
+    * an unknown node is not this error.  §7.2's route answers 404 for a
+      node the sidecar does not hold, a fact about the world rather than a
+      failure of the route, and a caller that had to catch to discover it
+      would retry the world and escalate the deployment;
+    * a broken sidecar is not this error either.  :class:`SidecarStoreError`
+      and :class:`SidecarDecryptionError` propagate out of the route
+      unwrapped, because a deployment failure dressed as a malformed body
+      would be investigated as a client bug.
+
+    Kept beside :class:`SidecarError` for the same reason the guard's two
+    errors are kept apart: *the request was malformed* and *the store
+    could not be read* are different facts, and only the first is about
+    the caller.
     """

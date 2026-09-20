@@ -73,6 +73,22 @@ regime they are not on their own row; this is the check above them, and
 behind — flip depths off the tree, root selections off §7.1's sealed file —
 so a world that went mixed by any path is caught by the one decision.
 
+**Feature 112 is where the member first answers, rather than records.**
+Every module above this paragraph *writes* a fact — the sealed file, the
+flip depths, the selections, the p-value, the verdict — and
+:mod:`nulloracle.target` is the one that *serves*: §7.2's ``POST
+/target``, the interface the evaluator's step 5 asks, as a Python seam
+over the sidecar.  The request is §7.2's six terms validated at
+construction (the identities as UUIDs, the horizon inside the closed five,
+the cross-section as one sorted spelling, the range first-to-last); the
+answer for a known node — one §7.1's sidecar holds an entry for — is the
+feature's own ``200``, an unknown node answers ``404``, and a sidecar that
+is missing or will not open propagates its own named error rather than
+reading as either.  The assignment the lookup reads is discarded where it
+was read: the payload §7.2 promises (``target_series`` and
+``charges_budget``, features 113-114) composes onto this answer later, and
+nothing in the route's first day carries the branch.
+
 **The three halves, and why they are three modules.**  A sidecar entry is a
 schema (:mod:`nulloracle.assignment`), a cipher (:mod:`nulloracle.envelope`)
 and a file (:mod:`nulloracle.sidecar`), and each is separately arguable.
@@ -119,6 +135,13 @@ already says:
   sidecar.NullSidecar.write` seals a whole map atomically at mode ``0600``,
   :meth:`~nulloracle.sidecar.NullSidecar.open` reads it back or refuses, and
   :meth:`~nulloracle.sidecar.NullSidecar.assignment` answers for one node.
+* :class:`~nulloracle.target.TargetEndpoint` with
+  :class:`~nulloracle.target.TargetRequest` and
+  :class:`~nulloracle.target.TargetResponse` — feature 112's route:
+  ``POST /target``, answering §7.2's request (node, campaign, depth,
+  horizon, symbols, date range) with a ``200`` for a node the sidecar
+  holds and a ``404`` for one it does not, and carrying nothing of the
+  branch either way.
 * :class:`~nulloracle.keyref.SidecarKey` with
   :class:`~nulloracle.keyref.KeyReference` and
   :func:`~nulloracle.keyref.ensure_key` — feature 111's seam: the reference
@@ -177,6 +200,7 @@ from .errors import (
     SidecarError,
     SidecarKeyError,
     SidecarStoreError,
+    TargetRouteError,
 )
 from .flipdepth import (
     FLIP_DEPTH_COLUMN,
@@ -281,6 +305,16 @@ from .sidecar import (
     SIDECAR_PATH_ENV,
     NullSidecar,
 )
+from .target import (
+    HORIZONS,
+    NOT_FOUND,
+    OK,
+    STATUS_CODES,
+    TARGET_ROUTE,
+    TargetEndpoint,
+    TargetRequest,
+    TargetResponse,
+)
 from .verdict import (
     CALIBRATION_STATUS_OK,
     CALIBRATION_STATUS_VOID,
@@ -305,6 +339,7 @@ __all__ = [
     "FORMAT_VERSION",
     "FRACTION_COMPONENT_NAME",
     "HETEROGENEOUS_WORLD",
+    "HORIZONS",
     "KEY_REF_ENV",
     "KS_ASYMPTOTIC",
     "KS_ASYMPTOTIC_FLOOR",
@@ -317,7 +352,9 @@ __all__ = [
     "MAGIC",
     "NODE_TABLE",
     "NONCE_BYTES",
+    "NOT_FOUND",
     "NULL_FRACTION_COLUMN",
+    "OK",
     "PHI_CEILING",
     "PHI_FLOOR",
     "PLAN_COMPONENT_NAME",
@@ -330,7 +367,10 @@ __all__ = [
     "SIDECAR_FILE_MODE",
     "SIDECAR_KEY_BYTES",
     "SIDECAR_PATH_ENV",
+    "STATUS_CODES",
     "TAG_BYTES",
+    "TARGET_COMPONENT_NAME",
+    "TARGET_ROUTE",
     "TYPE_D_CAMPAIGN_TYPE",
     "VERDICT_COMPONENT_NAME",
     "VOID_THRESHOLD",
@@ -366,6 +406,10 @@ __all__ = [
     "TRUE_IR_SCALE",
     "TYPE_R_CAMPAIGN_TYPE",
     "TYPE_R_COMPONENT_NAME",
+    "TargetEndpoint",
+    "TargetRequest",
+    "TargetResponse",
+    "TargetRouteError",
     "TrueIRFlipDepth",
     "TypeDOracle",
     "TypeDResolution",
@@ -375,6 +419,7 @@ __all__ = [
     "build_campaign_plan_gate",
     "build_flip_depth",
     "build_null_sidecar",
+    "build_target_route",
     "build_true_ir_flip_depth",
     "build_type_d_resolution",
     "build_verdict",
@@ -517,6 +562,20 @@ TYPE_R_COMPONENT_NAME = "nulloracle-type-r-selection"
 #: ``type-*`` families in the name-sorted ``app.order``, so feature 123's
 #: guard-immediately-after-sidecar adjacency is untouched.
 PLAN_COMPONENT_NAME = "nulloracle-plan-gate"
+
+#: The component name feature 112's route registers under — the key a
+#: composed :class:`~app.module_loader.Application` carries the endpoint at.
+#: A tenth name rather than a tenth component under :data:`COMPONENT_NAME`,
+#: because the sidecar and the route over it are different things on
+#: different lifecycles: the sidecar is §7.1's sealed file, held wherever
+#: the labels must be written, and the route is §7.2's answer, held wherever
+#: an evaluation asks — a deployment can legitimately compose the writer
+#: without the server and the server without the writer.  The ``target-``
+#: prefix sorts after the ``ks-*``, ``null-*`` and ``plan-*`` families and
+#: before the ``true-ir-*`` and ``type-*`` families in the name-sorted
+#: ``app.order``, so feature 123's guard-immediately-after-sidecar adjacency
+#: is untouched.
+TARGET_COMPONENT_NAME = "nulloracle-target-route"
 
 
 @register(FRACTION_COMPONENT_NAME)
@@ -822,3 +881,34 @@ def build_campaign_plan_gate() -> CampaignPlanGate | None:
     application never opens a database or touches the labels.
     """
     return CampaignPlanGate.resolve()
+
+
+@register(TARGET_COMPONENT_NAME)
+def build_target_route() -> TargetEndpoint | None:
+    """Component builder: §7.2's POST /target route, bound to the environment.
+
+    Feature 112's route as a component, so the evaluation whose §6.1 step 5
+    must ask the oracle can ask the composed application for the endpoint
+    the deployment configured rather than resolving the sidecar itself —
+    the same seam the member's other satellites expose.  Resolved from the
+    same environment and the same sidecar builder as
+    :func:`build_null_sidecar`, so the route and the composed
+    ``nulloracle`` component always answer from the same file and can never
+    point at two worlds.
+
+    Takes no arguments — that is the factory's registration protocol — and
+    resolves its sidecar at build time.  Construction performs no I/O (the
+    sidecar opens nothing until the first ``post``), so composing the
+    application never touches the labels.
+
+    Returns ``None`` when nothing names a usable sidecar location and key,
+    the degrade-don't-break stance every store in this workspace takes: an
+    unconfigured route is a discoverable state, and a deployment whose
+    evaluator must gate targets is the caller that must not find itself in
+    it.  Like :func:`build_null_sidecar`, this never raises, including for
+    a ``kms:`` or ``sops:`` reference this member does not speak — the
+    factory builds every registered component on every call, and one
+    member's unconfigured environment is not a fault the others pay for.
+    """
+    sidecar = NullSidecar.resolve()
+    return None if sidecar is None else TargetEndpoint(sidecar)
