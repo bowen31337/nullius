@@ -34,7 +34,12 @@ on the shell not having one. And it clears the allowlist variable
 feature 139 reads (``NULLIUS_SEARCHED_IMPORTS``) for the same reason:
 the allowlist resolution defaults when the variable is unset, so a
 shell carrying one would silently change which ceiling the screen
-tests judge under.
+tests judge under. And it clears the lockfile variable feature 136
+reads (``NULLIUS_LIBRARY_LOCKFILE``) for the same reason: the lock
+resolution defaults when the variable is unset, so a shell carrying one
+would silently change which lock the sweep tests judge under — and,
+worse, the "unset variable is the default lock" tests would depend on
+the shell not having one.
 """
 
 from __future__ import annotations
@@ -117,6 +122,7 @@ def _image_env_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
         "NULLIUS_EVAL_DEVICE",
         "NULLIUS_REPLAY_DEVICE",
         "NULLIUS_SEARCHED_IMPORTS",
+        "NULLIUS_LIBRARY_LOCKFILE",
         "PYTHONHASHSEED",
         "OMP_NUM_THREADS",
         "MKL_NUM_THREADS",

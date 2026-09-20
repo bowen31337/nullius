@@ -50,6 +50,7 @@ from ._containers import (
 )
 from ._device import DevicePaths, reject_gpus_from_env
 from ._inference import ModelInference
+from ._lockfile import PackageLock, lockfile_from_env
 from ._ordering import StableOrder, require_stable_environment
 from ._replay import CanaryReplay
 from ._reproducibility import BitReproducibility
@@ -88,6 +89,7 @@ class CanaryService:
             None if images is None else pin_containers(images)
         )
         self._devices: Optional[DevicePaths] = None
+        self._lockfile: Optional[PackageLock] = None
         self._allowlist: Optional[ImportAllowlist] = None
         self._order: Optional[StableOrder] = None
         self._threads: Optional[ThreadCaps] = None
@@ -234,6 +236,34 @@ class CanaryService:
         if self._devices is None:
             self._devices = reject_gpus_from_env(self._environment())
         return self._devices
+
+    @property
+    def lockfile(self) -> PackageLock:
+        """The library lock — feature 136's pinned version per package.
+
+        :data:`~canary.LOCKFILE_ENV` resolved from the environment the service
+        was constructed with, defaulting to :data:`~canary.DEFAULT_LOCKFILE`
+        when the deployment declared nothing: each locked package's installed
+        digest is compared against the lock, and one that is missing or not the
+        lock's is refused, naming every package the lock does not vouch for, in
+        sorted name order. A lock that names a version instead of a digest is
+        refused — a version is a mutable pointer, and a mutable pointer is not
+        a pin. Resolved once and cached, like :attr:`containers` and
+        :attr:`devices`: a deployment that re-read its lock mid-run could audit
+        two different library sets on the same night, and the second would say
+        nothing about the first.
+
+        Deliberately lazy, exactly like :attr:`containers`, :attr:`devices`,
+        :attr:`allowlist` and :attr:`order`: the sweep reads the environment,
+        so it can refuse, and the factory builds this component on every
+        ``create_app()`` — in a bare test process and on paths with no library
+        to audit — so the refusal must land at the first call that asks whether
+        *this deployment's* libraries are pinned, where it is informative,
+        rather than taking composition down.
+        """
+        if self._lockfile is None:
+            self._lockfile = lockfile_from_env(self._environment())
+        return self._lockfile
 
     @property
     def allowlist(self) -> ImportAllowlist:

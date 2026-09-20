@@ -11,11 +11,12 @@ hold.
 from __future__ import annotations
 
 import pytest
-
 from canary import (
     CanaryImageError,
+    CanaryLockfileError,
     CanaryService,
     build_canary_service,
+    lockfile_from_env,
     pin_containers,
 )
 from conftest import (  # type: ignore[import-not-found] - suite-local fixture module
@@ -24,7 +25,6 @@ from conftest import (  # type: ignore[import-not-found] - suite-local fixture m
     PINNED_EVALUATOR_IMAGE,
     PINNED_RUNNER_IMAGE,
 )
-
 
 # -- Laziness: composition must never need a pin ------------------------------
 
@@ -164,3 +164,51 @@ def test_the_service_sweep_agrees_with_the_module_level_sweep() -> None:
     assert CanaryService(env=env).containers == pin_containers(
         {"evaluator": PINNED_EVALUATOR_IMAGE}
     )
+
+
+# -- Feature 136: the library lock, carried beside the pin sweep ----------------
+
+
+def test_the_service_resolves_the_library_lock() -> None:
+    # Feature 136 through the composed surface: the lock resolves to the
+    # default when the deployment declared nothing, the same way the
+    # container sweep resolves to the declared image.
+    service = CanaryService()
+    assert service.lockfile.names == lockfile_from_env({}).names
+
+
+def test_the_service_lock_is_cached() -> None:
+    # Resolved once: a deployment that re-read its lock mid-run could
+    # audit two different library sets on the same night.
+    service = CanaryService()
+    assert service.lockfile is service.lockfile
+
+
+def test_the_service_lock_refuses_a_version_pin_on_first_use() -> None:
+    # The refusal lands at the first call that asks whether the
+    # deployment's libraries are pinned — a version is a mutable pointer,
+    # and a mutable pointer is not a pin.
+    service = CanaryService(env={"NULLIUS_LIBRARY_LOCKFILE": "numpy==2.1.3"})
+    with pytest.raises(CanaryLockfileError, match="mutable pointer"):
+        service.lockfile
+
+
+def test_the_service_lock_reads_the_environment_it_is_built_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The lock is read per-service at first use, so a deployment that
+    # re-pins a library constructs a new service rather than the old one
+    # quietly changing its mind mid-run.
+    first = CanaryService(env={"NULLIUS_LIBRARY_LOCKFILE": f"numpy@sha256:{'a1' * 32}"})
+    monkeypatch.setenv("NULLIUS_LIBRARY_LOCKFILE", f"numpy@sha256:{'cd' * 32}")
+    second = CanaryService()
+    assert first.lockfile.digests["numpy"] == "sha256:" + "a1" * 32
+    assert second.lockfile.digests["numpy"] == "sha256:" + "cd" * 32
+
+
+def test_the_service_lock_agrees_with_the_module_level_resolution() -> None:
+    # One answer to "are this deployment's libraries pinned?": the
+    # service delegates to the same resolution a caller would run by
+    # hand, so the two can never disagree about the same declaration.
+    env = {"NULLIUS_LIBRARY_LOCKFILE": f"numpy@sha256:{'a1' * 32}"}
+    assert CanaryService(env=env).lockfile == lockfile_from_env(env)

@@ -22,6 +22,35 @@ canary's assertions with a single ``except``. The subclasses split by
   variable that names no reference (an evaluation container nobody named
   is an evaluation container nobody pinned).
 
+:class:`CanaryLockfileError` is the seventh such subclass — feature 136
+(app_spec.xml): *"System pins library versions with a lockfile inside the
+image, which rejects any runtime package installation attempt"* — and it
+is the second clause of the same guarantee feature 135 makes, applied to
+the libraries *inside* the container rather than the container itself. A
+digest names an image; two images built from the same Dockerfile on
+different days can carry different wheels, and a score computed under one
+``numpy`` and replayed under another is a replay compared across a version
+boundary. So this error is the library pin: a package whose installed
+digest is not the lock's, a package the image is missing, a lock that
+names a version instead of a digest (a version is a mutable pointer — the
+same ``numpy==2.1.3`` wheel carries different bytes on different platforms
+— and a mutable pointer is not a pin), a lock that names no packages
+(vacuous green), and a runtime installation attempt (the guard refuses the
+attempt before the bytes land, because a lock that is only checked is a
+lock a runtime ``pip install`` has already defeated). It follows the rule
+rather than extending the second: a deployment can be perfectly
+container-pinned — every image at a frozen digest — and still carry a
+drifted wheel, which is the failure §12 names directly ("Lockfile inside
+the image; no runtime ``pip install``"). The repair for a moved pin is to
+re-pin the image; the repair for a drifted library is to rebuild the image
+from the lock; and a runtime install is not repaired at all — it is
+refused before it runs. The class split is what makes the difference
+legible at the ``except``. The refusal is collective: one error names
+every package the lock does not vouch for, in sorted name order, because a
+sweep that reported only the first would be re-run to learn the rest, and
+the operator of a nightly assertion reads the whole deployment's library
+state in one message.
+
 Later features in this category add the rest of §12's table — the
 lockfile, the thread caps, ``PYTHONHASHSEED``, the import allowlist, the
 GPU refusal, the inference refusal — and each brings its own subclass
@@ -115,6 +144,7 @@ __all__ = [
     "CanaryImageError",
     "CanaryImportError",
     "CanaryInferenceError",
+    "CanaryLockfileError",
     "CanaryOrderError",
     "CanaryReproducibilityError",
     "CanaryThreadError",
@@ -164,6 +194,47 @@ class CanaryImageError(CanaryError):
     a declared container. The refusal names the role — and the environment
     variable, when the declaration came from one — for every offender at
     once, because the feature's word is *every*.
+    """
+
+
+class CanaryLockfileError(CanaryError):
+    """A library is not pinned to the image's lockfile.
+
+    Raised by :func:`~canary.sweep_lockfile` when a locked package's
+    installed digest is not the lock's (:data:`~canary.INSTALLED`), when a
+    locked package is not installed at all (:data:`~canary.MISSING`), when
+    the lock names no packages (a sweep over an empty lock is vacuous
+    green), or when a lock entry is a version or tag instead of a digest (a
+    version is a mutable pointer, and a mutable pointer is not a pin). Also
+    raised by :func:`~canary.reject_install` against a *runtime installation
+    attempt* — the guard refuses the attempt before the bytes land, naming
+    the package and the lock it would have violated — and by
+    :func:`~canary.lockfile_from_env` when a *configured* lock tries to name
+    a version or a tag. This is app_spec.xml feature 136: "System pins
+    library versions with a lockfile inside the image, which rejects any
+    runtime package installation attempt", which is §12's "Pinned libraries
+    | Lockfile inside the image; no runtime ``pip install``" row made into
+    something a run can fail — the second clause of the same guarantee
+    feature 135 makes, applied to the libraries *inside* the container
+    rather than the container itself.
+
+    Deliberately its own subclass rather than folded into
+    :class:`CanaryImageError` (a moved container pin): the two are two
+    different breaks of §12's contract with two different repairs. A moved
+    image pin is re-pinned; a drifted library is rebuilt into the image from
+    the lock; and a runtime install is refused before it runs. A deployment
+    can be perfectly container-pinned — every image at a frozen digest — and
+    still carry a drifted wheel, which is the failure §12 names directly,
+    because a digest names an image and two images built on different days
+    can carry different wheels. The class split is what makes the difference
+    legible at the ``except``. A caller catching :class:`CanaryError` still
+    gets all of them.
+
+    The refusal is collective: one error names every package the lock does
+    not vouch for, in sorted name order, because a sweep that reported only
+    the first would be re-run to learn the rest, and the operator of a
+    nightly assertion reads the whole deployment's library state in one
+    message.
     """
 
 

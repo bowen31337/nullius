@@ -382,6 +382,7 @@ from ._errors import (
     CanaryImageError,
     CanaryImportError,
     CanaryInferenceError,
+    CanaryLockfileError,
     CanaryOrderError,
     CanaryReproducibilityError,
     CanaryThreadError,
@@ -411,6 +412,19 @@ from ._image import (
     PinnedImage,
     image_digest,
     parse_pinned_image,
+)
+from ._lockfile import (
+    DEFAULT_LOCKFILE,
+    INSTALLED,
+    LOCKED,
+    LOCKFILE_ENV,
+    MISSING,
+    CanaryLockfileError,
+    LockEntry,
+    PackageLock,
+    lockfile_from_env,
+    reject_install,
+    sweep_lockfile,
 )
 from ._ordering import (
     HASH_SEED_ENV,
@@ -517,6 +531,17 @@ __all__ = [
     "PinnedContainers",
     "pin_containers",
     "pinned_containers_from_env",
+    # Feature 136 — the library lock: one digest per package, no runtime install
+    "DEFAULT_LOCKFILE",
+    "INSTALLED",
+    "LOCKED",
+    "LOCKFILE_ENV",
+    "MISSING",
+    "LockEntry",
+    "PackageLock",
+    "lockfile_from_env",
+    "reject_install",
+    "sweep_lockfile",
     # Feature 139 — no wall clock in searched code: the import allowlist
     "ALLOWED",
     "CLOCK_CONSTRUCTORS",
@@ -646,6 +671,7 @@ __all__ = [
     "CanaryImageError",
     "CanaryImportError",
     "CanaryInferenceError",
+    "CanaryLockfileError",
     "CanaryOrderError",
     "CanaryReproducibilityError",
     "CanaryReplayScoreError",
