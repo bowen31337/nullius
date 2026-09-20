@@ -218,9 +218,26 @@ already says:
   the series, so neither the answer nor the clock names the branch.
 * :class:`~nulloracle.keyref.SidecarKey` with
   :class:`~nulloracle.keyref.KeyReference` and
-  :func:`~nulloracle.keyref.ensure_key` — feature 111's seam: the reference
+  :func:`~nulloracle.keyref.ensure_key` — feature 109's seam: the reference
   grammar (``kms:``, ``sops:``, ``hex:``), the account check, and a key
   wrapper that will not leak into a traceback.
+* :class:`~nulloracle.backends.KmsBackend` and
+  :class:`~nulloracle.backends.SopsBackend` with
+  :func:`~nulloracle.backends.resolve_sidecar_key` — feature 111's
+  resolution, on the receiving end of the seam above: the two backends turn a
+  ``kms:`` or ``sops:`` reference into key material (each taking an injected
+  client or runner, so no test needs a cloud SDK or the ``sops`` binary), and
+  the entry point resolves and hands the material to ``ensure_key``.
+* :class:`~nulloracle.keyalert.UnrecoverableState` with
+  :class:`~nulloracle.keyalert.UnrecoverableStateError`,
+  :func:`~nulloracle.keyalert.guard_decryption` and
+  :class:`~nulloracle.keyalert.KeyAlertJournal` — feature 111's alert, and
+  §7's one row that is *not* a repair: a failed decryption emits an
+  ``unrecoverable_state`` (the raise is the emission, the record is the
+  payload, and the journal is where it is kept), because all FDR history
+  becomes uninterpretable and the only answer is a restore from backup.  A
+  malformed reference or secret is deliberately *not* this alert — it is a
+  configuration mistake with a repair that is not a restore.
 * :func:`~nulloracle.envelope.seal` with
   :func:`~nulloracle.envelope.open_envelope` — the AES-GCM container, whose
   layout is pinned in that module so a nonce can never be reused.
@@ -314,6 +331,40 @@ from .keyref import (
     ensure_key,
     resolve_key,
     service_account,
+)
+
+# Feature 111's two halves: the backends (:mod:`nulloracle.backends`) that
+# actually call KMS and sops, and the alert (:mod:`nulloracle.keyalert`) a
+# failed decryption emits.  Imported at module scope like the rest of the
+# member's pure-Python halves: both are stdlib-only — the cloud SDK and the
+# `sops` binary are deferred to first use — so the factory's scan, which
+# imports this package to fire its `@register`, pays nothing for them.
+from .backends import (
+    KMS_BLOB_ENV,
+    KMS_SCHEME,
+    SOPS_SCHEME,
+    SOPS_TIMEOUT_SECONDS,
+    KmsBackend,
+    KeyBackend,
+    SopsBackend,
+    default_backends,
+    require_boto3,
+    require_sops,
+    resolve_material,
+    resolve_sidecar_key,
+)
+from .keyalert import (
+    ALERT_KIND,
+    KEY_ALERT_TABLE,
+    KEY_BACKEND_STAGE,
+    SIDECAR_STAGE,
+    KeyAlertJournal,
+    UnrecoverableState,
+    UnrecoverableStateError,
+    emit_unrecoverable_state,
+    guard_decryption,
+    load_key_alerts,
+    unrecoverable_state_error,
 )
 
 # Feature 123's two halves: the test (:mod:`nulloracle.ks`) and the store
@@ -423,6 +474,7 @@ __all__ = [
     "CAMPAIGN_SPREAD",
     "CAMPAIGN_TABLE",
     "CAMPAIGN_TYPE_COLUMN",
+    "ALERT_KIND",
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
     "DEFAULT_BLOCK_DAYS",
@@ -433,7 +485,12 @@ __all__ = [
     "FRACTION_COMPONENT_NAME",
     "HETEROGENEOUS_WORLD",
     "HORIZONS",
+    "KEY_ALERT_COMPONENT_NAME",
+    "KEY_ALERT_TABLE",
+    "KEY_BACKEND_STAGE",
     "KEY_REF_ENV",
+    "KMS_BLOB_ENV",
+    "KMS_SCHEME",
     "KS_ASYMPTOTIC",
     "KS_ASYMPTOTIC_FLOOR",
     "KS_EXACT",
@@ -464,6 +521,9 @@ __all__ = [
     "SIDECAR_FILE_MODE",
     "SIDECAR_KEY_BYTES",
     "SIDECAR_PATH_ENV",
+    "SIDECAR_STAGE",
+    "SOPS_SCHEME",
+    "SOPS_TIMEOUT_SECONDS",
     "STATUS_CODES",
     "TAG_BYTES",
     "TARGET_COMPONENT_NAME",
@@ -483,7 +543,10 @@ __all__ = [
     "FlipDepth",
     "FlipDepthDistribution",
     "HeterogeneousWorldError",
+    "KeyAlertJournal",
+    "KeyBackend",
     "KeyReference",
+    "KmsBackend",
     "KolmogorovSmirnov",
     "KsGuard",
     "KsGuardError",
@@ -501,6 +564,7 @@ __all__ = [
     "SidecarKey",
     "SidecarKeyError",
     "SidecarStoreError",
+    "SopsBackend",
     "TargetEndpoint",
     "TargetPayloadError",
     "TargetRequest",
@@ -510,6 +574,8 @@ __all__ = [
     "TypeDOracle",
     "TypeDResolution",
     "TypeRSelection",
+    "UnrecoverableState",
+    "UnrecoverableStateError",
     "Verdict",
     "assignments_digest",
     "autocorrelation",
@@ -518,6 +584,7 @@ __all__ = [
     "block_runs",
     "build_campaign_plan_gate",
     "build_flip_depth",
+    "build_key_alert_journal",
     "build_null_sidecar",
     "build_target_route",
     "build_true_ir_flip_depth",
@@ -528,17 +595,21 @@ __all__ = [
     "canonical_assignments",
     "check_preservation",
     "decode_assignments",
+    "default_backends",
     "destroys_relationship",
     "draw_flip_depth",
     "draw_null_roots",
+    "emit_unrecoverable_state",
     "encode_assignments",
     "ensure_key",
     "envelope_digest",
     "flip_depth",
     "flip_depth_distribution",
+    "guard_decryption",
     "guard_record_from_row",
     "ks_pvalue",
     "ks_two_sample",
+    "load_key_alerts",
     "load_ks_guard",
     "load_verdict",
     "node_as_seed",
@@ -556,14 +627,19 @@ __all__ = [
     "preserves_block_structure",
     "preserves_structure",
     "probability_from_true_ir",
+    "require_boto3",
     "require_cryptography",
+    "require_sops",
     "resolve_key",
+    "resolve_material",
+    "resolve_sidecar_key",
     "resolve_type_d",
     "review_campaign_plan",
     "seal",
     "service_account",
     "signal_to_target_correlation",
     "two_sample_statistic",
+    "unrecoverable_state_error",
     "void_if_detectable",
     "volatility_clustering",
 ]
@@ -683,6 +759,25 @@ PLAN_COMPONENT_NAME = "nulloracle-plan-gate"
 #: ``app.order``, so feature 123's guard-immediately-after-sidecar adjacency
 #: is untouched.
 TARGET_COMPONENT_NAME = "nulloracle-target-route"
+
+#: The component name feature 111's alert journal registers under — the key a
+#: composed :class:`~app.module_loader.Application` carries the journal at.
+#: An eleventh name rather than a component under :data:`COMPONENT_NAME`,
+#: because the sidecar and the journal of its key's failures are different
+#: things on different lifecycles: the sidecar is §7.1's sealed file, held
+#: wherever the labels must be read, and the journal is §7's *Unrecoverable*
+#: row, written wherever one must be able to ask *is this deployment already in
+#: that state?* — a deployment can hold either without the other.
+#:
+#: The ``sidecar-`` prefix is load-bearing, not cosmetic.  ``app.order`` is
+#: name-sorted and two tests pin feature 123's guard landing immediately after
+#: the sidecar (``nulloracle`` + 1 == ``nulloracle-ks-guard``), so a name
+#: sorting into that pair would break a rule this member has held since feature
+#: 123.  ``nulloracle-key-…`` would sort *before* ``nulloracle-ks-guard`` and
+#: displace it; ``nulloracle-sidecar-key-alert`` sorts after
+#: ``nulloracle-plan-gate`` and before ``nulloracle-target-route``, leaving the
+#: adjacency untouched.
+KEY_ALERT_COMPONENT_NAME = "nulloracle-sidecar-key-alert"
 
 
 @register(FRACTION_COMPONENT_NAME)
@@ -1105,3 +1200,48 @@ def _stored_permutation(series: Any, *, seed: Any, block_days: Any) -> dict:
     # gather is what puts a block of returns under a *different* block of
     # dates — the displacement §7.3 is about.
     return {days[position]: dict(rows[order[position]]) for position in range(len(days))}
+
+
+@register(KEY_ALERT_COMPONENT_NAME)
+def build_key_alert_journal() -> KeyAlertJournal | None:
+    """Component builder: feature 111's alert journal, bound to the environment.
+
+    The journal is where §7's *Unrecoverable* row is kept, so a process that
+    comes up against a deployment already in that state can ask
+    :meth:`~nulloracle.keyalert.KeyAlertJournal.latest` rather than rediscover
+    it by failing to decrypt — the question no other component in this member
+    can answer, which is why the journal gets a name of its own.
+
+    Takes no arguments — that is the factory's registration protocol — and
+    resolves its path from ``DATABASE_URL`` at build time, the same seam the
+    fraction's, the guard's, the verdict's and the ledger's stores expose.
+
+    Returns ``None`` when nothing names a relational store, the
+    degrade-don't-break stance every store in this workspace takes toward an
+    absent ``DATABASE_URL``: an unconfigured journal is a discoverable state,
+    and — this is the part worth stating — **the alert does not depend on it**.
+    :func:`~nulloracle.keyalert.emit_unrecoverable_state` emits with
+    ``journal=None``, because a deployment whose database is the thing that is
+    broken still has to hear that its key is gone.  The component exists so the
+    state can be *kept*, never so it can be *decided*.
+
+    Like :func:`build_null_sidecar`, this never raises, including for a URL
+    whose scheme this store cannot speak.  The factory builds every registered
+    component on every :func:`~app.module_loader.create_app` call, so a builder
+    that raised would take composition down for every unrelated feature; a
+    process that *requires* a journal asks
+    :meth:`~nulloracle.keyalert.KeyAlertJournal.resolve` or calls the store
+    directly, where a named :class:`~nulloracle.errors.KsGuardError` is the
+    right answer.  Construction performs no I/O — the path is resolved on first
+    use — so composing the application never opens a database.
+
+    Note what this builder deliberately does **not** do: it does not resolve the
+    sidecar key, and it does not call a backend.  Feature 111's resolution is
+    :func:`~nulloracle.backends.resolve_sidecar_key`, called by a process at its
+    own startup where failing loudly is right — a KMS call or a ``sops``
+    invocation during composition would put a network round trip inside
+    ``create_app()`` and, worse, would raise an ``unrecoverable_state`` alert
+    once per composition for every unrelated member to pay for.  The alert
+    feature 111 emits is emitted by the caller that asked for the key.
+    """
+    return KeyAlertJournal.resolve()
