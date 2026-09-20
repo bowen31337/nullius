@@ -127,6 +127,33 @@ operator can audit.  The composed service carries the replay through
 feature 145's check: a replay reachable only by import is a replay the
 factory's scan cannot discover.
 
+*Feature 143 is the decision the replay left open, and the halt is a store.*
+app_spec.xml gives the category its cq-15 feature: *"System halts dreaming
+when the canary score differs from the recorded constant by more than 1e-12,
+which emits a determinism_broken alert"* — §12 line 677's two statements
+under the ``if``, ``halt_dreaming()`` and ``alert(...)``.  :mod:`canary._halt`
+is that decision: :func:`halt_dreaming` takes the pair and the replay's
+result, and when the result broke under the one threshold this package spells
+once (:data:`DEFAULT_TOLERANCE`), writes one row — the break, its arithmetic,
+its instant, keyed by the pair's content fingerprint — and then raises
+:class:`CanaryDeterminismBrokenError` carrying that record on its ``halt``
+attribute; when the result did not break, the ``if`` was not taken, nothing
+is written and the call quietly returns.  Raising is the emission and the
+record is the payload, the stance :mod:`snapshot` takes for its corruption
+alert, and the row is written before the raise so a monitor that catches the
+alert to keep reporting still leaves the halt on record.  Like feature 141's
+store this is a *persistence* step, so it is a third registered component —
+:data:`HALT_STORE_COMPONENT_NAME`, ``canary-dream-halt`` — beside the pin
+sweep and the reference store: the sweep asserts the deployment's pins, the
+reference store holds the frozen pair, and this one answers *"is dreaming
+halted?"* — a different question on a different lifecycle, composed
+independently of either other.  The halt is monotone — no code path writes a
+row away; §15's recovery (*halt dreaming; bisect the image diff*) is the
+operator's — and the *first* break is the fact on record, because feature
+144's void markers key on the break's ``detected_at`` ("every score produced
+after a detected determinism break"), and a refresh that moved the instant
+forward would quietly shrink the window that feature exists to widen.
+
 *What this package deliberately does not do.* It does not resolve
 tags or consult a registry: feature 135 is an assertion, not a
 resolution, so the pin sweep is a pure parser over strings a deployment
@@ -170,6 +197,19 @@ from ._errors import (
     CanaryError,
     CanaryImageError,
     CanaryReproducibilityError,
+)
+from ._halt import (
+    DETERMINISM_BROKEN,
+    HALT_MESSAGE,
+    HALT_STORE_COMPONENT_NAME,
+    HALT_TABLE,
+    CanaryDeterminismBrokenError,
+    CanaryHaltStore,
+    DreamHalt,
+    build_halt_store,
+    determinism_broken_error,
+    halt_dreaming,
+    require_dreaming_allowed,
 )
 from ._image import (
     DIGEST_ALGORITHM,
@@ -260,6 +300,18 @@ __all__ = [
     "CanaryReplay",
     "CanaryReplayResult",
     "replay_pair",
+    # Feature 143 — the halt of dreaming and its determinism_broken alert
+    "DETERMINISM_BROKEN",
+    "HALT_MESSAGE",
+    "HALT_STORE_COMPONENT_NAME",
+    "HALT_TABLE",
+    "CanaryDeterminismBrokenError",
+    "CanaryHaltStore",
+    "DreamHalt",
+    "build_halt_store",
+    "determinism_broken_error",
+    "halt_dreaming",
+    "require_dreaming_allowed",
     # The composed component
     "CanaryService",
     "build_canary_service",
@@ -305,3 +357,23 @@ def _registered_reference_store() -> Optional[CanaryReferenceStore]:
     A caller that wants the store pointed at a URL uses :class:`CanaryReferenceStore`.
     """
     return build_reference_store()
+
+
+@register(HALT_STORE_COMPONENT_NAME)
+def _registered_halt_store() -> Optional[CanaryHaltStore]:
+    """Component builder: the dream-halt store, from the environment.
+
+    Feature 143's store half, composed under a third name for the same reason
+    the reference store took a second: the pin sweep, the reference store and
+    the halt store are three different things on three different lifecycles —
+    one asserts the deployment's pins, one persists the frozen pair, one holds
+    the halt of dreaming — and a deployment configured for any two composes
+    the third independently.  Resolves rather than strict, exactly as
+    :func:`_registered_reference_store` does: the factory builds every
+    component on every ``create_app()``, so a deployment with no
+    ``DATABASE_URL`` composes ``None`` — a discoverable state, not an
+    exception — and the nightly runner that must halt dreaming is the caller
+    :func:`canary.halt_dreaming` refuses by name, not the factory.  A caller
+    that wants the store pointed at a URL uses :class:`CanaryHaltStore`.
+    """
+    return build_halt_store()

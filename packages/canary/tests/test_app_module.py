@@ -142,3 +142,67 @@ def test_the_reference_store_seat_reaches_the_composed_store(
     store = reference_store_component()
     assert store is not None
     assert store.database_url == test_database_url
+
+
+# -- Feature 143: the halt-store seat -------------------------------------------
+
+
+def test_the_halt_store_seat_exposes_its_component_name() -> None:
+    # The seat spells its own component name, so the three spellings — the
+    # member's (:data:`canary.HALT_STORE_COMPONENT_NAME`), the seat's and the
+    # one the factory composes under — cannot drift apart silently.
+    from app.modules.canary.halt import COMPONENT_NAME
+
+    assert COMPONENT_NAME == "canary-dream-halt"
+
+
+def test_the_halt_store_seat_reads_from_an_application_it_is_handed() -> None:
+    from app.modules.canary.halt import halt_store_component
+
+    application = Application(
+        components={"canary-dream-halt": "sentinel"},
+        order=("canary-dream-halt",),
+    )
+    assert halt_store_component(application) == "sentinel"
+
+
+def test_the_halt_store_seat_degrades_rather_than_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A deployment without a ``DATABASE_URL`` composes no halt store — degrade,
+    # don't break — and the seat answers ``None`` rather than raising, exactly
+    # as the reference-store seat does for the same deployment fact.
+    from app.modules.canary.halt import halt_store_component
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    assert halt_store_component() is None
+
+
+def test_the_halt_store_seat_reaches_the_composed_store(
+    test_database_url: str,
+) -> None:
+    # Feature 143's store, through the seat: the composed halt store the
+    # factory built, pointed at the deployment's database — the store a
+    # determinism break is halted to.
+    from app.modules.canary.halt import halt_store_component
+
+    store = halt_store_component()
+    assert store is not None
+    assert store.database_url == test_database_url
+
+
+def test_the_halt_store_seat_is_a_third_module_beside_the_other_two() -> None:
+    # Three components, three seats — and the older two keep exactly the
+    # surfaces they promised: a third accessor crowded into either would be a
+    # caller-visible change to a feature that already shipped.
+    import app.modules.canary as pin_seat
+    import app.modules.canary.halt as halt_seat
+    import app.modules.canary.reference_store as reference_seat
+
+    assert pin_seat.__all__ == ["COMPONENT_NAME", "canary_component"]
+    assert reference_seat.__all__ == [
+        "COMPONENT_NAME",
+        "reference_store_component",
+    ]
+    assert halt_seat.__all__ == ["COMPONENT_NAME", "halt_store_component"]
+    assert halt_seat.__name__ != reference_seat.__name__

@@ -99,3 +99,19 @@ class CanaryReproducibilityError(CanaryError):
     bytes themselves, which for a score panel are far too large to paste
     into a log line.
     """
+
+
+# :class:`CanaryDeterminismBrokenError` is the taxonomy's fourth subclass, and
+# it does not live in this module: it is defined in :mod:`canary._halt` beside
+# the :class:`~canary.DreamHalt` record it carries on its ``halt`` attribute —
+# the placement rule :mod:`snapshot` states for its own corruption error, an
+# exception meaningless without the record's type beside it.  The paragraph
+# above anticipated it: "a caller halting dreaming (§15's 'Replay
+# non-determinism' recovery) needs to know *which* line of the contract broke",
+# and a nightly canary whose score drifted from its recorded constant is that
+# fourth break — not a moved pin (re-pin it), not an unscorable tree (re-freeze
+# the reference), not divergent bytes from two runs of one signal (bisect the
+# runs' diff), but §12's closing assertion, the one whose repair is §15's
+# *halt dreaming; bisect the image diff* and a fresh frozen pair.  Exported
+# from the package root beside the other three, so the single ``except``
+# :class:`CanaryError` this module promises still catches it.
