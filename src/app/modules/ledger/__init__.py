@@ -10,7 +10,10 @@ per evaluation under a monotonically increasing sequence number).  The
 member also registers feature 95's endpoint under
 :data:`DEBIT_COMPONENT_NAME` — the POST /ledger/debit charge, appending
 one trial row idempotently keyed by ``node_id`` and returning the prior
-sequence on a retry — over that same store.  Feature 96's per-epoch
+sequence on a retry — and feature 94's under
+:data:`KEFFECTIVE_COMPONENT_NAME` — the GET /ledger/k-effective read that
+returns ``K_effective`` per epoch as §10.3's deflation input — both over
+that same store.  Feature 96's per-epoch
 promotion-decision counts ride on the store itself, as
 ``ledger.epoch_usage()``: they read the ``epoch_ledger`` table (feature
 105) rather than this member's own, so no second component is needed to
@@ -32,10 +35,11 @@ campaign_id, outcome)`` for the raw debit of feature 86 carrying
 feature 91's outcome stamp, ``ledger.rows()`` for the ordered read, and
 ``ledger.epoch_usage()`` for feature 96's promotion-decision counts per
 sequestered epoch — and a second spelling of those APIs here would be a
-second thing to keep in sync.  This module answers exactly two questions
-— *what is the composed ledger component?* and *what is the composed
-debit endpoint?* — so the evaluator-facing features of this category can
-ask them without importing the member directly.
+second thing to keep in sync.  This module answers exactly three
+questions — *what is the composed ledger component?*, *what is the
+composed debit endpoint?* and *what is the composed k-effective
+endpoint?* — so the evaluator- and scoring-facing features of this
+category can ask them without importing the member directly.
 """
 
 from __future__ import annotations
@@ -45,12 +49,14 @@ from typing import TYPE_CHECKING, Any
 from app.module_loader import Application, create_app
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a dependency
-    from ledger import DebitEndpoint, TrialLedger
+    from ledger import DebitEndpoint, KEffectiveEndpoint, TrialLedger
 
 __all__ = [
     "COMPONENT_NAME",
     "DEBIT_COMPONENT_NAME",
+    "KEFFECTIVE_COMPONENT_NAME",
     "debit_component",
+    "k_effective_component",
     "ledger_component",
 ]
 
@@ -64,6 +70,12 @@ COMPONENT_NAME = "ledger"
 #: single-spelling rule: the member, the factory's registry and this seat
 #: cannot drift apart.
 DEBIT_COMPONENT_NAME = "ledger-debit"
+
+#: The component name the member's k-effective endpoint registers under
+#: (feature 94: GET /ledger/k-effective, returning §8's ``K_effective``
+#: per epoch as §10.3's deflation input).  The same single-spelling rule:
+#: the member, the factory's registry and this seat cannot drift apart.
+KEFFECTIVE_COMPONENT_NAME = "ledger-k-effective"
 
 
 def ledger_component(app: Application | None = None) -> "TrialLedger | Any":
@@ -93,3 +105,23 @@ def debit_component(app: Application | None = None) -> "DebitEndpoint | Any":
     """
     application = app if app is not None else create_app()
     return application.get(DEBIT_COMPONENT_NAME)
+
+
+def k_effective_component(app: Application | None = None) -> "KEffectiveEndpoint | Any":
+    """Return the composed k-effective endpoint (GET /ledger/k-effective, feature 94).
+
+    Reads the ``ledger-k-effective`` component the member registers — the
+    route that returns ``K_effective`` per epoch, the deflation input
+    §10.3's ``β₃`` term is computed from — with the same composition rules
+    as :func:`ledger_component`: an explicit application is read as given,
+    an absent one is composed first, and a composition without the
+    component (member not scanned, no ``DATABASE_URL`` configured) returns
+    ``None`` rather than raising.
+
+    The scoring process that deflates by ``K_effective`` reaches the route
+    through this accessor, so it never has to import the member — and
+    never has to reach for :meth:`ledger.store.TrialLedger.count`, which
+    answers the ``trials_charged`` figure §10.3 penalizes separately.
+    """
+    application = app if app is not None else create_app()
+    return application.get(KEFFECTIVE_COMPONENT_NAME)

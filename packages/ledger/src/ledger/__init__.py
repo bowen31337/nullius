@@ -27,7 +27,7 @@ sequestration a promotion decision spends is a different resource from
 the statistical budget a trial charges, and it is counted in a table of
 its own.
 
-Importing this package registers two components with the application
+Importing this package registers three components with the application
 factory.  ``"ledger"`` is the :class:`~ledger.store.TrialLedger` bound
 to the database ``DATABASE_URL`` names (or nothing, when it names
 nothing — an unconfigured store is a discoverable state, and the
@@ -35,8 +35,12 @@ composed application simply carries no ledger component).
 ``"ledger-debit"`` is feature 95's POST /ledger/debit endpoint
 (:class:`~ledger.debit.DebitEndpoint`) over that same store — the
 idempotent charge keyed by ``node_id`` that §14's spot-reclaimed eval
-workers retry — resolved from the same environment so the endpoint and
-the store it debits can never point at different databases.  The
+workers retry — and ``"ledger-k-effective"`` is feature 94's
+GET /ledger/k-effective endpoint
+(:class:`~ledger.keffective_route.KEffectiveEndpoint`) over it, the read
+that hands §10.3's deflation term its ``K_effective`` per epoch.  All
+three are resolved from the same environment, so the two routes and the
+store they speak to can never point at different databases.  The
 registrations are a deliberate import side effect: this is how a member
 announces itself to the factory without the factory knowing its name in
 advance.
@@ -63,6 +67,11 @@ already says:
   DebitRequest` and :class:`~ledger.debit.DebitResponse` — feature 95's
   route: POST /ledger/debit, appending one trial row idempotently keyed
   by ``node_id`` and returning the prior sequence on a retry.
+* :class:`~ledger.keffective_route.KEffectiveEndpoint` with
+  :class:`~ledger.keffective_route.KEffectiveResponse` — feature 94's
+  route: GET /ledger/k-effective, returning §8's ``K_effective`` per
+  epoch as the deflation input, drawn from feature 93's derivation
+  rather than from a raw row count.
 * :data:`~ledger.outcome.OUTCOMES` — feature 91's vocabulary: the four
   outcomes a trial can end in, the one closed set every appended row's
   ``outcome`` is drawn from.
@@ -103,6 +112,11 @@ from .errors import (
     TrialStoreError,
 )
 from .keffective import KEffective, UNNAMED_EPOCH, derive_k_effective
+from .keffective_route import (
+    KEFFECTIVE_ROUTE,
+    KEffectiveEndpoint,
+    KEffectiveResponse,
+)
 from .outcome import OUTCOMES
 from .record import TrialLedgerRecord, utc_now
 from .store import (
@@ -118,11 +132,15 @@ __all__ = [
     "DEBIT_COMPONENT_NAME",
     "DEBIT_ROUTE",
     "EPOCH_LEDGER_TABLE",
+    "KEFFECTIVE_COMPONENT_NAME",
+    "KEFFECTIVE_ROUTE",
     "DebitEndpoint",
     "DebitRequest",
     "DebitResponse",
     "EpochUsage",
     "KEffective",
+    "KEffectiveEndpoint",
+    "KEffectiveResponse",
     "OUTCOMES",
     "TRIAL_LEDGER_TABLE",
     "TrialImmutableError",
@@ -133,6 +151,7 @@ __all__ = [
     "TrialStoreError",
     "UNNAMED_EPOCH",
     "build_ledger_debit",
+    "build_ledger_k_effective",
     "build_trial_ledger",
     "derive_epoch_usage",
     "derive_k_effective",
@@ -153,6 +172,30 @@ COMPONENT_NAME = "ledger"
 #: …), so a composed deployment reaches the route as
 #: ``app.get("ledger-debit")``.
 DEBIT_COMPONENT_NAME = "ledger-debit"
+
+#: The component name feature 94's endpoint registers under — the same
+#: hyphenated satellite spelling, so a composed deployment reaches the
+#: route's read as ``app.get("ledger-k-effective")``.
+KEFFECTIVE_COMPONENT_NAME = "ledger-k-effective"
+
+
+@register(KEFFECTIVE_COMPONENT_NAME)
+def build_ledger_k_effective() -> Optional[KEffectiveEndpoint]:
+    """Component builder: the GET /ledger/k-effective endpoint (feature 94).
+
+    Takes no arguments — the factory's registration protocol — and
+    resolves the store from the environment exactly as
+    :func:`build_trial_ledger` does, so the route reads the database the
+    process is actually pointed at and can never serve a deflation input
+    drawn from a different ledger than the composed ``"ledger"``
+    component names.  Returns ``None`` when no ``DATABASE_URL`` is set,
+    the same stance the store's own builder takes: an unconfigured store
+    contributes no route either, while a deployment whose scoring process
+    must deflate by ``K_effective`` is the caller that must not find
+    itself composing in that state.
+    """
+    ledger = TrialLedger.resolve()
+    return None if ledger is None else KEffectiveEndpoint(ledger)
 
 
 @register(DEBIT_COMPONENT_NAME)
