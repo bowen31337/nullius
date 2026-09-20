@@ -60,6 +60,22 @@ inside must not carry a dependency whose refusals a caller could confuse with
 its own, and a caller catching a tripwire's error will not swallow an isolation
 refusal.  ``py.typed`` ships beside this file, so the annotations are the
 caller's problem to type-check as well as mine.
+
+**Feature 167 rides the same seat, as a second component.**  The category's
+later features each add a control to the same box, and the import allowlist is
+the first to arrive: *System rejects a submitted module importing anything
+outside the configured allowlist, which returns a disallowed_import error
+message.*  Its law lives in :mod:`sandbox.imports` — a screen over a
+*submitted module's* imports against a *configured* ceiling, the committed
+:data:`sandbox.imports.COMMITTED_IMPORTS_ALLOWLIST` — and its component
+(:class:`SandboxImports`, a facade of the same stateless shape as
+:class:`SandboxIsolation`) registers beside the isolation law under
+:data:`sandbox.imports.IMPORTS_COMPONENT_NAME` (``sandbox-imports``) rather
+than replacing it: the factory's registry is keyed by name, a second
+registration of ``sandbox`` would overwrite feature 157's law, and one member
+carrying two controls means two components, each answering its own feature's
+question — the shape the tripwires' and the canary's members already give
+their later features.  The builder below is the entire wiring story for both.
 """
 
 from __future__ import annotations
@@ -67,10 +83,28 @@ from __future__ import annotations
 from app.module_loader import register
 
 from .errors import (
+    AllowlistDocumentError,
+    DisallowedImportError,
     GVisorIsolationRequired,
     IsolationDocumentError,
     SandboxError,
+    SandboxImportError,
     SandboxIsolationError,
+)
+from .imports import (
+    COMMITTED_IMPORTS_ALLOWLIST,
+    DISALLOWED_IMPORT_CODE,
+    IMPORTS_COMPONENT_NAME,
+    IMPORTS_POLICY_KIND,
+    ImportsAllowlist,
+    ModuleDecision,
+    ModuleReason,
+    SandboxImports,
+    committed_imports_allowlist,
+    compile_imports_allowlist,
+    load_imports_allowlist,
+    sandbox_imports,
+    screen_module,
 )
 from .isolation import (
     COMMITTED_ISOLATION_POLICY,
@@ -90,27 +124,43 @@ from .isolation import (
 )
 
 __all__ = [
+    "COMMITTED_IMPORTS_ALLOWLIST",
     "COMMITTED_ISOLATION_POLICY",
     "COMPONENT_NAME",
+    "DISALLOWED_IMPORT_CODE",
     "GVISOR_MECHANISM",
     "GVISOR_RUNTIME",
+    "IMPORTS_COMPONENT_NAME",
+    "IMPORTS_POLICY_KIND",
     "ISOLATION_REQUIRED_CODE",
     "POLICY_KIND",
+    "AllowlistDocumentError",
     "ComponentIsolation",
+    "DisallowedImportError",
     "GVisorIsolationRequired",
+    "ImportsAllowlist",
     "IsolationDocumentError",
     "IsolationPolicy",
+    "ModuleDecision",
+    "ModuleReason",
     "RunDecision",
     "RunReason",
     "SandboxError",
+    "SandboxImportError",
+    "SandboxImports",
     "SandboxIsolation",
     "SandboxIsolationError",
     "SandboxRun",
     "authorize_run",
+    "committed_imports_allowlist",
     "committed_isolation_policy",
+    "compile_imports_allowlist",
     "compile_isolation_policy",
+    "load_imports_allowlist",
     "load_isolation_policy",
+    "sandbox_imports",
     "sandbox_isolation",
+    "screen_module",
 ]
 
 __version__ = "0.1.0"
@@ -268,3 +318,38 @@ def sandbox_isolation() -> SandboxIsolation:
     :func:`build_sandbox_isolation` makes minus the composition.
     """
     return SandboxIsolation(committed_isolation_policy())
+
+
+@register(IMPORTS_COMPONENT_NAME)
+def build_sandbox_imports() -> SandboxImports:
+    """Component builder: feature 167's import allowlist (app_spec.xml §5.2).
+
+    The second component this member contributes, beside feature 157's
+    isolation law under its own name — the registry is keyed by name and a
+    second registration of ``sandbox`` would *replace* the isolation law, so
+    a member carrying two controls carries two components, each answering
+    its own feature's question.  Like :func:`build_sandbox_isolation`, it
+    takes no arguments (the factory's registration protocol), compiles the
+    committed artifact
+    (:data:`~sandbox.imports.COMMITTED_IMPORTS_ALLOWLIST`) at build time,
+    never returns ``None`` and never raises: the artifact ships inside this
+    package, so there is no unconfigured state for a ``None`` to describe,
+    and the factory builds every registered component on every
+    ``create_app()`` call, so a builder that raised on a drifted artifact
+    would take composition down for every unrelated feature in the
+    workspace.  A drifted artifact is reported the same way the isolation
+    law's is: the component is built over the refusal-free path, and a
+    caller that must know the ceiling compiled asks
+    :func:`sandbox.imports.committed_imports_allowlist` or
+    :meth:`SandboxImports.covers` against its own manifest, where a named
+    :class:`~sandbox.errors.AllowlistDocumentError` is the right answer.
+
+    It returns a :class:`SandboxImports` rather than the bare allowlist for
+    the same reason :func:`build_sandbox_isolation` returns a
+    :class:`SandboxIsolation`: the composed component is duck-checkable and
+    extensible, and a caller that has it — ``screen`` for the decision,
+    ``require`` for the exception a launcher wants on the last line before
+    it would have run the module — has the seam the box's remaining
+    controls arrive on.
+    """
+    return SandboxImports(committed_imports_allowlist())

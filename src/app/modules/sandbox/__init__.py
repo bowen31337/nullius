@@ -42,6 +42,21 @@ reading a non-``None`` component here is entitled to the stronger conclusion
 that the deployment's isolation artifact compiled, which is a property worth
 being able to check at the seat rather than inferring from the builder's
 docstring.
+
+**Feature 167's law has its own seat here, beside the isolation law's.**  The
+import allowlist — *System rejects a submitted module importing anything
+outside the configured allowlist, which returns a disallowed_import error
+message* — is the category's second control to land, and it composes as its
+own component (``sandbox-imports``) rather than a wider ``sandbox`` one, so
+this module answers two questions now: *what is the composed isolation law?*
+and *what is the composed import allowlist?*  The second accessor below
+(:func:`sandbox_imports_component`) mirrors the first in every respect —
+``None`` means "no such component was registered", and a non-``None`` value
+is proof the committed allowlist artifact compiled — and re-exports nothing
+of the law's vocabulary for the same reason the first does: a caller who has
+the component calls its verbs (``screen`` for the decision a submission
+earns, ``require`` for the exception a launcher wants), and each returns the
+member's own type.
 """
 
 from __future__ import annotations
@@ -51,14 +66,26 @@ from typing import TYPE_CHECKING, Any
 from app.module_loader import Application, create_app
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a dependency
-    from sandbox import SandboxIsolation
+    from sandbox import SandboxImports, SandboxIsolation
 
-__all__ = ["COMPONENT_NAME", "sandbox_isolation_component"]
+__all__ = [
+    "COMPONENT_NAME",
+    "IMPORTS_COMPONENT_NAME",
+    "sandbox_imports_component",
+    "sandbox_isolation_component",
+]
 
 #: The component name the sandbox member registers under. Kept here so
 #: anything asking the composed application for the isolation law — by way of
 #: the app package, not the member — shares one spelling.
 COMPONENT_NAME = "sandbox"
+
+#: The component name the member's import allowlist registers under — the
+#: category's second control, kept beside feature 157's rather than over it,
+#: because the factory's registry replaces a name's earlier registration.
+#: Kept here for the same reason ``COMPONENT_NAME`` is: one spelling shared
+#: by everything that asks for the law through the app package.
+IMPORTS_COMPONENT_NAME = "sandbox-imports"
 
 
 def sandbox_isolation_component(
@@ -81,3 +108,27 @@ def sandbox_isolation_component(
     """
     application = app if app is not None else create_app()
     return application.get(COMPONENT_NAME)
+
+
+def sandbox_imports_component(
+    app: Application | None = None,
+) -> SandboxImports | Any:
+    """Return the composed sandbox import allowlist (feature 167).
+
+    The same contract :func:`sandbox_isolation_component` gives the isolation
+    law, for the control that screens a *submitted module's* imports against
+    the configured ceiling: with ``app`` given the component is read from
+    that application, without it the application is composed first, and
+    ``None`` means no ``sandbox-imports`` component was registered — never
+    "registered but not yet configured", for the same reason the isolation
+    seat's ``None`` cannot mean that either.
+
+    A non-``None`` component here is proof the committed allowlist artifact
+    compiled: the member's builder reads it at build time and resolves
+    nothing from the environment, so a caller holding the component holds a
+    validated ceiling — ``screen(source)`` for the decision a submission
+    earns, whose refusal detail is the ``disallowed_import`` message the
+    feature's own sentence names.
+    """
+    application = app if app is not None else create_app()
+    return application.get(IMPORTS_COMPONENT_NAME)

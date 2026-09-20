@@ -23,13 +23,22 @@ A drift test mutates the document it was handed; a shared constant would make
 one test's drift another test's starting point, which is the failure mode
 feature 149's sibling suite names for its own helper.  So the builders return
 new dicts every call.
+
+The submitted *sources* below are constants, not builders, and that is a
+different case rather than an inconsistency: a source is an immutable string
+a screen only ever reads, so there is no object for one test's drift to
+share with another's — the failure mode the fresh-document rule exists for
+cannot happen to a string.  Each is written with its imports on known lines,
+because the screen's refusal names the line it found an offender on, and a
+test asserting "line 2" against a source whose import drifted to line 3
+would be asserting a coincidence.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from sandbox import POLICY_KIND
+from sandbox import IMPORTS_POLICY_KIND, POLICY_KIND
 
 #: The two Z1 boxes §3's component map draws — the same membership feature
 #: 148's committed credential grant and feature 149's committed egress policy
@@ -144,3 +153,115 @@ def document_without_isolation(*, component: str = SIGNAL_SANDBOX) -> dict[str, 
         if block["name"] == component:
             del block["isolation"]
     return document
+
+
+# ---------------------------------------------------------------------------
+# Feature 167 — the import allowlist, and the modules submitted against it.
+# ---------------------------------------------------------------------------
+
+#: §5.2's payload stack, the terms the committed ceiling admits that a
+#: submitted signal plausibly reaches for: §5.1's contract is polars-native,
+#: the numeric layer sits beneath it, and the window arrives as Arrow IPC.
+POLARS: str = "polars"
+NUMPY: str = "numpy"
+PYARROW: str = "pyarrow"
+
+#: The module §12's determinism row names first — the one import the
+#: committed ceiling refuses by *listing nothing for it*, because every use
+#: of it is a wall-clock read and there is no sanctioned spelling to admit.
+TIME_MODULE: str = "time"
+
+#: A module no ceiling in this deployment names — the plain offender, one a
+#: drifted or hostile submission reaches for and a reader of the refusal
+#: recognises on sight.
+OS_MODULE: str = "os"
+
+#: The committed ceiling's terms, spelled as data so a drift test can vary
+#: *one* of them (drop a term, add a hole) and leave the rest the artifact's
+#: — the same role :data:`GVISOR` plays for the isolation document, and the
+#: same order the file on disk carries so a test comparing compiled order to
+#: document order reads the same list.
+COMMITTED_ALLOWLIST_TERMS: tuple[str, ...] = (
+    "math",
+    "decimal",
+    "fractions",
+    "statistics",
+    "itertools",
+    "functools",
+    "datetime",
+    "random",
+    "typing",
+    "collections",
+    "dataclasses",
+    "__future__",
+    POLARS,
+    NUMPY,
+    PYARROW,
+)
+
+
+def allowlist_document(*terms: str) -> dict[str, Any]:
+    """A well-formed allowlist document from the terms the caller names.
+
+    The caller passes the terms explicitly — rather than this builder
+    defaulting to the committed ceiling — so a test that means "a ceiling
+    admitting only math" says exactly that, and a test that means "the
+    committed ceiling" asks :func:`committed_allowlist_document` instead.
+    A default here would make the two indistinguishable at the call site,
+    the same reason :func:`isolation_document` takes its pairs explicitly.
+    """
+    return {"policy": IMPORTS_POLICY_KIND, "allow": list(terms)}
+
+
+def committed_allowlist_document() -> dict[str, Any]:
+    """The committed artifact's shape: the deterministic working set, the
+    structure modules, the compiler directive and the payload stack.
+
+    Built fresh and shaped after the file on disk rather than read *from*
+    it, for the reason :func:`committed_document` gives: the artifact's own
+    tests read the file (:mod:`test_imports_artifact`), so a builder that
+    read it too would make a drift in the file invisible to every test that
+    meant to build a ceiling instead.
+    """
+    return allowlist_document(*COMMITTED_ALLOWLIST_TERMS)
+
+
+#: A submission whose every import is inside the committed ceiling — in the
+#: shapes a real module writes them: the compiler directive, a plain
+#: import, a from-import binding a name, an aliased import, and a
+#: from-import binding a subpackage (``numpy.linalg``, judged as the
+#: subpackage it lands on).  Five shapes, one ceiling, all covered.
+SOURCE_WITHIN: str = (
+    "from __future__ import annotations\n"
+    "import math\n"
+    "from decimal import Decimal\n"
+    "import polars as pl\n"
+    "from numpy import linalg\n"
+)
+
+
+#: A submission reaching for the world the box refuses: ``os`` on line 1 and
+#: ``socket`` on line 3, so a refusal naming *both* with *both* lines is a
+#: test of the collective refusal rather than of whichever offender a
+#: screen happened to report first.
+SOURCE_WITH_OS_AND_SOCKET: str = (
+    "import os\n" "import math\n" "import socket\n"
+)
+
+#: The wall-clock module §12 names — absent from the committed ceiling by
+#: construction, so this submission is refused *by the ceiling*, which is a
+#: different fact from being refused by a hole.
+SOURCE_WITH_TIME: str = "import time\n"
+
+#: A relative import: a submitted module is one module, not a package with
+#: siblings, and the box holds no package for ``.`` to resolve against.
+SOURCE_RELATIVE: str = "from . import sibling\n"
+
+#: Source that does not parse, with the break on line 2 so the refusal can
+#: be expected to name it.
+SOURCE_UNPARSABLE: str = "import math\ndef broken(:\n"
+
+#: A submission importing the parent of a term the ceiling names — the
+#: half-check a prefix rule must close: an entry admitting ``numpy.linalg``
+#: does not admit ``numpy``, because importing the parent executes it.
+SOURCE_IMPORTING_PARENT: str = "import numpy\n"

@@ -36,6 +36,26 @@ failed — the discipline :mod:`infra.security.sandbox_egress`'s and
   already named the wrong runtime, or go looking for a runtime that was never
   named because a key was misspelled.
 
+* :class:`SandboxImportError` — the import-allowlist contract, and feature
+  167's whole subject.  A submitted module imports a term the configured
+  allowlist does not cover, or the allowlist document itself could not be
+  read.  Its subclass :class:`DisallowedImportError` is the refusal itself,
+  and every message it carries begins with the greppable code
+  :data:`sandbox.imports.DISALLOWED_IMPORT_CODE` (``disallowed_import``) —
+  the feature's own sentence, written as a token, the same discipline
+  :data:`sandbox.isolation.ISOLATION_REQUIRED_CODE` applies to feature 157's.
+  The gate's *returned* refusal carries the same code and the same sentence,
+  which is the shape the feature's own sentence asks for: it *returns* a
+  ``disallowed_import`` error message.
+
+* :class:`AllowlistDocumentError` — the *document* contract of the import
+  law, kept beside :class:`IsolationDocumentError` and apart from
+  :class:`DisallowedImportError` for the reason that pair is split: the
+  allowlist document is written by trusted code, and one that cannot be read
+  — a missing marker, a term that is not a dotted name, one term listed
+  twice — is a fact about the *configuration*, not about any module
+  submitted against it.
+
 There is deliberately no error for *"the run was not admitted"* beyond
 :class:`GVisorIsolationRequired`.  Feature 157's failure mode is one thing —
 a run configuration that is not gVisor's — and splitting it into an error per
@@ -47,9 +67,12 @@ deployment actually configured.
 from __future__ import annotations
 
 __all__ = [
+    "AllowlistDocumentError",
+    "DisallowedImportError",
     "GVisorIsolationRequired",
     "IsolationDocumentError",
     "SandboxError",
+    "SandboxImportError",
     "SandboxIsolationError",
 ]
 
@@ -131,4 +154,68 @@ class IsolationDocumentError(SandboxIsolationError):
     :class:`GVisorIsolationRequired` is about a document that read perfectly
     well and named the wrong isolation.  The second is the feature working; the
     first is the feature unable to say what it found.
+    """
+
+
+class SandboxImportError(SandboxError):
+    """The import-allowlist contract: a submission outside what is configured.
+
+    app_spec.xml, "Untrusted Code Sandbox", feature 167: *System rejects a
+    submitted module importing anything outside the configured allowlist,
+    which returns a disallowed_import error message.*  The subject has moved
+    from feature 157's *run* to the *module a run would execute* — §5.2's
+    ``code=node.code``, checked statically at the moment it is offered, before
+    anything executes — and from the isolation a box declares to the modules a
+    submission may import: §10.2's "any import outside an allowlist" and
+    §11.1's "no imports outside the allowlist", the row §12 states from the
+    determinism side ("blocked by the import allowlist").
+
+    Raised rather than returned only at the bridge
+    (:meth:`sandbox.imports.ModuleDecision.require`) and for the document
+    contract below — the gate itself *answers* a submission with a decision,
+    for the reason feature 157's gate does: the pipeline offers thousands of
+    submissions unattended, and a screen that raised per module would turn one
+    bad candidate into a crashed evaluator.
+    """
+
+
+class DisallowedImportError(SandboxImportError):
+    """The refusal itself: this module imports outside the configured allowlist.
+
+    Every message begins with ``disallowed_import``
+    (:data:`sandbox.imports.DISALLOWED_IMPORT_CODE`), the one spelling the
+    feature's own sentence gives the rejection, so a log-grepping operator or
+    CI check finds it by the feature's words.  The message the gate *returns*
+    carries the same code and the same sentence — the sentence says the system
+    "returns" it — and this class is that message in the exception shape a
+    launcher that must not proceed asks for with ``require()``.
+
+    The refusal names every offending term with its line, never only the
+    first: the reader of the refusal is the author of the submission (the
+    loop, or the operator debugging it), and a screen that reported one
+    offender at a time would be resubmitted to learn the rest — the same
+    discipline :mod:`canary._allowlist` states for its own collective
+    refusal, stated here rather than shared by import because the sandbox is
+    the box untrusted code is put inside and its vocabulary must not depend
+    on anything that could be handed to it.
+    """
+
+
+class AllowlistDocumentError(SandboxImportError):
+    """The configured allowlist is not a document this member can read.
+
+    A document that does not declare itself (the marker feature 157's
+    committed policy and feature 149's committed egress artifact carry), an
+    ``allow`` list that is not a list, a term that is not a dotted Python
+    name (a leading dot, a star, an empty segment), or one term listed twice.
+    Refused, fail closed — the whole document, not the unreadable term
+    skipped — because an allowlist compiled from a partially-read document is
+    one whose file and whose ceiling disagree, and that disagreement is where
+    the next drift lives.
+
+    The counterpart of :class:`IsolationDocumentError`, and kept apart from
+    :class:`DisallowedImportError` for the reason that pair is split: the
+    allowlist is written by *trusted* code, and its refusals are facts about
+    a deployment's configuration; the submissions screened against it are
+    untrusted, and their refusals are the feature working.
     """

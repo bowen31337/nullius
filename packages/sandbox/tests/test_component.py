@@ -81,19 +81,24 @@ def test_the_member_owns_the_plugin_name_the_spec_gives_it() -> None:
     assert sandbox.COMPONENT_NAME == "sandbox"
 
 
-def test_scanning_the_member_registers_exactly_the_component_it_owns() -> None:
+def test_scanning_the_member_registers_exactly_the_components_it_owns() -> None:
     # A fresh registry, not the process default: any earlier test that called
     # a bare ``create_app()`` has already imported every workspace member into
     # the current registry, so reading it back here would assert accumulated
     # process state, not this package's contribution.
     #
-    # The list is pinned exactly rather than by membership, so a *second*
+    # The list is pinned exactly rather than by membership, so a *third*
     # component arriving unnoticed fails here — which is the property this
-    # test is for. Feature 157 contributes one: the isolation law. The
-    # category's later features each add a control to the same box and will
-    # add their own seats beside it.
+    # test is for. Feature 157 contributed the first: the isolation law.
+    # Feature 167 added the second: the import allowlist, under its own name
+    # because the registry replaces a name's earlier registration. The
+    # category's remaining features each add a control to the same box and
+    # will add their own seats beside these two.
     components = scan_components(MEMBER_SRC, registry=Registration())
-    assert sorted(component.name for component in components) == ["sandbox"]
+    assert sorted(component.name for component in components) == [
+        "sandbox",
+        "sandbox-imports",
+    ]
 
 
 def test_the_composed_application_carries_the_isolation_law() -> None:
@@ -199,12 +204,26 @@ def test_the_seat_reads_from_an_application_it_is_handed() -> None:
 
 
 def test_the_app_seat_is_not_a_second_vocabulary() -> None:
-    # The seat answers exactly one question — what is the composed law? — and
-    # does not re-export the member's types. A caller who has the component
-    # calls its verbs; a second spelling of the run decision or the reason
-    # codes here would be a second thing to keep in sync.
+    # The seat answers questions — which component? — and does not re-export
+    # the member's types. A caller who has the component calls its verbs; a
+    # second spelling of the run decision or the reason codes here would be a
+    # second thing to keep in sync. Feature 167 added its own name and
+    # accessor beside feature 157's, and nothing else.
     import app.modules.sandbox as seat
 
-    assert set(seat.__all__) == {"COMPONENT_NAME", "sandbox_isolation_component"}
-    for leaked in ("RunDecision", "RunReason", "SandboxRun", "IsolationPolicy"):
+    assert set(seat.__all__) == {
+        "COMPONENT_NAME",
+        "IMPORTS_COMPONENT_NAME",
+        "sandbox_imports_component",
+        "sandbox_isolation_component",
+    }
+    for leaked in (
+        "RunDecision",
+        "RunReason",
+        "SandboxRun",
+        "IsolationPolicy",
+        "ModuleDecision",
+        "ModuleReason",
+        "ImportsAllowlist",
+    ):
         assert not hasattr(seat, leaked), leaked
