@@ -90,6 +90,25 @@ against the marked nodes — is a fact neither the replay member (features
 245-255, which does not exist yet) nor any other can compute: the tripwires are
 the component that holds both halves, the marks and the pool's rows.
 
+**Feature 127 is the first of the re-runs, and it is the opposite of a second
+probe.**  §C6's third sentence — *"Re-run with a different seed, a different
+start offset, a different universe subsample.  Degradation beyond threshold is
+a reject."* — is features 127 through 130, and :mod:`tripwires.seed_rerun` is
+the first axis.  It is worth saying plainly what it does *not* catch, because
+the two probes above it are what catch leakage: a planted leak's surviving
+Sharpe is identical across seeds (verified zero degradation, all four corpus
+kinds), so a re-run sails a leak straight through.  What it catches is a
+candidate whose reported surviving Sharpe **did not reproduce** under a second,
+equally valid derangement — a statement about the measurement rather than about
+the candidate's information — which matters because the rejection it licenses
+is irreversible (feature 131 poisons the subtree, feature 132 refuses the
+pool).  It arrives as a *method on the probe component* (``rerun``) rather than
+as this member's fifth component, and that is the same one-provenance argument
+feature 125's scope note makes from the other side: a re-run is this probe
+taken twice, so a component of its own would have to reach back through this
+one for the statistic, the shuffle and the threshold — three second spellings
+of an arithmetic that already has one home.
+
 **The layering note, restated because it is a constraint on every import
 below.**  This package is stdlib-only — dates, mappings, sorting, square roots
 and one inverse-normal quantile the member carries for itself
@@ -155,6 +174,16 @@ from .poison import (
     poison_node,
     poisoned_node_ids,
 )
+from .seed_rerun import (
+    DEFAULT_DEGRADATION_THRESHOLD,
+    DEFAULT_RERUN_SEED,
+    PERTURBATION_AXES,
+    PERTURBATION_STABILITY_NAME,
+    SEED_AXIS,
+    SeedRerunVerdict,
+    run_seed_rerun,
+    seed_rerun_degradation,
+)
 from .time_shuffle import (
     DEFAULT_SHUFFLE_LEVEL,
     DEFAULT_SHUFFLE_SEED,
@@ -174,6 +203,8 @@ __all__ = [
     "CORPUS_SEED",
     "CORPUS_SYMBOLS",
     "DATABASE_URL_ENV",
+    "DEFAULT_DEGRADATION_THRESHOLD",
+    "DEFAULT_RERUN_SEED",
     "DEFAULT_SHUFFLE_LEVEL",
     "DEFAULT_SHUFFLE_SEED",
     "EXCISE_COMPONENT_NAME",
@@ -182,9 +213,12 @@ __all__ = [
     "NODE_POISONED_COLUMN",
     "NODE_TABLE",
     "NORMAL_QUANTILE_SWITCH",
+    "PERTURBATION_AXES",
+    "PERTURBATION_STABILITY_NAME",
     "POISON_COMPONENT_NAME",
     "POISON_TABLE",
     "REPLAY_SCORE_TABLE",
+    "SEED_AXIS",
     "TIME_SHUFFLE_NAME",
     "TRIPWIRE_OUTCOMES",
     "CorpusSignal",
@@ -195,6 +229,7 @@ __all__ = [
     "PoisonedSubtree",
     "PoolScore",
     "ReplayPool",
+    "SeedRerunVerdict",
     "TimeShuffleTripwire",
     "TimeShuffleVerdict",
     "TripwireError",
@@ -212,7 +247,9 @@ __all__ = [
     "poison_node",
     "poisoned_node_ids",
     "replay_pool_bootstrap_schema",
+    "run_seed_rerun",
     "run_time_shuffle_tripwire",
+    "seed_rerun_degradation",
     "surviving_scores",
     "surviving_sharpe",
     "time_shuffle_pairing",
@@ -250,8 +287,16 @@ class TimeShuffleTripwire:
     statistic, the shuffle or the threshold is exactly what this member's
     one-provenance rule forbids.  What this class adds is discoverability (the
     factory's scan composes it) and a single duck-checkable seam
-    (``run``/``pairing``/``threshold``) for the app seat and the features that
-    follow, not arithmetic.
+    (``run``/``pairing``/``threshold``/``rerun``) for the app seat and the
+    features that follow, not arithmetic.
+
+    **``rerun`` is the fourth verb and the family's first axis.**  Feature 127
+    perturbs the one knob this probe deliberately holds fixed — the seed — so
+    the re-run is a *method here* rather than a fifth component: it needs the
+    statistic, the shuffle and the threshold, all three of which already live
+    on this class, and a component of its own would reach back through this one
+    for every one of them.  Features 128 through 130 add the same method's
+    later axes, beside this one.
     """
 
     __slots__ = ()
@@ -311,6 +356,46 @@ class TimeShuffleTripwire:
         cannot disagree.
         """
         return time_shuffle_threshold(dates, level=level)
+
+    def rerun(
+        self,
+        scores: Mapping[dt.date | str, Mapping[str, float]],
+        targets: Mapping[int, Mapping[dt.date | str, Mapping[str, float]]],
+        *,
+        node_id: str,
+        seed: int = DEFAULT_SHUFFLE_SEED,
+        rerun_seed: int = DEFAULT_RERUN_SEED,
+        level: float = DEFAULT_SHUFFLE_LEVEL,
+        threshold: float = DEFAULT_DEGRADATION_THRESHOLD,
+    ) -> SeedRerunVerdict:
+        """Re-run the probe under a different seed — feature 127's whole answer.
+
+        The same candidate and bundle :meth:`run` takes, plus the second seed
+        and the configured degradation threshold.  Returns the
+        :class:`~tripwires.seed_rerun.SeedRerunVerdict` — whose ``degradation``
+        is the perturbation-stability figure (feature 130 persists a sibling
+        axis of it as ``perturb_stability``), whose ``degradation_rejected`` is
+        the spec's own cause, and whose ``rejected`` unions it with the re-run's
+        own detection.
+
+        It is a method on *this* component rather than a fifth one because the
+        re-run is not a second probe: it is this probe, taken twice, and a
+        caller holding the composed probe has everything the re-run needs —
+        the statistic, the shuffle and the threshold are already here.  A
+        separate component would have to reach back through this one for all
+        three, which is the second spelling of the probe the member's
+        one-provenance rule forbids.  §6.1 step 10 names the family as one
+        probe (``... perturbation stability``) for the same reason.
+        """
+        return run_seed_rerun(
+            scores,
+            targets,
+            node_id=node_id,
+            seed=seed,
+            rerun_seed=rerun_seed,
+            level=level,
+            threshold=threshold,
+        )
 
 
 @register(COMPONENT_NAME)
