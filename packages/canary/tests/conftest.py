@@ -82,3 +82,26 @@ def canary_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     """
     monkeypatch.setenv("NULLIUS_EVALUATOR_IMAGE", PINNED_EVALUATOR_IMAGE)
     return {"NULLIUS_EVALUATOR_IMAGE": PINNED_EVALUATOR_IMAGE}
+
+
+#: The environment variable naming the relational store — the one spelling
+#: every store in this workspace already uses, and the one feature 141's
+#: reference store resolves.
+DATABASE_URL_ENV = "DATABASE_URL"
+
+
+@pytest.fixture
+def test_database_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Point ``DATABASE_URL`` at a per-test SQLite file, and return the URL.
+
+    The package suite cannot reach the root conftest's ``test_database_url`` —
+    conftest scope follows directories — and feature 141's store is a
+    persistence step that writes to the deployment's relational store, so the
+    isolation the root conftest guarantees there must be restated here: every
+    test that asks for this fixture gets its own throwaway SQLite file, and
+    ``DATABASE_URL`` is set to it for the duration of the test. The URL is the
+    one the code under test sees, so a composed store resolves to it.
+    """
+    url = f"sqlite:///{tmp_path / 'reference.db'}"
+    monkeypatch.setenv(DATABASE_URL_ENV, url)
+    return url

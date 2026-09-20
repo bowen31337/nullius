@@ -78,30 +78,61 @@ reachable only by import is a check the factory's scan cannot discover: the
 tripwires member's probe and the evaluator's service take the same stance
 for their own pure functions.
 
+*Feature 141 sits beside the pin, as the persistence half of the frozen
+pair.* The category's fourteenth-through-seventeenth features turn the pin
+into the reference the nightly replay compares under: feature 141 persists
+"a frozen canary policy together with a frozen canary tree as the
+determinism reference pair", and the nightly replay (feature 142) replays
+that frozen pair and asserts its score matches a recorded constant to
+``1e-12`` (§12, line 677).  The frozen pair is a thing with its own identity
+— a policy ``π_canary`` and a tree ``T_canary``, each reduced to canonical
+bytes and a content hash — so :mod:`canary._reference` is the set of value
+types (:class:`CanaryPolicy`, :class:`CanaryTree`, :class:`CanaryTreeNode`,
+:class:`CanaryReferencePair`, plus :func:`canonical_json`, :func:`content_hash`
+and :func:`tree_hash`) that make the pair a thing that can be frozen, hashed
+and told apart from a pair that is not the same pair.  Like feature 145's
+functions, these read no environment and refuse nothing — there is nothing to
+configure — but unlike them they are *persisted*, so feature 141 has a second
+component: the reference store, :mod:`canary._reference_store`, registered
+under :data:`REFERENCE_STORE_COMPONENT_NAME` beside the pin sweep's
+:data:`canary.CANARY_COMPONENT_NAME`.  The two are different things on
+different lifecycles — one asserts the deployment's pins, the other persists
+the frozen pair — and a deployment configured for the pin but not the store
+composes one and not the other.  The store writes the canonical bytes and the
+hashes, never the rendered walk; the recorded score the replay compares
+against is left ``Nullable`` and filled by the replay (feature 142), not by
+the freeze — this feature *freezes*, the next one *replays and decides*, and a
+store that also decided would be a threshold nobody could audit.
+
 *What this package deliberately does not do.* It does not resolve
-tags, consult a registry, or write anything down: feature 135 is an
-assertion, not a persistence step, so the member is a pure parser over
-strings a deployment already wrote, stdlib-only and import-cheap — the
-factory's scan (and the replay path §1 keeps away from anything that
-could perturb it) pays nothing for importing it. Feature 145 holds the
-same line: the comparison is over bytes the caller already holds, so it
-serializes nothing itself (the layers that own the encodings — the
-sandbox's Arrow IPC channel, the artifact renderer, the feature store's
-payload — are the ones that must produce canonical bytes) and reads no
-environment, which is what lets a recorded payload and a replayed one be
-compared by the same code that compares two fresh runs. The later
-features of this category layer onto the pin this package keeps: the
-lockfile, thread, hash-seed, allowlist and GPU refusals of features
-136-140
-assert into the same frozen container from the same sweep, the frozen
-pair and nightly replay of features 141-144 turn the pin into the
-reference the recorded constant is compared under, and the
-bit-reproducibility check of feature 145 reads that pair back — a
-caller's run output and a recorded one, compared byte for byte by the
-same function that compares two fresh runs. A canary that could not say
-which bytes it ran in could not honestly say any of those things
-either.
+tags or consult a registry: feature 135 is an assertion, not a
+resolution, so the pin sweep is a pure parser over strings a deployment
+already wrote, stdlib-only and import-cheap — the factory's scan (and
+the replay path §1 keeps away from anything that could perturb it) pays
+nothing for importing it.  Feature 145 holds the same line: the
+comparison is over bytes the caller already holds, so it serializes
+nothing itself (the layers that own the encodings — the sandbox's Arrow
+IPC channel, the artifact renderer, the feature store's payload — are
+the ones that must produce canonical bytes) and reads no environment,
+which is what lets a recorded payload and a replayed one be compared by
+the same code that compares two fresh runs.  Feature 141 is the one
+place the package writes down: it persists the frozen pair the nightly
+replay reads back, through the store and the four tables
+``migrations/versions/0119_canary_reference_pair.py`` creates — the one
+persistence step in a category that is otherwise assertions over bytes a
+deployment already wrote.  The later features of this category layer
+onto the pin this package keeps: the lockfile, thread, hash-seed,
+allowlist and GPU refusals of features 136-140 assert into the same
+frozen container from the same sweep, the frozen pair and nightly replay
+of features 141-144 turn the pin into the reference the recorded
+constant is compared under, and the bit-reproducibility check of feature
+145 reads that pair back — a caller's run output and a recorded one,
+compared byte for byte by the same function that compares two fresh
+runs.  A canary that could not say which bytes it ran in could not
+honestly say any of those things either.
 """
+
+from typing import Optional
 
 from app.module_loader import register
 
@@ -133,6 +164,27 @@ from ._reproducibility import (
     compare_runs,
     require_identical,
 )
+from ._reference import (
+    CanaryPolicy,
+    CanaryReferencePair,
+    CanaryTree,
+    CanaryTreeNode,
+    canonical_json,
+    content_hash,
+    tree_hash,
+)
+from ._reference_store import (
+    CanaryReferenceStore,
+    CanaryReferenceStoreRecord,
+    POLICY_TABLE,
+    REFERENCE_STORE_COMPONENT_NAME,
+    REFERENCE_TABLE,
+    TREE_NODE_TABLE,
+    TREE_TABLE,
+    build_reference_store,
+    freeze_reference_pair,
+    load_reference_pair,
+)
 from ._service import CanaryService, build_canary_service
 
 __all__ = [
@@ -156,6 +208,23 @@ __all__ = [
     "compare_bytes",
     "compare_runs",
     "require_identical",
+    # Feature 141 — the frozen determinism reference pair
+    "CanaryPolicy",
+    "CanaryReferencePair",
+    "CanaryTree",
+    "CanaryTreeNode",
+    "canonical_json",
+    "content_hash",
+    "tree_hash",
+    "CanaryReferenceStore",
+    "CanaryReferenceStoreRecord",
+    "POLICY_TABLE",
+    "REFERENCE_TABLE",
+    "TREE_NODE_TABLE",
+    "TREE_TABLE",
+    "build_reference_store",
+    "freeze_reference_pair",
+    "load_reference_pair",
     # The composed component
     "CanaryService",
     "build_canary_service",
@@ -183,3 +252,19 @@ def _registered_canary_service() -> CanaryService:
     startup uses ``CanaryService.from_env(strict=True)``.
     """
     return build_canary_service()
+
+
+@register(REFERENCE_STORE_COMPONENT_NAME)
+def _registered_reference_store() -> Optional[CanaryReferenceStore]:
+    """Component builder: the frozen reference-pair store, from the environment.
+
+    Feature 141's store half, composed under a second name rather than a second
+    component under :data:`canary.CANARY_COMPONENT_NAME` — the pin sweep and the
+    reference store are different things on different lifecycles, and a deployment
+    configured for the pin but not the store composes one and not the other.
+    Resolves rather than strict: the factory builds every component on every
+    ``create_app()``, so a deployment with no ``DATABASE_URL`` composes ``None`` —
+    a discoverable state, not an exception — rather than taking composition down.
+    A caller that wants the store pointed at a URL uses :class:`CanaryReferenceStore`.
+    """
+    return build_reference_store()

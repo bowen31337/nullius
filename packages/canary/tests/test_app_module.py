@@ -96,3 +96,49 @@ def test_the_seat_refuses_a_tag_only_reference(
         _ = service.containers
     assert "NULLIUS_EVALUATOR_IMAGE" in str(raised.value)
     assert "the evaluator container" in str(raised.value)
+
+
+# -- Feature 141: the reference-store seat --------------------------------------
+
+
+def test_the_reference_store_seat_exposes_its_component_name() -> None:
+    # The seat spells its own component name, so the three spellings — the
+    # member's, the store's and the seat's — cannot drift apart silently.
+    from app.modules.canary.reference_store import COMPONENT_NAME
+
+    assert COMPONENT_NAME == "canary-reference-store"
+
+
+def test_the_reference_store_seat_reads_from_an_application_it_is_handed() -> None:
+    from app.modules.canary.reference_store import reference_store_component
+
+    application = Application(
+        components={"canary-reference-store": "sentinel"},
+        order=("canary-reference-store",),
+    )
+    assert reference_store_component(application) == "sentinel"
+
+
+def test_the_reference_store_seat_degrades_rather_than_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A deployment without a ``DATABASE_URL`` composes no store — degrade,
+    # don't break — and the seat answers ``None`` rather than raising, exactly
+    # as the pin-sweep seat does for an absent component.
+    from app.modules.canary.reference_store import reference_store_component
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    assert reference_store_component() is None
+
+
+def test_the_reference_store_seat_reaches_the_composed_store(
+    test_database_url: str,
+) -> None:
+    # Feature 141's store, through the seat: the composed store the factory
+    # built, pointed at the deployment's database — the path a nightly runner
+    # takes.
+    from app.modules.canary.reference_store import reference_store_component
+
+    store = reference_store_component()
+    assert store is not None
+    assert store.database_url == test_database_url
