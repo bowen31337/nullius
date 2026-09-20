@@ -46,6 +46,19 @@ dreaming-halt and pool-exclusion that §7.4's rule also names are
 *consequences* of the status being ``VOID``, enforced where the pool and
 promotion read the status (features 876/1056), not here.
 
+**Feature 121 is where the flip depth is finally *used*.**  §7.2 states the
+rule in one line — *"below ``flip_depth`` the real targets are returned, at or
+beyond it the permuted ones"* — and :mod:`nulloracle.resolution` is that rule
+with a store behind it: :func:`~nulloracle.resolution.past_the_flip` is the
+boundary itself, and :class:`~nulloracle.resolution.TypeDOracle` reads the
+node's stored depth and its branch's stored flip (feature 119's, inherited
+down the ancestor chain), requires the campaign to be the Type-D regime, and
+serves the caller's real targets below the flip and the caller's permutation
+at or beyond it.  The permutation arrives as a seam — §7.2's
+``block_permute`` is feature 115's — because the *which branch* decision is
+feature 121's and the *permutation* is not; what the oracle refuses to do is
+serve the permuted branch without one.
+
 **The three halves, and why they are three modules.**  A sidecar entry is a
 schema (:mod:`nulloracle.assignment`), a cipher (:mod:`nulloracle.envelope`)
 and a file (:mod:`nulloracle.sidecar`), and each is separately arguable.
@@ -208,6 +221,13 @@ from .phi import (
     null_fraction,
     persist_null_fraction,
 )
+from .resolution import (
+    TYPE_D_CAMPAIGN_TYPE,
+    TypeDOracle,
+    TypeDResolution,
+    past_the_flip,
+    resolve_type_d,
+)
 from .sidecar import (
     SIDECAR_DIRECTORY,
     SIDECAR_FILE_MODE,
@@ -253,6 +273,7 @@ __all__ = [
     "PHI_FLOOR",
     "P_MAX",
     "P_MIN",
+    "RESOLUTION_COMPONENT_NAME",
     "SERVICE_ACCOUNT_ENV",
     "SIDECAR_DIRECTORY",
     "SIDECAR_FILENAME",
@@ -260,6 +281,7 @@ __all__ = [
     "SIDECAR_KEY_BYTES",
     "SIDECAR_PATH_ENV",
     "TAG_BYTES",
+    "TYPE_D_CAMPAIGN_TYPE",
     "VERDICT_COMPONENT_NAME",
     "VOID_THRESHOLD",
     "WORKSPACE_COUNT_COLUMN",
@@ -281,10 +303,13 @@ __all__ = [
     "SidecarKey",
     "SidecarKeyError",
     "SidecarStoreError",
+    "TypeDOracle",
+    "TypeDResolution",
     "Verdict",
     "assignments_digest",
     "build_flip_depth",
     "build_null_sidecar",
+    "build_type_d_resolution",
     "build_verdict",
     "canonical_assignments",
     "decode_assignments",
@@ -301,11 +326,13 @@ __all__ = [
     "normalize_node_id",
     "null_fraction",
     "open_envelope",
+    "past_the_flip",
     "persist_flip_depth",
     "persist_ks_pvalue",
     "persist_null_fraction",
     "require_cryptography",
     "resolve_key",
+    "resolve_type_d",
     "seal",
     "service_account",
     "two_sample_statistic",
@@ -356,6 +383,17 @@ FRACTION_COMPONENT_NAME = "nulloracle-null-fraction"
 #: legitimately have one without the others.  The ledger member registers
 #: several names the same way.
 FLIP_DEPTH_COMPONENT_NAME = "nulloracle-null-flip-depth"
+
+#: The component name feature 121's Type-D resolution registers under — the
+#: key a composed :class:`~app.module_loader.Application` carries it at.  A
+#: sixth name rather than a sixth component under :data:`COMPONENT_NAME`
+#: because the sidecar, the guard journal, the verdict, the fraction, the flip
+#: depth and the resolution are six different things on six different
+#: lifecycles, and a deployment can legitimately have any without the others.
+#: The ``type-d-`` prefix sorts after both the ``ks-*`` and the ``null-*``
+#: families in the name-sorted ``app.order``, so feature 123's
+#: guard-immediately-after-sidecar adjacency is untouched.
+RESOLUTION_COMPONENT_NAME = "nulloracle-type-d-resolution"
 
 
 @register(FRACTION_COMPONENT_NAME)
@@ -418,6 +456,35 @@ def build_flip_depth() -> FlipDepth | None:
     composing the application never opens a database.
     """
     return FlipDepth.resolve()
+
+
+@register(RESOLUTION_COMPONENT_NAME)
+def build_type_d_resolution() -> TypeDOracle | None:
+    """Component builder: §7.2's Type-D flip resolution, bound to the environment.
+
+    Feature 121's resolution half as a component, so the endpoint that serves
+    §7.2's ``POST /target`` requests can ask the composed application for the
+    Type-D oracle the deployment configured rather than reading
+    ``DATABASE_URL`` itself — the same seam the fraction's, the flip depth's,
+    the verdict's and the guard's stores expose.
+
+    Returns ``None`` when nothing names a relational store, the
+    degrade-don't-break stance every store in this workspace takes toward an
+    absent ``DATABASE_URL``: an unconfigured resolution is a discoverable
+    state, and a deployment whose endpoint must resolve Type-D requests is the
+    caller that must not find itself in it.
+
+    Like :func:`build_flip_depth`, this never raises, including for a URL
+    whose scheme this store cannot speak.  The factory builds every registered
+    component on every :func:`~app.module_loader.create_app` call, so a builder
+    that raised would take composition down for every unrelated feature; a
+    process that *requires* the resolution asks
+    :meth:`nulloracle.resolution.TypeDOracle.resolve` or calls the oracle
+    directly, where a named :class:`~nulloracle.errors.KsGuardError` is the
+    right answer.  Construction performs no I/O — the path is resolved on
+    first use — so composing the application never opens a database.
+    """
+    return TypeDOracle.resolve()
 
 
 @register(VERDICT_COMPONENT_NAME)
