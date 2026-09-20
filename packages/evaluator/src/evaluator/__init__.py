@@ -145,8 +145,22 @@ priced returns so the entry at horizon ``h`` sits on one axis with the
 capacity feature 82 sizes at that horizon. It stays import-cheap the way
 the whole step does: stdlib-only, with the scores arriving as a value — the
 Polars boundary stays at the edge of the package — so no member is imported
-and no normalization is restated. The rest of the pipeline
-(purge and embargo, metrics) is the rest of this category's features, and
+and no normalization is restated. Feature 84 adds step 11:
+:func:`debit_trial` charges the trial ledger for the evaluation — one
+irreversible row, idempotently keyed by the node, carrying §8's four-way
+outcome and the budget directive step 7 forwarded — and it is deliberately
+shaped to run on the failure path, because §6.1's note is the feature:
+step 11 happens even when the node fails, a failed evaluation still
+consumed a hypothesis, and :func:`failure_outcome` is the spelling that
+classifies the pipeline's own failures (a sandbox timeout, a crash, a
+raised step) into the outcome the charge carries. It stays stdlib-only:
+the ledger itself is an injected structural seam (the ledger member's
+``TrialLedger`` satisfies it), so this member imports no sibling and owns
+no table — the honest ``K`` counter is the ledger's to keep, and this
+step's contribution is the charge, the outcome, and the guarantee the
+write happens however the evaluation ended. The rest of the pipeline
+(the tripwires and the final persist) is the rest of this category's
+features, and
 each layers on this identity, this window, this execution, this
 normalization, this alignment, this gate and this pricing
 rather than beside them: a score that cannot name its evaluator cannot be
@@ -156,9 +170,10 @@ be trusted, a score that has not been normalized to a common scale cannot
 be compared across authors, a metric computed against targets that were not
 aligned to the grid it scored on measures nothing, a metric computed
 against targets that did not come through the gate measures a world nobody
-ran, and a metric computed against returns whose fee assumptions and
+ran, a metric computed against returns whose fee assumptions and
 deductions are not on the record cannot be defended to anyone who asks what
-it cost to earn them.
+it cost to earn them, and an evaluation whose charge was never written is a
+hypothesis the honest K counter never counted, however it ended.
 Keeping the import this cheap also keeps the replay path importable —
 architecture §1 forbids replay from reaching the evaluator at all, so the
 less this package does at import time, the less there is to accidentally
@@ -180,6 +195,7 @@ from ._errors import (
     EvaluatorConfigError,
     EvaluatorCostError,
     EvaluatorDecayError,
+    EvaluatorDebitError,
     EvaluatorEmbargoError,
     EvaluatorError,
     EvaluatorGateError,
@@ -323,6 +339,15 @@ from ._marginal_store import (
     load_marginal_ir,
     persist_marginal_ir,
 )
+from ._debit import (
+    DEBIT_STEP,
+    TRIAL_OUTCOMES,
+    DebitedTrial,
+    TrialCharge,
+    charge_failure,
+    debit_trial,
+    failure_outcome,
+)
 from ._service import ENV_IMAGE, EvaluatorService, build_evaluator_service
 from ._window import (
     ROSTER_STREAM,
@@ -411,6 +436,14 @@ __all__ = [
     "NodeMarginalIRStore",
     "load_marginal_ir",
     "persist_marginal_ir",
+    # Feature 84 — the trial charge
+    "DEBIT_STEP",
+    "TRIAL_OUTCOMES",
+    "DebitedTrial",
+    "TrialCharge",
+    "charge_failure",
+    "debit_trial",
+    "failure_outcome",
     # Feature 79 — persisting the post-cost signal returns
     "SIGNAL_RETURNS_GRID_TABLE",
     "SIGNAL_RETURNS_TABLE",
@@ -460,6 +493,7 @@ __all__ = [
     # Errors
     "EvaluatorConfigError",
     "EvaluatorDecayError",
+    "EvaluatorDebitError",
     "EvaluatorError",
     "EvaluatorGateError",
     "EvaluatorIdentityError",

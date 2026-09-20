@@ -198,6 +198,7 @@ __all__ = [
     "EvaluatorConfigError",
     "EvaluatorDecayError",
     "EvaluatorCostError",
+    "EvaluatorDebitError",
     "EvaluatorEmbargoError",
     "EvaluatorError",
     "EvaluatorGateError",
@@ -487,6 +488,35 @@ class EvaluatorMarginalError(EvaluatorError):
     ratio feature 80 pins for ``ir_standalone``, so ``ir_marginal`` and
     ``ir_standalone`` are measured on one axis and ``ir_standalone`` is the
     special case of a book of one (see ``_marginal``).
+    """
+
+
+class EvaluatorDebitError(EvaluatorError):
+    """The trial charge could not be built or debited.
+
+    Raised by :func:`evaluator.failure_outcome`, :func:`evaluator.charge_failure`,
+    :class:`evaluator.TrialCharge`, :class:`evaluator.DebitedTrial` and
+    :func:`evaluator.debit_trial` (app_spec.xml feature 84) when step 11 of
+    the §6.1 pipeline cannot charge the trial ledger for an evaluation: an
+    outcome outside §8's four-way vocabulary ('ok', 'timeout', 'error',
+    'tripwire_fail'), an identity that is not a name, a budget directive
+    that is neither the one bool §7.2's barrier lets cross nor the record
+    that carries it (the directive is supplied, never derived — feature
+    90), a failure the classifier does not know (a conforming run is not a
+    failure, and an unknown fail class is a drifted vocabulary, not a
+    fifth outcome), a ledger seam without a callable ``debit``, an answer
+    that is not the ``(record, appended)`` shape or whose record misses a
+    field, a sequence number no ledger could assign, an answer that names
+    another node than the one debited, and an appended row that disagrees
+    with the charge it was just asked to write.
+
+    Deliberately *not* here: the ledger's own failures.  A store that
+    cannot write propagates the ledger member's error, the same stance the
+    oracle and cost-schedule seams take — dressing it as a debit error
+    would hide which side of the seam failed.  And deliberately not a
+    failure at all: a *retry* answered by the prior row, which is §14's
+    idempotency contract working, is returned with ``appended=False`` and
+    never refused (see ``_debit``).
     """
 
 
