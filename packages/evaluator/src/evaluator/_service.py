@@ -41,8 +41,9 @@ import os
 from collections.abc import Mapping
 from typing import Any, Optional
 
+from ._compare import ProvenanceCheck, check_comparable
 from ._config import EvaluatorConfig
-from ._errors import EvaluatorImageError, EvaluatorStoreError
+from ._errors import EvaluatorImageError, EvaluatorProvenanceError, EvaluatorStoreError
 from ._identity import EvaluatorIdentity, evaluator_identity
 from ._image import ImageRef, coerce_image_ref, parse_image_ref
 from ._store import EvaluatorIdentityStore
@@ -260,6 +261,50 @@ class EvaluatorService:
         needs the store directly.
         """
         return self.store.identities()
+
+    def comparable(
+        self, left_hash: str, right_hash: str
+    ) -> ProvenanceCheck:
+        """Certify that two scores, by their stored hashes, can be compared.
+
+        Feature 71's end-to-end path: two scores each carry an
+        ``evaluator_hash`` as their provenance; this resolves each to the
+        identity the store persisted under it and refuses the comparison when
+        the two differ. A hash the store holds no row for is a *missing*
+        record (:meth:`resolve_hash` returns ``None``), not a mismatch between
+        two present ones — so it is refused here with the same message,
+        because a score whose provenance was never persisted is not one this
+        system can place on an axis with another.
+
+        Requires the store (it is the stored value the comparison is against,
+        not a recomputed one — see ``_store``); returns a
+        :class:`~evaluator.ProvenanceCheck` naming the shared hash when the
+        two scores share an evaluator. Raises
+        :class:`~evaluator.EvaluatorProvenanceError` — the
+        ``mismatched_provenance`` refusal — when the evaluators differ or a
+        score's provenance was never recorded.
+        """
+        left = self.store.resolve_hash(left_hash)
+        if left is None:
+            raise EvaluatorProvenanceError(
+                f"mismatched_provenance: the score carrying evaluator_hash "
+                f"{left_hash!r} was never persisted, so there is no evaluator "
+                "this system recorded to compare it under; app_spec.xml "
+                "feature 70 persists the identity and feature 71 refuses a "
+                "comparison it cannot place — record the score's evaluator "
+                "before comparing"
+            )
+        right = self.store.resolve_hash(right_hash)
+        if right is None:
+            raise EvaluatorProvenanceError(
+                f"mismatched_provenance: the score carrying evaluator_hash "
+                f"{right_hash!r} was never persisted, so there is no evaluator "
+                "this system recorded to compare it under; app_spec.xml "
+                "feature 70 persists the identity and feature 71 refuses a "
+                "comparison it cannot place — record the score's evaluator "
+                "before comparing"
+            )
+        return check_comparable(left, right)
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         image = "unresolved" if self._image is None else repr(self._image.short)

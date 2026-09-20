@@ -206,6 +206,7 @@ __all__ = [
     "EvaluatorIdentityError",
     "EvaluatorImageError",
     "EvaluatorNormalizeError",
+    "EvaluatorProvenanceError",
     "EvaluatorPurgeError",
     "EvaluatorSandboxError",
     "EvaluatorSignalError",
@@ -292,6 +293,30 @@ class EvaluatorNormalizeError(EvaluatorError):
     would dress a "no preference" up as a measurement. Each is refused rather
     than defaulted, because a normalized vector is only comparable when there
     was a scale to remove, and these are the cases in which there was not.
+    """
+
+
+class EvaluatorProvenanceError(EvaluatorError):
+    """Two scores cannot be compared because their provenance does not agree.
+
+    Raised by :func:`evaluator.check_comparable` (app_spec.xml feature 71)
+    when a comparison is asked to rank or difference two scores whose
+    ``evaluator_hash`` values differ: the scores were produced by different
+    evaluators — a different container image, a different resolved
+    configuration, or one whose provenance was never persisted and so cannot
+    be trusted — and comparing them would place two measurements taken under
+    different conditions on one axis. The refusal is §15's "Refuse cross-hash
+    comparison" recovery: an evaluator that changed between two scores is a
+    *different score wearing the same name*, and the recovery is to re-score
+    the pool under one pinned evaluator rather than to rank across the move.
+
+    The message carries the ``mismatched_provenance`` code and names both
+    hashes, because the refusal is only actionable when it can say *which*
+    two evaluators collided — the hash is one-way, so the caller is pointed
+    back at the stored row (or its own record of the run) to learn *how* they
+    differ. Deliberately *not* raised for a score whose provenance was never
+    persisted: that is a missing record, a discoverable state the caller
+    decides how to handle, not a mismatch between two present ones.
     """
 
 

@@ -204,6 +204,7 @@ from ._errors import (
     EvaluatorImageError,
     EvaluatorMarginalError,
     EvaluatorMetricsError,
+    EvaluatorProvenanceError,
     EvaluatorPurgeError,
     EvaluatorSandboxError,
     EvaluatorSignalError,
@@ -216,6 +217,10 @@ from ._identity import (
     evaluator_digest,
     evaluator_identity,
     normalize_evaluator_hash,
+)
+from ._compare import (
+    ProvenanceCheck,
+    check_comparable,
 )
 from ._image import (
     DIGEST_ALGORITHM,
@@ -411,6 +416,10 @@ __all__ = [
     "OracleResponse",
     "check_targets_gated",
     "gate_targets",
+    # Feature 71 — refusing a comparison across two evaluators
+    "EvaluatorProvenanceError",
+    "ProvenanceCheck",
+    "check_comparable",
     # Feature 79 — applying the cost model
     "COST_STEP",
     "CostModelRef",
