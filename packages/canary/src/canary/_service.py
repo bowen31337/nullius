@@ -47,6 +47,7 @@ from ._containers import (
     pin_containers,
     pinned_containers_from_env,
 )
+from ._device import DevicePaths, reject_gpus_from_env
 from ._replay import CanaryReplay
 from ._reproducibility import BitReproducibility
 
@@ -82,6 +83,7 @@ class CanaryService:
         self._pins: Optional[PinnedContainers] = (
             None if images is None else pin_containers(images)
         )
+        self._devices: Optional[DevicePaths] = None
         self._env = env
 
     # -- Construction -------------------------------------------------------
@@ -173,6 +175,32 @@ class CanaryService:
         if self._pins is None:
             self._pins = pinned_containers_from_env(self._environment())
         return self._pins
+
+    @property
+    def devices(self) -> DevicePaths:
+        """The eval and replay paths, swept and found GPU-free — feature 140.
+
+        :data:`~canary.DEVICE_ENV_VARS` resolved from the environment the
+        service was constructed with: each path's variable names the device
+        that path runs on, and the sweep refuses a GPU (or an unrecognized
+        device) in either, naming the path, the variable and the value. An
+        unset or blank variable is the CPU — the contract's desired state,
+        reached by declaring nothing — so it is recorded as the CPU rather
+        than refused. Resolved once and cached: a deployment that re-read its
+        device state mid-run could observe two different truths about the same
+        night, and the second read would say nothing about the first.
+
+        Deliberately lazy, like :attr:`containers` and unlike
+        :attr:`reproducibility`: the device sweep reads the environment, so it
+        can refuse, and the refusal names the deployment's own misconfiguration
+        rather than taking composition down — the factory builds this component
+        on every ``create_app()``, in a bare test process and on paths with no
+        GPU to guard. The refusal lands at the first call that asks whether the
+        deployment is GPU-free, where it is informative.
+        """
+        if self._devices is None:
+            self._devices = reject_gpus_from_env(self._environment())
+        return self._devices
 
     def _environment(self) -> Mapping[str, str]:
         """The environment mapping this service resolves against.

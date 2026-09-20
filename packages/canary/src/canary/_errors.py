@@ -24,10 +24,20 @@ canary's assertions with a single ``except``. The subclasses split by
 
 Later features in this category add the rest of §12's table — the
 lockfile, the thread caps, ``PYTHONHASHSEED``, the import allowlist, the
-GPU refusal — and each will bring its own subclass rather than folding
-into this one: a caller halting dreaming (§15's "Replay non-determinism"
+GPU refusal — and each brings its own subclass rather than folding into
+this one: a caller halting dreaming (§15's "Replay non-determinism"
 recovery) needs to know *which* line of the contract broke, because the
 recovery differs (bisect the image diff is not reinstall-from-lockfile).
+:class:`CanaryDeviceError` is that GPU refusal, feature 140 — a GPU (or an
+unrecognized device) declared in the eval or replay path — and it follows
+the rule rather than extending the second: a deployment can be perfectly
+pinned and still run on a GPU, which is the failure §12 names directly
+("no GPU in the eval path"), because a GPU kernel's reduction order is
+fixed by its block and grid shape rather than by the input, so two runs
+of one seeded signal can diverge in float. The repair for a moved pin is
+to re-pin; the repair for a GPU in the path is to remove it and run on
+the CPU; and the class split is what makes the difference legible at the
+``except``.
 
 :class:`CanaryReproducibilityError` is the third such subclass, and it
 follows that rule rather than extending the second. Feature 145
@@ -49,6 +59,7 @@ from __future__ import annotations
 
 __all__ = [
     "CanaryError",
+    "CanaryDeviceError",
     "CanaryImageError",
     "CanaryReproducibilityError",
 ]
@@ -56,6 +67,36 @@ __all__ = [
 
 class CanaryError(Exception):
     """Base class for every failure of the determinism canary's assertions."""
+
+
+class CanaryDeviceError(CanaryError):
+    """A GPU (or an unrecognized device) is declared in the eval or replay path.
+
+    Raised by :func:`~canary.reject_gpus` and :func:`~canary.reject_gpus_from_env`
+    when the evaluation path or the replay path declares a GPU — or a device
+    the sweep cannot place — rather than the CPU. This is app_spec.xml feature
+    140: "System rejects any GPU device in the evaluation path and in the
+    replay path, because float reproducibility requires a fixed reduction
+    order", which is §12's "Float reproducibility | Fixed reduction order; no
+    ``fastmath``; no GPU in the eval path" row made into something a run can
+    fail.
+
+    Deliberately its own subclass rather than folded into
+    :class:`CanaryImageError` (a moved pin) or :class:`CanaryReproducibilityError`
+    (divergent bytes): the three are three different breaks of §12's contract
+    with three different repairs. A moved pin is re-pinned; divergent bytes are
+    bisected; a GPU in the path is removed and the path re-run on the CPU. A
+    caller halting dreaming (§15's "Replay non-determinism" recovery) needs to
+    know *which* line of the contract broke, because the recovery differs, and
+    the class split is what makes that legible at the ``except``. A caller
+    catching :class:`CanaryError` still gets all of them.
+
+    The refusal is collective: one error names every path that declared a GPU,
+    with the variable behind it and the value as written, because a sweep that
+    reported only the first would be re-run to learn the rest, and the operator
+    of a nightly assertion reads the whole deployment's device state in one
+    message.
+    """
 
 
 class CanaryImageError(CanaryError):

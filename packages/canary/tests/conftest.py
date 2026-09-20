@@ -24,6 +24,13 @@ unpinned or tag-only container, so a suite that silently supplied a
 pin would hide the refusal it exists to pin. Tests that want a swept
 deployment ask for :func:`canary_env`, and the tests that assert the
 refusal ask for nothing and get the bare environment.
+
+The isolation also clears the device variables feature 140 reads
+(``NULLIUS_EVAL_DEVICE`` and ``NULLIUS_REPLAY_DEVICE``): the device
+sweep reads the process environment by default, so a developer shell
+carrying one would leak into the tests that assert the CPU is the
+passing case, and the "unset variable is the CPU" tests would depend
+on the shell not having one.
 """
 
 from __future__ import annotations
@@ -65,8 +72,18 @@ def _image_env_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
     makes each test state the environment it needs, and makes the
     "unset variable is refused" tests honest rather than dependent on
     the shell not having one.
+
+    It also clears the two device variables feature 140 reads —
+    ``NULLIUS_EVAL_DEVICE`` and ``NULLIUS_REPLAY_DEVICE`` — because the
+    device sweep reads the process environment by default, so a
+    developer shell carrying one would leak into the tests that assert
+    the CPU is the passing case.
     """
-    for variable in ("NULLIUS_EVALUATOR_IMAGE",):
+    for variable in (
+        "NULLIUS_EVALUATOR_IMAGE",
+        "NULLIUS_EVAL_DEVICE",
+        "NULLIUS_REPLAY_DEVICE",
+    ):
         monkeypatch.delenv(variable, raising=False)
 
 

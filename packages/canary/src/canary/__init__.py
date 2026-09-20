@@ -78,6 +78,38 @@ reachable only by import is a check the factory's scan cannot discover: the
 tripwires member's probe and the evaluator's service take the same stance
 for their own pure functions.
 
+*Feature 140 is the GPU refusal, over both paths, as the sweep's own
+assertion.* The category's sixteenth feature states §12's "Float
+reproducibility | Fixed reduction order; no ``fastmath``; no GPU in the eval
+path" row and the prerequisites' "No GPU anywhere; GPU is prohibited in both
+the evaluation and replay paths" — the correction §12.1 applies, that the
+prohibition reaches the replay path too, a separate deployment (§13) that
+reads materialized floats. A GPU kernel sums in an order fixed by its block
+and grid shape rather than by the input, so two runs of one seeded signal
+over the same bytes can diverge in float — the divergence the ``1e-12``
+canary exists to catch — and this feature refuses the GPU before it can run.
+Like the pin sweep it is a pure parser over strings a deployment already
+wrote — :mod:`canary._device` is :func:`classify_device` (a device string to
+:attr:`~canary.CPU` or :attr:`~canary.GPU`, refusing an unrecognized value),
+:func:`reject_gpus` (the explicit declaration) and :func:`reject_gpus_from_env`
+(the environment spelling) — and, like the pin sweep, it reads no environment
+at import and resolves nothing. But it differs from the pin sweep in one
+load-bearing way: the image sweep refuses an *empty* declaration (a sweep over
+zero containers is vacuously green, the one reading the nightly canary must
+never allow), while the device sweep refuses a *GPU* and accepts an *empty*
+declaration — the contract is "no GPU", and a deployment satisfies it by
+running on the CPU, which is the default reached by declaring nothing. So an
+unset device variable is the passing case, classified and recorded as the CPU,
+and the sweep is never vacuous because it always checks the same two fixed
+paths — :data:`EVAL_PATH` and :data:`REPLAY_PATH`, each read from its own
+variable in :data:`DEVICE_ENV_VARS` — and asserts neither names a GPU. The
+refusal is collective: one :class:`~canary.CanaryDeviceError` names every path
+that declared a GPU, with the variable behind it and the value as written. The
+composed service carries the sweep at ``service.devices``, beside
+``service.containers`` — the same seam, the same laziness (resolved on first
+use, so composition never fails on a deployment's device configuration) — for
+the same reason the pin sweep and feature 145's check are carried there.
+
 *Feature 141 sits beside the pin, as the persistence half of the frozen
 pair.* The category's fourteenth-through-seventeenth features turn the pin
 into the reference the nightly replay compares under: feature 141 persists
@@ -226,6 +258,17 @@ from ._containers import (
     pin_containers,
     pinned_containers_from_env,
 )
+from ._device import (
+    CPU,
+    DEVICE_ENV_VARS,
+    EVAL_PATH,
+    GPU,
+    REPLAY_PATH,
+    CanaryDeviceError,
+    DevicePaths,
+    reject_gpus,
+    reject_gpus_from_env,
+)
 from ._errors import (
     CanaryError,
     CanaryImageError,
@@ -318,6 +361,16 @@ __all__ = [
     "PinnedContainers",
     "pin_containers",
     "pinned_containers_from_env",
+    # Feature 140 — no GPU in the eval or replay path
+    "CPU",
+    "DEVICE_ENV_VARS",
+    "EVAL_PATH",
+    "GPU",
+    "REPLAY_PATH",
+    "CanaryDeviceError",
+    "DevicePaths",
+    "reject_gpus",
+    "reject_gpus_from_env",
     # Feature 145 — bit-identity across two runs of one seeded signal
     "BitReproducibility",
     "ByteComparison",
