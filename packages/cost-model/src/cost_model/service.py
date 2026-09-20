@@ -50,7 +50,8 @@ from .config import (
     read_cost_model_document,
 )
 from .errors import CostModelConfigError
-from .fees import FeeSchedule, resolve_fee_schedule
+from .fee_library import FeeImplementation, install_fee_implementation
+from .fees import FeeSchedule
 from .fill_probability import (
     FillProbabilityModel,
     resolve_fill_probability_model,
@@ -347,6 +348,14 @@ class CostModelService:
         penalty read, so the fee axis and the fill axis cannot disagree about
         which document was loaded.
 
+        The resolution runs through the process's one claimed fee
+        implementation (:meth:`fee_implementation`, feature 69): the
+        resolver this method calls is the one the process claimed, so a
+        process whose fee schedule has been claimed by some other module's
+        implementation refuses to price here rather than quietly serving
+        the second implementation — the divergence §6.2's ``β₄``
+        penalizes, surfaced as an error instead of a measurement.
+
         This is the seam feature 62's discount token substitutes into: the
         discount resolves a *different rate* and hands it to
         :meth:`FeeSchedule.apply` (or :func:`~cost_model.fees.apply_fee`)
@@ -359,8 +368,34 @@ class CostModelService:
         missing or blank — a fee defaulted to zero silently is the floored
         simulator `docs/alpha-engine-prd.md` §10 warns about, and a cost
         model that cannot price one side of a fill is not a cost model.
+        Raises :class:`~cost_model.errors.DuplicateFeeImplementationError`
+        when the process's fee schedule has been claimed by an
+        implementation that is not the shared library's.
         """
-        return resolve_fee_schedule(self.document)
+        return self.fee_implementation().resolve(self.document)
+
+    def fee_implementation(self) -> FeeImplementation:
+        """Claim and return the one implementation of the fee schedule this process prices through.
+
+        Feature 69's door: *"System rejects a second implementation of the
+        fee schedule, so research evaluation and live execution import one
+        shared cost library."*  Research evaluation and live execution
+        both hold the composed application, and this is the handle the
+        composition gives each of them — the claim is idempotent for the
+        shared library, so the second consumer to ask holds the *same*
+        implementation as the first (that is the feature's "so" clause,
+        made a return value), and a process already claimed by a
+        different implementation is refused here by name rather than
+        served, because serving it would make this service the second
+        implementation the feature exists to reject.
+
+        Delegates to
+        :func:`~cost_model.fee_library.install_fee_implementation`, so
+        the service and the importable symbol are one mechanism, not a
+        facade over a twin — the same stance every resolver method above
+        takes toward its module function.
+        """
+        return install_fee_implementation()
 
     def persist_latency(
         self,

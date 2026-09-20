@@ -106,6 +106,24 @@ and the instant the latency was measured, so a cost model's latency is a
 history that accumulates as shadow runs pile up rather than one assumed
 number.  It, too, layers on the resolved identity rather than beside it.
 
+Feature 69 closes the ring around all of the above: *System rejects a
+second implementation of the fee schedule, so research evaluation and
+live execution import one shared cost library.*  §6.2's rule — *"they
+must be the same code, not two implementations of the same document"*
+— is what every layer above kept structurally by living in this one
+package, and :mod:`cost_model.fee_library` makes it enforceable: the
+process's fee schedule is *claimed* once
+(:func:`~cost_model.fee_library.install_fee_implementation`), the same
+implementation claimed again is the one-shared-library outcome research
+evaluation and live execution are supposed to produce, and a *different*
+one offered afterwards is refused by name
+(:class:`~cost_model.errors.DuplicateFeeImplementationError`) — both
+modules in the message, so the divergent wiring is the error rather than
+the ``β₄`` divergence it would have caused.  Identity is the owning
+module with the factory's scan prefix stripped, so one source imported
+twice (directly and through the factory's mangled name) is still one
+implementation, never two.
+
 This package also *is* a component of the composed application: importing
 it registers a builder with the application factory
 (``app.module_loader.register``), so the module loader discovers it by
@@ -160,6 +178,13 @@ from .errors import (
     CostModelError,
     CostModelFillError,
     CostModelStoreError,
+    DuplicateFeeImplementationError,
+)
+from .fee_library import (
+    SHARED_FEE_IMPLEMENTATION,
+    FeeImplementation,
+    install_fee_implementation,
+    installed_fee_implementation,
 )
 from .fees import (
     FEES_KEY,
@@ -243,6 +268,7 @@ __all__ = [
     "QUEUE_POSITION_PENALTY_KEY",
     "REQUIRE_TRADE_THROUGH_KEY",
     "SELL",
+    "SHARED_FEE_IMPLEMENTATION",
     "TAKER",
     "TAKER_BPS_KEY",
     "WALK_BOOK_KEY",
@@ -256,7 +282,9 @@ __all__ = [
     "CostModelFillError",
     "CostModelService",
     "CostModelStoreError",
+    "DuplicateFeeImplementationError",
     "EmpiricalLatencyDistribution",
+    "FeeImplementation",
     "FeeSchedule",
     "FillProbability",
     "FillProbabilityModel",
@@ -274,6 +302,8 @@ __all__ = [
     "build_cost_model_service",
     "charge_queue_position_penalty",
     "fill_passive_order",
+    "install_fee_implementation",
+    "installed_fee_implementation",
     "load_cost_model",
     "load_latency_distributions",
     "load_latest_latency_distribution",

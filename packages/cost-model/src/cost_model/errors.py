@@ -36,6 +36,15 @@ not by which line of code failed:
   Each is refused rather than smoothed over, because the alternative —
   pricing the unpriceable — is exactly the unrealistic fill figure the
   feature's sentence rules out.
+* :class:`DuplicateFeeImplementationError` — the shared-library contract
+  (:mod:`cost_model.fee_library`, feature 69).  The process's fee
+  schedule is claimed once, and a *different* implementation offered
+  afterwards is refused by name — §6.2's *"they must be the same code,
+  not two implementations of the same document"*, made a refusal rather
+  than a hope.  The same error refuses a value offered as an
+  implementation that names no owning module or carries no schedule
+  type, charge or resolver: the registry only ever holds something that
+  actually prices.
 
 Every message names the offending value and the contract it broke, because
 these are operational signals for a pipeline that loads a Z0 artifact on
@@ -49,6 +58,7 @@ __all__ = [
     "CostModelError",
     "CostModelFillError",
     "CostModelStoreError",
+    "DuplicateFeeImplementationError",
 ]
 
 
@@ -156,4 +166,35 @@ class CostModelFillError(ValueError, CostModelError):
     of the *document*, which are :class:`CostModelConfigError` (a
     ``walk_book: false`` is a configuration the library refuses to resolve,
     not a broken book).
+    """
+
+
+class DuplicateFeeImplementationError(ValueError, CostModelError):
+    """A second implementation of the fee schedule was offered where one is already claimed.
+
+    Feature 69: *"System rejects a second implementation of the fee
+    schedule, so research evaluation and live execution import one shared
+    cost library."*  docs/nullius-tech-architecture.md §6.2 prices the
+    divergence directly — *"Divergence between these two is exactly the
+    quantity ``β₄`` penalizes"* — and this error is that sentence's
+    refusal: the process's fee schedule is claimed once through
+    :func:`cost_model.fee_library.install_fee_implementation`, and a
+    different implementation offered afterwards is refused with both
+    modules named, the incumbent first, so the operator sees which
+    wiring has to go.
+
+    The construction half of the same contract is refused here too: a
+    value offered as an implementation that names no owning module, or
+    carries no schedule type, no charge or no resolver, implements
+    nothing and cannot claim anything — the registry only ever holds
+    something that actually prices, so a malformed claim can never
+    half-install and leave the process believing itself guarded.
+
+    Dual-inherited for the same reason :class:`CostModelConfigError` and
+    :class:`CostModelFillError` are: the refusal lands on whoever
+    supplied the second (or broken) implementation — a ``ValueError``,
+    caught at the wiring that caused it — and stays catchable as this
+    package's one vocabulary (a :class:`CostModelError`), so a caller
+    with a single ``except`` sees a divergent fee schedule along with a
+    bad document and a refused fill.
     """
