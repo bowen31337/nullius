@@ -104,6 +104,29 @@ against is left ``Nullable`` and filled by the replay (feature 142), not by
 the freeze — this feature *freezes*, the next one *replays and decides*, and a
 store that also decided would be a threshold nobody could audit.
 
+*Feature 142 is the replay itself, beside the frozen pair, not inside it.*
+The category's fifteenth-through-sixteenth features turn the frozen pair into
+the nightly assertion §12's line 677 spells — *"replay a frozen policy
+``π_canary`` over a frozen tree ``T_canary`` and assert the score matches a
+recorded constant to ``1e-12``"*.  Feature 141 made the pair a thing that can
+be frozen and read back; feature 142 is the verb that runs it — :mod:`canary._replay`
+is the pure function (:func:`replay_pair`) that takes the frozen pair and runs
+the policy over the tree, once, in a stable order, to a single float, and
+returns the :class:`CanaryReplayResult` — the score, the recorded constant it
+is compared against, the deviation and the ``1e-12`` tolerance band.  Like
+feature 141's value types it reads no environment and resolves nothing — the
+pair is handed in, already frozen and read back — but unlike them it *computes*
+rather than merely holds, and the computation is the one §12's table must be
+invariant to.  It deliberately computes the score and reports the comparison
+without deciding it: :attr:`CanaryReplayResult.within_tolerance` is the four
+terms of line 677's ``abs(score - CANARY_EXPECTED) > 1e-12`` carried as a
+value, and the halt-dreaming and the ``determinism_broken`` alert are feature
+143's, which owns the ``1e-12`` decision so it sits in exactly one place an
+operator can audit.  The composed service carries the replay through
+:attr:`CanaryService.replay`, for the same reason it carries the pin sweep and
+feature 145's check: a replay reachable only by import is a replay the
+factory's scan cannot discover.
+
 *What this package deliberately does not do.* It does not resolve
 tags or consult a registry: feature 135 is an assertion, not a
 resolution, so the pin sweep is a pure parser over strings a deployment
@@ -136,6 +159,13 @@ from typing import Optional
 
 from app.module_loader import register
 
+from ._containers import (
+    EVALUATOR_ROLE,
+    IMAGE_ENV_VARS,
+    PinnedContainers,
+    pin_containers,
+    pinned_containers_from_env,
+)
 from ._errors import (
     CanaryError,
     CanaryImageError,
@@ -148,22 +178,6 @@ from ._image import (
     image_digest,
     parse_pinned_image,
 )
-from ._containers import (
-    EVALUATOR_ROLE,
-    IMAGE_ENV_VARS,
-    PinnedContainers,
-    pin_containers,
-    pinned_containers_from_env,
-)
-from ._reproducibility import (
-    BitReproducibility,
-    ByteComparison,
-    SeededSignal,
-    assert_bit_identical,
-    compare_bytes,
-    compare_runs,
-    require_identical,
-)
 from ._reference import (
     CanaryPolicy,
     CanaryReferencePair,
@@ -174,16 +188,32 @@ from ._reference import (
     tree_hash,
 )
 from ._reference_store import (
-    CanaryReferenceStore,
-    CanaryReferenceStoreRecord,
     POLICY_TABLE,
     REFERENCE_STORE_COMPONENT_NAME,
     REFERENCE_TABLE,
     TREE_NODE_TABLE,
     TREE_TABLE,
+    CanaryReferenceStore,
+    CanaryReferenceStoreRecord,
     build_reference_store,
     freeze_reference_pair,
     load_reference_pair,
+)
+from ._replay import (
+    DEFAULT_TOLERANCE,
+    CanaryReplay,
+    CanaryReplayResult,
+    CanaryReplayScoreError,
+    replay_pair,
+)
+from ._reproducibility import (
+    BitReproducibility,
+    ByteComparison,
+    SeededSignal,
+    assert_bit_identical,
+    compare_bytes,
+    compare_runs,
+    require_identical,
 )
 from ._service import CanaryService, build_canary_service
 
@@ -225,6 +255,11 @@ __all__ = [
     "build_reference_store",
     "freeze_reference_pair",
     "load_reference_pair",
+    # Feature 142 — the nightly replay of the frozen pair to a score
+    "DEFAULT_TOLERANCE",
+    "CanaryReplay",
+    "CanaryReplayResult",
+    "replay_pair",
     # The composed component
     "CanaryService",
     "build_canary_service",
@@ -232,7 +267,9 @@ __all__ = [
     "CanaryError",
     "CanaryImageError",
     "CanaryReproducibilityError",
+    "CanaryReplayScoreError",
 ]
+
 
 __version__ = "0.1.0"
 

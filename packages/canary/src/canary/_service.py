@@ -47,6 +47,7 @@ from ._containers import (
     pin_containers,
     pinned_containers_from_env,
 )
+from ._replay import CanaryReplay
 from ._reproducibility import BitReproducibility
 
 __all__ = ["CanaryService", "build_canary_service"]
@@ -134,6 +135,24 @@ class CanaryService:
         perfectly able to learn that its bytes diverged.
         """
         return BitReproducibility()
+
+    @property
+    def replay(self) -> "CanaryReplay":
+        """Feature 142's nightly replay, carried beside the pin sweep.
+
+        A stateless facade — constructed per access, holding nothing — so the
+        composed canary component exposes the whole category's assertions from
+        one value, the way the tripwires member's probe and the evaluator's
+        service expose theirs.  Deliberately *not* a lazy or
+        strict-lazily-resolved property like :attr:`containers`: the replay is a
+        pure function of the frozen pair it is handed, reads no environment and
+        can refuse nothing about the deployment, so there is nothing to defer and
+        no misconfiguration for a construction to discover.  A caller replaying a
+        frozen pair does not have to hold a *pinned* deployment to do it, and a
+        deployment whose pins are unset is still perfectly able to replay the
+        pair it froze.
+        """
+        return CanaryReplay()
 
     # -- What this service is bound to --------------------------------------
 
