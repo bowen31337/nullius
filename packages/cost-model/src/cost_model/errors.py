@@ -21,12 +21,16 @@ not by which line of code failed:
   configured at all is not this error — see :mod:`cost_model.service` for
   the stance that separates the two.
 * :class:`CostModelFillError` — the fill-input contract
-  (:mod:`cost_model.book_walk`, feature 66).  A recorded book, an aggressive
-  order or a walk over them that the fill model cannot price: a ladder whose
+  (:mod:`cost_model.book_walk`, feature 66, and
+  :mod:`cost_model.passive_fill`, feature 63).  A recorded book, an
+  aggressive order or a walk over them, or a recorded tape, a passive order
+  or a gate over them, that the fill model cannot price: a ladder whose
   levels are out of order, a book with an empty or crossed side, an order
-  the recorded depth cannot fill.  Each is refused rather than smoothed
-  over, because the alternative — pricing the unpriceable — is exactly the
-  unrealistic slippage figure the feature's sentence rules out.
+  the recorded depth cannot fill, a tape that carries a non-trade, a
+  decision that asserts a fill with no triggering trade.  Each is refused
+  rather than smoothed over, because the alternative — pricing the
+  unpriceable — is exactly the unrealistic fill figure the feature's
+  sentence rules out.
 
 Every message names the offending value and the contract it broke, because
 these are operational signals for a pipeline that loads a Z0 artifact on
@@ -96,6 +100,16 @@ class CostModelFillError(ValueError, CostModelError):
     slippage number produced by smoothing over a broken ladder or an
     unfilled remainder would be *unrealistic by construction*, which is
     precisely the defect the feature exists to remove.
+
+    Feature 63: *"System fills a passive order only when the recorded tape
+    trades through the quoted price, which rejects fills that merely touch
+    it."*  This is the same contract on the passive half: a recorded tape, a
+    passive order or a gate over them that the fill model cannot honestly
+    price — a tape carrying a non-trade, a decision that asserts a fill with
+    no triggering trade — and the one thing it must not do in that state is
+    answer *filled* anyway, because a fill produced by smoothing over a
+    broken tape or a mere touch would be *unrealistic by construction*,
+    which is precisely the defect the feature exists to remove.
 
     Dual-inherited for the same reason :class:`CostModelConfigError` is: a
     caller catching this package's single vocabulary catches a refused fill

@@ -21,6 +21,26 @@ latency distribution of 67, the borrow series of 68) layer on top of this
 package's resolved value rather than beside it, which is what keeps one
 schedule from becoming two.
 
+Feature 63 layers onto that identity from the fill model's passive half:
+*System fills a passive order only when the recorded tape trades through
+the quoted price, which rejects fills that merely touch it.*  It is §6.2's
+``passive.require_trade_through: true`` made concrete, and
+:mod:`cost_model.passive_fill` holds it — the recorded tape as a value
+(:class:`~cost_model.passive_fill.RecordedTape`, chronological trades), the
+resting order as a value (:class:`~cost_model.passive_fill.PassiveOrder`,
+a side and a limit price), and the gate that answers *whether* the order
+filled and names the trade that picked it off when it did
+(:class:`~cost_model.passive_fill.PassiveFillDecision`).  It refuses the
+fill the naive touch-based model would have granted — a trade that prints
+exactly at the quote has reached the price but not crossed it — because a
+passive provider is picked off only when the market moves *past* its quote.
+It refuses what the tape did not record — a tape that never traded through
+leaves the order unfilled — and a document whose ``require_trade_through``
+is not ``true`` is refused, because the only alternative behaviour is the
+touch-fill the sentence rules out and this library does not carry it.  It
+is the gate features 64 and 65 build on: the queue-position penalty and the
+fill-probability decay price a fill this feature has already granted.
+
 Feature 66 layers onto that identity from the fill model's aggressive
 half: *System walks the recorded L2 book for an aggressive order rather
 than crossing at the midpoint, which returns a realistic slippage
@@ -116,6 +136,17 @@ from .latency_store import (
     load_latest_latency_distribution,
     persist_latency_distribution,
 )
+from .passive_fill import (
+    PASSIVE_KEY,
+    REQUIRE_TRADE_THROUGH_KEY,
+    PassiveFillDecision,
+    PassiveFillModel,
+    PassiveOrder,
+    RecordedTape,
+    Trade,
+    fill_passive_order,
+    resolve_passive_fill_model,
+)
 from .service import CostModelService, build_cost_model_service
 from .store import (
     COST_MODEL_TABLE,
@@ -136,7 +167,9 @@ __all__ = [
     "DEFAULT_QUANTILES",
     "FILL_MODEL_KEY",
     "LATENCY_TABLE",
+    "PASSIVE_KEY",
     "QUANTILE_METHOD",
+    "REQUIRE_TRADE_THROUGH_KEY",
     "SELL",
     "WALK_BOOK_KEY",
     "AggressiveFillModel",
@@ -150,8 +183,14 @@ __all__ = [
     "CostModelService",
     "CostModelStoreError",
     "EmpiricalLatencyDistribution",
+    "PassiveFillDecision",
+    "PassiveFillModel",
+    "PassiveOrder",
     "RecordedBook",
+    "RecordedTape",
+    "Trade",
     "build_cost_model_service",
+    "fill_passive_order",
     "load_cost_model",
     "load_latency_distributions",
     "load_latest_latency_distribution",
@@ -162,6 +201,7 @@ __all__ = [
     "read_cost_model_document",
     "require_yaml",
     "resolve_aggressive_fill_model",
+    "resolve_passive_fill_model",
     "walk_recorded_book",
 ]
 

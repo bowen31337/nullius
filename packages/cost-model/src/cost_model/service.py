@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from typing import Optional, Union
 
 from .book_walk import AggressiveFillModel, resolve_aggressive_fill_model
 from .config import (
@@ -56,6 +55,7 @@ from .latency_store import (
     load_latest_latency_distribution,
     persist_latency_distribution,
 )
+from .passive_fill import PassiveFillModel, resolve_passive_fill_model
 from .store import (
     DATABASE_URL_ENV,
     load_persisted_cost_model,
@@ -77,10 +77,10 @@ class CostModelService:
 
     def __init__(
         self,
-        config: Optional[CostModelConfig] = None,
+        config: CostModelConfig | None = None,
         *,
-        config_path: Optional[Union[str, "os.PathLike[str]"]] = None,
-        database_url: Optional[str] = None,
+        config_path: str | os.PathLike[str] | None = None,
+        database_url: str | None = None,
     ) -> None:
         """Bind a service to a document path (or an already-resolved config).
 
@@ -108,7 +108,7 @@ class CostModelService:
         )
 
     @classmethod
-    def from_env(cls) -> "CostModelService":
+    def from_env(cls) -> CostModelService:
         """Construct the component the application factory composes.
 
         Reads the document path from
@@ -118,7 +118,7 @@ class CostModelService:
         is opened on the first persist.
         """
         raw = os.environ.get(COST_MODEL_PATH_ENV)
-        config_path: Optional[str] = raw if raw else None
+        config_path: str | None = raw if raw else None
         return cls(config_path=config_path)
 
     @property
@@ -140,7 +140,7 @@ class CostModelService:
         return self._config
 
     def load(
-        self, path: Optional[Union[str, "os.PathLike[str]"]] = None
+        self, path: str | os.PathLike[str] | None = None
     ) -> CostModelConfig:
         """Load (or return the already-resolved) cost model.
 
@@ -162,7 +162,7 @@ class CostModelService:
         return self.config
 
     @property
-    def document(self) -> "Mapping[str, object]":
+    def document(self) -> Mapping[str, object]:
         """The parsed cost model document, read once and cached.
 
         The service-level spelling of the single-parse seam
@@ -194,7 +194,7 @@ class CostModelService:
         return self._document
 
     def resolved(
-        self, database_url: Optional[str] = None
+        self, database_url: str | None = None
     ) -> CostModelConfig:
         """Load the configuration, persist the resolved pair, return it.
 
@@ -215,8 +215,8 @@ class CostModelService:
         self,
         venue: str,
         version: str,
-        database_url: Optional[str] = None,
-    ) -> Optional[CostModelConfig]:
+        database_url: str | None = None,
+    ) -> CostModelConfig | None:
         """Read a persisted cost model back, or ``None`` when absent.
 
         The reader a later feature resolves a score's fee assumptions
@@ -251,15 +251,39 @@ class CostModelService:
         """
         return resolve_aggressive_fill_model(self.document)
 
+    def passive(self) -> PassiveFillModel:
+        """Resolve the passive fill model's trade-through gate from the loaded document.
+
+        Feature 63's configuration half: §6.2's document names the
+        behaviour (``fill_model.passive.require_trade_through: true``), and
+        this is the caller's handle on it — the evaluator and the live
+        execution engine both reach the gate through the composed service,
+        so the two cannot each grow their own fill model (feature 69's
+        promise, and §6.2's ``β₄`` invariant).  The gate is resolved from
+        the one cached parse (see :attr:`document`), so it is the behaviour
+        of the document the resolved identity was loaded from — the same
+        parse the aggressive half (:meth:`aggressive`) reads, so the two
+        halves of the fill model cannot disagree about which document was
+        loaded.
+
+        Raises :class:`~cost_model.errors.CostModelConfigError` when the
+        document names no passive gate or names one whose
+        ``require_trade_through`` is not exactly ``true`` — the shared
+        library implements the trade-through gate and nothing else, because
+        the only alternative the flag could name is the touch-fill the
+        feature's sentence rules out.
+        """
+        return resolve_passive_fill_model(self.document)
+
     def persist_latency(
         self,
         distribution: EmpiricalLatencyDistribution,
         venue: str,
         version: str,
         *,
-        measured_at: Optional[str] = None,
-        source: Optional[str] = None,
-        database_url: Optional[str] = None,
+        measured_at: str | None = None,
+        source: str | None = None,
+        database_url: str | None = None,
     ) -> EmpiricalLatencyDistribution:
         """Persist a measured latency distribution for a cost model.
 
@@ -288,8 +312,8 @@ class CostModelService:
         self,
         venue: str,
         version: str,
-        database_url: Optional[str] = None,
-    ) -> Optional[EmpiricalLatencyDistribution]:
+        database_url: str | None = None,
+    ) -> EmpiricalLatencyDistribution | None:
         """Read the most recently measured latency distribution for a cost model.
 
         The reader a latency-aware cost computation resolves against: given
