@@ -4,6 +4,7 @@ requires-python = ">=3.12"
 
 [manifest]
 members = [
+    "canary",
     "cost-model",
     "evaluator",
     "ledger",
@@ -14,6 +15,17 @@ members = [
     "snapshot",
     "universe",
 ]
+
+[[package]]
+name = "canary"
+version = "0.1.0"
+source = { editable = "packages/canary" }
+dependencies = [
+    { name = "nullius" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "nullius", editable = "." }]
 
 [[package]]
 name = "colorama"

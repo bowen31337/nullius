@@ -1,0 +1,38 @@
+# nullius workspace member: the determinism canary plugin
+# (app_spec.xml, "Determinism Guarantees & Nightly Canary", feature 135;
+# docs/nullius-tech-architecture.md §12 for the determinism contract this
+# member polices, §16 for the digest-pinned container runtime it assumes).
+#
+# Joins the uv workspace by convention — packages/canary with this file —
+# so the module loader (src/app/module_loader.py) discovers this component
+# by scanning the members the root pyproject.toml declares.  No edit to
+# any central file is needed or wanted.
+#
+# Dependencies: the workspace root, for the factory's registration
+# protocol (`import app.module_loader`), and nothing else.  The pin sweep
+# is a parser over strings a deployment already wrote down — it needs no
+# registry client, no database and no numerics — so a member with no
+# third-party wheel cannot break another member's resolution, and this
+# one is imported on every factory scan (including the replay path,
+# which architecture §1 keeps away from anything that could perturb it),
+# so the cheaper this import is the better.  Later features in this
+# category (the lockfile, thread, hash-seed, allowlist and GPU refusals
+# of features 136-140, the frozen pair and nightly replay of 141-146)
+# layer on top of this package's pin rather than beside it.
+
+[project]
+name = "canary"
+version = "0.1.0"
+description = "Determinism canary: every evaluation container pinned by image digest, refusing a tag-only reference."
+requires-python = ">=3.12"
+dependencies = ["nullius"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/canary"]
