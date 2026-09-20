@@ -40,7 +40,7 @@ only.").  The sentence lands as four modules, one per claim:
   could widen it.
 
 The category's other features join this tree as siblings of these
-modules, and seven have:
+modules, and eight have:
 
 * :mod:`infra.security.key_backup` — feature 155's *two independent
   stores*, the sealed sidecar-key backup and the reconciliation
@@ -67,6 +67,12 @@ modules, and seven have:
   sandbox any egress allowance and the gate that answers every
   attempt — one at the data lake with the lake's own reason,
   everything else with the default's.
+* :mod:`infra.security.loop_credentials` — feature 148's *credential
+  set that rejects every write to the immutable zone*, the grant the
+  loop-mutated components run under, the compile that refuses any set
+  carrying a write onto the zone, and the gate that answers every
+  write attempt at it — §2's "Z1 has no credential for Z0", held in
+  both tenses.
 
 The exports below are feature 156's alone, deliberately: this module's
 ``__all__`` is the zone-policy vocabulary, and a caller reaching for
