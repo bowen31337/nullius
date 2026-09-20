@@ -10,11 +10,16 @@ persists one trial_ledger row per evaluation under a monotonically
 increasing sequence number.*  The append seam
 (:class:`ledger.store.TrialLedger.append`) and the never-reused sequence
 are this member's contribution; the features that follow add their own
-stamps and derivations on top of it — the provenance triple of 87, the
+stamps and derivations on top of it — the provenance triple of 87,
+the
 epoch accounting of 88, the charge semantics of 89-90, the outcome of
 91 (:mod:`ledger.outcome`: one of 'ok', 'timeout', 'error',
 'tripwire_fail' persisted on every appended row, refused when absent or
-misspelled), the opaque budget directive of 90
+misspelled), the charge unit of 89
+(:mod:`ledger.units`: a positive finite real defaulting to §8's ``1.0``,
+so an ordinary evaluation costs one unit and a cross-validated one whose
+folds each compare a fit against the same forward returns costs more),
+the opaque budget directive of 90
 (:mod:`ledger.budget`: a genuine bool supplied by the caller, never
 derived), the enforced immutability of 92, and the two derived views of
 93-96 — §8's ``K_effective`` per epoch (feature 93, counting the
@@ -60,7 +65,7 @@ already says:
 
 * :class:`~ledger.record.TrialLedgerRecord` — one row as a value: the
   sequence the table assigned, the stamp, the two identities, the
-  outcome.
+  outcome, the budget directive and the charge unit.
 * :class:`~ledger.store.TrialLedger` — the append, the idempotent
   debit, the ordered read, the count; bound to one database URL.
 * :class:`~ledger.debit.DebitEndpoint` with :class:`~ledger.debit.
@@ -79,6 +84,12 @@ already says:
   directive: the genuine-bool check every appended row's
   ``charges_budget`` is validated through, supplied by the caller and
   never derived.
+* :data:`~ledger.units.DEFAULT_CHARGE_UNITS` with
+  :func:`~ledger.units.validated_charge_units` — feature 89's unit: the
+  positive-finite-real check every appended row's ``charge_units`` is
+  validated through, and the ``1.0`` §8's DDL declares as the column's
+  default, so an ordinary evaluation costs one unit and a cross-validated
+  one states its folds' count.
 * :class:`~ledger.keffective.KEffective` with
   :func:`~ledger.keffective.derive_k_effective` and
   :data:`~ledger.keffective.UNNAMED_EPOCH` — feature 93's derivation:
@@ -125,10 +136,12 @@ from .store import (
     TRIAL_LEDGER_TABLE,
     TrialLedger,
 )
+from .units import DEFAULT_CHARGE_UNITS, validated_charge_units
 
 __all__ = [
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
+    "DEFAULT_CHARGE_UNITS",
     "DEBIT_COMPONENT_NAME",
     "DEBIT_ROUTE",
     "EPOCH_LEDGER_TABLE",
@@ -156,6 +169,7 @@ __all__ = [
     "derive_epoch_usage",
     "derive_k_effective",
     "utc_now",
+    "validated_charge_units",
     "validated_charges_budget",
 ]
 

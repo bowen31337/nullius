@@ -154,14 +154,15 @@ def test_the_endpoint_carries_the_directive_of_the_request(
     assert test_ledger.get(response.seq) == response.record
 
 
-def test_the_column_tuple_carries_the_directive_last(
+def test_the_column_tuple_carries_the_directive(
     test_ledger: TrialLedger,
 ) -> None:
     # The record's column tuple is the table's declaration order — the
-    # directive closes the row, and the reader that unpacks it cannot
-    # mistake it for an identity, a stamp or the outcome.
+    # directive sits where §8 declares it, and the reader that unpacks it
+    # cannot mistake it for an identity, a stamp or the outcome.  Feature
+    # 89's unit follows it (its own tests pin that end of the tuple).
     record = test_ledger.append(NODE, CAMPAIGN, OUTCOME, True, ts=STAMP)
-    assert record.row()[-1] == 1
+    assert record.row()[5] == 1
     assert record.row() == (
         record.seq,
         STAMP.isoformat(),
@@ -169,6 +170,7 @@ def test_the_column_tuple_carries_the_directive_last(
         str(CAMPAIGN),
         "ok",
         1,
+        1.0,
     )
 
 
@@ -305,13 +307,16 @@ def test_the_directive_column_is_boolean_not_null_with_no_default(
 ) -> None:
     # §8's DDL for the column is BOOLEAN NOT NULL with no default — the
     # shape that makes the directive the caller's to state, not the
-    # table's to presume.  The column closes the declaration order the
-    # record's row() tuple mirrors.
+    # table's to presume.  The column sits in the declaration order the
+    # record's row() tuple mirrors, just before feature 89's unit.
     test_ledger.append(NODE, CAMPAIGN, OUTCOME, True, ts=STAMP)
     with sqlite3.connect(db_path) as connection:
         info = connection.execute(f"PRAGMA table_info({TRIAL_LEDGER_TABLE})")
         rows = {row[1]: row for row in info}
-    assert list(rows) == ["seq", "ts", "node_id", "campaign_id", "outcome", "charges_budget"]
+    assert list(rows) == [
+        "seq", "ts", "node_id", "campaign_id", "outcome", "charges_budget",
+        "charge_units",
+    ]
     # (cid, name, type, notnull, dflt_value, pk) for the charges_budget column.
     # SQLite preserves the declared type name; the value is still stored as
     # the 0/1 an INTEGER-affinity column holds.
@@ -371,7 +376,12 @@ def test_a_pre_directive_database_is_upgraded_in_place(
     with sqlite3.connect(db_path) as connection:
         info = connection.execute(f"PRAGMA table_info({TRIAL_LEDGER_TABLE})")
         columns = [row[1] for row in info]
-    assert columns == ["seq", "ts", "node_id", "campaign_id", "outcome", "charges_budget"]
+    # The legacy table held outcome alone; the upgrade adds the directive
+    # and the unit after it, so every column a reader needs exists.
+    assert columns == [
+        "seq", "ts", "node_id", "campaign_id", "outcome", "charges_budget",
+        "charge_units",
+    ]
 
 
 def test_the_legacy_default_is_the_budget_charging_spelling(

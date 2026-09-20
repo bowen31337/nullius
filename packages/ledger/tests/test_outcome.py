@@ -144,14 +144,15 @@ def test_the_endpoint_carries_the_outcome_of_the_request(
     assert test_ledger.get(response.seq) == response.record
 
 
-def test_the_column_tuple_closes_with_the_directive(
+def test_the_column_tuple_places_the_outcome_before_the_directive(
     test_ledger: TrialLedger,
 ) -> None:
     # The record's column tuple is the table's declaration order — the
-    # directive closes the row, and the reader that unpacks it cannot
-    # mistake it for an identity, a stamp or the outcome.
+    # outcome sits where §8 declares it, and the reader that unpacks it
+    # cannot mistake it for an identity or a stamp.  The directive (5)
+    # and feature 89's unit (6) follow it; each has its own test.
     record = test_ledger.append(NODE, CAMPAIGN, "timeout", CHARGES_BUDGET, ts=STAMP)
-    assert record.row()[-1] == 1
+    assert record.row()[4] == "timeout"
     assert record.row() == (
         record.seq,
         STAMP.isoformat(),
@@ -159,6 +160,7 @@ def test_the_column_tuple_closes_with_the_directive(
         str(CAMPAIGN),
         "timeout",
         1,
+        1.0,
     )
 
 
@@ -270,13 +272,16 @@ def test_the_outcome_column_is_not_null_with_no_default(
 ) -> None:
     # §8's DDL for the column is TEXT NOT NULL with no default — the
     # shape that makes the outcome the caller's to state, not the
-    # table's to presume.  The column closes the declaration order the
-    # record's row() tuple mirrors.
+    # table's to presume.  The column sits in the declaration order the
+    # record's row() tuple mirrors, before the directive and the unit.
     test_ledger.append(NODE, CAMPAIGN, "ok", CHARGES_BUDGET, ts=STAMP)
     with sqlite3.connect(db_path) as connection:
         info = connection.execute(f"PRAGMA table_info({TRIAL_LEDGER_TABLE})")
         rows = {row[1]: row for row in info}
-    assert list(rows) == ["seq", "ts", "node_id", "campaign_id", "outcome", "charges_budget"]
+    assert list(rows) == [
+        "seq", "ts", "node_id", "campaign_id", "outcome", "charges_budget",
+        "charge_units",
+    ]
     # (cid, name, type, notnull, dflt_value, pk) for the outcome column.
     _, _, kind, notnull, default, pk = rows["outcome"]
     assert kind == "TEXT"
@@ -320,7 +325,12 @@ def test_a_pre_outcome_database_is_upgraded_in_place(
     with sqlite3.connect(db_path) as connection:
         info = connection.execute(f"PRAGMA table_info({TRIAL_LEDGER_TABLE})")
         columns = [row[1] for row in info]
-    assert columns == ["seq", "ts", "node_id", "campaign_id", "outcome", "charges_budget"]
+    # The legacy table held the four columns of features 86-95; the
+    # upgrade adds the outcome's successors, the directive and the unit.
+    assert columns == [
+        "seq", "ts", "node_id", "campaign_id", "outcome", "charges_budget",
+        "charge_units",
+    ]
 
 
 def test_the_legacy_default_is_the_no_recorded_failure_spelling(

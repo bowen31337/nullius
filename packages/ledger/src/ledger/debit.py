@@ -38,15 +38,21 @@ the atomicity is the store's to keep, the request/response shape is the
 endpoint's to say, and neither reaches into the other's half.
 
 **The request is a frozen value, validated at construction.**  A request
-whose ``node_id`` is not a UUID, whose ``ts`` is naive, or whose
-``outcome`` is not one of the four a trial can end in
-(:data:`~ledger.outcome.OUTCOMES`, feature 91), is refused before the
+whose ``node_id`` is not a UUID, whose ``ts`` is naive, whose ``outcome``
+is not one of the four a trial can end in
+(:data:`~ledger.outcome.OUTCOMES`, feature 91), or whose
+``charge_units`` is not a positive finite real (feature 89), is refused
+before the
 store is touched — a malformed body spends no sequence number — and the
 canonical spellings (UUID text, aware-UTC stamps) mean two requests for
 the same evaluation compare equal however the caller came by the
 identities.  The outcome is required with no default: the retry this
 endpoint exists to answer is the failure path's own charge, and a body
 that cannot say how the evaluation ended would debit it unclassified.
+The unit is the one term on this body that *does* default — to §8's own
+``1.0`` — because an ordinary evaluation's cost is a fact the spec
+already states, while the outcome and the directive are the caller's to
+supply and have no honest presumption.
 
 **The response is a fact, not a receipt to reinterpret.**  ``seq`` is
 the row's own sequence — fresh on the first POST, prior on every retry —
@@ -76,6 +82,7 @@ from .budget import validated_charges_budget
 from .outcome import validated_outcome
 from .record import TrialLedgerRecord, _validated_instant, _validated_uuid
 from .store import TrialLedger
+from .units import DEFAULT_CHARGE_UNITS, validated_charge_units
 
 __all__ = [
     "DEBIT_ROUTE",
@@ -105,18 +112,29 @@ class DebitRequest:
     which failure it is), the ``charges_budget`` directive (feature 90's
     stamp: a genuine bool, the opaque budget directive the null oracle
     returned alongside the target series, required, because a charge
-    must be able to say whether it consumed statistical budget), plus an
+    must be able to say whether it consumed statistical budget), the
+    ``charge_units`` the evaluation cost (feature 89's stamp: what the
+    trial cost, ``1.0`` for an ordinary evaluation and the folds' count
+    for a cross-validated one, defaulting to §8's own ``1.0``), plus an
     optional ``ts`` for the replay path, which debits the instant it is
     reproducing rather than the instant it ran.  Construction
     canonicalises the identities to UUID text, refuses anything that is
     not one, holds the outcome to the closed vocabulary, holds the
     directive to a genuine bool (a ``1``, a ``0`` or an absent ``None``
     is not the oracle's directive — the directive is supplied, never
-    derived), and normalises a given ``ts`` to aware-UTC while refusing a
-    naive instant, the same row contract
+    derived), holds the unit to a positive finite real (refused rather
+    than clamped, so the ledger never *derives* a weight the caller did
+    not state), and normalises a given ``ts`` to aware-UTC while refusing
+    a naive instant, the same row contract
     :class:`~ledger.record.TrialLedgerRecord` states: a charge that
     cannot be joined, ranged or classified is a charge no audit can
     use, and it is refused before the store is ever touched.
+
+    ``charge_units`` and ``charges_budget`` are the one pair on this body
+    worth not conflating: the unit prices the evaluation, the directive
+    says whether it spent statistical degrees of freedom, and a
+    cross-validated real trial is several units with ``True`` while a
+    null node is one unit with ``False``.
 
     Frozen, because a request is a fact the caller stated; editing one
     in flight would be posting a different charge than was validated.
@@ -132,6 +150,11 @@ class DebitRequest:
     #: statistical budget, ``False`` for a null node (§7.2's directive;
     #: feature 90).  Supplied by the caller, never derived by the ledger.
     charges_budget: Optional[bool] = None
+    #: What the trial cost, in units (§8: ``charge_units REAL NOT NULL
+    #: DEFAULT 1.0``; feature 89) — ``1.0``, the default, for an ordinary
+    #: evaluation, and the folds' count for a cross-validated one.  A
+    #: positive finite real; refused otherwise.
+    charge_units: float = DEFAULT_CHARGE_UNITS
     #: When the charge was debited, aware-UTC; ``None`` stamps at the
     #: store's default clock when the row is appended.
     ts: Optional[dt.datetime] = None
@@ -152,6 +175,13 @@ class DebitRequest:
         )
         object.__setattr__(
             self, "charges_budget", validated_charges_budget(self.charges_budget, strict=True)
+        )
+        # Normalised to the float the REAL column holds — a unit of 5 and
+        # a unit of 5.0 are one value and one charge — and refused when it
+        # is not a positive finite real.  The default is §8's own 1.0, so
+        # a body that says nothing about units is an ordinary trial.
+        object.__setattr__(
+            self, "charge_units", validated_charge_units(self.charge_units)
         )
         if self.ts is not None:
             object.__setattr__(self, "ts", _validated_instant(self.ts, "ts"))
@@ -277,10 +307,12 @@ class DebitEndpoint:
         """Answer one POST /ledger/debit: append the charge, or return the prior row.
 
         The whole of feature 95 at its seam, carrying feature 91's
-        outcome stamp and feature 90's budget directive.  The request's
+        outcome stamp, feature 90's budget directive and feature 89's
+        charge unit.  The request's
         node is the idempotency key: when the node holds no row the
         charge is appended — one row, one fresh sequence, the outcome it
-        ended with and the budget directive the oracle supplied — and
+        ended with, the budget directive the oracle supplied and the unit
+        the evaluation cost — and
         when it holds one (the worker died after the row landed; the
         response was lost; the retry fired) nothing is written and the
         response carries the *prior* sequence and the *prior* row, so the
@@ -299,6 +331,7 @@ class DebitEndpoint:
             request.campaign_id,
             request.outcome,
             request.charges_budget,
+            request.charge_units,
             ts=request.ts,
             clock=clock,
         )

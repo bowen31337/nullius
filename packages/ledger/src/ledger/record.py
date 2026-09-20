@@ -6,11 +6,12 @@ increasing sequence number.*  docs/nullius-tech-architecture.md §8 fixes
 the row's first four columns — ``seq``, ``ts``, ``node_id``,
 ``campaign_id`` — and leaves the rest to the features that own them:
 the charges_budget directive of 90 has landed on this row
-(:mod:`ledger.budget`), and the outcome of 91
-(:mod:`ledger.outcome`), while the provenance triple of 87, the epoch of
-88 and the remaining charge semantics of 89 are still to arrive.  This
-module is the row those columns make: the value a debit writes, and the
-value a read hands back.  A record read from the ledger equals the record
+(:mod:`ledger.budget`), the outcome of 91 (:mod:`ledger.outcome`), and
+feature 89's charge unit (:mod:`ledger.units`) — how much the trial
+*cost*, which a cross-validated evaluation states as more than the
+ordinary one unit — while the provenance triple of 87 and the epoch of
+88 are still to arrive.  This module is the row those columns make: the
+value a debit writes, and the value a read hands back.  A record read from the ledger equals the record
 the append returned — the row is a statement about a past charge, and a
 re-read must not restate it.
 
@@ -98,6 +99,7 @@ from typing import Any, Union
 from .budget import validated_charges_budget
 from .errors import TrialRecordError
 from .outcome import validated_outcome
+from .units import DEFAULT_CHARGE_UNITS, validated_charge_units
 
 __all__ = ["TrialLedgerRecord", "utc_now"]
 
@@ -218,7 +220,15 @@ class TrialLedgerRecord:
     returns alongside the target series, carried on every row because
     ``K_effective`` (feature 93) is a count of *budget-charging* trials,
     and a null node must never inflate it.  Supplied by the caller, never
-    derived by the ledger.
+    derived by the ledger.  ``charge_units`` is what the trial cost —
+    ``1.0`` for an ordinary evaluation, more for a cross-validated one
+    whose folds each compare a fit against the same forward returns
+    (§8's own comment on the column: *"1.0 default; CV folds may cost
+    more"*) — validated as a positive finite real and defaulted to
+    :data:`~ledger.units.DEFAULT_CHARGE_UNITS`, mirroring the column's
+    own ``DEFAULT``.  It prices the evaluation; it is a different fact
+    from ``charges_budget``, which says whether the evaluation spent
+    statistical degrees of freedom at all.
 
     Construction validates and canonicalises, so an instance is
     trustworthy by construction: the store's append builds its return
@@ -246,6 +256,13 @@ class TrialLedgerRecord:
     #: trial, ``False`` for a null node (§7.2's opaque directive; feature
     #: 90's stamp).  Supplied by the caller, never derived by the ledger.
     charges_budget: bool
+    #: What the trial cost, in units (§8: ``charge_units REAL NOT NULL
+    #: DEFAULT 1.0``; feature 89's stamp).  ``1.0`` — the default, which
+    #: mirrors the column's own ``DEFAULT`` — is what an ordinary
+    #: evaluation is worth; a cross-validated one whose folds each compare
+    #: a fit against the same forward returns states the folds' count
+    #: instead.  Validated as a positive finite real.
+    charge_units: float = DEFAULT_CHARGE_UNITS
 
     def __post_init__(self) -> None:
         # frozen+slots forbids plain assignment, so canonicalisation writes
@@ -268,17 +285,27 @@ class TrialLedgerRecord:
         object.__setattr__(
             self, "charges_budget", validated_charges_budget(self.charges_budget)
         )
+        # Normalised to the float the REAL column holds, so a unit of 5
+        # and a unit of 5.0 are one value and one row.  A non-finite or
+        # non-positive unit is refused — the read path revalidates through
+        # this same check, which is how a row whose unit wandered off the
+        # real line is refused rather than served.
+        object.__setattr__(
+            self, "charge_units", validated_charge_units(self.charge_units)
+        )
 
-    def row(self) -> tuple[Union[int, str], ...]:
+    def row(self) -> tuple[Union[int, float, str], ...]:
         """The record as the store's column tuple, in table order.
 
-        ``seq, ts, node_id, campaign_id, outcome, charges_budget`` — the
-        order the table's columns are declared in and the order the read
-        path unpacks, kept in one method so the two cannot drift apart and
-        silently swap an identity for a stamp.  ``ts`` serialises as
-        canonical ISO-8601 UTC with an explicit offset, the exact text
-        the table stores; ``charges_budget`` serialises as the ``0``/``1``
-        the SQLite ``BOOLEAN`` column stores.
+        ``seq, ts, node_id, campaign_id, outcome, charges_budget,
+        charge_units`` — the order the table's columns are declared in and
+        the order the read path unpacks, kept in one method so the two
+        cannot drift apart and silently swap an identity for a stamp.
+        ``ts`` serialises as canonical ISO-8601 UTC with an explicit
+        offset, the exact text the table stores; ``charges_budget``
+        serialises as the ``0``/``1`` the SQLite ``BOOLEAN`` column
+        stores; ``charge_units`` serialises as the ``float`` the ``REAL``
+        column holds.
         """
         return (
             self.seq,
@@ -287,4 +314,5 @@ class TrialLedgerRecord:
             self.campaign_id,
             self.outcome,
             1 if self.charges_budget else 0,
+            self.charge_units,
         )

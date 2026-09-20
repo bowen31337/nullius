@@ -149,6 +149,9 @@ def test_a_record_is_frozen() -> None:
 
 
 def test_the_column_tuple_is_in_table_order() -> None:
+    # The record's column tuple is the table's declaration order, and
+    # after feature 89 the unit closes the row — the reader that unpacks
+    # it cannot mistake a cost for an identity, a stamp or the directive.
     record = _record(seq=7)
     assert record.row() == (
         7,
@@ -157,4 +160,5 @@ def test_the_column_tuple_is_in_table_order() -> None:
         CAMPAIGN,
         "ok",
         1,
+        1.0,
     )

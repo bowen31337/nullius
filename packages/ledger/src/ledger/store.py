@@ -62,27 +62,44 @@ this statement's shape; both spellings agree that the number is the
 table's to assign, never the writer's to choose.
 
 **The columns are the ones the append itself owns.**  ``seq``, ``ts``,
-``node_id``, ``campaign_id``, ``outcome``, ``charges_budget`` — §8's
+``node_id``, ``campaign_id``, ``outcome``, ``charges_budget``,
+``charge_units`` — §8's
 first four, the ones that say *which evaluation was charged, when, in
 what order*, plus the outcome (feature 91), the one that says *how it
 ended*: 'ok', 'timeout', 'error' or 'tripwire_fail', the closed
 vocabulary of :mod:`ledger.outcome`, refused at the write when absent or
 misspelled because a failed evaluation still consumed a hypothesis and
-its charge must be classifiable; and the budget directive (feature 90),
-the one that says *whether it charged statistical budget*: a genuine
-bool supplied by the caller (the null oracle's opaque directive),
-refused at the write when it is not a bool because a ``1`` or a ``0`` or
-an absent ``None`` is not the oracle's directive.  The provenance triple
-(feature 87), the epoch (88) and the remaining charge semantics (89) are
+its charge must be classifiable; the budget directive (feature 90), the
+one that says *whether it charged statistical budget*: a genuine bool
+supplied by the caller (the null oracle's opaque directive), refused at
+the write when it is not a bool because a ``1`` or a ``0`` or an absent
+``None`` is not the oracle's directive; and the charge unit (feature
+89), the one that says *what it cost*: a positive finite real defaulting
+to ``1.0`` — §8's own ``DEFAULT`` — because an ordinary evaluation is
+worth one unit while a cross-validated one whose folds each compare a
+fit against the same forward returns states its own count.  The unit and
+the directive are the two halves of the charge that are easy to confuse
+and are deliberately not the same fact: the directive says whether the
+trial spent statistical degrees of freedom at all, the unit says how
+much evaluation it took.  The provenance triple (feature 87) and the
+epoch (88) are
 their features' stamps and land as columns on this same table as they
-arrive, the way this store upgraded in place for the outcome and the
-directive.  ``ts`` is stored as ISO-8601 UTC text with an explicit
+arrive, the way this store upgraded in place for the outcome, the
+directive and the unit.
+
+``ts`` is stored as ISO-8601 UTC text with an explicit
 offset — canonical, lexicographically ordered for a single offset, and
 revalidated through the record constructor on read, so a row that
 wandered in from outside cannot smuggle a naive stamp past the write-time
 check.  ``charges_budget`` is stored as the ``0``/``1`` a SQLite
-``BOOLEAN`` column stores, and revalidated through the same constructor,
-so a stored directive that is neither bit is refused rather than served.
+``BOOLEAN`` column stores, and ``charge_units`` as the ``REAL`` the
+column holds, both revalidated through the same constructor, so a stored
+directive that is neither bit, or a unit that is not a positive finite
+real, is refused rather than served.  The two stamps are written
+explicitly by both write paths even where the column carries a
+``DEFAULT``, so the row the append returns and the row the table holds
+are one value however the caller reached the append; the ``DEFAULT`` is
+what keeps the column honest for a writer that is not this store.
 
 **A pre-outcome database is upgraded in place, not refused.**  ``CREATE
 TABLE IF NOT EXISTS`` cannot evolve a table that already exists, so a
@@ -151,6 +168,7 @@ from .errors import TrialImmutableError, TrialRecordError, TrialStoreError
 from .keffective import KEffective, derive_k_effective
 from .outcome import validated_outcome
 from .record import TrialLedgerRecord, _validated_instant, _validated_uuid, utc_now
+from .units import DEFAULT_CHARGE_UNITS, validated_charge_units
 
 __all__ = [
     "DATABASE_URL_ENV",
@@ -201,7 +219,7 @@ CREATE TABLE IF NOT EXISTS {TRIAL_LEDGER_TABLE} (
     -- How the evaluation ended (feature 91): one of the closed
     -- vocabulary 'ok' | 'timeout' | 'error' | 'tripwire_fail', §8's own
     -- comment on this column.  NOT NULL with no default — unlike
-    -- charge_units (feature 89, DEFAULT 1.0) there is no honest
+    -- charge_units (feature 89, DEFAULT 1.0, below) there is no honest
     -- presumption: the caller must say how the trial ended, and the
     -- write is refused when it does not.
     outcome     TEXT NOT NULL,
@@ -213,7 +231,26 @@ CREATE TABLE IF NOT EXISTS {TRIAL_LEDGER_TABLE} (
     -- oracle is brought forward with the honest 'TRUE' (see
     -- _upgrade_legacy_ledger_table).  Stored as the 0-or-1 a SQLite
     -- BOOLEAN column stores.
-    charges_budget  BOOLEAN NOT NULL
+    charges_budget  BOOLEAN NOT NULL,
+    -- What the trial cost, in units (feature 89): §8's own comment on
+    -- the column is "1.0 default; CV folds may cost more", and the
+    -- default is the load-bearing half — an ordinary evaluation is
+    -- worth exactly one unit, so an append or a debit that states
+    -- nothing is charged one, while a cross-validated evaluation whose
+    -- folds each compare a fit against the same forward returns states
+    -- its own count.  The store writes the validated value explicitly
+    -- rather than leaning on this DEFAULT, so the row the append returns
+    -- and the row the table holds are one value; the DEFAULT is what
+    -- makes the column honest for a writer that is not this store.
+    --
+    -- The column closes the declaration: §8 orders charge_units before
+    -- charges_budget, but this table's columns follow the order the
+    -- features that own them *landed* — §8's first four, then the
+    -- outcome, the directive and now the unit — which is the order the
+    -- record's row() tuple mirrors and the order every reader unpacks.
+    -- SQLite appends an ALTER's column after whatever the table already
+    -- held, so a fresh table and a brought-forward one agree on it.
+    charge_units    REAL NOT NULL DEFAULT 1.0
 );
 """
 
@@ -221,7 +258,7 @@ CREATE TABLE IF NOT EXISTS {TRIAL_LEDGER_TABLE} (
 # string shared by every SELECT so the reader and the record cannot drift
 # apart in column order — the failure that would silently swap an
 # identity for a stamp.
-_COLUMNS = "seq, ts, node_id, campaign_id, outcome, charges_budget"
+_COLUMNS = "seq, ts, node_id, campaign_id, outcome, charges_budget, charge_units"
 
 # Feature 88's epoch stamp, read by feature 93's derivation when the table
 # carries it.  The column arrives with a sibling feature, so it is *probed*
@@ -416,6 +453,15 @@ def _upgrade_legacy_ledger_table(connection: sqlite3.Connection) -> None:
       it.  This is not a derivation and not the forbidden label — a
       legacy row names no null node to detect — it is the one honest
       statement a row that predates the directive can make.
+    * ``charge_units`` (feature 89) is added with ``1.0`` — which is
+      §8's own ``DEFAULT`` for the column rather than a value chosen
+      here, and the honest statement a row that predates the unit stamp
+      can make: those rows were written before a caller could state more
+      than one unit, so every one of them was an ordinary evaluation
+      worth exactly one.  ``1.0`` also keeps the honest counter's
+      arithmetic unchanged across the upgrade — the legacy rows' cost is
+      what it always was — where any other value would silently restate
+      what those trials spent.
 
     Each ``ALTER`` is issued on the caller's connection (the guarded one
     every store operation opens) and passes feature 92's wall by its own
@@ -423,10 +469,19 @@ def _upgrade_legacy_ledger_table(connection: sqlite3.Connection) -> None:
     charge and spends no sequence number — the wall is a mutation wall,
     not a schema freeze.  Idempotent by construction: a table that
     already holds the column is left untouched, so every connect after
-    the first takes the same cheap path.  The columns are added in
-    declaration order, so a table that had outcome but not
-    charges_budget (a database written between features 91 and 90) is
-    brought forward correctly rather than skipped.
+    the first takes the same cheap path.  The columns are added in the
+    order the features that own them landed — outcome, then the budget
+    directive, then the unit — so a table written between any two of them
+    (say one holding outcome but not charges_budget, a database written
+    between features 91 and 90) is brought forward correctly rather than
+    skipped.  That order is this upgrade's own and deliberately not the
+    table's declaration order (§8 declares ``charge_units`` before
+    ``charges_budget``): what matters is that every column a reader needs
+    exists by the time this returns, and SQLite appends each ``ADD
+    COLUMN`` after whatever the table already held, so a brought-forward
+    table's physical order is its own history — which is exactly why the
+    read path names its columns explicitly (:data:`_COLUMNS`) instead of
+    relying on ``SELECT *``.
     """
     columns = {
         row[1] for row in connection.execute(f"PRAGMA table_info({TRIAL_LEDGER_TABLE})")
@@ -440,6 +495,18 @@ def _upgrade_legacy_ledger_table(connection: sqlite3.Connection) -> None:
         connection.execute(
             f"ALTER TABLE {TRIAL_LEDGER_TABLE} "
             "ADD COLUMN charges_budget BOOLEAN NOT NULL DEFAULT TRUE"
+        )
+    if "charge_units" not in columns:
+        # Feature 89's unit, added with §8's own default (1.0) — the
+        # column's DEFAULT in the spec's DDL, not a presumption invented
+        # here.  The rows predate the unit stamp, so no cross-validated
+        # evaluation is among them: every one was an ordinary trial worth
+        # exactly one unit, and 1.0 asserts precisely that.  The read
+        # coerces the stored REAL to a float, so the legacy rows read
+        # back exactly as a fresh ordinary append's row does.
+        connection.execute(
+            f"ALTER TABLE {TRIAL_LEDGER_TABLE} "
+            "ADD COLUMN charge_units REAL NOT NULL DEFAULT 1.0"
         )
 
 
@@ -503,6 +570,7 @@ def _record_from_row(row: tuple[Any, ...]) -> TrialLedgerRecord:
             campaign_id=row[3],
             outcome=row[4],
             charges_budget=row[5],
+            charge_units=row[6],
         )
     except TrialRecordError as exc:
         raise TrialRecordError(
@@ -516,10 +584,11 @@ def _validated_charge(
     campaign_id: Any,
     outcome: Any,
     charges_budget: Any,
+    charge_units: Any,
     ts: Optional[datetime],
     clock: Optional[Callable[[], datetime]],
-) -> tuple[str, str, str, bool, datetime]:
-    """Validate a charge's arguments, returning the canonical quintuple.
+) -> tuple[str, str, str, bool, float, datetime]:
+    """Validate a charge's arguments, returning the canonical sextuple.
 
     The one spelling both write paths — :meth:`TrialLedger.append` and
     :meth:`TrialLedger.debit` — share, so the two cannot drift on what
@@ -529,18 +598,21 @@ def _validated_charge(
     directive held to a genuine bool (:func:`~ledger.budget.
     validated_charges_budget` refuses a ``1``, a ``0`` or an absent
     ``None`` — the directive is supplied by the caller, never derived),
-    and the stamp resolved from ``ts`` when the caller knows when the
-    charge happened (a replay debits the instant it reproduces, so the
-    clock is never read when ``ts`` is given) and from ``clock()``
-    otherwise, defaulting to :func:`~ledger.record.utc_now`.  Every
-    refusal lands here, *before* the database is touched, so a refused
-    charge spends no sequence number and leaves the ledger exactly as it
-    was.
+    the unit held to a positive finite real (:func:`~ledger.units.
+    validated_charge_units` refuses a non-number, a NaN or an infinity,
+    and anything at or below zero), and the stamp resolved from ``ts``
+    when the caller knows when the charge happened (a replay debits the
+    instant it reproduces, so the clock is never read when ``ts`` is
+    given) and from ``clock()`` otherwise, defaulting to
+    :func:`~ledger.record.utc_now`.  Every refusal lands here, *before*
+    the database is touched, so a refused charge spends no sequence
+    number and leaves the ledger exactly as it was.
     """
     node = _validated_uuid(node_id, "node_id")
     campaign = _validated_uuid(campaign_id, "campaign_id")
     ended = validated_outcome(outcome)
     directive = validated_charges_budget(charges_budget, strict=True)
+    units = validated_charge_units(charge_units)
     if ts is not None:
         instant = _validated_instant(ts, "ts")
     else:
@@ -551,7 +623,7 @@ def _validated_charge(
                 f"{type(source).__name__}"
             )
         instant = _validated_instant(source(), "ts")
-    return node, campaign, ended, directive, instant
+    return node, campaign, ended, directive, units, instant
 
 
 class TrialLedger:
@@ -669,6 +741,7 @@ class TrialLedger:
         campaign_id: Any,
         outcome: Any = None,
         charges_budget: Any = None,
+        charge_units: Any = DEFAULT_CHARGE_UNITS,
         *,
         ts: Optional[datetime] = None,
         clock: Optional[Callable[[], datetime]] = None,
@@ -676,7 +749,8 @@ class TrialLedger:
         """Debit one evaluation: one INSERT, one sequence number, one row.
 
         The whole of feature 86 at its seam, carrying feature 91's
-        outcome stamp and feature 90's budget directive.  The evaluation
+        outcome stamp, feature 90's budget directive and feature 89's
+        charge unit.  The evaluation
         is named by ``node_id`` and ``campaign_id`` (a
         :class:`~uuid.UUID` or its text spelling, canonicalised on the
         way in) and by ``outcome`` — how it ended, one of 'ok',
@@ -691,10 +765,19 @@ class TrialLedger:
         oracle returns it alongside the target series) and never derived
         by the ledger; it has no default and is refused when it is not a
         genuine bool, because a ``1`` or a ``0`` or an absent ``None`` is
-        not the oracle's directive.  The stamp is ``ts`` when the caller
-        knows when the charge happened — a replay debits the instant it
-        is reproducing, so it does not depend on when it ran — and
-        otherwise ``clock()`` (defaulting to :func:`~ledger.record.
+        not the oracle's directive.  ``charge_units`` is what the trial
+        *cost* (feature 89) — a positive finite real, defaulting to
+        :data:`~ledger.units.DEFAULT_CHARGE_UNITS` (``1.0``, §8's own
+        default for the column), because an ordinary evaluation is worth
+        exactly one unit and a cross-validated one whose folds each
+        compare a fit against the same forward returns states its own
+        count.  Unlike the directive it *does* have a default, and the
+        difference is the spec's: one unit is a real trial's honest
+        weight, while there is no honest weight for a budget directive
+        the oracle is supposed to supply.  The stamp is ``ts`` when the
+        caller knows when the charge happened — a replay debits the
+        instant it is reproducing, so it does not depend on when it ran —
+        and otherwise ``clock()`` (defaulting to :func:`~ledger.record.
         utc_now`, aware UTC at second resolution).  The sequence number
         is not a parameter and never will be: the table assigns it, and
         the returned :class:`~ledger.record.TrialLedgerRecord` carries
@@ -708,8 +791,8 @@ class TrialLedger:
         and concurrent appends serialise on the database and receive
         distinct, increasing sequences.
         """
-        node, campaign, ended, directive, instant = _validated_charge(
-            node_id, campaign_id, outcome, charges_budget, ts, clock
+        node, campaign, ended, directive, units, instant = _validated_charge(
+            node_id, campaign_id, outcome, charges_budget, charge_units, ts, clock
         )
         # Already aware-UTC (the validator normalises), so isoformat() ends
         # "+00:00" and the stored text is canonical and orderable.
@@ -719,9 +802,16 @@ class TrialLedger:
                 with connection:
                     cursor = connection.execute(
                         f"INSERT INTO {TRIAL_LEDGER_TABLE} "
-                        "(ts, node_id, campaign_id, outcome, charges_budget) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        (stamp, node, campaign, ended, 1 if directive else 0),
+                        "(ts, node_id, campaign_id, outcome, charges_budget, "
+                        "charge_units) VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            stamp,
+                            node,
+                            campaign,
+                            ended,
+                            1 if directive else 0,
+                            units,
+                        ),
                     )
                     assigned = cursor.lastrowid
         except sqlite3.Error as exc:
@@ -741,6 +831,7 @@ class TrialLedger:
             campaign_id=campaign,
             outcome=ended,
             charges_budget=directive,
+            charge_units=units,
         )
 
     def debit(
@@ -749,6 +840,7 @@ class TrialLedger:
         campaign_id: Any,
         outcome: Any = None,
         charges_budget: Any = None,
+        charge_units: Any = DEFAULT_CHARGE_UNITS,
         *,
         ts: Optional[datetime] = None,
         clock: Optional[Callable[[], datetime]] = None,
@@ -773,7 +865,10 @@ class TrialLedger:
         and feature 90's budget directive — a genuine bool, the opaque
         directive the null oracle returned, refused when it is not a
         bool because a ``1`` or a ``0`` or an absent ``None`` is not the
-        oracle's directive.
+        oracle's directive — and feature 89's charge unit: what the trial
+        cost, a positive finite real defaulting to ``1.0`` for an
+        ordinary evaluation, which a cross-validated one states as its
+        folds' count.
 
         The check and the insert are one statement in one transaction —
         ``INSERT … SELECT … WHERE NOT EXISTS (… node_id = ?)`` — on the
@@ -788,18 +883,18 @@ class TrialLedger:
         and it holds it at the seam.)
 
         On a retry, nothing is written — not the stamp, not the
-        campaign, not the outcome, not the directive: the prior row
-        stands exactly as first written, because this is append-only
-        accounting and a charge is never restated.  A ``ts``, an
-        ``outcome`` or a ``charges_budget`` handed to a retry is
-        silently the *loser* of that rule — the outcome and the
-        directive of the charge are the ones the evaluation ended with
-        when it was first debited, not the ones a later retry would
-        guess; callers that need to know which landed read them off the
-        returned record.  When several rows exist for the node — only
-        raw :meth:`append` calls can leave that — the earliest by
-        ``seq`` is the prior row: the first charge ever debited for the
-        node is the one whose retry this is.
+        campaign, not the outcome, not the directive, not the unit: the
+        prior row stands exactly as first written, because this is
+        append-only accounting and a charge is never restated.  A ``ts``,
+        an ``outcome``, a ``charges_budget`` or a ``charge_units`` handed
+        to a retry is silently the *loser* of that rule — the outcome,
+        the directive and the unit of the charge are the ones the
+        evaluation ended with when it was first debited, not the ones a
+        later retry would guess; callers that need to know which landed
+        read them off the returned record.  When several rows exist for
+        the node — only raw :meth:`append` calls can leave that — the
+        earliest by ``seq`` is the prior row: the first charge ever
+        debited for the node is the one whose retry this is.
 
         Validation is the append's own (see :func:`_validated_charge`)
         and happens before the database is touched, so a refused debit
@@ -807,8 +902,8 @@ class TrialLedger:
         none either, which is the whole point: the next node's first
         debit draws the very next number.
         """
-        node, campaign, ended, directive, instant = _validated_charge(
-            node_id, campaign_id, outcome, charges_budget, ts, clock
+        node, campaign, ended, directive, units, instant = _validated_charge(
+            node_id, campaign_id, outcome, charges_budget, charge_units, ts, clock
         )
         stamp = instant.isoformat()
         appended = False
@@ -819,10 +914,18 @@ class TrialLedger:
                 with connection:
                     cursor = connection.execute(
                         f"INSERT INTO {TRIAL_LEDGER_TABLE} "
-                        "(ts, node_id, campaign_id, outcome, charges_budget) "
-                        "SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS ("
+                        "(ts, node_id, campaign_id, outcome, charges_budget, "
+                        "charge_units) SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS ("
                         f"SELECT 1 FROM {TRIAL_LEDGER_TABLE} WHERE node_id = ?)",
-                        (stamp, node, campaign, ended, 1 if directive else 0, node),
+                        (
+                            stamp,
+                            node,
+                            campaign,
+                            ended,
+                            1 if directive else 0,
+                            units,
+                            node,
+                        ),
                     )
                     if cursor.rowcount == 1:
                         appended = True
@@ -852,6 +955,7 @@ class TrialLedger:
                     campaign_id=campaign,
                     outcome=ended,
                     charges_budget=directive,
+                    charge_units=units,
                 ),
                 True,
             )

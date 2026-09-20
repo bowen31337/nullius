@@ -32,7 +32,10 @@ The helpers below are deliberately the *composition* accessors and
 nothing more.  They do not re-export the append or the read paths: a
 caller who has the ledger can reach ``ledger.append(node_id,
 campaign_id, outcome)`` for the raw debit of feature 86 carrying
-feature 91's outcome stamp, ``ledger.rows()`` for the ordered read, and
+feature 91's outcome stamp — and, like the other stamps on that row,
+feature 89's ``charge_units``, which defaults to one unit for an
+ordinary evaluation and is stated higher by a cross-validated one — and
+``ledger.rows()`` for the ordered read, and
 ``ledger.epoch_usage()`` for feature 96's promotion-decision counts per
 sequestered epoch — and a second spelling of those APIs here would be a
 second thing to keep in sync.  This module answers exactly three

@@ -119,10 +119,14 @@ def test_the_schema_is_created_on_first_use_and_is_idempotent(
         info = connection.execute(f"PRAGMA table_info({TRIAL_LEDGER_TABLE})")
         columns = [row[1] for row in info]
     # §8's first four columns in declaration order, plus feature 91's
-    # outcome and feature 90's charges_budget directive — the columns the
-    # append itself owns.  The stamps of features 87-89 land on this same
-    # table as they arrive; they are deliberately absent now.
-    assert columns == ["seq", "ts", "node_id", "campaign_id", "outcome", "charges_budget"]
+    # outcome, feature 90's charges_budget directive and feature 89's
+    # charge_units — the columns the append itself owns.  The provenance
+    # triple (87) and the epoch (88) land on this same table as they
+    # arrive; they are deliberately absent now.
+    assert columns == [
+        "seq", "ts", "node_id", "campaign_id", "outcome", "charges_budget",
+        "charge_units",
+    ]
     # A second connect (every operation) takes the same path.
     assert test_ledger.count() == 1
 
