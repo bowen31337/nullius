@@ -1,0 +1,39 @@
+# nullius tripwires — workspace member for the "tripwires" plugin
+# (app_spec.xml, "Leakage Tripwires", feature 125;
+# docs/alpha-engine-prd.md §C6 for the probe this member opens;
+# docs/nullius-tech-architecture.md §6.1 step 10 for its place in the
+# pipeline).
+#
+# Joins the uv workspace by convention — packages/tripwires with this
+# file — so the module loader (src/app/module_loader.py) discovers it by
+# scanning the members the root pyproject.toml declares.  No edit to any
+# central registry, router table or app factory is needed or wanted to
+# wire this package in.
+#
+# Dependencies: the workspace root, for the factory's registration
+# protocol (`import app.module_loader`), and nothing else.  Feature 125's
+# probe is a pure function of its inputs — a score panel, a target panel,
+# a seed and a level — computed with dates, mappings, square roots and
+# the one inverse-normal quantile this member carries for itself
+# (normal.py), so the member owns no third-party dependency at all.
+# That is not frugality for its own sake: the tripwires run inside the
+# frozen evaluator (§5, "Immutable, containerized, hash-pinned"), and a
+# member whose import pulls a dependency graph is a member whose
+# determinism story (§12) has a moving part it cannot name.
+
+[project]
+name = "tripwires"
+version = "0.1.0"
+description = "Leakage tripwires: the time-shuffle probe that scores a candidate against time-shuffled forward returns and rejects the node when a surviving Sharpe indicates leakage."
+requires-python = ">=3.12"
+dependencies = ["nullius"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tripwires"]

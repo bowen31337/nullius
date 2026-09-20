@@ -13,6 +13,7 @@ members = [
     "nullius-feature-store",
     "nullius-ingest",
     "snapshot",
+    "tripwires",
     "universe",
 ]
 
@@ -277,6 +278,17 @@ wheels = [
 name = "snapshot"
 version = "0.1.0"
 source = { editable = "packages/snapshot" }
+
+[[package]]
+name = "tripwires"
+version = "0.1.0"
+source = { editable = "packages/tripwires" }
+dependencies = [
+    { name = "nullius" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "nullius", editable = "." }]
 
 [[package]]
 name = "universe"
