@@ -242,6 +242,16 @@ from .resolution import (
     past_the_flip,
     resolve_type_d,
 )
+from .selection import (
+    CAMPAIGN_TYPE_COLUMN,
+    TYPE_R_CAMPAIGN_TYPE,
+    RootSelection,
+    TypeRSelection,
+    draw_null_roots,
+    null_root_count,
+    persist_type_r_selection,
+    perm_seed_for,
+)
 from .sidecar import (
     SIDECAR_DIRECTORY,
     SIDECAR_FILE_MODE,
@@ -264,6 +274,7 @@ __all__ = [
     "CALIBRATION_STATUS_VOID",
     "CAMPAIGN_SPREAD",
     "CAMPAIGN_TABLE",
+    "CAMPAIGN_TYPE_COLUMN",
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
     "DEFAULT_BLOCK_DAYS",
@@ -315,6 +326,7 @@ __all__ = [
     "PROBABILITY_CEILING",
     "PROBABILITY_FLOOR",
     "PlantedNullFraction",
+    "RootSelection",
     "SidecarAccessError",
     "SidecarDecryptionError",
     "SidecarError",
@@ -324,9 +336,12 @@ __all__ = [
     "TRUE_IR_FLIP_DEPTH_COMPONENT_NAME",
     "TRUE_IR_MIDPOINT",
     "TRUE_IR_SCALE",
+    "TYPE_R_CAMPAIGN_TYPE",
+    "TYPE_R_COMPONENT_NAME",
     "TrueIRFlipDepth",
     "TypeDOracle",
     "TypeDResolution",
+    "TypeRSelection",
     "Verdict",
     "assignments_digest",
     "build_flip_depth",
@@ -339,6 +354,7 @@ __all__ = [
     "canonical_assignments",
     "decode_assignments",
     "draw_flip_depth",
+    "draw_null_roots",
     "encode_assignments",
     "ensure_key",
     "envelope_digest",
@@ -352,9 +368,12 @@ __all__ = [
     "node_as_seed",
     "normalize_node_id",
     "null_fraction",
+    "null_root_count",
     "open_envelope",
     "past_the_flip",
     "persist_flip_depth",
+    "persist_type_r_selection",
+    "perm_seed_for",
     "probability_from_true_ir",
     "persist_ks_pvalue",
     "persist_null_fraction",
@@ -437,6 +456,23 @@ RESOLUTION_COMPONENT_NAME = "nulloracle-type-d-resolution"
 #: ``app.order``, so feature 123's guard-immediately-after-sidecar adjacency is
 #: untouched.
 TRUE_IR_FLIP_DEPTH_COMPONENT_NAME = "nulloracle-true-ir-flip-depth"
+
+#: The component name feature 118's Type-R root selection registers under — the
+#: key a composed :class:`~app.module_loader.Application` carries it at.  An
+#: eighth name rather than a second component under
+#: :data:`RESOLUTION_COMPONENT_NAME` because the two regimes are different
+#: things on different lifecycles: the Type-D oracle resolves a *request*
+#: against a branch's flip depth, and this store draws and persists a *world*'s
+#: root selection into §7.1's sidecar.  A deployment can legitimately carry
+#: either without the other, and the spec's own campaign planning draws exactly
+#: one of them per campaign (§7.3: campaigns are homogeneous in null type).
+#: Registered as a composite: it needs both a relational store (the tree, φ and
+#: ``W``) and the sealed sidecar (the one artifact allowed to hold the bit), so
+#: it composes only where both resolve.  The ``type-r-`` prefix sorts after the
+#: ``ks-*``, ``null-*``, ``type-d-*`` and ``true-ir-*`` families in the
+#: name-sorted ``app.order``, so feature 123's guard-immediately-after-sidecar
+#: adjacency is untouched.
+TYPE_R_COMPONENT_NAME = "nulloracle-type-r-selection"
 
 
 @register(FRACTION_COMPONENT_NAME)
@@ -660,3 +696,44 @@ def build_null_sidecar() -> NullSidecar | None:
     answer.
     """
     return NullSidecar.resolve()
+
+
+@register(TYPE_R_COMPONENT_NAME)
+def build_type_r_selection() -> TypeRSelection | None:
+    """Component builder: §7.3's Type-R root selection, bound to the environment.
+
+    Feature 118's *store* half as a component, so the campaign loop that must
+    plant a Type-R world can ask the composed application for the store the
+    deployment configured rather than resolving ``DATABASE_URL`` and the
+    sidecar itself — the same seam the fraction's, the flip depth's, the
+    verdict's and the resolution's stores expose.
+
+    Takes no arguments — that is the factory's registration protocol — and
+    resolves both halves from the environment at build time.  This one needs
+    **both**: a relational store for the tree, φ and ``W``, and §7.1's sidecar
+    for the bit itself.  That is the feature's shape rather than a
+    convenience — the draw reads the campaign's own row, and the status may
+    only be written into the one artifact allowed to hold it (feature 110: no
+    ``is_null`` column anywhere in the tree store) — so a deployment carrying
+    one without the other composes no selection component rather than a
+    half-store that could draw but not persist.
+
+    Returns ``None`` when nothing names a relational store, or when nothing
+    names a usable sidecar location and key, the degrade-don't-break stance
+    every store in this workspace takes: an unconfigured selection is a
+    discoverable state, and a deployment whose campaign loop must plant
+    §7.3's Type-R world is the caller that must not find itself in it.
+
+    Like :func:`build_flip_depth`, this never raises, including for a URL
+    whose scheme this store cannot speak or a ``kms:`` reference this member
+    does not resolve.  The factory builds every registered component on every
+    :func:`~app.module_loader.create_app` call, so a builder that raised would
+    take composition down for every unrelated feature; a process that
+    *requires* the store asks :meth:`~nulloracle.selection.TypeRSelection.
+    resolve` or calls the store directly, where a named
+    :class:`~nulloracle.errors.KsGuardError` is the right answer.
+    Construction performs no I/O — the path is resolved on first use and the
+    sidecar opens nothing until the first ``write()`` or ``open()`` — so
+    composing the application never opens a database or touches the labels.
+    """
+    return TypeRSelection.resolve()
