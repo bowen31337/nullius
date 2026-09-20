@@ -1,0 +1,58 @@
+{
+  "zone": "live-trading",
+  "_comment": [
+    "The committed network policy of the live trading zone.",
+    "app_spec.xml, Trust Zone Isolation & Secrets, feature 156:",
+    "System rejects access to the live trading host that does not",
+    "arrive through a bastion session, because no inbound port is",
+    "exposed (docs/nullius-tech-architecture.md §17: No inbound ports",
+    "on the live trading host. Access via bastion or session manager",
+    "only). The compile in infra/security/network_policy.py refuses",
+    "this file — and any change to it — that gives a live-trading host",
+    "any ingress rule at all, so the empty ingress list below is not a",
+    "convention the next edit can forget: it is the law, checked.",
+    "Addresses are examples for the zone's shape, not real ranges."
+  ],
+  "hosts": [
+    {
+      "name": "bastion-1",
+      "role": "bastion",
+      "ingress": [
+        {
+          "port": 22,
+          "protocol": "tcp",
+          "sources": ["10.20.0.0/24"]
+        }
+      ],
+      "egress": [
+        {
+          "port": 443,
+          "protocol": "tcp",
+          "destinations": ["session-broker"]
+        }
+      ]
+    },
+    {
+      "name": "live-trading-1",
+      "role": "live-trading",
+      "ingress": [],
+      "egress": [
+        {
+          "port": 443,
+          "protocol": "tcp",
+          "destinations": ["session-broker"]
+        },
+        {
+          "port": 443,
+          "protocol": "tcp",
+          "destinations": ["exchange-api"]
+        },
+        {
+          "port_range": [1000, 65535],
+          "protocol": "tcp",
+          "destinations": ["exchange-ws"]
+        }
+      ]
+    }
+  ]
+}
