@@ -173,6 +173,20 @@ from .flipdepth import (
     node_as_seed,
     persist_flip_depth,
 )
+from .irprob import (
+    CAMPAIGN_SPREAD,
+    PROBABILITY_CEILING,
+    PROBABILITY_FLOOR,
+    TRUE_IR_MIDPOINT,
+    TRUE_IR_SCALE,
+    FlipDepthDistribution,
+    TrueIRFlipDepth,
+    campaign_as_seed,
+    campaign_offset,
+    draw_flip_depth,
+    flip_depth_distribution,
+    probability_from_true_ir,
+)
 from .keyref import (
     KEY_REF_ENV,
     SERVICE_ACCOUNT_ENV,
@@ -248,6 +262,7 @@ from .verdict import (
 __all__ = [
     "CALIBRATION_STATUS_OK",
     "CALIBRATION_STATUS_VOID",
+    "CAMPAIGN_SPREAD",
     "CAMPAIGN_TABLE",
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
@@ -287,6 +302,7 @@ __all__ = [
     "WORKSPACE_COUNT_COLUMN",
     "EnsureKeyResult",
     "FlipDepth",
+    "FlipDepthDistribution",
     "KeyReference",
     "KolmogorovSmirnov",
     "KsGuard",
@@ -296,6 +312,8 @@ __all__ = [
     "NullAssignment",
     "NullOracleError",
     "NullSidecar",
+    "PROBABILITY_CEILING",
+    "PROBABILITY_FLOOR",
     "PlantedNullFraction",
     "SidecarAccessError",
     "SidecarDecryptionError",
@@ -303,20 +321,29 @@ __all__ = [
     "SidecarKey",
     "SidecarKeyError",
     "SidecarStoreError",
+    "TRUE_IR_FLIP_DEPTH_COMPONENT_NAME",
+    "TRUE_IR_MIDPOINT",
+    "TRUE_IR_SCALE",
+    "TrueIRFlipDepth",
     "TypeDOracle",
     "TypeDResolution",
     "Verdict",
     "assignments_digest",
     "build_flip_depth",
     "build_null_sidecar",
+    "build_true_ir_flip_depth",
     "build_type_d_resolution",
     "build_verdict",
+    "campaign_as_seed",
+    "campaign_offset",
     "canonical_assignments",
     "decode_assignments",
+    "draw_flip_depth",
     "encode_assignments",
     "ensure_key",
     "envelope_digest",
     "flip_depth",
+    "flip_depth_distribution",
     "guard_record_from_row",
     "ks_pvalue",
     "ks_two_sample",
@@ -328,6 +355,7 @@ __all__ = [
     "open_envelope",
     "past_the_flip",
     "persist_flip_depth",
+    "probability_from_true_ir",
     "persist_ks_pvalue",
     "persist_null_fraction",
     "require_cryptography",
@@ -395,6 +423,21 @@ FLIP_DEPTH_COMPONENT_NAME = "nulloracle-null-flip-depth"
 #: guard-immediately-after-sidecar adjacency is untouched.
 RESOLUTION_COMPONENT_NAME = "nulloracle-type-d-resolution"
 
+#: The component name feature 120's true-IR flip-depth store registers under —
+#: the key a composed :class:`~app.module_loader.Application` carries it at.  A
+#: seventh name rather than a second component under
+#: :data:`FLIP_DEPTH_COMPONENT_NAME` because the two hold different things: the
+#: flip depth's component is the store that draws a geometric from a probability
+#: the caller supplies, and this one is the store that *derives* that probability
+#: from a branch's true information ratio and its campaign (feature 120).  A
+#: deployment can legitimately carry either without the other — the campaign
+#: loop that owns the world's true IRs wants this one, and a re-draw from a
+#: probability already decided wants the other.  The ``true-ir-`` prefix sorts
+#: after the ``ks-*``, ``null-*`` and ``type-d-*`` families in the name-sorted
+#: ``app.order``, so feature 123's guard-immediately-after-sidecar adjacency is
+#: untouched.
+TRUE_IR_FLIP_DEPTH_COMPONENT_NAME = "nulloracle-true-ir-flip-depth"
+
 
 @register(FRACTION_COMPONENT_NAME)
 def build_null_fraction() -> PlantedNullFraction | None:
@@ -456,6 +499,44 @@ def build_flip_depth() -> FlipDepth | None:
     composing the application never opens a database.
     """
     return FlipDepth.resolve()
+
+
+@register(TRUE_IR_FLIP_DEPTH_COMPONENT_NAME)
+def build_true_ir_flip_depth() -> TrueIRFlipDepth | None:
+    """Component builder: §7.3's true-IR flip probability, bound to the environment.
+
+    Feature 120's *store* half as a component, so the campaign loop that holds a
+    branch's true information ratio can ask the composed application for the
+    store that turns it into the probability feature 119 draws from — rather
+    than reading ``DATABASE_URL`` itself, the same seam the fraction's, the
+    flip depth's, the verdict's and the resolution's stores expose.
+
+    Takes no arguments — that is the factory's registration protocol — and
+    resolves its path from the environment at build time, so a composed
+    application carries a true-IR flip-depth store for the deployment the
+    process is actually running in.
+
+    Returns ``None`` when nothing names a relational store, the
+    degrade-don't-break stance every store in this workspace takes toward an
+    absent ``DATABASE_URL``: an unconfigured true-IR flip depth is a discoverable
+    state, and a deployment whose campaign loop must draw §7.3's Type-D flip
+    depths is the caller that must not find itself in it.
+
+    Like :func:`build_flip_depth`, this never raises, including for a URL whose
+    scheme this store cannot speak.  The factory builds every registered
+    component on every :func:`~app.module_loader.create_app` call, so a builder
+    that raised would take composition down for every unrelated feature; a
+    process that *requires* this store asks
+    :meth:`~nulloracle.irprob.TrueIRFlipDepth.resolve` or calls the store
+    directly, where a named :class:`~nulloracle.errors.KsGuardError` is the
+    right answer.  Construction performs no I/O — the path is resolved on first
+    use — so composing the application never opens a database.
+
+    The store is composed beside feature 119's rather than under it: this one
+    *reads* the node's campaign and delegates the write, so a deployment can
+    carry the derived-probability seam without carrying anything else.
+    """
+    return TrueIRFlipDepth.resolve()
 
 
 @register(RESOLUTION_COMPONENT_NAME)
