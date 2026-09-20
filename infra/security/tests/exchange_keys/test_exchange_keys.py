@@ -41,6 +41,7 @@ from infra.security.exchange_keys import (
     KeyValidation,
     KeyVerdict,
     WithdrawalNotDisabled,
+    WithdrawalStateMalformed,
     provision_exchange_key,
     validate_key,
 )
@@ -137,6 +138,50 @@ class TestTheProvisionedPermissionSet:
         """A refusal that does not name the missing half of "read +
         trade" is one an operator has to reverse-engineer."""
         assert TRADE_PERMISSION in _validate((READ_PERMISSION,)).detail
+
+    def test_a_tighter_key_than_read_plus_trade_is_admitted(self) -> None:
+        """The rule is a ceiling plus a floor, not an equality: §17's
+        "read + trade only" forbids *surplus*, and the sentence requires
+        trade. A trade-only key holds less than read + trade and so
+        satisfies the requirement more strongly — refusing it would be a
+        false refusal of a safer key."""
+        validation = _validate((TRADE_PERMISSION,), label="execution-orders-only")
+        assert validation.accepted
+        assert validation.code is KeyVerdict.PROVISIONED
+
+
+class TestTheRuleIsACeilingAndAFloor:
+    """Both edges, and the band between them."""
+
+    def test_the_ceiling_refuses_surplus(self) -> None:
+        """Anything beyond read + trade is a capability the deployment did
+        not ask for."""
+        assert _validate(
+            (READ_PERMISSION, TRADE_PERMISSION, "transfer")
+        ).code is KeyVerdict.UNKNOWN_PERMISSION
+
+    def test_the_floor_refuses_a_key_that_cannot_trade(self) -> None:
+        """The sentence's own "with trade permission"."""
+        assert _validate(
+            (READ_PERMISSION,)
+        ).code is KeyVerdict.MISSING_TRADE_PERMISSION
+
+    @pytest.mark.parametrize(
+        "permissions",
+        [
+            (READ_PERMISSION, TRADE_PERMISSION),
+            (TRADE_PERMISSION,),  # tighter than the ceiling: admitted
+        ],
+    )
+    def test_everything_in_the_band_is_admitted(
+        self, permissions: tuple[str, ...]
+    ) -> None:
+        """No input inside the band is falsely refused, and every one of
+        them is a key that trades and cannot withdraw."""
+        validation = _validate(permissions)
+        assert validation.accepted
+        assert TRADE_PERMISSION in validation.permissions
+        assert WITHDRAW_PERMISSION not in validation.permissions
 
 
 class TestWithdrawalIsRefused:
@@ -267,6 +312,93 @@ class TestTheValidationFailure:
             validate_key(
                 permissions=[READ_PERMISSION, 7],  # type: ignore[list-item]
                 withdrawal_disabled=WITHDRAWAL_OFF,
+            )
+
+
+class TestTheWithdrawalStateMustBeABoolean:
+    """The one input whose wrongness would otherwise pass silently.
+
+    The switch arrives from configuration, and configuration is text.  Every
+    non-empty string is truthy in Python, so a truthiness test would read
+    the string ``"false"`` as "withdrawal is disabled" — minting a key that
+    believes it cannot withdraw while its account can, with the record
+    reading ``withdrawal_disabled=True`` and every check downstream
+    agreeing.  That is the feature's worst outcome and its quietest, so the
+    state must be a real ``bool``.
+    """
+
+    @pytest.mark.parametrize(
+        "value",
+        ["false", "no", "0", "true", "yes", 1, 0, None, [], {}, 1.0],
+    )
+    def test_a_non_boolean_withdrawal_state_is_refused(self, value: object) -> None:
+        """No text, number or container stands in for the boolean."""
+        with pytest.raises(WithdrawalStateMalformed):
+            validate_key(
+                permissions=READ_AND_TRADE,
+                withdrawal_disabled=value,  # type: ignore[arg-type]
+            )
+
+    def test_the_falsy_string_false_is_refused_not_read_as_disabled(self) -> None:
+        """The bite: ``"false"`` is truthy, so a truthiness test would
+        accept it as "withdrawal is disabled" — the exact silent failure
+        this rule exists to prevent."""
+        assert bool("false") is True  # the reason the guard has to exist
+        with pytest.raises(WithdrawalStateMalformed):
+            validate_key(
+                permissions=READ_AND_TRADE,
+                withdrawal_disabled="false",  # type: ignore[arg-type]
+            )
+
+    def test_the_malformed_state_is_refused_rather_than_called_not_disabled(self) -> None:
+        """A value that is not a boolean does not describe an account
+        state, so reporting "the switch is on" would send an operator to
+        the exchange to fix a setting that was never the problem."""
+        with pytest.raises(WithdrawalStateMalformed) as raised:
+            validate_key(
+                permissions=READ_AND_TRADE,
+                withdrawal_disabled="false",  # type: ignore[arg-type]
+            )
+        assert not isinstance(raised.value, WithdrawalNotDisabled)
+
+    def test_the_malformed_state_names_the_value_and_its_type(self) -> None:
+        """The refusal has to say what it was handed."""
+        with pytest.raises(WithdrawalStateMalformed) as raised:
+            validate_key(
+                permissions=READ_AND_TRADE,
+                withdrawal_disabled="no",  # type: ignore[arg-type]
+            )
+        message = str(raised.value)
+        assert "'no'" in message
+        assert "str" in message
+
+    def test_both_real_booleans_are_still_judged(self) -> None:
+        """The guard refuses everything that is *not* a bool, and nothing
+        that is — ``True`` and ``False`` reach their verdicts."""
+        assert _validate(withdrawal_disabled=True).accepted
+        assert _validate(withdrawal_disabled=False).code is (
+            KeyVerdict.WITHDRAWAL_NOT_DISABLED
+        )
+
+    def test_a_malformed_state_refuses_the_mint(self) -> None:
+        """And the minting seam refuses it too, rather than provisioning a
+        key on a value it could not read."""
+        with pytest.raises(WithdrawalStateMalformed):
+            provision_exchange_key(
+                label=EXECUTION_KEY_LABEL,
+                permissions=READ_AND_TRADE,
+                withdrawal_disabled="false",  # type: ignore[arg-type]
+            )
+
+    def test_the_malformed_state_is_checked_before_the_permissions(self) -> None:
+        """Order matters for the message: when *both* the switch and the
+        permission set are malformed, the silent-wrongness input is the one
+        reported — a caller fixing the permissions first would still mint a
+        key on an unreadable switch."""
+        with pytest.raises(WithdrawalStateMalformed):
+            validate_key(
+                permissions=READ_TRADE_AND_WITHDRAW,
+                withdrawal_disabled="false",  # type: ignore[arg-type]
             )
 
 
@@ -428,6 +560,7 @@ class TestTheKeyCannotWithdraw:
             "ExchangeKeyError",
             "KeyPermissionRejected",
             "WithdrawalNotDisabled",
+            "WithdrawalStateMalformed",
         }
         for name, function in callables.items():
             # The *parameters*, not the return: provision_exchange_key

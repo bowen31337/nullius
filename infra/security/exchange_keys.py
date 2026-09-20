@@ -13,12 +13,25 @@ of which this module owns as a seam rather than a comment:
   *permission set* the exchange stamped onto the key, not the key's
   material.  An operator asks the exchange for a key and states what it
   asked for; what this module holds is the set of permissions that came
-  back, and what it publishes is exactly one acceptable set
-  (:data:`PROVISIONED_PERMISSIONS` — read and trade, nothing else).  The
-  comparison is a set comparison, not a containment test, because "read +
-  trade only" is the whole of §17's first clause: a key that *also*
-  carries something the deployment did not ask for is not a key this
-  deployment provisioned, and the excess is refused rather than ignored.
+  back, and the rule it applies is a **ceiling plus a floor**, not an
+  equality:
+
+  - *the ceiling* is §17's "read + trade only".  A key carrying anything
+    beyond :data:`PROVISIONED_PERMISSIONS` is refused, because the
+    surplus is by definition a capability the deployment did not ask for.
+    This is what makes the rule a containment test rather than a trust
+    exercise: extras are the risk, and extras are what get refused.
+  - *the floor* is the sentence's own "with trade permission".  A key
+    that cannot trade cannot place the orders the system exists to place,
+    so it is refused too.
+  - *between the two* — a key **tighter** than read + trade, such as a
+    trade-only key — is admitted, and deliberately so.  Refusing it would
+    be a false refusal of a *safer* key: the feature's requirement is
+    that the key can trade and cannot withdraw, and a key holding less
+    than read + trade satisfies that more strongly, not less.  §17's
+    "only" forbids surplus; it does not oblige a deployment to grant read
+    to a key that never needs it.
+
   Permissions are compared as the facts they are — case-folded, so the
   spelling an operator typed is not mistaken for a different permission —
   and a name that folds onto no known permission is refused, never
@@ -89,6 +102,7 @@ __all__ = [
     "KeyValidation",
     "KeyVerdict",
     "WithdrawalNotDisabled",
+    "WithdrawalStateMalformed",
     "provision_exchange_key",
     "validate_key",
 ]
@@ -152,6 +166,31 @@ class KeyPermissionRejected(ExchangeKeyError):
     """
 
 
+class WithdrawalStateMalformed(ExchangeKeyError):
+    """The account-side withdrawal state is not a boolean.
+
+    A third contract, and the one whose violation is silent.  The switch
+    is read from a deployment's configuration, and configuration arrives
+    as text: an operator's ``"false"``, an env var's ``"no"``, a
+    hand-edited ``"true"``.  Every one of those is *truthy* in Python, so
+    a truthiness test would accept ``"false"`` as "withdrawal is
+    disabled" — minting a key that believes itself unable to withdraw
+    while the account it was issued against can.  That is the feature's
+    worst outcome, and it is invisible: the record reads
+    ``withdrawal_disabled=True`` and every check downstream agrees.
+
+    So the state has to be a real ``bool``, and anything else is refused
+    as malformed rather than coerced — the same stance
+    :func:`_permission_set` takes on a bare string, and for the same
+    reason: a value the module cannot place is one it must not reason
+    past.  Refused by *raising* rather than by returning the
+    not-disabled verdict, because a value that is not a boolean does not
+    describe an account state at all — reporting "the switch is on" for
+    an input that may well have meant "off" would send an operator to
+    the exchange's console to fix a setting that was never the problem.
+    """
+
+
 class WithdrawalNotDisabled(ExchangeKeyError):
     """The account-side withdrawal switch is not off.
 
@@ -193,8 +232,9 @@ class KeyVerdict(enum.StrEnum):
     UNKNOWN_PERMISSION = "unknown-permission"
 
     #: Refused: the set does not carry trade, so the key cannot place the
-    #: orders the system exists to place.  Named for the missing half of
-    #: "read + trade", not for the missing set as a whole.
+    #: orders the system exists to place.  The floor of the rule — the
+    #: permission the feature's own sentence names — and deliberately not
+    #: raised for a key that is merely *tighter* than read + trade.
     MISSING_TRADE_PERMISSION = "missing-trade-permission"
 
     #: Refused: the permission set is right but the account's withdrawal
@@ -412,7 +452,37 @@ def validate_key(
     can still withdraw is refused as
     :attr:`KeyVerdict.WITHDRAWAL_NOT_DISABLED`, the "otherwise" of the
     sentence's own middle clause.
+
+    Accepted is therefore the band between the rule's two edges: no
+    permission beyond :data:`PROVISIONED_PERMISSIONS` and the trade
+    permission present.  A trade-only key sits inside the band and is
+    admitted — it is *safer* than read + trade, and refusing it would
+    refuse a key the feature's requirement is satisfied by.  See the
+    module docstring for why the rule is a ceiling and a floor rather
+    than an equality.
+
+    The withdrawal state is checked for *being a boolean* before any of
+    that, and raises :class:`WithdrawalStateMalformed` rather than
+    returning a verdict: it is not a property of the key being judged, it
+    is the caller having handed this function something that is not the
+    fact it asked for.  The check comes first because it is the only
+    input whose wrongness would otherwise pass *silently* — see that
+    exception's docstring.
     """
+    if not isinstance(withdrawal_disabled, bool):
+        raise WithdrawalStateMalformed(
+            f"withdrawal_disabled was given {withdrawal_disabled!r} of type "
+            f"{type(withdrawal_disabled).__name__}, not a bool. The "
+            f"account-side withdrawal state arrives from configuration, "
+            f"which is text: every non-empty string — 'false', 'no', "
+            f"'0' — is truthy in Python, so a truthiness test here would "
+            f"read 'false' as 'withdrawal is disabled' and mint a key that "
+            f"believes it cannot withdraw while its account can. Feature "
+            f"152's 'permanently disabled' is the one claim this module "
+            f"cannot afford to take on faith, so the state must be a real "
+            f"bool and anything else is refused rather than coerced."
+        )
+
     described = _permission_set(permissions)
     what = f"key {label!r}" if label else "the described key"
 
