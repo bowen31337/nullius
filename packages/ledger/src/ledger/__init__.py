@@ -63,6 +63,12 @@ already says:
   directive: the genuine-bool check every appended row's
   ``charges_budget`` is validated through, supplied by the caller and
   never derived.
+* :class:`~ledger.keffective.KEffective` with
+  :func:`~ledger.keffective.derive_k_effective` and
+  :data:`~ledger.keffective.UNNAMED_EPOCH` — feature 93's derivation:
+  the budget-charging trial count per epoch, the number null nodes
+  never inflate.  Read off the store as
+  :meth:`~ledger.store.TrialLedger.k_effective`.
 * :class:`~ledger.record.utc_now` — the append's default clock.
 * The error taxonomy of :mod:`ledger.errors`, one base class wide.
 """
@@ -81,6 +87,7 @@ from .errors import (
     TrialRecordError,
     TrialStoreError,
 )
+from .keffective import KEffective, UNNAMED_EPOCH, derive_k_effective
 from .outcome import OUTCOMES
 from .record import TrialLedgerRecord, utc_now
 from .store import DATABASE_URL_ENV, TRIAL_LEDGER_TABLE, TrialLedger
@@ -93,6 +100,7 @@ __all__ = [
     "DebitEndpoint",
     "DebitRequest",
     "DebitResponse",
+    "KEffective",
     "OUTCOMES",
     "TRIAL_LEDGER_TABLE",
     "TrialImmutableError",
@@ -101,8 +109,10 @@ __all__ = [
     "TrialLedgerRecord",
     "TrialRecordError",
     "TrialStoreError",
+    "UNNAMED_EPOCH",
     "build_ledger_debit",
     "build_trial_ledger",
+    "derive_k_effective",
     "utc_now",
     "validated_charges_budget",
 ]

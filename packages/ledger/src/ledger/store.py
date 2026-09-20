@@ -147,6 +147,7 @@ from urllib.parse import unquote, urlparse
 
 from .budget import validated_charges_budget
 from .errors import TrialImmutableError, TrialRecordError, TrialStoreError
+from .keffective import KEffective, derive_k_effective
 from .outcome import validated_outcome
 from .record import TrialLedgerRecord, _validated_instant, _validated_uuid, utc_now
 
@@ -207,6 +208,12 @@ CREATE TABLE IF NOT EXISTS {TRIAL_LEDGER_TABLE} (
 # apart in column order — the failure that would silently swap an
 # identity for a stamp.
 _COLUMNS = "seq, ts, node_id, campaign_id, outcome, charges_budget"
+
+# Feature 88's epoch stamp, read by feature 93's derivation when the table
+# carries it.  The column arrives with a sibling feature, so it is *probed*
+# for rather than assumed (see _has_epoch_column); a table that predates it
+# is read as one bucket of un-named epochs rather than refused.
+_EPOCH_COLUMN = "epoch_id"
 
 # Feature 92's seam: refuse an UPDATE or DELETE against trial_ledger before
 # it runs.  The check is by statement shape, not by trust — it names the
@@ -420,6 +427,27 @@ def _upgrade_legacy_ledger_table(connection: sqlite3.Connection) -> None:
             f"ALTER TABLE {TRIAL_LEDGER_TABLE} "
             "ADD COLUMN charges_budget BOOLEAN NOT NULL DEFAULT TRUE"
         )
+
+
+def _has_epoch_column(connection: sqlite3.Connection) -> bool:
+    """Whether the ledger table carries feature 88's ``epoch_id`` stamp yet.
+
+    The probe the derived-view read uses to decide whether there is an
+    epoch dimension to group by.  ``epoch_id`` is a *sibling* feature's
+    column (feature 88: *System records epoch_id naming which sequestered
+    epoch a trial charged*), so a table written before that stamp landed
+    genuinely has no such column — and asking it to group by one would
+    fail with "no such column" rather than answer.  Probing with ``PRAGMA
+    table_info`` — the same seam the legacy upgrade reads columns through —
+    lets feature 93's derivation answer honestly on both tables: one
+    un-named bucket before the column exists, a real per-epoch breakdown
+    after.  It reads the schema and never the rows, so it is a safe
+    question to ask of an append-only table on every read.
+    """
+    columns = {
+        row[1] for row in connection.execute(f"PRAGMA table_info({TRIAL_LEDGER_TABLE})")
+    }
+    return _EPOCH_COLUMN in columns
 
 
 def _record_from_row(row: tuple[Any, ...]) -> TrialLedgerRecord:
@@ -825,8 +853,10 @@ class TrialLedger:
 
         Ordered by ``seq``, not by ``ts``: the sequence is the order the
         charges were actually debited in, and the log is replayed in the
-        order it was written.  This is the seam the derived views of
-        features 93-94 and 96 read through when they arrive.
+        order it was written.  Feature 93's ``K_effective`` derivation
+        (:meth:`k_effective`) reads the whole log in this order; feature
+        96's epoch-usage counts, which read the ``epoch_ledger`` table
+        instead of this one, will read through their own member's seam.
         """
         with closing(self._connect()) as connection:
             rows = connection.execute(
@@ -838,14 +868,64 @@ class TrialLedger:
         """How many rows the ledger holds.
 
         The plain count — every row, unfiltered.  ``K_effective``
-        (feature 93) is *not* this number and is deliberately not here:
-        it counts only budget-charging trials, filtering on
-        ``charges_budget`` (feature 90), so the honest ``K`` and the
-        effective ``K`` are two different reads and this one stays the
-        plain total.
+        (feature 93) is *not* this number and is deliberately a separate
+        read (:meth:`k_effective`): it counts only budget-charging
+        trials, filtering on ``charges_budget`` (feature 90), so the
+        honest ``K`` and the effective ``K`` are two different numbers
+        and this one stays the plain total.  The two are equal only when
+        no null node was ever charged.
         """
         with closing(self._connect()) as connection:
             (total,) = connection.execute(
                 f"SELECT COUNT(*) FROM {TRIAL_LEDGER_TABLE}"
             ).fetchone()
         return int(total)
+
+    def k_effective(self) -> KEffective:
+        """``K_effective`` per epoch — the budget-charging trials (feature 93).
+
+        The derivation §8 names among the ledger's derived views —
+        *"``K_effective`` per epoch (filtered on ``charges_budget``)"* —
+        read straight off this table: every row, grouped by the epoch it
+        charged, counting only the ones whose ``charges_budget`` is true.
+        A null node is stamped ``False`` by the null oracle's opaque
+        directive (feature 90) and so contributes nothing, however many
+        of them a campaign ran; that is the whole point of the filter.
+        The result is a :class:`~ledger.keffective.KEffective`, which
+        carries the per-epoch breakdown and the total.
+
+        The plain :meth:`count` is *not* this number and this is not that
+        method: ``count`` answers how many rows the ledger holds, this
+        answers how many of them consumed statistical degrees of freedom.
+        The two are equal only when no null node was ever charged.
+
+        **The epoch dimension is feature 88's, and is read when present.**
+        The table carries an ``epoch_id`` column once feature 88's stamp
+        lands; until then every row is grouped under the un-named epoch
+        (``None``).  The column is probed for rather than assumed, so this
+        read is correct on a table written before 88 and becomes a genuine
+        per-epoch view the moment its column appears — with no edit here,
+        and without this feature presuming the shape of another's write
+        seam.  A row whose stored directive is neither ``0`` nor ``1`` is
+        refused by the derivation rather than quietly counted as "not
+        true", because understating ``K`` is the one error direction that
+        lets a false discovery through.
+
+        An epoch whose trials were all null nodes is reported with a count
+        of ``0`` rather than omitted — the deflation term must be told that
+        epoch contributed no degrees of freedom, not left to infer it.
+        """
+        with closing(self._connect()) as connection:
+            # The stamp's column is a sibling feature's, so the read asks
+            # the schema whether there is an epoch dimension to group by
+            # rather than assuming one — and never touches the rows to ask.
+            stamped = _has_epoch_column(connection)
+            projection = (
+                f"{_EPOCH_COLUMN}, charges_budget" if stamped else "charges_budget"
+            )
+            rows = connection.execute(
+                f"SELECT {projection} FROM {TRIAL_LEDGER_TABLE} ORDER BY seq"
+            ).fetchall()
+        if stamped:
+            return derive_k_effective((row[0], row[1]) for row in rows)
+        return derive_k_effective((None, row[0]) for row in rows)
