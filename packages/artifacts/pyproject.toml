@@ -1,0 +1,38 @@
+# nullius workspace member: the artifacts plugin
+# (app_spec.xml, "Tree & Artifact Persistence", feature 169;
+# docs/nullius-tech-architecture.md §9.2 for the layout this package
+# persists: one directory per node, keyed by campaign_id then node_id).
+#
+# Joins the uv workspace by convention — packages/artifacts with this
+# file — so the module loader (src/app/module_loader.py) discovers it by
+# scanning the members the root pyproject.toml declares.  No edit to any
+# central registry, router table or app factory is needed or wanted to
+# wire this package in.
+#
+# Dependencies: the workspace root, for the factory's registration
+# protocol (`import app.module_loader`) and its workspace discovery
+# (`find_workspace_root`, which locates the default artifact root the
+# way the snapshot member locates its default lake).  Nothing else, by
+# design: this feature is the *directory* half of §9.2 — keying a node's
+# directory by campaign then node, staging its files, publishing it as
+# one unit — and every part of that is stdlib filesystem work.  The
+# Parquet and JSON *content* of later features in this category
+# (170-173) layer on this package's API rather than beside it, and the
+# member that needs pyarrow will be the one that declares it.
+
+[project]
+name = "artifacts"
+version = "0.1.0"
+description = "Persists one artifact directory per node, keyed by campaign_id then node_id."
+requires-python = ">=3.12"
+dependencies = ["nullius"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/artifacts"]

@@ -4,6 +4,7 @@ requires-python = ">=3.12"
 
 [manifest]
 members = [
+    "artifacts",
     "canary",
     "cost-model",
     "evaluator",
@@ -17,6 +18,17 @@ members = [
     "tripwires",
     "universe",
 ]
+
+[[package]]
+name = "artifacts"
+version = "0.1.0"
+source = { editable = "packages/artifacts" }
+dependencies = [
+    { name = "nullius" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "nullius", editable = "." }]
 
 [[package]]
 name = "canary"
