@@ -54,8 +54,17 @@ boundary itself, and :class:`~nulloracle.resolution.TypeDOracle` reads the
 node's stored depth and its branch's stored flip (feature 119's, inherited
 down the ancestor chain), requires the campaign to be the Type-D regime, and
 serves the caller's real targets below the flip and the caller's permutation
-at or beyond it.  The permutation arrives as a seam — §7.2's
-``block_permute`` is feature 115's — because the *which branch* decision is
+at or beyond it.  The permutation arrives as a seam because the *which branch*
+decision is feature 121's and the *permutation* is feature 115's —
+:mod:`nulloracle.blockpermute` is §7.2's ``block_permute(forward_returns,
+seed=perm_seed, block=20d)``: it cuts a series into contiguous ``block_days``
+blocks and shuffles those blocks as units, preserving the autocorrelation and
+volatility clustering within each block while destroying the signal-to-target
+relationship, from the ``perm_seed`` feature 109 stored beside the bit so a
+replayed campaign reproduces the same series.  The two are composed at the
+call site — the seed and block length are read from §7.1's sidecar and handed
+to :func:`~nulloracle.blockpermute.block_permute`, whose return is passed to
+the resolution as its ``permute`` — because the *which branch* decision is
 feature 121's and the *permutation* is not; what the oracle refuses to do is
 serve the permuted branch without one.
 
@@ -180,6 +189,7 @@ from .assignment import (
     encode_assignments,
     normalize_node_id,
 )
+from .blockpermute import block_indices, block_permute
 from .envelope import (
     FORMAT_VERSION,
     MAGIC,
@@ -295,8 +305,8 @@ from .selection import (
     TypeRSelection,
     draw_null_roots,
     null_root_count,
-    persist_type_r_selection,
     perm_seed_for,
+    persist_type_r_selection,
 )
 from .sidecar import (
     SIDECAR_DIRECTORY,
@@ -358,8 +368,11 @@ __all__ = [
     "PHI_CEILING",
     "PHI_FLOOR",
     "PLAN_COMPONENT_NAME",
+    "PROBABILITY_CEILING",
+    "PROBABILITY_FLOOR",
     "P_MAX",
     "P_MIN",
+    "REGIMES",
     "RESOLUTION_COMPONENT_NAME",
     "SERVICE_ACCOUNT_ENV",
     "SIDECAR_DIRECTORY",
@@ -371,7 +384,12 @@ __all__ = [
     "TAG_BYTES",
     "TARGET_COMPONENT_NAME",
     "TARGET_ROUTE",
+    "TRUE_IR_FLIP_DEPTH_COMPONENT_NAME",
+    "TRUE_IR_MIDPOINT",
+    "TRUE_IR_SCALE",
     "TYPE_D_CAMPAIGN_TYPE",
+    "TYPE_R_CAMPAIGN_TYPE",
+    "TYPE_R_COMPONENT_NAME",
     "VERDICT_COMPONENT_NAME",
     "VOID_THRESHOLD",
     "WORKSPACE_COUNT_COLUMN",
@@ -390,9 +408,6 @@ __all__ = [
     "NullAssignment",
     "NullOracleError",
     "NullSidecar",
-    "PROBABILITY_CEILING",
-    "PROBABILITY_FLOOR",
-    "REGIMES",
     "PlantedNullFraction",
     "RootSelection",
     "SidecarAccessError",
@@ -401,11 +416,6 @@ __all__ = [
     "SidecarKey",
     "SidecarKeyError",
     "SidecarStoreError",
-    "TRUE_IR_FLIP_DEPTH_COMPONENT_NAME",
-    "TRUE_IR_MIDPOINT",
-    "TRUE_IR_SCALE",
-    "TYPE_R_CAMPAIGN_TYPE",
-    "TYPE_R_COMPONENT_NAME",
     "TargetEndpoint",
     "TargetRequest",
     "TargetResponse",
@@ -416,6 +426,8 @@ __all__ = [
     "TypeRSelection",
     "Verdict",
     "assignments_digest",
+    "block_indices",
+    "block_permute",
     "build_campaign_plan_gate",
     "build_flip_depth",
     "build_null_sidecar",
@@ -445,12 +457,12 @@ __all__ = [
     "null_root_count",
     "open_envelope",
     "past_the_flip",
-    "persist_flip_depth",
-    "persist_type_r_selection",
     "perm_seed_for",
-    "probability_from_true_ir",
+    "persist_flip_depth",
     "persist_ks_pvalue",
     "persist_null_fraction",
+    "persist_type_r_selection",
+    "probability_from_true_ir",
     "require_cryptography",
     "resolve_key",
     "resolve_type_d",
