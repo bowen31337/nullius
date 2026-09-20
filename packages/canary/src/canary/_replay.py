@@ -118,6 +118,7 @@ __all__ = [
     "CanaryReplayResult",
     "CanaryReplayScoreError",
     "replay_pair",
+    "tree_walk_order",
 ]
 
 #: The tolerance the nightly canary compares its score against the recorded
@@ -129,6 +130,55 @@ __all__ = [
 #: module's ``within_tolerance`` read the same threshold, and an operator
 #: auditing why dreaming halted finds the ``1e-12`` in exactly one place.
 DEFAULT_TOLERANCE = 1e-12
+
+
+def _sorted_nodes(tree_nodes: list[dict]) -> list[dict]:
+    """The tree's nodes in the one order the replay's reduction walks them.
+
+    The sort feature 138's row asks every reduction to apply, stated once so
+    :func:`_score_policy`'s sum and :func:`tree_walk_order`'s checkable
+    spelling of it cannot drift apart: the first to be edited would silently
+    make the score a function of something other than the tree's identity.
+    Ordered by ``node_id`` — the same key :func:`canary.tree_hash` renders its
+    nodes under, so the walk the score is computed over is the walk the tree's
+    identity is the identity of.
+
+    Sorted order rather than insertion order is not a tidiness choice: a sum
+    is not associative in float, so the order the nodes arrive in decides the
+    last bits of the score, and two nights that walked one frozen tree in two
+    orders would report two scores for one pair.  A node carrying no
+    ``node_id`` sorts under the empty string, which is the default the
+    reduction has always used, so malformed input sorts as it always did.
+    """
+    return sorted(tree_nodes, key=lambda node: node.get("node_id", ""))
+
+
+def tree_walk_order(tree_nodes: list[dict]) -> tuple[str, ...]:
+    """The node ids the replay's reduction walks, in the order it walks them.
+
+    Feature 138 (this category's): *"System sets PYTHONHASHSEED to 0 and
+    applies explicit sorts before every reduction, which returns a stable
+    iteration order"* — §12's "Stable iteration order" row, whose second
+    clause is the one this function makes *checkable* rather than the one it
+    performs.  :func:`_score_policy` applies the sort; this is the sort's
+    result as a sequence of strings, which is the shape
+    :func:`~canary.assert_stable_iteration_order` and
+    :func:`~canary.stable_reduction_order` judge.  So a caller that wants to
+    *check* the replay's reduction order rather than trust it — a nightly
+    runner, a test, the suite that pins this feature — asks for the walk and
+    hands it to the assertion, which is exactly the pair §12's row asks a
+    reduction to satisfy: a pinned environment, and an explicit sort its order
+    can be verified against.
+
+    Deliberately a reading, not an assertion: this function judges nothing and
+    raises nothing, because a node id that is blank or repeated is a fact
+    about the frozen tree — and the tree's own admission rules (feature 141)
+    are what refuse one, not the module that replays it.  What changes when
+    the order is wrong is the *caller's* verdict, taken at the caller's
+    boundary, which is the same division of labour feature 46 states for its
+    own predicate and assertion.
+    """
+    return tuple(str(node.get("node_id", "")) for node in _sorted_nodes(tree_nodes))
 
 
 def _score_policy(policy: dict, tree_nodes: list[dict]) -> float:
@@ -151,7 +201,7 @@ def _score_policy(policy: dict, tree_nodes: list[dict]) -> float:
     that had drifted into something the canary could no longer measure.
     """
     total = 0.0
-    for node in sorted(tree_nodes, key=lambda node: node.get("node_id", "")):
+    for node in _sorted_nodes(tree_nodes):
         raw_score = node.get("score", 0.0)
         if isinstance(raw_score, bool) or not isinstance(raw_score, (int, float)):
             raise CanaryReplayScoreError(

@@ -64,6 +64,29 @@ component reaches for a model from inside a replay. Its repair is
 likewise the only one that points *forward* in the pipeline: materialize
 the learned output at evaluation time and read back the stored floats
 (§11.2), rather than fixing anything in the replay itself.
+
+:class:`CanaryOrderError` is the fifth such subclass — feature 138
+(app_spec.xml): *"System sets PYTHONHASHSEED to 0 and applies explicit
+sorts before every reduction, which returns a stable iteration order"* —
+and it is the half of §12's "Stable iteration order | ``PYTHONHASHSEED=0``;
+explicit sorts before every reduction" row that nothing in this workspace
+asserted yet. Feature 46's :func:`~universe.canonical_symbol_order` is the
+row's *sort* half, applied where symbols are indexed; ``_sandbox``'s
+:data:`~evaluator.ENV_HASHSEED` is the row's *seed* half, applied to the
+child a signal runs in. Neither is an assertion: a symbol sequence is
+sorted on the way out of one resolution and reduced over somewhere else,
+and the sandbox writes the seed into one environment while the interpreter
+that runs the reduction is the caller's. This subclass is the refusal that
+closes both: a stable-order reading that takes a sequence and a declared
+environment together — :func:`~canary.stable_reduction_order` *producing* a
+sorted order and a pinned child environment, :func:`~canary.assert_stable_
+iteration_order` *refusing* a sequence that arrived unsorted — and that
+refuses whenever the environment would not make the sequence's order
+reproducible. Its repair is the row itself — pin
+``PYTHONHASHSEED=0`` and sort before the reduction — and, like
+:class:`CanaryReproducibilityError`, it is distinct from the pin because a
+deployment can be perfectly pinned and still leave its hash seed
+unpinned, which is the failure §12 calls invisible.
 """
 
 from __future__ import annotations
@@ -74,6 +97,7 @@ __all__ = [
     "CanaryImageError",
     "CanaryImportError",
     "CanaryInferenceError",
+    "CanaryOrderError",
     "CanaryReproducibilityError",
 ]
 
@@ -231,6 +255,48 @@ class CanaryReproducibilityError(CanaryError):
     """
 
 
+class CanaryOrderError(CanaryError):
+    """The environment would not make a reduction's iteration order stable.
+
+    Raised by :func:`~canary.require_stable_environment` when the environment
+    a reduction is about to run in cannot be vouched for as hash-stable, and
+    by :func:`~canary.assert_stable_iteration_order` when a sequence a
+    reduction is about to consume is not in a canonical order that the seed
+    could make reproducible either. This is app_spec.xml feature 138: "System
+    sets PYTHONHASHSEED to 0 and applies explicit sorts before every
+    reduction, which returns a stable iteration order" — §12's "Stable
+    iteration order | ``PYTHONHASHSEED=0``; explicit sorts before every
+    reduction" row made into something a run can fail.
+
+    Deliberately its own subclass rather than folded into
+    :class:`CanaryImageError` (a moved pin) or
+    :class:`CanaryReproducibilityError` (divergent bytes), which is the rule
+    rather than the exception here: those two refuse the *containers* and the
+    *output*, while this one refuses the one input that decides whether a
+    reduction over a set or dict of strings is reproducible at all. A
+    deployment can be perfectly pinned — every digest frozen, every library in
+    the lockfile — and emit different bytes on every night, because the
+    interpreter it emitted them in randomized the iteration order of the
+    containers its reductions walked. §12 files that failure under the row
+    whose remedy is this one, and the reason it is worth its own class is the
+    same reason the row exists: non-determinism "does not announce itself".
+    Divergent bytes are the symptom; an unpinned hash seed is the cause; and a
+    caller bisecting a byte diff while the cause stands is bisecting a
+    different stack every night.
+
+    The refusal is collective, like the pin and device sweeps': one error
+    names every reason the environment cannot be vouched for — an
+    unrecognized ``PYTHONHASHSEED`` value, a value set but blank — because an
+    operator fixing one and re-running to discover the next has learned
+    nothing the first message could not have said. A *pinned* and an *unset*
+    seed are both non-refusals and neither raises: the pinned seed is the
+    row's remedy, and the unset seed is a deployment declaring nothing (the
+    passing case the device sweep's unset variable is, §12's contract being
+    about what is *configured*), recorded rather than refused so a nightly
+    report can say which of the two it found.
+    """
+
+
 # :class:`CanaryDeterminismBrokenError` is the taxonomy's fifth subclass, and
 # it does not live in this module: it is defined in :mod:`canary._halt` beside
 # the :class:`~canary.DreamHalt` record it carries on its ``halt`` attribute —
@@ -244,5 +310,14 @@ class CanaryReproducibilityError(CanaryError):
 # an unscorable tree (re-freeze the reference), not divergent bytes from two
 # runs of one signal (bisect the runs' diff), but §12's closing assertion, the
 # one whose repair is §15's *halt dreaming; bisect the image diff* and a fresh
-# frozen pair.  Exported from the package root beside the other four, so the
+# frozen pair.  Exported from the package root beside the other five, so the
 # single ``except`` :class:`CanaryError` this module promises still catches it.
+#
+# :class:`CanaryOrderError` above is the *sixth*, and it is defined here rather
+# than beside its module because it names a break of §12's contract rather than
+# a record's type: it carries no value the way the halt's record does, so the
+# placement rule that moved the halt error into :mod:`canary._halt` does not
+# reach it.  Its neighbours in the taxonomy are the ones it must be legible
+# beside — a caller that caught :class:`CanaryReproducibilityError` for a byte
+# diff and :class:`CanaryImageError` for a moved pin needs a third ``except``
+# for the cause that produces the first from a perfectly pin-clean deployment.

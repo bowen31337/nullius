@@ -50,6 +50,7 @@ from ._containers import (
 )
 from ._device import DevicePaths, reject_gpus_from_env
 from ._inference import ModelInference
+from ._ordering import StableOrder, require_stable_environment
 from ._replay import CanaryReplay
 from ._reproducibility import BitReproducibility
 
@@ -87,6 +88,7 @@ class CanaryService:
         )
         self._devices: Optional[DevicePaths] = None
         self._allowlist: Optional[ImportAllowlist] = None
+        self._order: Optional[StableOrder] = None
         self._env = env
 
     # -- Construction -------------------------------------------------------
@@ -262,6 +264,41 @@ class CanaryService:
         if self._allowlist is None:
             self._allowlist = allowlist_from_env(self._environment())
         return self._allowlist
+
+    @property
+    def order(self) -> StableOrder:
+        """The iteration-order verdict — feature 138's hash-seed sweep.
+
+        :data:`~canary.HASH_SEED_ENV` resolved from the environment the service
+        was constructed with: a declaration that is present and not the pin —
+        a non-zero integer, which turns hash randomization *on* — is refused,
+        naming the value and the remedy, while an unset or blank declaration is
+        read as the deployment declaring nothing and recorded as such.  On a
+        clean environment the verdict is a :class:`~canary.StableOrder`
+        recording which of the two clean readings it was, so a nightly report
+        can show what it checked rather than merely that it did not raise.
+
+        Deliberately lazy, exactly like :attr:`containers`, :attr:`devices` and
+        :attr:`allowlist`: the sweep reads the environment, so it can refuse,
+        and the factory builds this component on every ``create_app()`` — in a
+        bare test process and on paths with no reduction to make stable — so
+        the refusal must land at the first call that asks whether the
+        deployment's iteration order is stable, where it is informative,
+        rather than taking composition down.
+
+        The sequence half of §12's row is *not* here, and that is deliberate:
+        a sequence is a reduction's argument, not a deployment fact, so the
+        sentence a caller wants — *is this reduction's order stable?*, both
+        halves at once — is :func:`~canary.stable_reduction_order`, which takes
+        the sequence and the environment together.  This property is the half
+        that is a fact about the deployment, and it is the one worth carrying
+        on the composed component: a nightly runner holding the service can ask
+        whether *this deployment* would make a hash-ordered walk reproducible
+        without having a sequence in hand.
+        """
+        if self._order is None:
+            self._order = require_stable_environment(self._environment())
+        return self._order
 
     def _environment(self) -> Mapping[str, str]:
         """The environment mapping this service resolves against.

@@ -32,16 +32,21 @@ import random
 
 import pytest
 from canary import (
+    HASH_SEED_ENV,
+    PINNED,
+    PINNED_SEED,
     BitReproducibility,
     ByteComparison,
     CanaryError,
     CanaryImageError,
+    CanaryOrderError,
     CanaryReproducibilityError,
     CanaryService,
     assert_bit_identical,
     compare_bytes,
     compare_runs,
     require_identical,
+    require_stable_environment,
 )
 from conftest import (  # type: ignore[import-not-found] - suite-local fixture module
     PINNED_EVALUATOR_DIGEST,
@@ -620,6 +625,22 @@ def test_the_facade_delegates_to_the_same_functions() -> None:
     )
     assert reproducibility.run(_seeded_signal, 3) == compare_runs(_seeded_signal, 3)
     assert reproducibility.bytes(b"a", b"b") == compare_bytes(b"a", b"b")
+    # Feature 138's verdict is exposed here too, and it delegates as well:
+    # the byte check and the order check must not disagree about what a
+    # pin is, so there is one implementation of the sweep between them.
+    assert reproducibility.order({}) == require_stable_environment({})
+
+
+def test_the_facade_delegates_the_order_check_to_the_one_sweep() -> None:
+    # The reason feature 138's verdict sits on this facade: a bit-identity
+    # check is only as strong as the environment the two runs shared, and
+    # a caller whose comparison came back ``identical`` needs to know
+    # whether the seed was pinned or whether both runs simply shared an
+    # unpinned one. Same function, so the two members cannot disagree.
+    reproducibility = BitReproducibility()
+    with pytest.raises(CanaryOrderError, match="not the pin"):
+        reproducibility.order({HASH_SEED_ENV: "1"})
+    assert reproducibility.order({HASH_SEED_ENV: PINNED_SEED}).seed == PINNED
 
 
 def test_the_facade_refuses_a_divergence_on_the_asserting_method() -> None:

@@ -103,10 +103,11 @@ is duplicated by having them: a caller may equally write
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from ._errors import CanaryReproducibilityError
+from ._ordering import StableOrder, require_stable_environment
 
 __all__ = [
     "BitReproducibility",
@@ -665,3 +666,32 @@ class BitReproducibility:
         means.
         """
         return compare_bytes(left, right, field=field, seed=seed)
+
+    def order(
+        self,
+        env: Mapping[str, str] | None = None,
+    ) -> StableOrder:
+        """Feature 138's hash-seed verdict for the environment that produced them.
+
+        A bit-identity check is only as strong as the environment it ran
+        *between*: two runs in one interpreter under an unpinned hash seed share
+        that seed, so a reduction over a set of strings looks perfectly
+        deterministic and :meth:`run` reports ``identical`` for a signal that
+        would diverge tomorrow.  This is the fact a caller needs to know which
+        of those two readings it got — §12's "Stable iteration order |
+        ``PYTHONHASHSEED=0``; explicit sorts before every reduction" row — and it
+        is exposed here rather than only on the service because it is the *same*
+        question as this class's: feature 145 refuses divergent bytes, feature
+        138 refuses the cause that produces them invisibly.
+
+        Delegates to :func:`~canary.require_stable_environment` — one
+        implementation, so the two members cannot disagree about what a pin is —
+        and returns its :class:`~canary.StableOrder` verdict; an unpinned or
+        unplaceable declaration raises :class:`~canary.CanaryOrderError`, which
+        is a different refusal from
+        :class:`~canary.CanaryReproducibilityError` on purpose, because the
+        repairs differ (pin the seed, §12, rather than bisect the byte diff).
+        Called with an environment the caller supplies, a nightly runner can
+        record the verdict for the exact environment its two runs shared.
+        """
+        return require_stable_environment(env)

@@ -112,6 +112,39 @@ composition never fails on a deployment's allowlist configuration —
 and ``service.allowlist.screen(source)`` is the seam a submitter is
 screened through.
 
+*Feature 138 is the stable iteration order — the seed, and the sort.* The
+category's fourth feature states §12's "Stable iteration order |
+``PYTHONHASHSEED=0``; explicit sorts before every reduction" row, and the
+`and` in the feature's own sentence is load-bearing: the two clauses defend
+one guarantee and each covers a case the other does not, so the module
+refuses when *either* is missing. :mod:`canary._ordering` is that pair:
+:func:`classify_hash_seed` (a declared seed to :data:`PINNED`,
+:data:`UNPINNED` or :data:`UNSET`, refusing a value the interpreter could not
+start under rather than assuming it harmless — an eval worker that would not
+boot is not a night the canary passed), :func:`require_stable_environment`
+(the sweep: an explicit non-zero declaration is refused by name, because it
+turns hash randomization *on*; an unset or blank one is the deployment
+declaring nothing, recorded rather than refused), and
+:func:`assert_stable_iteration_order` /
+:func:`stable_reduction_order` (the sort's half: the latter *produces* the
+order a reduction may sum in — :func:`apply_reduction_order` sorted and
+refusing a repeated member rather than collapsing it — and the former
+*refuses* a sequence no sort produced rather
+than repairing it, which is the division the two verbs of the row draw), and
+:func:`pinned_environment` (the seed half *set*: a fresh mapping a caller
+spawns a worker with, carrying ``PYTHONHASHSEED=0`` over whatever the shell
+declared). The seed is handed out rather than written into the running
+process, and that is the honest shape: the interpreter fixes
+``PYTHONHASHSEED`` before any application code runs, so a library that wrote
+the variable in place would be editing a decision already made — :func:`hash_seed_active`
+reports the runtime fact (``sys.flags.hash_randomization``) beside the
+declaration's, and the two are recorded together because they can disagree in
+exactly one direction, a deployment that pinned the seed in the environment
+of a process started with ``-R``. The composed service carries the verdict at
+``service.order``, lazily like its neighbours, and the walk it is checked
+against is exposed at :func:`tree_walk_order` on feature 142's replay: the
+reduction and the sort the row asks it to apply, in one spelling.
+
 *Feature 140 is the GPU refusal, over both paths, as the sweep's own
 assertion.* The category's sixteenth feature states §12's "Float
 reproducibility | Fixed reduction order; no ``fastmath``; no GPU in the eval
@@ -349,6 +382,7 @@ from ._errors import (
     CanaryImageError,
     CanaryImportError,
     CanaryInferenceError,
+    CanaryOrderError,
     CanaryReproducibilityError,
 )
 from ._halt import (
@@ -377,6 +411,24 @@ from ._image import (
     image_digest,
     parse_pinned_image,
 )
+from ._ordering import (
+    HASH_SEED_ENV,
+    MAX_SEED,
+    PINNED,
+    PINNED_SEED,
+    RANDOM_SPELLING,
+    UNPINNED,
+    UNSET,
+    StableOrder,
+    apply_reduction_order,
+    assert_stable_iteration_order,
+    classify_hash_seed,
+    hash_seed_active,
+    is_stable_iteration_order,
+    pinned_environment,
+    require_stable_environment,
+    stable_reduction_order,
+)
 from ._reference import (
     CanaryPolicy,
     CanaryReferencePair,
@@ -404,6 +456,7 @@ from ._replay import (
     CanaryReplayResult,
     CanaryReplayScoreError,
     replay_pair,
+    tree_walk_order,
 )
 from ._reproducibility import (
     BitReproducibility,
@@ -472,6 +525,23 @@ __all__ = [
     "is_replaying",
     "model_inference",
     "replaying",
+    # Feature 138 — PYTHONHASHSEED=0 and explicit sorts before every reduction
+    "HASH_SEED_ENV",
+    "MAX_SEED",
+    "PINNED",
+    "PINNED_SEED",
+    "RANDOM_SPELLING",
+    "UNPINNED",
+    "UNSET",
+    "StableOrder",
+    "apply_reduction_order",
+    "assert_stable_iteration_order",
+    "classify_hash_seed",
+    "hash_seed_active",
+    "is_stable_iteration_order",
+    "pinned_environment",
+    "require_stable_environment",
+    "stable_reduction_order",
     # Feature 145 — bit-identity across two runs of one seeded signal
     "BitReproducibility",
     "ByteComparison",
@@ -502,6 +572,8 @@ __all__ = [
     "CanaryReplay",
     "CanaryReplayResult",
     "replay_pair",
+    # Feature 138 — the replay's reduction order, as a checkable walk
+    "tree_walk_order",
     # Feature 143 — the halt of dreaming and its determinism_broken alert
     "DETERMINISM_BROKEN",
     "HALT_MESSAGE",
@@ -536,6 +608,7 @@ __all__ = [
     "CanaryImageError",
     "CanaryImportError",
     "CanaryInferenceError",
+    "CanaryOrderError",
     "CanaryReproducibilityError",
     "CanaryReplayScoreError",
 ]

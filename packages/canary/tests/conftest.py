@@ -86,12 +86,23 @@ def _image_env_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
     allowlist resolution falls back to its default when the variable is
     unset, so a shell carrying one would silently change which ceiling
     the screen tests judge under.
+
+    It clears ``PYTHONHASHSEED`` too, for feature 138: the order sweep
+    reads the variable out of the process environment by default, so a
+    developer shell (or a test runner started under one) carrying a
+    non-zero seed would make every "the unset case is recorded, not
+    refused" assertion fail for a reason that has nothing to do with the
+    sweep. Clearing it here does *not* change the running interpreter's
+    own hash-randomization flag — that was fixed before this conftest
+    was imported, which is exactly why the sweep reads the declaration
+    and the flag as two separate facts.
     """
     for variable in (
         "NULLIUS_EVALUATOR_IMAGE",
         "NULLIUS_EVAL_DEVICE",
         "NULLIUS_REPLAY_DEVICE",
         "NULLIUS_SEARCHED_IMPORTS",
+        "PYTHONHASHSEED",
     ):
         monkeypatch.delenv(variable, raising=False)
 
