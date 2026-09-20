@@ -155,6 +155,23 @@ code failed:
   library's fill model (§6.2, features 63-66), and this metric consumes
   liquidity as a *fact* while pinning only the estimator that combines it
   with the measured edge (see ``_capacity``).
+* :class:`EvaluatorDecayError` — the decay-profile contract (app_spec.xml
+  feature 81). Step 8 of §6.1's pipeline measures an information coefficient
+  at each of the five horizons, so the failures here are failures of that
+  measurement and its storage: a bundle that is not step 7's own result, a
+  score series that is not step 3's own output or does not live on the priced
+  grid (a score nobody aligned is not a pair), a cross-section too small or
+  too degenerate for a rank correlation (one symbol; a constant score or a
+  constant return — no order to agree with, or nothing to correlate), an
+  evaluation that measured nothing at any horizon, a profile whose array does
+  not carry exactly one entry per horizon, and a stored row that does not
+  reconstruct. Each is refused rather than zero-filled, because a decay
+  profile is the x-axis every later decay question is read off — "IC ≈ 0 at
+  horizon 20" is a *finding*, and a fabricated zero is the one value that
+  makes it unreadable. The coefficient itself is the Spearman rank
+  correlation, which is the *same* rank transform feature 74 pins for the
+  scores: the profile must measure the order the evaluator committed to, not
+  a second definition of agreement (see ``_decay``).
 * :class:`EvaluatorGateError` — the null-gate supply contract (app_spec.xml
   feature 76). Step 5 of §6.1's pipeline is the only place the null
   substitution happens, so the failures here are failures of that
@@ -179,6 +196,7 @@ __all__ = [
     "EvaluatorAlignmentError",
     "EvaluatorCapacityError",
     "EvaluatorConfigError",
+    "EvaluatorDecayError",
     "EvaluatorCostError",
     "EvaluatorEmbargoError",
     "EvaluatorError",
@@ -382,6 +400,35 @@ class EvaluatorCapacityError(EvaluatorError):
     metric consumes liquidity as a market fact and pins only the estimator
     that combines that fact with the measured edge, the way feature 74 pins
     the z-score rather than asking the deployment to inject one.
+    """
+
+
+class EvaluatorDecayError(EvaluatorError):
+    """The decay profile could not be measured or stored.
+
+    Raised by :func:`evaluator.compute_decay_profile`,
+    :func:`evaluator.persist_decay_profile` and the decay store
+    (app_spec.xml feature 81) when step 8 of the §6.1 pipeline cannot measure
+    an information coefficient at each of the five horizons: a bundle that is
+    not step 7's own result (the profile measures the edge that was actually
+    priced, and the gross series alone cannot say which schedule priced it),
+    a normalized score series that is not step 3's own output or that does not
+    live on the priced grid (a score nobody aligned is not a pair), a score
+    or return that is not a finite number, a horizon where the cross-section
+    is too small or degenerate for a correlation (one symbol, or a constant
+    score or constant return — the same "there was no scale to remove" cases
+    :func:`evaluator.normalize_scores` refuses one step earlier, refused here
+    rather than defaulted to zero), an evaluation that measured nothing at any
+    horizon, a profile built by hand whose array does not carry one entry per
+    horizon or whose stored values do not match its own points, and a stored
+    row that does not reconstruct.
+
+    Deliberately *not* here: any correlation arithmetic of its own invention.
+    The coefficient pinned here is the Spearman rank correlation — the
+    Pearson correlation of the two cross-sections' average ranks — which is
+    the *same* rank transform feature 74 pins for the scores, so the profile
+    measures the order the evaluator already committed to rather than a second
+    definition of agreement (see ``_decay``).
     """
 
 

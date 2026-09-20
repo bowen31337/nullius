@@ -120,7 +120,21 @@ halves in one transaction as the durable source the artifacts member's
 import-cheap the way the whole step does: stdlib-only, with the liquidity
 and the labels arriving as *values* — the sealed dollar volumes and the
 labeler's answer, the same seam the closes arrive through — so no member
-is imported and no fit is restated. The rest of the pipeline
+is imported and no fit is restated. Feature 81 adds step 8's decay half:
+:func:`compute_decay_profile` measures the information coefficient at each
+of the five horizons — the Spearman rank correlation of step 3's normalized
+scores against step 7's *post-cost* returns, over the symbols each date's
+two sides share — and :func:`persist_decay_profile` writes the result down
+as the stored array §9.2 files as ``decay_profile.json``, positional over
+the spec's axis with ``None`` for a horizon the window was too short to
+measure. The coefficient is the *same* rank transform feature 74 pins for
+the scores, so the profile measures the order the evaluator committed to
+rather than a second definition of agreement, and it is measured against
+priced returns so the entry at horizon ``h`` sits on one axis with the
+capacity feature 82 sizes at that horizon. It stays import-cheap the way
+the whole step does: stdlib-only, with the scores arriving as a value — the
+Polars boundary stays at the edge of the package — so no member is imported
+and no normalization is restated. The rest of the pipeline
 (purge and embargo, metrics) is the rest of this category's features, and
 each layers on this identity, this window, this execution, this
 normalization, this alignment, this gate and this pricing
@@ -154,6 +168,7 @@ from ._errors import (
     EvaluatorCapacityError,
     EvaluatorConfigError,
     EvaluatorCostError,
+    EvaluatorDecayError,
     EvaluatorEmbargoError,
     EvaluatorError,
     EvaluatorGateError,
@@ -259,6 +274,19 @@ from ._capacity_store import (
     load_capacity,
     persist_capacity,
 )
+from ._decay import (
+    DECAY_HORIZONS,
+    DECAY_STEP,
+    DecayProfile,
+    HorizonDecay,
+    compute_decay_profile,
+)
+from ._decay_store import (
+    DECAY_PROFILE_TABLE,
+    DecayStore,
+    load_decay_profile,
+    persist_decay_profile,
+)
 from ._service import ENV_IMAGE, EvaluatorService, build_evaluator_service
 from ._window import (
     ROSTER_STREAM,
@@ -317,6 +345,17 @@ __all__ = [
     "EvaluatorCostError",
     "apply_costs",
     "cost_model_ref",
+    # Feature 81 — the decay profile
+    "DECAY_HORIZONS",
+    "DECAY_STEP",
+    "DecayProfile",
+    "HorizonDecay",
+    "compute_decay_profile",
+    # Feature 81 — persisting the stored array
+    "DECAY_PROFILE_TABLE",
+    "DecayStore",
+    "load_decay_profile",
+    "persist_decay_profile",
     # Feature 79 — persisting the post-cost signal returns
     "SIGNAL_RETURNS_GRID_TABLE",
     "SIGNAL_RETURNS_TABLE",
@@ -365,6 +404,7 @@ __all__ = [
     "build_evaluator_service",
     # Errors
     "EvaluatorConfigError",
+    "EvaluatorDecayError",
     "EvaluatorError",
     "EvaluatorGateError",
     "EvaluatorIdentityError",
