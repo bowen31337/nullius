@@ -24,23 +24,23 @@ canary's assertions with a single ``except``. The subclasses split by
 
 Later features in this category add the rest of §12's table — the
 lockfile, the thread caps, ``PYTHONHASHSEED``, the import allowlist, the
-GPU refusal — and each brings its own subclass rather than folding into
-this one: a caller halting dreaming (§15's "Replay non-determinism"
-recovery) needs to know *which* line of the contract broke, because the
-recovery differs (bisect the image diff is not reinstall-from-lockfile).
-:class:`CanaryDeviceError` is that GPU refusal, feature 140 — a GPU (or an
-unrecognized device) declared in the eval or replay path — and it follows
-the rule rather than extending the second: a deployment can be perfectly
-pinned and still run on a GPU, which is the failure §12 names directly
-("no GPU in the eval path"), because a GPU kernel's reduction order is
-fixed by its block and grid shape rather than by the input, so two runs
-of one seeded signal can diverge in float. The repair for a moved pin is
-to re-pin; the repair for a GPU in the path is to remove it and run on
-the CPU; and the class split is what makes the difference legible at the
-``except``.
+GPU refusal, the inference refusal — and each brings its own subclass
+rather than folding into this one: a caller halting dreaming (§15's
+"Replay non-determinism" recovery) needs to know *which* line of the
+contract broke, because the recovery differs (bisect the image diff is
+not reinstall-from-lockfile). :class:`CanaryDeviceError` is that GPU
+refusal, feature 140 — a GPU (or an unrecognized device) declared in the
+eval or replay path — and it follows the rule rather than extending the
+second: a deployment can be perfectly pinned and still run on a GPU,
+which is the failure §12 names directly ("no GPU in the eval path"),
+because a GPU kernel's reduction order is fixed by its block and grid
+shape rather than by the input, so two runs of one seeded signal can
+diverge in float. The repair for a moved pin is to re-pin; the repair
+for a GPU in the path is to remove it and run on the CPU; and the class
+split is what makes the difference legible at the ``except``.
 
 :class:`CanaryReproducibilityError` is the third such subclass, and it
-follows that rule rather than extending the second. Feature 145
+follows that rule rather than extending the second.  Feature 145
 (app_spec.xml) asserts that "output [is] bit-identical across two runs of
 the same seeded signal", which is §12's *last* row, "Float
 reproducibility | Fixed reduction order; no ``fastmath``; no GPU in the
@@ -53,6 +53,17 @@ non-determinism "does not announce itself". So a caller holding both
 failures needs to tell them apart — the repair for a moved pin is to
 re-pin, the repair for divergent bytes is bisect-the-image-diff — and the
 class split is what makes the difference legible at the ``except``.
+
+:class:`CanaryInferenceError` is the fourth such subclass — feature 146,
+the table's closing row ("No inference in the replay path") — and it is
+the one refusal in this taxonomy that is raised against a *call at
+runtime* rather than a declaration a deployment wrote: the pin, the
+device and the byte-comparison failures are read off strings or bytes
+that already exist, while this one fires at the moment a learned
+component reaches for a model from inside a replay. Its repair is
+likewise the only one that points *forward* in the pipeline: materialize
+the learned output at evaluation time and read back the stored floats
+(§11.2), rather than fixing anything in the replay itself.
 """
 
 from __future__ import annotations
@@ -61,6 +72,7 @@ __all__ = [
     "CanaryError",
     "CanaryDeviceError",
     "CanaryImageError",
+    "CanaryInferenceError",
     "CanaryReproducibilityError",
 ]
 
@@ -111,6 +123,43 @@ class CanaryImageError(CanaryError):
     """
 
 
+class CanaryInferenceError(CanaryError):
+    """A model inference call was made from the replay path.
+
+    Raised by :func:`~canary.model_inference` when the call arrives inside
+    the dynamic extent :func:`~canary.replaying` marks — the replay path —
+    and by anything that runs under it, which includes feature 142's
+    :func:`~canary.replay_pair` (it enters the extent around its whole
+    computation, so a call attempted anywhere in the replay is refused).
+    This is app_spec.xml feature 146: "System rejects a model inference
+    call made from the replay path, because replay reads materialized
+    values rather than computing them" — §12's closing table row, "No
+    inference in the replay path | Replay calls no model of any kind.
+    Learned outputs, if ever adopted, are materialized at evaluation time
+    and read back as stored floats". The refusal fires *before* the model
+    runs: a learned output computed inside the replay would be a value no
+    frozen pair ever contributed, and the ``1e-12`` comparison would then
+    faithfully compare a number nothing had frozen.
+
+    Deliberately its own subclass rather than folded into
+    :class:`CanaryImageError` (a moved pin), :class:`CanaryDeviceError` (a
+    GPU in the path) or :class:`CanaryReproducibilityError` (divergent
+    bytes): the four are four different breaks of §12's contract with four
+    different repairs. §15's failure table files this one as "Learned
+    component reached the replay path un-materialized" — canary drift, a
+    replay score that varies with batch shape or thread count — and its
+    recovery is to halt dreaming and revert to stored-float artifacts
+    (§11.2), which is neither re-pinning an image, nor removing a GPU, nor
+    bisecting a byte diff. A caller catching :class:`CanaryError` still
+    gets all of them.
+
+    The message names the model and states the repair — materialize the
+    output where it is evaluated and read back the stored floats — because
+    §15's recovery is an operator's decision, and an operator reads the
+    message.
+    """
+
+
 class CanaryReproducibilityError(CanaryError):
     """Two runs of one seeded signal did not produce the same bytes.
 
@@ -142,7 +191,7 @@ class CanaryReproducibilityError(CanaryError):
     """
 
 
-# :class:`CanaryDeterminismBrokenError` is the taxonomy's fourth subclass, and
+# :class:`CanaryDeterminismBrokenError` is the taxonomy's fifth subclass, and
 # it does not live in this module: it is defined in :mod:`canary._halt` beside
 # the :class:`~canary.DreamHalt` record it carries on its ``halt`` attribute —
 # the placement rule :mod:`snapshot` states for its own corruption error, an
@@ -150,9 +199,10 @@ class CanaryReproducibilityError(CanaryError):
 # above anticipated it: "a caller halting dreaming (§15's 'Replay
 # non-determinism' recovery) needs to know *which* line of the contract broke",
 # and a nightly canary whose score drifted from its recorded constant is that
-# fourth break — not a moved pin (re-pin it), not an unscorable tree (re-freeze
-# the reference), not divergent bytes from two runs of one signal (bisect the
-# runs' diff), but §12's closing assertion, the one whose repair is §15's
-# *halt dreaming; bisect the image diff* and a fresh frozen pair.  Exported
-# from the package root beside the other three, so the single ``except``
-# :class:`CanaryError` this module promises still catches it.
+# fifth break — not a moved pin (re-pin it), not a GPU in the path (remove it),
+# not a model inference call from the replay path (materialize it, §11.2), not
+# an unscorable tree (re-freeze the reference), not divergent bytes from two
+# runs of one signal (bisect the runs' diff), but §12's closing assertion, the
+# one whose repair is §15's *halt dreaming; bisect the image diff* and a fresh
+# frozen pair.  Exported from the package root beside the other four, so the
+# single ``except`` :class:`CanaryError` this module promises still catches it.

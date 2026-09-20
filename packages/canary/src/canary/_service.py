@@ -48,6 +48,7 @@ from ._containers import (
     pinned_containers_from_env,
 )
 from ._device import DevicePaths, reject_gpus_from_env
+from ._inference import ModelInference
 from ._replay import CanaryReplay
 from ._reproducibility import BitReproducibility
 
@@ -155,6 +156,32 @@ class CanaryService:
         pair it froze.
         """
         return CanaryReplay()
+
+    @property
+    def inference(self) -> "ModelInference":
+        """Feature 146's inference refusal, carried beside the replay it guards.
+
+        A stateless facade — constructed per access, holding nothing — so the
+        composed canary component exposes the category's guard from the same
+        value it exposes the replay, the way :attr:`replay` and
+        :attr:`reproducibility` expose theirs. Deliberately *not* a lazy or
+        strict-lazily-resolved property like :attr:`containers` and
+        :attr:`devices`: the refusal reads no environment and can refuse
+        nothing at construction — it is a fact about where a *call* sits, and
+        the refusal lands on the call itself, in ``inference.call``, when that
+        call is made from inside a replay. Nothing to resolve, nothing a
+        deployment could misset, and no misconfiguration for a construction
+        to discover.
+
+        The replay this service carries at :attr:`replay` already runs under
+        the guard (feature 142's ``replay_pair`` enters the replay path's
+        dynamic extent around its whole computation), so this surface is the
+        *other* half of feature 146: the seam a learned component calls a
+        model through, discoverable from the composed application rather
+        than only by import — a refusal the factory's scan cannot see is a
+        refusal a future member would route around.
+        """
+        return ModelInference()
 
     # -- What this service is bound to --------------------------------------
 

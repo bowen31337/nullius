@@ -219,6 +219,31 @@ frozen pair?*, the halt store *is dreaming halted?*, and this one *may
 this score still be used?* — a fourth question on a fourth lifecycle,
 composed independently of the other three.
 
+*Feature 146 is the inference refusal — a guard, not a sweep.* The
+category's closing feature states §12's closing table row: *"System
+rejects a model inference call made from the replay path, because replay
+reads materialized values rather than computing them"* — "Replay calls no
+model of any kind. Learned outputs, if ever adopted, are materialized at
+evaluation time and read back as stored floats — §11.2". Unlike the pin
+and device assertions, which parse declarations a deployment already
+wrote, this one refuses a *call at runtime*: :mod:`canary._inference` is
+:func:`replaying` (the context manager that marks the replay path's
+dynamic extent, which feature 142's :func:`canary.replay_pair` enters
+around its whole computation, so every replay is guarded by
+construction), :func:`is_replaying` (the predicate), and
+:func:`model_inference` (the one seam a model is called through —
+refused with :class:`~canary.CanaryInferenceError` *before the model
+runs* when the call arrives from inside the extent, delegated to the
+model untouched otherwise, because the evaluation path is where §11.2
+computes learned outputs once and persists them). Like feature 145's
+functions it is a pure guard with no registered component of its own —
+there is no table to persist and no environment to read, so nothing to
+compose and nothing a deployment could misset — and the composed service
+carries it at :attr:`CanaryService.inference`, beside the replay it
+guards, for the same reason the replay and the bit-reproducibility check
+are carried there: a refusal reachable only by import is a refusal the
+factory's scan cannot discover.
+
 *What this package deliberately does not do.* It does not resolve
 tags or consult a registry: feature 135 is an assertion, not a
 resolution, so the pin sweep is a pure parser over strings a deployment
@@ -240,11 +265,13 @@ onto the pin this package keeps: the lockfile, thread, hash-seed,
 allowlist and GPU refusals of features 136-140 assert into the same
 frozen container from the same sweep, the frozen pair and nightly replay
 of features 141-144 turn the pin into the reference the recorded
-constant is compared under, and the bit-reproducibility check of feature
+constant is compared under, the bit-reproducibility check of feature
 145 reads that pair back — a caller's run output and a recorded one,
 compared byte for byte by the same function that compares two fresh
-runs.  A canary that could not say which bytes it ran in could not
-honestly say any of those things either.
+runs — and the inference refusal of feature 146 guards the replay's
+computation itself, so the path the pair replays on is held to the row
+that closes §12's table.  A canary that could not say which bytes it
+ran in could not honestly say any of those things either.
 """
 
 from typing import Optional
@@ -272,6 +299,7 @@ from ._device import (
 from ._errors import (
     CanaryError,
     CanaryImageError,
+    CanaryInferenceError,
     CanaryReproducibilityError,
 )
 from ._halt import (
@@ -286,6 +314,12 @@ from ._halt import (
     determinism_broken_error,
     halt_dreaming,
     require_dreaming_allowed,
+)
+from ._inference import (
+    ModelInference,
+    is_replaying,
+    model_inference,
+    replaying,
 )
 from ._image import (
     DIGEST_ALGORITHM,
@@ -371,6 +405,11 @@ __all__ = [
     "DevicePaths",
     "reject_gpus",
     "reject_gpus_from_env",
+    # Feature 146 — no model inference call from the replay path
+    "ModelInference",
+    "is_replaying",
+    "model_inference",
+    "replaying",
     # Feature 145 — bit-identity across two runs of one seeded signal
     "BitReproducibility",
     "ByteComparison",
@@ -433,6 +472,7 @@ __all__ = [
     # Errors
     "CanaryError",
     "CanaryImageError",
+    "CanaryInferenceError",
     "CanaryReproducibilityError",
     "CanaryReplayScoreError",
 ]

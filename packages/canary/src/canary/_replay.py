@@ -17,7 +17,7 @@ nightly replay's score — and hands that float back to the caller, which is the
 caller that owns the comparison (§12's ``abs(score - CANARY_EXPECTED) > 1e-12``,
 feature 143) and the recording (the store's ``recorded_score``).
 
-Three decisions shape this module, and each is a reading of one word in the
+Four decisions shape this module, and each is a reading of one word in the
 feature: *replays*.
 
 **The replay is a pure function of the frozen pair, and reads nothing else.**
@@ -61,6 +61,27 @@ its own score before returning it would be editing the number the comparison is
 about, and the comparison is the one thing in the system that must never be
 edited.
 
+**The replay runs under the inference refusal, and that is part of its
+purity.**  app_spec.xml feature 146 (this category's, depending on feature
+140): *System rejects a model inference call made from the replay path,
+because replay reads materialized values rather than computing them* — §12's
+closing table row, "No inference in the replay path | Replay calls no model
+of any kind.  Learned outputs, if ever adopted, are materialized at
+evaluation time and read back as stored floats — §11.2".  The half of that
+row this module owns is the *path*: :func:`replay_pair` runs its whole
+computation inside :func:`canary.replaying`, the context that marks the
+replay path's dynamic extent, so a call made anywhere between the argument
+checks and the returned result is a call made from the replay path, and the
+one seam a model is called through — :func:`canary.model_inference` — is
+refused there with :class:`~canary.CanaryInferenceError` before the model
+runs.  The guard is an assertion channel, not a data flow: it reads no
+value into the score and contributes none to it, so the score is still a
+pure function of the frozen pair — what the guard changes is what the
+replay *refuses*, not what it computes.  A replay that could quietly
+compute a learned output would be a replay whose score was a function of a
+model §12 never admitted, and the ``1e-12`` comparison would faithfully
+compare a number nothing had frozen.
+
 What this module deliberately does **not** do is resolve, persist, or alert.  It
 does not resolve a store or a pair: the pair is handed in, already frozen and
 already read back — the store owns the reading (feature 141's verb) and this
@@ -88,6 +109,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ._errors import CanaryError
+from ._inference import replaying
 from ._reference import CanaryReferencePair
 
 __all__ = [
@@ -392,6 +414,14 @@ def replay_pair(pair: CanaryReferencePair, *, tolerance: float = DEFAULT_TOLERAN
     refused with :class:`CanaryReplayScoreError`, naming the node: the replay
     could not place the tree on the number line, so there is no score to compare,
     and that is a broken reference rather than a broken determinism.
+
+    The whole computation runs under :func:`canary.replaying` — the replay
+    path's dynamic extent — so a model inference call attempted anywhere
+    inside it is rejected with :class:`~canary.CanaryInferenceError` before
+    the model runs (feature 146, §12's "No inference in the replay path"):
+    the replay reads materialized values rather than computing them, and the
+    guard is what makes that refusal hold for every caller of this function
+    by construction, without touching the score it computes.
     """
     if not isinstance(pair, CanaryReferencePair):
         raise CanaryError(
@@ -411,22 +441,28 @@ def replay_pair(pair: CanaryReferencePair, *, tolerance: float = DEFAULT_TOLERAN
             "tolerance is an absolute deviation the score may stray by, and a "
             "negative tolerance names no band around the recorded constant"
         )
-    policy = pair.policy.policy
-    score = _score_policy(policy, [node.content for node in pair.tree.nodes])
-    recorded = pair.recorded_score
-    deviation = None if recorded is None else abs(score - recorded)
-    within = (
-        True
-        if recorded is None
-        else deviation is not None and deviation <= tolerance
-    )
-    return CanaryReplayResult(
-        score=score,
-        recorded_score=recorded,
-        deviation=deviation,
-        within_tolerance=within,
-        tolerance=tolerance,
-    )
+    # The replay path's dynamic extent (feature 146): everything between the
+    # argument checks and the returned result runs under the inference
+    # refusal, so a model call attempted anywhere in the walk is rejected
+    # before the model runs — the guard marks the path, it does not touch
+    # the score.
+    with replaying():
+        policy = pair.policy.policy
+        score = _score_policy(policy, [node.content for node in pair.tree.nodes])
+        recorded = pair.recorded_score
+        deviation = None if recorded is None else abs(score - recorded)
+        within = (
+            True
+            if recorded is None
+            else deviation is not None and deviation <= tolerance
+        )
+        return CanaryReplayResult(
+            score=score,
+            recorded_score=recorded,
+            deviation=deviation,
+            within_tolerance=within,
+            tolerance=tolerance,
+        )
 
 
 class CanaryReplay:
