@@ -1,0 +1,32 @@
+{
+  "policy": "sandbox-egress",
+  "_comment": [
+    "The committed egress policy of the sandboxes.",
+    "app_spec.xml, Trust Zone Isolation & Secrets, feature 149:",
+    "System denies all egress from sandboxes by default, which rejects",
+    "any attempt to reach the data lake over the network",
+    "(docs/nullius-tech-architecture.md section 17: Z1 sandboxes:",
+    "egress denied by default; section 1 P1: LLM-authored code has no",
+    "network path to the data snapshots; section 1 P4: the sandbox never",
+    "mounts the lake).",
+    "The compile in infra/security/sandbox_egress.py refuses this file",
+    "and any change to it that grants a sandbox any egress rule at all,",
+    "so the empty egress lists below are not a convention the next edit",
+    "can forget: they are the law, checked.",
+    "Addresses are examples for the zone's shape, not real ranges."
+  ],
+  "data_lake": {
+    "name": "data-lake",
+    "addresses": ["10.8.0.0/24"]
+  },
+  "sandboxes": [
+    {
+      "name": "signal-sandbox",
+      "egress": []
+    },
+    {
+      "name": "policy-runtime",
+      "egress": []
+    }
+  ]
+}

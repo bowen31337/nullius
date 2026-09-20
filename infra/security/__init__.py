@@ -40,7 +40,7 @@ only.").  The sentence lands as four modules, one per claim:
   could widen it.
 
 The category's other features join this tree as siblings of these
-modules, and five have:
+modules, and seven have:
 
 * :mod:`infra.security.key_backup` — feature 155's *two independent
   stores*, the sealed sidecar-key backup and the reconciliation
@@ -55,10 +55,18 @@ modules, and five have:
   permission with withdrawal permanently disabled*, the permission
   set a provisioned key may carry, the account-side switch, and the
   validation that refuses every other shape.
+* :mod:`infra.security.secrets_manager` — feature 151's *credentials
+  in a secrets manager*, the store contract that keeps a credential
+  out of committed environment files.
 * :mod:`infra.security.provider_boundary` — feature 150's *provider
   API call outside the sandbox*, the zone-stamped call whose client
   refuses the sandbox's side, and the conduit that sends code in and
   takes code out.
+* :mod:`infra.security.sandbox_egress` — feature 149's *all egress
+  from sandboxes denied by default*, the compile that refuses a
+  sandbox any egress allowance and the gate that answers every
+  attempt — one at the data lake with the lake's own reason,
+  everything else with the default's.
 
 The exports below are feature 156's alone, deliberately: this module's
 ``__all__`` is the zone-policy vocabulary, and a caller reaching for
