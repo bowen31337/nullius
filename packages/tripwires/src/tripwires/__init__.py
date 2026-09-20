@@ -73,9 +73,22 @@ own, and writes only what a stated verdict says to write*.  The probe is still
 a pure function of its inputs; the corpus is still a value; the store is a
 seam a composed application carries as a third component
 (``"tripwires-poison"``), on its own lifecycle, and it writes the mark and the
-audit row and nothing else.  Feature 132's excision — reading those marks and
-rejecting the scores the branch contributed — is still not here, and the
-pool's refusal is the place it must live.
+audit row and nothing else.
+
+**Feature 132 is the other half of that sentence, and it is a *read*.**  §C6's
+rule is *"a failure poisons the node and its entire subtree, **which is excised
+from the replay pool**"*, so :mod:`tripwires.excise` is the feature that stops
+the pool serving the scores a marked branch contributed — and it does so by
+refusing them at read time rather than by deleting rows, for the four reasons
+that module's docstring gives at length (the pool is the evidence a selection
+was made on; app_spec.xml feature 270 forbids a pool mutation during a dreaming
+iteration; a refusal derived from an irreversible mark is monotone, which is the
+whole observable behaviour a deletion buys; and idempotence is free for a read
+and not for a ``DELETE``).  It arrives as this member's fourth component
+(``"tripwires-excise"``), because the join it needs — ``replay_score.committed_pick``
+against the marked nodes — is a fact neither the replay member (features
+245-255, which does not exist yet) nor any other can compute: the tripwires are
+the component that holds both halves, the marks and the pool's rows.
 
 **The layering note, restated because it is a constraint on every import
 below.**  This package is stdlib-only — dates, mappings, sorting, square roots
@@ -109,15 +122,27 @@ from .corpus import (
 )
 from .errors import (
     TripwireError,
+    TripwireExcisionError,
     TripwirePanelError,
     TripwirePoisonError,
     TripwireStatisticError,
+)
+from .excise import COMPONENT_NAME as EXCISE_COMPONENT_NAME
+from .excise import (
+    ExcisedBranch,
+    ExcisedScore,
+    PoolScore,
+    ReplayPool,
+    excise_subtree,
+    surviving_scores,
 )
 from .layout import (
     DATABASE_URL_ENV,
     NODE_POISONED_COLUMN,
     NODE_TABLE,
+    REPLAY_SCORE_TABLE,
     node_bootstrap_schema,
+    replay_pool_bootstrap_schema,
     validated_node_id,
 )
 from .normal import NORMAL_QUANTILE_SWITCH, normal_quantile
@@ -151,6 +176,7 @@ __all__ = [
     "DATABASE_URL_ENV",
     "DEFAULT_SHUFFLE_LEVEL",
     "DEFAULT_SHUFFLE_SEED",
+    "EXCISE_COMPONENT_NAME",
     "HORIZONS",
     "LEAK_KINDS",
     "NODE_POISONED_COLUMN",
@@ -158,26 +184,36 @@ __all__ = [
     "NORMAL_QUANTILE_SWITCH",
     "POISON_COMPONENT_NAME",
     "POISON_TABLE",
+    "REPLAY_SCORE_TABLE",
     "TIME_SHUFFLE_NAME",
     "TRIPWIRE_OUTCOMES",
     "CorpusSignal",
+    "ExcisedBranch",
+    "ExcisedScore",
     "PoisonRecord",
     "PoisonStore",
     "PoisonedSubtree",
+    "PoolScore",
+    "ReplayPool",
     "TimeShuffleTripwire",
     "TimeShuffleVerdict",
     "TripwireError",
+    "TripwireExcisionError",
     "TripwirePanelError",
     "TripwirePoisonError",
     "TripwireStatisticError",
     "build_poison_store",
+    "build_replay_pool",
     "build_time_shuffle_tripwire",
+    "excise_subtree",
     "node_bootstrap_schema",
     "normal_quantile",
     "planted_signals",
     "poison_node",
     "poisoned_node_ids",
+    "replay_pool_bootstrap_schema",
     "run_time_shuffle_tripwire",
+    "surviving_scores",
     "surviving_sharpe",
     "time_shuffle_pairing",
     "time_shuffle_threshold",
@@ -326,3 +362,34 @@ def build_poison_store() -> PoisonStore | None:
     application never opens a database.
     """
     return PoisonStore.resolve()
+
+
+@register(EXCISE_COMPONENT_NAME)
+def build_replay_pool() -> ReplayPool | None:
+    """Component builder: the pool a poisoned branch is excised from (feature 132).
+
+    Takes no arguments — that is the factory's registration protocol — and
+    resolves ``DATABASE_URL`` at build time, so a composed application carries
+    the pool for the deployment the process is actually running in.  It is the
+    fourth component this member contributes, and the third that may legitimately
+    be ``None``: the probe is ready the instant it is built, while this one and
+    the poison store both resolve a relational store that may not be named.
+
+    Returns ``None`` when nothing names a relational store — the
+    degrade-don't-break stance :func:`build_poison_store` takes, for the same
+    reason: the factory builds every registered component on every
+    ``create_app()``, so a builder that raised would take composition down for
+    every unrelated feature, and an unconfigured pool is a discoverable state.
+    A replay path that *requires* one is the caller that must not find itself in
+    it, which is why :func:`~tripwires.excise.surviving_scores` and
+    :func:`~tripwires.excise.excise_subtree` refuse rather than no-op when they
+    resolve no pool — the same split the poison store's two entry points draw.
+
+    The pool reads its marks through a :class:`~tripwires.poison.PoisonStore`
+    built from the same URL, so the two components compose the same deployment's
+    database even when only one of them is reached for.  Construction performs
+    no I/O — the path is resolved on first use — so composing the application
+    never opens a database, and a URL whose scheme this member cannot speak still
+    composes, with the refusal deferred to first use.
+    """
+    return ReplayPool.resolve()

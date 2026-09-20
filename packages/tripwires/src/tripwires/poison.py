@@ -124,6 +124,7 @@ from .layout import (
     NODE_TABLE,
     dialect_of,
     node_bootstrap_schema,
+    parsed_instant,
     sqlite_path,
     validated_instant,
     validated_node_id,
@@ -1454,28 +1455,22 @@ def _stamp_for(
 
 
 def _parse_instant(value: Any) -> dt.datetime:
-    """Parse a stored instant, refusing one that is not a usable stamp.
+    """Parse a stored instant — :func:`~tripwires.layout.parsed_instant`, kept by name.
 
-    SQLite hands back the text this store wrote (``isoformat()``) or, for a row
-    the migration's own default produced, ``strftime('%Y-%m-%dT%H:%M:%fZ')`` —
-    both of which :func:`datetime.fromisoformat` parses, the second's ``Z``
-    being the UTC designator Python accepts.  An unparseable value is refused
-    by name rather than returned as a string: a caller comparing a string
-    against a datetime would find them unequal always, and a poisoning trail
-    that silently compares as "not poisoned" is worse than one that stops.
+    The parser moved to :mod:`tripwires.layout` when feature 132 became its
+    second caller: the pool's ``replay_score.created_at`` is read back exactly
+    as this store's ``poisoned_at`` is, and two spellings of one parser is the
+    drift the member's one-provenance rule forbids.  This name stays because
+    three call sites in this module read a stored instant and the helper is
+    what they read it with; deleting it would make each of them name the layout
+    module for a value this module wrote.
+
+    A thin delegation and nothing else, deliberately: the shared function
+    already raises :class:`~tripwires.TripwirePoisonError` for an unparseable
+    value, which is this module's own error, so unlike
+    :func:`~tripwires.excise._pool_instant` there is no translation to do here.
     """
-    if isinstance(value, dt.datetime):
-        return value
-    try:
-        parsed = dt.datetime.fromisoformat(str(value))
-    except (TypeError, ValueError) as exc:
-        raise TripwirePoisonError(
-            f"the stored poisoning instant {value!r} could not be parsed: "
-            f"{exc}; the trail's ordering against the trial that caused it "
-            "rests on this column, and a stamp no reader can parse is an "
-            "ordering nobody can check"
-        ) from exc
-    return parsed
+    return parsed_instant(value)
 
 
 def _verdict_instant() -> str:

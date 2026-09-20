@@ -36,6 +36,16 @@ pipeline's own step boundaries already draw:
   a failure of *the record about the node*, not of the panel handed to a
   tripwire, and a caller that caught the panel error for one of these
   would be looking in the wrong module for the cause.
+* :class:`TripwireExcisionError` — the *pool's* refusals (feature 132).
+  Feature 131's error is about writing the record; this one is about reading
+  it back and refusing the scores it condemns, and the two are separate for
+  the reason the first two are: a caller running the replay path catches the
+  pool's refusal and lets the store's write failures surface elsewhere.  A
+  ``DATABASE_URL`` this member cannot speak, a pool query this member cannot
+  run, an excision asked for over a branch that was never poisoned: each is a
+  failure of *the pool read*, and the last one especially — "excise this
+  branch" and "this branch was never poisoned" are different sentences, and
+  collapsing them into a silent no-op is the failure §C6 exists to prevent.
 
 There is deliberately no ``TripwireVerdictError``.  A verdict is stated,
 not raised: the two things a tripwire can say about a node are *pass* and
@@ -53,6 +63,7 @@ from __future__ import annotations
 
 __all__ = [
     "TripwireError",
+    "TripwireExcisionError",
     "TripwirePanelError",
     "TripwirePoisonError",
     "TripwireStatisticError",
@@ -91,4 +102,27 @@ class TripwirePoisonError(TripwireError):
     judged.  A caller that catches :class:`TripwirePanelError` when the
     database is unreachable has caught the wrong error and will not find out
     until it reads the message.
+    """
+
+
+class TripwireExcisionError(TripwireError):
+    """Feature 132's refusals — the pool could not be read, or the branch was clean.
+
+    The sibling of :class:`TripwirePoisonError`, and deliberately not a
+    subclass of it.  Feature 131 *writes* the record of a failure; feature 132
+    *reads* it and refuses the scores the record condemns, and a caller in the
+    replay path catches this one because the pool is what it asked.  Folding
+    them together would make a caller that wanted to distinguish "the pool
+    refused a poisoned branch" from "the poisoning could not be written"
+    unable to — and those are the two halves of §C6 that a stuck deployment
+    most needs told apart, because one is the feature working and the other is
+    the feature never having run.
+
+    Raised for a ``DATABASE_URL`` this member cannot speak, for a pool read
+    that could not be completed, and — the one worth naming — for an excision
+    asked over a branch no poisoning ever marked.  That last refusal is the
+    point of the error's existence: "these scores are excised" and "nothing
+    here was ever excised" are different sentences, and a store that answered
+    the second with an empty success would let a caller report an excision it
+    never performed.
     """

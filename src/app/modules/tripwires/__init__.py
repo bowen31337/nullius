@@ -34,17 +34,20 @@ member's types.  A second spelling of any of that here would be a second thing
 to keep in sync, and the member's one-provenance rule is the reason the
 category restates its vocabularies rather than sharing them by import.
 
-**The member's second component has its own seat beside this one.**  Feature
-131 makes a tripwire failure a fact about the discovery tree, and the store
-that persists it arrives as a second component on its own lifecycle
-(``"tripwires-poison"``) — so it is reached through
-:mod:`app.modules.tripwires.poison` rather than through a second accessor here.
-The split is not tidiness: **this** seat's ``None`` means exactly one thing (no
-tripwires component was registered) because a stateless probe has no
-unconfigured state, while **that** seat's ``None`` means nothing named a
-relational store.  Two accessors in one module would put two different
-``None``\\ s behind one docstring, which is the kind of ambiguity a caller
-reading only this file would resolve wrongly and once.
+**The member's other components have their own seats beside this one.**  Feature
+131 makes a tripwire failure a fact about the discovery tree, and the store that
+persists it arrives as a second component on its own lifecycle
+(``"tripwires-poison"``); feature 132 makes the poisoned branch a refusal the
+replay pool applies, and the pool arrives as a third (``"tripwires-excise"``).
+Each is reached through its own module beside this one —
+:mod:`app.modules.tripwires.poison` and :mod:`app.modules.tripwires.excise` —
+rather than through a second accessor here.  The split is not tidiness: **this**
+seat's ``None`` means exactly one thing (no tripwires component was registered)
+because a stateless probe has no unconfigured state, while **those** seats'
+``None``\\ s mean nothing named a relational store.  Three accessors in one
+module would put three different ``None``\\ s behind one docstring, which is the
+kind of ambiguity a caller reading only this file would resolve wrongly and
+once.
 """
 
 from __future__ import annotations

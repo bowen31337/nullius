@@ -12,13 +12,20 @@ mean the probe had grown a dependency it is not allowed to have.
 **Feature 131 is where a database enters this suite, and it enters on purpose.**
 Poisoning "the node together with its entire subtree" is the transitive closure
 of the discovery tree's ``parent_id``, and no verdict carries that: the feature
-had to reach a store, so its tests have to reach one too.  The two fixtures
-below are that reach and nothing more — a SQLite file under the test's own
-temporary directory, and a store pointed at it.  They are deliberately *named*
+had to reach a store, so its tests have to reach one too.  The fixtures below
+are that reach and nothing more — a SQLite file under the test's own temporary
+directory, and a store pointed at it.  They are deliberately *named*
 for what they are (``database_url``, ``poison_store``) rather than folded into
 an autouse fixture, so a probe test reads as one that touches no database:
 :func:`test_the_probe_suite_still_needs_no_database` pins exactly that, and it
 is the reason these are not autouse.
+
+**Feature 132 arrives on the same file, and that is the feature.**  Excising a
+poisoned branch from the replay pool is a *join* between the marks feature 131
+writes and the ``replay_score`` rows the pool holds, so its two fixtures —
+``pool`` and ``other_pool`` — share this file rather than each taking their own.
+Two files would make every excision test pass for the wrong reason: nothing the
+pool read would ever be marked, so nothing would ever be refused.
 
 The isolation is the repository-level conftest's pattern, restated here because
 that conftest genuinely does not reach this directory: ``tmp_path`` for the
@@ -112,3 +119,40 @@ def poison_store(database_url: str):
     from tripwires import PoisonStore
 
     return PoisonStore(database_url)
+
+
+# -- Feature 132's reach: the pool, beside the store, over the same file -------
+
+
+@pytest.fixture
+def pool(database_url: str):
+    """Feature 132's replay pool, reading the *same* file as ``poison_store``.
+
+    Deliberately derived from the same ``database_url`` rather than given its
+    own temporary file, because the feature is a join: the marks feature 131
+    writes to ``node`` and the scores ``_pool.seed_pool`` writes to
+    ``replay_score`` have to be in one database for there to be an excision at
+    all.  A fixture that pointed the pool at a different file would make every
+    test in ``test_excise.py`` pass vacuously — nothing would ever be poisoned
+    from the pool's side, so nothing would ever be refused.
+
+    Asked for by name, like the two above, and never autouse: a probe test must
+    not acquire a database by accident.
+    """
+    from tripwires import ReplayPool
+
+    return ReplayPool(database_url)
+
+
+@pytest.fixture
+def other_pool(tmp_path: Path):
+    """A second pool over a *different* file — the cross-database refusal.
+
+    ``ReplayPool`` refuses a store handed to it that reads elsewhere, because
+    "the pool refuses what the store marked" is a sentence about one database.
+    Proving that refusal needs two, and neither may be the file the other
+    fixtures use.
+    """
+    from tripwires import ReplayPool
+
+    return ReplayPool(f"sqlite:///{tmp_path / 'tripwires-other.db'}")

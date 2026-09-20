@@ -1,4 +1,4 @@
-"""The discovery tree's shape, as this member has to spell it — feature 131.
+"""The shapes this member has to spell: the discovery tree and the replay pool.
 
 app_spec.xml, "Leakage Tripwires", feature 131: *"System persists a tripwire
 failure as poisoning the node together with its entire subtree."*  The word
@@ -9,6 +9,20 @@ category that has to reach *outside* the member — to the ``node`` table
 ``migrations/versions/0118_node_table.py`` creates and the self-referencing
 ``parent_id`` foreign key feature 97 puts on it — and this module is that
 reach, plus the one normalization every node id in the package passes through.
+
+**Feature 132 is the second reach, and it lands in the same place.**  Feature
+131's sentence says the poisoned branch is *"excised from the replay pool"*,
+and the pool is the ``replay_score`` table
+``migrations/versions/0109_replay_score_and_policy_revision.py`` creates —
+again a table outside this member, again owned by a member that does not exist
+yet, and again restated here rather than imported for the reason above.  What
+this module adds for it is the table's name, its eight columns and the DDL a
+database the orchestrator has not migrated yet gets, so
+:mod:`tripwires.excise` can read the pool it must refuse from.  The two
+restatements sit in one module because they are one kind of fact — *the shape
+of a store this member did not create but has to speak* — and because the
+alternative, a second `layout`-shaped module per feature, would leave a reader
+looking for the pool's shape in a file named after the tree.
 
 **Why the tree's shape is restated here rather than imported.**  The tree
 member does not exist yet (``packages/`` holds no ``tree``), and this member's
@@ -64,8 +78,9 @@ PRIMARY KEY``, and a mixed-case or braced spelling of one node would read as
 two nodes in a set that decides whether a branch is replayed.
 
 **What this module does not do.**  It does not walk, write or read.  It names
-the tree's shape and normalizes its keys; :mod:`tripwires.poison` is the walk
-and the write, and it is the only module that opens a connection.
+the trees' shapes and normalizes their keys; :mod:`tripwires.poison` is the
+walk and the write and :mod:`tripwires.excise` is the pool's read and refusal,
+and they are the only modules that open a connection.
 """
 
 from __future__ import annotations
@@ -85,8 +100,19 @@ __all__ = [
     "NODE_PARENT_COLUMN",
     "NODE_POISONED_COLUMN",
     "NODE_TABLE",
+    "REPLAY_SCORE_COLUMNS",
+    "REPLAY_SCORE_COMMITTED_PICK_COLUMN",
+    "REPLAY_SCORE_CREATED_AT_COLUMN",
+    "REPLAY_SCORE_ID_COLUMN",
+    "REPLAY_SCORE_IS_HOLDOUT_COLUMN",
+    "REPLAY_SCORE_POLICY_VERSION_COLUMN",
+    "REPLAY_SCORE_SCORE_COLUMN",
+    "REPLAY_SCORE_TABLE",
+    "REPLAY_SCORE_WORLD_COLUMN",
     "dialect_of",
     "node_bootstrap_schema",
+    "parsed_instant",
+    "replay_pool_bootstrap_schema",
     "sqlite_path",
     "validated_instant",
     "validated_node_id",
@@ -136,6 +162,83 @@ NODE_POISONED_COLUMN = "poisoned_at"
 #: reason a Postgres ``id`` needs no value supplied.  0118's constant, restated.
 _POSTGRES_UUID_DEFAULT = "gen_random_uuid()"
 
+# -- Feature 132: the replay pool's shape --------------------------------------
+
+#: The table feature 132 excises from — *"the replay pool"* in app_spec.xml's
+#: sentence and in §C6's (*"poisoned ... and its entire subtree, which is
+#: excised from the replay pool"*).  ``0109`` creates it and the replay member
+#: (features 245-255) is its writer; this member reads it, so the name is
+#: pinned here the way the tree's three names are.
+REPLAY_SCORE_TABLE = "replay_score"
+
+#: The score row's own key.  Needed here for the reason every key is: a report
+#: of *which* scores a branch contributed has to name them, and an excision
+#: that could not say which rows it rejected would be unauditable.
+REPLAY_SCORE_ID_COLUMN = "id"
+
+#: **The column the whole feature turns on.**  ``replay_score.committed_pick``
+#: is the policy's decision on the world that row scored — *"the ``committed_pick``
+#: the policy would have made"*, in ``0109``'s own words — and it is the one
+#: thing in the pool that points at the discovery tree.  A poisoned node's
+#: scores are the rows whose committed pick *is that node*, so this column is
+#: the join between §C6's two halves: the tree feature 131 marks and the pool
+#: feature 132 must refuse.
+#:
+#: ``0109`` declares it nullable and says why — a candidate scored but not
+#: selected has no committed pick, and a fabricated nil would read as a real
+#: trade — which is a fact this module has to respect rather than repair: a
+#: ``NULL`` pick names **no** node, so it can never match a poisoned one.  The
+#: refusal is therefore never over a ``NULL``-pick row, and that is correct:
+#: those rows contributed no node to the branch.
+REPLAY_SCORE_COMMITTED_PICK_COLUMN = "committed_pick"
+
+#: The policy revision the row scored.  Read by :mod:`tripwires.excise` for
+#: one purpose only — a report of the excised branch names the revisions whose
+#: evidence was rejected, so an operator can see *which* policy versions' scores
+#: a poisoning cost, rather than a bare count.
+REPLAY_SCORE_POLICY_VERSION_COLUMN = "policy_version"
+
+#: The stored world the policy was replayed against.
+REPLAY_SCORE_WORLD_COLUMN = "world_id"
+
+#: The score the row carries — the number §C5's dreaming loop aggregates.
+REPLAY_SCORE_SCORE_COLUMN = "score"
+
+#: The 70/30 world holdout flag (``0109``: ``is_holdout BOOLEAN NOT NULL
+#: DEFAULT FALSE``).  Read for the same reporting reason as the policy version:
+#: a tournament's holdout half is what the selection is *judged* on, so an
+#: operator reading an excision needs to know how much of it was holdout.
+REPLAY_SCORE_IS_HOLDOUT_COLUMN = "is_holdout"
+
+#: When the row was written (``0109``: ``TIMESTAMPTZ NOT NULL DEFAULT NOW()``).
+REPLAY_SCORE_CREATED_AT_COLUMN = "created_at"
+
+#: ``replay_score``'s columns, in the order ``0109`` declares them and the
+#: order :func:`replay_pool_bootstrap_schema` writes them.  Spelled once for
+#: the reason the tree's five are: the DDL, the statement that counts and any
+#: statement that reads a column by name must not drift apart on what the
+#: pool's row is made of.
+REPLAY_SCORE_COLUMNS = (
+    REPLAY_SCORE_ID_COLUMN,
+    REPLAY_SCORE_POLICY_VERSION_COLUMN,
+    REPLAY_SCORE_WORLD_COLUMN,
+    "beta",
+    REPLAY_SCORE_SCORE_COLUMN,
+    REPLAY_SCORE_COMMITTED_PICK_COLUMN,
+    REPLAY_SCORE_IS_HOLDOUT_COLUMN,
+    REPLAY_SCORE_CREATED_AT_COLUMN,
+)
+
+#: The SQLite spelling of ``NOW()``, and ``0109``'s own expression: an ISO-8601
+#: UTC timestamp string, the textual twin of Postgres's ``timestamptz``.  The
+#: **outer** parentheses are load-bearing and are the whole reason this is a
+#: separate constant from the call's own: SQLite's ``DEFAULT`` grammar accepts a
+#: function call only when the entire expression is parenthesised, so
+#: ``DEFAULT strftime(...)`` — which looks right and is the shape the migration's
+#: prose describes — is a syntax error, and a single missing pair took the whole
+#: ``CREATE TABLE`` down with it.
+_SQLITE_NOW_DEFAULT = "(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
+
 #: The SQLite equivalent — 0118's expression, verbatim: an RFC 4122 version-4
 #: UUID built from ``randomblob``.  The surrounding parentheses are required,
 #: because SQLite's ``DEFAULT`` grammar accepts a function call only when it is
@@ -159,6 +262,18 @@ def _uuid_default(dialect: str) -> str:
     handing it a SQLite expression would hide that.
     """
     return _SQLITE_UUID_DEFAULT if dialect == "sqlite" else _POSTGRES_UUID_DEFAULT
+
+
+def _sqlite_now_default(dialect: str) -> str:
+    """The ``created_at`` default for ``dialect`` — 0109's second dialect split.
+
+    Paired with :func:`_uuid_default`, and for the same grammar reason: SQLite
+    accepts a function call in a ``DEFAULT`` clause only when it is
+    parenthesised, so ``NOW()`` is a syntax error and the ISO-8601 UTC string
+    ``strftime`` produces is its textual twin.  An unknown dialect gets the
+    spec's ``NOW()``, which is Postgres and is what production runs.
+    """
+    return _SQLITE_NOW_DEFAULT if dialect == "sqlite" else "NOW()"
 
 
 def node_bootstrap_schema(dialect: str = "other") -> str:
@@ -197,6 +312,63 @@ def node_bootstrap_schema(dialect: str = "other") -> str:
         theme_root     TEXT NOT NULL,
         depth          INT  NOT NULL,
         {NODE_POISONED_COLUMN}    TIMESTAMPTZ
+    )
+    """
+
+
+def replay_pool_bootstrap_schema(dialect: str = "other") -> str:
+    """The DDL that brings a database without a ``replay_score`` table to 0109's shape.
+
+    Feature 132's other reach, and deliberately the *same* shape ``0109``
+    creates — eight columns in the migration's order, the two dialect splits
+    the migration makes (``DEFAULT gen_random_uuid()`` and ``DEFAULT NOW()``,
+    neither of which SQLite's ``DEFAULT`` grammar accepts unparenthesised), and
+    a ``NOT NULL`` on the primary key that the spec's bare ``UUID PRIMARY KEY``
+    leaves implicit.
+
+    **Why this member creates a table it does not own.**  The pool belongs to
+    the replay member (features 245-255) and the migration owns its schema.  A
+    store that has to *read* the pool against a database the orchestrator has
+    not migrated yet has two options: fail on a missing table, or create the
+    one the migration would.  The second is what every store in this workspace
+    does, and it is safe for exactly the reason ``node_bootstrap_schema`` is:
+    every statement is ``IF NOT EXISTS``, so a database the migration already
+    built is left byte-for-byte as it was.
+
+    **The restraint, and where the line is.**  Nothing here adds a column the
+    migration does not declare — not even one feature 132 would find
+    convenient. An ``excised_at`` column on ``replay_score`` is the tempting
+    one and it is exactly wrong: it would be this member legislating a schema
+    for a table three features short of it, and — worse — it would make the
+    pool's refusal *stateful*, when the whole point of excising is that the
+    refusal follows from facts already recorded (the node's mark, the row's
+    pick) rather than from a flag this feature would then have to keep in step
+    with them. Feature 132 writes nothing to this table.
+
+    **The index is not here either**, and for once the absence is worth
+    stating. ``0109``'s own ``INDEXES = ()`` says the migration creates none
+    because a query plan for readers that do not exist yet is the wrong thing
+    for a migration to invent; this member is now such a reader, and the
+    statement it runs filters on ``committed_pick``. It still creates no index,
+    and the reason is that the honest shape of feature 132's read is a *whole
+    pool* read — the committed pick on every row, grouped by node — because a
+    caller excising a branch has to know what it is rejecting, not merely
+    whether a particular row is one. An index on a column no query can use is
+    the same invention by a different author; when the replay member grows a
+    read that wants one, that read's owner adds it.
+    """
+    return f"""
+    CREATE TABLE IF NOT EXISTS {REPLAY_SCORE_TABLE} (
+        {REPLAY_SCORE_ID_COLUMN} UUID NOT NULL PRIMARY KEY
+            DEFAULT {_uuid_default(dialect)},
+        {REPLAY_SCORE_POLICY_VERSION_COLUMN} TEXT NOT NULL,
+        {REPLAY_SCORE_WORLD_COLUMN} UUID NOT NULL,
+        beta                   REAL NOT NULL,
+        {REPLAY_SCORE_SCORE_COLUMN} REAL NOT NULL,
+        {REPLAY_SCORE_COMMITTED_PICK_COLUMN} UUID,
+        {REPLAY_SCORE_IS_HOLDOUT_COLUMN} BOOLEAN NOT NULL DEFAULT FALSE,
+        {REPLAY_SCORE_CREATED_AT_COLUMN} TIMESTAMPTZ NOT NULL
+            DEFAULT {_sqlite_now_default(dialect)}
     )
     """
 
@@ -265,6 +437,44 @@ def validated_instant(value: Any) -> dt.datetime:
             "order against the trial that caused it"
         )
     return value.astimezone(dt.UTC)
+
+
+def parsed_instant(value: Any) -> dt.datetime:
+    """Parse a stored instant, refusing one that is not a usable stamp.
+
+    SQLite hands back the text this member's stores wrote (``isoformat()``) or,
+    for a row a migration's own default produced,
+    ``strftime('%Y-%m-%dT%H:%M:%fZ')`` — both of which
+    :func:`datetime.fromisoformat` parses, the second's ``Z`` being the UTC
+    designator Python accepts.  A :class:`datetime.datetime` passes through
+    unchanged, so a caller holding the value feature 131 returned from
+    :meth:`~tripwires.poison.PoisonStore.poisoned` can hand it back.
+
+    An unparseable value is refused by name rather than returned as a string: a
+    caller comparing a string against a datetime would find them unequal always,
+    and a poisoning trail that silently compares as "not poisoned" is worse than
+    one that stops.
+
+    Here rather than in either feature module because *two* of them parse stored
+    instants — feature 131's mark and feature 132's ``replay_score.created_at``
+    — and the one-provenance rule this member states for its vocabularies
+    applies to a parser as much as to a column name.  The error is
+    :class:`~tripwires.TripwirePoisonError`, the base refusal for a stored
+    value that cannot be read; :mod:`tripwires.excise` catches it and re-raises
+    under its own type, because a caller in the replay path catches that one.
+    """
+    if isinstance(value, dt.datetime):
+        return value
+    try:
+        parsed = dt.datetime.fromisoformat(str(value))
+    except (TypeError, ValueError) as exc:
+        raise TripwirePoisonError(
+            f"the stored poisoning instant {value!r} could not be parsed: "
+            f"{exc}; the trail's ordering against the trial that caused it "
+            "rests on this column, and a stamp no reader can parse is an "
+            "ordering nobody can check"
+        ) from exc
+    return parsed
 
 
 def sqlite_path(database_url: str) -> Path:

@@ -88,16 +88,19 @@ def test_scanning_the_member_registers_exactly_the_components_it_owns() -> None:
     # the current registry, so reading it back here would assert accumulated
     # process state, not this package's contribution.
     #
-    # The member contributes two components since feature 131: the probe
-    # (``tripwires``, feature 125, stateless and ready the instant it is built)
-    # and the store a failure is persisted to (``tripwires-poison``, feature
-    # 131, which resolves ``DATABASE_URL`` and may legitimately not exist). The
-    # list is pinned exactly rather than by membership, so a *third* component
-    # arriving unnoticed fails here the way the second one would have — which is
+    # The member contributes three components since feature 132: the probe
+    # (``tripwires``, feature 125, stateless and ready the instant it is built),
+    # the store a failure is persisted to (``tripwires-poison``, feature 131,
+    # which resolves ``DATABASE_URL`` and may legitimately not exist), and the
+    # pool a poisoned branch is excised from (``tripwires-excise``, feature 132,
+    # which resolves the same variable to *read* what the store wrote). The list
+    # is pinned exactly rather than by membership, so a *fourth* component
+    # arriving unnoticed fails here the way the third one would have — which is
     # the property this test has always been for.
     components = scan_components(MEMBER_SRC, registry=Registration())
     assert sorted(component.name for component in components) == [
         "tripwires",
+        "tripwires-excise",
         "tripwires-poison",
     ]
 
