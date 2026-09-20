@@ -1,0 +1,55 @@
+# nullius workspace member: the null-oracle plugin
+# (app_spec.xml, "Null Oracle & Planted Nulls", feature 109;
+# docs/nullius-tech-architecture.md §7.1 for the sidecar it writes).
+#
+# Joins the uv workspace by convention — packages/nulloracle with this
+# file — so the module loader (src/app/module_loader.py) discovers it by
+# scanning the members the root pyproject.toml declares.  No edit to any
+# central registry, router table or app factory is needed or wanted to
+# wire this package in.
+#
+# Dependencies: the workspace root, for the factory's registration
+# protocol (`import app.module_loader`), and the `cryptography` package,
+# for the AES-GCM the sidecar is sealed with.
+#
+# `cryptography` is the AES-GCM implementation.  §7.1 fixes the primitive
+# in one line — ``sidecar.enc  # AES-GCM, key in KMS/sops; readable by ONE
+# service account`` — and §7.1's whole argument rests on that primitive
+# being real: the null labels are the one secret whose leak *"silently
+# voids every calibration number the system has ever produced"*
+# (docs/nullius-tech-architecture.md §1).  A hand-rolled cipher, or a
+# mode that authenticates nothing, would make the whole FDR history
+# uninterpretable without anybody noticing, so this member owns a real,
+# audited AEAD implementation rather than an invention of its own.
+#
+# `>=` rather than `==`: the code depends on the AES-GCM *construction*
+# (a 12-byte nonce, a 128-bit tag, associated data) and on the
+# `AESGCM` class's refuse-on-tamper behaviour, not on a release's
+# internals.
+#
+# The import is deferred to first use (`nulloracle.envelope.
+# require_cryptography`), so the factory's workspace scan — which imports
+# this package to fire its @register decorators — does not require
+# `cryptography` to be installed.  That keeps the member import-safe in
+# the environments the workspace contract promises one will be (factory
+# scan, test sandbox, replay path); only the seal and open paths that
+# genuinely need AES-GCM raise, and they name the missing dependency when
+# they do.  The assignment layer, the key-reference parsing and the
+# one-service-account guard remain stdlib-only.
+
+[project]
+name = "nulloracle"
+version = "0.1.0"
+description = "The null oracle's encrypted sidecar: null assignments sealed with AES-GCM, readable by exactly one service account."
+requires-python = ">=3.12"
+dependencies = ["nullius", "cryptography>=42.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nulloracle"]
