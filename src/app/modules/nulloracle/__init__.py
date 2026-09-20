@@ -27,7 +27,7 @@ and ``sidecar.path`` for the file's location, and a second spelling of those
 APIs here would be a second thing to keep in sync.  This module answers
 exactly one question — *what is the composed null sidecar?* — so the
 features in this category that need the labels (the ``POST /target``
-resolution of 112-113, the campaign assignment of 117-122, the KS guard of
+resolution of 112-114, the campaign assignment of 117-122, the KS guard of
 123) can ask it without importing the member directly.
 
 Where the composed sidecar is ``None``, that is a statement about the

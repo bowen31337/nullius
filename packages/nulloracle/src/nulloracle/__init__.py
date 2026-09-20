@@ -137,6 +137,30 @@ route that answers for the branch it can and refuses the other by name,
 with :class:`~nulloracle.errors.TargetPayloadError`, rather than serving a
 world it does not hold.
 
+**Feature 114 is §7.2's promise read the way an adversary reads a response.**
+The line at the end of §7.2's rule — *"The caller cannot distinguish the two
+branches from the response"* — is stated over the payload, and features
+112-113 kept it there: one record, one shape, no field that names the branch,
+the one crossing bit carried as §8's opaque directive.  Feature 114 reads
+"the response" as everything the caller can observe about the call, and a
+response arrives with more than its bytes: *how long it took* is part of it
+too.  The null branch's series is the real one put through a block
+permutation, so a route that permuted only when the bit said so would do
+strictly more work for a null node — panel-sized work, spent on one branch
+alone — and a caller holding nothing but a stopwatch would read the branch
+off the latency.  So :meth:`nulloracle.target.TargetEndpoint.post` computes
+**both** branches' series on every request, checks both, and lets the bit do
+exactly one thing: select which already-computed value is served.  A real
+node's answer now pays for a permutation it discards — deliberate, because
+the alternative is a branch the caller can time — and nothing a caller can
+read — value, shape, call sequence, or clock — varies with the bit except
+the one directive §8 sends across.  The same-work discipline generalises the
+one features 112-113 already stated in the small (both supplies named before
+the branch is chosen, both payload validators run on both branches) to the
+series itself, and it is the route's own — no deployment configures it,
+because indistinguishability that a deployment could switch off would not be
+§7.2's promise at all.
+
 **The three halves, and why they are three modules.**  A sidecar entry is a
 schema (:mod:`nulloracle.assignment`), a cipher (:mod:`nulloracle.envelope`)
 and a file (:mod:`nulloracle.sidecar`), and each is separately arguable.
@@ -185,12 +209,13 @@ already says:
   :meth:`~nulloracle.sidecar.NullSidecar.assignment` answers for one node.
 * :class:`~nulloracle.target.TargetEndpoint` with
   :class:`~nulloracle.target.TargetRequest` and
-  :class:`~nulloracle.target.TargetResponse` — features 112 and 113's
+  :class:`~nulloracle.target.TargetResponse` — features 112 through 114's
   route: ``POST /target``, answering §7.2's request (node, campaign, depth,
   horizon, symbols, date range) with a ``200`` carrying the target series
   and the opaque ``charges_budget`` directive for a node the sidecar holds,
   and a ``404`` for one it does not — carrying nothing of the branch either
-  way.
+  way, and (feature 114) spending the same work whichever branch supplied
+  the series, so neither the answer nor the clock names the branch.
 * :class:`~nulloracle.keyref.SidecarKey` with
   :class:`~nulloracle.keyref.KeyReference` and
   :func:`~nulloracle.keyref.ensure_key` — feature 111's seam: the reference

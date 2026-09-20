@@ -39,7 +39,9 @@ plausible-looking implementation gets wrong:
   taken inside the payload validators, and not one string anywhere on either
   that names the bit.  Feature 114's indistinguishable-response promise is a
   promise about the whole record, and the cheapest way to break it is a
-  refusal message that says "this null node has no series";
+  refusal message that says "this null node has no series" — its work and
+  clock halves are that feature's own suite's, in
+  ``test_indistinguishability.py``;
 * **the refusals are refusals, not answers** — a known node whose payload
   cannot be built raises :class:`nulloracle.TargetPayloadError` rather than
   answering 404 (which would deny a node the sidecar just answered for) or an
@@ -326,18 +328,23 @@ class TestTheBitSelectsTheBranch:
         _endpoint(test_sidecar, permute=recorder).post(_request(node_id))
         assert recorder.calls == [(99, 3)]
 
-    def test_a_permutation_is_not_consulted_for_a_real_node(
+    def test_a_permutation_is_consulted_for_a_real_node_too(
         self, test_sidecar: NullSidecar, node_id: str
     ) -> None:
-        # The ``else`` arm does not permute, so it does not call the
-        # mechanism either — the same "spend the same work" discipline stated
-        # from the other side: whatever a real request costs, it is not a
-        # permutation, and a route that called one to discard the result
-        # would be doing work no branch needs.
+        # Feature 114 reversed the stance this test originally pinned (that
+        # the ``else`` arm skips the mechanism).  A permutation consulted
+        # only on the null branch is panel-sized work spent on one branch
+        # alone, and a caller holding a stopwatch reads the bit straight off
+        # the latency — the work must be spent whichever way the rule went,
+        # so the real node below pays for a permutation it discards.  The
+        # call is with the entry's own stored parameters, exactly as the
+        # null branch's is; the deep parity assertions live in
+        # ``test_indistinguishability.py``, and this one keeps the record
+        # straight in the suite that originally stated the opposite.
         recorder = _Recorder()
-        _written(test_sidecar, node_id, is_null=False, perm_seed=99)
+        _written(test_sidecar, node_id, is_null=False, perm_seed=99, block_days=3)
         _endpoint(test_sidecar, permute=recorder).post(_request(node_id))
-        assert recorder.calls == []
+        assert recorder.calls == [(99, 3)]
 
     def test_two_requests_for_one_node_reproduce_one_series(
         self, test_sidecar: NullSidecar, node_id: str

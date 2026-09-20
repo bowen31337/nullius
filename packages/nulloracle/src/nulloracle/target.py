@@ -72,7 +72,7 @@ flag leaked as a label → Audit: ``charges_budget`` correlated with anything
 in the agent's context → Treat as a §7.4 VOID event; the flag must be
 opaque."*
 
-**The directive is the branch, which is the one thing feature 114 will have to
+**The directive is the branch, which is the one thing feature 114 had to
 reckon with.**  ``charges_budget = not is_null`` and ``is_null`` *is* the
 branch, so a caller holding two responses for one node under two campaign
 types could read the bit off the directive.  That is not a hole this module can
@@ -80,12 +80,34 @@ close and it is not this module's to close: §8 *requires* the directive to be
 exactly this fact, and a directive that were constant (or randomised, or
 derived from something else) would either charge a null node a budget it never
 spent or refund a real one a budget it did — and either direction corrupts
-``K``, the deflation term §8 exists to keep honest.  What this module
-owes feature 114 is that *nothing else* varies: same response type, same
-fields, same branches, and — the half a later feature must preserve rather
-than add — the same work spent whichever way the branch went.  Every payload
-below is validated on both branches by the same code at the same points, so
-the route does not hand feature 114 a response whose *shape* already varies.
+``K``, the deflation term §8 exists to keep honest.  What feature 114 adds on
+top of that one sanctioned crossing is that *nothing else* varies: same
+response type, same fields, same branches — and the same work spent whichever
+way the branch went (the next paragraph).  Every payload below is validated on
+both branches by the same code at the same points, so the route has never
+handed a caller a response whose *shape* varies; since feature 114, the same
+is true of the clock.
+
+**Feature 114: the same work, spent before the branch is chosen.**  §7.2's
+promise — *"The caller cannot distinguish the two branches from the
+response"* — has two halves, and a response is more than its bytes: *when* it
+arrives is part of it too.  The null branch's payload is the real series put
+through a block permutation, so a route that permuted only when the bit said
+so would do strictly more work for a null node than for a real one — panel-
+sized work, spent on one branch alone — and a caller holding nothing but a
+stopwatch would read the bit off the latency, the same leak a
+``try``-around-the-refusal gives, measured instead of caught.  So the route
+computes **both** branches' series on every request: the permutation is run
+and its support checked whichever branch serves, and the bit's only office is
+to select between two values that already exist
+(:meth:`TargetEndpoint.post`).  The cost is real and deliberate — a real
+node's answer now pays for a permutation it discards — because the
+alternative is a branch the caller can time.  The discipline is the one this
+module already states in the small, extended to the series itself: both
+supplies are named before the branch is chosen, both payload validators run
+on both branches, and both branches' series are built before either is
+served.  Nothing a caller can read — value, shape, call sequence, or clock —
+varies with the bit except the one directive §8 sends across.
 
 **Where the real series comes from, and why it is a seam.**  §7.2's rule
 begins from ``forward_returns`` — *the real forward returns* — and this
@@ -180,10 +202,11 @@ checking the seam where it is needed is the natural place to write it and the
 one place it cannot go — the refusal would then fall on null nodes alone and
 the *exception* would be the bit.  The symbol check and the span check run
 before the branch is even chosen, over the ask and not over the answer's
-values; the date-preservation check runs on the permuted branch only, and is
-fair because it compares the permuted series to the series it permuted — a
-relation the real branch satisfies by identity and would satisfy trivially if
-it were run there too.  What would not be fair is anything that inspects the
+values; the date-preservation check runs on both branches — feature 114
+computes the permutation whichever branch serves, so the check is spent
+either way — and is fair because it compares the permuted series to the
+series it permuted, a relation the served series of the real branch
+satisfies by identity.  What would not be fair is anything that inspects the
 *values* of the served series, because the real and permuted series differ
 exactly in their values and in nothing else.
 
@@ -737,7 +760,9 @@ class TargetResponse:
     from it either: the same type, the same field names and the same branches
     serve a real node and a null one, which is feature 114's identical-shape
     promise (see ``test_target.py``, which asserts this for the instance, the
-    type and the ``repr``).  The one bit that does cross is ``charges_budget``,
+    type and the ``repr``, and ``test_indistinguishability.py``, which holds
+    the feature's other half — the identical work — against the route).  The
+    one bit that does cross is ``charges_budget``,
     and it crosses as a *directive* — the caller learns whether to debit
     statistical budget without learning why (§7.2, §8).
 
@@ -1004,9 +1029,18 @@ class TargetEndpoint:
         compared to real forward returns, so the directive is ``False`` for
         the null branch and ``True`` for the real one.
 
-        **Nothing on the answer names the branch.**  The response's type,
-        field names and branches are the same whichever way the rule went,
-        which is feature 114's promise; the one bit that crosses is the
+        **Nothing on the answer names the branch, and neither does the work
+        (feature 114).**  The response's type, field names and branches are
+        the same whichever way the rule went, and so is the work spent
+        producing it: both branches' series are *computed* — the real one
+        from the ``targets`` seam, the permuted one through the stored
+        parameters — and both are *checked* before the bit selects which to
+        serve, so the permutation's cost and its validation are paid on a
+        real node exactly as on a null one.  A route that permuted only when
+        the bit said so would do strictly more work for a null node, and a
+        caller holding nothing but a stopwatch would read the bit off the
+        latency; see the module docstring for why that leak is the same one
+        a branch-only refusal gives.  The one bit that crosses is the
         directive, carried as a directive.  This method names the branch
         exactly once — in the local binding below, reading the entry the
         sidecar handed it — and that name never reaches the response, a
@@ -1034,8 +1068,9 @@ class TargetEndpoint:
         is_null = self._is_null(request, node, assignment)
         # One series, read once, whichever branch serves it: the real branch
         # returns it unchanged and the null branch returns it permuted.  Both
-        # branches spend the same read for the same reason feature 114 will
-        # want them to spend the same work.
+        # branches spend the same read — the first half of feature 114's
+        # same-work discipline, and the half a route could keep even before
+        # the feature landed.
         series = self._real_series(request, node)
         # And both *supplies* are named before the branch is chosen, not on
         # the branch that wanted one.  A route missing either seam can serve
@@ -1049,10 +1084,21 @@ class TargetEndpoint:
         # it fires whichever way the rule went.
         permutation = self._permutation_seam(node)
         self._covers(request, series, node)
-        if not is_null:
-            served = series
-        else:
-            served = self._permuted(series, assignment, node, permutation)
+        # Feature 114's half: both branches' series are computed and checked
+        # before the bit selects which one is served, so the work — the seam
+        # calls, the validations, the clock — does not vary with the bit.  A
+        # route that permuted only on the null branch would hand a caller
+        # holding a stopwatch the branch itself: the permutation is
+        # panel-sized work, and latency is an answer the caller reads whether
+        # the route means to send it or not.
+        permuted = self._permuted(series, assignment, node, permutation)
+        # The selection is the one move the bit makes, and it moves nothing
+        # but *which already-computed value is served*: one conditional over
+        # two locals, a cost that does not scale with the series and does not
+        # touch a seam.  The permuted series exists on both branches; only
+        # the null branch serves it — and a real node pays for it anyway,
+        # which is the price of a branch no clock can name.
+        served = permuted if is_null else series
         return TargetResponse(
             status=OK,
             node_id=node,
@@ -1173,7 +1219,12 @@ class TargetEndpoint:
     def _permuted(
         self, series: Any, assignment: Any, node: str, permute: Any
     ) -> Any:
-        """The null branch's series: the real one through the stored permutation.
+        """The permuted series: the real one through the stored permutation.
+
+        Computed for **both** branches (feature 114) and served only for the
+        null one — the method is reached on every request, so its cost and
+        its checks are spent whichever branch serves, and the caller's clock
+        cannot tell which branch the route was on.
 
         §7.2's own spelling — ``block_permute(forward_returns, seed=perm_seed,
         block=20d)`` — with both parameters read from the entry the sidecar
@@ -1223,14 +1274,18 @@ class TargetEndpoint:
         ``self`` here, because its *absence* is refused by
         :meth:`_permutation_seam` on both branches before this method is
         reached; taking it as an argument is what makes that ordering
-        impossible to undo by moving a line.
+        impossible to undo by moving a line.  Since feature 114 the method is
+        itself reached on both branches, so the ordering and the cost hold
+        together: the seam is named once, called once, and paid for once —
+        whichever branch serves.
 
         The permute callable arrives as a seam for the same reason the others
         do — feature 115's module is not this module's to import at module
         scope, and the mechanism is a pure function of three values the caller
-        already holds — but unlike the other two it is *required* on this
-        branch: the entry's ``perm_seed`` and ``block_days`` are parameters,
-        and a parameter is not a mechanism.
+        already holds — but unlike the other two it is *required* wherever
+        this method is reached, which since feature 114 is every request:
+        the entry's ``perm_seed`` and ``block_days`` are parameters, and a
+        parameter is not a mechanism.
         """
         served = permute(
             series,
