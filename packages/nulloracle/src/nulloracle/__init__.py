@@ -191,6 +191,15 @@ from .ksguard import (
     load_ks_guard,
     persist_ks_pvalue,
 )
+from .phi import (
+    NULL_FRACTION_COLUMN,
+    PHI_CEILING,
+    PHI_FLOOR,
+    WORKSPACE_COUNT_COLUMN,
+    PlantedNullFraction,
+    null_fraction,
+    persist_null_fraction,
+)
 from .sidecar import (
     SIDECAR_DIRECTORY,
     SIDECAR_FILE_MODE,
@@ -215,6 +224,7 @@ __all__ = [
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
     "DEFAULT_BLOCK_DAYS",
+    "FRACTION_COMPONENT_NAME",
     "FORMAT_VERSION",
     "KEY_REF_ENV",
     "KS_ASYMPTOTIC",
@@ -227,7 +237,11 @@ __all__ = [
     "KS_SERIES_TERMS",
     "MAGIC",
     "NONCE_BYTES",
+    "NULL_FRACTION_COLUMN",
+    "PHI_CEILING",
+    "PHI_FLOOR",
     "SIDECAR_DIRECTORY",
+    "WORKSPACE_COUNT_COLUMN",
     "SIDECAR_FILENAME",
     "SIDECAR_FILE_MODE",
     "SIDECAR_KEY_BYTES",
@@ -246,6 +260,7 @@ __all__ = [
     "NullAssignment",
     "NullOracleError",
     "NullSidecar",
+    "PlantedNullFraction",
     "SidecarAccessError",
     "SidecarDecryptionError",
     "SidecarError",
@@ -267,8 +282,10 @@ __all__ = [
     "load_ks_guard",
     "load_verdict",
     "normalize_node_id",
+    "null_fraction",
     "open_envelope",
     "persist_ks_pvalue",
+    "persist_null_fraction",
     "require_cryptography",
     "resolve_key",
     "seal",
@@ -303,6 +320,49 @@ KS_GUARD_COMPONENT_NAME = "nulloracle-ks-guard"
 #: have one without the others.  The ledger member registers three names the
 #: same way.
 VERDICT_COMPONENT_NAME = "nulloracle-ks-verdict"
+
+#: The component name feature 117's fraction store registers under — the key a
+#: composed :class:`~app.module_loader.Application` carries it at.  A fourth
+#: name rather than a second component under :data:`COMPONENT_NAME` because
+#: the sidecar, the guard journal, the verdict and the fraction are four
+#: different things on four different lifecycles, and a deployment can
+#: legitimately have one without the others.  The ledger member registers
+#: several names the same way.
+FRACTION_COMPONENT_NAME = "nulloracle-null-fraction"
+
+
+@register(FRACTION_COMPONENT_NAME)
+def build_null_fraction() -> Optional[PlantedNullFraction]:
+    """Component builder: §4.1.1's fraction store, bound to the environment.
+
+    Feature 117's *store* half as a component, so the campaign planner that
+    fixes a campaign's planted-null fraction can ask the composed application
+    for the fraction store the deployment configured rather than reading
+    ``DATABASE_URL`` itself — the same seam the guard's, the verdict's and the
+    ledger's stores expose.
+
+    Takes no arguments — that is the factory's registration protocol — and
+    resolves its path from the environment at build time, so a composed
+    application carries a fraction store for the deployment the process is
+    actually running in.
+
+    Returns ``None`` when nothing names a relational store, the
+    degrade-don't-break stance every store in this workspace takes toward an
+    absent ``DATABASE_URL``: an unconfigured fraction is a discoverable state,
+    and a deployment whose campaign planner must fix §4.1.1's fraction is the
+    caller that must not find itself in it.
+
+    Like :func:`build_null_sidecar`, this never raises, including for a URL
+    whose scheme this store cannot speak.  The factory builds every registered
+    component on every :func:`~app.module_loader.create_app` call, so a builder
+    that raised would take composition down for every unrelated feature; a
+    process that *requires* a fraction store asks
+    :meth:`~nulloracle.phi.PlantedNullFraction.resolve` or calls the store
+    directly, where a named :class:`~nulloracle.errors.KsGuardError` is the
+    right answer.  Construction performs no I/O — the path is resolved on first
+    use — so composing the application never opens a database.
+    """
+    return PlantedNullFraction.resolve()
 
 
 @register(VERDICT_COMPONENT_NAME)
