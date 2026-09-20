@@ -10,7 +10,11 @@ per evaluation under a monotonically increasing sequence number).  The
 member also registers feature 95's endpoint under
 :data:`DEBIT_COMPONENT_NAME` — the POST /ledger/debit charge, appending
 one trial row idempotently keyed by ``node_id`` and returning the prior
-sequence on a retry — over that same store.
+sequence on a retry — over that same store.  Feature 96's per-epoch
+promotion-decision counts ride on the store itself, as
+``ledger.epoch_usage()``: they read the ``epoch_ledger`` table (feature
+105) rather than this member's own, so no second component is needed to
+reach them.
 
 This module is the member's seat inside the ``app`` package namespace
 (``src/app/modules/ledger/``): it exposes the composed components without
@@ -25,12 +29,13 @@ The helpers below are deliberately the *composition* accessors and
 nothing more.  They do not re-export the append or the read paths: a
 caller who has the ledger can reach ``ledger.append(node_id,
 campaign_id, outcome)`` for the raw debit of feature 86 carrying
-feature 91's outcome stamp, and ``ledger.rows()`` for the ordered
-read, and a second spelling of those APIs here would be a second thing
-to keep in sync.  This module answers exactly two questions — *what is
-the composed ledger component?* and *what is the composed debit
-endpoint?* — so the evaluator-facing features of this category can ask
-them without importing the member directly.
+feature 91's outcome stamp, ``ledger.rows()`` for the ordered read, and
+``ledger.epoch_usage()`` for feature 96's promotion-decision counts per
+sequestered epoch — and a second spelling of those APIs here would be a
+second thing to keep in sync.  This module answers exactly two questions
+— *what is the composed ledger component?* and *what is the composed
+debit endpoint?* — so the evaluator-facing features of this category can
+ask them without importing the member directly.
 """
 
 from __future__ import annotations

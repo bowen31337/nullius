@@ -146,6 +146,7 @@ from typing import Any, Optional
 from urllib.parse import unquote, urlparse
 
 from .budget import validated_charges_budget
+from .epochusage import EpochUsage, derive_epoch_usage
 from .errors import TrialImmutableError, TrialRecordError, TrialStoreError
 from .keffective import KEffective, derive_k_effective
 from .outcome import validated_outcome
@@ -153,6 +154,7 @@ from .record import TrialLedgerRecord, _validated_instant, _validated_uuid, utc_
 
 __all__ = [
     "DATABASE_URL_ENV",
+    "EPOCH_LEDGER_TABLE",
     "TRIAL_LEDGER_TABLE",
     "TrialLedger",
 ]
@@ -165,6 +167,18 @@ DATABASE_URL_ENV = "DATABASE_URL"
 
 #: The table feature 86 appends to — §8's own name for it.
 TRIAL_LEDGER_TABLE = "trial_ledger"
+
+#: The table feature 96's usage counts are read from — feature 105's own
+#: name for it, and the name ``migrations/versions/0110_epoch_ledger.py``
+#: creates.  Spelled once here so the read and the migration cannot drift
+#: apart on what the epoch ledger is called.
+EPOCH_LEDGER_TABLE = "epoch_ledger"
+
+#: The two columns feature 96's read projects out of ``epoch_ledger``:
+#: the epoch's name (feature 105's ``TEXT NOT NULL PRIMARY KEY``) and the
+#: running count of promotion decisions it has served (feature 294's
+#: column, ``INT NOT NULL DEFAULT 0``).
+_EPOCH_LEDGER_COLUMNS = "epoch_id, promotion_decisions_served"
 
 #: The table's DDL.  See the module docstring for why ``AUTOINCREMENT``
 #: is the load-bearing word and why these columns are this store's whole
@@ -448,6 +462,28 @@ def _has_epoch_column(connection: sqlite3.Connection) -> bool:
         row[1] for row in connection.execute(f"PRAGMA table_info({TRIAL_LEDGER_TABLE})")
     }
     return _EPOCH_COLUMN in columns
+
+
+def _has_epoch_ledger_table(connection: sqlite3.Connection) -> bool:
+    """Whether the ``epoch_ledger`` table exists yet.
+
+    The probe feature 96's read uses to tell "no epoch was ever sealed"
+    from "this deployment has an epoch ledger and it says nothing".  The
+    table is feature 105's, created by the versioned migration
+    (``migrations/versions/0110_epoch_ledger.py``) or by the promotion
+    plugin's own idempotent create — not by this store, which owns no
+    part of it — so on a database that has never sealed an epoch it is
+    genuinely absent, and asking it for rows would fail with "no such
+    table" rather than answer.  ``sqlite_master`` is read (never the
+    rows), which makes it a safe question to ask on every read, and it is
+    asked of the *table* rather than assumed because a store that
+    answered a missing table with a zero would be inventing a pool size.
+    """
+    row = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (EPOCH_LEDGER_TABLE,),
+    ).fetchone()
+    return row is not None
 
 
 def _record_from_row(row: tuple[Any, ...]) -> TrialLedgerRecord:
@@ -855,8 +891,9 @@ class TrialLedger:
         charges were actually debited in, and the log is replayed in the
         order it was written.  Feature 93's ``K_effective`` derivation
         (:meth:`k_effective`) reads the whole log in this order; feature
-        96's epoch-usage counts, which read the ``epoch_ledger`` table
-        instead of this one, will read through their own member's seam.
+        96's epoch-usage counts read the ``epoch_ledger`` table instead
+        (:meth:`epoch_usage`) and so never touch these rows at all — the
+        two derived views of §8 are two reads over two tables.
         """
         with closing(self._connect()) as connection:
             rows = connection.execute(
@@ -929,3 +966,79 @@ class TrialLedger:
         if stamped:
             return derive_k_effective((row[0], row[1]) for row in rows)
         return derive_k_effective((None, row[0]) for row in rows)
+
+    def epoch_usage(self) -> EpochUsage:
+        """Promotion decisions served per sequestered epoch (feature 96).
+
+        The second of §8's derived views — *"epoch usage counts (retire
+        at 3 promotion decisions)"* — read off ``epoch_ledger``
+        (:data:`EPOCH_LEDGER_TABLE`): one row per sequestered epoch,
+        carrying the running count the promotion plugin's persist
+        (feature 294) advances.  The result is an
+        :class:`~ledger.epochusage.EpochUsage`, which carries the
+        per-epoch breakdown, the number of epochs the pool holds and the
+        pool-wide burn.
+
+        **This is not** :meth:`k_effective` **and neither reads the
+        other's table.**  ``K_effective`` counts *trial charges* out of
+        the append-only ``trial_ledger`` — statistical degrees of freedom
+        spent — while this counts *promotion decisions* out of
+        ``epoch_ledger`` — sequestration spent.  §6.1's step 11 debits a
+        trial and a promotion decision debits an epoch, so the two
+        numbers move on different events and are equal only by
+        coincidence.  Feature 295's retirement threshold and feature
+        296's "no clean epoch remains" terminal state read *this* figure;
+        the deflation term (feature 259) reads the other.
+
+        **A missing table is an empty pool, honestly reported.**  This
+        store does not create ``epoch_ledger`` — the table is feature
+        105's and the migration or the promotion plugin creates it — so a
+        database where no epoch was ever sealed simply has no such table.
+        That is answered with an empty :class:`~ledger.epochusage.
+        EpochUsage` rather than an exception, and it is the safe
+        direction: no epochs observed means no clean epoch remains, which
+        §15 names as a legitimate terminal state, whereas a raised error
+        (or an invented count) could be worked around into a promotion.
+        A table that *exists* and cannot be read is the opposite case and
+        stays loud — see below.
+
+        **Every sealed epoch is reported, unspent ones included.**  An
+        epoch that has served nothing is reported at ``0`` and listed, so
+        feature 297's depleting-epoch figure is *told* the pool's size
+        rather than left to infer it from the rows that happen to be
+        non-zero.  A retired epoch is reported at what it served: the
+        ``retired`` column is feature 296's and is deliberately not read
+        here, because hiding a spent epoch's count would understate the
+        burn at the moment an operator asks how the pool got here.
+
+        A row that cannot be believed is refused rather than served — an
+        ``epoch_id`` that names no epoch, a count that is not a
+        non-negative integer, or (impossibly, given the primary key) two
+        rows for one epoch.  See :mod:`ledger.epochusage` for why each
+        refusal is in the direction that keeps a spent epoch from reading
+        as clean.  Unlike an absent table, a configured store whose read
+        *fails* raises :class:`~ledger.errors.TrialStoreError`: a usage
+        count that silently fell back to zero is a pool size the ledger
+        never stated.
+        """
+        try:
+            with closing(self._connect()) as connection:
+                # The table is a sibling feature's, so its existence is
+                # asked of the schema rather than assumed — and a database
+                # that has never sealed an epoch has none.
+                if not _has_epoch_ledger_table(connection):
+                    return EpochUsage(())
+                rows = connection.execute(
+                    f"SELECT {_EPOCH_LEDGER_COLUMNS} FROM {EPOCH_LEDGER_TABLE} "
+                    "ORDER BY epoch_id"
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise TrialStoreError(
+                f"the epoch ledger at {self._database_url} could not be read: "
+                f"{exc}.  Its usage counts (feature 96) are what the "
+                "promotion discipline retires epochs on (feature 295) and what "
+                "the operator surface reports as remaining clean epochs, so a "
+                "failed read is raised rather than answered with a zero this "
+                "store did not state."
+            ) from exc
+        return derive_epoch_usage((row[0], row[1]) for row in rows)

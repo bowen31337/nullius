@@ -16,9 +16,16 @@ epoch accounting of 88, the charge semantics of 89-90, the outcome of
 'tripwire_fail' persisted on every appended row, refused when absent or
 misspelled), the opaque budget directive of 90
 (:mod:`ledger.budget`: a genuine bool supplied by the caller, never
-derived), the enforced immutability of 92, the ``K_effective`` family
-of 93-96 — each as a layer over the one table this member creates, never
-a second table beside it.
+derived), the enforced immutability of 92, and the two derived views of
+93-96 — §8's ``K_effective`` per epoch (feature 93, counting the
+budget-charging rows of this member's own ``trial_ledger``) and the
+epoch-usage counts (feature 96, reading ``epoch_ledger``, the table the
+versioned migration and the promotion plugin own).  Features 93-95 sit
+over the one table this member creates, never a second table beside it;
+feature 96 is the exception the spec's own wording names, because the
+sequestration a promotion decision spends is a different resource from
+the statistical budget a trial charges, and it is counted in a table of
+its own.
 
 Importing this package registers two components with the application
 factory.  ``"ledger"`` is the :class:`~ledger.store.TrialLedger` bound
@@ -69,6 +76,13 @@ already says:
   the budget-charging trial count per epoch, the number null nodes
   never inflate.  Read off the store as
   :meth:`~ledger.store.TrialLedger.k_effective`.
+* :class:`~ledger.epochusage.EpochUsage` with
+  :func:`~ledger.epochusage.derive_epoch_usage` — feature 96's
+  derivation: the promotion decisions each sequestered epoch has
+  served, the figure §15 retires epochs at three of.  Read off the
+  store as :meth:`~ledger.store.TrialLedger.epoch_usage`, which reads
+  the ``epoch_ledger`` table (feature 105) rather than this member's
+  own — the two derived views of §8 are two reads over two tables.
 * :class:`~ledger.record.utc_now` — the append's default clock.
 * The error taxonomy of :mod:`ledger.errors`, one base class wide.
 """
@@ -81,6 +95,7 @@ from app.module_loader import register
 
 from .budget import validated_charges_budget
 from .debit import DEBIT_ROUTE, DebitEndpoint, DebitRequest, DebitResponse
+from .epochusage import EpochUsage, derive_epoch_usage
 from .errors import (
     TrialImmutableError,
     TrialLedgerError,
@@ -90,16 +105,23 @@ from .errors import (
 from .keffective import KEffective, UNNAMED_EPOCH, derive_k_effective
 from .outcome import OUTCOMES
 from .record import TrialLedgerRecord, utc_now
-from .store import DATABASE_URL_ENV, TRIAL_LEDGER_TABLE, TrialLedger
+from .store import (
+    DATABASE_URL_ENV,
+    EPOCH_LEDGER_TABLE,
+    TRIAL_LEDGER_TABLE,
+    TrialLedger,
+)
 
 __all__ = [
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
     "DEBIT_COMPONENT_NAME",
     "DEBIT_ROUTE",
+    "EPOCH_LEDGER_TABLE",
     "DebitEndpoint",
     "DebitRequest",
     "DebitResponse",
+    "EpochUsage",
     "KEffective",
     "OUTCOMES",
     "TRIAL_LEDGER_TABLE",
@@ -112,6 +134,7 @@ __all__ = [
     "UNNAMED_EPOCH",
     "build_ledger_debit",
     "build_trial_ledger",
+    "derive_epoch_usage",
     "derive_k_effective",
     "utc_now",
     "validated_charges_budget",
