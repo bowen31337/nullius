@@ -271,6 +271,15 @@ from .triage import (
     run_triage,
     triage_auc,
 )
+from .window_offset import (
+    DEFAULT_WINDOW_OFFSET,
+    DEFAULT_WINDOW_STABILITY_THRESHOLD,
+    WINDOW_AXIS,
+    WindowRerunVerdict,
+    run_window_rerun,
+    window_figure,
+    window_starts,
+)
 
 __all__ = [
     "COMPONENT_NAME",
@@ -287,6 +296,8 @@ __all__ = [
     "DEFAULT_SUBSAMPLE_FRACTION",
     "DEFAULT_SUBSAMPLE_SEED",
     "DEFAULT_SUBSAMPLE_STABILITY_THRESHOLD",
+    "DEFAULT_WINDOW_OFFSET",
+    "DEFAULT_WINDOW_STABILITY_THRESHOLD",
     "EXCISE_COMPONENT_NAME",
     "HORIZONS",
     "LEAK_KINDS",
@@ -315,6 +326,7 @@ __all__ = [
     "TRIAGE_SIGNAL_HORIZON",
     "TRIAGE_TRUE_IC",
     "TRIPWIRE_OUTCOMES",
+    "WINDOW_AXIS",
     "CorpusSignal",
     "ExcisedBranch",
     "ExcisedScore",
@@ -341,6 +353,7 @@ __all__ = [
     "TripwirePoisonError",
     "TripwireStabilityError",
     "TripwireStatisticError",
+    "WindowRerunVerdict",
     "build_node_metric_store",
     "build_poison_store",
     "build_replay_pool",
@@ -367,6 +380,7 @@ __all__ = [
     "run_subsample_rerun",
     "run_time_shuffle_tripwire",
     "run_triage",
+    "run_window_rerun",
     "seed_rerun_degradation",
     "stability_bootstrap_schema",
     "stability_of",
@@ -378,6 +392,8 @@ __all__ = [
     "time_shuffle_threshold",
     "triage_auc",
     "validated_node_id",
+    "window_figure",
+    "window_starts",
 ]
 
 __version__ = "0.1.0"
@@ -410,7 +426,8 @@ class TimeShuffleTripwire:
     statistic, the shuffle or the threshold is exactly what this member's
     one-provenance rule forbids.  What this class adds is discoverability (the
     factory's scan composes it) and a single duck-checkable seam
-    (``run``/``pairing``/``threshold``/``rerun``/``subsample``/``lookback``)
+    (``run``/``pairing``/``threshold``/``rerun``/``subsample``/``lookback``/
+    ``window``)
     for the app seat and the features that follow, not arithmetic.
 
     **``rerun`` is the fourth verb and the family's first axis.**  Feature 127
@@ -442,6 +459,24 @@ class TimeShuffleTripwire:
     (:func:`~tripwires.node_metric.record_node_metric`) writes to the node's
     own ``perturb_stability`` column, 0114's last metric column, beside the
     stability-ledger row the same verdict may also land in.
+
+    **``window`` is the seventh verb and the family's second axis.**  Feature
+    128 perturbs the window's *position* — which stretch of the measured grid
+    the re-run scores — holding the seed, the universe and the length all
+    fixed, so it is a method here for the reason the three above are.  It is
+    the axis §C6 names second (*"... a different seed, a different start
+    offset, ..."*) and the one that moves the grid's *newest* bar, which every
+    other axis holds fixed: the reference window is the trailing ``L`` dates
+    and the re-run is the same ``L`` started ``offset`` bars earlier, so the
+    two windows differ at both ends and share the dates between.  Its bar is
+    the family's equal-length limit — ``√2``, the number ``lookback``'s
+    formula tends to as its jitter shrinks — because the same re-dating
+    argument that freed ``lookback``'s runs from shared noise frees these,
+    with equal lengths on top of it.  And its persistence is the ledger's,
+    not a store of its own: the verdict lands in ``tripwire_stability``
+    keyed on this axis, beside feature 129's rows, with the knobs it does not
+    move written NULL — the row that table's ``(node_id, axis)`` key was
+    waiting for.
     """
 
     __slots__ = ()
@@ -637,6 +672,60 @@ class TimeShuffleTripwire:
             node_id=node_id,
             lookback=lookback,
             jitter=jitter,
+            seed=seed,
+            level=level,
+            threshold=threshold,
+        )
+
+    def window(
+        self,
+        scores: Mapping[dt.date | str, Mapping[str, float]],
+        targets: Mapping[int, Mapping[dt.date | str, Mapping[str, float]]],
+        *,
+        node_id: str,
+        window: int | None = None,
+        offset: int = DEFAULT_WINDOW_OFFSET,
+        seed: int = DEFAULT_SHUFFLE_SEED,
+        level: float = DEFAULT_SHUFFLE_LEVEL,
+        threshold: float = DEFAULT_WINDOW_STABILITY_THRESHOLD,
+    ) -> WindowRerunVerdict:
+        """Re-run the probe from a different window start offset — feature 128's whole answer.
+
+        The same candidate and bundle :meth:`run` takes, plus the declared
+        window — ``None`` meaning the maximal window this axis can offset
+        (the panel's measured span less the offset, the axis' structural
+        substitute for the family's full-span default, because a window that
+        is the whole grid has no position to move to) — and the offset
+        itself, in bars.  Returns the
+        :class:`~tripwires.window_offset.WindowRerunVerdict` — whose
+        ``stability`` is the delta feature 128's sentence says is persisted
+        (by :func:`~tripwires.stability.record_stability`, into the same
+        ``tripwire_stability`` ledger feature 129's figures land in, keyed on
+        this axis), and whose ``rejected`` unions the stability cause with
+        either run's own detection.
+
+        **``seed`` is one parameter, and there is no second seed and no
+        subsample seed at all** — and those absences, together, are the
+        axis' definition: 127 perturbs the derangement, 129 the universe,
+        130 the window's *length*, and this feature perturbs the window's
+        *position* holding all three fixed.  The pairing still differs
+        between the runs — the derangement is a function of the whole date
+        list, so the offset window draws its own — but that is a consequence
+        of the perturbation rather than a knob, and it is why the axis' bar
+        is the equal-length independent-runs ``√2``.
+
+        It is a method on this component for the reason :meth:`rerun`,
+        :meth:`subsample` and :meth:`lookback` are: the re-run is not a
+        second probe but this probe taken twice, and a caller holding the
+        composed probe already has the statistic, the shuffle and the
+        threshold it needs.
+        """
+        return run_window_rerun(
+            scores,
+            targets,
+            node_id=node_id,
+            window=window,
+            offset=offset,
             seed=seed,
             level=level,
             threshold=threshold,

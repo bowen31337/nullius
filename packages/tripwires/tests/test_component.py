@@ -61,13 +61,13 @@ MEMBER_SRC = Path(tripwires.__file__).resolve().parent.parent
 def _assert_is_the_tripwire_component(component: object) -> None:
     assert type(component).__name__ == "TimeShuffleTripwire"
     assert type(component).__module__.endswith("tripwires")
-    # The probe's six verbs, duck-checked across the loader's module copy
+    # The probe's seven verbs, duck-checked across the loader's module copy
     # seam: feature 125's run, the pairing and threshold a reader auditing a
-    # persisted rejection rebuilds from the record's own terms, and the three
+    # persisted rejection rebuilds from the record's own terms, and the four
     # perturbation re-runs the family reaches through the same component —
-    # feature 127's ``rerun``, feature 129's ``subsample`` and feature 130's
-    # ``lookback``, each a method here rather than a component of its own
-    # because a re-run is this probe taken twice.
+    # feature 127's ``rerun``, feature 128's ``window``, feature 129's
+    # ``subsample`` and feature 130's ``lookback``, each a method here rather
+    # than a component of its own because a re-run is this probe taken twice.
     for operation in (
         "run",
         "pairing",
@@ -75,6 +75,7 @@ def _assert_is_the_tripwire_component(component: object) -> None:
         "rerun",
         "subsample",
         "lookback",
+        "window",
     ):
         assert callable(getattr(component, operation)), operation
     # The probe's own name, not the component's: a persisted failure names
