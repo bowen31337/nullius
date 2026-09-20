@@ -1,4 +1,4 @@
-"""The cost model as a composed application component (feature 59).
+"""The cost model as a composed application component (features 59-60).
 
 Feature 59 in one sentence: *"System persists the resolved cost model
 version string with its venue name after loading the YAML
@@ -10,6 +10,16 @@ and returns the resolved :class:`~cost_model.config.CostModelConfig` so the
 caller evaluates against the very identity that landed.  A caller that
 loads and forgets to persist cannot get that ordering wrong by accident,
 because there is no public method that does one without the other.
+
+Feature 60 rides the same ordering: *"System persists ``cost_model_hash``
+computed over the loaded configuration, so every score names its fee
+assumptions."*  The hash is folded during the load — from the very parse
+the pair was resolved from (:func:`~cost_model.config.load_cost_model`) —
+so :meth:`CostModelService.resolved` persists it in the same upsert as the
+pair, and :meth:`CostModelService.cost_model_hash` is the caller's handle on
+the value a score is stamped with.  There is no method that computes a hash
+without persisting the configuration it names, for the same reason there is
+none that persists a pair without loading it: the two facts are one fact.
 
 The factory's contract is one-way: a component knows how to build itself
 from nothing, and the factory asks exactly that.
@@ -181,26 +191,43 @@ class CostModelService:
         §6.2 document — the fee schedule, the fill model, latency and
         borrow — as a read-only mapping, resolved from the one parse so
         every section-bearing consumer of this service (feature 66's
-        aggressive fill model here; feature 60's hash when it lands)
-        reads the configuration the resolved identity was loaded from,
-        not a re-read of whatever the file says now.
+        aggressive fill model here; feature 60's hash, folded into the
+        loaded config this reads through) reads the configuration the
+        resolved identity was loaded from, not a re-read of whatever the
+        file says now.
 
-        Refused for a service bound to an already-resolved config: that
-        service was explicitly told never to read a document, and it has
-        none to parse — the refusal names the constructor pair that
-        would carry one.  The parse is cached with the config and
-        invalidated by :meth:`load`, so one service can resolve several
-        documents in sequence exactly as it already could several
-        identities.
+        **The parse is the config's, not a second one.**  Feature 60's
+        hash is computed over the very bytes the pair was resolved from
+        (:meth:`~cost_model.config.load_cost_model`), and a service that
+        parsed the file again here would be reading a *different* parse
+        from the one the config's hash covers — the divergence the
+        provenance triple exists to catch, reintroduced at the seam that
+        was supposed to prevent it.  So a config that already carries its
+        document is answered with that mapping, and the file is read only
+        when the config has none (a bare :class:`CostModelConfig` built by
+        hand, or a service that has not resolved yet).
+
+        Refused for a service bound to an already-resolved config with no
+        document of its own: that service was explicitly told never to
+        read a document, and it has none to parse — the refusal names the
+        constructor pair that would carry one.  The parse is cached with
+        the config and invalidated by :meth:`load`, so one service can
+        resolve several documents in sequence exactly as it already could
+        several identities.
         """
         if self._document is None:
-            if self._config is not None and self.config_path is None:
-                raise CostModelConfigError(
-                    "a service bound to an already-resolved config carries "
-                    "no document to read sections from; construct the "
-                    "service with a config_path (or nothing, for the "
-                    "shipped default) to resolve a fill model"
-                )
+            if self._config is not None:
+                if self._config.document is not None:
+                    self._document = self._config.document
+                    return self._document
+                if self.config_path is None:
+                    raise CostModelConfigError(
+                        "a service bound to an already-resolved config "
+                        "carries no document to read sections from; "
+                        "construct the service with a config_path (or "
+                        "nothing, for the shipped default) to resolve a "
+                        "fill model"
+                    )
             self._document, _origin = read_cost_model_document(self.config_path)
         return self._document
 
@@ -235,12 +262,62 @@ class CostModelService:
         answers with the identity that was loaded — or ``None``, which is
         the honest answer for a cost model this store has never priced
         against.
+
+        The value it answers with carries feature 60's ``hash``, because a
+        score is compared on the hash rather than on the pair (see
+        :meth:`CostModelConfig.describes_same_cost_model`): two rows can
+        share a ``(venue, version)`` and still differ, and this is the read
+        that tells them apart.  A row written before feature 60 landed has
+        no hash to serve, and the store refuses it rather than inventing one
+        — see :func:`~cost_model.store.load_persisted_cost_model`.
         """
         return load_persisted_cost_model(
             venue,
             version,
             database_url if database_url is not None else self.database_url,
         )
+
+    def cost_model_hash(self) -> str:
+        """The feature-60 hash over the loaded configuration.
+
+        Feature 60's sentence: *"System persists ``cost_model_hash``
+        computed over the loaded configuration, so every score names its fee
+        assumptions."*  This is the value a score is stamped with — one of
+        §14.1's three provenance axes, and the one that says which fees a
+        post-cost return was netted against.
+
+        Read off the loaded config rather than recomputed here: the hash was
+        folded from the same parse the ``(venue, version)`` pair was
+        resolved from (see :attr:`document` and
+        :func:`~cost_model.config.load_cost_model`), so this method cannot
+        observe a different configuration than :meth:`resolved` persisted —
+        a second computation over a re-read file is exactly the divergence
+        the triple exists to catch.
+
+        Loading on first call, like every other resolution on this service:
+        a caller who only wants the hash never has to touch the store.
+
+        A service bound to a bare ``(venue, version)`` pair — one constructed
+        with a :class:`~cost_model.config.CostModelConfig` that carries no
+        configuration — is refused by name rather than answered with an empty
+        string.  This is the door a caller stamping a score reaches for, and
+        ``""`` is the one answer that would look like a stamp: a caller that
+        got it would write a score naming no fee assumptions, which is
+        precisely the state feature 60 exists to rule out.  The refusal is
+        the same one :meth:`~cost_model.config.CostModelConfig.hash_prefix`
+        makes, on the door where it matters more.
+        """
+        config = self.config
+        if not config.hash:
+            raise CostModelConfigError(
+                f"the cost model {config.reference!r} carries no "
+                "cost_model_hash: feature 60 stamps every score with the hash "
+                "computed over the loaded configuration, and this service was "
+                "bound to a bare (venue, version) pair with none. Construct "
+                "the service from a document — a config_path, or nothing for "
+                "the shipped default — so the hash is folded from the load."
+            )
+        return config.hash
 
     def aggressive(self) -> AggressiveFillModel:
         """Resolve the aggressive fill model from the loaded document.

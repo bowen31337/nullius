@@ -2,8 +2,13 @@
 
 app_spec.xml, "Cost Model & Fill Simulation", feature 59: *System persists
 the resolved cost model version string with its venue name after loading
-the YAML configuration.*  docs/nullius-tech-architecture.md §6.2 fixes the
-document and the two values this module is responsible for:
+the YAML configuration.*  Feature 60 then pins the bytes behind that pair:
+*System persists ``cost_model_hash`` computed over the loaded configuration,
+so every score names its fee assumptions.*  The two halves share one parse
+(see :func:`read_cost_model_document`), which is why the hash is computed
+here — over the very mapping the identity was resolved from — and carried on
+:class:`CostModelConfig` rather than re-derived by each caller.  §6.2 fixes
+the document and the values this module is responsible for:
 
 .. code-block:: yaml
 
@@ -67,12 +72,13 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Optional, Union
 
 from .errors import CostModelConfigError
+from .identity import cost_model_digest, normalize_cost_model_hash
 
 __all__ = [
     "COST_MODEL_KEY",
@@ -142,17 +148,25 @@ def require_yaml():
 
 @dataclass(frozen=True)
 class CostModelConfig:
-    """The resolved cost model identity: a version string and a venue name.
+    """A loaded cost model: its pair, the bytes behind it, and their hash.
 
-    The two values feature 59 names, and only those two.  §6.2's document
-    carries more — the fee basis points, the fill model, the latency
-    distribution's source — and those belong to the features that consume
-    them (61 applies the fees, 63-66 the fill model, 67 the latency
-    distribution).  This value is what *loading* the configuration
-    resolves: which schedule this is (:attr:`version`) and which venue it
-    prices (:attr:`venue`).  Everything downstream is keyed off the pair,
-    so a config that cannot name both is not a cost model at all and is
-    refused at construction.
+    Feature 59 names two of these values and feature 60 the third.  §6.2's
+    document carries more than the pair — the fee basis points, the fill
+    model, the latency distribution's source — and those belong to the
+    features that consume them (61 applies the fees, 63-66 the fill model,
+    67 the latency distribution).  What *loading* the configuration resolves
+    is all three of:
+
+    * which schedule this is (:attr:`version`) and which venue it prices
+      (:attr:`venue`) — the pair every downstream feature is keyed off, so a
+      config that cannot name both is not a cost model at all;
+    * the configuration itself (:attr:`document`), kept because feature 60
+      hashes it and because keeping it is what makes the hash honest — it is
+      the very mapping the pair was resolved from, not a re-read of whatever
+      the file says now;
+    * the hash over that configuration (:attr:`hash`), which is what a score
+      carries and a comparison ranks against, "so every score names its fee
+      assumptions".
 
     Attributes:
         version: The version string the document carries, verbatim apart
@@ -163,17 +177,64 @@ class CostModelConfig:
         source: Where the configuration was loaded from — the path for a
             file, else a short description of the origin.  Provenance only:
             it is recorded beside the resolved pair and takes no part in
-            their identity, so the same document loaded from two
+            the hash or the identity, so the same document loaded from two
             deployments is the same cost model.
+        hash: The 64-hex ``cost_model_hash`` over :attr:`document`
+            (:func:`~cost_model.identity.cost_model_digest`), or the empty
+            string for a config that carries no configuration.  Left empty
+            by a caller that has a :attr:`document` — it is then computed
+            from that document — and a hand-supplied value is *verified*
+            against the document rather than trusted.
+        document: The loaded model mapping — the ``cost_model`` block when
+            the document carries one, else the document itself — as the
+            read-only view :func:`read_cost_model_document` returns.
+
+    **What the pair cannot do, and the hash can.**  The ``(venue, version)``
+    pair is a label its author chose; two documents can carry the same label
+    while pricing differently (a rate edited without a version bump, a
+    hand-edited artifact).  A score stamped with the pair alone would then
+    look comparable to a score priced against other fees — which is exactly
+    the comparison §14.1's triple exists to refuse.  So the pair is one of
+    the things :attr:`hash` covers rather than all of it.
+
+    **A hash is derived, never invented.**  With a :attr:`document` present
+    the hash is computed from it, and a hand-supplied ``hash`` is checked
+    against that computation rather than trusted — an instance whose hash
+    disagreed with its own document would persist a row naming a
+    configuration it does not describe, the defect
+    :class:`evaluator.EvaluatorIdentity` refuses in its own terms.  With no
+    document there is nothing to compute from, so the hash is whatever the
+    caller supplied: the *stored* hash
+    :func:`~cost_model.store.load_persisted_cost_model` reads back, which
+    was verified when its row landed.
+
+    **A pair with no configuration is a legitimate value, and an unnamed
+    one.**  Feature 59's value is the pair, and a test or a tool that holds
+    a pair and no document — the service constructor's ``config`` argument
+    is the live case — gets exactly that, with :attr:`hash` empty.  It is
+    not a defect: :meth:`describes_same_cost_model` and :attr:`hash_prefix`
+    refuse it by name rather than answer "no fee assumptions" or hand back
+    an empty string, and :func:`~cost_model.store.persist_cost_model`
+    refuses to write it, because a row is what a *score* resolves its fee
+    assumptions against and a row naming none is the state feature 60
+    exists to rule out.  Every config a document was loaded into carries a
+    hash; only a hand-built pair can lack one.
 
     The dataclass is frozen and validates in ``__post_init__``, so the
-    invariant holds for every instance — one the loader built and one a
-    test or a tool built by hand alike.
+    invariant holds for every instance — one the loader built and one a test
+    or a tool built by hand alike.  :attr:`document` is excluded from
+    equality and from the repr: the hash beside it is what makes two configs
+    comparable, and two configs whose hashes agree already have canonically
+    identical documents.
     """
 
     version: str
     venue: str
     source: Optional[str] = None
+    hash: str = ""
+    document: Optional[Mapping[str, Any]] = field(
+        default=None, compare=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "version", _validated_component(self.version, "version"))
@@ -182,6 +243,37 @@ class CostModelConfig:
             raise CostModelConfigError(
                 f"source must be a string when given, got "
                 f"{type(self.source).__name__}"
+            )
+        if self.document is not None and not isinstance(self.document, Mapping):
+            raise CostModelConfigError(
+                f"the cost model document must be a mapping (the "
+                f"{COST_MODEL_KEY!r} block or the model itself), got "
+                f"{type(self.document).__name__}"
+            )
+        if self.document is None:
+            # No configuration to compute from: the hash is the caller's —
+            # the stored value a persisted row was read back with — or
+            # empty, which is the pair-only value feature 59 already had.
+            # Either way it is only ever a *validated* hash, never a
+            # re-derived one.
+            if self.hash:
+                object.__setattr__(
+                    self, "hash", normalize_cost_model_hash(self.hash)
+                )
+            return
+        computed = cost_model_digest(self.document)
+        if not self.hash:
+            object.__setattr__(self, "hash", computed)
+            return
+        normalized = normalize_cost_model_hash(self.hash)
+        object.__setattr__(self, "hash", normalized)
+        if normalized != computed:
+            raise CostModelConfigError(
+                f"cost_model_hash {normalized} does not match the value "
+                f"computed over the configuration this cost model carries "
+                f"({computed}); a config whose hash disagrees with its own "
+                f"document would persist a row naming a fee schedule it does "
+                f"not describe"
             )
 
     @property
@@ -195,6 +287,64 @@ class CostModelConfig:
         record cannot each invent their own order for the same fact.
         """
         return f"{self.venue}/{self.version}"
+
+    @property
+    def hash_prefix(self) -> str:
+        """The first six characters of the hash — a human-checkable shorthand.
+
+        The same shorthand ``evaluator.EvaluatorIdentity.hash_prefix`` and
+        the snapshot manifest's ``hash_prefix`` offer, so a log line naming
+        all three axes of the provenance triple abbreviates each the same
+        way.
+
+        Refused by name for a config that carries no hash — a bare
+        ``(venue, version)`` pair — because ``""`` is not a shorthand for
+        anything and a log line printing one would name no fee assumptions
+        while looking like it did.  See the class docstring.
+        """
+        if not self.hash:
+            raise CostModelConfigError(
+                f"the cost model {self.reference!r} carries no "
+                "cost_model_hash to abbreviate: a hash taken over the "
+                "configuration is what names the fee assumptions, so this "
+                "value has no shorthand — load a document through "
+                "load_cost_model(), or read a persisted row back through "
+                "load_persisted_cost_model()"
+            )
+        return self.hash[:6]
+
+    def describes_same_cost_model(self, other: "CostModelConfig") -> bool:
+        """Whether two configs name the same fee assumptions.
+
+        Compares the *hash*, not the pair: that is the point of computing
+        one.  Two documents carrying the same ``(venue, version)`` but
+        different rates are different cost models, and comparing labels
+        would call them the same — the error §14.1's triple exists to
+        prevent.  Not named ``__eq__``: the dataclass equality below
+        compares :attr:`source` too, which is deliberately not part of "same
+        cost model" (see that field's docstring), so a caller asking the
+        question of interest asks this method.
+
+        A config that carries no hash cannot answer the question, and is
+        refused rather than compared: two empty hashes are equal, so
+        comparing them would report two hand-built pairs as *the same cost
+        model* on the strength of both having named nothing — the exact
+        false match the hash exists to prevent, and the one case where
+        equality is at its most dangerous.  See the class docstring for why
+        a pair with no configuration is still a legitimate value.
+        """
+        if not isinstance(other, CostModelConfig):
+            return NotImplemented
+        for config in (self, other):
+            if not config.hash:
+                raise CostModelConfigError(
+                    f"the cost model {config.reference!r} carries no "
+                    "cost_model_hash, so it cannot be compared: two configs "
+                    "are the same cost model when they were priced against "
+                    "the same loaded configuration, which is what the hash "
+                    "records, and a pair with no hash records nothing"
+                )
+        return self.hash == other.hash
 
     def __str__(self) -> str:  # pragma: no cover - cosmetic
         return self.reference
@@ -348,19 +498,27 @@ def load_cost_model(
     Every refusal is a :class:`~cost_model.errors.CostModelConfigError`
     naming the offending value and the contract it broke: a path that cannot
     be read, bytes that are not YAML, an empty document, a document that is
-    not a mapping, a ``cost_model`` key that is not one, or a model missing
-    (or carrying an unusable) ``version``/``venue``.  The loader never
+    not a mapping, a ``cost_model`` key that is not one, a model missing
+    (or carrying an unusable) ``version``/``venue``, or a model carrying a
+    value feature 60's canonical spelling cannot pin (a non-finite float, a
+    non-string key, a blob JSON has no form for).  The loader never
     substitutes a default for a missing component: a silent fallback version
     would be a fee schedule nothing signed, which is precisely the state §2's
     trust zone exists to prevent.
 
     The document itself is parsed once, by
-    :func:`read_cost_model_document`, which is also the seam a later
-    consumer reaches for when it needs more of the configuration than the
-    resolved pair — feature 60's hash, or a fee schedule's basis points.
+    :func:`read_cost_model_document`, and the returned config carries that
+    very mapping — so feature 60's hash is computed over the bytes this
+    identity was resolved from, and a fee schedule's basis points are read
+    from the same parse rather than a second one.  That is the single-parse
+    seam the module docstring argues for: a hash over a fresh re-parse names
+    whatever the file says *now*.
     """
     model, origin = read_cost_model_document(path)
     resolved = _resolve(model, origin)
     return CostModelConfig(
-        version=resolved["version"], venue=resolved["venue"], source=origin
+        version=resolved["version"],
+        venue=resolved["venue"],
+        source=origin,
+        document=model,
     )

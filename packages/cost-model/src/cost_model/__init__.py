@@ -10,16 +10,30 @@ part of every score's provenance triple"* — so the version string and its
 venue are not decoration, they are half of what makes two scores
 comparable at all.
 
+Feature 60 lands the other half: *System persists ``cost_model_hash``
+computed over the loaded configuration, so every score names its fee
+assumptions.*  Where feature 59 records the ``(venue, version)`` *label* a
+document chose, feature 60 pins the *bytes* behind it — the whole loaded
+model, fee schedule and fill model and latency and borrow included —
+because a label is something an author writes and two documents can carry
+one label while pricing differently.  :mod:`cost_model.identity` holds the
+formula (canonical JSON over the loaded model, hashed once as sha256), and
+:class:`~cost_model.config.CostModelConfig` carries the result, folded from
+the same parse the pair was resolved from — so the hash a score names is
+the hash of the configuration that priced it, not of whatever the file says
+now.  §14.1's triple is now whole in this package: the cost axis is
+computed here, persisted here, and read back here.
+
 This package is the **single shared cost library** §6.2 requires: *"Shared
 library used by both the evaluator and the live execution engine.
 Divergence between these two is exactly the quantity β₄ penalizes, so they
 must be the same code, not two implementations of the same document."*
-Feature 59 lands its first half — the configuration identity, loaded from
-the YAML document and persisted.  The features that consume it (the fee
-schedule of 61-62, the fill model of 63-66, the book walk of 66, the
-latency distribution of 67, the borrow series of 68) layer on top of this
-package's resolved value rather than beside it, which is what keeps one
-schedule from becoming two.
+Feature 59 lands the configuration identity, loaded from the YAML document
+and persisted, and feature 60 the hash over it.  The features that consume
+it (the fee schedule of 61-62, the fill model of 63-66, the book walk of
+66, the latency distribution of 67, the borrow series of 68) layer on top
+of this package's resolved value rather than beside it, which is what keeps
+one schedule from becoming two.
 
 Feature 63 layers onto that identity from the fill model's passive half:
 *System fills a passive order only when the recorded tape trades through
@@ -228,6 +242,12 @@ from .fees import (
     apply_fee,
     resolve_fee_schedule,
 )
+from .identity import (
+    COST_MODEL_HASH_LENGTH,
+    canonical_cost_model,
+    cost_model_digest,
+    normalize_cost_model_hash,
+)
 from .fill_probability import (
     EXP_DECAY_MODEL,
     FILL_PROBABILITY_KEY,
@@ -270,6 +290,7 @@ from .queue_penalty import (
 )
 from .service import CostModelService, build_cost_model_service
 from .store import (
+    COST_MODEL_HASH_COLUMN,
     COST_MODEL_TABLE,
     DATABASE_URL_ENV,
     load_persisted_cost_model,
@@ -280,6 +301,8 @@ __all__ = [
     "AGGRESSIVE_KEY",
     "BUY",
     "COMPONENT_NAME",
+    "COST_MODEL_HASH_COLUMN",
+    "COST_MODEL_HASH_LENGTH",
     "COST_MODEL_KEY",
     "COST_MODEL_PATH_ENV",
     "COST_MODEL_TABLE",
@@ -334,7 +357,9 @@ __all__ = [
     "Trade",
     "apply_fee",
     "build_cost_model_service",
+    "canonical_cost_model",
     "charge_queue_position_penalty",
+    "cost_model_digest",
     "discount_fee_schedule",
     "fill_passive_order",
     "install_fee_implementation",
@@ -343,6 +368,7 @@ __all__ = [
     "load_latency_distributions",
     "load_latest_latency_distribution",
     "load_persisted_cost_model",
+    "normalize_cost_model_hash",
     "passive_fill_fraction",
     "persist_cost_model",
     "persist_latency_distribution",

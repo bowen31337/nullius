@@ -1,12 +1,17 @@
-"""Persistence for the resolved cost model (feature 59).
+"""Persistence for the resolved cost model (features 59-60).
 
 Feature 59's second half: *"…and persists the resolved cost model version
 string with its venue name after loading the YAML configuration."*  Loading
 resolves the pair (:mod:`cost_model.config`); this module writes it down.
+Feature 60 adds the column that makes the row *mean* something: *"System
+persists ``cost_model_hash`` computed over the loaded configuration, so
+every score names its fee assumptions."*  Loading computes the hash over the
+very mapping it resolved the pair from; this module records it beside the
+pair.
 
 The row is deliberately small, and its smallness is the design.  Two
 columns matter — ``venue`` and ``version`` — because those are the two
-values the feature names, and they are persisted *together* for the reason
+values feature 59 names, and they are persisted *together* for the reason
 :attr:`~cost_model.config.CostModelConfig.reference` spells out: a version
 string with no venue does not say whose fee schedule it is.  A cost model
 is only identified by the pair, so the pair is the primary key.  That has a
@@ -15,7 +20,18 @@ one row and leaves one row behind, so the table converges on the set of
 distinct cost models this store has ever been asked to price against,
 however many times each was loaded.
 
-The third column, ``source``, is provenance rather than identity.  It
+**The third column is the hash, and it is identity rather than provenance.**
+``cost_model_hash`` (feature 60) is what a *score* carries, so a later
+reader resolves a score's fee assumptions by looking up the hash that score
+names — §14.1's provenance triple, and ``docs/alpha-engine-prd.md`` §13.5's
+"mismatched scores are never compared".  It is deliberately outside the
+key, exactly like ``source``: the key stays the ``(venue, version)`` pair
+feature 59 chose, so a document edited *without* a version bump does not
+silently create a second row beside the one scores already reference — it
+upserts onto that row and the hash moves, which is a fact an operator can
+see rather than a divergence the key would hide.
+
+**The fourth column, ``source``, is provenance rather than identity.**  It
 records *where* the configuration was read from — the operator's signed
 artifact path, or the packaged default — so an audit can tell which
 document produced a row.  It is deliberately outside the key: the same
@@ -28,9 +44,27 @@ no update-in-place API surface here beyond the upsert a re-load performs,
 and no delete: the row a load wrote is the record a later reader resolves
 fee assumptions against.  What this module cannot do is prove the *document*
 was not tampered with — the Z0 trust zone's read-only mount and signed
-release (docs/nullius-tech-architecture.md §2) are that boundary, and the
-hash that pins the loaded bytes is feature 60's.  This module's job ends at
-writing down the identity that was resolved.
+release (docs/nullius-tech-architecture.md §2) are that boundary — but the
+hash does let a *reader* notice that the configuration behind a row is no
+longer the one a score was stamped with, which is the divergence the triple
+is for.
+
+**A database written before feature 60 is upgraded in place, and reads
+honestly.**  ``CREATE TABLE IF NOT EXISTS`` cannot evolve a table that
+already exists, so a database written by feature 59's three-column schema
+would otherwise reject every write with "no column named cost_model_hash".
+The store brings such a table forward the way the ledger member's store
+brings a pre-stamp ledger forward: ``PRAGMA table_info`` names the columns
+it holds and a missing ``cost_model_hash`` is added by ``ALTER TABLE``.  It
+is added *nullable*, with no default, because the one true statement a row
+that predates feature 60 can make is *no hash was recorded* — every other
+column's legacy default could assert something true of every legacy row
+(``source`` is provenance, ``resolved_at`` is a timestamp), while a hash
+invented here would name fee assumptions nobody measured.  Such a row is
+served by :func:`load_persisted_cost_model` as a pair with no hash, and a
+caller that needs the hash is told exactly that rather than handed a
+fabricated one.  The recovery is one load: the upsert is keyed on the pair,
+so re-loading the signed artifact stamps the existing row in place.
 
 **Storage is the workspace's relational store**, addressed by
 ``DATABASE_URL`` exactly as the universe member's tables and the snapshot
@@ -59,6 +93,7 @@ from .config import CostModelConfig
 from .errors import CostModelStoreError
 
 __all__ = [
+    "COST_MODEL_HASH_COLUMN",
     "COST_MODEL_TABLE",
     "DATABASE_URL_ENV",
     "connect",
@@ -77,18 +112,32 @@ DATABASE_URL_ENV = "DATABASE_URL"
 #: The table the resolved cost models live in.
 COST_MODEL_TABLE = "cost_model"
 
+#: The feature-60 column: the hash over the loaded configuration.
+#:
+#: Named here rather than inline so the schema, the upgrade probe and the
+#: read path cannot disagree about the spelling — the ledger member's store
+#: makes the same argument for its ``_EPOCH_COLUMN``.
+COST_MODEL_HASH_COLUMN = "cost_model_hash"
+
 _SCHEMA = f"""
--- Feature 59: the resolved cost model, one row per (venue, version).
+-- Features 59-60: the resolved cost model, one row per (venue, version).
 --
 -- The pair is the primary key because a version string alone does not
--- identify a fee schedule — see the module docstring.  `source` is
--- provenance, deliberately outside the key so a relocated artifact does not
--- read as a second schedule.
+-- identify a fee schedule — see the module docstring.  `cost_model_hash` is
+-- the identity a score carries (feature 60), and `source` is provenance;
+-- both sit deliberately outside the key so a relocated or hand-edited
+-- artifact cannot masquerade as a second schedule.
+--
+-- `cost_model_hash` is NULLable for one reason only: a row written by
+-- feature 59's three-column schema predates the stamp, and leaving it NULL
+-- is the honest record that no hash was taken.  Every row this store writes
+-- carries one — the write seam refuses a row that tries to leave it out.
 CREATE TABLE IF NOT EXISTS {COST_MODEL_TABLE} (
-    venue        TEXT NOT NULL,  -- the venue whose schedule this is
-    version      TEXT NOT NULL,  -- the version string, verbatim as loaded
-    source       TEXT,           -- where the document was read from (provenance)
-    resolved_at  TEXT NOT NULL,  -- ISO 8601 UTC: when the load resolved it
+    venue            TEXT NOT NULL,  -- the venue whose schedule this is
+    version          TEXT NOT NULL,  -- the version string, verbatim as loaded
+    source           TEXT,           -- where the document was read from (provenance)
+    resolved_at      TEXT NOT NULL,  -- ISO 8601 UTC: when the load resolved it
+    {COST_MODEL_HASH_COLUMN} CHAR(64),  -- feature 60: hash over the loaded configuration
     PRIMARY KEY (venue, version)
 );
 """
@@ -127,12 +176,43 @@ def sqlite_path(database_url: str) -> Path:
     return Path(path)
 
 
+def _upgrade_legacy_cost_model_table(connection: sqlite3.Connection) -> None:
+    """Bring a pre-feature-60 cost model table up to the current schema.
+
+    ``CREATE TABLE IF NOT EXISTS`` cannot evolve a table that already
+    exists, so a database written by feature 59's schema would otherwise
+    reject every write with "no column named cost_model_hash".  The upgrade
+    adds the column for the reason the module docstring gives: it is added
+    *nullable*, with no default, because a hash invented for a pre-stamp row
+    would name fee assumptions nobody measured.
+
+    Idempotent by construction — a table that already holds the column is
+    left untouched, so every connect after the first takes the same cheap
+    path — and an ``ALTER TABLE … ADD COLUMN`` is a schema change, not a
+    rewrite of any recorded value: no row's pair, provenance or timestamp is
+    touched by it.  The column is appended after whatever the table already
+    held, so a brought-forward table's physical order reflects its own
+    history — which is why the read path names its columns explicitly and
+    never relies on ``SELECT *``.
+    """
+    columns = {
+        row[1]
+        for row in connection.execute(f"PRAGMA table_info({COST_MODEL_TABLE})")
+    }
+    if COST_MODEL_HASH_COLUMN not in columns:
+        connection.execute(
+            f"ALTER TABLE {COST_MODEL_TABLE} "
+            f"ADD COLUMN {COST_MODEL_HASH_COLUMN} CHAR(64)"
+        )
+
+
 def connect(database_url: Optional[str] = None) -> sqlite3.Connection:
     """Open the store named by ``DATABASE_URL`` (or the given URL).
 
-    Creates the schema if absent, so every caller gets the same database
-    contract without a migration step.  The caller owns the connection; use
-    it as a context manager to commit.
+    Creates the schema if absent — upgrading a pre-feature-60 database in
+    place, see :func:`_upgrade_legacy_cost_model_table` — so every caller
+    gets the same database contract without a migration step.  The caller
+    owns the connection; use it as a context manager to commit.
 
     A missing ``DATABASE_URL`` — and no explicit URL — is refused by name
     rather than by a bare :class:`KeyError`: the caller asked for a store it
@@ -151,6 +231,7 @@ def connect(database_url: Optional[str] = None) -> sqlite3.Connection:
     connection = sqlite3.connect(path)
     with connection:
         connection.executescript(_SCHEMA)
+        _upgrade_legacy_cost_model_table(connection)
     return connection
 
 
@@ -164,8 +245,38 @@ def persist_cost_model(
     artifact twice leaves one row and a store accumulates exactly the
     distinct cost models it has been asked to price against.  The remaining
     columns are refreshed on every write: ``source`` records where *this*
-    load read the document from, and ``resolved_at`` when it resolved —
-    provenance that is allowed to move, unlike the identity it describes.
+    load read the document from, ``resolved_at`` when it resolved, and
+    ``cost_model_hash`` (feature 60) the configuration this load priced
+    against — provenance and identity that are allowed to move *together*,
+    unlike the key they describe.  A document edited without a version bump
+    therefore updates its own row rather than creating a second one beside
+    it, and the hash column is how a reader sees that the fee assumptions
+    moved under a label that did not.
+
+    The hash written is the config's own (:attr:`~cost_model.config.
+    CostModelConfig.hash`), which :class:`~cost_model.config.CostModelConfig`
+    derived from the document it was loaded from or verified against one —
+    so this module never computes a hash of its own and cannot drift from
+    the loader's formula.
+
+    **A config that names no fee assumptions is refused, not written.**  A
+    bare ``(venue, version)`` pair is a legitimate *value* — feature 59's
+    own, and what a caller hands
+    :class:`~cost_model.service.CostModelService` for a config it resolved
+    elsewhere — but it is not a legitimate *row*: feature 60's sentence is
+    that every score names its fee assumptions, and a row whose hash is
+    absent is a row a later reader could resolve a score against and learn
+    nothing.  So the refusal is here, at the write that would put it in the
+    store, rather than at the construction that merely held it.  The error
+    names the pair and the fix (load the document, whose hash rides along).
+
+    That refusal is checked *after* the store is opened, and the order is
+    deliberate: a caller who handed over both a hashless config and an
+    unusable store address is told about the address, because "there is no
+    store here" is the more fundamental fact — the write could not have
+    happened whatever the config said — and reporting the config instead
+    would send an operator to fix a document while the real fault, a
+    misrouted ``DATABASE_URL``, went unnamed.
 
     Any failure of the write — an unconfigured store, an unsupported URL
     scheme, a locked or unwritable database — surfaces as
@@ -184,16 +295,34 @@ def persist_cost_model(
     resolved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     try:
         with closing(connect(database_url)) as connection, connection:
+            if not config.hash:
+                raise CostModelStoreError(
+                    f"the cost model {config.reference!r} carries no "
+                    "cost_model_hash, so it cannot be persisted: feature 60 "
+                    "records the hash computed over the loaded "
+                    "configuration, and a row without one names no fee "
+                    "assumptions for a score to resolve. Load the document "
+                    "through cost_model.load_cost_model() — the hash is "
+                    "folded from the same parse as the pair — and persist "
+                    "that."
+                )
             connection.execute(
                 f"""
                 INSERT INTO {COST_MODEL_TABLE} (
-                    venue, version, source, resolved_at
-                ) VALUES (?, ?, ?, ?)
+                    venue, version, source, resolved_at, {COST_MODEL_HASH_COLUMN}
+                ) VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(venue, version) DO UPDATE SET
-                    source      = excluded.source,
-                    resolved_at = excluded.resolved_at
+                    source                = excluded.source,
+                    resolved_at           = excluded.resolved_at,
+                    {COST_MODEL_HASH_COLUMN} = excluded.{COST_MODEL_HASH_COLUMN}
                 """,
-                (config.venue, config.version, config.source, resolved_at),
+                (
+                    config.venue,
+                    config.version,
+                    config.source,
+                    resolved_at,
+                    config.hash,
+                ),
             )
     except (sqlite3.Error, OSError) as exc:
         raise CostModelStoreError(
@@ -210,15 +339,33 @@ def load_persisted_cost_model(
 ) -> Optional[CostModelConfig]:
     """Read one persisted cost model back, or ``None`` when it is absent.
 
-    The round trip is lossless for the pair: a config written by
-    :func:`persist_cost_model` comes back with the same ``version``,
-    ``venue`` and ``source``.  A miss is ``None`` — a cost model this store
+    The round trip is lossless for everything the row holds: a config
+    written by :func:`persist_cost_model` comes back with the same
+    ``version``, ``venue``, ``source`` and (feature 60) ``hash`` — the hash
+    being the point of the read, since it is what a score names and a
+    comparison ranks against.  A miss is ``None`` — a cost model this store
     has never been asked to price against is a discoverable state, not an
     exception, on the same stance the universe member's readers take.
 
     ``venue`` and ``version`` are looked up as given: the store holds the
     text the document carried, and a caller resolving a score's fee
     assumptions is looking up exactly the strings that score names.
+
+    **A row that predates feature 60 reads back without a hash**, because
+    the row itself is refused rather than served with an invented one.  Such
+    a row's ``cost_model_hash`` is NULL — the store's schema leaves it
+    nullable for exactly this case — and rather than construct a config that
+    would have to fabricate a stamp, this function raises
+    :class:`~cost_model.errors.CostModelStoreError` naming the row and the
+    one-step recovery (re-load the signed artifact, whose upsert stamps the
+    existing row in place).  Reading a legacy row is not a *miss* — the cost
+    model is there — so ``None`` would be a lie, and a plausible-looking
+    hash would be a worse one.
+
+    Note the asymmetry with :func:`connect`: the *schema* upgrade runs on
+    every connection, including this one, so a legacy database is brought
+    forward even by a reader.  What the upgrade cannot do is invent the hash
+    for the rows already in it, which is why this refusal exists.
 
     A store that cannot be reached at all surfaces as
     :class:`~cost_model.errors.CostModelStoreError`, the same type a failed
@@ -230,7 +377,7 @@ def load_persisted_cost_model(
         with closing(connect(database_url)) as connection:
             row = connection.execute(
                 f"""
-                SELECT venue, version, source
+                SELECT venue, version, source, {COST_MODEL_HASH_COLUMN}
                 FROM {COST_MODEL_TABLE}
                 WHERE venue = ? AND version = ?
                 """,
@@ -243,4 +390,14 @@ def load_persisted_cost_model(
         ) from exc
     if row is None:
         return None
-    return CostModelConfig(version=row[1], venue=row[0], source=row[2])
+    if row[3] is None:
+        raise CostModelStoreError(
+            f"the persisted cost model {venue!r}/{version!r} carries no "
+            f"{COST_MODEL_HASH_COLUMN}: the row predates feature 60, which is "
+            "the only way a row this store writes can lack one. Re-load the "
+            f"signed artifact for {venue!r}/{version!r} — the upsert is keyed "
+            "on the pair, so the load stamps this row in place."
+        )
+    return CostModelConfig(
+        version=row[1], venue=row[0], source=row[2], hash=row[3]
+    )

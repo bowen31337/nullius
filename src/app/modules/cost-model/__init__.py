@@ -8,7 +8,8 @@ with the application factory under the component name
 :class:`~cost_model.service.CostModelService` bound to
 ``NULLIUS_COST_MODEL_PATH`` and ``DATABASE_URL`` (feature 59: the resolved
 cost model version string and its venue, persisted after loading the YAML
-configuration).
+configuration; feature 60: the ``cost_model_hash`` computed over that same
+loaded configuration, so every score names its fee assumptions).
 
 This module is the member's seat inside the ``app`` package namespace
 (``src/app/modules/cost-model/``): it exposes the composed component
@@ -27,8 +28,9 @@ The seat answers exactly one question — *what is the composed cost model
 service?* — and does not re-export the loading, the persistence or the
 resolved value: a caller who has the service can reach
 ``service.resolved()`` for feature 59's load-then-persist, ``service.load()``
-for the configuration alone and ``service.persisted(venue, version)`` for
-the read-back, and a second spelling of those APIs here would be a second
+for the configuration alone, ``service.cost_model_hash()`` for feature 60's
+stamp over the loaded configuration and ``service.persisted(venue, version)``
+for the read-back, and a second spelling of those APIs here would be a second
 thing to keep in sync.
 """
 
