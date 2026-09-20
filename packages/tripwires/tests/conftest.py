@@ -156,3 +156,29 @@ def other_pool(tmp_path: Path):
     from tripwires import ReplayPool
 
     return ReplayPool(f"sqlite:///{tmp_path / 'tripwires-other.db'}")
+
+
+# -- Feature 129's reach: a second store, over the same file ------------------
+
+
+@pytest.fixture
+def stability_store(database_url: str):
+    """Feature 129's stability store, beside the poison store on one file.
+
+    Derived from the same ``database_url`` as ``poison_store`` and ``pool``, for
+    a reason that is the *opposite* of feature 132's.  The pool shares the file
+    because its feature is a join — nothing marked, nothing refused.  This store
+    shares it because its feature is a *neighbour*: the two stores both write
+    per-node facts about a tripwire failure into different tables of the same
+    database, and a test that gave them separate files could not assert the one
+    thing worth asserting about the pair — that a poisoning writes no row in the
+    stability table and a stability figure writes no ``poisoned_at``.  Putting
+    them on one file makes that separation checkable rather than assumed.
+
+    Asked for by name, like the three above, and never autouse: a probe test
+    must not acquire a database by accident, and a stability test must not
+    acquire a *poisoned* one.
+    """
+    from tripwires import StabilityStore
+
+    return StabilityStore(database_url)

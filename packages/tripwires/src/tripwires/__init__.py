@@ -144,6 +144,7 @@ from .errors import (
     TripwireExcisionError,
     TripwirePanelError,
     TripwirePoisonError,
+    TripwireStabilityError,
     TripwireStatisticError,
 )
 from .excise import COMPONENT_NAME as EXCISE_COMPONENT_NAME
@@ -160,8 +161,11 @@ from .layout import (
     NODE_POISONED_COLUMN,
     NODE_TABLE,
     REPLAY_SCORE_TABLE,
+    STABILITY_COLUMNS,
+    STABILITY_TABLE,
     node_bootstrap_schema,
     replay_pool_bootstrap_schema,
+    stability_bootstrap_schema,
     validated_node_id,
 )
 from .normal import NORMAL_QUANTILE_SWITCH, normal_quantile
@@ -183,6 +187,23 @@ from .seed_rerun import (
     SeedRerunVerdict,
     run_seed_rerun,
     seed_rerun_degradation,
+)
+from .stability import COMPONENT_NAME as STABILITY_COMPONENT_NAME
+from .stability import (
+    StabilityRecord,
+    StabilityStore,
+    record_stability,
+    stability_of,
+)
+from .subsample import (
+    DEFAULT_SUBSAMPLE_FRACTION,
+    DEFAULT_SUBSAMPLE_SEED,
+    DEFAULT_SUBSAMPLE_STABILITY_THRESHOLD,
+    SUBSAMPLE_AXIS,
+    SubsampleRerunVerdict,
+    run_subsample_rerun,
+    subsample_figure,
+    subsample_symbols,
 )
 from .time_shuffle import (
     DEFAULT_SHUFFLE_LEVEL,
@@ -207,6 +228,9 @@ __all__ = [
     "DEFAULT_RERUN_SEED",
     "DEFAULT_SHUFFLE_LEVEL",
     "DEFAULT_SHUFFLE_SEED",
+    "DEFAULT_SUBSAMPLE_FRACTION",
+    "DEFAULT_SUBSAMPLE_SEED",
+    "DEFAULT_SUBSAMPLE_STABILITY_THRESHOLD",
     "EXCISE_COMPONENT_NAME",
     "HORIZONS",
     "LEAK_KINDS",
@@ -219,6 +243,10 @@ __all__ = [
     "POISON_TABLE",
     "REPLAY_SCORE_TABLE",
     "SEED_AXIS",
+    "STABILITY_COLUMNS",
+    "STABILITY_COMPONENT_NAME",
+    "STABILITY_TABLE",
+    "SUBSAMPLE_AXIS",
     "TIME_SHUFFLE_NAME",
     "TRIPWIRE_OUTCOMES",
     "CorpusSignal",
@@ -230,15 +258,20 @@ __all__ = [
     "PoolScore",
     "ReplayPool",
     "SeedRerunVerdict",
+    "StabilityRecord",
+    "StabilityStore",
+    "SubsampleRerunVerdict",
     "TimeShuffleTripwire",
     "TimeShuffleVerdict",
     "TripwireError",
     "TripwireExcisionError",
     "TripwirePanelError",
     "TripwirePoisonError",
+    "TripwireStabilityError",
     "TripwireStatisticError",
     "build_poison_store",
     "build_replay_pool",
+    "build_stability_store",
     "build_time_shuffle_tripwire",
     "excise_subtree",
     "node_bootstrap_schema",
@@ -246,10 +279,16 @@ __all__ = [
     "planted_signals",
     "poison_node",
     "poisoned_node_ids",
+    "record_stability",
     "replay_pool_bootstrap_schema",
     "run_seed_rerun",
+    "run_subsample_rerun",
     "run_time_shuffle_tripwire",
     "seed_rerun_degradation",
+    "stability_bootstrap_schema",
+    "stability_of",
+    "subsample_figure",
+    "subsample_symbols",
     "surviving_scores",
     "surviving_sharpe",
     "time_shuffle_pairing",
@@ -287,8 +326,8 @@ class TimeShuffleTripwire:
     statistic, the shuffle or the threshold is exactly what this member's
     one-provenance rule forbids.  What this class adds is discoverability (the
     factory's scan composes it) and a single duck-checkable seam
-    (``run``/``pairing``/``threshold``/``rerun``) for the app seat and the
-    features that follow, not arithmetic.
+    (``run``/``pairing``/``threshold``/``rerun``/``subsample``) for the app seat
+    and the features that follow, not arithmetic.
 
     **``rerun`` is the fourth verb and the family's first axis.**  Feature 127
     perturbs the one knob this probe deliberately holds fixed — the seed — so
@@ -297,6 +336,15 @@ class TimeShuffleTripwire:
     on this class, and a component of its own would reach back through this one
     for every one of them.  Features 128 through 130 add the same method's
     later axes, beside this one.
+
+    **``subsample`` is the fifth verb and the family's third axis.**  Feature
+    129 perturbs the *universe* — the names the panel scores — and holds the
+    derangement fixed, so it is a method here for the same reason ``rerun`` is,
+    and its single shared ``seed`` parameter is what makes the pair of axes
+    complementary rather than a larger sweep of one.  Its figure is not
+    ``rerun``'s: that one is signed, one-sided and judged against ``0.77``,
+    this one is a magnitude, two-sided and judged against ``1.05``, and the
+    two numbers mean nothing against each other's bar.
     """
 
     __slots__ = ()
@@ -397,6 +445,53 @@ class TimeShuffleTripwire:
             threshold=threshold,
         )
 
+    def subsample(
+        self,
+        scores: Mapping[dt.date | str, Mapping[str, float]],
+        targets: Mapping[int, Mapping[dt.date | str, Mapping[str, float]]],
+        *,
+        node_id: str,
+        fraction: float = DEFAULT_SUBSAMPLE_FRACTION,
+        subsample_seed: int = DEFAULT_SUBSAMPLE_SEED,
+        seed: int = DEFAULT_SHUFFLE_SEED,
+        level: float = DEFAULT_SHUFFLE_LEVEL,
+        threshold: float = DEFAULT_SUBSAMPLE_STABILITY_THRESHOLD,
+    ) -> SubsampleRerunVerdict:
+        """Re-run the probe against a universe subsample — feature 129's whole answer.
+
+        The same candidate and bundle :meth:`run` takes, plus the fraction of
+        the universe to keep and the seed the subsample is drawn under.  Returns
+        the :class:`~tripwires.subsample.SubsampleRerunVerdict` — whose
+        ``stability`` is the perturbation-stability figure feature 129's
+        sentence says is persisted (by
+        :func:`~tripwires.stability.record_stability`, into this member's own
+        ``tripwire_stability`` table), and whose ``rejected`` unions the
+        stability cause with either run's own detection.
+
+        **``seed`` here is one parameter where :meth:`rerun` takes two**, and
+        that is the axis' definition rather than a simplification: feature 127
+        perturbs the derangement and holds the universe, this feature perturbs
+        the universe and holds the derangement, so both runs draw their pairing
+        from the *same* seed.  A caller who moved both at once would be running
+        two features' perturbations in one measurement and could not say which
+        produced the figure.
+
+        It is a method on this component for the reason :meth:`rerun` is: the
+        re-run is not a second probe but this probe taken twice, and a caller
+        holding the composed probe already has the statistic, the shuffle and
+        the threshold it needs.  Features 128 and 130 arrive the same way.
+        """
+        return run_subsample_rerun(
+            scores,
+            targets,
+            node_id=node_id,
+            fraction=fraction,
+            subsample_seed=subsample_seed,
+            seed=seed,
+            level=level,
+            threshold=threshold,
+        )
+
 
 @register(COMPONENT_NAME)
 def build_time_shuffle_tripwire() -> TimeShuffleTripwire:
@@ -478,3 +573,36 @@ def build_replay_pool() -> ReplayPool | None:
     composes, with the refusal deferred to first use.
     """
     return ReplayPool.resolve()
+
+
+@register(STABILITY_COMPONENT_NAME)
+def build_stability_store() -> StabilityStore | None:
+    """Component builder: the store a stability figure is persisted to (feature 129).
+
+    Takes no arguments — that is the factory's registration protocol — and
+    resolves ``DATABASE_URL`` at build time, so a composed application carries
+    the store for the deployment the process is actually running in.  It is the
+    fifth component this member contributes and the fourth that may legitimately
+    be ``None``, for the reason :func:`build_poison_store` states: the factory
+    builds every registered component on every ``create_app()`` call, a builder
+    that raised would take composition down for every unrelated feature, and a
+    deployment without a relational store is a discoverable state rather than a
+    failure.  A process that *requires* one is the caller that must not find
+    itself in it — which is why :func:`~tripwires.stability.record_stability`
+    and :func:`~tripwires.stability.stability_of` refuse by name where they
+    resolve no store, while this builder stays silent.
+
+    It is a **separate component from the poison store** even though both
+    resolve the same variable, and that is the point rather than an oversight:
+    feature 131's store writes the record of a failure and refuses a verdict
+    that passed; this one writes a measurement that is taken either way and has
+    a different table, a different key and a different refusal.  A caller asking
+    the composed application for the stability store must not be handed the
+    poisoning store — the two would answer the same question with an object
+    whose every method means the other feature's thing.
+
+    Construction performs no I/O, so composing the application never opens a
+    database; a URL whose scheme this member cannot speak still composes, with
+    the refusal deferred to first use.
+    """
+    return StabilityStore.resolve()

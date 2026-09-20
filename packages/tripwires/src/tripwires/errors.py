@@ -105,6 +105,32 @@ class TripwirePoisonError(TripwireError):
     """
 
 
+class TripwireStabilityError(TripwireError):
+    """Feature 129's refusals — the stability figure could not be persisted.
+
+    The third sibling of :class:`TripwirePoisonError`, alongside
+    :class:`TripwireExcisionError`, and deliberately not a subclass of either.
+    The three describe three different moments around one node: 131 *writes* the
+    record of a failure, 132 *reads* it to refuse the condemned scores, and 129
+    writes a *measurement* that is taken whether or not anything failed.  A
+    caller in the evaluation loop catches this one because the figure is what it
+    asked to persist, and folding them together would make "the perturbation
+    figure was not stored" and "the poisoning could not be written"
+    indistinguishable at exactly the point where the difference is the whole
+    question — one is a candidate's stability unrecorded, the other is a leak
+    gone unexcluded.
+
+    Raised for a store nothing names, a ``DATABASE_URL`` this member cannot
+    speak, a producer whose terms the store cannot read, a verdict whose outcome
+    word disagrees with its own decision, and — the one worth naming — a
+    single-axis read of a node that has no figure on that axis.  That last
+    refusal is this error's reason to exist beside :meth:`figures`: "this node's
+    stability is X" and "this node was never re-run on this perturbation" are
+    different sentences, and a store that answered the second with a default
+    would record a measurement nobody took.
+    """
+
+
 class TripwireExcisionError(TripwireError):
     """Feature 132's refusals — the pool could not be read, or the branch was clean.
 

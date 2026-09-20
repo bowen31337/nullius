@@ -109,11 +109,14 @@ __all__ = [
     "REPLAY_SCORE_SCORE_COLUMN",
     "REPLAY_SCORE_TABLE",
     "REPLAY_SCORE_WORLD_COLUMN",
+    "STABILITY_COLUMNS",
+    "STABILITY_TABLE",
     "dialect_of",
     "node_bootstrap_schema",
     "parsed_instant",
     "replay_pool_bootstrap_schema",
     "sqlite_path",
+    "stability_bootstrap_schema",
     "validated_instant",
     "validated_node_id",
 ]
@@ -369,6 +372,101 @@ def replay_pool_bootstrap_schema(dialect: str = "other") -> str:
         {REPLAY_SCORE_IS_HOLDOUT_COLUMN} BOOLEAN NOT NULL DEFAULT FALSE,
         {REPLAY_SCORE_CREATED_AT_COLUMN} TIMESTAMPTZ NOT NULL
             DEFAULT {_sqlite_now_default(dialect)}
+    )
+    """
+
+
+# -- Feature 129: the perturbation-stability figures ---------------------------
+
+#: The table feature 129's persistence half writes — one row per node per
+#: perturbation axis.  It is **not** a column on ``node`` and deliberately not
+#: the ``perturb_stability`` column 0114 creates: that column is one number, and
+#: the family §C6 declares is *four* axes (seed, window offset, universe
+#: subsample, lookback jitter) whose figures are only meaningful side by side.
+#: A single column would have the last axis to run overwrite the others, and the
+#: operator asking *which perturbation moved this candidate* would be reading
+#: whichever probe happened to be scheduled last.  So the shape is one row per
+#: axis, and 130's writer is what fills the node column the migration declares.
+STABILITY_TABLE = "tripwire_stability"
+
+#: The columns of :data:`STABILITY_TABLE`, in the order the insert statement
+#: names them and the order the reader unpacks them.  Spelled once so the write
+#: and the read cannot drift apart on a column order — the failure a positional
+#: ``SELECT *`` invites.
+STABILITY_COLUMNS = (
+    "node_id",
+    "axis",
+    "tripwire",
+    "outcome",
+    "rejected",
+    "stability",
+    "stability_threshold",
+    "reference_sharpe",
+    "rerun_sharpe",
+    "reference_threshold",
+    "seed",
+    "rerun_seed",
+    "subsample_fraction",
+    "subsample_seed",
+    "horizon",
+    "measured_dates",
+    "recorded_at",
+)
+
+
+def stability_bootstrap_schema(dialect: str = "other") -> str:
+    """The DDL for :data:`STABILITY_TABLE` — feature 129's own table.
+
+    ``IF NOT EXISTS``, like every bootstrap in this module, so a database that
+    already carries the table is left byte-for-byte as it was.
+
+    **One row per ``(node_id, axis)``, and the primary key is the decision.**
+    The figures are comparable only as a set, so the table's unit is *a node's
+    stability under one perturbation* rather than a node's stability.  The key
+    makes a re-run of the same axis on the same node a refresh rather than a
+    second figure — the property that lets a crash between the measurement and
+    the write be repaired by running the feature again, and the same
+    upsert-on-the-key discipline feature 131's audit table keeps for the same
+    reason.
+
+    **Why this member owns a table for a metric the migration already names.**
+    ``perturb_stability`` is 0114's column and feature 130 is its writer: §C6's
+    *"persisting perturbation_stability as a node metric"* is that feature's
+    sentence, not this one's.  Feature 129's sentence says *"persisting the
+    subsample stability figure"* — the figure, not a node metric — and the
+    figure is one of four.  Writing it into the node column here would be this
+    feature legislating which of the four axes the single column means, three
+    features before the one that decides it.
+
+    The columns carry the verdict's own terms, so the decision is re-derivable
+    from the row alone: both statistics, the bar the figure is measured in, the
+    configured bar it was judged against, the seeds and the horizon and the date
+    count.  ``rerun_seed`` is nullable because an axis whose perturbation is not
+    a seed has none — 128 perturbs a window offset, 130 a lookback — while this
+    axis leaves it ``NULL`` and carries ``subsample_seed`` instead.  ``NULL``
+    means *this axis perturbs no such knob* and nothing else, which is the
+    absent-versus-zero distinction the member's other schemas keep.
+    """
+    return f"""
+    CREATE TABLE IF NOT EXISTS {STABILITY_TABLE} (
+        node_id            TEXT NOT NULL,
+        axis               TEXT NOT NULL,
+        tripwire           TEXT NOT NULL,
+        outcome            TEXT NOT NULL,
+        rejected           INTEGER NOT NULL,
+        stability          REAL NOT NULL,
+        stability_threshold REAL NOT NULL,
+        reference_sharpe   REAL NOT NULL,
+        rerun_sharpe       REAL NOT NULL,
+        reference_threshold REAL NOT NULL,
+        seed               INTEGER NOT NULL,
+        rerun_seed         INTEGER,
+        subsample_fraction REAL,
+        subsample_seed     INTEGER,
+        horizon            INTEGER NOT NULL,
+        measured_dates     INTEGER NOT NULL,
+        recorded_at        TEXT NOT NULL,
+        PRIMARY KEY (node_id, axis)
     )
     """
 

@@ -39,6 +39,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import tripwires
 from _panels import gaussian_panel, lookahead_panel, monday
 
@@ -60,10 +61,14 @@ MEMBER_SRC = Path(tripwires.__file__).resolve().parent.parent
 def _assert_is_the_tripwire_component(component: object) -> None:
     assert type(component).__name__ == "TimeShuffleTripwire"
     assert type(component).__module__.endswith("tripwires")
-    # The probe's three verbs, duck-checked across the loader's module copy
-    # seam: feature 125's run, plus the pairing and threshold a reader
-    # auditing a persisted rejection rebuilds from the record's own terms.
-    for operation in ("run", "pairing", "threshold"):
+    # The probe's five verbs, duck-checked across the loader's module copy
+    # seam: feature 125's run, the pairing and threshold a reader auditing a
+    # persisted rejection rebuilds from the record's own terms, and the two
+    # perturbation re-runs the family reaches through the same component —
+    # feature 127's ``rerun`` and feature 129's ``subsample``, each a method
+    # here rather than a component of its own because a re-run is this probe
+    # taken twice.
+    for operation in ("run", "pairing", "threshold", "rerun", "subsample"):
         assert callable(getattr(component, operation)), operation
     # The probe's own name, not the component's: a persisted failure names
     # which tripwire fired (feature 131).
@@ -88,21 +93,58 @@ def test_scanning_the_member_registers_exactly_the_components_it_owns() -> None:
     # the current registry, so reading it back here would assert accumulated
     # process state, not this package's contribution.
     #
-    # The member contributes three components since feature 132: the probe
+    # The member contributes four components since feature 129: the probe
     # (``tripwires``, feature 125, stateless and ready the instant it is built),
     # the store a failure is persisted to (``tripwires-poison``, feature 131,
-    # which resolves ``DATABASE_URL`` and may legitimately not exist), and the
-    # pool a poisoned branch is excised from (``tripwires-excise``, feature 132,
-    # which resolves the same variable to *read* what the store wrote). The list
-    # is pinned exactly rather than by membership, so a *fourth* component
-    # arriving unnoticed fails here the way the third one would have — which is
-    # the property this test has always been for.
+    # which resolves ``DATABASE_URL`` and may legitimately not exist), the pool a
+    # poisoned branch is excised from (``tripwires-excise``, feature 132, which
+    # resolves the same variable to *read* what the store wrote), and the store
+    # a stability figure is persisted to (``tripwires-stability``, feature 129,
+    # which resolves the same variable again into a different table with a
+    # different refusal). The list is pinned exactly rather than by membership,
+    # so a *fifth* component arriving unnoticed fails here the way the fourth
+    # one would have — which is the property this test has always been for.
+    #
+    # The fourth arriving is why the stability store is spelled here rather
+    # than folded into ``tripwires-poison``: both resolve ``DATABASE_URL``, and
+    # a member that answered the two questions with one component would have
+    # made this list a list of three and left the distinction untested.
     components = scan_components(MEMBER_SRC, registry=Registration())
     assert sorted(component.name for component in components) == [
         "tripwires",
         "tripwires-excise",
         "tripwires-poison",
+        "tripwires-stability",
     ]
+
+
+def test_the_stability_store_is_its_own_component() -> None:
+    # Feature 129's store is composed *beside* feature 131's, not inside it.
+    # Both resolve ``DATABASE_URL``, so in a bare process both are ``None`` and
+    # a wiring test that only asked whether the component exists could not see
+    # them collapsed into one builder under two names — the two names would
+    # both be present and both ``None``.  So the two are asked for through
+    # their composed types: the builders registered under them must be two
+    # functions, and a ``DATABASE_URL`` in the environment must produce two
+    # *different* classes of store.
+    builders = {
+        component.name: component.builder
+        for component in scan_components(MEMBER_SRC, registry=Registration())
+    }
+    assert builders["tripwires-stability"] is not builders["tripwires-poison"]
+    assert builders["tripwires-stability"].__name__ == "build_stability_store"
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
+        app = create_app(MEMBER_SRC, registry=Registration())
+        stability = app.get("tripwires-stability")
+        poison = app.get("tripwires-poison")
+        assert type(stability).__name__ == "StabilityStore"
+        assert type(poison).__name__ == "PoisonStore"
+        assert stability is not poison
+    finally:
+        monkeypatch.undo()
 
 
 def test_the_composed_application_carries_the_tripwire_component() -> None:
