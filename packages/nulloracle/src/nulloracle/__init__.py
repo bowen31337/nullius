@@ -21,6 +21,19 @@ seeds this member stores), 117's ``φ`` and 118-122's campaign assignment
 (the writers of the map this member seals), and 123-124's KS guard (which
 needs the labels, not merely their count).
 
+**Feature 123 is where the labels are finally *used*, and it is the one
+place they may be.**  §7.4 states the test — *"a job holding the sidecar key
+runs a two-sample KS test on in-sample score distributions, null nodes vs.
+real nodes"* — and §4.2 states the rule it is the single exception to:
+``is_null`` is visible to exactly one component, and the guard is the job
+that component runs.  So feature 123 arrives as two modules split the way
+the sidecar's three are: :mod:`nulloracle.ks` is the test (the statistic
+and its p-value, validated, stdlib-only and carrying no node id) and
+:mod:`nulloracle.ksguard` is the store that writes the number against its
+campaign.  The *verdict* — §7.4's ``p < 0.05`` comparison and the ``VOID``
+it sets — is feature 124's and is deliberately not written here: this
+feature measures, the next one decides.
+
 **The three halves, and why they are three modules.**  A sidecar entry is a
 schema (:mod:`nulloracle.assignment`), a cipher (:mod:`nulloracle.envelope`)
 and a file (:mod:`nulloracle.sidecar`), and each is separately arguable.
@@ -110,6 +123,8 @@ from .envelope import (
     seal,
 )
 from .errors import (
+    KsGuardError,
+    KsTestError,
     NullOracleError,
     SidecarAccessError,
     SidecarDecryptionError,
@@ -128,19 +143,57 @@ from .keyref import (
     resolve_key,
     service_account,
 )
+
+# Feature 123's two halves: the test (:mod:`nulloracle.ks`) and the store
+# that writes its answer against the campaign (:mod:`nulloracle.ksguard`).
+# Imported at module scope, unlike the `cryptography` the envelope defers:
+# both are stdlib-only, so the factory's scan — which imports this package
+# to fire its `@register` — pays nothing for them.
+from .ks import (
+    KS_ASYMPTOTIC,
+    KS_ASYMPTOTIC_FLOOR,
+    KS_EXACT,
+    KS_EXACT_CELLS,
+    KS_MIN_SAMPLE,
+    KS_SERIES_TERMS,
+    KolmogorovSmirnov,
+    ks_pvalue,
+    ks_two_sample,
+    two_sample_statistic,
+)
+from .ksguard import (
+    CAMPAIGN_TABLE,
+    DATABASE_URL_ENV,
+    KS_GUARD_TABLE,
+    KsGuard,
+    KsGuardRecord,
+    guard_record_from_row,
+    load_ks_guard,
+    persist_ks_pvalue,
+)
 from .sidecar import (
     SIDECAR_DIRECTORY,
-    SIDECAR_FILENAME,
     SIDECAR_FILE_MODE,
+    SIDECAR_FILENAME,
     SIDECAR_PATH_ENV,
     NullSidecar,
 )
 
 __all__ = [
+    "CAMPAIGN_TABLE",
     "COMPONENT_NAME",
+    "DATABASE_URL_ENV",
     "DEFAULT_BLOCK_DAYS",
     "FORMAT_VERSION",
     "KEY_REF_ENV",
+    "KS_ASYMPTOTIC",
+    "KS_ASYMPTOTIC_FLOOR",
+    "KS_EXACT",
+    "KS_EXACT_CELLS",
+    "KS_GUARD_COMPONENT_NAME",
+    "KS_GUARD_TABLE",
+    "KS_MIN_SAMPLE",
+    "KS_SERIES_TERMS",
     "MAGIC",
     "NONCE_BYTES",
     "SIDECAR_DIRECTORY",
@@ -152,6 +205,11 @@ __all__ = [
     "TAG_BYTES",
     "EnsureKeyResult",
     "KeyReference",
+    "KolmogorovSmirnov",
+    "KsGuard",
+    "KsGuardError",
+    "KsGuardRecord",
+    "KsTestError",
     "NullAssignment",
     "NullOracleError",
     "NullSidecar",
@@ -162,18 +220,25 @@ __all__ = [
     "SidecarKeyError",
     "SidecarStoreError",
     "assignments_digest",
+    "build_ks_guard",
     "build_null_sidecar",
     "canonical_assignments",
     "decode_assignments",
     "encode_assignments",
     "ensure_key",
     "envelope_digest",
+    "guard_record_from_row",
+    "ks_pvalue",
+    "ks_two_sample",
+    "load_ks_guard",
     "normalize_node_id",
     "open_envelope",
+    "persist_ks_pvalue",
     "require_cryptography",
     "resolve_key",
     "seal",
     "service_account",
+    "two_sample_statistic",
 ]
 
 __version__ = "0.1.0"
@@ -184,6 +249,44 @@ __version__ = "0.1.0"
 #: for.  Spelled once here so the member, the factory's registry and the
 #: seat cannot drift apart.
 COMPONENT_NAME = "nulloracle"
+
+#: The component name feature 123's guard journal registers under — the key a
+#: composed :class:`~app.module_loader.Application` carries the journal at.
+#: A second name rather than a second component under :data:`COMPONENT_NAME`
+#: because the two are different things on different lifecycles: the sidecar
+#: is §7.1's sealed file, the guard is feature 123's store, and a deployment
+#: can legitimately have one without the other.  The ledger member registers
+#: three names the same way.
+KS_GUARD_COMPONENT_NAME = "nulloracle-ks-guard"
+
+
+@register(KS_GUARD_COMPONENT_NAME)
+def build_ks_guard() -> Optional[KsGuard]:
+    """Component builder: §7.4's guard journal, bound to the environment.
+
+    Feature 123's *store* half as a component, so the campaign job that runs
+    the guard over a completed campaign can ask the composed application for
+    the journal the deployment configured rather than reading
+    ``DATABASE_URL`` itself — the same seam the ledger member's store and
+    the evaluator's own expose.
+
+    Returns ``None`` when nothing names a relational store, the
+    degrade-don't-break stance every store in this workspace takes toward an
+    absent ``DATABASE_URL``: an unconfigured guard is a discoverable state,
+    and a deployment whose campaign loop must run §7.4's guard is the caller
+    that must not find itself in it.
+
+    Like :func:`build_null_sidecar`, this never raises, including for a URL
+    whose scheme this store cannot speak.  The factory builds every
+    registered component on every :func:`~app.module_loader.create_app`
+    call, so a builder that raised would take composition down for every
+    unrelated feature; a process that *requires* a guard asks
+    :meth:`~nulloracle.ksguard.KsGuard.resolve` or calls the store directly,
+    where a named :class:`~nulloracle.errors.KsGuardError` is the right
+    answer.  Construction performs no I/O — the path is resolved on first
+    use — so composing the application never opens a database.
+    """
+    return KsGuard.resolve()
 
 
 @register(COMPONENT_NAME)
