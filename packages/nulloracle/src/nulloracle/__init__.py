@@ -46,6 +46,26 @@ dreaming-halt and pool-exclusion that §7.4's rule also names are
 *consequences* of the status being ``VOID``, enforced where the pool and
 promotion read the status (features 876/1056), not here.
 
+**Feature 116 is the sentence feature 115's mechanism exists to satisfy.**
+§7.3 states it in one line — *"Block permutation shuffles contiguous 20-day
+blocks, preserving return autocorrelation and volatility clustering while
+destroying the signal-to-target relationship"* — and
+:mod:`nulloracle.preservation` is that sentence made checkable: the block
+structure survives *exactly* (the output is the input's runs concatenated in
+some order, each run whole and in order, which a pointwise shuffle fails at
+every length above two), the two statistics survive *approximately* to within
+a bound scaled by how much of each estimate the shuffle actually disturbed,
+and the signal-to-target relationship is destroyed to within what a
+rearrangement of the series' blocks produces by chance.  The asymmetry is the
+whole point: §7.4's guard must not be able to tell a null branch from a real
+one, while §4.1's *"expected true OOS edge of a null branch is exactly zero by
+construction"* must hold.  :func:`~nulloracle.preservation.check_preservation`
+measures all three at the ``block_days`` the assignment sealed and returns a
+:class:`~nulloracle.preservation.PreservationReport` carrying every number,
+and :meth:`~nulloracle.preservation.PreservationReport.require` is the
+serving path's refusal — a null series that broke the sentence is a
+computation that went wrong, so it is the guard's error and not the sidecar's.
+
 **Feature 121 is where the flip depth is finally *used*.**  §7.2 states the
 rule in one line — *"below ``flip_depth`` the real targets are returned, at or
 beyond it the permuted ones"* — and :mod:`nulloracle.resolution` is that rule
@@ -291,6 +311,20 @@ from .plan import (
     CampaignPlanGate,
     review_campaign_plan,
 )
+from .preservation import (
+    DESTRUCTION_HEADROOM,
+    PRESERVATION_TOLERANCE,
+    PreservationReport,
+    autocorrelation,
+    block_runs,
+    check_preservation,
+    destroys_relationship,
+    preservation_lags,
+    preserves_block_structure,
+    preserves_structure,
+    signal_to_target_correlation,
+    volatility_clustering,
+)
 from .resolution import (
     TYPE_D_CAMPAIGN_TYPE,
     TypeDOracle,
@@ -344,6 +378,7 @@ __all__ = [
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
     "DEFAULT_BLOCK_DAYS",
+    "DESTRUCTION_HEADROOM",
     "FLIP_DEPTH_COLUMN",
     "FLIP_DEPTH_COMPONENT_NAME",
     "FORMAT_VERSION",
@@ -368,6 +403,7 @@ __all__ = [
     "PHI_CEILING",
     "PHI_FLOOR",
     "PLAN_COMPONENT_NAME",
+    "PRESERVATION_TOLERANCE",
     "PROBABILITY_CEILING",
     "PROBABILITY_FLOOR",
     "P_MAX",
@@ -409,6 +445,7 @@ __all__ = [
     "NullOracleError",
     "NullSidecar",
     "PlantedNullFraction",
+    "PreservationReport",
     "RootSelection",
     "SidecarAccessError",
     "SidecarDecryptionError",
@@ -426,8 +463,10 @@ __all__ = [
     "TypeRSelection",
     "Verdict",
     "assignments_digest",
+    "autocorrelation",
     "block_indices",
     "block_permute",
+    "block_runs",
     "build_campaign_plan_gate",
     "build_flip_depth",
     "build_null_sidecar",
@@ -438,7 +477,9 @@ __all__ = [
     "campaign_as_seed",
     "campaign_offset",
     "canonical_assignments",
+    "check_preservation",
     "decode_assignments",
+    "destroys_relationship",
     "draw_flip_depth",
     "draw_null_roots",
     "encode_assignments",
@@ -462,6 +503,9 @@ __all__ = [
     "persist_ks_pvalue",
     "persist_null_fraction",
     "persist_type_r_selection",
+    "preservation_lags",
+    "preserves_block_structure",
+    "preserves_structure",
     "probability_from_true_ir",
     "require_cryptography",
     "resolve_key",
@@ -469,8 +513,10 @@ __all__ = [
     "review_campaign_plan",
     "seal",
     "service_account",
+    "signal_to_target_correlation",
     "two_sample_statistic",
     "void_if_detectable",
+    "volatility_clustering",
 ]
 
 __version__ = "0.1.0"
