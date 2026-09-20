@@ -60,25 +60,56 @@ and none may. All intra-package imports are relative, so the package
 imports identically under its own name and under the loader's
 scan-time name.
 
+*Feature 145 sits beside the pin, not inside it.* The category's
+fifteenth feature asserts "bit-identical output across two runs of the
+same seeded signal, which returns a byte-level comparison result" — §12's
+*last* table row ("Float reproducibility | Fixed reduction order; no
+``fastmath``; no GPU in the eval path") rather than its first, which the
+pin sweep above owns. The two are deliberately separate surfaces: a
+deployment can be perfectly pinned and still emit different bytes twice,
+and a caller must be able to tell those apart because the repairs differ.
+So :mod:`canary._reproducibility` is a set of pure functions
+(:func:`compare_runs`, :func:`compare_bytes`, :func:`require_identical`,
+:func:`assert_bit_identical`) that read no environment and can refuse
+nothing — there is nothing to configure and so no second *component* here.
+The composed service nevertheless carries them, through
+:class:`BitReproducibility` at ``service.reproducibility``, because a check
+reachable only by import is a check the factory's scan cannot discover: the
+tripwires member's probe and the evaluator's service take the same stance
+for their own pure functions.
+
 *What this package deliberately does not do.* It does not resolve
 tags, consult a registry, or write anything down: feature 135 is an
 assertion, not a persistence step, so the member is a pure parser over
 strings a deployment already wrote, stdlib-only and import-cheap — the
 factory's scan (and the replay path §1 keeps away from anything that
-could perturb it) pays nothing for importing it. The later features of
-this category layer onto the pin this package keeps: the lockfile,
-thread, hash-seed, allowlist and GPU refusals of features 136-140
+could perturb it) pays nothing for importing it. Feature 145 holds the
+same line: the comparison is over bytes the caller already holds, so it
+serializes nothing itself (the layers that own the encodings — the
+sandbox's Arrow IPC channel, the artifact renderer, the feature store's
+payload — are the ones that must produce canonical bytes) and reads no
+environment, which is what lets a recorded payload and a replayed one be
+compared by the same code that compares two fresh runs. The later
+features of this category layer onto the pin this package keeps: the
+lockfile, thread, hash-seed, allowlist and GPU refusals of features
+136-140
 assert into the same frozen container from the same sweep, the frozen
 pair and nightly replay of features 141-144 turn the pin into the
 reference the recorded constant is compared under, and the
-bit-reproducibility check of feature 145 reads the pair back. A canary
-that could not say which bytes it ran in could not honestly say any
-of those things either.
+bit-reproducibility check of feature 145 reads that pair back — a
+caller's run output and a recorded one, compared byte for byte by the
+same function that compares two fresh runs. A canary that could not say
+which bytes it ran in could not honestly say any of those things
+either.
 """
 
 from app.module_loader import register
 
-from ._errors import CanaryError, CanaryImageError
+from ._errors import (
+    CanaryError,
+    CanaryImageError,
+    CanaryReproducibilityError,
+)
 from ._image import (
     DIGEST_ALGORITHM,
     DIGEST_HEX_LENGTH,
@@ -92,6 +123,15 @@ from ._containers import (
     PinnedContainers,
     pin_containers,
     pinned_containers_from_env,
+)
+from ._reproducibility import (
+    BitReproducibility,
+    ByteComparison,
+    SeededSignal,
+    assert_bit_identical,
+    compare_bytes,
+    compare_runs,
+    require_identical,
 )
 from ._service import CanaryService, build_canary_service
 
@@ -108,12 +148,21 @@ __all__ = [
     "PinnedContainers",
     "pin_containers",
     "pinned_containers_from_env",
+    # Feature 145 — bit-identity across two runs of one seeded signal
+    "BitReproducibility",
+    "ByteComparison",
+    "SeededSignal",
+    "assert_bit_identical",
+    "compare_bytes",
+    "compare_runs",
+    "require_identical",
     # The composed component
     "CanaryService",
     "build_canary_service",
     # Errors
     "CanaryError",
     "CanaryImageError",
+    "CanaryReproducibilityError",
 ]
 
 __version__ = "0.1.0"

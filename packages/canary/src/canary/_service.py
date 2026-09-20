@@ -47,6 +47,7 @@ from ._containers import (
     pin_containers,
     pinned_containers_from_env,
 )
+from ._reproducibility import BitReproducibility
 
 __all__ = ["CanaryService", "build_canary_service"]
 
@@ -114,6 +115,25 @@ class CanaryService:
             # Touch the lazily-resolved sweep so the refusal lands here.
             service.containers  # noqa: B018 - the property raises; that is the point
         return service
+
+    # -- The category's other assertions ------------------------------------
+
+    @property
+    def reproducibility(self) -> BitReproducibility:
+        """Feature 145's bit-identity check, carried beside the pin sweep.
+
+        A stateless facade — constructed per access, holding nothing — so the
+        composed canary component exposes the whole category's assertions
+        from one value, the way the tripwires member's probe and the
+        evaluator's service expose theirs. Deliberately *not* a lazy or
+        strict-lazily-resolved property like :attr:`containers`: this check
+        reads no environment and can refuse nothing, so there is nothing to
+        defer and no misconfiguration for a construction to discover. A
+        caller comparing two runs does not have to hold a *pinned*
+        deployment to do it, and a deployment whose pins are unset is still
+        perfectly able to learn that its bytes diverged.
+        """
+        return BitReproducibility()
 
     # -- What this service is bound to --------------------------------------
 
