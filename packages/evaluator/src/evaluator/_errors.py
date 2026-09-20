@@ -459,6 +459,37 @@ class EvaluatorMetricsError(EvaluatorError):
     """
 
 
+class EvaluatorMarginalError(EvaluatorError):
+    """The marginal information ratio could not be computed or stored.
+
+    Raised by :func:`evaluator.compute_marginal_ir`,
+    :func:`evaluator.persist_marginal_ir` and the marginal-IR store
+    (app_spec.xml feature 83) when step 9 of the §6.1 pipeline cannot compute
+    ``ir_marginal`` — the incremental information ratio of the candidate against
+    the current book, ``IR(book ∪ {v}) − IR(book)``: a bundle that is not step
+    7's own result (the ratio is measured from the post-cost returns, and the
+    gross series alone cannot say which schedule priced them), a current book
+    that is malformed, empty, names an empty or duplicated signal, carries a
+    non-finite value, or misses a date the candidate was priced on (a book
+    signal that misses a priced date is a hole in the resident array, not a zero
+    return), a book of zero signals (that is the candidate's standalone IR,
+    feature 80), a panel that covers no horizon at any of the spec's horizons
+    (nothing measured), a priced panel with fewer than two dates (an information
+    ratio over one date names a zero standard deviation and a fabricated
+    infinity), a book or combined book whose per-date return never varies (its
+    standard deviation is zero), and a record built by hand whose ratios do not
+    reduce from their own per-date returns or whose marginal IR is not the
+    difference of its own two ratios.
+
+    Deliberately *not* here: any information-ratio arithmetic of its own
+    invention.  The information ratio pinned here — the mean per-date
+    equal-weight return over its population standard deviation — is the *same*
+    ratio feature 80 pins for ``ir_standalone``, so ``ir_marginal`` and
+    ``ir_standalone`` are measured on one axis and ``ir_standalone`` is the
+    special case of a book of one (see ``_marginal``).
+    """
+
+
 class EvaluatorGateError(EvaluatorError):
     """A target series was supplied outside the null gate, or the ask is malformed.
 

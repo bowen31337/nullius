@@ -185,6 +185,7 @@ from ._errors import (
     EvaluatorGateError,
     EvaluatorIdentityError,
     EvaluatorImageError,
+    EvaluatorMarginalError,
     EvaluatorMetricsError,
     EvaluatorPurgeError,
     EvaluatorSandboxError,
@@ -311,6 +312,17 @@ from ._metrics_store import (
     load_node_metrics,
     persist_node_metrics,
 )
+from ._marginal import (
+    MARGINAL_IR_STEP,
+    MarginalIR,
+    compute_marginal_ir,
+)
+from ._marginal_store import (
+    NODE_MARGINAL_IR_TABLE,
+    NodeMarginalIRStore,
+    load_marginal_ir,
+    persist_marginal_ir,
+)
 from ._service import ENV_IMAGE, EvaluatorService, build_evaluator_service
 from ._window import (
     ROSTER_STREAM,
@@ -390,6 +402,15 @@ __all__ = [
     "NodeMetricsStore",
     "load_node_metrics",
     "persist_node_metrics",
+    # Feature 83 — the marginal information ratio
+    "MARGINAL_IR_STEP",
+    "MarginalIR",
+    "compute_marginal_ir",
+    # Feature 83 — persisting the incremental information ratio
+    "NODE_MARGINAL_IR_TABLE",
+    "NodeMarginalIRStore",
+    "load_marginal_ir",
+    "persist_marginal_ir",
     # Feature 79 — persisting the post-cost signal returns
     "SIGNAL_RETURNS_GRID_TABLE",
     "SIGNAL_RETURNS_TABLE",
@@ -443,6 +464,7 @@ __all__ = [
     "EvaluatorGateError",
     "EvaluatorIdentityError",
     "EvaluatorImageError",
+    "EvaluatorMarginalError",
     "EvaluatorMetricsError",
     "EvaluatorSandboxError",
     "EvaluatorSignalError",
