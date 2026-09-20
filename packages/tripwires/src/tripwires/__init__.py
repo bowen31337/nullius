@@ -53,10 +53,14 @@ second, independent probe deliberately not built on this one's shuffle; the
 seed/offset/subsample/lookback re-runs are features 127 through 130; feature
 131 poisons the failing node and its subtree, feature 132 excises it from the
 replay pool, and feature 133 maintains the planted-leak corpus the whole suite
-must score 0 escapes against.  None of that is here, and this package
-persists nothing — a verdict is a *value*, full of its own evidence, and the
-features that own persistence will find everything they need on it.  Later
-features of the category extend this member; they do not replace it.
+must score 0 escapes against — and feature 133 lives *in this member*, as
+:mod:`tripwires.corpus`, because the corpus is a set of score panels and the
+verdicts they produce, both of them values this package already owns the
+vocabulary for.  Features 131 and 132 (persistence and excision) are not here,
+and this package persists nothing — a verdict is a *value*, full of its own
+evidence, and the features that own persistence will find everything they need
+on it.  Later features of the category extend this member; they do not
+replace it.
 
 **The layering note, restated because it is a constraint on every import
 below.**  This package is stdlib-only — dates, mappings, sorting, square roots
@@ -80,6 +84,14 @@ from collections.abc import Mapping
 
 from app.module_loader import register
 
+from .corpus import (
+    CORPUS_GRID,
+    CORPUS_SEED,
+    CORPUS_SYMBOLS,
+    LEAK_KINDS,
+    CorpusSignal,
+    planted_signals,
+)
 from .errors import TripwireError, TripwirePanelError, TripwireStatisticError
 from .normal import NORMAL_QUANTILE_SWITCH, normal_quantile
 from .time_shuffle import (
@@ -97,12 +109,17 @@ from .time_shuffle import (
 
 __all__ = [
     "COMPONENT_NAME",
+    "CORPUS_GRID",
+    "CORPUS_SEED",
+    "CORPUS_SYMBOLS",
     "DEFAULT_SHUFFLE_LEVEL",
     "DEFAULT_SHUFFLE_SEED",
     "HORIZONS",
+    "LEAK_KINDS",
     "NORMAL_QUANTILE_SWITCH",
     "TIME_SHUFFLE_NAME",
     "TRIPWIRE_OUTCOMES",
+    "CorpusSignal",
     "TimeShuffleTripwire",
     "TimeShuffleVerdict",
     "TripwireError",
@@ -110,6 +127,7 @@ __all__ = [
     "TripwireStatisticError",
     "build_time_shuffle_tripwire",
     "normal_quantile",
+    "planted_signals",
     "run_time_shuffle_tripwire",
     "surviving_sharpe",
     "time_shuffle_pairing",
