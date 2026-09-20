@@ -53,6 +53,7 @@ from ._inference import ModelInference
 from ._ordering import StableOrder, require_stable_environment
 from ._replay import CanaryReplay
 from ._reproducibility import BitReproducibility
+from ._threads import ThreadCaps, reject_threaded_workers_from_env
 
 __all__ = ["CanaryService", "build_canary_service"]
 
@@ -89,6 +90,7 @@ class CanaryService:
         self._devices: Optional[DevicePaths] = None
         self._allowlist: Optional[ImportAllowlist] = None
         self._order: Optional[StableOrder] = None
+        self._threads: Optional[ThreadCaps] = None
         self._env = env
 
     # -- Construction -------------------------------------------------------
@@ -299,6 +301,45 @@ class CanaryService:
         if self._order is None:
             self._order = require_stable_environment(self._environment())
         return self._order
+
+    @property
+    def threads(self) -> ThreadCaps:
+        """The worker's single-threaded numerics — feature 137's cap sweep.
+
+        :data:`~canary.THREAD_ENV_CAPS` resolved from the environment the
+        service was constructed with: each cap variable is classified, and one
+        that is absent, blank, or present at anything but the pin is refused —
+        naming the variable, the library layer it governs and the value as
+        written — while a declared library-level pool floor that is not the pin
+        is refused with them, because it outranks the caps inside the library
+        that reads it.  On a clean worker the verdict is a
+        :class:`~canary.ThreadCaps` recording what was declared and that it was
+        the pin, so a nightly report can show what it checked rather than
+        merely that it did not raise.
+
+        Deliberately lazy, exactly like :attr:`containers`, :attr:`devices`,
+        :attr:`allowlist` and :attr:`order`: the sweep reads the environment, so
+        it can refuse, and the factory builds this component on every
+        ``create_app()`` — in a bare test process and on paths with no
+        reduction to make single-threaded — so the refusal must land at the
+        first call that asks whether *this worker* was started under the caps,
+        where it is informative, rather than taking composition down.
+
+        A refusal here and a refusal at :attr:`order` are the two ends of one
+        reduction: the thread pool that summed it and the iteration order it
+        walked are the two inputs §12's contract fixes, both read from the same
+        environment mapping through the same seam, and a caller that fixed one
+        and not the other has a worker whose bytes can still move.  The
+        *measured* half of the thread reading — whether the numerics actually
+        sized a pool of one — is deliberately not taken here: measuring means
+        loading the numerics to ask them, which this package may not do on the
+        factory scan path.  A nightly runner that holds a numerics module
+        passes it to :func:`~canary.single_threaded` or
+        :func:`~canary.reject_threaded_workers_from_env` directly.
+        """
+        if self._threads is None:
+            self._threads = reject_threaded_workers_from_env(self._environment())
+        return self._threads
 
     def _environment(self) -> Mapping[str, str]:
         """The environment mapping this service resolves against.

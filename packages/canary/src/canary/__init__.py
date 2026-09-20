@@ -384,6 +384,7 @@ from ._errors import (
     CanaryInferenceError,
     CanaryOrderError,
     CanaryReproducibilityError,
+    CanaryThreadError,
 )
 from ._halt import (
     DETERMINISM_BROKEN,
@@ -468,6 +469,25 @@ from ._reproducibility import (
     require_identical,
 )
 from ._service import CanaryService, build_canary_service
+from ._threads import (
+    ABSENT,
+    CAPPED,
+    CHILD_CAP_VARIABLES,
+    POOL_ACCESSOR,
+    POOL_VARIABLE,
+    SINGLE_THREADED,
+    THREAD_ENV_CAPS,
+    UNCAPPED,
+    ThreadCaps,
+    child_thread_environment,
+    classify_thread_cap,
+    inherited_threaded_variables,
+    interpreter_thread_pool,
+    reject_threaded_workers,
+    reject_threaded_workers_from_env,
+    single_threaded,
+    thread_capped_environment,
+)
 from ._void import (
     VOID_MARKER_COMPONENT_NAME,
     VOID_STATUS,
@@ -542,6 +562,24 @@ __all__ = [
     "pinned_environment",
     "require_stable_environment",
     "stable_reduction_order",
+    # Feature 137 — single-threaded numerics in every eval worker
+    "ABSENT",
+    "CAPPED",
+    "CHILD_CAP_VARIABLES",
+    "POOL_ACCESSOR",
+    "POOL_VARIABLE",
+    "SINGLE_THREADED",
+    "THREAD_ENV_CAPS",
+    "UNCAPPED",
+    "ThreadCaps",
+    "child_thread_environment",
+    "classify_thread_cap",
+    "inherited_threaded_variables",
+    "interpreter_thread_pool",
+    "reject_threaded_workers",
+    "reject_threaded_workers_from_env",
+    "single_threaded",
+    "thread_capped_environment",
     # Feature 145 — bit-identity across two runs of one seeded signal
     "BitReproducibility",
     "ByteComparison",
@@ -611,6 +649,7 @@ __all__ = [
     "CanaryOrderError",
     "CanaryReproducibilityError",
     "CanaryReplayScoreError",
+    "CanaryThreadError",
 ]
 
 

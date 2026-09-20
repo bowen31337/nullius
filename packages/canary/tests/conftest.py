@@ -96,6 +96,21 @@ def _image_env_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
     own hash-randomization flag — that was fixed before this conftest
     was imported, which is exactly why the sweep reads the declaration
     and the flag as two separate facts.
+
+    And it clears the three variables feature 137 reads —
+    ``OMP_NUM_THREADS``, ``MKL_NUM_THREADS`` and the library-level pool
+    floor — for the strongest version of the same reason: a *thread cap*
+    is read by the numerics at their own import, so a test runner started
+    under one has already been summed single-threaded however the sweep
+    is called. Clearing the variable here cannot undo that for this
+    process (which is exactly the module's point, and why the sweep reads
+    the declaration while ``interpreter_thread_pool`` reports the pool),
+    but it does keep the *declaration* assertions honest: without it, a
+    suite run under ``OMP_NUM_THREADS=16`` would refuse the
+    single-threaded cases for a reason that has nothing to do with the
+    test, and a suite run under the right value would pass the refusal
+    cases vacuously. Tests that want a capped worker ask for
+    :func:`capped_env` and get one.
     """
     for variable in (
         "NULLIUS_EVALUATOR_IMAGE",
@@ -103,6 +118,9 @@ def _image_env_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
         "NULLIUS_REPLAY_DEVICE",
         "NULLIUS_SEARCHED_IMPORTS",
         "PYTHONHASHSEED",
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "POLARS_MAX_THREADS",
     ):
         monkeypatch.delenv(variable, raising=False)
 
@@ -142,3 +160,27 @@ def test_database_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     url = f"sqlite:///{tmp_path / 'reference.db'}"
     monkeypatch.setenv(DATABASE_URL_ENV, url)
     return url
+
+
+#: §12's cap values, spelled out rather than imported from the member, so a
+#: test that asserts on them is readable and a drift in the member's constant
+#: is a test failure rather than a silently-followed rename.
+CAPPED_OMP = "1"
+CAPPED_MKL = "1"
+
+
+@pytest.fixture
+def capped_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """A complete, single-threaded worker environment — feature 137.
+
+    Both of §12's caps at the pin, in the process *and* returned as a mapping
+    so a test can assert against exactly what it configured and can hand the
+    same mapping to a sweep instead of relying on the shell — the two
+    spellings must agree, which is what the sweep's ``env`` parameter is for.
+    Deliberately *explicit* rather than autouse, matching :func:`canary_env`
+    and for the same reason: the sweep's refusal is the feature, so a suite
+    that silently capped every test would hide the refusal it exists to pin.
+    """
+    monkeypatch.setenv("OMP_NUM_THREADS", CAPPED_OMP)
+    monkeypatch.setenv("MKL_NUM_THREADS", CAPPED_MKL)
+    return {"OMP_NUM_THREADS": CAPPED_OMP, "MKL_NUM_THREADS": CAPPED_MKL}

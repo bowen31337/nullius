@@ -65,7 +65,25 @@ likewise the only one that points *forward* in the pipeline: materialize
 the learned output at evaluation time and read back the stored floats
 (§11.2), rather than fixing anything in the replay itself.
 
-:class:`CanaryOrderError` is the fifth such subclass — feature 138
+:class:`CanaryThreadError` is the fifth such subclass — feature 137
+(app_spec.xml): *"System rejects an evaluation worker started without
+OMP_NUM_THREADS and MKL_NUM_THREADS set to 1, because threaded reductions
+are non-deterministic in float"* — and it is the third clause of the
+prerequisites' one sentence ("eval workers pin single-threaded BLAS,
+``PYTHONHASHSEED=0`` and digest-pinned images"), whose other two are
+:class:`CanaryImageError` and :class:`CanaryOrderError`.  It follows the
+rule rather than extending the second: a deployment can be perfectly pinned
+and perfectly hash-stable and still sum in as many partitions as the host
+has cores, and the class split is what makes the difference legible at the
+``except``.  Its subject is a *worker* rather than a deployment — the caps
+are read by a third-party library rather than by this member's caller, so
+an unset variable is a refusal here where the device sweep's is the passing
+case — and its repair is the only one in the taxonomy that is unavailable
+in the process that detected it: the numerics read the variables at their
+own import, so the worker must be *restarted* under the pin, where a moved
+pin is re-pinned and a GPU is removed in place.
+
+:class:`CanaryOrderError` is the sixth such subclass — feature 138
 (app_spec.xml): *"System sets PYTHONHASHSEED to 0 and applies explicit
 sorts before every reduction, which returns a stable iteration order"* —
 and it is the half of §12's "Stable iteration order | ``PYTHONHASHSEED=0``;
@@ -99,6 +117,7 @@ __all__ = [
     "CanaryInferenceError",
     "CanaryOrderError",
     "CanaryReproducibilityError",
+    "CanaryThreadError",
 ]
 
 
@@ -255,6 +274,55 @@ class CanaryReproducibilityError(CanaryError):
     """
 
 
+class CanaryThreadError(CanaryError):
+    """An evaluation worker was started without single-threaded numerics.
+
+    Raised by :func:`~canary.reject_threaded_workers` and
+    :func:`~canary.reject_threaded_workers_from_env` when a worker's
+    environment does not declare ``OMP_NUM_THREADS`` and ``MKL_NUM_THREADS``
+    at one — absent, blank, present at another count, or present as a value no
+    parser resolves to a count — and when a declared library-level pool floor
+    would leave the worker threaded however those two are set.  Also raised by
+    :func:`~canary.single_threaded` when a pool widens inside a span that was
+    justified as single-threaded.  This is app_spec.xml feature 137: *"System
+    rejects an evaluation worker started without OMP_NUM_THREADS and
+    MKL_NUM_THREADS set to 1, because threaded reductions are
+    non-deterministic in float"* — §12's "Single-threaded numerics |
+    ``OMP_NUM_THREADS=1``, ``MKL_NUM_THREADS=1`` in every eval worker" row
+    made into something a run can fail.
+
+    Deliberately its own subclass rather than folded into
+    :class:`CanaryImageError` (a moved pin), :class:`CanaryDeviceError` (a GPU
+    in the path), :class:`CanaryOrderError` (an unpinned hash seed) or
+    :class:`CanaryReproducibilityError` (divergent bytes), which is the rule
+    rather than the exception in this taxonomy: the five are five different
+    breaks of §12's contract with five different repairs.  A moved pin is
+    re-pinned; a GPU is removed; an unpinned seed is pinned; divergent bytes
+    are bisected; and this one is repaired by *restarting the worker* under
+    the caps, because the variables are read by the numerics at their own
+    import and nothing can repair a process that has already started.  That
+    last difference is the reason the class matters beyond legibility: it is
+    the only break in the category whose repair is not available in the
+    process that detected it.  A caller catching :class:`CanaryError` still
+    gets all of them.
+
+    Its subject is a *worker*, not a deployment, and the distinction is
+    load-bearing where the device sweep's is.  ``NULLIUS_EVAL_DEVICE`` is a
+    declaration about the deployment, which the caller reads and files, so an
+    unset one is the passing case (the contract is "no GPU"); the thread caps
+    are read by a third-party library the canary cannot see, so an unset one
+    is a refusal — nothing in the environment states that a reduction is
+    single-threaded, and a sweep that passed the omission would report the
+    vacuous green §12's prerequisites exist to prevent.
+
+    The refusal is collective: one error names every variable that is not
+    pinned, with the layer it governs and the value as written, in sorted
+    variable order — because a sweep that reported only the first would be
+    re-run to learn the rest, and the operator of a nightly assertion reads
+    the whole worker's numerics state in one message.
+    """
+
+
 class CanaryOrderError(CanaryError):
     """The environment would not make a reduction's iteration order stable.
 
@@ -269,11 +337,13 @@ class CanaryOrderError(CanaryError):
     reduction" row made into something a run can fail.
 
     Deliberately its own subclass rather than folded into
-    :class:`CanaryImageError` (a moved pin) or
+    :class:`CanaryImageError` (a moved pin),
+    :class:`CanaryThreadError` (a threaded worker) or
     :class:`CanaryReproducibilityError` (divergent bytes), which is the rule
-    rather than the exception here: those two refuse the *containers* and the
-    *output*, while this one refuses the one input that decides whether a
-    reduction over a set or dict of strings is reproducible at all. A
+    rather than the exception here: those refuse the *containers*, the
+    *numerics* and the *output*, while this one refuses the one input that
+    decides whether a reduction over a set or dict of strings is reproducible
+    at all. A
     deployment can be perfectly pinned — every digest frozen, every library in
     the lockfile — and emit different bytes on every night, because the
     interpreter it emitted them in randomized the iteration order of the
@@ -313,11 +383,14 @@ class CanaryOrderError(CanaryError):
 # frozen pair.  Exported from the package root beside the other five, so the
 # single ``except`` :class:`CanaryError` this module promises still catches it.
 #
-# :class:`CanaryOrderError` above is the *sixth*, and it is defined here rather
-# than beside its module because it names a break of §12's contract rather than
-# a record's type: it carries no value the way the halt's record does, so the
-# placement rule that moved the halt error into :mod:`canary._halt` does not
-# reach it.  Its neighbours in the taxonomy are the ones it must be legible
-# beside — a caller that caught :class:`CanaryReproducibilityError` for a byte
-# diff and :class:`CanaryImageError` for a moved pin needs a third ``except``
-# for the cause that produces the first from a perfectly pin-clean deployment.
+# :class:`CanaryThreadError` and :class:`CanaryOrderError` above are the
+# *fifth* and *sixth* of the same count, and both are defined here rather than
+# beside their modules because each names a break of §12's contract rather than
+# a record's type: neither carries a value the way the halt's record does, so
+# the placement rule that moved the halt error into :mod:`canary._halt` does
+# not reach them.  Their neighbours in the taxonomy are the ones they must be
+# legible beside — a caller that caught :class:`CanaryReproducibilityError` for
+# a byte diff and :class:`CanaryImageError` for a moved pin needs a further
+# ``except`` for each *cause* that produces the first from a perfectly
+# pin-clean deployment, and the two causes sit at the two ends of one
+# reduction: the thread pool that summed it and the iteration order it walked.
