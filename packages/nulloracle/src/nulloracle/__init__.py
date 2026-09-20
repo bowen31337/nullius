@@ -30,9 +30,21 @@ that component runs.  So feature 123 arrives as two modules split the way
 the sidecar's three are: :mod:`nulloracle.ks` is the test (the statistic
 and its p-value, validated, stdlib-only and carrying no node id) and
 :mod:`nulloracle.ksguard` is the store that writes the number against its
-campaign.  The *verdict* — §7.4's ``p < 0.05`` comparison and the ``VOID``
-it sets — is feature 124's and is deliberately not written here: this
-feature measures, the next one decides.
+campaign.
+
+**Feature 124 is the decision the test does not make.**  §7.4's ``p < 0.05``
+comparison and the ``VOID`` it sets are feature 124's, and they arrive as
+:mod:`nulloracle.verdict` — the module that reads the p-value feature 123
+persisted, compares it to :data:`VOID_THRESHOLD`, and sets
+``calibration_status = VOID`` when it falls below.  The split is the same
+discipline feature 123 observes: this feature measures, the next one
+decides, and the threshold that separates "calibrated" from "void" is a
+constant of the verdict module because the verdict module is the one place
+the verdict is pronounced.  The verdict is a fact about a campaign, so it is
+written to the campaign row the guard already writes to; the alert and the
+dreaming-halt and pool-exclusion that §7.4's rule also names are
+*consequences* of the status being ``VOID``, enforced where the pool and
+promotion read the status (features 876/1056), not here.
 
 **The three halves, and why they are three modules.**  A sidecar entry is a
 schema (:mod:`nulloracle.assignment`), a cipher (:mod:`nulloracle.envelope`)
@@ -92,6 +104,14 @@ already says:
   :func:`~nulloracle.envelope.envelope_digest` — the two key-free
   comparisons: *is this the same sidecar?*, answerable by a process that is
   not allowed to open it.
+* :func:`~nulloracle.ks.ks_two_sample` with :mod:`nulloracle.ksguard` —
+  feature 123's detectability test and the store that persists its p-value
+  against the campaign, and :func:`~nulloracle.verdict.void_if_detectable`
+  with :mod:`nulloracle.verdict` — feature 124's verdict, which reads that
+  stored p-value, compares it to :data:`VOID_THRESHOLD`, and sets the
+  campaign's ``calibration_status`` to ``VOID``.  The test measures, the
+  verdict decides, and the verdict pronounces on the number the guard
+  persisted rather than on one a caller hands in.
 * The error taxonomy of :mod:`nulloracle.errors`, one base class wide —
   and its central distinction is that an unopenable sidecar raises rather
   than reading as an empty one.
@@ -178,8 +198,19 @@ from .sidecar import (
     SIDECAR_PATH_ENV,
     NullSidecar,
 )
+from .verdict import (
+    CALIBRATION_STATUS_OK,
+    CALIBRATION_STATUS_VOID,
+    VOID_THRESHOLD,
+    CampaignVerdict,
+    Verdict,
+    load_verdict,
+    void_if_detectable,
+)
 
 __all__ = [
+    "CALIBRATION_STATUS_OK",
+    "CALIBRATION_STATUS_VOID",
     "CAMPAIGN_TABLE",
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
@@ -203,6 +234,8 @@ __all__ = [
     "SIDECAR_PATH_ENV",
     "SERVICE_ACCOUNT_ENV",
     "TAG_BYTES",
+    "VERDICT_COMPONENT_NAME",
+    "VOID_THRESHOLD",
     "EnsureKeyResult",
     "KeyReference",
     "KolmogorovSmirnov",
@@ -219,9 +252,10 @@ __all__ = [
     "SidecarKey",
     "SidecarKeyError",
     "SidecarStoreError",
+    "Verdict",
     "assignments_digest",
-    "build_ks_guard",
     "build_null_sidecar",
+    "build_verdict",
     "canonical_assignments",
     "decode_assignments",
     "encode_assignments",
@@ -231,6 +265,7 @@ __all__ = [
     "ks_pvalue",
     "ks_two_sample",
     "load_ks_guard",
+    "load_verdict",
     "normalize_node_id",
     "open_envelope",
     "persist_ks_pvalue",
@@ -239,6 +274,7 @@ __all__ = [
     "seal",
     "service_account",
     "two_sample_statistic",
+    "void_if_detectable",
 ]
 
 __version__ = "0.1.0"
@@ -258,6 +294,44 @@ COMPONENT_NAME = "nulloracle"
 #: can legitimately have one without the other.  The ledger member registers
 #: three names the same way.
 KS_GUARD_COMPONENT_NAME = "nulloracle-ks-guard"
+
+#: The component name feature 124's verdict store registers under — the key a
+#: composed :class:`~app.module_loader.Application` carries it at.  A third
+#: name rather than a second/third component under :data:`COMPONENT_NAME`
+#: because the sidecar, the guard journal and the verdict are three different
+#: things on three different lifecycles, and a deployment can legitimately
+#: have one without the others.  The ledger member registers three names the
+#: same way.
+VERDICT_COMPONENT_NAME = "nulloracle-ks-verdict"
+
+
+@register(VERDICT_COMPONENT_NAME)
+def build_verdict() -> Optional[CampaignVerdict]:
+    """Component builder: §7.4's verdict store, bound to the environment.
+
+    Feature 124's *decision* half as a component, so the campaign job that
+    judges a completed campaign can ask the composed application for the
+    verdict store the deployment configured rather than reading
+    ``DATABASE_URL`` itself — the same seam the guard's and the ledger's store
+    expose.
+
+    Returns ``None`` when nothing names a relational store, the
+    degrade-don't-break stance every store in this workspace takes toward an
+    absent ``DATABASE_URL``: an unconfigured verdict is a discoverable state,
+    and a deployment whose campaign loop must pronounce §7.4's verdict is the
+    caller that must not find itself in it.
+
+    Like :func:`build_null_sidecar` and :func:`build_ks_guard`, this never
+    raises, including for a URL whose scheme this store cannot speak.  The
+    factory builds every registered component on every
+    :func:`~app.module_loader.create_app` call, so a builder that raised would
+    take composition down for every unrelated feature; a process that *requires*
+    a verdict asks :meth:`~nulloracle.verdict.CampaignVerdict.resolve` or calls
+    the store directly, where a named :class:`~nulloracle.errors.KsGuardError`
+    is the right answer.  Construction performs no I/O — the path is resolved
+    on first use — so composing the application never opens a database.
+    """
+    return CampaignVerdict.resolve()
 
 
 @register(KS_GUARD_COMPONENT_NAME)
