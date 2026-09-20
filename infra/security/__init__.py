@@ -39,10 +39,23 @@ only.").  The sentence lands as four modules, one per claim:
   travels from document to compile to artifact with no step that
   could widen it.
 
-The category's other features (the secrets manager, key provisioning,
-per-environment credentials, the sidecar audit trail) join this tree
-as siblings of these modules; the exports below are feature 156's
-alone.
+The category's other features join this tree as siblings of these
+modules, and two have:
+
+* :mod:`infra.security.key_backup` — feature 155's *two independent
+  stores*, the sealed sidecar-key backup and the reconciliation
+  between the stores.
+* :mod:`infra.security.audit_log` — feature 154's *access audit
+  record per read of the null sidecar key*, the append-only chained
+  log and the chokepoint that writes to it before serving a key.
+
+The exports below are feature 156's alone, deliberately: this module's
+``__all__`` is the zone-policy vocabulary, and a caller reaching for
+the audit log or the backup names its own submodule
+(``from infra.security.audit_log import AuditLog``) rather than
+finding it here beside the zone's gate.  One namespace per feature
+keeps the gate's ``Channel`` from sitting next to an unrelated
+``Channel`` a later member grows.
 """
 
 from __future__ import annotations
