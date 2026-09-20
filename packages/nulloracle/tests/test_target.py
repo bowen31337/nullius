@@ -9,8 +9,9 @@ architecture.md §7.2 spells the interface this suite pins::
       request:  { node_id, campaign_id, depth, horizon, symbols[], date_range }
       response: { target_series, charges_budget }   # is_null NEVER appears
 
-The feature's sentence stops at the request and the status line — the
-payload is feature 113's — so this suite pins exactly those two halves:
+This suite owns feature 112's two halves — the ask and the answer's
+*status* — and deliberately not the payload, which is feature 113's and is
+pinned in ``test_target_payload.py``:
 
 * **the ask** — :class:`nulloracle.target.TargetRequest`, §7.2's six terms
   as one frozen value: canonicalised (UUID identities, one sorted spelling
@@ -30,9 +31,13 @@ plausible-looking implementation gets wrong:
   feature 114's indistinguishability promise broken on the day the route
   was born;
 * **nothing on the answer names the branch** — the response carries a
-  status and a node, and the entry the lookup read is discarded where it
-  was read, because §7.2's comment line (``# is_null NEVER appears``) is a
-  property of the whole response, not only of the fields feature 113 adds.
+  status and a payload and never the bit, because §7.2's comment line
+  (``# is_null NEVER appears``) is a property of the whole response.
+
+Where feature 113 landed, this suite's endpoint tests supply the series
+seam the payload needs — through :func:`_endpoint`, which every test here
+constructs its route with, so the *status* assertions stay assertions about
+the status rather than about the supply.
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import uuid
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -56,9 +62,66 @@ from nulloracle import (
     TargetRequest,
     TargetResponse,
     TargetRouteError,
+    block_indices,
 )
 
 # -- Helpers ---------------------------------------------------------------------
+
+
+#: The series feature 113's tests serve, and the only one this file needs: the
+#: subjects below are the request, the status and the branch's *shape*, none of
+#: which depend on what the labels are worth.  Two symbols on two dates, so a
+#: payload is a panel and not a point.
+SERIES: MappingProxyType | dict = {
+    dt.date(2026, 1, 5): {"BTCUSDT": 0.01, "ETHUSDT": -0.02},
+    dt.date(2026, 1, 6): {"BTCUSDT": 0.03, "ETHUSDT": 0.04},
+}
+
+
+def _targets(request: Any) -> dict:
+    """A ``targets`` seam answering the request's own cross-section.
+
+    Feature 112's tests construct endpoints to ask about *statuses*, and a
+    route that cannot serve a payload cannot answer 200 at all — so every
+    endpoint here is built through :func:`_endpoint`, which supplies the real
+    series and feature 115's permutation.  The stub answers for the symbols
+    the request named, at the two dates of :data:`SERIES`, so the payload is
+    never the reason a status assertion fails.
+    """
+    return {day: dict(row) for day, row in SERIES.items()}
+
+
+def _permute(series: Any, *, seed: Any, block_days: Any) -> dict:
+    """Feature 115's mechanism at the panel's grain — days are the blocks.
+
+    The same reconciliation the composed route's own closure makes: a
+    ``forward_returns`` series' blocks become runs of consecutive *dates*,
+    each date's whole cross-section travelling with it.  The dates are the
+    axis and stay put; the rows move across them, because a mapping holds no
+    order and a gather that kept each row under its own date would rebuild
+    the identical series.
+    """
+    days = list(series)
+    rows = [series[day] for day in days]
+    order = block_indices(range(len(days)), seed=seed, block_days=block_days)
+    return {
+        days[position]: dict(rows[order[position]])
+        for position in range(len(days))
+    }
+
+
+def _endpoint(sidecar: NullSidecar, **overrides: Any) -> TargetEndpoint:
+    """The endpoint under test, with the seams feature 113 needs supplied.
+
+    Feature 112's suite answers *did the route know this node*, and that
+    question is only reachable through a route that can build an answer:
+    feature 113 requires a series and, on the permuted branch, a mechanism.
+    Both are supplied here once so the tests below override exactly the seam
+    each one is about.
+    """
+    seams: dict[str, Any] = {"targets": _targets, "permute": _permute}
+    seams.update(overrides)
+    return TargetEndpoint(sidecar, **seams)
 
 
 def _request(node_id: Any, **overrides: Any) -> TargetRequest:
@@ -228,7 +291,12 @@ class TestTheAskRefusesMalformedTerms:
 class TestTheResponseHoldsItsOwnContract:
     def test_a_known_node_answers_200_and_is_known(self) -> None:
         node = str(uuid.uuid4())
-        response = TargetResponse(status=OK, node_id=node)
+        response = TargetResponse(
+            status=OK,
+            node_id=node,
+            target_series=SERIES,
+            charges_budget=True,
+        )
         assert response.status == 200
         assert response.known is True
         assert response.detail is None
@@ -267,7 +335,7 @@ class TestTheEndpointAnswersForTheSidecarItHolds:
         test_sidecar.write(
             [NullAssignment(node_id=node_id, is_null=True, perm_seed=11)]
         )
-        response = TargetEndpoint(test_sidecar).post(_request(node_id))
+        response = _endpoint(test_sidecar).post(_request(node_id))
         assert response.status == 200
         assert response.known is True
         assert response.node_id == node_id
@@ -285,7 +353,7 @@ class TestTheEndpointAnswersForTheSidecarItHolds:
                 NullAssignment(node_id=real_node, is_null=False, perm_seed=0),
             ]
         )
-        endpoint = TargetEndpoint(test_sidecar)
+        endpoint = _endpoint(test_sidecar)
         null_answer = endpoint.post(_request(null_node))
         real_answer = endpoint.post(_request(real_node))
         assert null_answer.status == real_answer.status == 200
@@ -300,7 +368,7 @@ class TestTheEndpointAnswersForTheSidecarItHolds:
         test_sidecar.write(
             [NullAssignment(node_id=node_id, is_null=True, perm_seed=11)]
         )
-        response = TargetEndpoint(test_sidecar).post(_request(node_id))
+        response = _endpoint(test_sidecar).post(_request(node_id))
         for public in (response, type(response)):
             assert not hasattr(public, "is_null")
         assert "is_null" not in repr(response)
@@ -357,7 +425,7 @@ class TestTheEndpointAnswersForTheSidecarItHolds:
         test_sidecar.write(
             [NullAssignment(node_id=node_id, is_null=False, perm_seed=0)]
         )
-        endpoint = TargetEndpoint(test_sidecar)
+        endpoint = _endpoint(test_sidecar)
         with pytest.raises(TargetRouteError, match="node_id"):
             endpoint.post(_Ask("not-a-uuid"))  # type: ignore[arg-type]
         assert endpoint.post(_Ask(node_id)).status == 200  # type: ignore[arg-type]
@@ -373,7 +441,9 @@ class TestTheEndpointComposesFromTheEnvironment:
     def test_a_configured_deployment_composes_the_endpoint(
         self, sidecar_path, key_ref: str, node_id: str
     ) -> None:
-        endpoint = TargetEndpoint.from_env()
+        endpoint = TargetEndpoint.from_env(
+            targets=_targets, permute=_permute
+        )
         assert endpoint is not None
         assert endpoint.sidecar.path == sidecar_path
 

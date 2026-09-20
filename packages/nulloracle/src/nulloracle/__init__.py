@@ -102,21 +102,40 @@ regime they are not on their own row; this is the check above them, and
 behind — flip depths off the tree, root selections off §7.1's sealed file —
 so a world that went mixed by any path is caught by the one decision.
 
-**Feature 112 is where the member first answers, rather than records.**
-Every module above this paragraph *writes* a fact — the sealed file, the
-flip depths, the selections, the p-value, the verdict — and
+**Features 112 and 113 are where the member first answers, rather than
+records.**  Every module above this paragraph *writes* a fact — the sealed
+file, the flip depths, the selections, the p-value, the verdict — and
 :mod:`nulloracle.target` is the one that *serves*: §7.2's ``POST
 /target``, the interface the evaluator's step 5 asks, as a Python seam
 over the sidecar.  The request is §7.2's six terms validated at
 construction (the identities as UUIDs, the horizon inside the closed five,
 the cross-section as one sorted spelling, the range first-to-last); the
 answer for a known node — one §7.1's sidecar holds an entry for — is the
-feature's own ``200``, an unknown node answers ``404``, and a sidecar that
-is missing or will not open propagates its own named error rather than
-reading as either.  The assignment the lookup reads is discarded where it
-was read: the payload §7.2 promises (``target_series`` and
-``charges_budget``, features 113-114) composes onto this answer later, and
-nothing in the route's first day carries the branch.
+feature's own ``200`` carrying §7.2's whole payload, an unknown node
+answers ``404``, and a sidecar that is missing or will not open propagates
+its own named error rather than reading as either.
+
+The payload is feature 113's half, and it is the one place in the member
+where the sealed bit is *used*.  §7.2's rule is *"if ``is_null``, return
+``block_permute(forward_returns, seed=perm_seed, block=20d)``; else return
+the real forward returns"*, so the entry the lookup read selects the
+branch — and selects it without disclosing it.  What leaves the route is
+the series and one bool: ``charges_budget``, ``False`` exactly for a null
+node (§8's own column comment is ``-- FALSE for null nodes``), because a
+null node's signal was never compared to real forward returns and so spent
+no statistical degrees of freedom — ``K_effective`` counts only the rows
+whose directive is true, and a null node must never inflate it.  §7.2's
+response comment
+(``# is_null NEVER appears``) is a property of the whole answer, and the
+corruption table's audit is the reason it is stated twice: *"Null budget
+flag leaked as a label → Audit: ``charges_budget`` correlated with
+anything in the agent's context → the flag must be opaque."*  The real
+series, feature 115's permutation and feature 121's flip rule all arrive
+as injected seams — this member holds no forward returns and imports no
+other member's store — and a deployment that supplies none composes a
+route that answers for the branch it can and refuses the other by name,
+with :class:`~nulloracle.errors.TargetPayloadError`, rather than serving a
+world it does not hold.
 
 **The three halves, and why they are three modules.**  A sidecar entry is a
 schema (:mod:`nulloracle.assignment`), a cipher (:mod:`nulloracle.envelope`)
@@ -166,11 +185,12 @@ already says:
   :meth:`~nulloracle.sidecar.NullSidecar.assignment` answers for one node.
 * :class:`~nulloracle.target.TargetEndpoint` with
   :class:`~nulloracle.target.TargetRequest` and
-  :class:`~nulloracle.target.TargetResponse` — feature 112's route:
-  ``POST /target``, answering §7.2's request (node, campaign, depth,
-  horizon, symbols, date range) with a ``200`` for a node the sidecar
-  holds and a ``404`` for one it does not, and carrying nothing of the
-  branch either way.
+  :class:`~nulloracle.target.TargetResponse` — features 112 and 113's
+  route: ``POST /target``, answering §7.2's request (node, campaign, depth,
+  horizon, symbols, date range) with a ``200`` carrying the target series
+  and the opaque ``charges_budget`` directive for a node the sidecar holds,
+  and a ``404`` for one it does not — carrying nothing of the branch either
+  way.
 * :class:`~nulloracle.keyref.SidecarKey` with
   :class:`~nulloracle.keyref.KeyReference` and
   :func:`~nulloracle.keyref.ensure_key` — feature 111's seam: the reference
@@ -197,6 +217,8 @@ already says:
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from app.module_loader import register
 
@@ -230,6 +252,7 @@ from .errors import (
     SidecarError,
     SidecarKeyError,
     SidecarStoreError,
+    TargetPayloadError,
     TargetRouteError,
 )
 from .flipdepth import (
@@ -454,6 +477,7 @@ __all__ = [
     "SidecarKeyError",
     "SidecarStoreError",
     "TargetEndpoint",
+    "TargetPayloadError",
     "TargetRequest",
     "TargetResponse",
     "TargetRouteError",
@@ -945,14 +969,36 @@ def build_campaign_plan_gate() -> CampaignPlanGate | None:
 def build_target_route() -> TargetEndpoint | None:
     """Component builder: §7.2's POST /target route, bound to the environment.
 
-    Feature 112's route as a component, so the evaluation whose §6.1 step 5
-    must ask the oracle can ask the composed application for the endpoint
-    the deployment configured rather than resolving the sidecar itself —
-    the same seam the member's other satellites expose.  Resolved from the
-    same environment and the same sidecar builder as
-    :func:`build_null_sidecar`, so the route and the composed
-    ``nulloracle`` component always answer from the same file and can never
-    point at two worlds.
+    Features 112 and 113's route as a component, so the evaluation whose
+    §6.1 step 5 must ask the oracle can ask the composed application for the
+    endpoint the deployment configured rather than resolving the sidecar
+    itself — the same seam the member's other satellites expose.  Resolved
+    from the same environment and the same sidecar builder as
+    :func:`build_null_sidecar`, so the route and the composed ``nulloracle``
+    component always answer from the same file and can never point at two
+    worlds.
+
+    **Feature 115's permutation is wired here, and the other two seams are
+    not.**  §7.2's null branch is *``block_permute(forward_returns,
+    seed=perm_seed, block=20d)``*, and this member owns that mechanism — so
+    the builder composes it in, reading the entry's own stored seed and block
+    length from the assignment the route hands it.  Nothing left over is
+    guessed: the call is the same one :func:`nulloracle.blockpermute.
+    block_permute` makes for any caller, made through a closure so the route
+    need not import the module that owns it.
+
+    The other two seams are deliberately left unwired, because neither is
+    this member's to resolve from an environment variable.  ``targets`` is
+    pipeline step 4's aligned series — the evaluator member's, produced from
+    a sealed snapshot this member may not open — and ``past_flip`` is feature
+    121's store, which a deployment attaches when it composes a route for a
+    Type-D world; both arrive on :class:`~nulloracle.target.TargetEndpoint`'s
+    constructor by the caller that holds them.  A route built here therefore
+    refuses a node by name rather than serving a series it does not have —
+    and it refuses *both* branches, not the null one alone, because a refusal
+    that fell only on null nodes would itself be the branch oracle §7.2
+    forbids.  That is the honest degradation, and the state every deployment
+    is in until it wires step 4's supply.
 
     Takes no arguments — that is the factory's registration protocol — and
     resolves its sidecar at build time.  Construction performs no I/O (the
@@ -969,4 +1015,68 @@ def build_target_route() -> TargetEndpoint | None:
     member's unconfigured environment is not a fault the others pay for.
     """
     sidecar = NullSidecar.resolve()
-    return None if sidecar is None else TargetEndpoint(sidecar)
+    if sidecar is None:
+        return None
+    return TargetEndpoint(sidecar, permute=_stored_permutation)
+
+
+def _stored_permutation(series: Any, *, seed: Any, block_days: Any) -> dict:
+    """Feature 115's permutation, bound to the parameters the entry sealed.
+
+    The closure :func:`build_target_route` hands the route as its ``permute``
+    seam.  §7.2 spells the mechanism over ``forward_returns`` — one node's
+    series — and the route's payload is a cross-section per date, so this
+    closure is where the two grains are reconciled: the blocks feature 115
+    moves are runs of ``block_days`` consecutive *dates*, and each date's
+    whole row of per-symbol returns travels with it.  That is the reading
+    §7.3's preservation claim requires — *"shuffles contiguous 20-day blocks,
+    preserving return autocorrelation and volatility clustering while
+    destroying the signal-to-target relationship"* — because a permutation at
+    ``(date, symbol)`` grain would break each date's cross-section apart,
+    destroying structure the null branch is supposed to keep and planting a
+    null feature 123's guard could detect.
+
+    The days are gathered through
+    :func:`~nulloracle.blockpermute.block_indices`, which is the permutation
+    expressed over *positions* and whose docstring names exactly this case:
+    *"a caller that wants to permute something other than a float series
+    permutes its own positions and gathers."*  The positions here are
+    ``range(len(days))`` — the panel's row indices, in the order the mapping
+    yielded them.  The index form and the series form share the one seeded
+    shuffle, so this closure and a series-grain caller can never disagree
+    about what the permutation did.
+
+    **The dates stay where they are; the rows move between them.**  A panel
+    is a grid, and the grid is the *axis* rather than a series laid out on
+    it, so output slot ``position`` keeps date ``days[position]`` and takes
+    the row that input slot ``order[position]`` held.  Writing
+    ``{days[i]: series[days[i]] for i in order}`` instead would gather each
+    date *with* its own row and rebuild the identical mapping in a different
+    insertion order — and since mapping equality is order-insensitive, the
+    null branch would serve the real series and nothing downstream could
+    tell.  §7.3's whole claim is about rows arriving next to the wrong
+    dates; a permutation that keeps them together moves nothing at all.
+
+    The route never calls this with parameters of its own: ``seed`` and
+    ``block_days`` are read from the :class:`~nulloracle.assignment.
+    NullAssignment` the sidecar returned for this node, which is what makes
+    the permutation reproducible from the sealed world alone (§12) rather
+    than from anything a process remembers.  A missing or malformed parameter
+    is refused by the permutation's own contract — :func:`~nulloracle.
+    blockpermute.block_indices` refuses ``None`` by name — so a route that
+    reached this closure through a seam that drifted is caught by the
+    mechanism rather than by a second validation that could disagree with it.
+    """
+    # Imported lazily, the way the member defers every other mechanism: the
+    # factory's scan imports this package to fire its @register, and the
+    # permutation is only ever reached on a null branch's request.
+    from .blockpermute import block_indices
+
+    days = list(series)
+    rows = [series[day] for day in days]
+    order = block_indices(range(len(days)), seed=seed, block_days=block_days)
+    # The grid holds; the rows move across it.  ``order[position]`` is the
+    # input slot whose row the permuted slot ``position`` receives, so this
+    # gather is what puts a block of returns under a *different* block of
+    # dates — the displacement §7.3 is about.
+    return {days[position]: dict(rows[order[position]]) for position in range(len(days))}

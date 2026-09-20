@@ -94,6 +94,29 @@ violated, not by which line of code failed:
   sidecar is a deployment failure, and dressing it as either a refusal or
   a 404 would read "no such node" off a world the route never saw.
 
+* :class:`TargetPayloadError` — the route's supply contract (app_spec.xml
+  feature 113, §7.2's response body).  The node *is* known and the sidecar
+  answered for it, but the answer §7.2 promises — ``target_series`` plus
+  the opaque ``charges_budget`` — cannot be built without lying: a known
+  node the route has no series for at all, a null node with no permutation
+  to serve it through, a permutation whose answer sits on a different
+  support than the series it permuted, a series covering other symbols than
+  the ask named, or a series reaching outside the span the ask named.  Kept
+  apart from :class:`TargetRouteError` because the two are refused at
+  different points about different things: a route error is a *body* that
+  cannot say what it is asking for and is refused before the sidecar is
+  opened, where a payload error is a *deployment* that cannot serve what
+  the body asked for and is only discoverable after the entry was read.
+  A caller that conflated them would retry a working request against a
+  broken deployment, or file a missing seam as a client bug.
+
+  This is deliberately not the third option — answering anyway.  Serving
+  an empty series on a null branch would hand the evaluator a target
+  series measured against nothing while §8 debits no budget for it; and
+  serving the *real* series on a null branch would hand the caller real
+  signal inside a world planted to have none.  Both read as ordinary
+  answers downstream, which is exactly why the refusal must be loud here.
+
 Every message names the offending value and the contract it broke, in the
 same discipline as the ledger member's taxonomy: these errors are
 operational signals for a system whose whole FDR claim rests on the labels
@@ -113,6 +136,7 @@ __all__ = [
     "SidecarError",
     "SidecarKeyError",
     "SidecarStoreError",
+    "TargetPayloadError",
     "TargetRouteError",
 ]
 
@@ -303,4 +327,50 @@ class TargetRouteError(NullOracleError):
     errors are kept apart: *the request was malformed* and *the store
     could not be read* are different facts, and only the first is about
     the caller.
+    """
+
+
+class TargetPayloadError(NullOracleError):
+    """A known node's §7.2 payload could not be served coherently.
+
+    app_spec.xml feature 113 is the payload — *System returns a target series
+    plus a charges_budget directive from POST /target, never which returns
+    is_null in any form* — and this refusal is the route's supply half: the
+    sidecar holds the node, so the answer is not a 404, but the series §7.2
+    promises cannot be built from what the deployment supplied.
+
+    Five ways that happens, and each of them is a *lie avoided* rather than a
+    bug reported:
+
+    * a node the sidecar holds and the route has no series for at all — no
+      ``targets`` seam composed, or a seam that answered nothing for this ask;
+      a 200 over an empty series would measure the evaluation against nothing
+      while §8 charged it nothing either;
+    * a null node with no permutation to serve it through — the entry's stored
+      ``perm_seed`` and ``block_days`` are only parameters, and a parameter is
+      not a mechanism, so serving the real series in their place would hand
+      the caller real signal inside a world planted to have none;
+    * a permutation whose answer carries a different set of dates than the
+      series it permuted — §7.2's permutation moves a series' day blocks and
+      never adds or drops one, so a series on a different support has been
+      recomputed rather than rearranged, and its support alone would mark the
+      branch;
+    * a series that does not cover the cross-section the request named —
+      neither §7.2 branch can answer for a symbol that was not asked about, so
+      such a series arrived by some other path than this route;
+    * a series whose dates fall outside the span the request's ``date_range``
+      named — an answer reaching past the window the ask stated is an answer
+      to a different ask.
+
+    What is deliberately *not* among them is an identity permutation: see the
+    route module's docstring — a refusal that could only fire on the null
+    branch would itself be the branch oracle §7.2 forbids.
+
+    Distinct from :class:`TargetRouteError`, which is refused *before* the
+    sidecar is opened and is about the caller's body; this one is only
+    discoverable *after* the entry was read and is about the deployment's
+    supply.  Distinct too from the sidecar's own errors, which propagate
+    unwrapped: a sidecar that will not open is not a payload that cannot be
+    built, and a caller that conflated the two would go looking for a missing
+    seam when the key was wrong.
     """

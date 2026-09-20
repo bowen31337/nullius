@@ -58,10 +58,39 @@ class _Ask:
     so its ``TargetRequest`` is not the class a direct import yields; the
     route reads its request duck-typed (validating the identity by value),
     and this stand-in pins that the composed component answers one.
+
+    It carries the ``symbols`` term too, because feature 113's payload must
+    answer the cross-section the ask named: the seat test below drives a
+    *real* node through the route, and a real node's series is served
+    unchanged — so the ask has to state what it asked for.
     """
 
-    def __init__(self, node_id: str) -> None:
+    def __init__(self, node_id: str, symbols: tuple[str, ...] = ("BTCUSDT",)) -> None:
         self.node_id = node_id
+        self.symbols = symbols
+
+
+def _targets(request) -> dict:
+    """The real-return series the composed route is given, per ask.
+
+    Two bars over the ask's own cross-section, with values that differ between
+    them — so a test can tell a permuted series from the real one by reading
+    the values rather than by comparing insertion orders, which a mapping does
+    not carry.
+    """
+    import datetime as dt
+
+    symbols = getattr(request, "symbols", ("BTCUSDT",))
+    return {
+        dt.date(2026, 1, 5): {
+            symbol: 0.01 * (index + 1)
+            for index, symbol in enumerate(symbols)
+        },
+        dt.date(2026, 1, 6): {
+            symbol: 0.05 * (index + 1)
+            for index, symbol in enumerate(symbols)
+        },
+    }
 
 
 def test_the_component_name_matches_the_member() -> None:
@@ -113,16 +142,117 @@ def test_a_configured_environment_composes_the_route(
 
     # And the composed route answers over the composed sidecar: the two
     # components resolve from one environment, so they can never point at
-    # two worlds.
+    # two worlds.  The node below is *real*, so the route serves the series
+    # unchanged and the component's own wired permutation is never reached —
+    # which is what a composition with no step-4 supply can still serve.
     from app.module_loader import create_app
 
     application = create_app()
     sidecar = application.get("nulloracle")
     route = application.get(TARGET_COMPONENT_NAME)
-    sidecar.write([NullAssignment(node_id=node_id, is_null=True, perm_seed=7)])
+    # The series half of feature 113 is pipeline step 4's supply, and it is
+    # not something the member resolves from an environment variable; the
+    # composed component therefore carries none, and the test attaches one
+    # the way a deployment would — alongside the component the factory built,
+    # over the same sidecar.
+    #
+    # ``route._permute`` is asserted present above and is set on the instance
+    # rather than passed here on purpose: a route carrying ``targets`` but no
+    # ``permute`` refuses *both* branches (a missing supply that only the null
+    # branch tripped over would be a branch oracle), so rebuilding the
+    # endpoint without the builder's permutation would test the refusal
+    # instead of the answer this test is about.
+    route._targets = _targets
+    sidecar.write([NullAssignment(node_id=node_id, is_null=False, perm_seed=0)])
     response = route.post(_Ask(node_id))
     assert response.status == 200
     assert response.known is True
+    assert response.charges_budget is True
+    assert set(next(iter(response.target_series.values()))) == {"BTCUSDT"}
+
+
+def test_the_composed_routes_own_permutation_moves_rows_across_dates(
+    sidecar_path, key_ref: str, node_id: str
+) -> None:
+    # The seam ``build_target_route`` wires itself — feature 115's mechanism,
+    # reconciled with the panel's grain — is the one piece of feature 113 that
+    # no other test reaches, because the *builder* composes it and the tests
+    # above attach their own seams instead.  It is also the piece with the
+    # failure mode this suite exists to catch: a gather that carries each date
+    # together with its own row rebuilds the identical mapping, and mapping
+    # equality ignores insertion order, so every other assertion here would
+    # pass while the null branch served the real series.
+    #
+    # So this test drives a *null* node through the route the factory built,
+    # attaching only the series supply (step 4's, which is not this member's
+    # to resolve) and leaving the permutation to the builder.
+    # The application is composed here once and handed to the seat, so the
+    # route and the sidecar below are read from one composition rather than
+    # two — ``target_route_component`` builds its own when given none.
+    from app.module_loader import create_app
+    from app.modules.nulloracle.target import target_route_component
+
+    application = create_app()
+    route = target_route_component(application)
+    sidecar = application.get("nulloracle")
+    assert route is application.get(TARGET_COMPONENT_NAME)
+
+    # The builder's own wiring, asserted before it is used: the composed route
+    # carries a permutation without anyone having supplied one.
+    assert route._permute is not None
+
+    # Only the *series* supply is attached — pipeline step 4's, which is not
+    # this member's to resolve from an environment variable, and which is what
+    # ``build_target_route``'s docstring says the caller supplies on the
+    # constructor.  Attaching it here rather than rebuilding the endpoint
+    # keeps the builder's permutation in place: a fresh
+    # ``type(route)(route.sidecar, targets=...)`` would drop it and the test
+    # would be exercising its own seams again.
+    route._targets = _targets
+
+    # Two bars, so the fixture's series is small enough to reason about, and a
+    # seed whose one-observation blocks genuinely swap them.  Asserted here as
+    # a property of the *fixture* rather than of the route: if a future change
+    # to feature 115's shuffle made this seed an identity permutation, the
+    # test would fail here — naming the fixture — instead of three assertions
+    # later, blaming the route.
+    from nulloracle import block_indices
+
+    asserted_seed, asserted_block = 1, 1
+    order = block_indices(range(2), seed=asserted_seed, block_days=asserted_block)
+    assert tuple(order) != (0, 1)
+
+    sidecar.write(
+        [
+            NullAssignment(
+                node_id=node_id,
+                is_null=True,
+                perm_seed=asserted_seed,
+                block_days=asserted_block,
+            )
+        ]
+    )
+    response = route.post(_Ask(node_id, symbols=("BTCUSDT", "ETHUSDT")))
+
+    assert response.status == 200
+    assert response.charges_budget is False
+    served = response.target_series
+    real = _targets(_Ask(node_id, symbols=("BTCUSDT", "ETHUSDT")))
+    assert served is not None
+    # The grid is intact — the same two dates, and no others — and the rows
+    # have moved across it, which is the whole of §7.3's displacement.  The
+    # multiset of values is preserved (a permutation moves observations, it
+    # never invents one) and at least one date now carries the other's row.
+    assert set(served) == set(real)
+    assert sorted(
+        value for row in served.values() for value in row.values()
+    ) == sorted(value for row in real.values() for value in row.values())
+    assert any(served[day] != real[day] for day in served)
+    # Stated the way a reader would check it: the null answer is not the real
+    # series.  A closure that gathered each date together with its own row
+    # would rebuild ``real`` exactly, and — since mapping equality ignores
+    # insertion order — would satisfy every assertion above except this one.
+    assert served != real
 
 
 def test_composing_the_route_creates_no_sidecar_file(
