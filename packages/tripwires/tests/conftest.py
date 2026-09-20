@@ -3,12 +3,27 @@
 This suite lives inside the workspace member (``packages/tripwires/tests``)
 rather than the repository-level ``tests/`` tree, so the shared fixtures in
 ``tests/conftest.py`` do not reach it — conftest scope follows directories.
-Nothing here needs them: feature 125's probe is a pure function of plain
+Feature 125's probe needs none of them: it is a pure function of plain
 mappings, so there is no lake to isolate, no database to point at and no
-environment to clear.  The absence of those fixtures is itself a property
-worth stating — the member is deliberately stdlib-only and environment-free,
-so a test that needed a temp lake would mean the probe had grown a dependency
-it is not allowed to have.
+environment to clear.  The probe's own tests still need none of them, and that
+is a property worth keeping stated — a probe test that needed a temp lake would
+mean the probe had grown a dependency it is not allowed to have.
+
+**Feature 131 is where a database enters this suite, and it enters on purpose.**
+Poisoning "the node together with its entire subtree" is the transitive closure
+of the discovery tree's ``parent_id``, and no verdict carries that: the feature
+had to reach a store, so its tests have to reach one too.  The two fixtures
+below are that reach and nothing more — a SQLite file under the test's own
+temporary directory, and a store pointed at it.  They are deliberately *named*
+for what they are (``database_url``, ``poison_store``) rather than folded into
+an autouse fixture, so a probe test reads as one that touches no database:
+:func:`test_the_probe_suite_still_needs_no_database` pins exactly that, and it
+is the reason these are not autouse.
+
+The isolation is the repository-level conftest's pattern, restated here because
+that conftest genuinely does not reach this directory: ``tmp_path`` for the
+file, so two tests never share a database and no test can write into a
+deployment's real store.
 
 This file holds *fixtures only*.  The panel builders — ``monday``,
 ``gaussian_panel``, ``lookahead_panel``, ``symbols`` — live beside it in
@@ -66,3 +81,34 @@ def grid() -> list[dt.date]:
 def symbols() -> list[str]:
     """Symbol names at the module's own leak-verification width."""
     return symbol_names(DEFAULT_SYMBOLS)
+
+
+# -- Feature 131's reach: a database, on purpose, for the tests that write ---
+
+
+@pytest.fixture
+def database_url(tmp_path: Path) -> str:
+    """A ``sqlite:///`` URL for a store file only this test can see.
+
+    The repository-level conftest points ``DATABASE_URL`` at a per-test SQLite
+    file for every suite under ``tests/``; this suite is not under ``tests/``,
+    so the isolation is restated rather than inherited.  Deliberately **not**
+    autouse and deliberately not named ``DATABASE_URL``'s value in the
+    environment: a probe test must not acquire a database by accident, and a
+    test that wants one asks for this fixture by name.
+    """
+    return f"sqlite:///{tmp_path / 'tripwires-test.db'}"
+
+
+@pytest.fixture
+def poison_store(database_url: str):
+    """Feature 131's store, pointed at this test's own database.
+
+    Imported inside the fixture so the module-level import list of this file
+    stays what it was for every probe test — the member's package ``__init__``
+    is reached either way, but a reader scanning the imports should not have to
+    work out that ``poison_store`` is the only thing that pulls the store in.
+    """
+    from tripwires import PoisonStore
+
+    return PoisonStore(database_url)

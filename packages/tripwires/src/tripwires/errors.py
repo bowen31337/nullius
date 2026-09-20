@@ -25,6 +25,17 @@ pipeline's own step boundaries already draw:
   has a zero denominator: refusing rather than fabricating an infinity is
   the same stance the metrics step takes on a constant book (feature 80)
   and the coefficient takes on a constant side (feature 81).
+* :class:`TripwirePoisonError` — the *store* half's refusals (feature 131).
+  Both of the errors above are about a probe that runs on panels and never
+  touches a database; this one is about the persistence feature that
+  consumes a probe's verdict, so it is a different kind of refusal in a
+  different place — the split this module's first paragraph draws, applied
+  to the feature that arrives three members later.  A malformed node id, a
+  ``DATABASE_URL`` whose scheme the store cannot speak, a subtree that is
+  its own ancestor, a mark that does not survive being read back: each is
+  a failure of *the record about the node*, not of the panel handed to a
+  tripwire, and a caller that caught the panel error for one of these
+  would be looking in the wrong module for the cause.
 
 There is deliberately no ``TripwireVerdictError``.  A verdict is stated,
 not raised: the two things a tripwire can say about a node are *pass* and
@@ -32,7 +43,10 @@ not raised: the two things a tripwire can say about a node are *pass* and
 TimeShuffleVerdict.rejected`).  A tripwire that raised on detection would
 be indistinguishable, at the trial-ledger layer, from a tripwire that
 crashed — and feature 91's outcome vocabulary exists precisely so those
-two futures do not collapse into one word.
+two futures do not collapse into one word.  Feature 131's refusal is not an
+exception to that rule and does not smuggle one back in: ``poison_node``
+raises only when it could not *persist* the poisoning the verdict already
+stated, and a detected leak handed to it in good order is still a value.
 """
 
 from __future__ import annotations
@@ -40,6 +54,7 @@ from __future__ import annotations
 __all__ = [
     "TripwireError",
     "TripwirePanelError",
+    "TripwirePoisonError",
     "TripwireStatisticError",
 ]
 
@@ -62,3 +77,18 @@ class TripwirePanelError(TripwireError):
 
 class TripwireStatisticError(TripwireError):
     """The panel is well-formed but the statistic is undefined on it."""
+
+
+class TripwirePoisonError(TripwireError):
+    """Feature 131's refusals — the poisoning could not be persisted.
+
+    Raised by the persistence half of this member: a node id that cannot join
+    the tree store's key, a relational store whose URL this member cannot
+    speak, a subtree whose recursion came back to where it started, or a mark
+    that did not survive being read back.  Distinct from the two above by
+    *where* it happens rather than by severity: those describe panels handed
+    to a probe, this describes the record written about the node a probe
+    judged.  A caller that catches :class:`TripwirePanelError` when the
+    database is unreachable has caught the wrong error and will not find out
+    until it reads the message.
+    """

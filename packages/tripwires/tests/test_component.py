@@ -82,13 +82,24 @@ def test_the_member_is_declared_in_the_scanned_workspace() -> None:
     assert (MEMBER_SRC / "tripwires" / "__init__.py").is_file()
 
 
-def test_scanning_the_member_registers_exactly_one_component() -> None:
+def test_scanning_the_member_registers_exactly_the_components_it_owns() -> None:
     # A fresh registry, not the process default: any earlier test that called
     # a bare ``create_app()`` has already imported every workspace member into
     # the current registry, so reading it back here would assert accumulated
     # process state, not this package's contribution.
+    #
+    # The member contributes two components since feature 131: the probe
+    # (``tripwires``, feature 125, stateless and ready the instant it is built)
+    # and the store a failure is persisted to (``tripwires-poison``, feature
+    # 131, which resolves ``DATABASE_URL`` and may legitimately not exist). The
+    # list is pinned exactly rather than by membership, so a *third* component
+    # arriving unnoticed fails here the way the second one would have — which is
+    # the property this test has always been for.
     components = scan_components(MEMBER_SRC, registry=Registration())
-    assert [component.name for component in components] == ["tripwires"]
+    assert sorted(component.name for component in components) == [
+        "tripwires",
+        "tripwires-poison",
+    ]
 
 
 def test_the_composed_application_carries_the_tripwire_component() -> None:
@@ -179,5 +190,7 @@ def test_the_seat_returns_none_when_nothing_registered() -> None:
 def test_the_seat_reads_from_an_application_it_is_handed() -> None:
     from app.modules.tripwires import tripwires_component
 
-    application = Application(components={"tripwires": "sentinel"}, order=("tripwires",))
+    application = Application(
+        components={"tripwires": "sentinel"}, order=("tripwires",)
+    )
     assert tripwires_component(application) == "sentinel"

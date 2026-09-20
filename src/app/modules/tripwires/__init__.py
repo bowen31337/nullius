@@ -33,6 +33,18 @@ component calls ``run``/``pairing``/``threshold`` on it, and those return the
 member's types.  A second spelling of any of that here would be a second thing
 to keep in sync, and the member's one-provenance rule is the reason the
 category restates its vocabularies rather than sharing them by import.
+
+**The member's second component has its own seat beside this one.**  Feature
+131 makes a tripwire failure a fact about the discovery tree, and the store
+that persists it arrives as a second component on its own lifecycle
+(``"tripwires-poison"``) — so it is reached through
+:mod:`app.modules.tripwires.poison` rather than through a second accessor here.
+The split is not tidiness: **this** seat's ``None`` means exactly one thing (no
+tripwires component was registered) because a stateless probe has no
+unconfigured state, while **that** seat's ``None`` means nothing named a
+relational store.  Two accessors in one module would put two different
+``None``\\ s behind one docstring, which is the kind of ambiguity a caller
+reading only this file would resolve wrongly and once.
 """
 
 from __future__ import annotations

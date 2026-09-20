@@ -56,11 +56,26 @@ replay pool, and feature 133 maintains the planted-leak corpus the whole suite
 must score 0 escapes against — and feature 133 lives *in this member*, as
 :mod:`tripwires.corpus`, because the corpus is a set of score panels and the
 verdicts they produce, both of them values this package already owns the
-vocabulary for.  Features 131 and 132 (persistence and excision) are not here,
-and this package persists nothing — a verdict is a *value*, full of its own
-evidence, and the features that own persistence will find everything they need
-on it.  Later features of the category extend this member; they do not
-replace it.
+vocabulary for.  Later features of the category extend this member; they do
+not replace it.
+
+**Feature 131 broke the "this package persists nothing" rule, and that is the
+honest way to say it.**  The note above used to end there — a verdict is a
+*value*, and the features that own persistence would find everything they
+needed on it — and feature 131 is one of those features arriving *in this
+member* rather than beside it, because "the node together with its entire
+subtree" is not a fact a verdict carries and not a fact any other member can
+compute: it is the transitive closure of the discovery tree's own
+``parent_id``, and the tripwires are the component that has to mark it.  So
+:mod:`tripwires.poison` opens a database, and the rule the member keeps is not
+"persists nothing" but the narrower and truer one: *persists nothing of its
+own, and writes only what a stated verdict says to write*.  The probe is still
+a pure function of its inputs; the corpus is still a value; the store is a
+seam a composed application carries as a third component
+(``"tripwires-poison"``), on its own lifecycle, and it writes the mark and the
+audit row and nothing else.  Feature 132's excision — reading those marks and
+rejecting the scores the branch contributed — is still not here, and the
+pool's refusal is the place it must live.
 
 **The layering note, restated because it is a constraint on every import
 below.**  This package is stdlib-only — dates, mappings, sorting, square roots
@@ -92,8 +107,29 @@ from .corpus import (
     CorpusSignal,
     planted_signals,
 )
-from .errors import TripwireError, TripwirePanelError, TripwireStatisticError
+from .errors import (
+    TripwireError,
+    TripwirePanelError,
+    TripwirePoisonError,
+    TripwireStatisticError,
+)
+from .layout import (
+    DATABASE_URL_ENV,
+    NODE_POISONED_COLUMN,
+    NODE_TABLE,
+    node_bootstrap_schema,
+    validated_node_id,
+)
 from .normal import NORMAL_QUANTILE_SWITCH, normal_quantile
+from .poison import COMPONENT_NAME as POISON_COMPONENT_NAME
+from .poison import (
+    POISON_TABLE,
+    PoisonedSubtree,
+    PoisonRecord,
+    PoisonStore,
+    poison_node,
+    poisoned_node_ids,
+)
 from .time_shuffle import (
     DEFAULT_SHUFFLE_LEVEL,
     DEFAULT_SHUFFLE_SEED,
@@ -112,26 +148,40 @@ __all__ = [
     "CORPUS_GRID",
     "CORPUS_SEED",
     "CORPUS_SYMBOLS",
+    "DATABASE_URL_ENV",
     "DEFAULT_SHUFFLE_LEVEL",
     "DEFAULT_SHUFFLE_SEED",
     "HORIZONS",
     "LEAK_KINDS",
+    "NODE_POISONED_COLUMN",
+    "NODE_TABLE",
     "NORMAL_QUANTILE_SWITCH",
+    "POISON_COMPONENT_NAME",
+    "POISON_TABLE",
     "TIME_SHUFFLE_NAME",
     "TRIPWIRE_OUTCOMES",
     "CorpusSignal",
+    "PoisonRecord",
+    "PoisonStore",
+    "PoisonedSubtree",
     "TimeShuffleTripwire",
     "TimeShuffleVerdict",
     "TripwireError",
     "TripwirePanelError",
+    "TripwirePoisonError",
     "TripwireStatisticError",
+    "build_poison_store",
     "build_time_shuffle_tripwire",
+    "node_bootstrap_schema",
     "normal_quantile",
     "planted_signals",
+    "poison_node",
+    "poisoned_node_ids",
     "run_time_shuffle_tripwire",
     "surviving_sharpe",
     "time_shuffle_pairing",
     "time_shuffle_threshold",
+    "validated_node_id",
 ]
 
 __version__ = "0.1.0"
@@ -214,9 +264,7 @@ class TimeShuffleTripwire:
         """
         return time_shuffle_pairing(dates, seed=seed)
 
-    def threshold(
-        self, dates: int, *, level: float = DEFAULT_SHUFFLE_LEVEL
-    ) -> float:
+    def threshold(self, dates: int, *, level: float = DEFAULT_SHUFFLE_LEVEL) -> float:
         """The rejection threshold over ``dates`` measured dates.
 
         ``Φ⁻¹(1 − level/2) / √dates``, computed rather than tabled, so a
@@ -246,3 +294,35 @@ def build_time_shuffle_tripwire() -> TimeShuffleTripwire:
     caller that has the component has the seam they will arrive on.
     """
     return TimeShuffleTripwire()
+
+
+@register(POISON_COMPONENT_NAME)
+def build_poison_store() -> PoisonStore | None:
+    """Component builder: the store a tripwire failure is persisted to (feature 131).
+
+    Takes no arguments — that is the factory's registration protocol — and
+    resolves ``DATABASE_URL`` at build time, so a composed application carries
+    the store for the deployment the process is actually running in.
+
+    Returns ``None`` when nothing names a relational store: the
+    degrade-don't-break stance every store in this workspace takes toward an
+    absent ``DATABASE_URL``, and the same one
+    :func:`~nulloracle.verdict.CampaignVerdict.resolve` takes for the campaign
+    verdict.  An unconfigured poison store is a discoverable state, and the
+    evaluation loop that must persist §C6's rejection is the caller that must
+    not find itself in it — which is why :func:`~tripwires.poison.poison_node`
+    *refuses* rather than silently no-ops when it resolves no store, while this
+    builder stays silent so composition never fails.
+
+    Like the probe's builder, this never raises — including for a URL whose
+    scheme the store cannot speak.  The factory builds every registered
+    component on every :func:`~app.module_loader.create_app` call, so a builder
+    that raised would take composition down for every unrelated feature in the
+    workspace; a process that *requires* a store calls
+    :meth:`~tripwires.poison.PoisonStore.resolve` or passes a URL to
+    ``PoisonStore`` directly, where a named
+    :class:`~tripwires.TripwirePoisonError` is the right answer.  Construction
+    performs no I/O — the path is resolved on first use — so composing the
+    application never opens a database.
+    """
+    return PoisonStore.resolve()
