@@ -138,6 +138,23 @@ code failed:
   shared cost library, and a second implementation here — refusing its own
   fee cases with its own errors — would be exactly the divergence ``β₄``
   penalizes (see ``_costs``).
+* :class:`EvaluatorCapacityError` — the capacity-and-attribution contract
+  (app_spec.xml feature 82). Step 8 of §6.1's pipeline sizes the book the
+  post-cost edge supports and splits that edge across regime strata, so the
+  failures here are failures of those two measurements: a bundle that is not
+  step 7's own result (capacity sizes the returns that were actually priced,
+  and the gross series alone cannot say which schedule priced them), a
+  dollar-volume map that does not cover every (symbol, date) the returns
+  scored (a missing volume is not free liquidity — it would read a name
+  nobody can trade as infinitely tradable), a volume that is not a positive
+  finite number, a label map whose grid dates all carry no stratum (nothing
+  to attribute), a bundle where no horizon carries a return (no edge to
+  size), and a record built by hand whose capacity is not the minimum of its
+  own horizons or whose binding horizon does not achieve it. Deliberately
+  *not* here: any per-trade impact pricing — that is the shared cost
+  library's fill model (§6.2, features 63-66), and this metric consumes
+  liquidity as a *fact* while pinning only the estimator that combines it
+  with the measured edge (see ``_capacity``).
 * :class:`EvaluatorGateError` — the null-gate supply contract (app_spec.xml
   feature 76). Step 5 of §6.1's pipeline is the only place the null
   substitution happens, so the failures here are failures of that
@@ -160,6 +177,7 @@ from __future__ import annotations
 
 __all__ = [
     "EvaluatorAlignmentError",
+    "EvaluatorCapacityError",
     "EvaluatorConfigError",
     "EvaluatorCostError",
     "EvaluatorEmbargoError",
@@ -342,6 +360,28 @@ class EvaluatorCostError(EvaluatorError):
     implementation inside the evaluator would be precisely the divergence
     ``β₄`` penalizes — so the fee schedule arrives as an injected seam and
     its failures propagate as its own.
+    """
+
+
+class EvaluatorCapacityError(EvaluatorError):
+    """The capacity estimate or regime attribution could not be computed.
+
+    Raised by :func:`evaluator.estimate_capacity` and
+    :func:`evaluator.attribute_regimes` (app_spec.xml feature 82) when step 8
+    of the §6.1 pipeline cannot size the book or split its edge: a bundle
+    that is not step 7's own result, a dollar-volume map that misses a
+    (symbol, date) the returns scored (a missing volume is not free
+    liquidity), a volume that is not a positive finite number, a label map
+    that names no stratum for any grid date, a bundle whose every horizon is
+    empty (no edge to size), and a record built by hand whose capacity is
+    not the minimum of its own per-horizon estimates or whose binding
+    horizon does not achieve that minimum.
+
+    Deliberately *not* here: per-trade impact pricing. Sizing a *trade* is
+    the shared cost library's fill model (§6.2, features 63-66); this
+    metric consumes liquidity as a market fact and pins only the estimator
+    that combines that fact with the measured edge, the way feature 74 pins
+    the z-score rather than asking the deployment to inject one.
     """
 
 

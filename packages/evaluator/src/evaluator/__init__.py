@@ -109,7 +109,18 @@ contribution is the pairing rather than the prices. The step also *forwards*
 §7.2's opaque budget directive untouched, because the steps that consume it
 (features 80, 83 and 84) receive step 7's record rather than the gate's, and
 feature 84's trial charge has to be written even when an evaluation failed —
-so a bit dropped here is one no later step can go back for. The rest of the pipeline
+so a bit dropped here is one no later step can go back for. Feature 82 adds the first two of step
+8's metrics: :func:`estimate_capacity` sizes the largest equal-weight book
+whose square-root-law impact drag leaves half of the measured post-cost
+edge — the dollar answer to the PRD's "works on $50k but not $50M" — and
+:func:`attribute_regimes` splits that same edge across the named strata of
+feature 58's causal labels, with :func:`persist_capacity` writing both
+halves in one transaction as the durable source the artifacts member's
+``regime_attribution.json`` (feature 172) reads back. The two stay
+import-cheap the way the whole step does: stdlib-only, with the liquidity
+and the labels arriving as *values* — the sealed dollar volumes and the
+labeler's answer, the same seam the closes arrive through — so no member
+is imported and no fit is restated. The rest of the pipeline
 (purge and embargo, metrics) is the rest of this category's features, and
 each layers on this identity, this window, this execution, this
 normalization, this alignment, this gate and this pricing
@@ -140,6 +151,7 @@ from ._config import (
 )
 from ._errors import (
     EvaluatorAlignmentError,
+    EvaluatorCapacityError,
     EvaluatorConfigError,
     EvaluatorCostError,
     EvaluatorEmbargoError,
@@ -228,6 +240,25 @@ from ._cost_store import (
     load_signal_returns,
     persist_signal_returns,
 )
+from ._capacity import (
+    CAPACITY_STEP,
+    EDGE_SURVIVAL_FRACTION,
+    IMPACT_COEFFICIENT,
+    CapacityEstimate,
+    HorizonCapacity,
+    RegimeAttribution,
+    StratumAttribution,
+    StratumSlice,
+    attribute_regimes,
+    estimate_capacity,
+)
+from ._capacity_store import (
+    NODE_CAPACITY_TABLE,
+    REGIME_ATTRIBUTION_TABLE,
+    CapacityStore,
+    load_capacity,
+    persist_capacity,
+)
 from ._service import ENV_IMAGE, EvaluatorService, build_evaluator_service
 from ._window import (
     ROSTER_STREAM,
@@ -292,6 +323,24 @@ __all__ = [
     "PostCostStore",
     "load_signal_returns",
     "persist_signal_returns",
+    # Feature 82 — the capacity estimate and the regime attribution
+    "CAPACITY_STEP",
+    "EDGE_SURVIVAL_FRACTION",
+    "IMPACT_COEFFICIENT",
+    "CapacityEstimate",
+    "HorizonCapacity",
+    "RegimeAttribution",
+    "StratumAttribution",
+    "StratumSlice",
+    "EvaluatorCapacityError",
+    "attribute_regimes",
+    "estimate_capacity",
+    # Feature 82 — persisting both into the node artifact record
+    "NODE_CAPACITY_TABLE",
+    "REGIME_ATTRIBUTION_TABLE",
+    "CapacityStore",
+    "load_capacity",
+    "persist_capacity",
     # Feature 70 — the first term: the pinned container image
     "DIGEST_ALGORITHM",
     "DIGEST_HEX_LENGTH",
