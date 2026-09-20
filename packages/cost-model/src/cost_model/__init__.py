@@ -41,6 +41,27 @@ touch-fill the sentence rules out and this library does not carry it.  It
 is the gate features 64 and 65 build on: the queue-position penalty and the
 fill-probability decay price a fill this feature has already granted.
 
+Feature 64 layers onto that gate from the fill model's passive half:
+*System charges a queue-position penalty in basis points on every passive
+fill, so a zero-maker venue still returns a nonzero cost.*  It is §6.2's
+``passive.queue_position_penalty_bps: 1.5`` made concrete, and
+:mod:`cost_model.queue_penalty` holds it — the resolved rate
+(:class:`~cost_model.queue_penalty.QueuePositionPenaltyModel`) and the
+charge it levies on a fill (:class:`~cost_model.queue_penalty.QueuePenalty`,
+which reads :attr:`~cost_model.queue_penalty.QueuePenalty.cost_bps`).  It
+takes feature 63's decision as evidence and answers what that fill *cost*:
+a filled order is charged the rate, an order the tape merely touched or
+never reached is charged nothing, and the charge is flat per fill rather
+than per unit — the queue depth is priced by feature 65 as a quantity, and
+billing it again here would charge one fact twice.  It is what makes
+`docs/alpha-engine-prd.md` §10's claim true: *"Going 0%-maker does not make
+trading free. It converts fee cost into adverse-selection cost on passive
+fills"* — a zero-maker venue whose passive orders fill still returns a
+nonzero cost, because the maker's cost moved into the queue rather than
+disappearing.  A document that omits the field is refused, because a cost
+defaulted to zero silently is the floored simulator that feature exists to
+prevent; a document that sets it to ``0.0`` is answered honestly.
+
 Feature 65 layers onto that gate from the fill model's passive half:
 *System models passive fill probability as exponential decay against queue
 depth, which returns a fill fraction per rebalance.*  It is §6.2's
@@ -173,6 +194,13 @@ from .passive_fill import (
     fill_passive_order,
     resolve_passive_fill_model,
 )
+from .queue_penalty import (
+    QUEUE_POSITION_PENALTY_KEY,
+    QueuePenalty,
+    QueuePositionPenaltyModel,
+    charge_queue_position_penalty,
+    resolve_queue_position_penalty_model,
+)
 from .service import CostModelService, build_cost_model_service
 from .store import (
     COST_MODEL_TABLE,
@@ -198,6 +226,7 @@ __all__ = [
     "LATENCY_TABLE",
     "PASSIVE_KEY",
     "QUANTILE_METHOD",
+    "QUEUE_POSITION_PENALTY_KEY",
     "REQUIRE_TRADE_THROUGH_KEY",
     "SELL",
     "WALK_BOOK_KEY",
@@ -218,10 +247,13 @@ __all__ = [
     "PassiveFillModel",
     "PassiveOrder",
     "QueueObservation",
+    "QueuePenalty",
+    "QueuePositionPenaltyModel",
     "RecordedBook",
     "RecordedTape",
     "Trade",
     "build_cost_model_service",
+    "charge_queue_position_penalty",
     "fill_passive_order",
     "load_cost_model",
     "load_latency_distributions",
@@ -236,6 +268,7 @@ __all__ = [
     "resolve_aggressive_fill_model",
     "resolve_fill_probability_model",
     "resolve_passive_fill_model",
+    "resolve_queue_position_penalty_model",
     "walk_recorded_book",
 ]
 

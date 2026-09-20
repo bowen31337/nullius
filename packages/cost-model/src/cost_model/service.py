@@ -60,6 +60,10 @@ from .latency_store import (
     persist_latency_distribution,
 )
 from .passive_fill import PassiveFillModel, resolve_passive_fill_model
+from .queue_penalty import (
+    QueuePositionPenaltyModel,
+    resolve_queue_position_penalty_model,
+)
 from .store import (
     DATABASE_URL_ENV,
     load_persisted_cost_model,
@@ -303,6 +307,29 @@ class CostModelService:
         grow back.
         """
         return resolve_fill_probability_model(self.document)
+
+    def queue_penalty(self) -> QueuePositionPenaltyModel:
+        """Resolve the passive queue-position penalty from the loaded document.
+
+        Feature 64's configuration half: §6.2's document names the rate
+        (``fill_model.passive.queue_position_penalty_bps: 1.5``), and this
+        is the caller's handle on it — the evaluator and the live execution
+        engine both charge a passive fill through the composed service, so
+        the two cannot each grow their own penalty (feature 69's promise,
+        and §6.2's ``β₄`` invariant).  The rate is resolved from the one
+        cached parse (see :attr:`document`), so it is the behaviour of the
+        document the resolved identity was loaded from — the same parse the
+        passive gate, the fill-probability decay and the aggressive walk
+        read, so the passive half's gate, its fraction and its cost cannot
+        disagree about which document was loaded.
+
+        Raises :class:`~cost_model.errors.CostModelConfigError` when the
+        document names no penalty rate, or names one that is not a
+        non-negative finite real — a cost defaulted to zero silently is the
+        floored simulator `docs/alpha-engine-prd.md` §10 warns about, and a
+        document that omits the field has not named the behaviour.
+        """
+        return resolve_queue_position_penalty_model(self.document)
 
     def persist_latency(
         self,

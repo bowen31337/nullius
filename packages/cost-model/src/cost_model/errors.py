@@ -22,17 +22,20 @@ not by which line of code failed:
   the stance that separates the two.
 * :class:`CostModelFillError` — the fill-input contract
   (:mod:`cost_model.book_walk`, feature 66,
-  :mod:`cost_model.passive_fill`, feature 63, and
-  :mod:`cost_model.fill_probability`, feature 65).  A recorded book, an
+  :mod:`cost_model.passive_fill`, feature 63,
+  :mod:`cost_model.fill_probability`, feature 65, and
+  :mod:`cost_model.queue_penalty`, feature 64).  A recorded book, an
   aggressive order or a walk over them; a recorded tape, a passive order or
-  a gate over them; or a rebalance's queue observation or the fraction
-  decayed from it, that the fill model cannot price: a ladder whose levels
-  are out of order, a book with an empty or crossed side, an order the
-  recorded depth cannot fill, a tape that carries a non-trade, a decision
-  that asserts a fill with no triggering trade, a negative queue depth.  Each
-  is refused rather than smoothed over, because the alternative — pricing the
-  unpriceable — is exactly the unrealistic fill figure the feature's sentence
-  rules out.
+  a gate over them; a rebalance's queue observation or the fraction decayed
+  from it; or a fill charged a queue-position penalty at an impossible rate,
+  that the fill model cannot price: a ladder whose levels are out of order,
+  a book with an empty or crossed side, an order the recorded depth cannot
+  fill, a tape that carries a non-trade, a decision that asserts a fill with
+  no triggering trade, a negative queue depth, a negative penalty rate (a
+  rebate is not a penalty), a non-`PassiveFillDecision` handed to the charge.
+  Each is refused rather than smoothed over, because the alternative —
+  pricing the unpriceable — is exactly the unrealistic fill figure the
+  feature's sentence rules out.
 
 Every message names the offending value and the contract it broke, because
 these are operational signals for a pipeline that loads a Z0 artifact on
@@ -124,6 +127,22 @@ class CostModelFillError(ValueError, CostModelError):
     remove.  (A level that traded *nothing* is not this error: that is a
     recorded fact the decay answers with an honest zero, the way an empty
     tape is an honest no-fill for feature 63.)
+
+    Feature 64: *"System charges a queue-position penalty in basis points on
+    every passive fill, so a zero-maker venue still returns a nonzero
+    cost."*  This is the same contract on the charge: a penalty rate handed
+    beside a fill that is not a non-negative finite number of basis points,
+    or a fill that is not feature 63's own decision, where the one thing the
+    charge must not do is answer with a number anyway, because a cost
+    produced from an impossible rate or from something that is not a fill
+    would be *unrealistic by construction*, which is precisely the defect
+    the feature exists to remove.  (An order the tape never filled is not
+    this error: that is the true answer the gate recorded, and feature 64
+    charges it nothing — see
+    :attr:`cost_model.queue_penalty.QueuePenalty.cost_bps`.  Neither is a
+    *configured* rate of ``0.0``, which is a legal document value whose
+    honest answer is a zero cost: a malformed configured rate is the
+    document's defect and is :class:`CostModelConfigError`.)
 
     Dual-inherited for the same reason :class:`CostModelConfigError` is: a
     caller catching this package's single vocabulary catches a refused fill
