@@ -223,6 +223,34 @@ features persist land inside the directories this store keys.
   through feature 174's load once per key, and neither is a second
   decoder.
 
+* **The book's Cholesky factor is precomputed once, as a value**
+  (:mod:`artifacts._factor`, feature 177).  §9.3's arithmetic answer
+  — *"the book is **fixed during a replay**, so precompute the book's
+  Cholesky factor once at ``O(k³)`` and every candidate is a rank-1
+  update at ``O(kT + k²)`` — roughly 40 µs"* — has two halves, and
+  this module is the first: :func:`precompute_book_cholesky` takes
+  the book's members as rows of the resident campaign array (feature
+  174's load, feature 175's pin — no second decoder, no second
+  lifetime), computes their covariance over the periods every member
+  measured (each row centered on its mean, population ``1/T``, the
+  evaluator's own coefficient, every sum ``fsum``), and factors it
+  once into the reusable :class:`BookCholesky` every candidate
+  evaluation threads — a frozen ``k × k`` float64 lower triangle
+  with the membership as its canonical axis and the shared sample
+  spelled beside it, so feature 178's rank-1 update aligns on
+  exactly the columns the factor was measured over.  The second half
+  — the update, and the ~40 µs number — is feature 178's.  A value,
+  deliberately, and not a residence: §9.3 closes with *"no
+  canonical-book cache anywhere"*, and the book is an argument of
+  ``ir_marginal`` rather than a dimension of the data (the reason
+  feature 176 declines), so nothing here keys, stores or outlives a
+  factor — the replay that precomputed it owns it.  Positive
+  definiteness is required rather than patched: a member linearly
+  dependent on the committed ones (a duplicate, a constant, a
+  combination) refuses naming the member, because a jittered factor
+  would feed every candidate an invented covariance and break the
+  determinism §10.4 pins.
+
 * **The two per-date series persist as Parquet** (:mod:`artifacts._series`,
   feature 171).  §9.2's ``ic_series.parquet`` and ``turnover_series.parquet``
   — the two lines between the returns grid and the edge's JSON documents —
@@ -307,6 +335,7 @@ from ._dedup import (
     reject_duplicate,
 )
 from ._errors import (
+    ArtifactBookFactorError,
     ArtifactCacheError,
     ArtifactDeduplicatedError,
     ArtifactKeyError,
@@ -325,6 +354,12 @@ from ._execution import (
     execution_trace,
     persist_execution,
     source_code_hash,
+)
+from ._factor import (
+    BOOK_FACTOR_POLICY,
+    FACTOR_TYPECODE,
+    BookCholesky,
+    precompute_book_cholesky,
 )
 from ._keys import (
     campaign_directory,
@@ -394,6 +429,7 @@ from ._store import (
 __all__ = [
     "ABSENT",
     "ARTIFACT_ROOT_ENV",
+    "BOOK_FACTOR_POLICY",
     "CAMPAIGN_LOAD_HORIZON",
     "CAMPAIGN_SIZING_FOOTPRINT_BYTES",
     "CAMPAIGN_SIZING_NODES",
@@ -410,6 +446,7 @@ __all__ = [
     "DEDUP_COMPONENT_NAME",
     "DEFAULT_ROOT_NAME",
     "DUPLICATE_CODE_HASH",
+    "FACTOR_TYPECODE",
     "FLOAT32_TYPECODE",
     "GROSS_COLUMN",
     "HORIZON_COLUMN",
@@ -429,6 +466,7 @@ __all__ = [
     "TRACE_FILENAME",
     "TURNOVER_SERIES_FILENAME",
     "VALUE_COLUMN",
+    "ArtifactBookFactorError",
     "ArtifactCacheError",
     "ArtifactDeduplicatedError",
     "ArtifactKeyError",
@@ -439,6 +477,7 @@ __all__ = [
     "ArtifactStore",
     "ArtifactStoreError",
     "ArtifactsError",
+    "BookCholesky",
     "CampaignPin",
     "CampaignPins",
     "CampaignReturns",
@@ -474,6 +513,7 @@ __all__ = [
     "persist_regime_attribution",
     "persist_signal_returns",
     "persist_turnover_series",
+    "precompute_book_cholesky",
     "regime_attribution",
     "regime_attribution_is_persisted",
     "reject_duplicate",

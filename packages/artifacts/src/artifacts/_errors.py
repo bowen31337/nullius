@@ -94,6 +94,25 @@ by which line of code failed:
   holds no nodes for stays :class:`ArtifactNotFoundError`, exactly as a
   direct :func:`~artifacts.load_campaign_returns` answers it.
 
+* :class:`ArtifactBookFactorError` — the book Cholesky factor's
+  contract (app_spec.xml feature 177).  The precompute is taken over
+  one already-loaded :class:`~artifacts.CampaignReturns` — no store,
+  no I/O — so everything it refuses is a lie about the book or its
+  sample: a first argument that is not the resident array, a book
+  holding no members, a member named twice, a member the array holds
+  no row for, members sharing no period every one measured, a book
+  wider than its sample (``k`` members need ``T ≥ k + 1``: centering
+  leaves each T-vector in ``T − 1`` dimensions), or a member linearly
+  dependent on the ones before it — the pivot the factorization
+  refuses to take, jitter never added.  Split from the cache's and
+  the pins' contracts the way they split from each other: feature 176
+  owns which *value* may reside, feature 175 owns how long a *hold*
+  lasts, and this feature owns the honesty of one derived arithmetic
+  — the factor must be the book's own covariance, or nothing.  The
+  same validation guards the record built by hand
+  (:class:`~artifacts.BookCholesky`), whose lies are about the buffer
+  rather than the book.
+
 Every message names the offending value and the contract it broke, in
 the same discipline as the snapshot and null-oracle taxonomies: these
 errors are operational signals for a system whose replay determinism
@@ -104,6 +123,7 @@ must be *speakable*, not merely loggable.
 from __future__ import annotations
 
 __all__ = [
+    "ArtifactBookFactorError",
     "ArtifactCacheError",
     "ArtifactDeduplicatedError",
     "ArtifactKeyError",
@@ -277,4 +297,36 @@ class ArtifactPinError(ArtifactsError):
     :class:`ArtifactStoreError`, each the load's own vocabulary — this
     class is the hold's seam, not a wrapper that would give one refusal
     two spellings depending on which seam was crossed.
+    """
+
+
+class ArtifactBookFactorError(ArtifactsError):
+    """The book Cholesky factor could not be taken or built as given.
+
+    app_spec.xml feature 177: *System precomputes the book Cholesky
+    factor once per replay, which returns a reusable factor for every
+    candidate.*  The precompute is a pure function of one resident
+    :class:`~artifacts.CampaignReturns` — no store, no filesystem, no
+    second decoder — so every refusal it speaks is about the book or
+    the sample, never about I/O: a book holding no members (an empty
+    book has no covariance to factor, and the candidate-alone
+    question is feature 80's), a member named twice (singular by
+    construction), a member the array holds no row for, members
+    sharing no period every one measured (a covariance is defined
+    over one sample measured together), a book wider than its sample
+    (``k`` members need ``T ≥ k + 1`` — centering leaves each
+    T-vector in ``T − 1`` dimensions), or a member linearly dependent
+    on the ones before it, the pivot named in the refusal.
+
+    The last of those is a *verdict about the book*, not a breakage:
+    nothing failed, the arithmetic discovered that a committed member
+    adds no dimension the book does not already hold, and no jitter
+    is added to smooth it over — a regularized factor would feed
+    every candidate an invented covariance and break the determinism
+    §10.4 pins.  The same class speaks for the record built by hand
+    (:class:`~artifacts.BookCholesky`), where the lies are about the
+    buffer — a ragged length, a non-zero upper triangle, a
+    non-positive diagonal, a non-finite cell, an axis out of order —
+    so a caller catching it covers every way a factor can fail to be
+    the book's own covariance.
     """
