@@ -99,6 +99,27 @@ features persist land inside the directories this store keys.
   refusing the pair anywhere.  Nothing here charges: the ledger is feature
   84's, the debit endpoint feature 95's, and this module owns only the
   ordering the feature states.
+
+* **The executed source and its trace persist as one pair**
+  (:mod:`artifacts._execution`, feature 173).  §9.2's last two lines —
+  ``code.py`` and ``exec_trace.json`` — are the only records of the
+  *execution* itself, every other file in the directory being data one
+  run derived; §1 grants replay read access to this store and nothing
+  else, so the run's bytes and behaviour live in the node's directory
+  or nowhere.  :func:`persist_execution` stages both halves through the
+  store's write path as one operation (the "plus" is the contract: a
+  source without its trace, or a trace without its source, is the half
+  pair the feature exists to prevent, and no spelling of this layer
+  can stage one), the node's :meth:`~artifacts.ArtifactStore.commit`
+  publishes them alongside every stored artifact file, and
+  :func:`executed_source`/:func:`execution_trace` answer the pair back
+  by the same two keys while :func:`execution_is_persisted` reports the
+  invariant for a published node.  The trace's *vocabulary* is the
+  evaluator's (feature 85's fingerprint); this layer owns the names,
+  the pairing, the canonical JSON bytes and the identity tie —
+  :func:`source_code_hash` derives the sha256 §9.1's ``code_hash``
+  column carries from the very text staged as ``code.py``, so the row
+  and the directory cannot disagree about which code a node ran.
 """
 
 from __future__ import annotations
@@ -124,6 +145,15 @@ from ._errors import (
     ArtifactProposalError,
     ArtifactsError,
     ArtifactStoreError,
+)
+from ._execution import (
+    SOURCE_FILENAME,
+    TRACE_FILENAME,
+    executed_source,
+    execution_is_persisted,
+    execution_trace,
+    persist_execution,
+    source_code_hash,
 )
 from ._keys import (
     campaign_directory,
@@ -152,7 +182,9 @@ __all__ = [
     "DUPLICATE_CODE_HASH",
     "NODE_CODE_HASH_INDEX",
     "NODE_TABLE",
+    "SOURCE_FILENAME",
     "STAGING_ROOT_NAME",
+    "TRACE_FILENAME",
     "ArtifactDeduplicatedError",
     "ArtifactKeyError",
     "ArtifactNotFoundError",
@@ -166,8 +198,13 @@ __all__ = [
     "build_dedup_gate",
     "campaign_directory",
     "canonical_code_hash",
+    "executed_source",
+    "execution_is_persisted",
+    "execution_trace",
     "node_directory",
+    "persist_execution",
     "reject_duplicate",
+    "source_code_hash",
     "validate_campaign_id",
     "validate_filename",
     "validate_node_id",
