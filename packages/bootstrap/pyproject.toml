@@ -1,0 +1,48 @@
+# nullius workspace member: the bootstrap plugin
+# (app_spec.xml, "Bootstrap Worlds", feature 181;
+# docs/nullius-tech-architecture.md §10.6 for the pool this package
+# authors, §10.6.1 for the ported worlds that share its interface).
+#
+# Joins the uv workspace by convention — packages/bootstrap with this
+# file — so the module loader (src/app/module_loader.py) discovers it by
+# scanning the members the root pyproject.toml declares.  No edit to any
+# central registry, router table or app factory is needed or wanted to
+# wire this package in.
+#
+# Dependencies: the workspace root, and nothing else.  The factory's
+# registration protocol (`import app.module_loader`) is the whole of it.
+#
+# The world this feature authors is *synthetic*: the fixed model and the
+# fixed dataset §10.6 asks for are generated from the world's own seed by
+# a pure integer hash, so there is no data file to ship, no download to
+# declare and no third-party numerics to trust.  The arithmetic §3.3's
+# objective is measured over — an ordinary least-squares fit and its
+# held-out R² — is a small dense solve this member writes out in stdlib
+# floats, the same stance the artifacts member takes for its rank-1
+# update and the evaluator takes for its metrics.  numpy would be a
+# dependency for one `solve`, and §10.4's determinism contract is a
+# property of *this* arithmetic rather than of whichever BLAS the
+# deployment resolved, so the member owns it.
+#
+# That the world needs no dependency is a property of the feature and not
+# an accident: §10.6's pool-size precondition is a *compute* problem
+# precisely because the worlds are generated rather than found, and a
+# world that had to be fetched could not be authored 40-50 at a time on
+# demand (feature 188, a later feature in this category).
+
+[project]
+name = "bootstrap"
+version = "0.1.0"
+description = "Exposes non-financial ground-truth worlds: a fixed model and dataset with an honest label per node."
+requires-python = ">=3.12"
+dependencies = ["nullius"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bootstrap"]
