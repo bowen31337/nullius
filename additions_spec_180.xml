@@ -1,0 +1,186 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 180 (downsample the high-frequency return series to daily for replay, retaining the fine series for promotion)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 180 in the artifacts plugin: the system
+    downsamples a node's high-frequency (per-symbol, per-period) post-cost
+    return grid — the signal_returns.parquet of feature 170 — to a single
+    equal-weight per-date daily return, and persists that daily series as a
+    new date-keyed Parquet file inside the node's artifact directory, without
+    disturbing the fine grid it is derived from. The fine series is retained
+    verbatim for the final promotion decision; the daily series is the
+    coarser input replay-time IR is computed over once the tree has moved to
+    intraday rebalancing. The feature is the per-node, persisted counterpart
+    to feature 174's campaign-scale dense load: 174 loads one campaign's
+    returns as one resident array, this feature produces the per-node daily
+    series that resident array is built from when the bars are finer than
+    daily. It depends on feature 174 (it is specified in the same resident
+    array's shadow and reuses the same equal-weight reduction) and on feature
+    170 (it reads the fine grid through feature 170's own read side, adding no
+    second decoder). It stays on the member's stance: the downsample is the
+    evaluator's own equal-weight per-date reduction of the post-cost returns
+    (feature 80), nothing is zero-filled, absence is NaN not zero, the horizon
+    is a policy (the shortest horizon every priced date covers, the same
+    METRICS_HORIZON rule feature 174 pins), the daily file rides feature 169's
+    staged write path and feature 171's date32/float64 series codec, and a
+    node with no priced grid refuses rather than answering an empty daily
+    series. No shared file is touched.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/artifacts member, import artifacts) / pytest (ruff + mypy conventions)</stack>
+    <test_baseline>artifacts suite under packages/artifacts/tests/, stdlib-only modules plus PyYAML where the config layer is exercised and pyarrow where the Parquet codecs (series, returns, daily) are exercised. The repository-level tests/ tree is separate and is not collected by this member's suite; run the member suite (packages/artifacts/tests) under its own conftest, because same-basename files collide under one pytest run.</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, docstrings that
+      cite app_spec.xml feature numbers and docs/nullius-tech-architecture.md
+      sections, stdlib-only computation, third-party imports (pyarrow) deferred
+      to first use via require_arrow(), @register only in the package __init__
+      (never a submodule), degrade-don't-break composition. The member never
+      imports another workspace member. Values are validated at construction and
+      at the codec seam; absence is NaN not zero; a stored measurement keeps the
+      float64 the evaluator computed. Tests assert on observed behaviour with
+      long narrative docstrings explaining the "why", and name the campaign,
+      node and file in every refusal.
+    </conventions>
+  </existing_context>
+  <!-- Layout mirrors the clean main app_spec.xml: uv-workspace is what makes
+       plugin="artifacts" resolve to the real packages/artifacts/ tree rather
+       than the single-package src/plugins/artifacts/ default. Parsed before
+       features. -->
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Downsample to daily">
+      <feature index="1" shape="plugin" plugin="artifacts" depends_on="170">
+        <description>System persists a node's downsampled daily return series as a new date-keyed Parquet file (daily_returns.parquet) inside the node's artifact directory, reducing the node's fine per-symbol, per-period post-cost grid (signal_returns.parquet, feature 170) to one equal-weight per-date daily return — the mean over the symbols each date holds of that date's post-cost returns at the pinned horizon, feature 80's own reduction — staged through feature 169's write path and published by the node's one commit, alongside and without disturbing the fine grid it is derived from</description>
+      </feature>
+      <feature index="2" shape="plugin" plugin="artifacts" depends_on="1">
+        <description>System answers a node's downsampled daily return series back by the node's same two keys through feature 169's read surface as {date: daily_return} in ascending date order, refusing bytes this member's writer cannot have produced (not Parquet, the wrong date32/float64 columns, a null or non-finite entry, a duplicate date, a file naming a node other than the one it was read from) with a named error rather than answering a stand-in</description>
+      </feature>
+      <feature index="3" shape="plugin" plugin="artifacts" depends_on="1,2">
+        <description>System pins the horizon the daily downsample reduces over as a policy rather than a caller's guess — the shortest horizon every priced date of the node's grid covers, the evaluator's METRICS_HORIZON rule restated for the daily file, the same policy feature 174 pins at campaign scale — with an explicit horizon= override for a caller measuring at another axis, refusing a pinned horizon the node's grid covers no date of</description>
+      </feature>
+      <feature index="4" shape="plugin" plugin="artifacts" depends_on="1,2,3">
+        <description>System keeps the fine series and the daily series as two distinct artifacts for two distinct decisions: the fine signal_returns grid is retained verbatim and is never reduced, overwritten or dropped by the downsample, and is the source the final promotion decision reads; the daily series is the coarser replay-time input; a node whose fine grid is absent refuses the downsample rather than answering an empty daily series, and re-persisting the daily file re-stages the one name, keeping the last bytes, never a splice of two runs</description>
+      </feature>
+      <feature index="5" shape="plugin" plugin="artifacts" depends_on="1,2,3,4">
+        <description>System exposes the daily downsample and its invariants from the artifacts package __init__ alongside the existing symbols — a persist function, a read function, an is-persisted predicate and the file's name and column constants — exported through the package __init__ (never a submodule @register), so research evaluation and live execution import one spelling and the daily file sits beside the existing series and grid seams</description>
+      </feature>
+    </category>
+    <category name="Downsample to daily — verification">
+      <feature index="6" shape="plugin" plugin="artifacts" depends_on="1,2,3,4,5">
+        <description>System passes an end-to-end test in which a node's fine grid at horizon 1 over a set of rebalance dates downsamples to the equal-weight per-date daily returns the reduction computes by hand (mean of the day's post-cost returns over the symbols that date holds), the daily file is float64 and date32 and sorted by date so two equal downsamples stage identical bytes, a date the grid priced at no horizon is absent (NaN) not zero-filled in the daily series, a node whose fine grid is absent refuses the downsample, the fine grid is unchanged after the downsample is persisted, the horizon is the shortest every priced date covers unless overridden, and the daily series is read back and answered by the node's same two keys through the store's read surface</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    New module packages/artifacts/src/artifacts/_daily.py owning the downsample:
+    the equal-weight per-date reduction of a node's fine grid (feature 170's
+    signal_returns) to one daily return per date, the persist/read/is-persisted
+    seams over feature 169's write path, and the file's name and column
+    constants. Reuses feature 171's date32/float64 series codec
+    (encode_series/decode_series and PARQUET_COMPRESSION, imported from
+    artifacts._series) rather than a second codec, and feature 80's equal-weight
+    reduction (math.fsum over the day's post-cost returns over their count)
+    restated for the daily file. Reads the fine grid only through feature 170's
+    signal_returns read side — no second decoder. The fine grid
+    (signal_returns.parquet) is never written, overwritten or dropped by this
+    feature; the daily file (daily_returns.parquet) is a new, additional name in
+    the node's directory. Exported from the package __init__
+    (packages/artifacts/src/artifacts/__init__.py) alongside the existing
+    symbols, with no new @register builder in a submodule. Covered by
+    packages/artifacts/tests/test_daily.py. No shared file is modified
+    (src/app/middleware.py, src/app/settings.py, migrations/**, alembic/**).
+  </integration_points>
+  <constraints>
+    Must not modify the config, store, service or any shared file
+    (src/app/middleware.py, src/app/settings.py, migrations/**, alembic/**)
+    The fine signal_returns grid is retained verbatim and is never reduced,
+    overwritten or dropped by the downsample — the daily series is derived from
+    it and persisted beside it, and the fine grid remains the source the final
+    promotion decision reads
+    The downsample reduces the fine grid to one equal-weight per-date daily
+    return — the mean over the symbols each date holds of that date's post-cost
+    returns at the pinned horizon (feature 80's own reduction, the same
+    reduction feature 174 applies at campaign scale) — and nothing else; no
+    second reduction, no per-symbol cell, no zero-fill
+    Absence is NaN not zero: a date the node's grid priced at no horizon is
+    absent in the daily series (the NaN marks the absent date), and a node whose
+    fine grid is absent refuses the downsample rather than answering an empty
+    daily series
+    The horizon is a policy, not a guess: the shortest horizon every priced date
+    of the node's grid covers (the evaluator's METRICS_HORIZON rule restated for
+    the daily file), pinnable by an explicit horizon= override; a pinned horizon
+    a grid covers no date of refuses
+    The daily file rides feature 169's staged write path and feature 171's
+    date32/float64 series codec: it keeps the float64 the evaluator computed
+    (the daily series is a stored measurement, not the resident replay array),
+    is sorted by date so two equal downsamples stage identical bytes, and every
+    refusal lands before the first staged byte, leaving the staged set exactly
+    as it was
+    The daily file is a new name in the node's directory, published by the node's
+    one commit; re-persisting re-stages the one name, keeping the last bytes,
+    never a splice of two runs; a discard rolls it back with every other staged
+    file
+    Follow the existing docstring discipline: cite app_spec.xml feature 180 and
+    docs/nullius-tech-architecture.md §9.3 (the resident campaign arrays and the
+    scaling caveat that motivates the downsample), §9.2 (the fine grid and the
+    node directory layout) and §4.1 (the Parquet format read in place by
+    DuckDB)
+    All existing artifacts tests must stay green
+  </constraints>
+  <implementation_steps>
+    <phase name="Phase 1: Downsample to daily">
+      Add the new module packages/artifacts/src/artifacts/_daily.py, importing
+      the equal-weight reduction's building blocks from feature 170's read side
+      (signal_returns, ReturnRow) and feature 171's codec (encode_series,
+      decode_series, PARQUET_COMPRESSION, DATE_COLUMN, VALUE_COLUMN)
+      Add the file's name constant (daily_returns.parquet) and the column
+      constants, reusing feature 171's date32/float64 schema
+      Add the horizon resolver: the shortest horizon every priced date of the
+      node's grid covers (the evaluator's METRICS_HORIZON rule restated for the
+      daily file), with an explicit horizon= override validated as a positive
+      period count, refusing a pinned horizon the grid covers no date of
+      Add the equal-weight per-date reduction of the node's fine grid at the
+      pinned horizon — for each date, fsum over the day's post-cost returns over
+      their count, feature 80's reduction — producing {date: daily_return}, with
+      a date priced at no horizon absent (NaN) not zero-filled, and a grid with
+      no priced date refusing
+      Add persist_daily_returns, staging the daily series through feature 169's
+      write path (encode_series over feature 171's codec), published by the
+      node's one commit, with every refusal before the first staged byte
+      Add daily_returns, reading the daily series back by the node's same two
+      keys through the store's read surface (decode_series), refusing bytes this
+      member's writer cannot have produced
+      Add daily_returns_is_persisted, reporting the daily file's presence as a
+      fact separate from its content validity
+      Export the new names from the package __init__ (no new @register builder
+      in a submodule)
+    </phase>
+    <phase name="Phase 2: Downsample to daily — verification">
+      Add end-to-end tests (packages/artifacts/tests/test_daily.py) asserting:
+      the fine grid downsamples to the equal-weight per-date daily returns
+      computed by hand; the daily file is float64/date32 and sorted by date so
+      two equal downsamples stage identical bytes; a date priced at no horizon
+      is absent (NaN) not zero-filled; a node whose fine grid is absent refuses
+      the downsample; the fine grid is unchanged after the daily file is
+      persisted; the horizon is the shortest every priced date covers unless
+      overridden; the daily series is read back and answered by the node's same
+      two keys through the store's read surface
+    </phase>
+  </implementation_steps>
+  <success_criteria>
+    Feature 180 implemented: a node's high-frequency post-cost return grid is
+    downsampled to one equal-weight per-date daily return and persisted as a new
+    date-keyed Parquet file inside the node's artifact directory, without
+    disturbing the fine grid
+    The fine series is retained verbatim for the final promotion decision; the
+    daily series is the coarser replay-time input
+    The downsample is the evaluator's own equal-weight per-date reduction at a
+    pinned horizon (a policy, not a guess), absence is NaN not zero, and a node
+    with no priced grid refuses
+    The daily file rides feature 169's staged write path and feature 171's
+    date32/float64 series codec, keeps the float64 the evaluator computed, and
+    is read back through feature 170's read side with no second decoder
+    The new seams are exported from the artifacts package __init__ and covered
+    by packages/artifacts/tests/test_daily.py
+    All existing artifacts tests stay green and no shared file is modified
+  </success_criteria>
+</project_specification>

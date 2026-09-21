@@ -228,6 +228,12 @@ from ._campaign import (
     CampaignReturns,
     load_campaign_returns,
 )
+from ._daily import (
+    DAILY_RETURNS_FILENAME,
+    daily_returns,
+    daily_returns_is_persisted,
+    persist_daily_returns,
+)
 from ._dedup import (
     CODE_HASH_COLUMN,
     CODE_HASH_LENGTH,
@@ -322,6 +328,7 @@ __all__ = [
     "CODE_HASH_COLUMN",
     "CODE_HASH_LENGTH",
     "COMPONENT_NAME",
+    "DAILY_RETURNS_FILENAME",
     "DATABASE_URL_ENV",
     "DATE_COLUMN",
     "DECAY_PROFILE_FILENAME",
@@ -360,6 +367,8 @@ __all__ = [
     "build_dedup_gate",
     "campaign_directory",
     "canonical_code_hash",
+    "daily_returns",
+    "daily_returns_is_persisted",
     "decay_profile",
     "decay_profile_is_persisted",
     "decode_series",
@@ -373,6 +382,7 @@ __all__ = [
     "ic_series_is_persisted",
     "load_campaign_returns",
     "node_directory",
+    "persist_daily_returns",
     "persist_decay_profile",
     "persist_execution",
     "persist_ic_series",
