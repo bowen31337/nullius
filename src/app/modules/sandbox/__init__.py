@@ -96,6 +96,24 @@ share with the transfer is the shape of its refusal — the seed is law about
 the *node*, so its record half is reachable through the member's module-level
 verbs as well, and a caller that only holds a record reaches
 ``sandbox.resolve_seed`` directly, without the component.
+
+**Feature 164's law has its own seat here too, and it is the fifth.**  The
+thread-pinning environment — *System rejects a sandbox invocation missing the
+thread-pinning environment* — composes as ``sandbox-threads``, so this module
+now answers five questions, and :func:`sandbox_threads_component` mirrors the
+other four in shape and re-exports nothing of the law's vocabulary for the same
+reason they do not: a caller who has the component calls ``require`` to get the
+environment to dispatch with (or the refusal, on the last line before it would
+have spawned), ``check`` for the answer as a value, and ``required``,
+``pins`` and ``pool_floors`` for the read side a deployment audits with.
+
+It is the third of the five seats whose component is backed by a **committed
+artifact**, and the first where that is worth stating in the other direction:
+features 165 and 166 argued their subjects are a value a run is handed and a
+format, neither of which a deployment could set differently, while this one's
+subject is the environment a deployment *configures* a run with — so a
+non-``None`` component here proves the committed pinning policy compiled, the
+same conclusion feature 157's and 167's seats entitle a caller to draw.
 """
 
 from __future__ import annotations
@@ -109,6 +127,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a depende
         SandboxImports,
         SandboxIsolation,
         SandboxSeed,
+        SandboxThreads,
         SandboxTransfer,
     )
 
@@ -116,10 +135,12 @@ __all__ = [
     "COMPONENT_NAME",
     "IMPORTS_COMPONENT_NAME",
     "SEED_COMPONENT_NAME",
+    "THREADS_COMPONENT_NAME",
     "TRANSFER_COMPONENT_NAME",
     "sandbox_imports_component",
     "sandbox_isolation_component",
     "sandbox_seed_component",
+    "sandbox_threads_component",
     "sandbox_transfer_component",
 ]
 
@@ -149,6 +170,13 @@ TRANSFER_COMPONENT_NAME = "sandbox-transfer"
 #: Kept here for the same reason the other three are: one spelling shared by
 #: everything that asks for the law through the app package.
 SEED_COMPONENT_NAME = "sandbox-seed"
+
+#: The component name the member's thread-pinning law registers under — the
+#: category's fifth control, kept beside the other four rather than over any of
+#: them, because the factory's registry replaces a name's earlier registration.
+#: Kept here for the same reason the other four are: one spelling shared by
+#: everything that asks for the law through the app package.
+THREADS_COMPONENT_NAME = "sandbox-threads"
 
 
 def sandbox_isolation_component(
@@ -251,3 +279,35 @@ def sandbox_seed_component(
     """
     application = app if app is not None else create_app()
     return application.get(SEED_COMPONENT_NAME)
+
+
+def sandbox_threads_component(
+    app: Application | None = None,
+) -> SandboxThreads | Any:
+    """Return the composed sandbox thread-pinning law (feature 164).
+
+    The same contract the other four accessors give their laws, for the control
+    that decides whether an invocation's environment carries §12's two caps:
+    with ``app`` given the component is read from that application, without it
+    the application is composed first, and ``None`` means no ``sandbox-threads``
+    component was registered.
+
+    **Here the artifact-backed reading is available again, unlike the last two
+    seats.**  Features 166's and 165's accesses each state that their ``None``
+    cannot mean "registered but unconfigured" and that a non-``None`` value
+    proves only that the law is loaded, because neither has a committed file
+    behind it.  This one does — the pinning policy ships inside the member and
+    the builder compiles it at build time and resolves nothing from the
+    environment — so a non-``None`` component here is proof the committed
+    document compiled and the deployment's caps are pinned at §12's value,
+    exactly the conclusion feature 157's and 167's seats entitle a caller to
+    draw.  There is still no unconfigured state for a ``None`` to describe: it
+    means *no such component was registered*, and nothing else.
+
+    The value carries no environment, so a caller does not get one from this
+    accessor: it gets the law, and calls ``require(subject)`` for the
+    environment to dispatch with — or for the refusal, on the last line before
+    it would have spawned.
+    """
+    application = app if app is not None else create_app()
+    return application.get(THREADS_COMPONENT_NAME)

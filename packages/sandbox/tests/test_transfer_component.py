@@ -67,15 +67,16 @@ def test_scanning_the_member_registers_the_four_components_it_owns() -> None:
     # process state, not this package's contribution.
     #
     # The list is pinned exactly: the isolation law, the import law, the
-    # payload channel and the node seed, no more and no less. A fifth
-    # component arriving unnoticed fails here — and a builder that had taken
-    # either earlier feature's name would fail here too, which is the
-    # registry-replacement hazard this file exists for.
+    # payload channel, the node seed and the thread-pinning law, no more and
+    # no less. A sixth component arriving unnoticed fails here — and a
+    # builder that had taken either earlier feature's name would fail here
+    # too, which is the registry-replacement hazard this file exists for.
     components = scan_components(MEMBER_SRC, registry=Registration())
     assert sorted(component.name for component in components) == [
         "sandbox",
         "sandbox-imports",
         "sandbox-seed",
+        "sandbox-threads",
         "sandbox-transfer",
     ]
 

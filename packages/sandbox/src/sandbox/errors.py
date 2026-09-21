@@ -67,6 +67,30 @@ failed — the discipline :mod:`infra.security.sandbox_egress`'s and
   *stored record that contradicts itself*, whose messages begin with
   :data:`sandbox.seed.SEED_MISMATCH_CODE` (``node_seed_mismatch``).
 
+* :class:`SandboxThreadPinningError` — the thread-pinning contract, and
+  feature 164's whole subject.  A sandbox invocation was dispatched *without*
+  the environment §5.2's call site names — ``OMP_NUM_THREADS=1``,
+  ``MKL_NUM_THREADS=1`` — or with one of those variables declared at something
+  other than the pin.  Its subclass :class:`ThreadPinningRequired` is the
+  refusal itself, every message beginning with the greppable code
+  :data:`sandbox.threads.THREAD_PINNING_CODE`
+  (``thread_pinning_required``) — the discipline
+  :data:`sandbox.isolation.ISOLATION_REQUIRED_CODE` applies to feature 157's —
+  and :class:`ThreadPinningDocumentError` is the *document* half of the pair:
+  the committed pinning policy could not be read as a policy at all.
+
+  **Why a thread count earns an error when nothing about it fails loudly.**
+  §5.2 closes its sandbox section with the sentence that makes this a refusal
+  rather than a warning — *"Thread-count pinning is not a performance setting.
+  Multi-threaded BLAS reductions are non-deterministic in float, which breaks
+  P3."* — and a threaded reduction produces neither an exception nor an obviously
+  wrong number: it produces a *different last bit*, so a score vector from a
+  worker whose OMP cap went missing is a plausible answer that no replay
+  reproduces.  That is the same class of invisible failure
+  :class:`SandboxSeedError` guards for the run's randomness, one variable over,
+  and it is why the two features both refuse at the seam rather than trusting a
+  deployment to have exported its environment.
+
 There is deliberately no error for *"the run was not admitted"* beyond
 :class:`GVisorIsolationRequired`.  Feature 157's failure mode is one thing —
 a run configuration that is not gVisor's — and splitting it into an error per
@@ -92,8 +116,11 @@ __all__ = [
     "SandboxImportError",
     "SandboxIsolationError",
     "SandboxSeedError",
+    "SandboxThreadPinningError",
     "SandboxTransferError",
     "ScoreChannelError",
+    "ThreadPinningDocumentError",
+    "ThreadPinningRequired",
     "WindowTransferError",
 ]
 
@@ -320,6 +347,71 @@ class ScoreChannelError(SandboxTransferError):
     take.  Kept apart from :class:`WindowTransferError` because the two name
     opposite directions of one channel, and a caller reading a failure wants to
     know which leg it was on before it wants the detail.
+    """
+
+
+class SandboxThreadPinningError(SandboxError):
+    """The thread-pinning contract: a run went out without §12's two caps.
+
+    app_spec.xml, "Untrusted Code Sandbox", feature 164: *System rejects a
+    sandbox invocation missing the thread-pinning environment.*  The subject is
+    the *environment* §5.2's call site names — one of the three clauses of the
+    call, beside the code and the seed — and this class is its refusals.
+
+    **The feature's own verb is *missing*, and the spelling is checked from
+    both sides.**  A variable that is *absent* is missing; so is one that is
+    present and *blank* (``""``, ``"   "``), which looks configured and names no
+    count, so the library reading it applies its own default of one worker per
+    core — a threaded worker wearing the shape of a pinned one.  And so is a
+    variable declared at a value that is not the pin, because §12's row names
+    one value and ``2`` is a *choice* the libraries admit and the row does not:
+    a law that read only for presence would certify every worker that exported
+    ``OMP_NUM_THREADS=16``.  The pool floor the sandbox member knows by name
+    (:data:`sandbox.threads.POOL_FLOOR_VARIABLE`) is refused on the same terms
+    when it is declared wider than the pin, since it outranks the caps inside
+    the library that reads it.
+
+    **Raised rather than returned, like the seed's law and unlike the two
+    gates'.**  The environment is §5.2's own call site — one dispatch by trusted
+    host code — and not a subject untrusted code offers thousands of times, so
+    there is exactly one sensible response to "this invocation is unpinned": do
+    not spawn, because the run that proceeded would report an ordinary trial
+    outcome for a score no replay reproduces.  The gate still *answers* as a
+    value for a caller that wants to branch or to audit a batch
+    (:meth:`sandbox.threads.SandboxThreads.check`), and both shapes reach one
+    implementation, so a decision and an exception cannot disagree.
+    """
+
+
+class ThreadPinningRequired(SandboxThreadPinningError):
+    """The refusal itself: this invocation is missing the pinning environment.
+
+    Every message begins with ``thread_pinning_required``
+    (:data:`sandbox.threads.THREAD_PINNING_CODE`), the one spelling a
+    log-grepping operator or CI check looks for, and names the offending
+    variable *and the library layer it governs* — the layer is the word an
+    operator can act on, the same reason
+    :data:`canary._threads.THREAD_ENV_CAPS` carries it for the worker-side
+    sweep.  The four spellings are kept apart because the repairs differ:
+    a variable that was never exported is looked for in the launcher, a blank
+    one in whatever templated the environment, a numeric count wider than one in
+    the deployment's own configuration, and a value no parser resolves to a
+    count in the manifest that wrote it.
+    """
+
+
+class ThreadPinningDocumentError(SandboxThreadPinningError):
+    """The committed pinning policy could not be read as a policy.
+
+    The counterpart of :class:`IsolationDocumentError` and
+    :class:`AllowlistDocumentError`, kept apart from
+    :class:`ThreadPinningRequired` for the reason that pair is split: *the
+    document could not be read* and *this run is missing its pins* are
+    different facts about different things, and a caller that conflated them
+    would go looking for a launcher that dropped an environment variable when
+    the fault is a policy file that does not say what it is — or, worse, would
+    treat a well-formed document that had already drifted to another pin as a
+    launcher bug.
     """
 
 

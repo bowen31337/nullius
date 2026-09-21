@@ -134,6 +134,38 @@ naming is that a component shared across runs carries no seed: a seed belongs
 to one node, and a value held on the component would let two nodes share a
 stream — the property :class:`SandboxTransfer` states for its channel, in a
 different quantity.
+
+**Feature 164 rides the seat a fifth time.**  *System rejects a sandbox
+invocation missing the thread-pinning environment* is the category's
+single-threaded-numerics control, and its law lives in :mod:`sandbox.threads`:
+§12's two caps — ``OMP_NUM_THREADS`` and ``MKL_NUM_THREADS``, each named with
+the library layer it governs — classified in the environment an invocation is
+dispatched with, so *missing* covers absent *and* present-at-something-other-
+than-the-pin, the second being the one that looks configured.  It composes as
+:class:`SandboxThreads` under
+:data:`sandbox.threads.THREADS_COMPONENT_NAME` (``sandbox-threads``) — a fifth
+seat beside the other four, for the same registry-replacement reason — and it is
+the **third control with a committed artifact**, beside feature 157's isolation
+policy and feature 167's allowlist: features 165 and 166 shipped none because
+their subjects are a value a run is handed and a format, while this one's
+subject is an *environment the deployment configures a run with*, which is
+written down before it can be checked.  :data:`sandbox.threads.COMMITTED_PINNING_POLICY`
+ships beside the law, and the compiler holds it to §12's row: every required
+variable present, every one pinned at ``1``, every watched floor declared
+nowhere wider than the pin.
+
+**It is feature 137's fact on the other side of the seam, and the two are
+deliberately independent.**  ``canary._threads`` is the *worker* law — it reads
+a worker's environment and, where a numerics library is loaded, the pool that
+library actually resolved — while this one is the *dispatch* law: the ``env=``
+clause §5.2 hands into the box.  The cap names and the pin are restated here
+with their provenance rather than imported, the discipline feature 165 applies
+to :data:`sandbox.seed.ENV_SIGNAL_SEED` against ``evaluator._sandbox``: the box
+agent-authored code is put inside must not acquire a dependency on the member
+that drives it, and this suite pins the spelling as data.  Like feature 165's
+refusal and unlike the two gates', this law's launcher verb *returns* something
+— the environment to dispatch with, pins written in the policy's own spelling —
+so a caller writes one line and cannot read the environment twice.
 """
 
 from __future__ import annotations
@@ -151,8 +183,11 @@ from .errors import (
     SandboxImportError,
     SandboxIsolationError,
     SandboxSeedError,
+    SandboxThreadPinningError,
     SandboxTransferError,
     ScoreChannelError,
+    ThreadPinningDocumentError,
+    ThreadPinningRequired,
     WindowTransferError,
 )
 from .imports import (
@@ -204,6 +239,31 @@ from .seed import (
     sandbox_seed,
     seed_record,
 )
+from .threads import (
+    ABSENT,
+    COMMITTED_PINNING_POLICY,
+    ENV_MKL,
+    ENV_OMP,
+    PINNED,
+    PINNING_POLICY_KIND,
+    POOL_FLOOR_VARIABLE,
+    REQUIRED_CAPS,
+    SINGLE_THREADED,
+    THREADS_COMPONENT_NAME,
+    THREAD_PINNING_CODE,
+    UNPINNED,
+    SandboxThreads,
+    ThreadCap,
+    ThreadDecision,
+    ThreadPinningPolicy,
+    ThreadReason,
+    check_thread_pinning,
+    classify_cap,
+    committed_thread_pinning_policy,
+    compile_thread_pinning_policy,
+    load_thread_pinning_policy,
+    sandbox_threads,
+)
 from .transfer import (
     SCORE_CHANNEL_CODE,
     SCORE_FRAME_NAME,
@@ -224,10 +284,14 @@ from .transfer import (
 )
 
 __all__ = [
+    "ABSENT",
     "COMMITTED_IMPORTS_ALLOWLIST",
     "COMMITTED_ISOLATION_POLICY",
+    "COMMITTED_PINNING_POLICY",
     "COMPONENT_NAME",
     "DISALLOWED_IMPORT_CODE",
+    "ENV_MKL",
+    "ENV_OMP",
     "ENV_SIGNAL_SEED",
     "GVISOR_MECHANISM",
     "GVISOR_RUNTIME",
@@ -235,7 +299,11 @@ __all__ = [
     "IMPORTS_POLICY_KIND",
     "ISOLATION_REQUIRED_CODE",
     "MINT_SALT",
+    "PINNED",
+    "PINNING_POLICY_KIND",
     "POLICY_KIND",
+    "POOL_FLOOR_VARIABLE",
+    "REQUIRED_CAPS",
     "SCORE_CHANNEL_CODE",
     "SCORE_FRAME_NAME",
     "SCORE_MAGIC",
@@ -244,7 +312,11 @@ __all__ = [
     "SEED_MAX",
     "SEED_MISMATCH_CODE",
     "SEED_REQUIRED_CODE",
+    "SINGLE_THREADED",
+    "THREADS_COMPONENT_NAME",
+    "THREAD_PINNING_CODE",
     "TRANSFER_COMPONENT_NAME",
+    "UNPINNED",
     "WINDOW_TRANSFER_CODE",
     "AllowlistDocumentError",
     "ComponentIsolation",
@@ -268,6 +340,8 @@ __all__ = [
     "SandboxRun",
     "SandboxSeed",
     "SandboxSeedError",
+    "SandboxThreadPinningError",
+    "SandboxThreads",
     "SandboxTransfer",
     "SandboxTransferError",
     "ScoreChannelError",
@@ -275,26 +349,38 @@ __all__ = [
     "SeedDecision",
     "SeedReason",
     "SeedRecord",
+    "ThreadCap",
+    "ThreadDecision",
+    "ThreadPinningDocumentError",
+    "ThreadPinningPolicy",
+    "ThreadPinningRequired",
+    "ThreadReason",
     "TransferChannel",
     "TransferLeg",
     "WindowFacts",
     "WindowTransferError",
     "authorize_run",
     "check_invocation",
+    "check_thread_pinning",
+    "classify_cap",
     "committed_imports_allowlist",
     "committed_isolation_policy",
+    "committed_thread_pinning_policy",
     "compile_imports_allowlist",
     "compile_isolation_policy",
+    "compile_thread_pinning_policy",
     "decode_scores",
     "encode_scores",
     "inspect_window_payload",
     "load_imports_allowlist",
     "load_isolation_policy",
+    "load_thread_pinning_policy",
     "mint_node_seed",
     "resolve_seed",
     "sandbox_imports",
     "sandbox_isolation",
     "sandbox_seed",
+    "sandbox_threads",
     "sandbox_transfer",
     "scores_alias_payload",
     "screen_module",
@@ -580,3 +666,52 @@ def build_sandbox_seed() -> SandboxSeed:
     ran.
     """
     return sandbox_seed()
+
+
+@register(THREADS_COMPONENT_NAME)
+def build_sandbox_threads() -> SandboxThreads:
+    """Component builder: feature 164's thread-pinning law (app_spec.xml §5.2).
+
+    The fifth component this member contributes, beside feature 157's isolation
+    law, feature 167's import allowlist, feature 166's payload channel and
+    feature 165's node seed, under its own name — the registry is keyed by name
+    and a later registration of ``sandbox`` would *replace* the isolation law,
+    so one member carrying five controls carries five components.
+
+    Like :func:`build_sandbox_isolation` and unlike the two builders before it,
+    it compiles a **committed artifact** at build time
+    (:data:`~sandbox.threads.COMMITTED_PINNING_POLICY`), and that is the third
+    control in this category to ship one.  Features 165 and 166 state their
+    reason for having none — their subjects are a value a run is *handed* and a
+    format, neither of which a deployment could set differently — and this
+    feature's subject is neither: it is the environment a deployment
+    *configures* a run with, which has to be written down before it can be
+    checked.  So the file ships, and the compiler holds it to §12's row: every
+    cap the table requires is named, every one is pinned at ``1``, and no
+    watched floor is declared wider.
+
+    Like the other four it takes no arguments (the factory's registration
+    protocol), never returns ``None`` and never raises: the factory builds every
+    registered component on every ``create_app()`` call, so a builder that
+    raised on a drifted artifact would take composition down for every unrelated
+    feature in the workspace, and a bare test process with no ``DATABASE_URL``
+    and no lake still composes this one.  Unlike them it reads no *ambient*
+    environment either — the law's subject is the environment an invocation
+    carries, never ``os.environ`` — so composition cannot depend on the shell
+    that started the process.  A drifted artifact is reported the way the other
+    two artifacts' are: the component is built over the refusal-free path, and a
+    caller that must know the file still pins §12's row asks
+    :func:`sandbox.threads.committed_thread_pinning_policy`, where a named
+    :class:`~sandbox.errors.ThreadPinningRequired` is the right answer.
+
+    It returns a :class:`SandboxThreads` rather than a policy, necessarily
+    rather than by preference — and the reason is sharper here than for any of
+    the four: a component held across runs that carried an *environment* would
+    be one letting two invocations share a description, and the concrete failure
+    is a run dispatched under another run's environment.  What the composed
+    value gives a caller is the law — ``require`` for the environment to
+    dispatch with or the refusal on the last line before the spawn, ``check``
+    for the answer as a decision, and ``required``/``pins``/``pool_floors`` for
+    the read side a deployment audits with.
+    """
+    return sandbox_threads()

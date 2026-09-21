@@ -45,8 +45,13 @@ import pyarrow as pa
 from contract import MarketWindow
 from contract.signal import validate_signal_return
 from sandbox import (
+    ENV_MKL,
+    ENV_OMP,
     IMPORTS_POLICY_KIND,
+    PINNING_POLICY_KIND,
     POLICY_KIND,
+    POOL_FLOOR_VARIABLE,
+    SINGLE_THREADED,
     SandboxInvocation,
     encode_scores,
 )
@@ -529,3 +534,107 @@ class SeedRecordRow:
     def __init__(self, node_id: str = SEED_NODE_ID, seed: Any = NODE_SEED) -> None:
         self.node_id = node_id
         self.seed = seed
+
+
+# ---------------------------------------------------------------------------
+# Feature 164 — the thread-pinning environment.
+#
+# The builders below are the *environment* half of §5.2's call site, and they
+# are spelled from the two cap names as *data* rather than by importing the
+# member's own constants: the law's tests pin that the spelling is
+# ``"OMP_NUM_THREADS"`` and the pin is ``"1"``, and a suite that imported them
+# would follow a rename instead of catching one.  The same discipline feature
+# 165's tests apply to ``NULLIUS_SIGNAL_SEED``.  The two constants imported
+# above (``ENV_OMP``, ``ENV_MKL``, ``SINGLE_THREADED``, ``POOL_FLOOR_VARIABLE``)
+# are used only by the builders that build a *policy document*, where the
+# artifact's own shape is what is being reproduced.
+# ---------------------------------------------------------------------------
+
+#: §5.2's call site, verbatim: the two caps §12 names, each at the pin.  A
+#: builder rather than a constant (below) because a drift test mutates the
+#: environment it was handed — the suite's fresh-object rule.
+OMP: str = "OMP_NUM_THREADS"
+MKL: str = "MKL_NUM_THREADS"
+PIN: str = "1"
+
+#: A third variable of the kind §5.2's call site also carries — ``PYTHONHASHSEED``
+#: is feature 138's law, not this one's, and it rides along here so the tests can
+#: prove the pinning law neither requires nor disturbs variables outside its
+#: table: the environment it hands back must carry the subject's other keys
+#: untouched.
+BYSTANDER: str = "PYTHONHASHSEED"
+
+#: The layer each cap governs, spelled here so a test asserting that a refusal
+#: *names the library left threaded* has the words to assert against.
+OMP_LAYER: str = "the OpenMP-parallel BLAS kernels"
+MKL_LAYER: str = "the Intel MKL threading layer"
+
+
+def thread_pinned_env(**overrides: Any) -> dict[str, Any]:
+    """A fresh environment carrying §5.2's pins — the passing case.
+
+    ``overrides`` replace individual declarations, so a test that means "the MKL
+    cap is threaded" writes ``thread_pinned_env(**{MKL: "4"})`` and one that
+    means "the OMP cap is missing" writes ``thread_pinned_env(**{OMP: None})`` —
+    the same "state the one thing you varied" shape
+    :func:`document_with_runtime` gives the isolation policy.  ``None`` *removes*
+    the key rather than writing it, because "absent" and "declared as None" are
+    different states of an environment and the law distinguishes them.
+    """
+    env: dict[str, Any] = {OMP: PIN, MKL: PIN, BYSTANDER: "0"}
+    for name, value in overrides.items():
+        if value is None:
+            env.pop(name, None)
+        else:
+            env[name] = value
+    return env
+
+
+def unpinned_env() -> dict[str, Any]:
+    """A fresh environment missing both caps — feature 164's own subject.
+
+    Its own builder rather than ``thread_pinned_env(**{OMP: None, MKL: None})``
+    so the refusal tests read as themselves: this is §5.2's call site with the
+    ``env=`` clause left out of the determinism half, which is the invocation
+    the feature exists to refuse.  The bystander is kept, so the refusal is
+    about the two names §12 lists and not about an empty mapping.
+    """
+    return {BYSTANDER: "0"}
+
+
+def pinning_document(
+    *,
+    caps: list[dict[str, Any]] | None = None,
+    floors: list[str] | None = None,
+    policy: str = PINNING_POLICY_KIND,
+) -> dict[str, Any]:
+    """A well-formed pinning document from the blocks the caller names.
+
+    The caller passes the caps explicitly — rather than this builder defaulting
+    to the committed pair — so a test that means "a policy pinning only OMP"
+    says exactly that, and a test that means "the committed policy" asks
+    :func:`committed_pinning_document` instead.  A default here would make the
+    two indistinguishable at the call site, the same reason
+    :func:`isolation_document` and :func:`allowlist_document` take their
+    subjects explicitly.
+    """
+    if caps is None:
+        caps = [
+            {"name": ENV_OMP, "value": SINGLE_THREADED, "layer": OMP_LAYER},
+            {"name": ENV_MKL, "value": SINGLE_THREADED, "layer": MKL_LAYER},
+        ]
+    if floors is None:
+        floors = [POOL_FLOOR_VARIABLE]
+    return {"policy": policy, "caps": caps, "pool_floors": floors}
+
+
+def committed_pinning_document() -> dict[str, Any]:
+    """The committed artifact's shape: §12's two caps at the pin, one floor.
+
+    Built fresh and shaped after the file on disk rather than read *from* it,
+    for the reason :func:`committed_document` gives: the artifact's own tests
+    read the file (:mod:`test_thread_artifact`), so a builder that read it too
+    would make a drift in the file invisible to every test that meant to build a
+    policy instead.
+    """
+    return pinning_document()

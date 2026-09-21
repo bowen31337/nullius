@@ -1,0 +1,18 @@
+{
+  "policy": "sandbox-thread-pinning",
+  "caps": [
+    {
+      "name": "OMP_NUM_THREADS",
+      "value": "1",
+      "layer": "the OpenMP-parallel BLAS kernels"
+    },
+    {
+      "name": "MKL_NUM_THREADS",
+      "value": "1",
+      "layer": "the Intel MKL threading layer"
+    }
+  ],
+  "pool_floors": [
+    "POLARS_MAX_THREADS"
+  ]
+}
