@@ -10,6 +10,16 @@ of summarized guidance, 209's retry diagnosis, 210's anti-convergence clause,
 discrimination and 215's tree diversity are each a further statement about
 what the agent is asked for and what is recorded about the asking.
 
+**Feature 212 rides the same seat.**  *System rejects a proposal whose theme
+root falls outside the configured legal set, which returns an illegal_theme
+error message* is the second feature this member owns a law for, and it lives
+in :mod:`signal_agent._themes`: one committed artifact
+(:data:`COMMITTED_LEGAL_THEMES`, PRD §9.3's six), one compiler that refuses a
+document that is not a set, and :class:`SignalThemeGate` — the law, which
+answers as a value and raises only at ``require``.  It composes as a second
+component under :data:`THEMES_COMPONENT_NAME` rather than replacing feature
+205's, for the registry-replacement reason below.
+
 **What this member is, and what it deliberately is not.**  §14.1 gives the
 signal agent its seat — *"Signal agent, roots (depth 0-1) ... Signal agent,
 depth >= 2"* — and PRD §C3 describes it as *"a coding agent writing signal
@@ -62,6 +72,7 @@ from __future__ import annotations
 
 from app.module_loader import register
 
+from . import _themes
 from ._authoring import (
     CONFORMS_CODE,
     AdoptionReason,
@@ -71,20 +82,57 @@ from ._authoring import (
     signal_contract,
     source_code_hash,
 )
-from .errors import AgentSourceError, SignalAgentError
+from ._themes import (
+    COMMITTED_LEGAL_THEMES,
+    ILLEGAL_THEME_CODE,
+    LEGAL_THEME_CODE,
+    LEGAL_THEMES_POLICY_KIND,
+    NOT_A_THEME_CODE,
+    LegalThemes,
+    SignalThemeGate,
+    ThemeAdmission,
+    ThemeReason,
+    committed_legal_themes,
+    compile_legal_themes,
+    load_legal_themes,
+    signal_theme_gate,
+)
+from .errors import (
+    AgentSourceError,
+    IllegalThemeError,
+    SignalAgentError,
+    ThemeSetError,
+)
 
 __all__ = [
     "AGENT_ROLES",
+    "COMMITTED_LEGAL_THEMES",
     "COMPONENT_NAME",
     "CONFORMS_CODE",
+    "ILLEGAL_THEME_CODE",
+    "LEGAL_THEMES_POLICY_KIND",
+    "LEGAL_THEME_CODE",
+    "NOT_A_THEME_CODE",
+    "THEMES_COMPONENT_NAME",
     "AdoptionReason",
     "AgentSourceError",
+    "IllegalThemeError",
+    "LegalThemes",
     "SignalAgentError",
     "SignalContract",
+    "SignalThemeGate",
     "SourceAdoption",
+    "ThemeAdmission",
+    "ThemeReason",
+    "ThemeSetError",
     "build_signal_contract",
+    "build_signal_theme_gate",
+    "committed_legal_themes",
+    "compile_legal_themes",
+    "load_legal_themes",
     "require_contract",
     "signal_contract",
+    "signal_theme_gate",
     "source_code_hash",
 ]
 
@@ -101,6 +149,24 @@ COMPONENT_NAME = "signal-agent"
 #: times is three spellings that can drift.  The tuple is ordered as §14.1's
 #: table orders it: roots first, then depth.
 AGENT_ROLES = ("root", "depth")
+
+#: The component name feature 212's gate registers under.  Imported from
+#: :mod:`signal_agent._themes` rather than re-spelled — the ``__all__`` entry
+#: above re-exports it, so this is a name, not a second literal.  Unlike
+#: :data:`COMPONENT_NAME`, which the spec's plugin declaration owns and which
+#: this module is the single spelling of, this one is *also* the live name the
+#: submodule's own doc references and its tests assert on, and two literals for
+#: it would be the drift the single spelling exists to prevent.
+#:
+#: Prefixed, because the registry is keyed by name and this member now carries
+#: two components: an unprefixed second registration would be a *spelling* of
+#: ``signal-agent`` that replaced feature 205's law rather than sitting beside
+#: it, which is the registry-replacement hazard
+#: :data:`sandbox.imports.IMPORTS_COMPONENT_NAME` names for its own member.
+#: ``signal-agent-themes`` sorts immediately after ``signal-agent`` in the
+#: name-sorted ``app.order``, so the pair stays adjacent to the category it
+#: belongs to.
+THEMES_COMPONENT_NAME = _themes.THEMES_COMPONENT_NAME
 
 
 @register(COMPONENT_NAME)
@@ -126,3 +192,56 @@ def build_signal_contract() -> SignalContract:
     about a signal, and is reported as such.
     """
     return signal_contract()
+
+
+@register(THEMES_COMPONENT_NAME)
+def build_signal_theme_gate() -> SignalThemeGate:
+    """Contribute feature 212's law to the composed application.
+
+    The second component this member contributes, beside feature 205's law
+    under its own name — the registry is keyed by name and a later registration
+    of ``signal-agent`` would *replace* the authoring law, so a member carrying
+    two controls carries two components, each answering its own feature's
+    question.  Like :func:`build_signal_contract` it takes no arguments (the
+    factory's registration protocol) and returns a law rather than a service,
+    a session or an LLM client.
+
+    **It compiles the committed artifact at build time**, which is the one
+    place it differs from the builder above, and the difference is the
+    feature's: feature 205's ABI is *declared* by another member and read
+    lazily so its presence cannot depend on scan order, while feature 212's
+    legal set ships inside this package
+    (:data:`~signal_agent.COMMITTED_LEGAL_THEMES`), so there is nothing to
+    defer and no member to reach.
+
+    That compile can raise, and the raising is confined to the module-level
+    convenience (:func:`~signal_agent.signal_theme_gate`), not here.  A drifted
+    artifact is *reported*, not swallowed, and the report is the member's own:
+    the component is built over the refusal-free path — an empty set, which
+    admits nothing and so fails closed rather than open — and a caller that
+    must know the set still names PRD §9.3's six asks
+    :func:`~signal_agent.committed_legal_themes`, where a named
+    :class:`~signal_agent.ThemeSetError` is the right answer.  The division is
+    the same one :func:`sandbox.build_sandbox_isolation` draws between what
+    composition may raise and what a caller that *requires* something must
+    hear: the factory builds every registered component on every
+    ``create_app()`` call, so a builder that raised on a drifted artifact would
+    take composition down for every unrelated feature in the workspace.
+
+    Holding the handle computes nothing beyond that one file read, and it can
+    fail at nothing.
+    """
+    try:
+        return SignalThemeGate(committed_legal_themes())
+    except ThemeSetError:
+        # Fail closed, as a value rather than by raising: an empty set admits
+        # no theme, so a caller that skipped the check above refuses every
+        # proposal instead of authoring into an unvalidated space.  Built by
+        # construction rather than through the compiler on purpose — the
+        # compiler *refuses* an empty set, because a deployment whose document
+        # names nothing has not made PRD §9's decision, and that refusal is
+        # exactly why this branch cannot reach for it.  A caller that must know
+        # why asks `committed_legal_themes()` for the named refusal.
+        return SignalThemeGate(
+            LegalThemes(kind=LEGAL_THEMES_POLICY_KIND, themes=())
+        )

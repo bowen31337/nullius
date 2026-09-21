@@ -1,0 +1,62 @@
+{
+  "policy": "signal-agent-legal-themes",
+  "_comment": [
+    "The committed legal theme set of the hypothesis-authoring agent.",
+    "app_spec.xml, Hypothesis Authoring Agent, feature 212:",
+    "System rejects a proposal whose theme root falls outside the",
+    "configured legal set, which returns an illegal_theme error message.",
+    "docs/alpha-engine-prd.md 9 ('Hypothesis space (the human's job)') is",
+    "where the set comes from and why it is committed rather than computed:",
+    "'Dream-RSI improves search efficiency within a space. It cannot create",
+    "edge in a space that has none. Choosing the space is the highest-value",
+    "human input in the system, and it should be encoded as the set of legal",
+    "theme_root values.'  Section 9.3 lists the initial six; each entry",
+    "below carries that section's name for it verbatim as its title, so the",
+    "document and the PRD can be diffed against each other by eye.",
+    "Section 9.4 is the neighbouring refusal and NOT this one: 'structurally",
+    "dead at retail scale' - triangular arbitrage, sub-30-minute",
+    "liquidity-taking - is feature 213's subject, and it is a different",
+    "question about a root that is already inside this set.  A theme the",
+    "human admitted and a mechanism that cannot pay for itself are two",
+    "findings, and a document that folded them together would make the",
+    "second unfixable without widening the first.",
+    "The compile in packages/signal-agent/src/signal_agent/_themes.py",
+    "refuses this file and any change to it that is not a marker plus a",
+    "list of well-formed slug/title entries - so the set below is not a",
+    "convention the next edit can forget: it is the configuration, checked,",
+    "and a proposal opening in a theme it does not name is refused with the",
+    "code illegal_theme.",
+    "The slugs are the machine spelling the node table's theme_root column",
+    "holds (docs/nullius-tech-architecture.md 9.1: 'theme_root TEXT NOT",
+    "NULL'); the titles are for the human reading a rejection.  Widening",
+    "this list is widening the hypothesis space, which PRD 9 makes the",
+    "human's own decision - the widen happens here, in review, or not at",
+    "all."
+  ],
+  "themes": [
+    {
+      "slug": "cross-sectional-momentum-reversal",
+      "title": "Cross-sectional momentum and short-term reversal, small/mid-cap universe"
+    },
+    {
+      "slug": "order-flow-imbalance",
+      "title": "Order-flow imbalance and microstructure features from the free L2 feed"
+    },
+    {
+      "slug": "borrow-rate-funding-state",
+      "title": "Borrow-rate and funding-state conditioning"
+    },
+    {
+      "slug": "volatility-state-dispersion",
+      "title": "Volatility-state and dispersion regimes"
+    },
+    {
+      "slug": "mechanical-calendar-events",
+      "title": "Mechanical calendar and event effects"
+    },
+    {
+      "slug": "cross-venue-state-divergence",
+      "title": "Cross-asset and cross-venue state divergence (state, not price)"
+    }
+  ]
+}

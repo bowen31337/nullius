@@ -26,21 +26,25 @@ That gives the suite identical behaviour under
 ``uv run --all-packages pytest packages/signal-agent`` (where the venv also
 provides every member) and under a bare ``pytest``.
 
-**What the fixtures are.**  The vocabulary the tests share: the law itself,
-and the sandbox's own admission screen.  The two proposals every claim is
-made about live in ``test_authoring.py`` beside the claims rather than here —
-they are *text*, and several assertions are about the text itself (it is
-returned unmodified; its hash is the tree's ``code_hash``), so a fixture that
-rebuilt them per test would make "the same source" a claim about two
-constructions rather than about one string.
+**What the fixtures are.**  The vocabulary the tests share: the two laws this
+member owns — feature 205's authoring contract and feature 212's legal theme
+gate — and the sandbox's own admission screen.  The proposals every claim in
+``test_authoring.py`` is made about live in that file beside the claims rather
+than here — they are *text*, and several assertions are about the text itself
+(it is returned unmodified; its hash is the tree's ``code_hash``), so a fixture
+that rebuilt them per test would make "the same source" a claim about two
+constructions rather than about one string.  The same reasoning puts
+``test_themes.py``'s legal and illegal slugs at module scope there.
 
-There is deliberately no environment isolation here.  Feature 205's law reads
-no environment variable, opens no database, writes no file and consults no
-clock: it is a pure function of a string of source and the contract's own
-declaration.  A fixture that cleared the environment would imply a knob this
-member does not have — the same statement ``packages/sandbox/tests/conftest``
-makes for its own law, and the reason that member's pool-style fixtures (a
-database URL, a store) have no counterpart here.
+There is deliberately no environment isolation here.  Neither law reads an
+environment variable, opens a database or consults a clock.  Feature 205's is a
+pure function of a string of source and the contract's own declaration;
+feature 212's is a pure function of a string and the committed
+``legal_themes.json`` that ships inside this package — one file read, not a
+knob.  A fixture that cleared the environment would imply a knob this member
+does not have — the same statement ``packages/sandbox/tests/conftest`` makes
+for its own laws, and the reason that member's pool-style fixtures (a database
+URL, a store) have no counterpart here.
 """
 
 from __future__ import annotations
@@ -64,7 +68,12 @@ for _root in workspace_scan_roots():
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
-from signal_agent import SignalContract, signal_contract
+from signal_agent import (
+    SignalContract,
+    SignalThemeGate,
+    signal_contract,
+    signal_theme_gate,
+)
 
 
 @pytest.fixture
@@ -76,6 +85,20 @@ def law() -> SignalContract:
     the discipline the bootstrap member's suite states for its own worlds.
     """
     return signal_contract()
+
+
+@pytest.fixture
+def gate() -> SignalThemeGate:
+    """Feature 212's law, built directly — the same discipline as ``law``.
+
+    It differs from the fixture above in one way worth stating, because it is
+    the feature's: this law *is* configured rather than declared elsewhere, so
+    building it reads the committed ``legal_themes.json`` beside it.  That is
+    still a fixture and not a composed application — the file ships inside the
+    member, so the law needs no factory to be itself — and the component tests
+    reach the composed gate separately.
+    """
+    return signal_theme_gate()
 
 
 @pytest.fixture
