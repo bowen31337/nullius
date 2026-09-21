@@ -246,6 +246,37 @@ law cannot read.  The gate still *answers* — ``check`` returns a decision whos
 class, which is the value feature 161 quarantines a node and its subtree for —
 and that class is deliberately **not** one of §9.1's four, so feature 168's table
 is what translates it to ``error`` at the seat one law above this one.
+
+**Feature 159's law has its own seat here too, and it is the eleventh.**  The
+payload-delivery gate — *System rejects a sandboxed run whose payload did not
+arrive over the IPC channel, because the sandbox holds no filesystem mounts* —
+composes as ``sandbox-payload``, so this module now answers eleven questions,
+and :func:`sandbox_payload_component` mirrors the other ten in shape and
+re-exports nothing of the law's vocabulary for the same reason they do not: a
+caller who has the component calls ``check`` for the answer as a decision, and
+``require`` for the payload that provably crossed the channel — or the refusal,
+on the last line before the spawn.
+
+**It has the missing-artifact property in common with the transfer, seed,
+fail-class and quarantine seats, and for the same class of reason.**  Those
+four state theirs: a format, a value a run is handed, a vocabulary and a rule
+are not things a deployment could set differently.  This law's subject is the
+box's *structure* — §5.2's row ``Filesystem | No mounts.  Data arrives over IPC
+only.`` fixes it for every box in this deployment — so there is no file to
+compile and a non-``None`` component here is proof only that the law is loaded.
+
+**Its refusal shape is feature 157's rather than the transfer's, and the
+difference is worth knowing before calling it.**  The two laws share a channel
+but split it: feature 166 owns *what crossed* and raises at the channel seam
+(one dispatch by trusted host code), while this one owns *whether the run's
+payload crossed at all* and *answers* per run like the gates do — a decision
+from ``check``, and ``require`` raising
+:class:`~sandbox.errors.PayloadChannelRequired` only for a caller that must not
+spawn.  The component carries no channel and mints none (feature 166's
+``channel()`` owns the seam), so a caller does not get a delivery from this
+accessor: it gets the law, hands it the run *and the channel that would have
+delivered the window*, and the answer is derived from the channel rather than
+from a constant.
 """
 
 from __future__ import annotations
@@ -260,6 +291,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a depende
         SandboxFailClass,
         SandboxImports,
         SandboxIsolation,
+        SandboxPayload,
         SandboxQuarantine,
         SandboxSeed,
         SandboxSyscalls,
@@ -273,6 +305,7 @@ __all__ = [
     "COMPONENT_NAME",
     "FAIL_CLASS_COMPONENT_NAME",
     "IMPORTS_COMPONENT_NAME",
+    "PAYLOAD_COMPONENT_NAME",
     "QUARANTINE_COMPONENT_NAME",
     "SEED_COMPONENT_NAME",
     "SYSCALLS_COMPONENT_NAME",
@@ -283,6 +316,7 @@ __all__ = [
     "sandbox_fail_class_component",
     "sandbox_imports_component",
     "sandbox_isolation_component",
+    "sandbox_payload_component",
     "sandbox_quarantine_component",
     "sandbox_seed_component",
     "sandbox_syscalls_component",
@@ -380,6 +414,20 @@ SYSCALLS_COMPONENT_NAME = "sandbox-syscalls"
 #: ``packages/sandbox/tests/test_quarantine_component.py`` pins the two equal, so
 #: the pair cannot drift into a silent ``None`` at this seat.
 QUARANTINE_COMPONENT_NAME = "sandbox-quarantine"
+
+#: Feature 159's payload-delivery law: ``sandbox-payload``. The eleventh
+#: component this member contributes, and the seat beside the other ten —
+#: distinct from each of them because the factory's registry replaces a name's
+#: earlier registration. Kept here for the same reason the other ten are: one
+#: spelling shared by everything that asks for the law through the app package.
+#:
+#: Named rather than respelled from the member for the reason the ten constants
+#: above are: the member's own ``sandbox.PAYLOAD_COMPONENT_NAME`` is the
+#: spelling the builder registers under, and this one is the spelling the app
+#: namespace reads it back with.  ``packages/sandbox/tests/test_payload_component.py``
+#: pins the two equal, so the pair cannot drift into a silent ``None`` at this
+#: seat.
+PAYLOAD_COMPONENT_NAME = "sandbox-payload"
 
 
 def sandbox_isolation_component(
@@ -700,3 +748,39 @@ def sandbox_quarantine_component(
     """
     application = app if app is not None else create_app()
     return application.get(QUARANTINE_COMPONENT_NAME)
+
+
+def sandbox_payload_component(
+    app: Application | None = None,
+) -> SandboxPayload | Any:
+    """Return the composed sandbox payload-delivery law (feature 159).
+
+    The same contract the other ten accessors give their laws, for the control
+    that answers *did this run's payload arrive over the IPC channel?* — §5.2's
+    row ``Filesystem | No mounts. Data arrives over IPC only.``: with ``app``
+    given the component is read from that application, without it the
+    application is composed first, and ``None`` means no ``sandbox-payload``
+    component was registered.
+
+    **This seat has the missing-artifact property in common with the transfer,
+    seed, fail-class and quarantine seats.**  Those four state theirs: a format,
+    a value a run is handed, a vocabulary and a rule are not things a deployment
+    could set differently, and neither is this law's subject — §5.2 fixes the
+    box's filesystem posture for every box in this deployment.  So a
+    non-``None`` component here is proof only that the law is loaded, and there
+    is nothing for a ``None`` to describe beyond "no such component was
+    registered".
+
+    The value carries no channel and no window, so a caller does not get a
+    delivery from this accessor: it gets the law, and hands it the run *and the
+    channel that would have delivered the window* — the channel feature 166's
+    own ``channel()`` mints — calling ``check(run)`` for the answer as a
+    decision or ``require(run)`` for the payload that provably crossed, on the
+    last line before the spawn.  Note that ``require`` here has the gates' two
+    outcomes rather than the channel's raises-always shape, because the subject
+    is a run offered thousands of times unattended: the refusal arrives as a
+    value from ``check`` and as :class:`~sandbox.errors.PayloadChannelRequired`
+    from ``require``, never as a crashed evaluator.
+    """
+    application = app if app is not None else create_app()
+    return application.get(PAYLOAD_COMPONENT_NAME)

@@ -341,6 +341,56 @@ under its own name and left for feature 168's table to translate under ``error``
 two laws, two writes, one translation — and the closure is walked in Python over the
 rows the caller hands in, so a ``parent_id`` cycle arrives as a refusal an operator
 can act on rather than as a query that never comes back.
+
+**Feature 159 rides the seat an eleventh time, and it is the gate the channel's
+own law does not ask.**  *System rejects a sandboxed run whose payload did not
+arrive over the IPC channel, because the sandbox holds no filesystem mounts* —
+the row §5.2's control table writes ``Filesystem | No mounts.  Data arrives over
+IPC only.`` and the arrival the call site writes
+``payload=window.to_arrow(),        # IPC, zero-copy``.  Its law lives in
+:mod:`sandbox.payload`: the run is handed in with the channel that would have
+delivered its window, and the gate admits only when the channel holds a window
+*and* the payload the run was dispatched with is those bytes.  It composes as
+:class:`SandboxPayload` under
+:data:`sandbox.payload.PAYLOAD_COMPONENT_NAME` (``sandbox-payload``) — an
+eleventh seat beside the other ten, for the same registry-replacement reason.
+
+**It owns the *whether*; feature 166 owns the *what*.**  The two laws split one
+channel at the moment a run is dispatched, and neither can ask the other's
+question: a run that never sends a window produces no transfer to fail, so the
+channel's own refusals never fire for exactly the dispatch this feature exists
+for.  Here the evidence is the channel itself, read duck-typed by its
+``window_bytes`` so a deployment's stand-in channel is read as happily as
+feature 166's — and bytes offered with no channel behind them are refused
+however well-formed they are, because arrival is a property of the channel, not
+of the bytes: the ``payload=`` argument is the *claim*, the channel is the
+provenance.  A run dispatched with bytes that disagree with the window its
+channel carries is refused too — two buffers, one run — rather than read as
+doubly-verified.
+
+**It is the earliest of the three enforcements §5.2's Filesystem row has.**  The
+runtime's container config (no volumes, an empty rootfs) and feature 160's
+seccomp ceiling — which denies the ``open``/``openat`` family, so a process that
+reaches for a mount it was never given is killed as §15's escape attempt — hold
+the row from below; this law refuses the run *before a process exists*, which is
+the only point where "the window never arrived" is still a dispatch problem with
+a dispatch repair rather than a killed child with a fail class to record.  The
+because-clause is why the refusal is total rather than a warning: a box with no
+mounts cannot read a window that stayed on the host, so a spawn anyway would
+report an ordinary trial outcome for a signal that never saw one.
+
+**It compiles no committed artifact**, joining the builders that can say so —
+the transfer's, the seed's, the fail-class law's, the quarantine's — because its
+subject is the box's *structure*, not a deployment's setting: §5.2 fixes "no
+mounts, IPC only" for every box in this deployment, so a ``payload_policy.json``
+would hold a knob nobody turns.  And like feature 157's gate it *answers* every
+run with a :class:`~sandbox.payload.PayloadDecision` — thousands of unattended
+candidates reach an operator as facts about runs, not as crashed evaluators —
+with the raise living on :meth:`SandboxPayload.require` /
+:meth:`~sandbox.payload.PayloadDecision.require` as
+:class:`~sandbox.errors.PayloadChannelRequired`, a sibling of the transfer's
+error rather than a subclass of it, for the same reason the two laws split the
+channel: a caller reading a refusal wants to know which half fired.
 """
 
 from __future__ import annotations
@@ -388,6 +438,7 @@ from .errors import (
     InvocationSeedError,
     IsolationDocumentError,
     NodeSeedDocumentError,
+    PayloadChannelRequired,
     QuarantineTreeError,
     SandboxBudgetError,
     SandboxError,
@@ -395,6 +446,7 @@ from .errors import (
     SandboxFailClassError,
     SandboxImportError,
     SandboxIsolationError,
+    SandboxPayloadError,
     SandboxQuarantineError,
     SandboxSeedError,
     SandboxSyscallError,
@@ -469,6 +521,16 @@ from .isolation import (
     committed_isolation_policy,
     compile_isolation_policy,
     load_isolation_policy,
+)
+from .payload import (
+    PAYLOAD_CHANNEL_CODE,
+    PAYLOAD_COMPONENT_NAME,
+    PayloadDecision,
+    PayloadReason,
+    PayloadRun,
+    SandboxPayload,
+    authorize_payload_run,
+    sandbox_payload,
 )
 from .quarantine import (
     NODE_QUARANTINED_COLUMN,
@@ -641,6 +703,8 @@ __all__ = [
     "NODE_FAIL_CLASSES",
     "NODE_QUARANTINED_COLUMN",
     "OK_FAIL_CLASS",
+    "PAYLOAD_CHANNEL_CODE",
+    "PAYLOAD_COMPONENT_NAME",
     "PINNED",
     "PINNING_POLICY_KIND",
     "POLICY_KIND",
@@ -706,6 +770,10 @@ __all__ = [
     "ModuleReason",
     "NodeSeedDocumentError",
     "NodeTree",
+    "PayloadChannelRequired",
+    "PayloadDecision",
+    "PayloadReason",
+    "PayloadRun",
     "Quarantine",
     "QuarantineDecision",
     "QuarantineReason",
@@ -724,6 +792,7 @@ __all__ = [
     "SandboxInvocation",
     "SandboxIsolation",
     "SandboxIsolationError",
+    "SandboxPayload",
     "SandboxQuarantine",
     "SandboxQuarantineError",
     "SandboxRun",
@@ -767,6 +836,7 @@ __all__ = [
     "UnknownFailClassError",
     "WindowFacts",
     "WindowTransferError",
+    "authorize_payload_run",
     "authorize_run",
     "check_cgroup_budget",
     "check_invocation",
@@ -812,6 +882,7 @@ __all__ = [
     "sandbox_fail_class",
     "sandbox_imports",
     "sandbox_isolation",
+    "sandbox_payload",
     "sandbox_quarantine",
     "sandbox_seed",
     "sandbox_syscalls",
@@ -833,18 +904,19 @@ __version__ = "0.1.0"
 #: of the member, not by a hard-coded string — shares one spelling.
 COMPONENT_NAME: str = "sandbox"
 
-#: The other eight component names — ``IMPORTS_COMPONENT_NAME``,
+#: The other ten component names — ``IMPORTS_COMPONENT_NAME``,
 #: ``TRANSFER_COMPONENT_NAME``, ``SEED_COMPONENT_NAME``,
 #: ``THREADS_COMPONENT_NAME``, ``TIMEOUT_COMPONENT_NAME``,
-#: ``FAIL_CLASS_COMPONENT_NAME``, ``BUDGET_COMPONENT_NAME`` and
-#: ``SYSCALLS_COMPONENT_NAME`` — are not respelled here.  Each is its own law's
+#: ``FAIL_CLASS_COMPONENT_NAME``, ``BUDGET_COMPONENT_NAME``,
+#: ``SYSCALLS_COMPONENT_NAME``, ``QUARANTINE_COMPONENT_NAME`` and
+#: ``PAYLOAD_COMPONENT_NAME`` — are not respelled here.  Each is its own law's
 #: constant, read out of :mod:`sandbox.imports`, :mod:`sandbox.transfer`,
 #: :mod:`sandbox.seed`, :mod:`sandbox.threads`, :mod:`sandbox.timeout`,
-#: :mod:`sandbox.failclass`, :mod:`sandbox.budget` and :mod:`sandbox.syscalls`
-#: at the top of this module, and the member re-exports them rather than
-#: shadowing them: the nine component names are each owned by the law that
-#: registers under them, and a second assignment here would be a second place
-#: for one to drift.
+#: :mod:`sandbox.failclass`, :mod:`sandbox.budget`, :mod:`sandbox.syscalls`,
+#: :mod:`sandbox.quarantine` and :mod:`sandbox.payload` at the top of this
+#: module, and the member re-exports them rather than shadowing them: the
+#: eleven component names are each owned by the law that registers under them,
+#: and a second assignment here would be a second place for one to drift.
 
 
 class SandboxIsolation:
@@ -1425,3 +1497,54 @@ def build_sandbox_quarantine() -> SandboxQuarantine:
     for the read side a deployment audits with.
     """
     return sandbox_quarantine()
+
+
+@register(PAYLOAD_COMPONENT_NAME)
+def build_sandbox_payload() -> SandboxPayload:
+    """Component builder: feature 159's payload-delivery law (app_spec.xml §5.2).
+
+    The eleventh component this member contributes, beside feature 157's
+    isolation law, feature 167's import allowlist, feature 166's payload
+    channel, feature 165's node seed, feature 164's thread-pinning law, feature
+    163's wall-clock law, feature 168's fail-class law, feature 162's
+    cgroup-limits law, feature 160's seccomp allowlist and feature 161's
+    quarantine law — under its own name, because the registry is keyed by name
+    and a later registration of ``sandbox`` would *replace* the isolation law,
+    so one member carrying eleven controls carries eleven components.  With it
+    §5.2's Filesystem row has the admission gate its own words describe: "No
+    mounts.  Data arrives over IPC only."
+
+    **It compiles no committed artifact**, and it joins the four builders here
+    that can say that — the transfer's, the seed's, the fail-class law's and
+    the quarantine's — because its subject is the box's *structure* rather than
+    a deployment's setting: §5.2 fixes the row for every box in this
+    deployment, so there is nothing a ``payload_policy.json`` could hold that a
+    deployment could set differently without leaving the architecture.  A knob
+    nobody turns, the objection :func:`build_sandbox_transfer` raises against
+    inventing one; a non-``None`` component at this seat is proof only that the
+    law is loaded.
+
+    Like the other ten it takes no arguments (the factory's registration
+    protocol), never returns ``None`` and never raises: the factory builds every
+    registered component on every ``create_app()`` call, so a builder that
+    raised would take composition down for every unrelated feature in the
+    workspace, and a bare test process with no ``DATABASE_URL`` and no lake
+    still composes this one.  It reads nothing ambient either — the law's
+    subject is *a run and the channel that would have delivered its payload*,
+    both handed in by the caller, never a file (this law exists because the box
+    holds no mounts), never a probe and never ``os.environ`` — so composition
+    cannot depend on the shell that started the process.
+
+    It returns a :class:`SandboxPayload` rather than a channel, necessarily
+    rather than by preference: a channel belongs to one run, and a component
+    held across runs that carried one would let two runs share a window — the
+    property :func:`build_sandbox_transfer` and :func:`build_sandbox_seed`
+    state for their own quantities.  It does not mint channels either, for the
+    sharper reason that feature 166 owns the seam
+    (:meth:`SandboxTransfer.channel`), and a delivery law that opened channels
+    would be a second owner of the one thing whose provenance it is supposed to
+    judge.  What the composed value gives a caller is the law: ``check`` for
+    the answer as a decision, ``require`` for the payload that provably crossed
+    or the refusal on the last line before the spawn.
+    """
+    return sandbox_payload()

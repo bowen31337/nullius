@@ -169,6 +169,31 @@ failed — the discipline :mod:`infra.security.sandbox_egress`'s and
   whose ``default_action`` no longer denies is a box that admits everything it
   does not name.
 
+* :class:`SandboxPayloadError` — the payload-delivery contract, and feature
+  159's whole subject.  A sandboxed run was offered whose payload did not
+  arrive over the IPC channel: a path naming a filesystem the box does not
+  hold, an object reference that was never serialized, bytes with no channel
+  behind them, or a channel that carries no window at all.  §5.2's control
+  table gives the law both its row and its reason — ``Filesystem | No mounts.
+  Data arrives over IPC only.`` — and every refusal carries that row, because
+  a box with no mounts cannot read a window that stayed on the host and the
+  run that spawned anyway would score a signal against a universe it never
+  saw.  Its subclass :class:`PayloadChannelRequired` is the refusal itself,
+  every message beginning with the greppable code
+  :data:`sandbox.payload.PAYLOAD_CHANNEL_CODE`
+  (``payload_channel_required``) — the discipline
+  :data:`sandbox.isolation.ISOLATION_REQUIRED_CODE` applies to feature 157's.
+  **A sibling of :class:`SandboxTransferError`, not a subclass of it**, for
+  the reason the two laws split one channel at the moment a run is
+  dispatched: feature 166 owns *what crossed* — the bytes are a window, the
+  return is aligned — and refuses at the channel seam, one dispatch by
+  trusted host code; this one owns *whether the run's payload crossed at
+  all* and answers per run like the gates do, because §6.1 offers thousands
+  of unattended candidates and "this one's window never crossed" must reach
+  an operator as a fact about a run rather than a crashed evaluator.  The
+  raise lives on :meth:`sandbox.payload.PayloadDecision.require`, the
+  launcher's last line before the spawn.
+
 There is deliberately no error for *"the run was not admitted"* beyond
 :class:`GVisorIsolationRequired`.  Feature 157's failure mode is one thing —
 a run configuration that is not gVisor's — and splitting it into an error per
@@ -197,6 +222,7 @@ __all__ = [
     "InvocationSeedError",
     "IsolationDocumentError",
     "NodeSeedDocumentError",
+    "PayloadChannelRequired",
     "QuarantineTreeError",
     "SandboxBudgetError",
     "SandboxError",
@@ -204,6 +230,7 @@ __all__ = [
     "SandboxFailClassError",
     "SandboxImportError",
     "SandboxIsolationError",
+    "SandboxPayloadError",
     "SandboxQuarantineError",
     "SandboxSeedError",
     "SandboxSyscallError",
@@ -1062,4 +1089,102 @@ class QuarantineTreeError(SandboxQuarantineError):
     it *hangs*, and the guard that would have refused never runs.  This member
     walks the closure in Python over edges the caller hands it, precisely so that
     the cycle arrives here as a refusal a caller can act on.
+    """
+
+
+class SandboxPayloadError(SandboxError):
+    """The payload-delivery contract: a run whose payload did not cross.
+
+    app_spec.xml, "Untrusted Code Sandbox", feature 159: *System rejects a
+    sandboxed run whose payload did not arrive over the IPC channel, because
+    the sandbox holds no filesystem mounts.*  The subject is the run's
+    *delivery* — §5.2's ``payload=window.to_arrow(), # IPC, zero-copy``
+    clause in the call site whose other arguments are the code, the seed and
+    the limits — and this class is the refusal that keeps a dispatch from
+    spawning a box against bytes the box can never read.
+
+    **Why a missing payload is an error when nothing about it computed
+    wrongly.**  §5.2's control table row ``Filesystem | No mounts.  Data
+    arrives over IPC only.`` is structural: the box has no disk, so a
+    payload that did not cross the channel is not a payload the signal
+    inside could read *at all*, and the failure mode is not a wrong answer
+    but an *absent* one — a run that spawns anyway would report an ordinary
+    trial outcome for a candidate whose signal never saw a window, and a
+    score vector produced that way, if the signal survives to emit one, is
+    scored against a universe the box never received.  That is the same
+    absence-that-reads-as-a-result failure :class:`SandboxFailClassError`
+    refuses to read as ``ok`` and :class:`SandboxSeedError` refuses to
+    default, stated for the one argument of §5.2's call that carries the
+    data itself.
+
+    **A sibling of :class:`SandboxTransferError`, not a subclass of it.**
+    The two laws split one channel at the moment a run is dispatched, and a
+    caller reading a refusal wants to know which half fired before it wants
+    the detail.  Feature 166 owns *what crossed*: the bytes are a window,
+    the return is a positionally aligned score vector — its refusals are
+    raised at the channel seam, because a transfer is one dispatch by
+    trusted host code with exactly one sensible response.  This one owns
+    *whether the run's payload crossed at all*: a question about a run,
+    offered thousands of times unattended by §6.1's pipeline, so the gate
+    (:func:`sandbox.payload.authorize_payload_run`) *answers* with a
+    decision like feature 157's — the same reason the gates raise nothing —
+    and the raise lives on
+    :meth:`sandbox.payload.PayloadDecision.require`, the launcher's last
+    line before the spawn.  Nesting this class under the transfer's would
+    subscribe a caller catching "the delivery was refused" to every byte
+    the channel found malformed, and send an operator repairing a dispatch
+    looking for a serialization bug instead of the send nobody made.
+
+    **What this class deliberately does not cover: the mount.**  The
+    because-clause names the box's filesystem posture, and its enforcement
+    is layered beneath this refusal — the runtime's container config (no
+    volumes, an empty rootfs) and feature 160's seccomp ceiling, which
+    denies the ``open``/``openat`` family so a process that reaches for a
+    mount it was never given is killed as §15's escape attempt.  This class
+    is the admission half, ahead of both: it refuses the run *before a
+    process exists*, which is the only point where "the window never
+    arrived" is still a dispatch problem with a dispatch repair rather than
+    a killed child with a fail class to record.  A payload offered as a
+    path is the spelling this class names most directly — a path names a
+    place on a filesystem the box does not hold, and there is no mount for
+    it to resolve against.
+    """
+
+
+class PayloadChannelRequired(SandboxPayloadError):
+    """The refusal itself: this run's payload did not arrive over the channel.
+
+    Every message begins with ``payload_channel_required``
+    (:data:`sandbox.payload.PAYLOAD_CHANNEL_CODE`), the one spelling a
+    log-grepping operator or CI check looks for, and names which of the
+    spellings of not-arriving it found — a path (``by-filesystem``), an
+    object reference that was never serialized or bytes that disagree with
+    the window the channel carries (``off-channel``), bytes with no channel
+    behind them (``no-channel``), a channel holding no window
+    (``nothing-arrived``), or a run offering no payload anywhere
+    (``without-payload``) — because an operator repairing a dispatch needs
+    to know which side of the send went wrong.  Every message also carries
+    §5.2's row verbatim, the same one-body discipline the seed law's
+    refusals take, so a reader of any one refusal can find the law the
+    others cite without grep.
+
+    **One class for five spellings, because they are one repair.**  The
+    spellings are told apart in the decision's reason
+    (:class:`sandbox.payload.PayloadReason`), not as subclasses here, for
+    the restraint :class:`GVisorIsolationRequired`'s docstring states for
+    feature 157's several spellings of one fact: a caller that had to catch
+    each spelling would catch the ones it thought of and miss the one its
+    dispatch actually produced.  All five end at the same operator question
+    — *did the window reach the box, and on whose word?* — and the repair is
+    always the send: serialize the window, put it over the channel, and
+    dispatch the run against the channel that carries it.
+
+    Raised rather than returned only at the bridge
+    (:meth:`sandbox.payload.PayloadDecision.require` and
+    :meth:`sandbox.payload.SandboxPayload.require`): the gate *answers*
+    every run with a decision, so a pipeline auditing thousands of
+    unattended candidates reads values instead of surviving tracebacks.  A
+    launcher puts ``require`` on the last line before the spawn, where a run
+    offered against bytes that did not cross is refused there rather than
+    remembered.
     """

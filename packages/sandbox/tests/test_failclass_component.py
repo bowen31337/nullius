@@ -99,6 +99,7 @@ def test_scanning_the_member_registers_the_ten_components_it_owns() -> None:
         "sandbox-budget",
         "sandbox-failclass",
         "sandbox-imports",
+        "sandbox-payload",
         "sandbox-quarantine",
         "sandbox-seed",
         "sandbox-syscalls",
