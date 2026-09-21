@@ -157,6 +157,13 @@ from ._pool import (
     draw_world_seed,
     world_id_for,
 )
+from ._ported import (
+    DEFAULT_PORTED_WORLD_ID,
+    PortedWorld,
+    Provenance,
+    ported_question_for,
+    ported_world,
+)
 from ._question import (
     BOOTSTRAP_THEME_ROOT,
     BootstrapQuestion,
@@ -213,6 +220,7 @@ __all__ = [
     "DEFAULT_DEGREE",
     "DEFAULT_INTERACTIONS",
     "DEFAULT_POOL_SIZE",
+    "DEFAULT_PORTED_WORLD_ID",
     "DEFAULT_RIDGE",
     "DEFAULT_STANDARDIZE",
     "DEFAULT_WORLD_ID",
@@ -250,6 +258,8 @@ __all__ = [
     "HyperparameterWorld",
     "Observation",
     "PersistedPool",
+    "PortedWorld",
+    "Provenance",
     "WorldRecord",
     "build_bootstrap_pool",
     "build_hyperparameter_world",
@@ -265,6 +275,8 @@ __all__ = [
     "mix64",
     "node_steps",
     "normal",
+    "ported_question_for",
+    "ported_world",
     "question_for",
     "setting_dimensions",
     "setting_from_steps",

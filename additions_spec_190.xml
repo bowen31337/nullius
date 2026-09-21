@@ -1,0 +1,69 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 190 (System exposes a ported world adapter presenting an external ground-truth environment through the identical policy question interface, which returns scores comparable with an authored bootstrap world)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 190 in the bootstrap plugin: a PortedWorld
+    adapter that presents an external ground-truth environment — one whose
+    labels come from an upstream the member does not generate — through the
+    identical question.* interface feature 184 built, so a policy runs
+    unmodified and its scores are comparable with an authored bootstrap world.
+    The adapter is a new HyperparameterWorld-shaped object
+    (packages/bootstrap/src/bootstrap/_ported.py) that owns the same
+    answer-surface feature 184's BootstrapQuestion calls through —
+    label(node_id) (the honest ground-truth score), legal_moves(node_id),
+    legal_roots(), setting/steps/canonical_node/world_id — and adds the one
+    fact an authored world cannot have: a provenance record (the source
+    commit and dataset manifest the labels were ported from), which feature
+    191 persists and checks. question_for(ported_world) then returns the
+    identical BootstrapQuestion, unchanged, so the ported world scores on the
+    same R^2 scale the authored worlds do and the two pools stay comparable.
+    No shared file is touched; feature 184's adapter is reused, not rewritten.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/bootstrap member, import bootstrap) / pytest (ruff + mypy conventions)</stack>
+    <test_baseline>The bootstrap suite under packages/bootstrap/tests/, collected under its own conftest (same-basename files collide under one pytest run). Stdlib-only computation: the world's fit is a dense Cholesky solve in math.fsum over a pure integer-hash stream, so the adapter's suite adds no third-party dependency. Run the member suite (packages/bootstrap/tests) under its own conftest; the repository-level tests/ tree is separate and is not collected by this member's suite.</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, docstrings that
+      cite app_spec.xml feature numbers and docs/nullius-tech-architecture.md
+      sections, stdlib-only computation, @register only in the package
+      __init__ (never a submodule), degrade-don't-break composition. The member
+      never imports another workspace member. Values are validated at
+      construction and at the address seam; the label is the world's honest
+      score unchanged; a refusal names the world and the node. Tests assert
+      on observed behaviour with long narrative docstrings explaining the "why",
+      and pin the adapter against the world's own primitives so the wrapper and
+      the world cannot drift.
+    </conventions>
+  </existing_context>
+  <!-- Layout mirrors the clean main app_spec.xml: uv-workspace is what makes
+       plugin="bootstrap" resolve to the real packages/bootstrap/ tree rather
+       than the single-package src/plugins/bootstrap/ default. Parsed before
+       features. -->
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Ported world adapter">
+      <feature index="1" shape="plugin" plugin="bootstrap" depends_on="184">
+        <description>System exposes Provenance, the frozen record of where a ported world's labels came from — the source commit the upstream code was pinned to, and the dataset manifest hash the label-bearing data was taken from — as the identity of a ported world rather than a seed. An authored bootstrap world *is* its seed (generate_dataset is a pure function of it, so there is nothing upstream to check); a ported world's labels are read from an environment the member does not generate, so the world's identity is the pair of digests that let feature 191 tell "the same upstream" from "an upstream that changed". Provenance is a frozen value, validated at construction: both digests are non-empty strings, and two ported worlds with different provenance are different worlds, not updated versions of one another (§10.6.1's provenance rule seen from the ported side).</description>
+      </feature>
+      <feature index="2" shape="plugin" plugin="bootstrap" depends_on="1">
+        <description>System exposes PortedWorld, the adapter that presents an external ground-truth environment through the identical question.* interface. A PortedWorld is built from a label function — a pure callable mapping a node id to the honest held-out R^2 the external environment assigns that node — plus a lattice (the same HyperparameterWorld lattice a node is addressed on), a world id, and the Provenance of the labels. It owns the answer surface feature 184's BootstrapQuestion calls through — label(node_id) (the external score, unchanged), legal_moves(node_id), legal_roots(), setting(node_id)/steps(node_id)/canonical_node()/world_id — so question_for(ported_world) returns the identical BootstrapQuestion and one policy runs unmodified against a ported world. The label is the external environment's honest score, carried unchanged: a ported world's whole contribution is that its labels are the environment's ground truth, and an adapter that rescored or narrowed them would be the corruption the identical interface exists to prevent. The lattice is the authored world's lattice, shared, so the ported node addresses the same cell a bootstrap node does and the two are comparable on the same R^2 scale.</description>
+      </feature>
+      <feature index="3" shape="plugin" plugin="bootstrap" depends_on="2">
+        <description>System exposes ported_world(...) and ported_question_for(ported_world), the constructors and the one factory that turn an external environment into the question.* adapter a policy expects, so the identical-interface requirement is a single call site rather than a construction a caller could get wrong. The factory binds the adapter to the identical BootstrapQuestion feature 184 built — its legal_actions, its labels, its CellMeta are the ported world's — and refuses a non-ported-world or an empty id at construction; two adapters of one external environment answer identical observations and cell meta to the last field, and a ported world and an authored world of one lattice expose the identical interface but their own labels, so one policy is scored on each world's ground truth and the scores are comparable — which is what "returns scores comparable with an authored bootstrap world" has to mean.</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <endpoints>
+    <endpoint name="Provenance">the frozen (source_commit, dataset_manifest) record a ported world's labels are pinned to</endpoint>
+    <endpoint name="PortedWorld.label">returns the external environment's honest held-out score for a node, unchanged</endpoint>
+    <endpoint name="PortedWorld.legal_moves">the neighbours of a node on the shared lattice, one axis by one position</endpoint>
+    <endpoint name="PortedWorld.legal_roots">the single canonical root node id</endpoint>
+    <endpoint name="PortedWorld.canonical_node">the root's node id — where a policy's walk starts</endpoint>
+    <endpoint name="PortedWorld.setting / steps">the node id's address on the shared lattice, refused if out of lattice</endpoint>
+    <endpoint name="PortedWorld.world_id">the name the ported world's labels are attributed to</endpoint>
+    <endpoint name="PortedWorld.provenance">the Provenance the labels came from — read-only</endpoint>
+    <endpoint name="ported_world">constructor: an external label function, a lattice, an id and Provenance in, a PortedWorld out</endpoint>
+    <endpoint name="ported_question_for">factory: a PortedWorld in, the identical question.* adapter out</endpoint>
+  </endpoints>
+  <database_tables>
+  </database_tables>
+</project_specification>
