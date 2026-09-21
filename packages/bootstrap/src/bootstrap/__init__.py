@@ -5,10 +5,12 @@ exposes a hyperparameter search world over a fixed model and dataset,
 which returns a ground-truth score per node"*; feature 184, the identical
 ``question.*`` interface every bootstrap world fronts; feature 188, *"System
 persists 40 to 50 generated bootstrap worlds into the replay pool on
-demand"*; feature 190, the ported-world adapter; and feature 191, *"System
-persists source commit and dataset manifest hash for every ported world,
-which rejects a world whose recorded values no longer match its
-upstream"* — on the phase
+demand"*; feature 189, *"System labels every bootstrap node with ground
+truth, which returns perfect sensitivity and specificity references for
+calibration"*; feature 190, the ported-world adapter; and feature 191,
+*"System persists source commit and dataset manifest hash for every
+ported world, which rejects a world whose recorded values no longer
+match its upstream"* — on the phase
 docs/nullius-tech-architecture.md §10.6 opens:
 
     Build the non-financial ground-truth worlds so pool size becomes a
@@ -127,16 +129,32 @@ sibling features of this category:
   refused, not re-hashed (§10.6.1: *"an upstream that changes is a
   different world, not an updated one"*).
 
+* **The ground truth of every node** (:mod:`bootstrap._truth`).
+  Feature 189's reference: :func:`~bootstrap.ground_truth` labels every
+  cell of a world's lattice with its class — a **discovery** when the
+  node's honest held-out ``R²`` clears the published evidential bar
+  :data:`~bootstrap.DISCOVERY_BAR`, a **null** when it does not — read
+  off the same answer surface the question interface calls through, so
+  the authored world, the ported world and the composed world are
+  labelled through one duck-typed code path.  The counts those labels
+  make are integers and the rates are single divisions, so the
+  sensitivity and specificity a declaration scores
+  (:meth:`~bootstrap.GroundTruth.calibrate`) are exact — *perfect
+  references* in the feature's own sense — and the declaration naming
+  exactly the discoveries (:meth:`~bootstrap.GroundTruth.perfect`)
+  scores ``1.0`` / ``1.0`` outright: the answer key a financial pool's
+  estimated rates are calibrated against, published.
+
 **What this member deliberately does not ship.**  The things this member
 does not ship are the ones that are statements about *callers* of its
-labels rather than about the labels: feature 189's sensitivity and
-specificity references are a calibration report made *over* bootstrap
-labels, features 186-187's tallies and headline refusal are statements
-about both pools at once (financial and bootstrap, made where both are
-visible), and feature 185's budget rule — *"System charges no statistical
-budget for a bootstrap world"* — is a fact about what the *trial* records
-rather than about what the world computes, so nothing here indexes,
-decrements or reports a budget.  The world itself stays
+labels rather than about the labels: features 186-187's tallies and
+headline refusal are statements about both pools at once (financial and
+bootstrap, made where both are visible), feature 185's budget rule —
+*"System charges no statistical budget for a bootstrap world"* — is a
+fact about what the *trial* records rather than about what the world
+computes, so nothing here indexes, decrements or reports a budget, and
+§10.3's ``FDR_deploy`` reweighting is the scorer's arithmetic over rates
+this member makes exact, not a rate itself.  The world itself stays
 reveal-history-free by design — a world that owned a reveal history
 would be a world whose answers depended on it, which is why the
 bookkeeping lives in the question (:mod:`bootstrap._question`) and not
@@ -200,6 +218,13 @@ from ._question import (
     question_for,
 )
 from ._stream import GOLDEN_GAMMA, MASK64, mix64, normal, uniform
+from ._truth import (
+    DISCOVERY_BAR,
+    ConfusionMatrix,
+    GroundTruth,
+    NodeTruth,
+    ground_truth,
+)
 from ._world import (
     AXIS_ORDER,
     DEFAULT_ALPHA,
@@ -252,6 +277,7 @@ __all__ = [
     "DEFAULT_RIDGE",
     "DEFAULT_STANDARDIZE",
     "DEFAULT_WORLD_ID",
+    "DISCOVERY_BAR",
     "FEATURE_COUNT",
     "FEATURE_SCALES",
     "GOLDEN_GAMMA",
@@ -280,11 +306,14 @@ __all__ = [
     "BootstrapScoringError",
     "BootstrapWorldError",
     "CellMeta",
+    "ConfusionMatrix",
     "Dataset",
     "FitResult",
+    "GroundTruth",
     "HyperparameterAxis",
     "HyperparameterSetting",
     "HyperparameterWorld",
+    "NodeTruth",
     "Observation",
     "PersistedPool",
     "PortedWorld",
@@ -301,6 +330,7 @@ __all__ = [
     "encode_node_id",
     "fit_and_score",
     "generate_dataset",
+    "ground_truth",
     "hyperparameter_world",
     "mix64",
     "node_steps",
