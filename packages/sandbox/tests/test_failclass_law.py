@@ -148,6 +148,7 @@ class TestTheVocabulary:
             "sandbox-timeout",
             "sandbox-budget",
             "sandbox-syscalls",
+            "sandbox-quarantine",
         }
 
 

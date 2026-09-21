@@ -260,6 +260,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a depende
         SandboxFailClass,
         SandboxImports,
         SandboxIsolation,
+        SandboxQuarantine,
         SandboxSeed,
         SandboxSyscalls,
         SandboxThreads,
@@ -272,6 +273,7 @@ __all__ = [
     "COMPONENT_NAME",
     "FAIL_CLASS_COMPONENT_NAME",
     "IMPORTS_COMPONENT_NAME",
+    "QUARANTINE_COMPONENT_NAME",
     "SEED_COMPONENT_NAME",
     "SYSCALLS_COMPONENT_NAME",
     "THREADS_COMPONENT_NAME",
@@ -281,6 +283,7 @@ __all__ = [
     "sandbox_fail_class_component",
     "sandbox_imports_component",
     "sandbox_isolation_component",
+    "sandbox_quarantine_component",
     "sandbox_seed_component",
     "sandbox_syscalls_component",
     "sandbox_threads_component",
@@ -363,6 +366,20 @@ BUDGET_COMPONENT_NAME = "sandbox-budget"
 #: ``packages/sandbox/tests/test_syscalls_component.py`` pins the two equal, so
 #: the pair cannot drift into a silent ``None`` at this seat.
 SYSCALLS_COMPONENT_NAME = "sandbox-syscalls"
+
+#: Feature 161's quarantine law: ``sandbox-quarantine``. The tenth component this
+#: member contributes, and the seat beside the other nine — distinct from each of
+#: them because the factory's registry replaces a name's earlier registration.
+#: Kept here for the same reason the other nine are: one spelling shared by
+#: everything that asks for the law through the app package.
+#:
+#: Named rather than respelled from the member for the reason the nine constants
+#: above are: the member's own ``sandbox.QUARANTINE_COMPONENT_NAME`` is the
+#: spelling the builder registers under, and this one is the spelling the app
+#: namespace reads it back with.
+#: ``packages/sandbox/tests/test_quarantine_component.py`` pins the two equal, so
+#: the pair cannot drift into a silent ``None`` at this seat.
+QUARANTINE_COMPONENT_NAME = "sandbox-quarantine"
 
 
 def sandbox_isolation_component(
@@ -641,3 +658,45 @@ def sandbox_syscalls_component(
     """
     application = app if app is not None else create_app()
     return application.get(SYSCALLS_COMPONENT_NAME)
+
+
+def sandbox_quarantine_component(
+    app: Application | None = None,
+) -> SandboxQuarantine | Any:
+    """Return the composed sandbox quarantine law (feature 161).
+
+    The same contract the other nine accessors give their laws, for the control
+    that answers *which nodes stop being evaluated because of a seccomp
+    violation?* — §15's recovery column: with ``app`` given the component is read
+    from that application, without it the application is composed first, and
+    ``None`` means no ``sandbox-quarantine`` component was registered.
+
+    **This is the second seat where a non-``None`` component proves only that the
+    law is loaded, and the reason is feature 168's own.**  There is no committed
+    artifact behind it: §15 fixes the trigger, the recovery and the class, and
+    §9.1 fixes the vocabulary the class is read against, so this law's subject is
+    a *rule* rather than a deployment's setting, the builder has nothing to
+    compile, and there is no file whose drift a ``None`` could report.  So the
+    artifact-backed reading features 157's, 167's, 164's, 163's, 162's and 160's
+    seats entitle a caller to draw is *not* available here, and nothing is lost:
+    what a reviewer would want to read — which class halts a branch, and which
+    column the halt is written to — comes back from ``fail_class()`` and
+    ``mark_column()`` rather than from a document.
+
+    The value carries no violation and no tree, so a caller does not get a halt
+    from this accessor: it gets the law, and calls ``check(subject, tree)`` /
+    ``quarantines(subject, tree)`` for the answer as a value, ``require(subject,
+    tree)`` for the refusal on the line after feature 160's own ``require``, or
+    ``tree(rows)`` to build the closure from the node rows the caller fetched.
+    The subtree is *handed in* rather than opened here because the member's
+    one-provenance rule keeps the box stdlib-only and store-free — the caller
+    owns the fetch, the transaction and the commit — and the handoff from the
+    gate is a value: feature 160's decision publishes the ``sandbox_escape``
+    commitment, and that is the only subject this law halts a branch for.  A
+    timeout, an ``error`` or a tripwire verdict comes back as a refusal rather
+    than as a halt, and feature 160's ``None`` — an attempt nobody could read as
+    a syscall — comes back as the run continuing, which is what the gate says it
+    is.
+    """
+    application = app if app is not None else create_app()
+    return application.get(QUARANTINE_COMPONENT_NAME)

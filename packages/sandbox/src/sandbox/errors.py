@@ -197,11 +197,14 @@ __all__ = [
     "InvocationSeedError",
     "IsolationDocumentError",
     "NodeSeedDocumentError",
+    "QuarantineTreeError",
     "SandboxBudgetError",
     "SandboxError",
+    "SandboxEscapeQuarantine",
     "SandboxFailClassError",
     "SandboxImportError",
     "SandboxIsolationError",
+    "SandboxQuarantineError",
     "SandboxSeedError",
     "SandboxSyscallError",
     "SandboxThreadPinningError",
@@ -961,4 +964,102 @@ class SyscallsDocumentError(SandboxSyscallError):
     closed, because a ceiling compiled from a partially-read document is one
     whose file and whose box disagree — and that disagreement is a sandbox
     confining agent-authored code under a filter nobody wrote down.
+    """
+
+
+class SandboxQuarantineError(SandboxError):
+    """The quarantine contract: a branch of the discovery tree halted behind a violation.
+
+    app_spec.xml, "Untrusted Code Sandbox", feature 161: *System quarantines a
+    node together with its subtree after a seccomp violation, persisting a
+    ``sandbox_escape`` fail class.*  §15's failure table gives the row this class
+    is the refusal half of — *"Sandbox escape attempt | seccomp violation | Kill,
+    record ``fail_class``, quarantine the node and its subtree"* — and §9.1's
+    ``fail_class`` column is the vocabulary the recorded half is read against.
+
+    **The three refusals are one class because they are one question.**  The
+    trigger is not the ``sandbox_escape`` violation this law exists for
+    (``quarantine_required``, :data:`sandbox.quarantine.QUARANTINE_REQUIRED_CODE`);
+    the branch cannot be read as a tree at all
+    (``quarantine_tree_invalid``,
+    :data:`sandbox.quarantine.QUARANTINE_TREE_CODE`); or the nodes the quarantine
+    would mark are not the ones the caller holds records for
+    (``quarantine_mismatch``,
+    :data:`sandbox.quarantine.QUARANTINE_MISMATCH_CODE`).  Each ends at the same
+    operator question — *which nodes are halted, and on whose authority?* — and
+    each is answered by the same repair: go read the violation, or go read the
+    tree.  :class:`SandboxSyscallError`'s docstring makes the same argument for
+    feature 160's two spellings of one fact.
+
+    **Why this is a refusal rather than an action.**  Halting a subtree is the
+    most consequential thing this member does: every node under the violating one
+    stops being evaluated, and §6.1 runs the sandbox unattended over thousands of
+    candidates, so a law that quarantined on a guess would silently retire a
+    branch of the search on evidence nobody checked.  So
+    :func:`sandbox.quarantine.quarantine_violation` *answers* — it returns a
+    :class:`~sandbox.quarantine.QuarantineDecision` naming both the class it
+    found and the class §15 requires — and the raise lives on
+    :meth:`sandbox.quarantine.QuarantineDecision.require` for the caller that
+    wants the halt to be fatal.  That is the same split
+    :class:`SandboxSyscallError` and :class:`SandboxBudgetError` draw, for the
+    same reason: these are violations of the box rather than properties of a
+    hypothesis, and all three end at an operator question rather than a retry.
+
+    Deliberately *not* a subclass of any other member's error.  Quarantine
+    consumes feature 160's violation handoff, but it does not consume feature
+    160's vocabulary of refusal: a caller catching :class:`SandboxSyscallError`
+    has caught the *gate's* decision about a syscall, and a caller catching this
+    has caught a decision about a *branch* of the discovery tree.  The two
+    arrive at different moments in a run and are repaired by reading different
+    things, so a caller that had to catch one for the other would be repairing
+    the wrong one.
+    """
+
+
+class SandboxEscapeQuarantine(SandboxQuarantineError):
+    """The refusal itself: this branch will not be quarantined, and here is why.
+
+    Every message begins with a greppable code — ``quarantine_required``,
+    ``quarantine_tree_invalid`` or ``quarantine_mismatch`` (the three constants
+    named on :class:`SandboxQuarantineError`) — so an operator grepping a log
+    finds the refusal by the feature's own words, the discipline feature 157's
+    ``gvisor_isolation_required``, feature 167's ``disallowed_import``, feature
+    164's ``thread_pinning_required``, feature 165's ``node_seed_required``,
+    feature 162's ``cgroup_budget_exceeded``, feature 163's ``timeout_required``,
+    feature 160's ``disallowed_syscall`` and feature 168's
+    ``fail_class_required`` set for theirs.
+
+    Note what this class does **not** claim: it never says the seccomp violation
+    did not happen.  A subject whose ``fail_class`` reads ``timeout`` or ``error``
+    is refused here *because* feature 160's gate and feature 163's clock have
+    their own owners and their own records — this law declining to halt a branch
+    for them is not this law doubting them.  The one case that is a genuine "no",
+    :data:`~sandbox.quarantine.QuarantineReason.NOTHING_TO_QUARANTINE`, is not a
+    refusal at all and does not raise: feature 160 documents that an unreadable
+    attempt is deliberately not called an escape attempt, so there is no branch
+    to halt and the run continues.
+    """
+
+
+class QuarantineTreeError(SandboxQuarantineError):
+    """The nodes handed in could not be read as one campaign's discovery tree.
+
+    The counterpart of :class:`IsolationDocumentError`,
+    :class:`AllowlistDocumentError`, :class:`ThreadPinningDocumentError`,
+    :class:`TimeoutBudgetDocumentError`, :class:`CgroupBudgetDocumentError`,
+    :class:`NodeSeedDocumentError` and :class:`SyscallsDocumentError`, kept
+    apart from :class:`SandboxEscapeQuarantine` for the reason that pair is
+    always split: *the tree could not be read* and *this branch will not be
+    quarantined* are different facts about different things, and a caller that
+    conflated them would go looking at a syscall trace when the fault is a
+    ``node`` table that no longer says what it is.
+
+    Raised for a row that is not a mapping, a node with no id, a node id that
+    appears twice, two rows for one node agreeing on nothing, or — the case this
+    class exists for — a ``parent_id`` chain that closes on itself.  The last is
+    the one worth naming: a ``UNION ALL`` recursion over a ``parent_id`` cycle
+    never terminates, so a closure walked in SQL does not *fail* on a cyclic tree,
+    it *hangs*, and the guard that would have refused never runs.  This member
+    walks the closure in Python over edges the caller hands it, precisely so that
+    the cycle arrives here as a refusal a caller can act on.
     """

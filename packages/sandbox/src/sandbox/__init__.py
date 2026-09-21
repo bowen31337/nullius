@@ -294,6 +294,53 @@ matters: the default action must deny, so an artifact drifted to ``allow`` (or t
 compose at all.  A widened default is the one drift that turns this whole control
 into a container that believes it is sandboxed, and it is refused as a *document*
 error before any box is armed from it.
+
+**Feature 161 rides the seat a tenth time, and it is the law feature 160's row
+hands the node to.**  *System quarantines a node together with its subtree after a
+seccomp violation, persisting a ``sandbox_escape`` fail class* is §15's recovery
+column made executable, and its law lives in :mod:`sandbox.quarantine`: a
+:class:`~sandbox.quarantine.NodeTree` that reads the caller's ``node`` rows,
+:func:`~sandbox.quarantine.quarantine_violation` that closes the branch over
+``parent_id`` from the violating node, and a
+:class:`~sandbox.quarantine.Quarantine` that writes the class onto the failing
+node and the halt onto every node it took with it.  It composes as
+:class:`SandboxQuarantine` under
+:data:`sandbox.quarantine.QUARANTINE_COMPONENT_NAME` (``sandbox-quarantine``) — a
+tenth seat beside the other nine, for the same registry-replacement reason.
+
+**It is the *second* law in this member, not a second fact about the first.**  The
+event and the recovery are two things: feature 160's gate decides *a process
+called something the ceiling does not admit* and publishes
+:attr:`~sandbox.syscalls.SyscallDecision.violation`; this law decides *which nodes
+stop being evaluated because of it*.  They are separate because they have separate
+owners, separate refusals and separate repair paths — a caller that got a
+``disallowed_syscall`` goes and reads the ceiling, while a caller that got a
+``quarantine_required`` goes and reads the violation or the tree — and because the
+second question is about a *branch of the discovery tree*, which feature 160 has
+no way to name.  So the handoff between them is a value: the commitment feature
+160's decision carries is the only subject this law quarantines for, and its
+``fail_class`` is §15's ``sandbox_escape`` restated as data.
+
+**Nothing but that class halts a branch, and the restraint is the feature.**  §15's
+recovery column belongs to one row, so a timeout, an ``error``, a tripwire verdict
+and an ``errno``-action rejection that let the process carry on all come back as
+:data:`~sandbox.quarantine.QuarantineReason.FOREIGN_CLASS` rather than as a halt —
+each has its own owner and its own record, and quarantining a subtree for one of
+them would retire a branch for a failure no ceiling was ever compared against.  The
+one non-refusal is :data:`~sandbox.quarantine.QuarantineReason.NOTHING_TO_QUARANTINE`:
+feature 160 publishes ``None`` for an attempt it could not read as a syscall at all,
+and deliberately does not call that an escape attempt, so there is nothing to halt
+and the run continues.
+
+**It ships no committed artifact, and it is the second.**  Feature 168's builder is
+the other one, for the same reason one law over: §15 fixes the trigger, the
+recovery and the class, and §9.1 fixes the vocabulary the class is read against, so
+this law's subject is a *rule* rather than a deployment's setting and there is no
+file whose drift a compile could catch.  A ``sandbox_escape`` is therefore persisted
+under its own name and left for feature 168's table to translate under ``error`` —
+two laws, two writes, one translation — and the closure is walked in Python over the
+rows the caller hands in, so a ``parent_id`` cycle arrives as a refusal an operator
+can act on rather than as a query that never comes back.
 """
 
 from __future__ import annotations
@@ -341,11 +388,14 @@ from .errors import (
     InvocationSeedError,
     IsolationDocumentError,
     NodeSeedDocumentError,
+    QuarantineTreeError,
     SandboxBudgetError,
     SandboxError,
+    SandboxEscapeQuarantine,
     SandboxFailClassError,
     SandboxImportError,
     SandboxIsolationError,
+    SandboxQuarantineError,
     SandboxSeedError,
     SandboxSyscallError,
     SandboxThreadPinningError,
@@ -419,6 +469,25 @@ from .isolation import (
     committed_isolation_policy,
     compile_isolation_policy,
     load_isolation_policy,
+)
+from .quarantine import (
+    NODE_QUARANTINED_COLUMN,
+    QUARANTINE_COLUMNS,
+    QUARANTINE_COMPONENT_NAME,
+    QUARANTINE_FAIL_CLASS,
+    QUARANTINE_MISMATCH_CODE,
+    QUARANTINE_REQUIRED_CODE,
+    QUARANTINE_TABLE,
+    QUARANTINE_TREE_CODE,
+    NodeTree,
+    Quarantine,
+    QuarantineDecision,
+    QuarantineReason,
+    QuarantineRecord,
+    SandboxQuarantine,
+    quarantine_violation,
+    quarantines,
+    sandbox_quarantine,
 )
 from .seed import (
     ENV_SIGNAL_SEED,
@@ -570,11 +639,19 @@ __all__ = [
     "MEM_DRIFT_REASON",
     "MINT_SALT",
     "NODE_FAIL_CLASSES",
+    "NODE_QUARANTINED_COLUMN",
     "OK_FAIL_CLASS",
     "PINNED",
     "PINNING_POLICY_KIND",
     "POLICY_KIND",
     "POOL_FLOOR_VARIABLE",
+    "QUARANTINE_COLUMNS",
+    "QUARANTINE_COMPONENT_NAME",
+    "QUARANTINE_FAIL_CLASS",
+    "QUARANTINE_MISMATCH_CODE",
+    "QUARANTINE_REQUIRED_CODE",
+    "QUARANTINE_TABLE",
+    "QUARANTINE_TREE_CODE",
     "REQUIRED_CAPS",
     "RUNNER_MEM_MB",
     "SANDBOX_ESCAPE_CLASS",
@@ -628,11 +705,18 @@ __all__ = [
     "ModuleDecision",
     "ModuleReason",
     "NodeSeedDocumentError",
+    "NodeTree",
+    "Quarantine",
+    "QuarantineDecision",
+    "QuarantineReason",
+    "QuarantineRecord",
+    "QuarantineTreeError",
     "RunDecision",
     "RunReason",
     "SandboxBudget",
     "SandboxBudgetError",
     "SandboxError",
+    "SandboxEscapeQuarantine",
     "SandboxFailClass",
     "SandboxFailClassError",
     "SandboxImportError",
@@ -640,6 +724,8 @@ __all__ = [
     "SandboxInvocation",
     "SandboxIsolation",
     "SandboxIsolationError",
+    "SandboxQuarantine",
+    "SandboxQuarantineError",
     "SandboxRun",
     "SandboxSeed",
     "SandboxSeedError",
@@ -718,12 +804,15 @@ __all__ = [
     "load_timeout_policy",
     "mint_node_seed",
     "over_limits",
+    "quarantine_violation",
+    "quarantines",
     "reject_syscall",
     "resolve_seed",
     "sandbox_budget",
     "sandbox_fail_class",
     "sandbox_imports",
     "sandbox_isolation",
+    "sandbox_quarantine",
     "sandbox_seed",
     "sandbox_syscalls",
     "sandbox_threads",
@@ -1284,3 +1373,55 @@ def build_sandbox_syscalls() -> SandboxSyscalls:
     audits with.
     """
     return sandbox_syscalls()
+
+
+@register(QUARANTINE_COMPONENT_NAME)
+def build_sandbox_quarantine() -> SandboxQuarantine:
+    """Component builder: feature 161's quarantine law (app_spec.xml §15).
+
+    The tenth component this member contributes, beside feature 157's isolation
+    law, feature 167's import allowlist, feature 166's payload channel, feature
+    165's node seed, feature 164's thread-pinning law, feature 163's wall-clock
+    law, feature 168's fail-class law, feature 162's cgroup-limits law and
+    feature 160's seccomp allowlist — under its own name, because the registry
+    is keyed by name and a later registration of ``sandbox`` would *replace* the
+    isolation law, so one member carrying ten controls carries ten components.
+    With it §15's failure table has a law behind its most consequential row:
+    *"Sandbox escape attempt | seccomp violation | Kill, record ``fail_class``,
+    quarantine the node and its subtree"*.
+
+    **It compiles no committed artifact, and it is the second builder in this
+    member that can say that.**  Six of its nine siblings ship one — an isolation
+    policy, an allowlist, a pinning policy, a budget, a cgroup budget, a node
+    record — because their subject is a *setting* a deployment writes down and a
+    reviewer reads.  This law's subject is a *rule*: §15 fixes the trigger, the
+    recovery and the class, and §9.1 fixes the vocabulary the class is read
+    against, so there is nothing here for a deployment to set and no file whose
+    drift a compile could catch.  Feature 168's builder is the other one, and its
+    reason is the same one law over.  What is *not* artifact-less about this
+    feature is the tree it halts: the rows arrive from the caller, and the class
+    it persists is the one feature 160's commitment publishes.
+
+    Like the other nine it takes no arguments (the factory's registration
+    protocol), never returns ``None`` and never raises: the factory builds every
+    registered component on every ``create_app()`` call, so a builder that raised
+    would take composition down for every unrelated feature in the workspace, and
+    a bare test process with no ``DATABASE_URL`` and no lake still composes this
+    one.  It reads nothing ambient either — the law's subject is *a violation and
+    a tree a caller hands in*, never a database this member opens, never a
+    probe, and never ``os.environ`` — so composition cannot depend on the shell
+    that started the process, and this law opens no store the way the member's
+    one-provenance rule requires of everything inside the box.  There is no
+    drifted-artifact path to report, because there is no artifact.
+
+    It returns a :class:`SandboxQuarantine` rather than a policy — the same
+    shape the other nine give — and this one's reason is feature 157's own
+    restated: a component held across runs that had *halted a branch* would be
+    one violation's closure applied to another's tree, and this law has no tree
+    to halt until a caller fetches one.  What the composed value gives a caller
+    is the law: ``check``/``quarantines`` for the answer as a value, ``require``
+    for the refusal on the line after the gate's own ``require``, ``tree`` to
+    build the closure from rows, and ``columns``/``fail_class``/``mark_column``
+    for the read side a deployment audits with.
+    """
+    return sandbox_quarantine()

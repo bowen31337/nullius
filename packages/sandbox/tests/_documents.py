@@ -1410,3 +1410,184 @@ FORBIDDEN_SYSCALL_TERMS: tuple[str, ...] = (
     "tkill",
     "ioctl",
 )
+
+
+# Feature 161 — the quarantine law (app_spec.xml §15).  The tree is seeded here
+# as *rows* rather than through a store, because feature 97's `node` table is the
+# caller's to fetch and this member opens no database: a test that means "the
+# branch from this node" says which edges exist by handing them in.
+QUARANTINE_CAMPAIGN: str = "campaign-9f2e"
+OTHER_QUARANTINE_CAMPAIGN: str = "campaign-4a71"
+QUARANTINE_ROOT_ID: str = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+QUARANTINE_CHILD_ID: str = "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e"
+QUARANTINE_GRANDCHILD_ID: str = "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f"
+QUARANTINE_GREATGRANDCHILD_ID: str = "3d4e5f6a-7b8c-4d9e-8f0a-1b2c3d4e5f6a"
+QUARANTINE_SIBLING_ID: str = "4e5f6a7b-8c9d-4e0f-9a1b-2c3d4e5f6a7b"
+OTHER_CAMPAIGN_ROOT_ID: str = "5f6a7b8c-9d0e-4f1a-8b2c-3d4e5f6a7b8c"
+OTHER_CAMPAIGN_CHILD_ID: str = "6a7b8c9d-0e1f-4a2b-9c3d-4e5f6a7b8c9d"
+
+
+def node_row(
+    node_id: str,
+    *,
+    parent_id: str | None = None,
+    campaign_id: str = QUARANTINE_CAMPAIGN,
+    theme_root: str = "test-theme",
+    depth: int = 0,
+) -> dict[str, Any]:
+    """One feature-97 ``node`` row, as a caller's fetch hands it over.
+
+    The five structural columns migration ``0118_node_table`` declares, with the
+    class column absent: a node row before anything has been recorded about it is
+    the state a fresh quarantine is written onto, and a test that means "this node
+    already carries a class" passes ``record`` to :func:`quarantine_record`.
+    """
+    return {
+        "id": node_id,
+        "parent_id": parent_id,
+        "campaign_id": campaign_id,
+        "theme_root": theme_root,
+        "depth": depth,
+    }
+
+
+def quarantine_record(
+    node_id: str = QUARANTINE_ROOT_ID,
+    *,
+    parent_id: str | None = None,
+    campaign_id: str = QUARANTINE_CAMPAIGN,
+    fail_class: Any = None,
+    quarantined_at: Any = None,
+) -> dict[str, Any]:
+    """A node row as the *caller's record* — the mapping :meth:`Quarantine.mark` writes into.
+
+    Distinct from :func:`node_row` because the two are different things in this
+    law's vocabulary: ``node_row`` is what a tree is *built* from, and this is
+    what a halt is *written to*.  ``fail_class`` and ``quarantined_at`` are
+    omitted rather than set to ``None`` when they are not asked for, so a test
+    that means "this node carries no class yet" produces a row without the key —
+    which is the shape a fresh §9.1 row has.
+    """
+    record: dict[str, Any] = {
+        "id": node_id,
+        "parent_id": parent_id,
+        "campaign_id": campaign_id,
+    }
+    if fail_class is not None:
+        record["fail_class"] = fail_class
+    if quarantined_at is not None:
+        record["quarantined_at"] = quarantined_at
+    return record
+
+
+def quarantine_rows(
+    *,
+    campaign_id: str = QUARANTINE_CAMPAIGN,
+    depth: int = 3,
+) -> list[dict[str, Any]]:
+    """One campaign's tree: root → child → grandchild → great-grandchild, plus a sibling.
+
+    ``depth`` is how many *descendants* hang below the root, so ``depth=0`` is a
+    bare root and ``depth=1`` is a root with one child — the two ends a
+    quarantine's width test needs; the suite's default of 3 is root → child →
+    grandchild → great-grandchild.  A *sibling* branch hangs off the root, because
+    the property under test is that a halt starting at the child takes two nodes
+    and leaves the sibling alone: a tree that is one chain cannot tell "the
+    subtree" from "everything below the root".
+    """
+    rows: list[dict[str, Any]] = [node_row(QUARANTINE_ROOT_ID, campaign_id=campaign_id)]
+    chain = [
+        (QUARANTINE_CHILD_ID, QUARANTINE_ROOT_ID),
+        (QUARANTINE_GRANDCHILD_ID, QUARANTINE_CHILD_ID),
+        (QUARANTINE_GREATGRANDCHILD_ID, QUARANTINE_GRANDCHILD_ID),
+    ]
+    for index, (node_id, parent_id) in enumerate(chain[: max(depth, 0)], start=1):
+        rows.append(
+            node_row(node_id, parent_id=parent_id, campaign_id=campaign_id, depth=index)
+        )
+    rows.append(
+        node_row(QUARANTINE_SIBLING_ID, parent_id=QUARANTINE_ROOT_ID, campaign_id=campaign_id, depth=1)
+    )
+    return rows
+
+
+def two_campaign_rows() -> list[dict[str, Any]]:
+    """Two campaigns' rows in one fetch, with one branch crossing between them.
+
+    The leak test: ``OTHER_CAMPAIGN_CHILD_ID``'s ``parent_id`` points at
+    ``QUARANTINE_CHILD_ID``, so the edge exists but the campaign differs.  A
+    closure that walked edges without checking the campaign would halt a node in
+    a campaign nobody asked about — which is why the scope is read from the
+    violating node's own row rather than taken as a parameter.
+    """
+    rows = quarantine_rows()
+    rows.append(node_row(OTHER_CAMPAIGN_ROOT_ID, campaign_id=OTHER_QUARANTINE_CAMPAIGN))
+    rows.append(
+        node_row(
+            OTHER_CAMPAIGN_CHILD_ID,
+            parent_id=QUARANTINE_CHILD_ID,
+            campaign_id=OTHER_QUARANTINE_CAMPAIGN,
+            depth=1,
+        )
+    )
+    return rows
+
+
+def cyclic_rows(
+    *,
+    campaign_id: str = QUARANTINE_CAMPAIGN,
+) -> list[dict[str, Any]]:
+    """Two nodes that name each other — the tree a ``UNION ALL`` recursion hangs on.
+
+    The fault this law refuses rather than guesses at: a recursive CTE over these
+    edges never terminates, so a closure walked in SQL cannot produce the refusal
+    at all.  Walking the edges in Python bounds the work by the rows handed in,
+    which is what makes this a :class:`~sandbox.errors.QuarantineTreeError` an
+    operator can act on.
+    """
+    return [
+        node_row(QUARANTINE_CHILD_ID, parent_id=QUARANTINE_GRANDCHILD_ID, campaign_id=campaign_id),
+        node_row(QUARANTINE_GRANDCHILD_ID, parent_id=QUARANTINE_CHILD_ID, campaign_id=campaign_id, depth=1),
+    ]
+
+
+def self_parented_rows(
+    *,
+    campaign_id: str = QUARANTINE_CAMPAIGN,
+) -> list[dict[str, Any]]:
+    """One node that is its own parent — the shortest cycle, refused the same way."""
+    return [node_row(QUARANTINE_ROOT_ID, parent_id=QUARANTINE_ROOT_ID, campaign_id=campaign_id)]
+
+
+def quarantine_violation_from_gate(
+    *,
+    syscall: str = DISALLOWED_SYSCALL,
+    default_action: str = KILL_ACTION,
+    node_id: str = QUARANTINE_CHILD_ID,
+    component: str = SIGNAL_SANDBOX,
+) -> Any:
+    """A real violation, taken from feature 160's gate rather than re-spelled.
+
+    The handoff under test is the one the gate actually publishes, so this builds
+    a fresh :class:`~sandbox.syscalls.SandboxSyscalls` over a compiled ceiling,
+    asks it about ``syscall``, and returns the *decision* — the object
+    :func:`sandbox.quarantine.quarantine_violation` is handed in production.  A
+    builder that constructed a ``Commitment`` directly would test a shape this law
+    tolerates rather than the value it is actually given.
+
+    ``default_action`` is what the *commitment's* ``action`` is read from —
+    feature 160's gate does not take an action per attempt, it reads the one the
+    ceiling denies by — so a test that means "the errno path that let the process
+    carry on" compiles a ceiling denying by ``errno`` and passes
+    ``default_action=ERRNO_ACTION``.  The class that comes back is
+    ``sandbox_escape`` in both cases, which is the point: the *fate* differs and
+    the class does not, and the commitment's ``killed`` property is what makes
+    the difference readable at the seam.
+    """
+    from sandbox.syscalls import SandboxSyscalls, compile_syscalls_policy
+
+    ceiling = compile_syscalls_policy(
+        syscalls_document(default_action=default_action)
+    )
+    gate = SandboxSyscalls(ceiling)
+    return gate.check(syscall_attempt(syscall=syscall, node_id=node_id, component=component))

@@ -661,6 +661,7 @@ class TestTheCrossMemberSpellings:
             "sandbox-failclass",
             "sandbox-budget",
             "sandbox-syscalls",
+            "sandbox-quarantine",
         }
 
 

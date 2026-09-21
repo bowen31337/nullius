@@ -98,7 +98,7 @@ def test_the_seat_declares_the_same_component_name() -> None:
     assert seat.BUDGET_COMPONENT_NAME == sandbox.BUDGET_COMPONENT_NAME
 
 
-def test_scanning_the_member_registers_the_nine_components_it_owns() -> None:
+def test_scanning_the_member_registers_the_ten_components_it_owns() -> None:
     # A fresh registry, not the process default: any earlier test that called a
     # bare ``create_app()`` has already imported every workspace member into the
     # current registry, so reading it back here would assert accumulated process
@@ -116,6 +116,7 @@ def test_scanning_the_member_registers_the_nine_components_it_owns() -> None:
         "sandbox-budget",
         "sandbox-failclass",
         "sandbox-imports",
+        "sandbox-quarantine",
         "sandbox-seed",
         "sandbox-syscalls",
         "sandbox-threads",
