@@ -77,6 +77,25 @@ at their seats proves a file compiled.  Feature 166 is a format, a direction
 and an alignment, none of which a deployment could set differently, so there
 is nothing for a committed file to say and no knob nobody turns. A caller
 should not read the missing artifact as an unconfigured state.
+
+**Feature 165's law has its own seat here too, and it is the fourth.**  The
+node seed — *System passes the node seed into every sandboxed invocation,
+persisting that seed on the node record* — composes as ``sandbox-seed``, so
+this module now answers four questions, and :func:`sandbox_seed_component`
+mirrors the other three in shape and re-exports nothing of the law's
+vocabulary for the same reason they do not: a caller who has the component
+calls ``require`` to get the integer to hand the box (or the refusal, on the
+last line before it would have spawned), ``check`` for the answer as a value,
+and ``seeded`` to audit a batch of invocations that already ran.
+
+It has the missing-artifact property in common with feature 166, and for the
+same class of reason: its subject is a value a run is *handed* rather than a
+configuration a deployment writes down, so there is no file here to compile
+and no unconfigured state for a ``None`` to describe.  What it does *not*
+share with the transfer is the shape of its refusal — the seed is law about
+the *node*, so its record half is reachable through the member's module-level
+verbs as well, and a caller that only holds a record reaches
+``sandbox.resolve_seed`` directly, without the component.
 """
 
 from __future__ import annotations
@@ -86,14 +105,21 @@ from typing import TYPE_CHECKING, Any
 from app.module_loader import Application, create_app
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a dependency
-    from sandbox import SandboxImports, SandboxIsolation, SandboxTransfer
+    from sandbox import (
+        SandboxImports,
+        SandboxIsolation,
+        SandboxSeed,
+        SandboxTransfer,
+    )
 
 __all__ = [
     "COMPONENT_NAME",
     "IMPORTS_COMPONENT_NAME",
+    "SEED_COMPONENT_NAME",
     "TRANSFER_COMPONENT_NAME",
     "sandbox_imports_component",
     "sandbox_isolation_component",
+    "sandbox_seed_component",
     "sandbox_transfer_component",
 ]
 
@@ -116,6 +142,13 @@ IMPORTS_COMPONENT_NAME = "sandbox-imports"
 #: spelling shared by everything that asks for the law through the app
 #: package.
 TRANSFER_COMPONENT_NAME = "sandbox-transfer"
+
+#: The component name the member's node seed registers under — the category's
+#: fourth control, kept beside the other three rather than over any of them,
+#: because the factory's registry replaces a name's earlier registration.
+#: Kept here for the same reason the other three are: one spelling shared by
+#: everything that asks for the law through the app package.
+SEED_COMPONENT_NAME = "sandbox-seed"
 
 
 def sandbox_isolation_component(
@@ -187,3 +220,34 @@ def sandbox_transfer_component(
     """
     application = app if app is not None else create_app()
     return application.get(TRANSFER_COMPONENT_NAME)
+
+
+def sandbox_seed_component(
+    app: Application | None = None,
+) -> SandboxSeed | Any:
+    """Return the composed sandbox node seed (feature 165).
+
+    The same contract the other three accessors give their laws, for the
+    control that carries the node's seed into every sandboxed invocation and
+    persists it on the node record: with ``app`` given the component is read
+    from that application, without it the application is composed first, and
+    ``None`` means no ``sandbox-seed`` component was registered.
+
+    **Like the transfer seat and unlike the two laws', there is no committed
+    artifact behind this one.**  Features 157 and 167 are laws about a
+    *configuration* — which isolation a box declares, which imports a
+    submission may reach — and a configuration is written down before it can
+    be checked, which is why a non-``None`` component at their seats proves a
+    file compiled.  Feature 165's subject is a value a run is *handed*: the
+    seed §5.2's call site passes as ``seed=node.seed``, which §12 stores on the
+    node.  There is no file for a deployment to drift to another seed and no
+    knob nobody turns, so a non-``None`` component here is proof only that the
+    law is loaded.
+
+    The value carries no seed, so a caller does not get one from this
+    accessor: it gets the law, and calls ``require(invocation)`` for the
+    integer to hand the box — or for the refusal, on the last line before it
+    would have spawned.
+    """
+    application = app if app is not None else create_app()
+    return application.get(SEED_COMPONENT_NAME)

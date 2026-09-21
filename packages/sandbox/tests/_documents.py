@@ -37,13 +37,19 @@ would be asserting a coincidence.
 from __future__ import annotations
 
 import datetime
+from collections.abc import Mapping
 from typing import Any
 
 import polars as pl
 import pyarrow as pa
 from contract import MarketWindow
 from contract.signal import validate_signal_return
-from sandbox import IMPORTS_POLICY_KIND, POLICY_KIND, encode_scores
+from sandbox import (
+    IMPORTS_POLICY_KIND,
+    POLICY_KIND,
+    SandboxInvocation,
+    encode_scores,
+)
 
 #: The two Z1 boxes §3's component map draws — the same membership feature
 #: 148's committed credential grant and feature 149's committed egress policy
@@ -408,3 +414,118 @@ def score_payload(
         decision_time=decision_time,
         contract_version=contract_version,
     )
+
+
+# ---------------------------------------------------------------------------
+# Feature 165 — the node seed, the invocations that carry it, the records it
+# lands on.
+#
+# These are *builders* rather than constants for the reason the section above
+# gives and one more of its own: the record builders below return objects a
+# test deliberately mutates (a drift test writes a second seed onto a record),
+# so a shared one would make one test's drift another test's starting point —
+# the failure mode :func:`isolation_document` states for its own dicts, applied
+# to the seed's two carriers.  The *seeds* are constants, because the value a
+# signature is checked against is data, and a builder that minted a fresh one
+# per call would make "this run carried seed 7" unwritable.
+# ---------------------------------------------------------------------------
+
+#: The node the invocations below belong to — a UUID-shaped string, because
+#: that is what §9.1's ``node.id`` holds and what :func:`sandbox.mint_node_seed`
+#: is keyed on.  Spelled rather than generated so a test asserting a minted seed
+#: has one value to assert.
+SEED_NODE_ID: str = "5f3c1a1e-0d1f-4f6a-9a62-7c2b5d4e8a01"
+
+#: A second node, so "two nodes get two seeds" has two identities to compare —
+#: the property :func:`nulloracle.selection.perm_seed_for` states for its own
+#: derivation, and the reason a seed is minted per node rather than per run.
+OTHER_SEED_NODE_ID: str = "9b1d6c44-2e77-4a0b-8f3d-1c5a7e9b2d10"
+
+#: The seed these tests use when they mean "a good one" — small, positive and
+#: unmistakable in a repr, so a failure message says which value went where.
+NODE_SEED: int = 7
+
+#: A second good seed, for the re-seed tests: distinct from :data:`NODE_SEED`
+#: so "a different seed" is a different number rather than a coincidence.
+OTHER_NODE_SEED: int = 424242
+
+#: §5.2's component the run belongs to, the same box feature 157's committed
+#: policy lists — named here so the invocation builders default to a real
+#: member of the deployment rather than to an invented third box.
+SEED_COMPONENT: str = SIGNAL_SANDBOX
+
+
+def invocation(
+    *,
+    node_id: str = SEED_NODE_ID,
+    seed: Any = NODE_SEED,
+    component: str = SEED_COMPONENT,
+    env: Mapping[str, str] | None = None,
+) -> SandboxInvocation:
+    """A fresh invocation for ``node_id``, carrying ``seed`` by default.
+
+    ``seed`` is typed ``Any`` and defaults to a *good* value rather than to
+    ``None``: a test that means "this invocation has no seed" says so by
+    passing ``None``, and one that means "this one is fine" does not have to
+    restate the seed.  A default of ``None`` would make every builder call in
+    this suite read as a seedless run, which is the state the law exists to
+    refuse.
+    """
+    return SandboxInvocation(
+        node_id=node_id, seed=seed, component=component, env=env
+    )
+
+
+def seedless_invocation(
+    *,
+    node_id: str = SEED_NODE_ID,
+    component: str = SEED_COMPONENT,
+    env: Mapping[str, str] | None = None,
+) -> SandboxInvocation:
+    """An invocation whose seed is absent — the refusal's own subject.
+
+    Its own builder rather than ``invocation(seed=None)`` so the two tests that
+    disagree about *which* absence is the worst one read as themselves: the
+    keyword omitted entirely is the same state as ``None`` to this law, and the
+    suite checks that they are the same state rather than assuming it.
+
+    Everything *else* about the invocation is ordinary: a seedless run is a run
+    that reached the launcher, which is the whole reason the law has to refuse
+    it rather than a caller simply not building one.
+    """
+    return SandboxInvocation(node_id=node_id, seed=None, component=component, env=env)
+
+
+def node_record(
+    *,
+    node_id: str = SEED_NODE_ID,
+    seed: Any = NODE_SEED,
+) -> dict[str, Any]:
+    """A fresh node record — a mutable mapping, the shape §9.1's row arrives in.
+
+    A dict rather than a dataclass because that is what a relational driver
+    hands back and because a test that drifts one needs a record it can write
+    into: §9.1's ``node`` row is the record this feature's second half persists
+    the seed on.
+    """
+    record: dict[str, Any] = {"node_id": node_id}
+    if seed is not None:
+        record["seed"] = seed
+    return record
+
+
+class SeedRecordRow:
+    """A node record as an *object* rather than a mapping — the other shape.
+
+    Deliberately attribute-carrying rather than a dataclass: the suite's point
+    is that the law reads both shapes, and a dataclass with a ``seed`` field
+    would be the members' own record type rather than a third thing that
+    happens to look like it.  ``node_id`` defaults to the module's own node so
+    a test that only wants the object spelling writes one line.
+    """
+
+    __slots__ = ("node_id", "seed")
+
+    def __init__(self, node_id: str = SEED_NODE_ID, seed: Any = NODE_SEED) -> None:
+        self.node_id = node_id
+        self.seed = seed

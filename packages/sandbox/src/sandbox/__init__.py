@@ -105,6 +105,35 @@ control whose law is asymmetric in its error shape: the inbound leg raises
 (a dispatch by trusted host code, where "these are not a window" has one
 sensible response), while the *score* half keeps the category's habit of
 turning a per-run failure into a value rather than a traceback.
+
+**Feature 165 rides the seat a fourth time.**  *System passes the node seed
+into every sandboxed invocation, persisting that seed on the node record* is
+the category's randomness control, and its law lives in :mod:`sandbox.seed`:
+one non-negative integer, inside the signed 64-bit range §12's ``node`` row
+can hold, carried by the envelope every invocation is described by
+(:class:`SandboxInvocation`) and written onto the node record
+(:func:`seed_record`).  It composes as :class:`SandboxSeed` under
+:data:`sandbox.seed.SEED_COMPONENT_NAME` (``sandbox-seed``) — a fourth seat
+beside the other three, for the same registry-replacement reason — and it is
+the second control with **no committed artifact**, on the same terms feature
+166 states its own: the seed is a value a run is *handed*, not a configuration
+a deployment writes down, so there is no file here to drift and no unconfigured
+state for a ``None`` to describe.
+
+**It is the category's first law whose subject is a *value* rather than a
+gate, and the shape of its refusal follows from that.**  Features 157, 167 and
+166 each answer a *subject offered* — a run, a submission, a window — and the
+first two answer it as a decision because the pipeline offers thousands of
+them unattended.  The seed is §5.2's own call site, one dispatch by trusted
+host code, so the refusal is an exception at the last line before the spawn —
+and because the caller that most needs to be told its invocation is seedless
+is the caller holding the seedless invocation, the *constructor* refuses
+nothing and every check lives at
+:meth:`SandboxSeed.require`/:meth:`SandboxSeed.check`.  The one silence worth
+naming is that a component shared across runs carries no seed: a seed belongs
+to one node, and a value held on the component would let two nodes share a
+stream — the property :class:`SandboxTransfer` states for its channel, in a
+different quantity.
 """
 
 from __future__ import annotations
@@ -115,10 +144,13 @@ from .errors import (
     AllowlistDocumentError,
     DisallowedImportError,
     GVisorIsolationRequired,
+    InvocationSeedError,
     IsolationDocumentError,
+    NodeSeedDocumentError,
     SandboxError,
     SandboxImportError,
     SandboxIsolationError,
+    SandboxSeedError,
     SandboxTransferError,
     ScoreChannelError,
     WindowTransferError,
@@ -154,6 +186,24 @@ from .isolation import (
     compile_isolation_policy,
     load_isolation_policy,
 )
+from .seed import (
+    ENV_SIGNAL_SEED,
+    MINT_SALT,
+    SEED_COMPONENT_NAME,
+    SEED_MAX,
+    SEED_MISMATCH_CODE,
+    SEED_REQUIRED_CODE,
+    SandboxInvocation,
+    SandboxSeed,
+    SeedDecision,
+    SeedReason,
+    SeedRecord,
+    check_invocation,
+    mint_node_seed,
+    resolve_seed,
+    sandbox_seed,
+    seed_record,
+)
 from .transfer import (
     SCORE_CHANNEL_CODE,
     SCORE_FRAME_NAME,
@@ -178,16 +228,22 @@ __all__ = [
     "COMMITTED_ISOLATION_POLICY",
     "COMPONENT_NAME",
     "DISALLOWED_IMPORT_CODE",
+    "ENV_SIGNAL_SEED",
     "GVISOR_MECHANISM",
     "GVISOR_RUNTIME",
     "IMPORTS_COMPONENT_NAME",
     "IMPORTS_POLICY_KIND",
     "ISOLATION_REQUIRED_CODE",
+    "MINT_SALT",
     "POLICY_KIND",
     "SCORE_CHANNEL_CODE",
     "SCORE_FRAME_NAME",
     "SCORE_MAGIC",
     "SCORE_VERSION",
+    "SEED_COMPONENT_NAME",
+    "SEED_MAX",
+    "SEED_MISMATCH_CODE",
+    "SEED_REQUIRED_CODE",
     "TRANSFER_COMPONENT_NAME",
     "WINDOW_TRANSFER_CODE",
     "AllowlistDocumentError",
@@ -195,27 +251,36 @@ __all__ = [
     "DisallowedImportError",
     "GVisorIsolationRequired",
     "ImportsAllowlist",
+    "InvocationSeedError",
     "IsolationDocumentError",
     "IsolationPolicy",
     "ModuleDecision",
     "ModuleReason",
+    "NodeSeedDocumentError",
     "RunDecision",
     "RunReason",
     "SandboxError",
     "SandboxImportError",
     "SandboxImports",
+    "SandboxInvocation",
     "SandboxIsolation",
     "SandboxIsolationError",
     "SandboxRun",
+    "SandboxSeed",
+    "SandboxSeedError",
     "SandboxTransfer",
     "SandboxTransferError",
     "ScoreChannelError",
     "ScoreVector",
+    "SeedDecision",
+    "SeedReason",
+    "SeedRecord",
     "TransferChannel",
     "TransferLeg",
     "WindowFacts",
     "WindowTransferError",
     "authorize_run",
+    "check_invocation",
     "committed_imports_allowlist",
     "committed_isolation_policy",
     "compile_imports_allowlist",
@@ -225,11 +290,15 @@ __all__ = [
     "inspect_window_payload",
     "load_imports_allowlist",
     "load_isolation_policy",
+    "mint_node_seed",
+    "resolve_seed",
     "sandbox_imports",
     "sandbox_isolation",
+    "sandbox_seed",
     "sandbox_transfer",
     "scores_alias_payload",
     "screen_module",
+    "seed_record",
 ]
 
 __version__ = "0.1.0"
@@ -240,6 +309,12 @@ __version__ = "0.1.0"
 #: so anything asking the composed application for the isolation law — by way
 #: of the member, not by a hard-coded string — shares one spelling.
 COMPONENT_NAME: str = "sandbox"
+
+#: ``SEED_COMPONENT_NAME`` is not respelled here.  It is the seed law's own
+#: constant, read out of :mod:`sandbox.seed` at the top of this module, and the
+#: member re-exports it rather than shadowing it: the four component names are
+#: each owned by the law that registers under them, and a second assignment
+#: here would be a second place for one to drift.
 
 
 class SandboxIsolation:
@@ -463,3 +538,45 @@ def build_sandbox_transfer() -> SandboxTransfer:
     outside.
     """
     return sandbox_transfer()
+
+
+@register(SEED_COMPONENT_NAME)
+def build_sandbox_seed() -> SandboxSeed:
+    """Component builder: feature 165's node seed (app_spec.xml §5.2).
+
+    The fourth component this member contributes, beside feature 157's
+    isolation law, feature 167's import allowlist and feature 166's payload
+    channel, under its own name — the registry is keyed by name and a later
+    registration of ``sandbox`` would *replace* the isolation law, so one
+    member carrying four controls carries four components.
+
+    Like :func:`build_sandbox_transfer` it compiles **no artifact**, and for
+    the same reason: features 157 and 167 are laws about a *configuration* —
+    which isolation a box declares, which imports a submission may reach — and
+    a configuration has to be written down before it can be checked, while
+    feature 165's subject is *the value a run is handed*: the seed §5.2's call
+    site passes as ``seed=node.seed``.  There is no file for a deployment to
+    drift to another seed, and a committed ``seed_policy.json`` would be a knob
+    nobody turns — the seed comes from the node, which is where §12 stores it.
+
+    Like the other three it takes no arguments (the factory's registration
+    protocol), never returns ``None`` and never raises: the factory builds
+    every registered component on every ``create_app()`` call, so a builder
+    that raised would take composition down for every unrelated feature in the
+    workspace, and a bare test process with no ``DATABASE_URL`` and no lake
+    still composes this one.  It reads no environment either — the seed law's
+    only inputs are an invocation and a node record, both supplied by the
+    caller.
+
+    It returns a :class:`SandboxSeed` rather than a seed, necessarily rather
+    than by preference: a seed belongs to one node, and a component held across
+    runs that carried one would let two nodes share a stream — the same
+    property :func:`build_sandbox_transfer` states for its channel.  What the
+    composed value gives a caller is the law — ``require`` to hand a launcher
+    the integer or the refusal on its last line before the spawn, ``check`` for
+    the answer as a value, ``mint``-free by design for a caller that has a node
+    identity and needs the seed `:func:`mint_node_seed` derives, and
+    :meth:`SandboxSeed.seeded` to audit a batch of invocations that already
+    ran.
+    """
+    return sandbox_seed()

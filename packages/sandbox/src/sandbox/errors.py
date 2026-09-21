@@ -56,12 +56,27 @@ failed — the discipline :mod:`infra.security.sandbox_egress`'s and
   twice — is a fact about the *configuration*, not about any module
   submitted against it.
 
+* :class:`SandboxSeedError` — the seed contract, and feature 165's whole
+  subject.  A sandboxed invocation that carries no seed, carries one that is
+  not a seed, or whose node record disagrees with the seed the invocation
+  would carry.  Its subclass :class:`InvocationSeedError` is the refusal of a
+  *seedless run* — every message begins with the greppable code
+  :data:`sandbox.seed.SEED_REQUIRED_CODE` (``node_seed_required``), the
+  discipline :data:`sandbox.isolation.ISOLATION_REQUIRED_CODE` applies to
+  feature 157's — and :class:`NodeSeedDocumentError` is the refusal of a
+  *stored record that contradicts itself*, whose messages begin with
+  :data:`sandbox.seed.SEED_MISMATCH_CODE` (``node_seed_mismatch``).
+
 There is deliberately no error for *"the run was not admitted"* beyond
 :class:`GVisorIsolationRequired`.  Feature 157's failure mode is one thing —
 a run configuration that is not gVisor's — and splitting it into an error per
 spelling (absent block, ``runc``, a micro-VM, an empty string) would let a
 caller catch the spellings it happened to think of and miss the one the
-deployment actually configured.
+deployment actually configured.  The same restraint shapes
+:class:`SandboxSeedError`: *"this run carries no seed this law can pass"* is
+one fact with several spellings (absent, ``None``, a string, a ``bool``, a
+negative integer), and a caller that had to catch each spelling would miss the
+one its deployment actually produced.
 """
 
 from __future__ import annotations
@@ -70,10 +85,13 @@ __all__ = [
     "AllowlistDocumentError",
     "DisallowedImportError",
     "GVisorIsolationRequired",
+    "InvocationSeedError",
     "IsolationDocumentError",
+    "NodeSeedDocumentError",
     "SandboxError",
     "SandboxImportError",
     "SandboxIsolationError",
+    "SandboxSeedError",
     "SandboxTransferError",
     "ScoreChannelError",
     "WindowTransferError",
@@ -302,4 +320,98 @@ class ScoreChannelError(SandboxTransferError):
     take.  Kept apart from :class:`WindowTransferError` because the two name
     opposite directions of one channel, and a caller reading a failure wants to
     know which leg it was on before it wants the detail.
+    """
+
+
+class SandboxSeedError(SandboxError):
+    """The seed contract: the node seed did not reach the invocation.
+
+    app_spec.xml, "Untrusted Code Sandbox", feature 165: *System passes the
+    node seed into every sandboxed invocation, persisting that seed on the node
+    record.*  The subject is the run's *one source of randomness* — §5.2's
+    ``seed=node.seed`` in the call site whose other arguments are the code, the
+    payload and the limits — and this class is the refusals that keep it from
+    silently going missing.
+
+    **Why a seed deserves its own error when nothing about it can fail.**  The
+    seed is not a value the box computes; it is a value the box is *handed*,
+    and the failure mode is not a wrong answer but an *absent* one: a launcher
+    that spawned a child without the seed would produce a score vector that
+    looks exactly like a correct one, from a signal whose ``random.Random(seed)``
+    drew from a different stream (or from the interpreter's own entropy) than
+    the one the node record says it drew from.  §12's row — "Seeded RNG |
+    ``seed`` passed into ``signal()``; stored on the node" — is the whole of the
+    determinism contract's randomness clause, and P3 is explicit that a replay
+    that is not bit-reproducible makes the replay pool *quietly worthless*:
+    "Non-determinism does not announce itself; it just slowly makes every
+    conclusion wrong."  So the two places the seed could go missing — the
+    invocation that must carry it, and the record that must store it — are
+    refusals rather than silent defaults, which is the same stance
+    :class:`~sandbox.isolation.GVisorIsolationRequired` takes toward a run's
+    declared isolation.
+
+    **Raised rather than returned, unlike the two laws' gates.**  Features
+    157's and 167's gates answer *untrusted subjects* — a run, a submission —
+    offered thousands of times by an unattended pipeline, so they return
+    decisions.  A seed is not offered by untrusted code: it is §5.2's own call
+    site, one dispatch by trusted host code, and there is exactly one sensible
+    response to "this invocation carries no seed" — do not run, because the run
+    that proceeded would be unjustifiable afterwards.  The same split
+    :class:`SandboxTransferError` draws for the channel, and for the same
+    reason.  The *constructor* of a seedless invocation is therefore not an
+    error at all — a caller must be able to build one to be told what is wrong
+    with it — and the refusal fires at :meth:`sandbox.seed.SeededInvocation.require`,
+    the last line before the spawn.
+    """
+
+
+class InvocationSeedError(SandboxSeedError):
+    """The refusal itself: this invocation carries no seed this law can pass.
+
+    Every message begins with ``node_seed_required``
+    (:data:`sandbox.seed.SEED_REQUIRED_CODE`), the one spelling a log-grepping
+    operator or CI check looks for, and names the offending value *and which
+    spelling it was*: absent (the keyword never passed), ``None``, a string
+    (``"42"`` — the seed as an environment variable carries it, which is a
+    different type in a different place), a ``bool`` (``True`` is not a seed
+    anyone meant to write), a negative integer, or one too large for the signed
+    64-bit column it is about to be stored in.  The distinction is the point of
+    naming them: an operator who sees "absent" looks at the call site, and one
+    who sees "negative" looks at whatever minted the seed.
+
+    Deliberately **not** a ``ValueError``, unlike the null oracle's own seed
+    refusals.  That member's seed checks guard a *derivation* inside trusted
+    arithmetic, where the standard exception is what the surrounding code
+    expects; this one guards a value about to be carried into a subprocess by a
+    launcher and written to a node row, and a caller that caught the standard
+    exception would be subscribing to every other library's value errors along
+    with it.  The member's vocabulary is its own for the reason
+    :mod:`sandbox.errors`' module docstring gives: the box untrusted code is put
+    inside must not carry a dependency whose refusals a caller could confuse
+    with its own.
+    """
+
+
+class NodeSeedDocumentError(SandboxSeedError):
+    """A stored node record contradicts the seed the invocation would carry.
+
+    The second half of feature 165's sentence — *persisting that seed on the
+    node record* — when the record and the run disagree.  A node record whose
+    ``seed`` is not a seed at all, and a record whose stored seed is a genuine
+    integer that is **not** the seed the invocation carries.
+
+    **The second case is the feature, not a technicality.**  The whole value of
+    writing a seed down is that a later reader can re-run the node and get the
+    same vector; a record that names a seed other than the one the signal
+    actually drew from is worse than no record, because it is a *plausible*
+    answer to "what seed was this run?" that no replay would reproduce — the
+    §12 failure mode stated as a row rather than as a crash.  So the writer
+    refuses rather than overwriting: a record and an invocation are two
+    statements about one run, and this law will not write the second while the
+    first says something else.
+
+    Messages begin with ``node_seed_mismatch``
+    (:data:`sandbox.seed.SEED_MISMATCH_CODE`) and name both values, so the
+    reader sees which of the two the disagreement is about rather than being
+    told only that they differ.
     """
