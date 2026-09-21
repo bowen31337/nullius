@@ -23,6 +23,7 @@ read: it does not grow a second spelling of ``write``/``commit``/
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from artifacts import COMPONENT_NAME
@@ -87,3 +88,74 @@ def test_the_seat_is_a_composition_read_and_not_a_second_api() -> None:
 
     exported = set(seat.__all__)
     assert exported == {"COMPONENT_NAME", "artifact_store_component"}
+
+
+# -- Feature 179's seat, beside this one -------------------------------------------
+
+
+def test_the_dedup_seat_spells_the_component_name_the_member_registers() -> None:
+    # Spelled twice on purpose — once in the member, once in the seat —
+    # so the two cannot drift apart silently.  The second seat sitting
+    # in its own module is what keeps this from being a rename hazard
+    # for feature 169's seat: the store's accessor never moves.
+    import artifacts
+
+    from app.modules.artifacts import dedup
+
+    assert dedup.COMPONENT_NAME == artifacts.DEDUP_COMPONENT_NAME
+    assert dedup.COMPONENT_NAME == "artifacts-code-hash-dedup"
+    assert dedup.COMPONENT_NAME != COMPONENT_NAME
+
+
+def test_the_dedup_seat_exposes_the_composed_gate() -> None:
+    # The composed gate, through the app namespace: a CodeHashIndex bound
+    # to the database the environment names under this suite's autouse
+    # isolation.  The seat lives in its own module — ``from
+    # app.modules.artifacts.dedup import ...``, not out of the package's
+    # ``__init__`` — because a second accessor crowded into feature 169's
+    # seat would be a second thing to keep in sync with it.
+    from app.modules.artifacts import dedup
+
+    component = dedup.code_hash_dedup_component()
+    assert type(component).__name__ == "CodeHashIndex"
+    assert component.database_url == os.environ["DATABASE_URL"]  # type: ignore[attr-defined]
+
+
+def test_the_dedup_seat_reads_from_an_application_it_is_handed() -> None:
+    from app.modules.artifacts import dedup
+
+    application = Application(
+        components={dedup.COMPONENT_NAME: "sentinel"}, order=(dedup.COMPONENT_NAME,)
+    )
+    assert dedup.code_hash_dedup_component(application) == "sentinel"
+
+
+def test_an_absent_gate_is_none_rather_than_an_error() -> None:
+    # The seat's ``None`` covers two states at once — an absent member and
+    # a deployment with no DATABASE_URL — and both are statements about
+    # the deployment, not verdicts about the tree.  That distinction is
+    # the feature, so the degradation is pinned rather than assumed.
+    from app.modules.artifacts import dedup
+
+    empty = Application(components={}, order=())
+    assert dedup.code_hash_dedup_component(empty) is None
+
+
+def test_the_dedup_seat_is_a_composition_read_and_not_a_second_api() -> None:
+    # Same rule as feature 169's seat: the comparison and the probe stay
+    # on the gate, where the caller who has it reaches them.  A caller
+    # holding only a list of stored hashes reaches
+    # ``artifacts.reject_duplicate`` directly — the half of the feature
+    # that needs no store — and neither is re-exported here.
+    from app.modules.artifacts import dedup
+
+    assert set(dedup.__all__) == {"COMPONENT_NAME", "code_hash_dedup_component"}
+    for second_spelling in (
+        "check",
+        "probe",
+        "stored",
+        "canonical_code_hash",
+        "reject_duplicate",
+        "CodeHashIndex",
+    ):
+        assert not hasattr(dedup, second_spelling), second_spelling

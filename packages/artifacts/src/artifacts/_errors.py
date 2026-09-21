@@ -47,6 +47,19 @@ by which line of code failed:
   tell a missing *node* from a node that is missing *one file* — the
   half-written state the staged write path exists to prevent.
 
+* :class:`ArtifactProposalError` — the dedup gate's contract (app_spec.xml
+  feature 179).  A *proposed* node that cannot pass the gate that stands
+  between it and its trial: the code hash it carries is not a sha256
+  hexdigest, or the campaign it must be deduplicated within cannot be
+  named.  Raised before the tree store is touched, so a proposal that
+  cannot state its identity spends no sequence number and leaves no
+  reservation behind.  Its subclass
+  :class:`ArtifactDeduplicatedError` is the feature's own decision — an
+  exact duplicate of a code the campaign already stores — split out so a
+  caller can tell "this proposal is malformed" from "this proposal is a
+  repeat" and report them differently, while a caller that only needs to
+  know the proposal was refused catches the base.
+
 Every message names the offending value and the contract it broke, in
 the same discipline as the snapshot and null-oracle taxonomies: these
 errors are operational signals for a system whose replay determinism
@@ -57,8 +70,10 @@ must be *speakable*, not merely loggable.
 from __future__ import annotations
 
 __all__ = [
+    "ArtifactDeduplicatedError",
     "ArtifactKeyError",
     "ArtifactNotFoundError",
+    "ArtifactProposalError",
     "ArtifactStoreError",
     "ArtifactsError",
 ]
@@ -111,4 +126,45 @@ class ArtifactNotFoundError(ArtifactsError):
     campaign, the node and — for a file ask — the filename keeps a
     missing *node* distinguishable from a node missing *a file*, which
     is the distinction a reconciliation sweep wants.
+    """
+
+
+class ArtifactProposalError(ArtifactsError):
+    """A proposed node cannot pass the dedup gate feature 179 puts before it.
+
+    The gate's contract: :func:`artifacts._dedup.reject_duplicate` and
+    :meth:`artifacts._dedup.CodeHashIndex.reserve` deduplicate a proposal
+    against the campaign's stored ``code_hash`` values, and a value that
+    cannot take part in that comparison is refused rather than skipped —
+    a proposal whose code hash is truncated, non-hex, non-string or
+    prefixed with an algorithm name names no stored node, so a gate that
+    guessed at it would pass every duplicate it was handed.  Raised before
+    the tree store is written, so nothing is half-reserved.
+
+    Distinct from :class:`ArtifactStoreError` (the *store* failed — this
+    refusal says the store was never reached) and from
+    :class:`ArtifactKeyError` (the §9.2 layout's key contract, a different
+    address entirely).
+    """
+
+
+class ArtifactDeduplicatedError(ArtifactProposalError):
+    """The proposal is an exact duplicate of code the campaign already stores.
+
+    app_spec.xml feature 179: *System deduplicates a proposed node against
+    stored ``code_hash`` values, which rejects an exact duplicate before it
+    charges a trial.*  The refusal's message begins with the
+    ``duplicate_code_hash`` code so the rejection is greppable by the
+    feature that defines it.
+
+    A *fact about the proposal*, not a breakage: the gate worked, the
+    proposal was compared against the campaign's tree, and it is the same
+    code a node already holds — so no trial was charged for it.  That is
+    the difference between this class and its parent: a proposal that
+    cannot state its code identity is malformed and can be fixed by the
+    caller, while a duplicate is a *verdict* the caller acts on by
+    proposing something structurally different (§14.1's anti-convergence
+    clause is the same rule from the search side).  Catching
+    :class:`ArtifactProposalError` covers both; catching this one separates
+    the verdict from the malformed input.
     """

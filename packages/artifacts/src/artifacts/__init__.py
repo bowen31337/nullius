@@ -25,11 +25,13 @@ importing this module *is* joining the application. All intra-package
 imports are relative so the package imports identically under its own
 name and under the loader's scan-time name.
 
-The contributed component is an :class:`ArtifactStore` bound to the
+The contributed components are an :class:`ArtifactStore` bound to the
 root ``ARTIFACT_ROOT`` names (defaulting to ``artifacts/`` beside the
-workspace root). Everything else in the public API is importable
-directly for scripts, tests and the sibling features of this category,
-which build on these seams:
+workspace root) and — feature 179 — a :class:`CodeHashIndex` bound to
+the store ``DATABASE_URL`` names, or ``None`` where it names none.
+Everything else in the public API is importable directly for scripts,
+tests and the sibling features of this category, which build on these
+seams:
 
 * **The key is the layout** (:mod:`artifacts._keys`).  A node's
   directory has no name of its own — no seal time, no hash prefix —
@@ -80,15 +82,46 @@ The content of the §9.2 files is deliberately *not* this feature's:
 feature 169 pins the directory half — the address, the one-unit
 publication, the listing — and the Parquet and JSON files later
 features persist land inside the directories this store keys.
+
+* **The dedup gate stands between a proposal and its trial**
+  (:mod:`artifacts._dedup`, feature 179).  §9.1's node table carries
+  ``code_hash`` as the node's *identity*, and the index over it exists
+  ``-- dedup``: :func:`reject_duplicate` compares a proposed node's code
+  hash against the stored ones and refuses an exact duplicate, and
+  :meth:`CodeHashIndex.probe` holds the tree store's write lock across the
+  check and the caller's write, so two proposers holding one code cannot
+  both read "not stored" and both charge.  That lock is where migration
+  0113's named exposure — *"two writers racing feature 179's check can both
+  pass it and both charge a trial"* — is closed, without the ``UNIQUE``
+  constraint the spec withheld.  The lookup is over the whole tree, not one
+  campaign: the index §9.1 draws for it is keyed on ``code_hash`` alone,
+  and 0117's argument that it needs no ``UNIQUE`` rests on the gate
+  refusing the pair anywhere.  Nothing here charges: the ledger is feature
+  84's, the debit endpoint feature 95's, and this module owns only the
+  ordering the feature states.
 """
 
 from __future__ import annotations
 
 from app.module_loader import register
 
+from ._dedup import (
+    CODE_HASH_COLUMN,
+    CODE_HASH_LENGTH,
+    DATABASE_URL_ENV,
+    DUPLICATE_CODE_HASH,
+    NODE_CODE_HASH_INDEX,
+    NODE_TABLE,
+    CodeHashIndex,
+    StoredCodeHash,
+    canonical_code_hash,
+    reject_duplicate,
+)
 from ._errors import (
+    ArtifactDeduplicatedError,
     ArtifactKeyError,
     ArtifactNotFoundError,
+    ArtifactProposalError,
     ArtifactsError,
     ArtifactStoreError,
 )
@@ -110,17 +143,31 @@ from ._store import (
 
 __all__ = [
     "ARTIFACT_ROOT_ENV",
+    "CODE_HASH_COLUMN",
+    "CODE_HASH_LENGTH",
     "COMPONENT_NAME",
+    "DATABASE_URL_ENV",
+    "DEDUP_COMPONENT_NAME",
     "DEFAULT_ROOT_NAME",
+    "DUPLICATE_CODE_HASH",
+    "NODE_CODE_HASH_INDEX",
+    "NODE_TABLE",
     "STAGING_ROOT_NAME",
+    "ArtifactDeduplicatedError",
     "ArtifactKeyError",
     "ArtifactNotFoundError",
+    "ArtifactProposalError",
     "ArtifactStore",
     "ArtifactStoreError",
     "ArtifactsError",
+    "CodeHashIndex",
+    "StoredCodeHash",
     "artifact_uri",
+    "build_dedup_gate",
     "campaign_directory",
+    "canonical_code_hash",
     "node_directory",
+    "reject_duplicate",
     "validate_campaign_id",
     "validate_filename",
     "validate_node_id",
@@ -132,6 +179,17 @@ __all__ = [
 #: component key, the app-namespace seat
 #: (``src/app/modules/artifacts``) and the spec cannot drift apart.
 COMPONENT_NAME = "artifacts"
+
+#: The component name feature 179's dedup gate registers under.  A second
+#: component under its own name rather than a second thing hung on the
+#: store: the artifact directory (feature 169) and the dedup gate are two
+#: different objects on two different lifecycles — one is bound to a
+#: filesystem root, the other to the relational store — and a deployment
+#: configured for the tree but not the artifact volume (a reconciliation
+#: process, a planner) composes the gate and not the store.  The
+#: ``artifacts-`` prefix keeps the member's components adjacent in
+#: ``app.order``, which is name-sorted.
+DEDUP_COMPONENT_NAME = "artifacts-code-hash-dedup"
 
 
 @register(COMPONENT_NAME)
@@ -149,3 +207,22 @@ def artifact_store() -> ArtifactStore:
     reason (composition must be safe in any environment).
     """
     return ArtifactStore.from_env()
+
+
+@register(DEDUP_COMPONENT_NAME)
+def build_dedup_gate() -> CodeHashIndex | None:
+    """Component builder: the dedup gate ``DATABASE_URL`` names, or ``None``.
+
+    Feature 179's gate is bound to the *relational* store, not the artifact
+    root, so it resolves through :meth:`CodeHashIndex.resolve` — which
+    returns ``None`` for a deployment that names no database rather than
+    raising, because the factory builds every registered component on every
+    ``create_app()`` call and a builder that raised would take composition
+    down for every unrelated feature.  ``None`` is a discoverable state, not
+    an error: it is a deployment with no tree store to deduplicate against
+    — while the proposal path that must not charge a duplicate is the
+    caller that must not find itself in it.  Construction performs no I/O:
+    the URL is translated on first use, so composing an application that
+    carries this gate touches no disk.
+    """
+    return CodeHashIndex.resolve()
