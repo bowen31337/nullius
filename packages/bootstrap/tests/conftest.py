@@ -62,8 +62,11 @@ for _root in (APP_SRC, PACKAGE_SRC):
 from bootstrap import (
     HYPERPARAMETER_WORLD_ID,
     PRICED_SEED,
+    SYMREG_SEED,
+    SYMREG_WORLD_ID,
     HyperparameterSetting,
     HyperparameterWorld,
+    SymbolicRegressionWorld,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the fixture imports lazily
@@ -123,6 +126,29 @@ def setting() -> HyperparameterSetting:
     return HyperparameterSetting(
         degree=2, interactions=True, standardize=True, alpha=1.0
     )
+
+
+# -- Feature 183's world: the symbolic regression vocabulary -------------------
+
+
+@pytest.fixture
+def symreg_world() -> SymbolicRegressionWorld:
+    """The committed symbolic regression world — 183's published id and seed.
+
+    Built through the public constructor, on the same terms as ``world``:
+    a test of the world should not depend on the factory having scanned
+    anything.  Its target is drawn from the committed seed, and the
+    oracle cell its lattice holds is derived from that target by the
+    tests rather than named by the world — the answer key is the target,
+    published, and the cell is a fact about it.
+    """
+    return SymbolicRegressionWorld(SYMREG_WORLD_ID, seed=SYMREG_SEED)
+
+
+@pytest.fixture
+def symreg_root_node(symreg_world: SymbolicRegressionWorld) -> str:
+    """The symbolic world's root node id — where a symreg walk starts."""
+    return symreg_world.canonical_node()
 
 
 # -- Feature 188's reach: a database, on purpose, for the pool's tests ---------

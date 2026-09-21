@@ -2,7 +2,9 @@
 
 Implements app_spec.xml, "Bootstrap Worlds" — feature 181, *"System
 exposes a hyperparameter search world over a fixed model and dataset,
-which returns a ground-truth score per node"*; feature 184, the identical
+which returns a ground-truth score per node"*; feature 183, *"System
+exposes a symbolic regression world, which returns a ground-truth score
+against known target expressions"*; feature 184, the identical
 ``question.*`` interface every bootstrap world fronts; feature 185,
 *"System charges no statistical budget for a bootstrap world, persisting
 charges_budget as false on those trials"*; feature 188, *"System
@@ -42,9 +44,9 @@ perfect labels, zero statistical-budget cost, and no dependence on market
 time"*, and §10.6's instruction is that they are therefore *built*, 40-50
 at a time, rather than awaited.
 
-**What this member ships.**  Feature 181's world, feature 188's pool,
-and the pieces the world is made of, all importable directly for the
-sibling features of this category:
+**What this member ships.**  Feature 181's world, feature 183's symbolic
+regression world, feature 188's pool, and the pieces the worlds are made
+of, all importable directly for the sibling features of this category:
 
 * **The world** (:mod:`bootstrap._world`).  A
   :class:`~bootstrap.HyperparameterWorld` is a *fixed model* — an
@@ -65,6 +67,28 @@ sibling features of this category:
   space is connected from its declared default: a policy that only ever
   moves along edges can reach every cell, which is what makes the world
   addressable by the structural vocabulary §10.6.1's ``CellMeta`` speaks.
+
+* **The second world — symbolic regression** (:mod:`bootstrap._symreg`).
+  Feature 183's domain, named third in §10.6's own tree (``symreg/  #
+  symbolic regression against known target expressions``): a
+  :class:`~bootstrap.SymbolicRegressionWorld` searches *expressions*
+  rather than hyperparameters — a node is a candidate structure, a small
+  sum of monomials over the dataset's features, addressed as a point of
+  its own four-axis lattice (which linear block, which square, which
+  pairwise product, which spurious width).  Each world *draws* its known
+  target from its seed and publishes it whole
+  (:class:`~bootstrap.TargetExpression` — the "known" of the feature's
+  own sentence, auditable down to
+  :meth:`~bootstrap.SymbolicDataset.truth_for`), and the label is the
+  structure completed by least squares and scored by held-out ``R²``
+  against data drawn from that target — the same
+  :class:`~bootstrap.FitResult` the hyperparameter world returns through
+  the same :func:`~bootstrap.fit_and_score`, so the two domains' scores
+  are one kind of number and a policy compared across both pools is
+  compared on one scale.  :class:`~bootstrap.SymbolicQuestion` fronts
+  the world through feature 184's adapter inherited whole, re-answering
+  only ``meta`` so a symreg node reports the ``symreg`` family §11.1's
+  conditioning reads; :func:`~bootstrap.symreg_question_for` builds it.
 
 * **The honest label** (:mod:`bootstrap._fit`).  The fit is an ordinary
   ridge regression solved through a Cholesky factorisation, in
@@ -222,18 +246,25 @@ in the world — and the pool, for its part, records identities and
 refuses to record datasets, for the drift a cached dataset would invite
 (§10.6.1's rule, the same one the ported half's digests exist to check).
 
-**Two components, two questions.**  The world registers under
-``"bootstrap"`` (:data:`COMPONENT_NAME`) and answers *what is the
-composed bootstrap world?* — the one world a bare ``create_app()``
-carries.  The pool registers under ``"bootstrap-pool"``
-(:data:`POOL_COMPONENT_NAME`) and answers *what is the composed bootstrap
-pool?* — the store a deployment's ``DATABASE_URL`` names, or ``None``
-when nothing does.  Two names rather than one component with two faces,
-the convention :mod:`tripwires` states for its own seats: the world is
-ready the instant it is built and never degrades, while the pool is a
+**Three components, three questions.**  The hyperparameter world
+registers under ``"bootstrap"`` (:data:`COMPONENT_NAME`) and answers
+*what is the composed bootstrap world?* — the one world a bare
+``create_app()`` carried from the start, still the seat that name
+resolves.  The symbolic regression world registers under
+``"bootstrap-symreg"`` (:data:`SYMREG_COMPONENT_NAME`) and answers
+*what is the composed symbolic regression world?* — feature 183's own
+seat, added beside the first rather than by renaming it, for the reason
+a registry key is a name: every caller already holding ``"bootstrap"``
+must keep resolving to the world it always did.  The pool registers
+under ``"bootstrap-pool"`` (:data:`POOL_COMPONENT_NAME`) and answers
+*what is the composed bootstrap pool?* — the store a deployment's
+``DATABASE_URL`` names, or ``None`` when nothing does.  Three names
+rather than one component with three faces, the convention
+:mod:`tripwires` states for its own seats: both worlds are ready the
+instant they are built and never degrade, while the pool is a
 deployment state that may legitimately be absent, and a caller holding
-``None`` from one wants a *refusal to author*, not a label — two facts
-that different should not share one component key.
+``None`` from one wants a *refusal to author*, not a label — facts that
+different should not share one component key.
 
 The tests that hold this package to §10.6 and to §10.3.1's reproducibility
 live in ``packages/bootstrap/tests``, inside this member's own file claim,
@@ -292,6 +323,40 @@ from ._question import (
     question_for,
 )
 from ._stream import GOLDEN_GAMMA, MASK64, mix64, normal, uniform
+from ._symreg import (
+    CURVATURE_MAGNITUDE,
+    CURVATURE_TERMS,
+    LINEAR_MAGNITUDES,
+    LINEAR_TERMS,
+    PRODUCT_MAGNITUDE,
+    PRODUCT_TERMS,
+    SPURIOUS_TERMS,
+    SYMBOLIC_AXES,
+    SYMBOLIC_AXIS_ORDER,
+    SYMREG_COMPONENT_NAME,
+    SYMREG_DOMAIN,
+    SYMREG_FEATURE_COUNT,
+    SYMREG_INTERCEPT,
+    SYMREG_NOISE_SCALE,
+    SYMREG_RIDGE,
+    SYMREG_ROWS,
+    SYMREG_SEED,
+    SYMREG_THEME_ROOT,
+    SYMREG_WORLD_ID,
+    ExpressionSetting,
+    SymbolicAxis,
+    SymbolicDataset,
+    SymbolicQuestion,
+    SymbolicRegressionWorld,
+    TargetExpression,
+    canonical_symbolic_node_id,
+    decode_symbolic_node_id,
+    encode_symbolic_node_id,
+    generate_symbolic_dataset,
+    symbolic_setting_dimensions,
+    symreg_question_for,
+    target_for_seed,
+)
 from ._trial import (
     TRIAL_CHARGES_BUDGET,
     TRIAL_TABLE,
@@ -348,6 +413,8 @@ from .errors import (
 __all__ = [
     "AXIS_ORDER",
     "BOOTSTRAP_THEME_ROOT",
+    "CURVATURE_MAGNITUDE",
+    "CURVATURE_TERMS",
     "DATABASE_URL_ENV",
     "DEFAULT_ALPHA",
     "DEFAULT_DEGREE",
@@ -368,6 +435,8 @@ __all__ = [
     "INTERACTION_COEFFICIENTS",
     "INTERCEPT",
     "LINEAR_COEFFICIENTS",
+    "LINEAR_MAGNITUDES",
+    "LINEAR_TERMS",
     "M3_GATE_WORLDS",
     "MASK64",
     "MAX_POOL_SIZE",
@@ -380,9 +449,24 @@ __all__ = [
     "PORTED_DOMAIN",
     "PRICED_ROWS",
     "PRICED_SEED",
+    "PRODUCT_MAGNITUDE",
+    "PRODUCT_TERMS",
     "REPLAY_SCORE_TABLE",
     "REPLAY_SCORE_WORLD_COLUMN",
+    "SPURIOUS_TERMS",
     "SQUARE_COEFFICIENTS",
+    "SYMBOLIC_AXES",
+    "SYMBOLIC_AXIS_ORDER",
+    "SYMREG_COMPONENT_NAME",
+    "SYMREG_DOMAIN",
+    "SYMREG_FEATURE_COUNT",
+    "SYMREG_INTERCEPT",
+    "SYMREG_NOISE_SCALE",
+    "SYMREG_RIDGE",
+    "SYMREG_ROWS",
+    "SYMREG_SEED",
+    "SYMREG_THEME_ROOT",
+    "SYMREG_WORLD_ID",
     "TOTAL_BASIS",
     "TRIAL_CHARGES_BUDGET",
     "TRIAL_TABLE",
@@ -397,6 +481,7 @@ __all__ = [
     "ConfusionMatrix",
     "Dataset",
     "DreamingClaim",
+    "ExpressionSetting",
     "FitResult",
     "GroundTruth",
     "HyperparameterAxis",
@@ -408,20 +493,30 @@ __all__ = [
     "PortedWorld",
     "PortedWorldRecord",
     "Provenance",
+    "SymbolicAxis",
+    "SymbolicDataset",
+    "SymbolicQuestion",
+    "SymbolicRegressionWorld",
+    "TargetExpression",
     "TrialRecord",
     "WorldCensus",
     "WorldRecord",
     "build_bootstrap_pool",
     "build_hyperparameter_world",
+    "build_symbolic_world",
     "canonical_node_id",
+    "canonical_symbolic_node_id",
     "claim_basis",
     "column_statistics",
     "decode_node_id",
+    "decode_symbolic_node_id",
     "design_columns",
     "draw_world_seed",
     "encode_node_id",
+    "encode_symbolic_node_id",
     "fit_and_score",
     "generate_dataset",
+    "generate_symbolic_dataset",
     "ground_truth",
     "hyperparameter_world",
     "mix64",
@@ -435,6 +530,10 @@ __all__ = [
     "setting_from_steps",
     "solve_cholesky",
     "split_indices",
+    "symbolic_regression_world",
+    "symbolic_setting_dimensions",
+    "symreg_question_for",
+    "target_for_seed",
     "uniform",
     "world_census",
     "world_id_for",
@@ -443,11 +542,14 @@ __all__ = [
 #: The component name this member registers under — the plugin name the
 #: spec's features carry (``plugin="bootstrap"``), so the component key, the
 #: app-namespace seat (``src/app/modules/bootstrap``) and the spec cannot
-#: drift apart.  Deliberately *not* ``bootstrap-hpo``: features 182
-#: (feature selection) and 183 (symbolic regression) are siblings in this
-#: category that share this member and this pool, and the pool is one
-#: thing, so the member registers the *pool's* seat once rather than a
-#: component per domain.
+#: drift apart.  Deliberately *not* ``bootstrap-hpo``: the name predates
+#: the sibling domains, and renaming a composed key that callers already
+#: hold is the one change a new domain must not require of them.  A domain
+#: that grows its own world takes its own component beside this one —
+#: feature 183's symbolic regression world registers as
+#: :data:`SYMREG_COMPONENT_NAME` — while the pool stays one pool with one
+#: seat, because the worlds are many and the replay pool they persist into
+#: is a single store.
 COMPONENT_NAME = "bootstrap"
 
 #: The world id the composed application carries.  A stable, human-readable
@@ -497,6 +599,29 @@ def hyperparameter_world() -> HyperparameterWorld:
 #: ``app.module_loader.Registration.add`` documents — so this is an
 #: ordinary function a script or a sibling suite calls directly.
 build_hyperparameter_world = hyperparameter_world
+
+
+@register(SYMREG_COMPONENT_NAME)
+def symbolic_regression_world() -> SymbolicRegressionWorld:
+    """Component builder: the symbolic regression world (feature 183).
+
+    Takes no arguments — the factory's registration protocol — and builds
+    the world bound to :data:`SYMREG_WORLD_ID` and
+    :data:`SYMREG_SEED`, which draws its known target from that seed and
+    publishes it.  On the hyperparameter world's own terms throughout:
+    construction performs no arithmetic (the dataset waits for the first
+    :meth:`~bootstrap.SymbolicRegressionWorld.label`), the builder never
+    raises and needs no configuration, and a world whose whole
+    configuration is its seed puts §10.6's pool-size precondition on the
+    compute side of the ledger where it belongs.
+    """
+    return SymbolicRegressionWorld(SYMREG_WORLD_ID, seed=SYMREG_SEED)
+
+
+#: A second spelling of the builder, on the hyperparameter world's own
+#: terms — an ordinary function a script or a sibling suite calls
+#: directly, not a component and not registered.
+build_symbolic_world = symbolic_regression_world
 
 
 @register(POOL_COMPONENT_NAME)

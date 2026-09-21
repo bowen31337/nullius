@@ -160,12 +160,15 @@ def test_scanning_registers_the_pool_exactly_once() -> None:
         if component.name == member.POOL_COMPONENT_NAME
     ]
     assert len(named) == 1
-    # And the two components of this member are the only bootstrap ones.
+    # And the member's components are the only bootstrap ones — three
+    # since feature 183's symbolic regression world took its own seat
+    # beside the hyperparameter world's and the pool's, so a fourth
+    # bootstrap-prefixed name is a registration nobody authored.
     assert sorted(
         component.name
         for component in registry.components()
         if component.name.startswith("bootstrap")
-    ) == ["bootstrap", "bootstrap-pool"]
+    ) == ["bootstrap", "bootstrap-pool", "bootstrap-symreg"]
 
 
 # -- On demand --------------------------------------------------------------------
