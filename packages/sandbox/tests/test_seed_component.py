@@ -82,6 +82,7 @@ def test_scanning_the_member_registers_the_four_components_it_owns() -> None:
         "sandbox-imports",
         "sandbox-seed",
         "sandbox-threads",
+        "sandbox-timeout",
         "sandbox-transfer",
     ]
 

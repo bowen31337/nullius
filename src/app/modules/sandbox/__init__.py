@@ -114,6 +114,31 @@ format, neither of which a deployment could set differently, while this one's
 subject is the environment a deployment *configures* a run with — so a
 non-``None`` component here proves the committed pinning policy compiled, the
 same conclusion feature 157's and 167's seats entitle a caller to draw.
+
+**Feature 163's law has its own seat here too, and it is the sixth.**  The
+wall-clock budget — *System persists a timeout fail class after hard-killing a
+sandboxed run that exceeded its 30 second wall clock budget* — composes as
+``sandbox-timeout``, so this module now answers six questions, and
+:func:`sandbox_timeout_component` mirrors the other five in shape and
+re-exports nothing of the law's vocabulary for the same reason they do not.
+
+It is the fourth of the six seats whose component is backed by a **committed
+artifact**, and its subject is the same class as feature 164's: the feature's
+sentence fixes a number — §5.2's ``limits=Limits(wall_s=30, …)`` — and a number
+a watchdog hard-kills at is a deployment's configuration rather than a value a
+run carries, so the artifact ships and the compiler holds it to the thirty.  A
+non-``None`` component here therefore proves the committed budget compiled, the
+same conclusion the other three artifacts' seats entitle a caller to draw.
+
+What makes this seat's *refusal shape* different from the other five is worth
+knowing before calling it.  Features 157, 164, 165 and 167 answer a run offered
+*before* anything executes, so ``require`` raises on a refusal; a timeout is an
+event *after* the box was admitted and spawned, and §5.2's control table records
+it as an outcome ("Timeout | Hard kill, recorded as ``fail_class=timeout``", §8's
+ledger carrying the same class, §6.1 step 11 charging the trial regardless).  So
+``require`` here returns ``None`` for a run inside its budget, a ``TimeoutKill``
+for a run that outran it, and raises only when the run it was handed is
+unreadable.  A caller that wants every kill raised re-raises on ``not None``.
 """
 
 from __future__ import annotations
@@ -128,6 +153,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a depende
         SandboxIsolation,
         SandboxSeed,
         SandboxThreads,
+        SandboxTimeout,
         SandboxTransfer,
     )
 
@@ -136,11 +162,13 @@ __all__ = [
     "IMPORTS_COMPONENT_NAME",
     "SEED_COMPONENT_NAME",
     "THREADS_COMPONENT_NAME",
+    "TIMEOUT_COMPONENT_NAME",
     "TRANSFER_COMPONENT_NAME",
     "sandbox_imports_component",
     "sandbox_isolation_component",
     "sandbox_seed_component",
     "sandbox_threads_component",
+    "sandbox_timeout_component",
     "sandbox_transfer_component",
 ]
 
@@ -177,6 +205,13 @@ SEED_COMPONENT_NAME = "sandbox-seed"
 #: Kept here for the same reason the other four are: one spelling shared by
 #: everything that asks for the law through the app package.
 THREADS_COMPONENT_NAME = "sandbox-threads"
+
+#: The component name the member's wall-clock-budget law registers under — the
+#: category's sixth control, kept beside the other five rather than over any of
+#: them, because the factory's registry replaces a name's earlier registration.
+#: Kept here for the same reason the other five are: one spelling shared by
+#: everything that asks for the law through the app package.
+TIMEOUT_COMPONENT_NAME = "sandbox-timeout"
 
 
 def sandbox_isolation_component(
@@ -311,3 +346,38 @@ def sandbox_threads_component(
     """
     application = app if app is not None else create_app()
     return application.get(THREADS_COMPONENT_NAME)
+
+
+def sandbox_timeout_component(
+    app: Application | None = None,
+) -> SandboxTimeout | Any:
+    """Return the composed sandbox wall-clock-budget law (feature 163).
+
+    The same contract the other five accessors give their laws, for the control
+    that decides whether a run that outran §5.2's thirty-second wall budget is
+    hard-killed and recorded as §8's ``timeout`` fail class: with ``app`` given
+    the component is read from that application, without it the application is
+    composed first, and ``None`` means no ``sandbox-timeout`` component was
+    registered.
+
+    **The artifact-backed reading is available here too.**  The committed budget
+    ships inside the member (:data:`sandbox.timeout.COMMITTED_TIMEOUT_POLICY`)
+    and the builder compiles it at build time, resolving nothing from the
+    environment — so a non-``None`` component is proof the committed document
+    compiled and this deployment hard-kills past §5.2's thirty seconds, exactly
+    the conclusion feature 157's, 167's and 164's seats entitle a caller to
+    draw.  There is no unconfigured state for a ``None`` to describe: it means
+    *no such component was registered*, and nothing else.
+
+    The value carries no clock and no watchdog, so a caller does not get a
+    deadline from this accessor: it gets the law, and calls
+    ``check(subject)``/``killed(subject)`` for the answer as a value or
+    ``require(subject)`` for the kill on the line after the spawn.  Note that
+    ``require`` here has three outcomes rather than the other five laws' two —
+    ``None`` for a run inside its budget, a ``TimeoutKill`` for one that
+    outran it, and a raise only for a run this law cannot read — because a
+    timeout is the pipeline's *recorded outcome* rather than a refusal (§5.2's
+    "Timeout | Hard kill, recorded as ``fail_class=timeout``"; §6.1 step 11).
+    """
+    application = app if app is not None else create_app()
+    return application.get(TIMEOUT_COMPONENT_NAME)

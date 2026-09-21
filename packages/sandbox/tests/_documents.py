@@ -638,3 +638,149 @@ def committed_pinning_document() -> dict[str, Any]:
     policy instead.
     """
     return pinning_document()
+
+
+# ---------------------------------------------------------------------------
+# Feature 163 — the wall-clock budget (session §5.2's ``limits=Limits(wall_s=30,
+# …)``) and the two durations a run is judged by.  A builder rather than a
+# constant below, for the suite's fresh-object rule; the budget itself is a
+# *number*, though, and a number is immutable — so the scalar is a constant and
+# only the *documents* carrying it are builders.  The same distinction the
+# module docstring draws for the submitted sources.
+# ---------------------------------------------------------------------------
+
+#: §5.2's budget, spelled as *data* rather than imported from
+#: :data:`sandbox.timeout.DEFAULT_WALL_S`: a test that read the constant would
+#: follow a rename of the number instead of catching one, and the feature's own
+#: sentence ("its 30 second wall clock budget") is what this suite is holding
+#: the law to.  The law's compile pins the constant to this value in
+#: :mod:`test_timeout_law`; here it is the number the *documents* are built with.
+WALL_S: float = 30.0
+
+#: An elapsed time a watchdog would report for a run that outran §5.2's budget —
+#: comfortably past it rather than a hair, so a test that means "killed" is not
+#: secretly a boundary test, and the overrun the kill sentence names is a value
+#: with room in it (``OVERRUN_S`` past the budget).
+OVERRUN_S: float = 47.5
+
+#: An elapsed time comfortably *inside* the budget — the run that finished and
+#: was never killed.  §6.1 step 2 dispatches thousands of these for every one
+#: that hangs, so the pass-through is the common case rather than a corner.
+WITHIN_S: float = 3.25
+
+#: §5.2's budget itself, as the elapsed time — the boundary case, and its own
+#: constant because the reading of it is the one judgement in this law that
+#: could reasonably have gone the other way.  *Exceeded* is strict: a run that
+#: took exactly its budget did not exceed it, so this elapsed time is **not** a
+#: kill, and a test asserting that says so by name.
+AT_BUDGET_S: float = WALL_S
+
+#: The two durations a *malformed* elapsed time is drawn from: the shape §9.1's
+#: column, a JSON document or an environment variable would hand one over as
+#: (text), and a value that looks like a number to a reader and is not one to a
+#: comparison (a flag — ``True`` is an ``int`` in Python).  Both are refused by
+#: name rather than coerced, which is the property the alias tests pin.
+TEXT_DURATION: str = "47.5s"
+FLAG_DURATION: bool = True
+
+
+def timeout_run(
+    *,
+    elapsed_s: Any = OVERRUN_S,
+    budget_s: Any = WALL_S,
+    node_id: str = "",
+    component: str = "",
+) -> Any:
+    """A fresh run as the wall-clock law sees it — over budget unless told.
+
+    Defaults to the *killed* case because that is the feature's subject: a test
+    that means "this one finished in time" passes ``elapsed_s=WITHIN_S`` and
+    says so, rather than the other way round, where the interesting case would
+    be the one a reader had to notice at the call site.  ``budget_s`` is the run's
+    own record of what it was dispatched under — distinct from the *policy's*
+    compiled budget, which is what the gate actually compares against, so a test
+    can put the two in disagreement on purpose.
+
+    Imported from :mod:`sandbox.timeout` here rather than re-spelled as a dict,
+    because a run is not a *document*: the law reads it as an object with two
+    durations on it, and a builder handing over a bare mapping would be testing
+    a shape the law does not claim to accept.  The law's tolerance for
+    duck-typed subjects is exercised with an explicit stand-in in the law suite.
+    """
+    from sandbox.timeout import TimeoutRun
+
+    return TimeoutRun(
+        elapsed_s=elapsed_s,
+        budget_s=budget_s,
+        node_id=node_id,
+        component=component,
+    )
+
+
+def timeout_document(
+    *,
+    wall_s: Any = WALL_S,
+    policy: str = "sandbox-timeout",
+    include_wall: bool = True,
+) -> dict[str, Any]:
+    """A well-formed timeout document, drifted only where the caller says.
+
+    ``policy`` and ``wall_s`` are parameters rather than this builder reaching
+    for the committed kinds, for the reason :func:`pinning_document` gives: a
+    test that means "a document that does not declare itself" says exactly that,
+    and a test that means "the committed policy" asks
+    :func:`committed_timeout_document` instead.  ``include_wall=False`` builds
+    the *silent* document — the one that omits the budget entirely — which is a
+    different refusal from a budget of the wrong value, and the law says so.
+
+    The marker is written as the literal ``"sandbox-timeout"`` here rather than
+    read from :data:`sandbox.timeout.TIMEOUT_POLICY_KIND`, deliberately: a
+    document is an *input* to the compile, and a builder that had to import the
+    module under test to be constructible would couple every drift test's
+    premise to the thing being tested — the discipline the submitted sources in
+    this module already follow.
+    """
+    document: dict[str, Any] = {"policy": policy}
+    if include_wall:
+        document["wall_s"] = wall_s
+    return document
+
+
+def committed_timeout_document() -> dict[str, Any]:
+    """The committed artifact's shape: §5.2's budget, and the marker.
+
+    Shaped after the file on disk rather than read *from* it, for the reason
+    :func:`committed_pinning_document` gives: the artifact's own tests read the
+    file (:mod:`test_timeout_artifact`), so a builder that read it too would
+    make a drift in the file invisible to every test that meant to build a
+    document instead.
+    """
+    return timeout_document()
+
+
+def node_fail_class_record(
+    *,
+    node_id: str = SEED_NODE_ID,
+    fail_class: Any = None,
+    field: str = "fail_class",
+) -> dict[str, Any]:
+    """A fresh §9.1 ``node`` row, with an optional terminal class already on it.
+
+    The write half's subject: :func:`sandbox.timeout.timed_out_record` persists
+    the timeout class onto a record like this one, and the tests here need the
+    three starting states distinct — *no class yet* (the unevaluated node),
+    *the same class* (a retried kill, which is idempotent) and *a different one*
+    (a node that already died some other way, which is refused rather than
+    overwritten).  ``field`` lets a test put the class under the ledger's
+    ``outcome`` spelling instead of §9.1's ``fail_class``, because the two rows
+    are two shapes of the same fact and the law reads both.
+
+    A dict rather than a dataclass because that is what §9.1's row arrives as
+    from a relational driver — the mapping shape is the one that matters at this
+    seam, and the attribute shape is exercised with an explicit stand-in in the
+    law suite rather than smuggled in here.
+    """
+    record: dict[str, Any] = {"node_id": node_id}
+    if fail_class is not None:
+        record[field] = fail_class
+    return record

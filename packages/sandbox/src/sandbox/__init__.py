@@ -166,6 +166,41 @@ that drives it, and this suite pins the spelling as data.  Like feature 165's
 refusal and unlike the two gates', this law's launcher verb *returns* something
 — the environment to dispatch with, pins written in the policy's own spelling —
 so a caller writes one line and cannot read the environment twice.
+
+**Feature 163 rides the seat a sixth time.**  *System persists a timeout fail
+class after hard-killing a sandboxed run that exceeded its 30 second wall clock
+budget* is the category's wall-clock control, and its law lives in
+:mod:`sandbox.timeout`: the committed budget — §5.2's ``limits=Limits(wall_s=30,
+…)``, which the compiler holds the artifact to — compared against the duration a
+runner's watchdog measured, with the outcome persisted as §8's ``timeout`` fail
+class on the node record.  It composes as :class:`SandboxTimeout` under
+:data:`sandbox.timeout.TIMEOUT_COMPONENT_NAME` (``sandbox-timeout``) — a sixth
+seat beside the other five, for the same registry-replacement reason — and it is
+the **fourth control with a committed artifact**, on the same terms feature 164
+states its own: the feature's sentence fixes a number, and a number a watchdog
+hard-kills at is a deployment's configuration rather than a value a run carries,
+so it is written down before it can be audited.  What that artifact deliberately
+does *not* carry is the other three fields of the same ``Limits(...)`` call —
+``cpu_s``, ``mem_mb`` and ``pids`` belong to feature 162's cgroup law.
+
+**It is the one law in this member whose subject is a failure rather than a
+run, and that inverts its refusal shape.**  Features 157, 164, 165 and 167 each
+refuse a run *before* anything executes, so their launcher verbs raise on a
+refusal and return on success.  A timeout happens *after* the box was admitted
+and spawned, and the pipeline's contract for it is a **recorded outcome**: §5.2's
+control table is "Timeout | Hard kill, recorded as ``fail_class=timeout``", §8's
+ledger carries ``timeout`` among its four ``outcome`` spellings, §6.1 step 11
+charges the trial "even if the node fails.  A failed evaluation still consumed a
+hypothesis", and :class:`evaluator.SandboxResult` already returns its kills as
+values.  So :func:`sandbox.timeout.kill_timeout` answers with a
+:class:`~sandbox.timeout.TimeoutKill` and :meth:`SandboxTimeout.require` returns
+it — a kill is never raised, because a raise here would turn one hung signal
+into a crashed evaluator over thousands of unattended candidates and would make
+the recorded class the runner already wrote a second, disagreeing spelling.  What
+*is* refused, loudly, is the *recording* and the *budget*: an elapsed time that
+is not a number of seconds, a committed artifact that does not declare §5.2's
+thirty, a node record this law cannot write the class onto.  A caller that wants
+every kill raised re-raises on ``not None``, and that stays the caller's choice.
 """
 
 from __future__ import annotations
@@ -184,10 +219,12 @@ from .errors import (
     SandboxIsolationError,
     SandboxSeedError,
     SandboxThreadPinningError,
+    SandboxTimeoutError,
     SandboxTransferError,
     ScoreChannelError,
     ThreadPinningDocumentError,
     ThreadPinningRequired,
+    TimeoutBudgetDocumentError,
     WindowTransferError,
 )
 from .imports import (
@@ -249,8 +286,8 @@ from .threads import (
     POOL_FLOOR_VARIABLE,
     REQUIRED_CAPS,
     SINGLE_THREADED,
-    THREADS_COMPONENT_NAME,
     THREAD_PINNING_CODE,
+    THREADS_COMPONENT_NAME,
     UNPINNED,
     SandboxThreads,
     ThreadCap,
@@ -263,6 +300,29 @@ from .threads import (
     compile_thread_pinning_policy,
     load_thread_pinning_policy,
     sandbox_threads,
+)
+from .timeout import (
+    COMMITTED_TIMEOUT_POLICY,
+    DEFAULT_WALL_S,
+    NODE_FAIL_CLASSES,
+    TIMEOUT_COMPONENT_NAME,
+    TIMEOUT_FAIL_CLASS,
+    TIMEOUT_POLICY_KIND,
+    SandboxTimeout,
+    TimeoutDecision,
+    TimeoutKill,
+    TimeoutPolicy,
+    TimeoutReason,
+    TimeoutRecord,
+    TimeoutRun,
+    classify_duration,
+    committed_timeout_policy,
+    compile_timeout_policy,
+    exceeded_budget,
+    kill_timeout,
+    load_timeout_policy,
+    sandbox_timeout,
+    timed_out_record,
 )
 from .transfer import (
     SCORE_CHANNEL_CODE,
@@ -288,7 +348,9 @@ __all__ = [
     "COMMITTED_IMPORTS_ALLOWLIST",
     "COMMITTED_ISOLATION_POLICY",
     "COMMITTED_PINNING_POLICY",
+    "COMMITTED_TIMEOUT_POLICY",
     "COMPONENT_NAME",
+    "DEFAULT_WALL_S",
     "DISALLOWED_IMPORT_CODE",
     "ENV_MKL",
     "ENV_OMP",
@@ -299,6 +361,7 @@ __all__ = [
     "IMPORTS_POLICY_KIND",
     "ISOLATION_REQUIRED_CODE",
     "MINT_SALT",
+    "NODE_FAIL_CLASSES",
     "PINNED",
     "PINNING_POLICY_KIND",
     "POLICY_KIND",
@@ -315,6 +378,9 @@ __all__ = [
     "SINGLE_THREADED",
     "THREADS_COMPONENT_NAME",
     "THREAD_PINNING_CODE",
+    "TIMEOUT_COMPONENT_NAME",
+    "TIMEOUT_FAIL_CLASS",
+    "TIMEOUT_POLICY_KIND",
     "TRANSFER_COMPONENT_NAME",
     "UNPINNED",
     "WINDOW_TRANSFER_CODE",
@@ -342,6 +408,8 @@ __all__ = [
     "SandboxSeedError",
     "SandboxThreadPinningError",
     "SandboxThreads",
+    "SandboxTimeout",
+    "SandboxTimeoutError",
     "SandboxTransfer",
     "SandboxTransferError",
     "ScoreChannelError",
@@ -355,6 +423,13 @@ __all__ = [
     "ThreadPinningPolicy",
     "ThreadPinningRequired",
     "ThreadReason",
+    "TimeoutBudgetDocumentError",
+    "TimeoutDecision",
+    "TimeoutKill",
+    "TimeoutPolicy",
+    "TimeoutReason",
+    "TimeoutRecord",
+    "TimeoutRun",
     "TransferChannel",
     "TransferLeg",
     "WindowFacts",
@@ -363,28 +438,36 @@ __all__ = [
     "check_invocation",
     "check_thread_pinning",
     "classify_cap",
+    "classify_duration",
     "committed_imports_allowlist",
     "committed_isolation_policy",
     "committed_thread_pinning_policy",
+    "committed_timeout_policy",
     "compile_imports_allowlist",
     "compile_isolation_policy",
     "compile_thread_pinning_policy",
+    "compile_timeout_policy",
     "decode_scores",
     "encode_scores",
+    "exceeded_budget",
     "inspect_window_payload",
+    "kill_timeout",
     "load_imports_allowlist",
     "load_isolation_policy",
     "load_thread_pinning_policy",
+    "load_timeout_policy",
     "mint_node_seed",
     "resolve_seed",
     "sandbox_imports",
     "sandbox_isolation",
     "sandbox_seed",
     "sandbox_threads",
+    "sandbox_timeout",
     "sandbox_transfer",
     "scores_alias_payload",
     "screen_module",
     "seed_record",
+    "timed_out_record",
 ]
 
 __version__ = "0.1.0"
@@ -396,11 +479,15 @@ __version__ = "0.1.0"
 #: of the member, not by a hard-coded string — shares one spelling.
 COMPONENT_NAME: str = "sandbox"
 
-#: ``SEED_COMPONENT_NAME`` is not respelled here.  It is the seed law's own
-#: constant, read out of :mod:`sandbox.seed` at the top of this module, and the
-#: member re-exports it rather than shadowing it: the four component names are
-#: each owned by the law that registers under them, and a second assignment
-#: here would be a second place for one to drift.
+#: The other five component names — ``IMPORTS_COMPONENT_NAME``,
+#: ``TRANSFER_COMPONENT_NAME``, ``SEED_COMPONENT_NAME``,
+#: ``THREADS_COMPONENT_NAME`` and ``TIMEOUT_COMPONENT_NAME`` — are not respelled
+#: here.  Each is its own law's constant, read out of :mod:`sandbox.imports`,
+#: :mod:`sandbox.transfer`, :mod:`sandbox.seed`, :mod:`sandbox.threads` and
+#: :mod:`sandbox.timeout` at the top of this module, and the member re-exports
+#: them rather than shadowing them: the six component names are each owned by
+#: the law that registers under them, and a second assignment here would be a
+#: second place for one to drift.
 
 
 class SandboxIsolation:
@@ -715,3 +802,54 @@ def build_sandbox_threads() -> SandboxThreads:
     the read side a deployment audits with.
     """
     return sandbox_threads()
+
+
+@register(TIMEOUT_COMPONENT_NAME)
+def build_sandbox_timeout() -> SandboxTimeout:
+    """Component builder: feature 163's wall-clock-budget law (app_spec.xml §5.2).
+
+    The sixth component this member contributes, beside feature 157's isolation
+    law, feature 167's import allowlist, feature 166's payload channel, feature
+    165's node seed and feature 164's thread-pinning law, under its own name —
+    the registry is keyed by name and a later registration of ``sandbox`` would
+    *replace* the isolation law, so one member carrying six controls carries six
+    components.
+
+    Like :func:`build_sandbox_isolation` and :func:`build_sandbox_threads` it
+    compiles a **committed artifact** at build time
+    (:data:`~sandbox.timeout.COMMITTED_TIMEOUT_POLICY`) — the fourth in this
+    category, and for the same reason the third one ships: the feature's
+    sentence fixes a number (*"exceeded its 30 second wall clock budget"*) that
+    a deployment enforces with a watchdog, and a number a watchdog kills at has
+    to be written down before it can be audited.  The compiler holds the file to
+    §5.2's ``wall_s=30`` exactly, so the artifact cannot drift to a budget
+    nobody wrote down.  Features 165 and 166 state their reason for having no
+    artifact; this is not it.
+
+    Like the other five it takes no arguments (the factory's registration
+    protocol), never returns ``None`` and never raises: the factory builds every
+    registered component on every ``create_app()`` call, so a builder that
+    raised on a drifted artifact would take composition down for every unrelated
+    feature in the workspace, and a bare test process with no ``DATABASE_URL``
+    and no lake still composes this one.  It reads nothing ambient either — the
+    law's subject is a run's *measured* duration, never a clock and never
+    ``os.environ`` — so composition cannot depend on the shell that started the
+    process, and the component it hands out holds no timer.  A drifted artifact
+    is reported the way the other three artifacts' are: the component is built
+    over the refusal-free path, and a caller that must know the file still
+    declares §5.2's budget asks
+    :func:`sandbox.timeout.committed_timeout_policy`, where a named
+    :class:`~sandbox.errors.SandboxTimeoutError` is the right answer.
+
+    It returns a :class:`SandboxTimeout` rather than a policy, necessarily
+    rather than by preference — and this one's reason is the sharpest of the
+    six: a component held across runs that carried a *watchdog* would be one
+    measuring a duration that belongs to a single run, so two dispatches would
+    share a deadline and the second would be killed for the first's elapsed
+    time.  What the composed value gives a caller is the law —
+    ``check``/``killed`` for the answer as a value, ``require`` for the kill or
+    the refusal on the line after the spawn, ``record`` for feature 163's own
+    verb of persisting the fail class onto a node record, and ``wall_s`` for the
+    read side a deployment audits with.
+    """
+    return sandbox_timeout()

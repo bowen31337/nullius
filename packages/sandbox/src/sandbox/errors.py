@@ -91,6 +91,23 @@ failed — the discipline :mod:`infra.security.sandbox_egress`'s and
   and it is why the two features both refuse at the seam rather than trusting a
   deployment to have exported its environment.
 
+* :class:`SandboxTimeoutError` — the wall-clock-budget contract, and feature
+  163's whole subject.  The committed *budget* could not be read as a budget
+  (the document half), or a caller asked this law to record a run whose
+  elapsed time it cannot describe.  **There is deliberately no error for the
+  kill itself**, which is the one thing a reader may expect to find here and
+  the absence is the feature: §5.2's table says the timeout is *"Hard kill,
+  **recorded** as ``fail_class=timeout``"*, the pipeline persists a failed
+  run as a value (feature 79's "a failed evaluation still consumed a
+  hypothesis"), and :mod:`evaluator._sandbox` already returns its kills as
+  :class:`~evaluator.SandboxResult` values rather than raising them.  So the
+  kill has no exception to be, and a timeout that arrives at this member as a
+  *raised* error is a host-side failure wearing a familiar name — the reading
+  :func:`evaluator.failure_outcome` states for its own seam.  What can fail
+  loudly here is the *recording*: an elapsed time that is not a number, a
+  budget that is not a positive number of seconds, a record this law cannot
+  write the class onto.
+
 There is deliberately no error for *"the run was not admitted"* beyond
 :class:`GVisorIsolationRequired`.  Feature 157's failure mode is one thing —
 a run configuration that is not gVisor's — and splitting it into an error per
@@ -117,10 +134,12 @@ __all__ = [
     "SandboxIsolationError",
     "SandboxSeedError",
     "SandboxThreadPinningError",
+    "SandboxTimeoutError",
     "SandboxTransferError",
     "ScoreChannelError",
     "ThreadPinningDocumentError",
     "ThreadPinningRequired",
+    "TimeoutBudgetDocumentError",
     "WindowTransferError",
 ]
 
@@ -412,6 +431,65 @@ class ThreadPinningDocumentError(SandboxThreadPinningError):
     the fault is a policy file that does not say what it is — or, worse, would
     treat a well-formed document that had already drifted to another pin as a
     launcher bug.
+    """
+
+
+class SandboxTimeoutError(SandboxError):
+    """The wall-clock-budget contract: the budget could not be read, or the
+    timeout could not be recorded.
+
+    app_spec.xml, "Untrusted Code Sandbox", feature 163: *System persists a
+    timeout fail class after hard-killing a sandboxed run that exceeded its 30
+    second wall clock budget.*  The subject is the run's *wall clock* — §5.2's
+    ``limits=Limits(wall_s=30, …)`` clause and the control table's row
+    ``Timeout | Hard kill, recorded as fail_class=timeout`` — and this class is
+    that clause's refusals.
+
+    **The kill is not one of them, and that is the feature rather than a gap.**
+    A timeout is the member's *one* terminal state that is deliberately not a
+    refusal: the sandbox hard-kills the child and the pipeline records the
+    outcome, because §6.1 step 11 writes the trial charge "even if the node
+    fails. A failed evaluation still consumed a hypothesis."  So
+    :func:`sandbox.timeout.kill_timeout` returns a
+    :class:`~sandbox.timeout.TimeoutKill` value — the fail class, the budget,
+    the elapsed time — and never raises for the kill itself, mirroring
+    :meth:`evaluator._sandbox.SignalSandbox.run`.  A caller that *does* see a
+    :class:`TimeoutError` from the box has a host-side failure, not this law's
+    subject, which is the distinction :func:`evaluator.failure_outcome` draws
+    from the other side of the same seam.
+
+    What this class is for is the two things that can genuinely go wrong
+    around that kill: a *committed budget* that cannot be read as a budget
+    (:class:`TimeoutBudgetDocumentError`), and the **recording** half of the
+    feature — an elapsed time that is not a number of seconds, a budget that
+    is not a positive number of seconds, or a node record this law cannot
+    write the class onto.  The feature's verb is *persists*, so a persistence
+    this law could not perform is reported rather than silently skipped: the
+    failure mode the whole feature exists to prevent is a run that died at the
+    wall and left no row saying so.
+    """
+
+
+class TimeoutBudgetDocumentError(SandboxTimeoutError):
+    """The committed wall-clock budget could not be read as a budget.
+
+    The counterpart of :class:`IsolationDocumentError`,
+    :class:`AllowlistDocumentError` and :class:`ThreadPinningDocumentError`,
+    and kept apart from the recording refusals for the reason that pair is
+    always split: *the document could not be read* and *this run's timeout
+    could not be written down* are different facts about different things, and
+    a caller that conflated them would go looking at a launcher's watchdog
+    when the fault is a policy file that does not say what it is — or, worse,
+    would treat a well-formed budget that had drifted to another number as a
+    runner bug.
+
+    A document that does not declare itself (the marker feature 157's
+    isolation policy, feature 167's allowlist and feature 164's pinning policy
+    carry), a ``wall_s`` that is absent, is not a number, is a ``bool``, or is
+    not a positive number of seconds: refused whole, fail closed, because a
+    budget compiled from a partially-read document is one whose file and whose
+    watchdog disagree — and the disagreement is a run killed at a number
+    nobody wrote down.
     """
 
 

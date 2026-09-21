@@ -79,6 +79,7 @@ def test_scanning_the_member_registers_the_components_it_owns() -> None:
         "sandbox-imports",
         "sandbox-seed",
         "sandbox-threads",
+        "sandbox-timeout",
         "sandbox-transfer",
     ]
 
@@ -190,11 +191,13 @@ class TestTheSeat:
             "IMPORTS_COMPONENT_NAME",
             "SEED_COMPONENT_NAME",
             "THREADS_COMPONENT_NAME",
+            "TIMEOUT_COMPONENT_NAME",
             "TRANSFER_COMPONENT_NAME",
             "sandbox_imports_component",
             "sandbox_isolation_component",
             "sandbox_seed_component",
             "sandbox_threads_component",
+            "sandbox_timeout_component",
             "sandbox_transfer_component",
         }
         for leaked in ("ModuleDecision", "ModuleReason", "ImportsAllowlist", "SandboxImports"):
