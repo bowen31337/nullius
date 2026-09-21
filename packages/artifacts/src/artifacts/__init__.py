@@ -121,6 +121,30 @@ features persist land inside the directories this store keys.
   column carries from the very text staged as ``code.py``, so the row
   and the directory cannot disagree about which code a node ran.
 
+* **The two per-date series persist as Parquet** (:mod:`artifacts._series`,
+  feature 171).  §9.2's ``ic_series.parquet`` and ``turnover_series.parquet``
+  — the two lines between the returns grid and the edge's JSON documents —
+  are the node's *date-keyed scalar series*: the information coefficient the
+  signal earned on each rebalance date and the fraction of the equal-weight
+  book that had to be traded to hold it.  Every other line of the layout has
+  a shape of its own — ``signal_returns.parquet`` is a symbol × period grid
+  (feature 170), the two documents are an array and a per-stratum split
+  (feature 172), the pair is text and a fingerprint (feature 173) — these
+  two are one shape twice, which is why they carry one schema
+  (``date32``/``float64``) and are written, read and checked by one codec:
+  the metric is the filename's to say, the shape is the columns'.
+  :func:`persist_ic_series` and :func:`persist_turnover_series` stage each
+  file through feature 169's write path (one operation per metric, since
+  neither is unreadable without the other), :func:`ic_series` and
+  :func:`turnover_series` answer ``{date: value}`` back by the same two keys,
+  and :func:`ic_series_is_persisted`/:func:`turnover_series_is_persisted`
+  report each invariant separately.  Rows are sorted by date before they are
+  written, so two equal series stage identical bytes and key order is never
+  part of a stored measurement's identity.  This layer owns the names, the
+  schema, the canonical row order and the refusals; the *metric* — what an
+  information coefficient and a fractional turnover mean, and how they are
+  computed — is the evaluator's (features 80, 85), and is not restated here.
+
 * **The edge's two shapes persist as JSON documents**
   (:mod:`artifacts._profiles`, feature 172).  §9.2's two middle lines —
   ``decay_profile.json`` and ``regime_attribution.json`` — are the
@@ -195,6 +219,22 @@ from ._profiles import (
     regime_attribution,
     regime_attribution_is_persisted,
 )
+from ._series import (
+    DATE_COLUMN,
+    IC_SERIES_FILENAME,
+    PARQUET_COMPRESSION,
+    TURNOVER_SERIES_FILENAME,
+    VALUE_COLUMN,
+    decode_series,
+    encode_series,
+    ic_series,
+    ic_series_is_persisted,
+    persist_ic_series,
+    persist_turnover_series,
+    require_arrow,
+    turnover_series,
+    turnover_series_is_persisted,
+)
 from ._store import (
     ARTIFACT_ROOT_ENV,
     DEFAULT_ROOT_NAME,
@@ -209,16 +249,21 @@ __all__ = [
     "CODE_HASH_LENGTH",
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
+    "DATE_COLUMN",
     "DECAY_PROFILE_FILENAME",
     "DEDUP_COMPONENT_NAME",
     "DEFAULT_ROOT_NAME",
     "DUPLICATE_CODE_HASH",
+    "IC_SERIES_FILENAME",
     "NODE_CODE_HASH_INDEX",
     "NODE_TABLE",
+    "PARQUET_COMPRESSION",
     "REGIME_ATTRIBUTION_FILENAME",
     "SOURCE_FILENAME",
     "STAGING_ROOT_NAME",
     "TRACE_FILENAME",
+    "TURNOVER_SERIES_FILENAME",
+    "VALUE_COLUMN",
     "ArtifactDeduplicatedError",
     "ArtifactKeyError",
     "ArtifactNotFoundError",
@@ -234,17 +279,26 @@ __all__ = [
     "canonical_code_hash",
     "decay_profile",
     "decay_profile_is_persisted",
+    "decode_series",
+    "encode_series",
     "executed_source",
     "execution_is_persisted",
     "execution_trace",
+    "ic_series",
+    "ic_series_is_persisted",
     "node_directory",
     "persist_decay_profile",
     "persist_execution",
+    "persist_ic_series",
     "persist_regime_attribution",
+    "persist_turnover_series",
     "regime_attribution",
     "regime_attribution_is_persisted",
     "reject_duplicate",
+    "require_arrow",
     "source_code_hash",
+    "turnover_series",
+    "turnover_series_is_persisted",
     "validate_campaign_id",
     "validate_filename",
     "validate_node_id",

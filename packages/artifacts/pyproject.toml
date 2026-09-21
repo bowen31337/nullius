@@ -12,20 +12,34 @@
 # Dependencies: the workspace root, for the factory's registration
 # protocol (`import app.module_loader`) and its workspace discovery
 # (`find_workspace_root`, which locates the default artifact root the
-# way the snapshot member locates its default lake).  Nothing else, by
-# design: this feature is the *directory* half of §9.2 — keying a node's
-# directory by campaign then node, staging its files, publishing it as
-# one unit — and every part of that is stdlib filesystem work.  The
-# Parquet and JSON *content* of later features in this category
-# (170-173) layer on this package's API rather than beside it, and the
-# member that needs pyarrow will be the one that declares it.
+# way the snapshot member locates its default lake); and pyarrow, for
+# feature 171's two Parquet series.
+#
+# Feature 169 — the *directory* half of §9.2, keying a node's directory by
+# campaign then node, staging its files, publishing it as one unit — is
+# stdlib filesystem work and needs nothing.  Feature 171's
+# `ic_series.parquet` and `turnover_series.parquet` are the first files in
+# this category whose content is an encoded *binary* format rather than
+# text, so the member declares the encoder.  §4.1's stack table pins the
+# format ("Parquet + Zstd, columnar, compressed, portable"), the same
+# choice feature 49's materialiser made for the same reason (a file a
+# DuckDB scan can read in place, §4.1's analytics row), and the version
+# bound follows that member's: >=14.0 because nothing here depends on an
+# Arrow version's behaviour, only on the format.
+#
+# The import is deferred to first use (`artifacts._series.require_arrow`)
+# so the factory's workspace scan — which imports this package to fire its
+# @register — requires no pyarrow to be installed.  That keeps the member
+# import-safe in the environments the workspace contract promises one will
+# be (factory scan, test sandbox, replay path), and it keeps the JSON half
+# of this category and the whole of feature 169 free of the dependency.
 
 [project]
 name = "artifacts"
 version = "0.1.0"
 description = "Persists one artifact directory per node, keyed by campaign_id then node_id."
 requires-python = ">=3.12"
-dependencies = ["nullius"]
+dependencies = ["nullius", "pyarrow>=14.0"]
 
 [build-system]
 requires = ["hatchling"]
