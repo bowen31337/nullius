@@ -60,6 +60,25 @@ by which line of code failed:
   repeat" and report them differently, while a caller that only needs to
   know the proposal was refused catches the base.
 
+* :class:`ArtifactCacheError` — the resident replay cache's contract
+  (app_spec.xml feature 176).  A cache bound to anything but an
+  :class:`~artifacts.ArtifactStore`, or the canonical book a declined
+  ``ir_marginal`` ask is keyed against being unnameable text.  The
+  load's own refusals pass through the cache *unchanged* — a campaign
+  the store holds no nodes for stays
+  :class:`ArtifactNotFoundError`, exactly as a direct
+  :func:`~artifacts.load_campaign_returns` answers it — because this
+  class is the cache's seam, not a wrapper that would soften the
+  load's vocabulary behind a second error type.
+
+  Its subclass :class:`ArtifactMarginalIRDeclinedError` is the
+  feature's own decision — the ask to cache a marginal information
+  ratio against a canonical book, declined in every spelling — split
+  out the same way feature 179 split its verdict: an ask that is
+  malformed can be fixed by the caller, while a declined ask is a
+  verdict to code around (by caching the return series), and a caller
+  that only needs "the cache refused" catches the base.
+
 Every message names the offending value and the contract it broke, in
 the same discipline as the snapshot and null-oracle taxonomies: these
 errors are operational signals for a system whose replay determinism
@@ -70,8 +89,10 @@ must be *speakable*, not merely loggable.
 from __future__ import annotations
 
 __all__ = [
+    "ArtifactCacheError",
     "ArtifactDeduplicatedError",
     "ArtifactKeyError",
+    "ArtifactMarginalIRDeclinedError",
     "ArtifactNotFoundError",
     "ArtifactProposalError",
     "ArtifactStoreError",
@@ -167,4 +188,51 @@ class ArtifactDeduplicatedError(ArtifactProposalError):
     clause is the same rule from the search side).  Catching
     :class:`ArtifactProposalError` covers both; catching this one separates
     the verdict from the malformed input.
+    """
+
+
+class ArtifactCacheError(ArtifactsError):
+    """The resident replay cache could not take the ask as given.
+
+    app_spec.xml feature 176's cache stands *in front of* feature 174's
+    load, and its own contract is narrow by design: it is bound to one
+    :class:`~artifacts.ArtifactStore` (a cache handed anything else
+    cannot load through the read side §1 grants, and this member trusts
+    no second decoder), and the canonical book a declined
+    ``ir_marginal`` ask is keyed against must be nameable text — a term
+    that cannot be named is an ask malformed before it is a verdict,
+    refused as malformed so the caller fixes the ask rather than
+    mistaking a typo for the policy.
+
+    Everything the *load* refuses passes through unchanged, on purpose:
+    a campaign holding no node directories is
+    :class:`ArtifactNotFoundError`, a horizon some panel covers no date
+    of is :class:`ArtifactStoreError`, each exactly as a direct
+    :func:`~artifacts.load_campaign_returns` answers it — wrapping the
+    load's vocabulary in a cache-specific type would give the same
+    refusal two spellings depending on which seam was crossed, and the
+    seam is the only thing that differs.
+    """
+
+
+class ArtifactMarginalIRDeclinedError(ArtifactCacheError):
+    """The one ask the resident cache declines: a marginal IR against a book.
+
+    app_spec.xml feature 176: *System declines to cache marginal
+    information ratio against canonical books, caching the return series
+    instead.*  A *verdict about the ask*, not a breakage: nothing failed
+    and no store was consulted — the design declines the entry in every
+    spelling (stored, looked up, warmed ahead of a replay), and the
+    refusal's message begins with the ``declined_marginal_ir`` code and
+    names the instead — the resident return series, and §9.3's
+    recomputation over it — so the decline is greppable by the feature
+    that defines it and actionable by the caller that hit it.
+
+    The same split as feature 179's
+    :class:`ArtifactDeduplicatedError`: an ask that is malformed can be
+    fixed by the caller, while a declined ask is a verdict to code
+    around — by caching the return series and recomputing, which §9.2
+    keeps deterministic and §9.3 keeps cheap.  Catching
+    :class:`ArtifactCacheError` covers both; catching this one
+    separates the policy from the malformed input.
     """

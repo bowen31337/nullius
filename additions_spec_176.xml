@@ -1,0 +1,204 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 176 (decline to cache marginal information ratio against canonical books, caching the return series instead)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 176 in the artifacts plugin: the
+    system's resident replay cache caches the return series — one
+    CampaignReturns per (campaign, horizon) ask, loaded once through
+    feature 174's load and answered resident thereafter — and declines,
+    with a named verdict, the one ask a canonical-book cache would serve:
+    caching or serving a marginal information ratio keyed against a
+    canonical book, in every spelling (stored, looked up, warmed ahead of
+    a replay). The decline follows docs/nullius-tech-architecture.md
+    §9.3's instruction ("So do not cache marginal IR against canonical
+    books. Cache the return series." / "no canonical-book cache
+    anywhere") and §9.2's reason a cached value would be stale by
+    construction ("marginal contribution against any book can be
+    recomputed at replay time, so the same node scores differently
+    depending on the path a policy took to reach it"): the book is an
+    argument of the metric, not a dimension of the data, and a (node,
+    book) key would grow without the bound a resident series has (§9.3:
+    500 nodes × 2000 periods × 4 B = 4 MB per campaign). The decline is
+    spoken at both seams the ask can arrive by — a module-level function
+    (decline_marginal_ir, the data-side spelling needing no store, the
+    way feature 179's reject_duplicate needs none) and a method on the
+    cache object (ReturnSeriesCache.marginal_ir, the object-side
+    spelling a replay holding the cache reaches for) — both raising
+    ArtifactMarginalIRDeclinedError carrying the declined_marginal_ir
+    code, the §9.2 reason, and the instead (the resident series and
+    §9.3's array-indexing-plus-rank-1-update recomputation). The cache
+    adds no second decoder: it loads through feature 174's
+    load_campaign_returns only, every refusal of the load refuses the
+    ask unchanged, and a refused load caches nothing. The cache is
+    per-process replay state, not a composed component (no @register):
+    §9.3 pins arrays per replay, the store stays the truth, and a fresh
+    cache answers a fresh load. No shared file is touched; the member
+    never imports another workspace member.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/artifacts member, import artifacts) / pytest (ruff + mypy conventions)</stack>
+    <test_baseline>artifacts suite under packages/artifacts/tests/, stdlib-only modules plus pyarrow where the Parquet codecs and the campaign load are exercised (the resident cache loads through feature 174's Parquet read, so its suite carries the same importorskip). The repository-level tests/ tree is separate and is not collected by this member's suite; run the member suite (packages/artifacts/tests) under its own conftest, because same-basename files collide under one pytest run.</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, docstrings
+      that cite app_spec.xml feature numbers and docs/nullius-tech-architecture.md
+      sections, stdlib-only computation, third-party imports (pyarrow)
+      deferred to the read seams that need them, @register only in the
+      package __init__ (never a submodule), degrade-don't-break
+      composition. The member never imports another workspace member.
+      Errors are a taxonomy (one base, subclasses split by which
+      contract was violated, verdicts split from malformed input the way
+      feature 179 split ArtifactDeduplicatedError from
+      ArtifactProposalError), messages begin with a greppable code and
+      name the offending value. Tests assert on observed behaviour with
+      long narrative docstrings explaining the "why".
+    </conventions>
+  </existing_context>
+  <!-- Layout mirrors the clean main app_spec.xml: uv-workspace is what makes
+       plugin="artifacts" resolve to the real packages/artifacts/ tree rather
+       than the single-package src/plugins/artifacts/ default. Parsed before
+       features. -->
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Resident replay cache">
+      <feature index="1" shape="plugin" plugin="artifacts" depends_on="174">
+        <description>System declines, with a named verdict, the ask to cache the marginal information ratio (ir_marginal) of one node of one campaign against one canonical book — declined in every spelling (stored, looked up, warmed ahead of a replay) — raising ArtifactMarginalIRDeclinedError whose message begins with the declined_marginal_ir code, names the ask's three terms (campaign, node, book), states §9.2's reason a cached value would be stale by construction (the same node scores differently depending on the path a policy took to reach it, so the book is an argument of the metric, not a dimension of the data), and names the instead: the resident return series of the very campaign the ask named, which §9.3's array indexing plus a rank-1 update recomputes the declined number from</description>
+      </feature>
+      <feature index="2" shape="plugin" plugin="artifacts" depends_on="1">
+        <description>System answers the decline identically from both seams the ask can arrive by — the module function decline_marginal_ir (the data-side spelling, which needs no store and performs no I/O, because a decline is a policy rather than a lookup: a campaign that was never persisted is declined exactly like one that was) and the method ReturnSeriesCache.marginal_ir (the object-side spelling a replay holding the cache reaches for) — same class, same code, same message, so the two seams cannot drift apart on what is declined</description>
+      </feature>
+      <feature index="3" shape="plugin" plugin="artifacts" depends_on="1,2">
+        <description>System refuses a malformed ask as malformed rather than declined: asking with a canonical book that cannot be named (empty, whitespace-only, non-string) raises ArtifactCacheError (the cache contract's base class, never the verdict class), and asking with a campaign or node that cannot serve as its one path segment raises ArtifactKeyError, via the one spelling of that rule every boundary in the member applies — so a caller can tell a typo from the policy by the error class the ask returns</description>
+      </feature>
+      <feature index="4" shape="plugin" plugin="artifacts" depends_on="174">
+        <description>System caches the return series instead: ReturnSeriesCache, bound to one ArtifactStore (refusing anything else by name), answers a campaign's CampaignReturns through feature 174's load_campaign_returns the first time it is asked for an axis and the same resident object every time after — one Parquet sweep per (campaign_id, horizon) key per cache, then array indexing; every refusal of the load refuses the ask unchanged in the load's own vocabulary (no second decoder, no wrapper class), and a refused load caches nothing</description>
+      </feature>
+      <feature index="5" shape="plugin" plugin="artifacts" depends_on="4">
+        <description>System keys the residence by exactly the ask — (campaign_id, horizon), with the policy axis (horizon=None, feature 174's CAMPAIGN_LOAD_HORIZON) and each pinned horizon resident under their own keys (two asks, two resident buffers, identical bytes, safe because feature 174's loads are deterministic) — and reports the residence honestly: holds(campaign, horizon) answers from the residence alone without touching the store, resident_campaigns() lists the held campaigns sorted each once across the pinned axes, and the cache is per-process replay state over the store-as-truth (a node published after a cache loaded is invisible to that cache and visible to a fresh one; two caches over one store are two residences; nothing is evicted because nothing arrives unasked)</description>
+      </feature>
+      <feature index="6" shape="plugin" plugin="artifacts" depends_on="1,2,3,4,5">
+        <description>System keeps §9.3's "no canonical-book cache anywhere" structural: the module's public surface is exactly the decline (decline_marginal_ir), the cache (ReturnSeriesCache) and the policy spellings (IR_MARGINAL, DECLINED_MARGINAL_IR, RESIDENT_CACHE_POLICY), the residence is a private mapping of campaign keys to CampaignReturns values with no public operation that accepts any other entry kind and no key that spells a book, and the new names are exported through the package __init__ (never a submodule @register) alongside the existing seams</description>
+      </feature>
+    </category>
+    <category name="Resident replay cache — verification">
+      <feature index="7" shape="plugin" plugin="artifacts" depends_on="1,2,3,4,5,6">
+        <description>System passes an end-to-end test which displays, over one published two-node campaign, that the ask to cache ir_marginal against a canonical book raises the named verdict error from both seams while the return-series ask answers the resident (nodes × periods) float32 array; the decline raises without consulting the store; a second series ask answers the same resident object and does not re-read the store (the array outlives the campaign's directory being deleted under it, while a direct load raises ArtifactNotFoundError); the policy axis and a pinned horizon are distinct resident keys with identical bytes; the load's refusals (a campaign the store does not hold, a pinned horizon a panel covers no date of) raise the load's own error classes unchanged and leave nothing resident; and the malformed asks raise the malformed-refusal classes, not the verdict</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    New module packages/artifacts/src/artifacts/_cache.py owning feature
+    176: the decline (decline_marginal_ir, the verdict, the
+    _canonical_book_name malformed refusal, and the one refusal message
+    spelled once for both seams) and the instead (ReturnSeriesCache:
+    series/holds/resident_campaigns/marginal_ir over feature 174's
+    load_campaign_returns, with the (campaign, horizon) residence key).
+    Two new error classes in the member's taxonomy
+    (packages/artifacts/src/artifacts/_errors.py): ArtifactCacheError
+    (the resident cache's contract — a cache bound to anything but an
+    ArtifactStore, an unnameable book) and its subclass
+    ArtifactMarginalIRDeclinedError (the feature's own verdict, split
+    from the malformed input the way feature 179 split
+    ArtifactDeduplicatedError from ArtifactProposalError); the load's
+    own refusals pass through the cache unchanged. New names exported
+    from the package __init__
+    (packages/artifacts/src/artifacts/__init__.py): DECLINED_MARGINAL_IR,
+    IR_MARGINAL, RESIDENT_CACHE_POLICY, ReturnSeriesCache,
+    decline_marginal_ir, ArtifactCacheError,
+    ArtifactMarginalIRDeclinedError — no new @register builder (the
+    cache is per-process replay state, not a composed component, the
+    same stance features 170-174 and 180 take). Covered by
+    packages/artifacts/tests/test_cache.py. No shared file is modified
+    (src/app/middleware.py, src/app/settings.py, migrations/**,
+    alembic/**), and src/app/modules/artifacts/ needs no change (the
+    feature adds no component for the seat to expose).
+  </integration_points>
+  <constraints>
+    Must not modify the config, store, service or any shared file
+    (src/app/middleware.py, src/app/settings.py, migrations/**,
+    alembic/**)
+    The decline is a named verdict, not a silent absence: the ask to
+    cache or serve ir_marginal against a canonical book is refused with
+    ArtifactMarginalIRDeclinedError from every seam that can receive
+    it, the message begins with the declined_marginal_ir code (pinned
+    as a prefix, not a substring), names the ask's three terms, states
+    §9.2's path-dependence reason, and names the instead
+    The decline performs no I/O and consults no store — a policy, not a
+    lookup; malformed asks (an unnameable book, a key that cannot
+    address the layout) refuse as malformed in their own vocabularies,
+    never as the verdict
+    The instead caches the return series and nothing else: entries are
+    CampaignReturns values keyed by (campaign_id, horizon), loaded once
+    per key per cache through feature 174's load (no second decoder),
+    every load refusal passes through unchanged, and a refused load
+    caches nothing
+    The cache is per-process replay state over the store-as-truth:
+    no @register builder, no eviction (nothing arrives unasked), a
+    fresh cache answers a fresh load, and two caches over one store are
+    two residences
+    Follow the existing docstring discipline: cite app_spec.xml feature
+    176 and docs/nullius-tech-architecture.md §9.3 (the resident
+    campaign arrays, the "cache the return series" instruction and the
+    "no canonical-book cache anywhere" close), §9.2 (the key artifact
+    and the path-dependence sentence) and §10.1/§10.4 (the replay whose
+    book is an argument and whose determinism recomputation keeps)
+    All existing artifacts tests must stay green
+  </constraints>
+  <implementation_steps>
+    <phase name="Phase 1: Resident replay cache">
+      Add the two error classes to the member's taxonomy
+      (packages/artifacts/src/artifacts/_errors.py):
+      ArtifactCacheError and its subclass
+      ArtifactMarginalIRDeclinedError, with the taxonomy's docstring
+      entries and __all__ spellings
+      Add the new module packages/artifacts/src/artifacts/_cache.py:
+      the constants (IR_MARGINAL, DECLINED_MARGINAL_IR,
+      RESIDENT_CACHE_POLICY, BOOK_ROLE), the decline
+      (decline_marginal_ir validating its three terms before speaking
+      the verdict, _canonical_book_name refusing the unnameable book as
+      malformed, _marginal_ir_refusal spelling the one message both
+      seams share), and ReturnSeriesCache (constructor binding one
+      ArtifactStore, series/holds/resident_campaigns over the
+      (campaign, horizon) residence, marginal_ir answering the decline)
+      Export the new names from the package __init__ (no new @register
+      builder in a submodule) and add the feature's bullet to the
+      package docstring, beside feature 174's
+    </phase>
+    <phase name="Phase 2: Resident replay cache — verification">
+      Add packages/artifacts/tests/test_cache.py (the 174 suite's
+      builders and importorskip stance) asserting: the decline's
+      verdict, code, terms, reason and instead, from both seams,
+      without store consultation; the malformed asks refusing as
+      malformed; the first ask answering the load and the second the
+      same resident object, surviving the campaign directory's deletion
+      under it; the (campaign, horizon) key, the two-axes-one-content
+      stance, holds/resident_campaigns; the load's refusals passing
+      through with nothing resident; the per-cache lifetime (a fresh
+      cache answers a fresh load, two caches are two residences); the
+      feature as one behaviour (declined and cached over one published
+      campaign); and the module surface being exactly the decline and
+      the cache
+    </phase>
+  </implementation_steps>
+  <success_criteria>
+    Feature 176 implemented: the ask to cache a marginal information
+    ratio against a canonical book is declined with a named, greppable
+    verdict from both seams that can receive it, and the return series
+    is cached instead — one resident CampaignReturns per (campaign,
+    horizon) ask, loaded once through feature 174's load
+    The decline states §9.2's reason and names the instead; it performs
+    no I/O; malformed asks refuse as malformed in their own
+    vocabularies (ArtifactCacheError for the unnameable book,
+    ArtifactKeyError for the keys)
+    The cache adds no second decoder (the load's refusals pass through
+    unchanged, nothing caches on refusal), keys its residence by the
+    ask, reports it honestly, and stays per-process state over the
+    store-as-truth with no @register builder
+    §9.3's "no canonical-book cache anywhere" is structural: the
+    residence accepts no entry kind but the return series, no key
+    spells a book, and the module's public surface is the decline, the
+    cache and the policy spellings
+    The new seams are exported from the artifacts package __init__ and
+    covered by packages/artifacts/tests/test_cache.py
+    All existing artifacts tests stay green and no shared file is
+    modified
+  </success_criteria>
+</project_specification>

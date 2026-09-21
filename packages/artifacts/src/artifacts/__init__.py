@@ -170,6 +170,32 @@ features persist land inside the directories this store keys.
   keeps the 4 bytes §9.3 sizes its residency by (500 nodes × 2000
   periods × 4 B = 4 MB per campaign).
 
+* **The resident cache holds the series, and declines the marginal IR**
+  (:mod:`artifacts._cache`, feature 176).  §9.3's instruction is a
+  refusal before it is an instruction — *"So do not cache marginal IR
+  against canonical books.  Cache the return series."* — and this
+  module speaks both halves.  The decline is a *named verdict*, not a
+  silent absence: :func:`decline_marginal_ir` (the data-side
+  spelling, needing no store, the way feature 179's
+  :func:`reject_duplicate` needs none) and
+  :meth:`ReturnSeriesCache.marginal_ir` (the object-side spelling, the
+  one a replay holding the cache reaches for) both answer
+  :class:`~artifacts.ArtifactMarginalIRDeclinedError` carrying the
+  ``declined_marginal_ir`` code, the §9.2 reason a cached value would
+  be stale by construction (*"the same node scores differently
+  depending on the path a policy took to reach it"* — the book is an
+  argument of the metric, not a dimension of the data), and the
+  instead this feature's own sentence pins.  The instead is
+  :class:`ReturnSeriesCache`: one campaign's
+  :class:`~artifacts.CampaignReturns`, loaded once through feature
+  174's load (no second decoder — the load's refusals pass through
+  unchanged) and answered resident thereafter, keyed by exactly the
+  ask ``(campaign, horizon)``.  §9.3's *"no canonical-book cache
+  anywhere"* is structural here: the residence is a private mapping of
+  campaign keys to return-series values, no public operation accepts
+  any other entry kind, and the one ask shaped like one is the
+  decline.
+
 * **The two per-date series persist as Parquet** (:mod:`artifacts._series`,
   feature 171).  §9.2's ``ic_series.parquet`` and ``turnover_series.parquet``
   — the two lines between the returns grid and the edge's JSON documents —
@@ -221,6 +247,13 @@ from __future__ import annotations
 
 from app.module_loader import register
 
+from ._cache import (
+    DECLINED_MARGINAL_IR,
+    IR_MARGINAL,
+    RESIDENT_CACHE_POLICY,
+    ReturnSeriesCache,
+    decline_marginal_ir,
+)
 from ._campaign import (
     ABSENT,
     CAMPAIGN_LOAD_HORIZON,
@@ -247,8 +280,10 @@ from ._dedup import (
     reject_duplicate,
 )
 from ._errors import (
+    ArtifactCacheError,
     ArtifactDeduplicatedError,
     ArtifactKeyError,
+    ArtifactMarginalIRDeclinedError,
     ArtifactNotFoundError,
     ArtifactProposalError,
     ArtifactsError,
@@ -332,6 +367,7 @@ __all__ = [
     "DATABASE_URL_ENV",
     "DATE_COLUMN",
     "DECAY_PROFILE_FILENAME",
+    "DECLINED_MARGINAL_IR",
     "DEDUP_COMPONENT_NAME",
     "DEFAULT_ROOT_NAME",
     "DUPLICATE_CODE_HASH",
@@ -339,11 +375,13 @@ __all__ = [
     "GROSS_COLUMN",
     "HORIZON_COLUMN",
     "IC_SERIES_FILENAME",
+    "IR_MARGINAL",
     "NET_COLUMN",
     "NODE_CODE_HASH_INDEX",
     "NODE_TABLE",
     "PARQUET_COMPRESSION",
     "REGIME_ATTRIBUTION_FILENAME",
+    "RESIDENT_CACHE_POLICY",
     "SIGNAL_RETURNS_FILENAME",
     "SOURCE_FILENAME",
     "STAGING_ROOT_NAME",
@@ -351,8 +389,10 @@ __all__ = [
     "TRACE_FILENAME",
     "TURNOVER_SERIES_FILENAME",
     "VALUE_COLUMN",
+    "ArtifactCacheError",
     "ArtifactDeduplicatedError",
     "ArtifactKeyError",
+    "ArtifactMarginalIRDeclinedError",
     "ArtifactNotFoundError",
     "ArtifactProposalError",
     "ArtifactStore",
@@ -361,6 +401,7 @@ __all__ = [
     "CampaignReturns",
     "CodeHashIndex",
     "ReturnRow",
+    "ReturnSeriesCache",
     "SignalReturns",
     "StoredCodeHash",
     "artifact_uri",
@@ -371,6 +412,7 @@ __all__ = [
     "daily_returns_is_persisted",
     "decay_profile",
     "decay_profile_is_persisted",
+    "decline_marginal_ir",
     "decode_series",
     "decode_signal_returns",
     "encode_series",
