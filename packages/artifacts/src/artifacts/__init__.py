@@ -145,6 +145,31 @@ features persist land inside the directories this store keys.
   charge and the net, so the writer cannot stage a row its own reader — which
   re-checks every stored gross against its own terms — would refuse.
 
+* **One campaign's returns load as one dense resident array**
+  (:mod:`artifacts._campaign`, feature 174).  §9.3 opens with the
+  bottleneck — *"A replay revealing 100 nodes reads ~20 MB of Parquet;
+  200 worlds × 40 policy versions done naively is ~160 GB per dreaming
+  cycle"* — and pins the answer this module builds: *"Load each
+  campaign's signal returns once as a single dense ``float32`` array of
+  shape ``(nodes × T)``."*  :func:`load_campaign_returns` sweeps the
+  campaign's nodes through the read side §1 grants replay (and no
+  second decoder), reduces each node's grid to the T-vector §9.3 says a
+  signal contributes — the equal-weight per-date post-cost return at
+  the pinned horizon, both collapses the evaluator's own — and answers
+  a :class:`~artifacts.CampaignReturns`: the two sorted axes beside one
+  contiguous stdlib ``array.array('f')`` buffer, row-major, one cell
+  per ``(node, period)``, NaN where no panel measured (absence, not a
+  zero dressed as a measurement) and never an ``inf``.  The horizon is
+  a policy — the shortest horizon every swept panel covers, the
+  evaluator's ``METRICS_HORIZON`` at campaign scale — with an explicit
+  pin for a caller measuring at another axis; the panels' sealed
+  snapshot and ``(venue, version)`` cost pair must agree, because the
+  load is the seam where a per-file identity becomes a per-campaign
+  fact.  The narrowing to float32 is the point and happens once, here:
+  the file keeps the double the evaluator computed, the resident array
+  keeps the 4 bytes §9.3 sizes its residency by (500 nodes × 2000
+  periods × 4 B = 4 MB per campaign).
+
 * **The two per-date series persist as Parquet** (:mod:`artifacts._series`,
   feature 171).  §9.2's ``ic_series.parquet`` and ``turnover_series.parquet``
   — the two lines between the returns grid and the edge's JSON documents —
@@ -196,6 +221,13 @@ from __future__ import annotations
 
 from app.module_loader import register
 
+from ._campaign import (
+    ABSENT,
+    CAMPAIGN_LOAD_HORIZON,
+    FLOAT32_TYPECODE,
+    CampaignReturns,
+    load_campaign_returns,
+)
 from ._dedup import (
     CODE_HASH_COLUMN,
     CODE_HASH_LENGTH,
@@ -283,7 +315,9 @@ from ._store import (
 )
 
 __all__ = [
+    "ABSENT",
     "ARTIFACT_ROOT_ENV",
+    "CAMPAIGN_LOAD_HORIZON",
     "CHARGE_COLUMN",
     "CODE_HASH_COLUMN",
     "CODE_HASH_LENGTH",
@@ -294,6 +328,7 @@ __all__ = [
     "DEDUP_COMPONENT_NAME",
     "DEFAULT_ROOT_NAME",
     "DUPLICATE_CODE_HASH",
+    "FLOAT32_TYPECODE",
     "GROSS_COLUMN",
     "HORIZON_COLUMN",
     "IC_SERIES_FILENAME",
@@ -316,6 +351,7 @@ __all__ = [
     "ArtifactStore",
     "ArtifactStoreError",
     "ArtifactsError",
+    "CampaignReturns",
     "CodeHashIndex",
     "ReturnRow",
     "SignalReturns",
@@ -335,6 +371,7 @@ __all__ = [
     "execution_trace",
     "ic_series",
     "ic_series_is_persisted",
+    "load_campaign_returns",
     "node_directory",
     "persist_decay_profile",
     "persist_execution",

@@ -33,6 +33,12 @@
 # import-safe in the environments the workspace contract promises one will
 # be (factory scan, test sandbox, replay path), and it keeps the JSON half
 # of this category and the whole of feature 169 free of the dependency.
+#
+# Feature 174's dense campaign load adds no dependency on top of this: the
+# load decodes through feature 170's own read seam (`signal_returns`, which
+# reaches `require_arrow`), and the resident `nodes × periods` payload it
+# answers is stdlib `array.array('f')` — §9.3's float32 — so the member that
+# declares the Parquet format is still the only third-party surface here.
 
 [project]
 name = "artifacts"
