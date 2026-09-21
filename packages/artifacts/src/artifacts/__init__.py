@@ -120,6 +120,28 @@ features persist land inside the directories this store keys.
   :func:`source_code_hash` derives the sha256 §9.1's ``code_hash``
   column carries from the very text staged as ``code.py``, so the row
   and the directory cannot disagree about which code a node ran.
+
+* **The edge's two shapes persist as JSON documents**
+  (:mod:`artifacts._profiles`, feature 172).  §9.2's two middle lines —
+  ``decay_profile.json`` and ``regime_attribution.json`` — are the
+  node's edge described along its two axes: the horizon axis (how much
+  information coefficient survives to each of feature 81's horizons, as
+  the positional array the live loop reads entry by entry) and the
+  regime axis (feature 82's per-stratum, per-horizon split).  Every
+  other file in the directory is a date-keyed series (170-171's
+  Parquet), the run's record (``exec_trace.json``) or its source
+  (``code.py``); these two are the documents a policy reads to ask what
+  *shape* an edge has.  :func:`persist_decay_profile` and
+  :func:`persist_regime_attribution` stage their file through the same
+  write path — one operation per document, because the two are produced
+  at two different measurement steps and each is independently readable,
+  so unlike feature 173's pair neither insists on the other — with
+  :func:`decay_profile`/:func:`regime_attribution` answering them back
+  and :func:`decay_profile_is_persisted`/
+  :func:`regime_attribution_is_persisted` reporting each invariant
+  separately.  This layer owns the names, the two top-level shapes, the
+  canonical JSON bytes and the refusals; the axis's horizons and the
+  strata's vocabulary are the evaluator's, and are not restated here.
 """
 
 from __future__ import annotations
@@ -163,6 +185,16 @@ from ._keys import (
     validate_node_id,
     validate_segment,
 )
+from ._profiles import (
+    DECAY_PROFILE_FILENAME,
+    REGIME_ATTRIBUTION_FILENAME,
+    decay_profile,
+    decay_profile_is_persisted,
+    persist_decay_profile,
+    persist_regime_attribution,
+    regime_attribution,
+    regime_attribution_is_persisted,
+)
 from ._store import (
     ARTIFACT_ROOT_ENV,
     DEFAULT_ROOT_NAME,
@@ -177,11 +209,13 @@ __all__ = [
     "CODE_HASH_LENGTH",
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
+    "DECAY_PROFILE_FILENAME",
     "DEDUP_COMPONENT_NAME",
     "DEFAULT_ROOT_NAME",
     "DUPLICATE_CODE_HASH",
     "NODE_CODE_HASH_INDEX",
     "NODE_TABLE",
+    "REGIME_ATTRIBUTION_FILENAME",
     "SOURCE_FILENAME",
     "STAGING_ROOT_NAME",
     "TRACE_FILENAME",
@@ -198,11 +232,17 @@ __all__ = [
     "build_dedup_gate",
     "campaign_directory",
     "canonical_code_hash",
+    "decay_profile",
+    "decay_profile_is_persisted",
     "executed_source",
     "execution_is_persisted",
     "execution_trace",
     "node_directory",
+    "persist_decay_profile",
     "persist_execution",
+    "persist_regime_attribution",
+    "regime_attribution",
+    "regime_attribution_is_persisted",
     "reject_duplicate",
     "source_code_hash",
     "validate_campaign_id",
