@@ -1,12 +1,24 @@
 """The policy-runtime error vocabulary — one base class, split by contract.
 
-The base class for every failure of the policy-runtime path, and the two
-subclasses the read-side question path raises.  One base class so a caller —
-the replay engine, the dreaming loop, an operator script, a later feature in
-this category — can catch every failure of the read-side question path with a
-single ``except``, the discipline :mod:`bootstrap.errors` and
-:mod:`artifacts._errors` state for their own trees.  The subclasses split by
-*which contract* was violated, not by which line of code failed.
+The base class for every failure of the policy-runtime path, and the three
+subclasses that path raises.  One base class so a caller — the replay engine,
+the dreaming loop, an operator script, a later feature in this category — can
+catch every failure of the read-side question path with a single ``except``,
+the discipline :mod:`bootstrap.errors` and :mod:`artifacts._errors` state for
+their own trees.  The subclasses split by *which contract* was violated, not by
+which line of code failed.
+
+Two of them — :class:`PolicyTreeError` and its child :class:`PolicyAddressError`
+— are the tree's: a node that is empty or misspelled, a depth that is not an
+integer, a payload that is not canonical JSON, a dangling parent reference, or a
+node id that names a cell no tree can reach.  The third —
+:class:`PolicyAdmissionRefusal` (feature 230) — is the admission gate's: a
+policy's authored source that carries an absolute score constant, a hardcoded
+node id, or a terminating path that never reaches ``commit()``.  It is kept
+apart from the tree's two because the tree itself was well-formed and the ask
+reached the lattice — it is the *source* that broke the contract, not a node the
+question fronted — but a :class:`PolicyRuntimeError` all the same, so the one
+base class still catches it.
 
 These live in their own module rather than in the package ``__init__`` for two
 reasons.  One, it is the house shape — every sibling member (``sandbox``,
@@ -44,6 +56,30 @@ class PolicyTreeError(PolicyRuntimeError):
     any observation is computed, so a refused tree answers no node at all —
     the same "name the subject in the refusal" discipline
     :class:`bootstrap.BootstrapWorldError` applies to a world.
+    """
+
+
+class PolicyAdmissionRefusal(PolicyRuntimeError):
+    """A policy could not be admitted — a static check found an anti-pattern.
+
+    Raised by :meth:`PolicyAdmissionDecision.require` on the caller's last line
+    before it admits a policy — the bridge between the gate's returned verdict
+    and the exception a caller wants there, the same role
+    :meth:`PlanGridDecision.require` plays for feature 229 and
+    :meth:`sandbox.ModuleDecision.require` plays for feature 167. The gate
+    itself (:func:`screen_policy`) raises nothing: it returns a
+    :class:`PolicyAdmissionDecision`, so a caller auditing a *history* of
+    policies can read the verdict without a try/except. Only :meth:`require`
+    raises, and it carries the refusal's own sentence, so the admission log and
+    the retry prompt say the same thing.
+
+    Kept apart from :class:`PolicyTreeError`/:class:`PolicyAddressError` because
+    the tree itself was well-formed and the ask reached the lattice — it is the
+    *policy's authored source* that broke the admission contract, not a node the
+    question fronted. A subclass of :class:`PolicyRuntimeError` all the same, so
+    a caller catching the read-side path's one base class catches an admission
+    refusal too — the single-except discipline :mod:`bootstrap.errors` and
+    :mod:`artifacts._errors` state.
     """
 
 

@@ -1,0 +1,164 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 230 (System rejects a policy admission when static checks detect absolute score constants, hardcoded node ids or an unreachable commit path)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 230 in the existing policy-runtime plugin
+    (packages/policy-runtime, import name policy_runtime): a static-analysis
+    admission gate, `screen_policy(source)`, that parses a policy's authored
+    source and refuses admission when it detects one of the three
+    barrier-breaking anti-patterns the paper's hard constraints name — an
+    absolute score constant, a hardcoded node id, or a terminating path that
+    never reaches `commit()`. The gate returns a verdict, never raises: it
+    answers admitted or refused, why, in what words, naming every offender, and
+    only `require()` on the caller's last line raises (a `PolicyAdmissionRefusal`,
+    a `PolicyRuntimeError`). It follows the house's verdict-gate shape exactly
+    — feature 229's `plan_grid` and sandbox's `screen_module` — and is a pure
+    function over source with no store, no deployment state, no I/O, so it adds
+    no new `@register` component (the existing `policy-runtime` component, the
+    campaign tree of feature 217, is untouched) and is reached directly from the
+    member (`from policy_runtime import screen_policy`), the way feature 229's
+    `plan_grid` is. The checks are a read of the source's AST: absolute score
+    constants are numeric literals used as comparison operands; hardcoded node
+    ids are string literals shaped like an indexed address (a UUID, a theme
+    root, a calibration status and prose are excluded); commit reachability is
+    intra-procedural, holding every terminating path of a function that contains
+    a `commit()` to a preceding `commit()`. The gate is conservative — no false
+    negatives over false positives — because the information barrier is a hard
+    rule, not a heuristic. No central registry, router, app factory, middleware,
+    settings, or migration is edited; the member joins by workspace-scan
+    convention and does not import another workspace member.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/* members, import names are
+      underscored slugs) / pytest (ruff + mypy conventions). The module loader
+      (src/app/module_loader.py) discovers members from the root pyproject.toml
+      `[tool.uv.workspace] members = ["packages/*"]`, imports each package so
+      its module-level `@register` fires, and composes what each `@register`
+      builder contributes under a component name. `app` (src/app) is a namespace
+      package with no `__init__.py`; the seats in src/app/modules/&lt;member&gt;/
+      are reached by namespace import (e.g. app.modules.bootstrap,
+      app.modules.artifacts, app.modules.policy-runtime). A member never imports
+      another member — it reaches shared shapes through `app.*`, never through a
+      sibling package's import name.</stack>
+    <test_baseline>The repository-level suite under tests/ is collected by
+      pytest with testpaths=tests; each workspace member's own suite lives under
+      packages/&lt;member&gt;/tests/ and is collected under its own conftest
+      (same-basename files collide under one pytest run), and is NOT graded by
+      the bare `uv run pytest` acceptance gate — a member suite must be run
+      explicitly. Stdlib-only computation is the norm for a member that fronts
+      already-computed values, so feature 230's gate adds no third-party
+      dependency: it is `ast` over source. Measure the real numbers by running
+      the suite before relying on them. The repo lint is red on main (mypy
+      absent, pre-existing ruff errors), so lint only the changed files and
+      compare to a sibling.</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, docstrings that
+      cite app_spec.xml feature numbers and docs/nullius-tech-architecture.md
+      sections, stdlib-only computation, `@register` only in the package
+      `__init__` (never a submodule — a submodule's registration fires only on
+      the first `create_app()` of a process), degrade-don't-break composition
+      (a builder that raises would take composition down for every unrelated
+      feature, so a builder returns `None` for a deployment that names no store
+      rather than raising). A member never imports another workspace member —
+      it reaches shared shapes through `app.*`, never through a sibling
+      package's import name. A verdict gate returns a decision, never raises;
+      only `require()` on the caller's last line raises, carrying the refusal's
+      own sentence so the admission log and the retry prompt say the same thing
+      (the shape feature 229's `PlanGridDecision` and sandbox's `ModuleDecision`
+      take). The reason enum's value is the token every refusal's detail opens
+      with, so the reason is greppable in an admission log. Tests assert on
+      observed behaviour with long narrative docstrings explaining the "why",
+      and pin the gate against the three anti-patterns plus the admitted
+      canonical case.
+    </conventions>
+  </existing_context>
+  <!-- Layout mirrors the clean main app_spec.xml: uv-workspace is what makes
+       plugin="policy-runtime" resolve to the real packages/policy-runtime/ and
+       src/app/modules/policy-runtime/ trees rather than the single-package
+       src/plugins/policy-runtime/ default. Parsed before features. -->
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Admission gate">
+      <feature index="230" shape="plugin" plugin="policy-runtime" covers="cq-8,cq-16">
+        <description>System exposes `screen_policy(source)`, the admission gate: it takes a policy's authored source and returns a `PolicyAdmissionDecision` — admitted or refused, why, in what words, naming every offender — never raising, the verdict-gate shape feature 229's `plan_grid` and sandbox's `screen_module` take. It parses the source to an AST and refuses admission when static checks detect one of the three barrier-breaking anti-patterns the paper's hard constraints name (docs §634: no absolute score constants, no hardcoded node ids, `commit()` reachable on every terminating path). The checks run in order — readability, absolute score, node id, commit — so the most fundamental problem is named first. The gate is a pure function over source: no store, no deployment state, no I/O, so it adds no new `@register` component (the existing `policy-runtime` component, feature 217's campaign tree, is untouched) and is reached directly from the member (`from policy_runtime import screen_policy`), the way feature 229's `plan_grid` is. It is import-cheap (stdlib `ast` only, nothing at module scope the factory's scan pays for) and does not import another workspace member.</description>
+      </feature>
+      <feature index="230a" shape="plugin" plugin="policy-runtime" depends_on="230">
+        <description>System exposes `AdmissionReason`, the audit vocabulary — a `str` enum whose value is the token every refusal's detail opens with, so the reason is greppable in an admission log without a lookup table. The six are split by repair, not by which check happened to fail (two policies that break the barrier for different reasons are two different prompts to the retrying agent, so they are two reasons): `CLEAN` (admitted — no anti-pattern found), `UNREADABLE_SOURCE` (the source is not text, is blank, or does not parse — a screen cannot admit what it cannot read, and passing it would be reporting clean over code it never checked, the vacuous green no admission gate may allow), `ABSOLUTE_SCORE` (a numeric literal compared against something — the barrier forbids a policy authoring any absolute score target, so a policy that compares anything to an absolute number has broken the contract; no attempt is made to prove the other side "is not a score", because that is the false negative that lets an absolute target through), `HARDCODED_NODE_ID` (a string literal shaped like an indexed address — a node id is the one address a node is revealed or committed on, and a policy that names one by a literal is reading past the prefix the barrier promises it), and `UNREACHABLE_COMMIT` (a terminating path — a `return`, a `raise`, or falling off the end — is reachable without a preceding `commit()`; `commit()` is mandatory, so a path that can end without committing is a policy that can score on a pick it never made).</description>
+      </feature>
+      <feature index="230b" shape="plugin" plugin="policy-runtime" depends_on="230a">
+        <description>System exposes `PolicyAdmissionDecision`, the gate's whole answer — a frozen value carrying `reason`, `detail`, the offending literals and lines (for a refusal, so the author repairs them all rather than resubmitting to learn the rest — the same "name every offender" stance sandbox's `screen_module` takes), and the admitted `source` (for an admission; `None` for every refusal). `adopted` is computed from the reason, never assumed — the same "computed, never assumed" stance `PlanGridDecision` and `sandbox.ModuleDecision` take — so `CLEAN` is the only admitted reason. `require()` is the bridge between the returned verdict and the exception a caller wants on its last line before admitting a policy: an admitted source is returned unchanged (adoption is a judgement, never an edit — the bytes a later stage hashes are exactly these), so a caller can write `source = law.screen_policy(source).require()` and have feature 230 enforced there rather than remembered; a refusal raises `PolicyAdmissionRefusal` naming the policy, so the admission log and the retry prompt say the same thing.</description>
+      </feature>
+      <feature index="230c" shape="plugin" plugin="policy-runtime" depends_on="230b">
+        <description>System exposes `PolicyAdmissionRefusal`, the error the gate's `require()` raises on a refused admission — a `PolicyRuntimeError`, so a caller catching the read-side path's one base class catches an admission refusal too, the single-except discipline `bootstrap.errors` and `artifacts._errors` state. It is kept apart from the tree's two error subclasses (`PolicyTreeError`, `PolicyAddressError`) because the tree itself was well-formed and the ask reached the lattice — it is the policy's authored source that broke the admission contract, not a node the question fronted — but a `PolicyRuntimeError` all the same.</description>
+      </feature>
+      <feature index="230d" shape="plugin" plugin="policy-runtime" depends_on="230">
+        <description>System detects absolute score constants as numeric literals used as comparison operands — every `ast.Compare` with a numeric literal operand (an `int` or `float`, not a `bool`, which is an `int` subclass and so an `is_null = True` flag is not a score, the same affinity trap the workspace's SQLite layer guards) is an offender. A numeric literal that is not part of a comparison (a loop bound like `range(8)`, an array index) is not a score target and is not flagged — the comparison-only rule draws that boundary. The check is conservative: a policy that compares an observed metric to an absolute number (`observed[c].r2_insample > 0.8`) is refused, because the barrier forbids a policy authoring any absolute score constant, and a policy that needs one has already broken the contract; refusing it and naming the literal is the correct, safe answer.</description>
+      </feature>
+      <feature index="230e" shape="plugin" plugin="policy-runtime" depends_on="230d">
+        <description>System detects hardcoded node ids as string literals shaped like an indexed address — lowercase alphanumeric segments joined by `.`, `+`, `-` or `_`, with a letter and a digit (node ids are indexed, never a bare word), the spelling the planted tree (`n0`) and the bootstrap lattice (`d+9.i+0.s+0.a+0`) both use. A UUID (lowercase hex in the 8-4-4-4-12 shape) is excluded on its own pattern, so the world or campaign ids a policy legitimately carries are never mistaken for a node id; a theme root (`momentum`, `value`), a calibration status (`VOID`), prose in a message, and a bare word (`root`) do not match, so legitimate vocabulary is never flagged — the safe direction is to miss the rare bare-word root rather than to flag a common word. A bare word is deliberately not flagged because it is as likely an English word as an address.</description>
+      </feature>
+      <feature index="230f" shape="plugin" plugin="policy-runtime" depends_on="230e">
+        <description>System detects an unreachable commit by intra-procedural reachability — it walks each top-level function (and each method of a module-level class) that contains a `commit()` call, matching `commit` by the attribute name alone (so the gate is blind to whatever the policy names its question), and flags any `return`, `raise`, or fall-off-the-end reachable on a path with no preceding `commit()`. An `if`/`else` is path-sensitive: both branches are scanned with the `seen_commit` inherited from before the `if`, and the `if` is commit-safe afterwards only if it was already safe before or both branches are. A `while True` with no `break` is treated as infinite: it never falls off the end, so the post-loop path is not reachable, and the canonical policy (an unbounded walk that returns its commit from inside the loop, docs §476) is admitted. A `while True` that can `break` is not truly infinite, so a policy that breaks out and falls off without committing is refused. A function with no `commit()` call anywhere is a helper whose committing happens elsewhere and is not held to the reachability standard. A source with no `commit()` at all is refused, because `commit()` is mandatory.</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Lives in the existing policy-runtime member (packages/policy-runtime), beside
+    feature 229's `plan_grid` — the next gate on the same admission path. Exports
+    `screen_policy`, `AdmissionReason`, `PolicyAdmissionDecision` and
+    `PolicyAdmissionRefusal` from the package `__init__`, and adds
+    `PolicyAdmissionRefusal` to the member's error vocabulary (errors.py),
+    subclassing the member's `PolicyRuntimeError`. Adds no new `@register`
+    component — the existing `policy-runtime` component (feature 217's campaign
+    tree) is untouched, because the gate is a pure function over source with no
+    store, no deployment state, no I/O. The app-namespace seat
+    (src/app/modules/policy-runtime) is extended in its docstring only, to note
+    that feature 230's gate is reached directly from the member, the way feature
+    229's `plan_grid` is, rather than through the composed application. The
+    member does not import another workspace member; the gate uses `ast` and the
+    member's own errors.
+  </integration_points>
+  <constraints>
+    The gate must return a verdict, never raise; only `require()` raises, on the
+    caller's last line before admitting a policy.
+    The gate must be conservative — no false negatives over false positives —
+    because the information barrier is a hard rule, not a heuristic; a policy
+    that compares an observed metric to an absolute number is refused, not
+    rationalised away.
+    The node-id detector must exclude a UUID, a theme root, a calibration
+    status, prose, and a bare word, so legitimate vocabulary a policy carries is
+    never mistaken for a hardcoded node id.
+    No new `@register` component is added; the existing `policy-runtime`
+    component (feature 217's campaign tree) is untouched.
+    `@register` must live only in the package `__init__`, never a submodule — a
+    submodule's registration fires only on the first `create_app()` of a
+    process.
+    The member must not import another workspace member (e.g. canary, sandbox);
+    it owns the gate with stdlib `ast` and its own errors, and reaches shared
+    shapes through `app.*`.
+    No central registry, router, app factory, middleware, settings, or
+    migration is edited; the member joins by workspace-scan convention.
+    The gate must be import-cheap: stdlib `ast` only, nothing at module scope
+    the factory's scan pays for.
+    All existing tests across the repository-level `tests/` tree and every
+    sibling member suite must stay green.
+  </constraints>
+  <implementation_steps>
+    <phase name="Admission gate">
+      Add `PolicyAdmissionRefusal` to packages/policy-runtime/src/policy_runtime/errors.py, subclassing `PolicyRuntimeError`.
+      Add packages/policy-runtime/src/policy_runtime/admission.py with `AdmissionReason`, `PolicyAdmissionDecision`, and `screen_policy` — the AST-based gate over the three anti-patterns.
+      Export `screen_policy`, `AdmissionReason`, `PolicyAdmissionDecision`, `PolicyAdmissionRefusal` from packages/policy-runtime/src/policy_runtime/__init__.py (no new `@register`).
+      Extend the app-namespace seat src/app/modules/policy-runtime/__init__.py docstring only, to note the gate is reached directly from the member.
+      Write the member's own suite packages/policy-runtime/tests/test_admission.py, pinned against the three anti-patterns plus the admitted canonical case, with long narrative docstrings.
+      Confirm the repository and sibling suites stay green, and lint only the changed files against a sibling.
+    </phase>
+  </implementation_steps>
+  <success_criteria>
+    `screen_policy` returns a `PolicyAdmissionDecision` — admitted or refused, why, in what words, naming every offender — and never raises.
+    The canonical policy (a `while True` walk that commits at its terminal) is admitted with `CLEAN`.
+    Each of the three anti-patterns — an absolute score constant, a hardcoded node id, an unreachable commit — is refused with its own reason and the offending literal or path named.
+    The node-id detector excludes a UUID, a theme root, a calibration status, prose, and a bare word.
+    `require()` raises `PolicyAdmissionRefusal` (a `PolicyRuntimeError`) on a refusal, and returns the source unchanged on an admission.
+    The policy-runtime member joins by workspace-scan convention with no edit to a central registry, router, app factory, middleware, settings, or migration, and does not import another workspace member.
+    The member's own suite and every existing suite stay green.
+  </success_criteria>
+</project_specification>

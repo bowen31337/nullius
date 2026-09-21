@@ -30,6 +30,15 @@ composed campaign tree?* — so the features in this category that need the
 read-side interface (218's frontier, 219's meta, 220's probe, 222's commit)
 can ask it without importing the member directly.
 
+Feature 230 lives in the same member but is not reached through this seat: the
+admission gate (:func:`policy_runtime.screen_policy`) is a pure static check
+over a policy's source, with no store and no deployment state, so it is reached
+directly from the member — ``from policy_runtime import screen_policy`` —
+exactly the way feature 229's :func:`policy_runtime.plan_grid` is, rather than
+through the composed application.  This module does not wrap it, because a
+second spelling of a pure gate would be a second thing to keep in sync, and the
+gate has no component to compose.
+
 Where the composed tree is ``None``, that is a statement about the deployment,
 not an error: the member was not scanned, or the workspace is empty, or the
 deployment's artifact store holds no committed campaign, so there is no tree to
