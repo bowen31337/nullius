@@ -6,7 +6,8 @@ that the sandbox executes.*  This package is that feature, and the category
 it opens (``plugin="signal-agent"``, features 205-216) attaches to it: 206's
 read-every-proposal-in-full, 207's proposal-plus-score history, 208's refusal
 of summarized guidance, 209's retry diagnosis, 210's anti-convergence clause,
-211's stated mechanism, 212's legal theme set, 214's mechanism
+211's stated mechanism, 212's legal theme set, 213's dead-territory refusal,
+214's mechanism
 discrimination and 215's tree diversity are each a further statement about
 what the agent is asked for and what is recorded about the asking.
 
@@ -19,6 +20,23 @@ document that is not a set, and :class:`SignalThemeGate` — the law, which
 answers as a value and raises only at ``require``.  It composes as a second
 component under :data:`THEMES_COMPONENT_NAME` rather than replacing feature
 205's, for the registry-replacement reason below.
+
+**Feature 213 rides a third seat, beside it — and is deliberately not part of
+it.**  *System rejects any root opening in structurally dead territory such as
+sub-30-minute liquidity-taking strategies* is the third feature this member
+owns a law for, and it lives in :mod:`signal_agent._dead_territory`: one
+committed artifact (:data:`COMMITTED_DEAD_TERRITORY`, PRD §9.4's three), one
+compiler that refuses a document that is not a list, and
+:class:`DeadTerritoryGate` — the law, which answers as a value and raises only
+at ``require``.  It composes as a third component under
+:data:`DEAD_TERRITORY_COMPONENT_NAME` rather than replacing feature 205's or
+feature 212's, for the registry-replacement reason below.  It is a *denylist*
+where feature 212 is an *allowlist* — feature 212 asks *is the space admitted?*,
+feature 213 asks *is the mechanism live?* — and the two laws are independent
+questions, so the second gate carries nothing of the first's set.  A proposal
+is admitted only when feature 212 admits its space *and* feature 213 clears its
+mechanism; the two refusals are distinct classes (:class:`IllegalThemeError`
+and :class:`DeadTerritoryError`), each greppable on its own.
 
 **What this member is, and what it deliberately is not.**  §14.1 gives the
 signal agent its seat — *"Signal agent, roots (depth 0-1) ... Signal agent,
@@ -72,7 +90,7 @@ from __future__ import annotations
 
 from app.module_loader import register
 
-from . import _themes
+from . import _dead_territory, _themes
 from ._authoring import (
     CONFORMS_CODE,
     AdoptionReason,
@@ -81,6 +99,21 @@ from ._authoring import (
     require_contract,
     signal_contract,
     source_code_hash,
+)
+from ._dead_territory import (
+    COMMITTED_DEAD_TERRITORY,
+    DEAD_TERRITORY_CODE,
+    DEAD_TERRITORY_POLICY_KIND,
+    LIVE_TERRITORY_CODE,
+    NOT_A_ROOT_CODE,
+    DeadTerritory,
+    DeadTerritoryGate,
+    DeadTerritoryReason,
+    DeadTerritoryVerdict,
+    committed_dead_territory,
+    compile_dead_territory,
+    dead_territory_gate,
+    load_dead_territory,
 )
 from ._themes import (
     COMMITTED_LEGAL_THEMES,
@@ -99,6 +132,8 @@ from ._themes import (
 )
 from .errors import (
     AgentSourceError,
+    DeadTerritoryError,
+    DeadTerritorySetError,
     IllegalThemeError,
     SignalAgentError,
     ThemeSetError,
@@ -106,16 +141,28 @@ from .errors import (
 
 __all__ = [
     "AGENT_ROLES",
+    "COMMITTED_DEAD_TERRITORY",
     "COMMITTED_LEGAL_THEMES",
     "COMPONENT_NAME",
     "CONFORMS_CODE",
+    "DEAD_TERRITORY_CODE",
+    "DEAD_TERRITORY_COMPONENT_NAME",
+    "DEAD_TERRITORY_POLICY_KIND",
     "ILLEGAL_THEME_CODE",
     "LEGAL_THEMES_POLICY_KIND",
     "LEGAL_THEME_CODE",
+    "LIVE_TERRITORY_CODE",
+    "NOT_A_ROOT_CODE",
     "NOT_A_THEME_CODE",
     "THEMES_COMPONENT_NAME",
     "AdoptionReason",
     "AgentSourceError",
+    "DeadTerritory",
+    "DeadTerritoryError",
+    "DeadTerritoryGate",
+    "DeadTerritoryReason",
+    "DeadTerritorySetError",
+    "DeadTerritoryVerdict",
     "IllegalThemeError",
     "LegalThemes",
     "SignalAgentError",
@@ -125,10 +172,15 @@ __all__ = [
     "ThemeAdmission",
     "ThemeReason",
     "ThemeSetError",
+    "build_dead_territory_gate",
     "build_signal_contract",
     "build_signal_theme_gate",
+    "committed_dead_territory",
     "committed_legal_themes",
+    "compile_dead_territory",
     "compile_legal_themes",
+    "dead_territory_gate",
+    "load_dead_territory",
     "load_legal_themes",
     "require_contract",
     "signal_contract",
@@ -167,6 +219,21 @@ AGENT_ROLES = ("root", "depth")
 #: name-sorted ``app.order``, so the pair stays adjacent to the category it
 #: belongs to.
 THEMES_COMPONENT_NAME = _themes.THEMES_COMPONENT_NAME
+
+#: The component name feature 213's gate registers under.  Imported from
+#: :mod:`signal_agent._dead_territory` rather than re-spelled — the ``__all__``
+#: entry above re-exports it, so this is a name, not a second literal.  Unlike
+#: :data:`COMPONENT_NAME`, which the spec's plugin declaration owns and which
+#: this module is the single spelling of, this one is *also* the live name the
+#: submodule's own doc references and its tests assert on, and two literals for
+#: it would be the drift the single spelling exists to prevent.
+#:
+#: Prefixed, for the same reason :data:`THEMES_COMPONENT_NAME` is — an
+#: unprefixed ``signal-agent`` a third time would replace feature 205's law —
+#: and ``signal-agent-dead-territory`` sorts between ``signal-agent`` and
+#: ``signal-agent-themes`` in the name-sorted ``app.order``, so the member's
+#: three components stay contiguous in the category they belong to.
+DEAD_TERRITORY_COMPONENT_NAME = _dead_territory.DEAD_TERRITORY_COMPONENT_NAME
 
 
 @register(COMPONENT_NAME)
@@ -244,4 +311,67 @@ def build_signal_theme_gate() -> SignalThemeGate:
         # why asks `committed_legal_themes()` for the named refusal.
         return SignalThemeGate(
             LegalThemes(kind=LEGAL_THEMES_POLICY_KIND, themes=())
+        )
+
+
+@register(DEAD_TERRITORY_COMPONENT_NAME)
+def build_dead_territory_gate() -> DeadTerritoryGate:
+    """Contribute feature 213's law to the composed application.
+
+    The third component this member contributes, beside feature 205's law and
+    feature 212's gate, each under its own name — the registry is keyed by name
+    and a later registration of either would *replace* that law, so a member
+    carrying three controls carries three components, each answering its own
+    feature's question.  Like the two builders above it takes no arguments (the
+    factory's registration protocol) and returns a law rather than a service, a
+    session or an LLM client.
+
+    **It compiles the committed artifact at build time**, like feature 212's
+    builder and unlike feature 205's: feature 213's dead-territory list ships
+    inside this package (:data:`~signal_agent.COMMITTED_DEAD_TERRITORY`), so
+    there is nothing to defer and no member to reach.
+
+    That compile can raise, and the raising is confined to the module-level
+    convenience (:func:`~signal_agent.dead_territory_gate`), not here.  A
+    drifted artifact is *reported*, not swallowed, and the report is the
+    member's own: the component is built over the refusal-free path — an empty
+    denylist, which refuses nothing and so fails **open** rather than closed —
+    and a caller that must know the list still names PRD §9.4's three asks
+    :func:`~signal_agent.committed_dead_territory`, where a named
+    :class:`~signal_agent.DeadTerritorySetError` is the right answer.
+
+    **Fail open, where feature 212's builder fails closed — the one asymmetry,
+    and it is load-bearing.**  Feature 212's builder falls back to an *empty
+    set* on a drifted legal set, which admits nothing and so refuses every
+    proposal: no legal set means no space, and authoring into no space must
+    refuse.  This builder falls back to an *empty denylist* on a drifted
+    denylist, which refuses nothing and so admits every proposal: a down
+    guardrail is less catastrophic than a system that refuses *every* proposal,
+    and the space still exists — feature 212 still judges it.  The compiler
+    *refuses* an empty denylist, because a list that names no dead mechanism is
+    the absence of PRD §9.4's decision, not a strict denylist; this branch
+    hand-builds the empty denylist rather than reaching for the compiler, so
+    the compiler's refusal is never the thing a run silently obeys.  The
+    division is the same one :func:`sandbox.build_sandbox_isolation` draws
+    between what composition may raise and what a caller that *requires*
+    something must hear: the factory builds every registered component on every
+    ``create_app()`` call, so a builder that raised on a drifted artifact would
+    take composition down for every unrelated feature in the workspace.
+
+    Holding the handle computes nothing beyond that one file read, and it can
+    fail at nothing.
+    """
+    try:
+        return DeadTerritoryGate(committed_dead_territory())
+    except DeadTerritorySetError:
+        # Fail open, as a value rather than by raising: an empty denylist
+        # refuses no theme, so a caller that skipped the check above admits
+        # every proposal instead of refusing them all.  Built by construction
+        # rather than through the compiler on purpose — the compiler *refuses*
+        # an empty denylist, because a deployment whose document names nothing
+        # has not made PRD §9.4's decision, and that refusal is exactly why
+        # this branch cannot reach for it.  A caller that must know why asks
+        # `committed_dead_territory()` for the named refusal.
+        return DeadTerritoryGate(
+            DeadTerritory(kind=DEAD_TERRITORY_POLICY_KIND, mechanisms=())
         )

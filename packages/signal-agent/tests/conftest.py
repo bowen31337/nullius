@@ -26,9 +26,10 @@ That gives the suite identical behaviour under
 ``uv run --all-packages pytest packages/signal-agent`` (where the venv also
 provides every member) and under a bare ``pytest``.
 
-**What the fixtures are.**  The vocabulary the tests share: the two laws this
-member owns — feature 205's authoring contract and feature 212's legal theme
-gate — and the sandbox's own admission screen.  The proposals every claim in
+**What the fixtures are.**  The vocabulary the tests share: the three laws this
+member owns — feature 205's authoring contract, feature 212's legal theme gate
+and feature 213's dead-territory gate — and the sandbox's own admission screen.
+The proposals every claim in
 ``test_authoring.py`` is made about live in that file beside the claims rather
 than here — they are *text*, and several assertions are about the text itself
 (it is returned unmodified; its hash is the tree's ``code_hash``), so a fixture
@@ -69,8 +70,10 @@ for _root in workspace_scan_roots():
         sys.path.insert(0, _entry)
 
 from signal_agent import (
+    DeadTerritoryGate,
     SignalContract,
     SignalThemeGate,
+    dead_territory_gate,
     signal_contract,
     signal_theme_gate,
 )
@@ -99,6 +102,21 @@ def gate() -> SignalThemeGate:
     reach the composed gate separately.
     """
     return signal_theme_gate()
+
+
+@pytest.fixture
+def territory() -> DeadTerritoryGate:
+    """Feature 213's law, built directly — the same discipline as ``gate``.
+
+    Like the theme gate it *is* configured rather than declared elsewhere, so
+    building it reads the committed ``dead_territory.json`` beside it.  It is
+    still a fixture and not a composed application — the file ships inside the
+    member — and the component tests reach the composed gate separately.  A
+    separate fixture rather than reusing ``gate`` because the two laws are two
+    gates: feature 212's allowlist and feature 213's denylist answer different
+    questions, and a test of one must not hold the other.
+    """
+    return dead_territory_gate()
 
 
 @pytest.fixture

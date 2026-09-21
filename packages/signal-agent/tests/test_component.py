@@ -1,35 +1,39 @@
-"""Features 205 and 212's plugin seam: composition, and the app-namespace seats.
+"""Features 205, 212 and 213's plugin seam: composition, and the app-namespace seats.
 
-Two contracts, both held from the side this member owns:
+Three contracts, all held from the side this member owns:
 
 * **composition by convention** — the factory scans the workspace, imports
   this package, the ``@register`` builders fire, and the composed application
-  carries a ``signal-agent`` component and a ``signal-agent-themes`` one under
-  the member's own names.  No registry, router, entry-points table or app
-  factory was edited to make that true, and this suite keeps it true under the
-  three loader hazards the bootstrap, sandbox and cost-model suites state for
-  their own components: the synthetic-name copy (pin by name, module suffix and
-  behaviour — never ``isinstance``), the second composition (a ``@register``
-  outside ``__init__.py`` would fire once and silently drop out of every later
-  ``create_app()``; both builders live in ``__init__.py`` and the test asserts
-  on the *second* application or it passes vacuously), and the
+  carries a ``signal-agent`` component, a ``signal-agent-dead-territory`` one
+  and a ``signal-agent-themes`` one under the member's own names.  No registry,
+  router, entry-points table or app factory was edited to make that true, and
+  this suite keeps it true under the three loader hazards the bootstrap,
+  sandbox and cost-model suites state for their own components: the
+  synthetic-name copy (pin by name, module suffix and behaviour — never
+  ``isinstance``), the second composition (a ``@register`` outside
+  ``__init__.py`` would fire once and silently drop out of every later
+  ``create_app()``; all three builders live in ``__init__.py`` and the test
+  asserts on the *second* application or it passes vacuously), and the
   **registry-replacement** hazard a second component introduces — the registry
   is keyed by name, so a builder that took ``signal-agent`` for itself would
   silently replace feature 205's law rather than sit beside it, which is why
-  the pair is asserted together and the law is checked *after* both fired.
+  the three are asserted together and each law is checked *after* all three
+  fired.
 
 * **the seats** — ``app.modules.signal-agent`` answers *what is the composed
-  authoring law?* and ``app.modules.signal-agent.themes`` answers *what is the
-  composed legal theme gate?*, each importing the member only under
-  ``TYPE_CHECKING`` and answering ``None`` — not an exception — when nothing is
-  registered.  A seat's ``None`` is a statement about *composition*, never
-  about a proposal: the verdicts are the laws' own returned values, and reading
-  one ``None`` as "no signal was adopted" or "the agent opened in an illegal
-  theme" would collapse a deployment problem into a research result.  The
-  theme seat's ``None`` matters twice over, because a composed gate that
-  *admits nothing* is the opposite complaint — a present component refusing
-  every proposal — and an operator who could not tell them apart would not know
-  whether to widen the document or re-prompt the agent.
+  authoring law?*, ``app.modules.signal-agent.themes`` answers *what is the
+  composed legal theme gate?* and ``app.modules.signal-agent.dead_territory``
+  answers *what is the composed dead-territory gate?*, each importing the member
+  only under ``TYPE_CHECKING`` and answering ``None`` — not an exception — when
+  nothing is registered.  A seat's ``None`` is a statement about *composition*,
+  never about a proposal: the verdicts are the laws' own returned values, and
+  reading one ``None`` as "no signal was adopted", "the agent opened in an
+  illegal theme" or "the mechanism is live" would collapse a deployment problem
+  into a research result.  The theme seat's ``None`` matters twice over,
+  because a composed gate that *admits nothing* is the opposite complaint — a
+  present component refusing every proposal — and an operator who could not tell
+  them apart would not know whether to widen the document or re-prompt the
+  agent.
 
 Both seats' directory names carry a hyphen and so are not valid dotted import
 paths; they are reached the way the factory reaches such a package —
@@ -58,6 +62,7 @@ MEMBER_SRC = Path(member.__file__).resolve().parent.parent
 # the factory's scan does.
 seat = importlib.import_module("app.modules.signal-agent")
 theme_seat = importlib.import_module("app.modules.signal-agent.themes")
+dead_seat = importlib.import_module("app.modules.signal-agent.dead_territory")
 
 _CONFORMING = (
     "def signal(ctx, seed):\n"
@@ -69,6 +74,12 @@ _CONFORMING = (
 #: *composed* gate is a claim about the deployment's set.
 _LEGAL_THEME = "order-flow-imbalance"
 _ILLEGAL_THEME = "sub-30-minute-liquidity-taking"
+
+#: A mechanism the committed denylist names as dead.  Taken from the artifact's
+#: own vocabulary rather than invented, so a claim about the *composed* gate is
+#: a claim about the deployment's denylist.
+_DEAD_MECHANISM = "sub-30-minute-liquidity-taking"
+_LIVE_MECHANISM = "order-flow-imbalance"
 
 
 def _assert_is_the_authoring_law(component: object) -> None:
@@ -190,6 +201,33 @@ def _assert_is_the_theme_law(component: object) -> None:
     )
 
 
+def _assert_is_the_dead_territory_law(component: object) -> None:
+    """The composed dead-territory gate is the law, across the loader's copies.
+
+    Name, then behaviour — never ``isinstance``, for the same reason the
+    authoring law's check above is not.  The decisive check is feature 213's
+    own subject: the composed gate must refuse what the canonically-imported
+    one refuses, with the same ``dead_territory`` message.
+    """
+    assert type(component).__name__ == "DeadTerritoryGate"
+    assert type(component).__module__.endswith("signal_agent._dead_territory")
+
+    for verb in ("admit", "require", "covers", "dead", "title"):
+        assert callable(getattr(component, verb)), verb
+
+    composed = component.admit(_DEAD_MECHANISM)  # type: ignore[attr-defined]
+    direct = member.dead_territory_gate().admit(_DEAD_MECHANISM)
+    assert composed.admitted == direct.admitted is False
+    assert composed.reason == direct.reason
+    assert composed.detail == direct.detail
+    # And the read side, compared by value: the composed gate's list comes from
+    # the scanned copy's module, so the tuples are equal but are not the same
+    # object across the loader's boundary.  The mechanisms are the claim.
+    assert tuple(component.dead()) == tuple(  # type: ignore[attr-defined]
+        member.dead_territory_gate().dead()
+    )
+
+
 def test_the_member_registers_the_theme_gate_under_its_own_name() -> None:
     # The registry is keyed by name, so this prefix is not cosmetic: a builder
     # that registered "signal-agent" a second time would *replace* feature
@@ -200,25 +238,37 @@ def test_the_member_registers_the_theme_gate_under_its_own_name() -> None:
     assert member.THEMES_COMPONENT_NAME != member.COMPONENT_NAME
 
 
-def test_the_scanned_application_carries_both_laws() -> None:
-    # The pair, in one composition: feature 205's law under its own name and
-    # feature 212's gate under its own, neither having replaced the other.
+def test_the_scanned_application_carries_all_three_laws() -> None:
+    # The three, in one composition: feature 205's law, feature 212's gate and
+    # feature 213's gate, each under its own name, none having replaced another.
     app = create_app(MEMBER_SRC, registry=Registration())
     assert "signal-agent" in app
+    assert member.DEAD_TERRITORY_COMPONENT_NAME in app
     assert member.THEMES_COMPONENT_NAME in app
     _assert_is_the_authoring_law(app.get("signal-agent"))
+    _assert_is_the_dead_territory_law(app.get(member.DEAD_TERRITORY_COMPONENT_NAME))
     _assert_is_the_theme_law(app.get(member.THEMES_COMPONENT_NAME))
 
 
-def test_the_two_laws_stay_adjacent_in_the_name_sorted_order() -> None:
-    # ``app.order`` is name-sorted, so the prefixed name is what keeps the
-    # member's two components together in the category they belong to rather
-    # than scattered by whatever the prefix happened to be.
+def test_the_three_laws_stay_contiguous_in_the_name_sorted_order() -> None:
+    # ``app.order`` is name-sorted, so the prefixed names are what keep the
+    # member's three components together in the category they belong to rather
+    # than scattered by whatever the prefixes happened to be.  The three names
+    # sort as ``signal-agent`` < ``signal-agent-dead-territory`` <
+    # ``signal-agent-themes``, so the dead-territory gate lands between the
+    # authoring law and the theme gate — and the three are contiguous, with no
+    # unrelated component wedged between them.
     app = create_app(MEMBER_SRC, registry=Registration())
     order = list(app.order)
-    assert order.index(member.THEMES_COMPONENT_NAME) == (
-        order.index(member.COMPONENT_NAME) + 1
-    )
+    positions = sorted(order.index(name) for name in (
+        member.COMPONENT_NAME,
+        member.DEAD_TERRITORY_COMPONENT_NAME,
+        member.THEMES_COMPONENT_NAME,
+    ))
+    assert positions == [positions[0], positions[0] + 1, positions[0] + 2]
+    assert order[positions[0]] == member.COMPONENT_NAME
+    assert order[positions[1]] == member.DEAD_TERRITORY_COMPONENT_NAME
+    assert order[positions[2]] == member.THEMES_COMPONENT_NAME
 
 
 def test_the_theme_component_survives_a_second_composition() -> None:
@@ -283,6 +333,81 @@ def test_the_theme_builder_takes_no_arguments() -> None:
     )
     assert list(
         inspect.signature(builders[member.THEMES_COMPONENT_NAME]).parameters
+    ) == []
+
+
+# -- Feature 213's component --------------------------------------------------
+
+
+def test_the_member_registers_the_dead_territory_gate_under_its_own_name() -> None:
+    # The registry is keyed by name, so this prefix is not cosmetic: a builder
+    # that registered "signal-agent" a third time would *replace* feature
+    # 205's law rather than sit beside it.  Asserted against the spec's plugin
+    # namespace — the feature belongs to ``signal-agent`` — and against the
+    # unprefixed name, which must not be what this component took, and against
+    # the theme gate's name, which it must not collide with either.
+    assert member.DEAD_TERRITORY_COMPONENT_NAME == "signal-agent-dead-territory"
+    assert member.DEAD_TERRITORY_COMPONENT_NAME != member.COMPONENT_NAME
+    assert member.DEAD_TERRITORY_COMPONENT_NAME != member.THEMES_COMPONENT_NAME
+
+
+def test_building_the_dead_territory_gate_carries_the_committed_list() -> None:
+    app = create_app(MEMBER_SRC, registry=Registration())
+    gate = app.get(member.DEAD_TERRITORY_COMPONENT_NAME)
+    assert gate is not None
+    # A non-None component carrying PRD §9.4's three mechanisms is proof the
+    # committed artifact loaded — the member's builder compiles it, so there is
+    # no unconfigured state a caller could confuse with a denylist that refuses
+    # nothing.
+    assert len(gate.territory) == 3
+    assert gate.covers(_DEAD_MECHANISM) and not gate.covers(_LIVE_MECHANISM)
+
+
+def test_a_drifted_dead_territory_artifact_does_not_take_composition_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The builder's documented contract, held to behaviour rather than to its
+    # own prose: the factory builds every registered component on every
+    # ``create_app()`` call, so a builder that *raised* on a drifted artifact
+    # would take composition down for every unrelated feature in the workspace.
+    # Instead it fails **open** — an empty denylist refuses no theme — and a
+    # caller that must know why asks `committed_dead_territory()` for the named
+    # refusal, which is the same division `build_sandbox_isolation` draws.  This
+    # is the one asymmetry with feature 212's builder, and it is load-bearing:
+    # a down guardrail refuses fewer proposals than a system that refuses them
+    # all, and the space (feature 212) still judges it.
+    monkeypatch.setattr(
+        member,
+        "committed_dead_territory",
+        lambda: (_ for _ in ()).throw(
+            member.DeadTerritorySetError("drifted artifact")
+        ),
+    )
+    gate = member.build_dead_territory_gate()
+    assert len(gate.territory) == 0
+    admission = gate.admit(_DEAD_MECHANISM)
+    assert admission.admitted is True
+    # And the named refusal is still reachable — the builder swallowed it into
+    # a value, it did not lose it.
+    with pytest.raises(member.DeadTerritorySetError):
+        member.committed_dead_territory()
+
+
+def test_the_dead_territory_builder_takes_no_arguments() -> None:
+    # The factory's protocol: a zero-argument builder.  It reads a committed
+    # artifact shipped inside the package and no environment at all, so it
+    # composes in any process.
+    from app.module_loader import scan_components
+
+    builders = {
+        component.name: component.builder
+        for component in scan_components(MEMBER_SRC, registry=Registration())
+    }
+    assert builders[member.DEAD_TERRITORY_COMPONENT_NAME].__name__ == (
+        "build_dead_territory_gate"
+    )
+    assert list(
+        inspect.signature(builders[member.DEAD_TERRITORY_COMPONENT_NAME]).parameters
     ) == []
 
 
@@ -424,3 +549,73 @@ def test_the_theme_seat_is_reachable_by_its_hyphenated_path() -> None:
     assert theme_seat.__name__ == "app.modules.signal-agent.themes"
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("app.modules.signal_agent.themes")
+
+
+# -- The dead-territory seat --------------------------------------------------
+
+
+def test_the_dead_territory_seat_names_line_up() -> None:
+    assert dead_seat.COMPONENT_NAME == member.DEAD_TERRITORY_COMPONENT_NAME == (
+        "signal-agent-dead-territory"
+    )
+
+
+def test_the_dead_territory_seat_answers_the_composed_law() -> None:
+    app = create_app(MEMBER_SRC, registry=Registration())
+    gate = dead_seat.dead_territory_component(app)
+    _assert_is_the_dead_territory_law(gate)
+
+
+def test_the_dead_territory_seat_returns_none_when_nothing_is_registered() -> None:
+    # An absent component is a discoverable state, not an exception — and it is
+    # a statement about composition, never about a mechanism.  This is the
+    # distinction that matters most here: a *composed* gate that refuses nothing
+    # (an empty denylist, which fails open) is a present component admitting
+    # every proposal, which is the opposite complaint and a different repair.
+    empty = Application(components={}, order=())
+    assert dead_seat.dead_territory_component(empty) is None
+
+
+def test_the_dead_territory_seat_does_not_import_the_member_at_module_scope() -> None:
+    # The same two-sided assertion the authoring and theme seats get, for the
+    # same reason: the app package must not depend on any workspace member at
+    # import time, and the member's type must still be *present* under the guard
+    # or the typing the guard exists for was lost.
+    import ast
+
+    tree = ast.parse(inspect.getsource(dead_seat))
+    live: list[str] = []
+    guarded: list[str] = []
+
+    def _collect(nodes, into: list[str]) -> None:
+        for node in nodes:
+            if isinstance(node, ast.If) and "TYPE_CHECKING" in ast.dump(node.test):
+                for nested in node.body:
+                    _collect([nested], guarded)
+                continue
+            if isinstance(node, ast.Import):
+                into.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                into.append(node.module or "")
+            for child in ast.iter_child_nodes(node):
+                if isinstance(
+                    child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                ):
+                    _collect(child.body, into)
+
+    _collect(tree.body, live)
+
+    assert not any(name.startswith("signal_agent") for name in live), live
+    assert "signal_agent" in guarded, guarded
+
+
+def test_the_dead_territory_seat_exports_only_the_component_accessor() -> None:
+    # Asserted as an exact set: the failure this guards against is the seat
+    # growing a re-export of the member's list, verdict value or reasons.
+    assert set(dead_seat.__all__) == {"COMPONENT_NAME", "dead_territory_component"}
+
+
+def test_the_dead_territory_seat_is_reachable_by_its_hyphenated_path() -> None:
+    assert dead_seat.__name__ == "app.modules.signal-agent.dead_territory"
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("app.modules.signal_agent.dead_territory")

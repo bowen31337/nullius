@@ -1,0 +1,54 @@
+{
+  "policy": "signal-agent-dead-territory",
+  "_comment": [
+    "The committed dead-territory list of the hypothesis-authoring agent.",
+    "app_spec.xml, Hypothesis Authoring Agent, feature 213:",
+    "System rejects any root opening in structurally dead territory such as",
+    "sub-30-minute liquidity-taking strategies.",
+    "docs/alpha-engine-prd.md 9.4 ('What is structurally dead at retail",
+    "scale') is where this list comes from and why it is committed rather than",
+    "computed: 'Triangular arbitrage, cross-exchange latency arbitrage,",
+    "anything with a holding period under ~30 minutes taking liquidity. Do not",
+    "let the agent open roots there.'  These three are the initial denylist;",
+    "each entry below carries that section's name for it verbatim as its",
+    "title, so the document and the PRD can be diffed against each other by",
+    "eye.",
+    "This is the NEIGHBOURING refusal feature 212's legal theme set is not:",
+    "feature 212's legal_themes.json is an ALLOWLIST - a root is admitted iff",
+    "the human admitted the space (PRD 9.3) - while this list is a DENYLIST -",
+    "a root is refused iff it is a mechanism 9.4 names as dead.  A root can be",
+    "legal (in the 9.3 set) and yet dead (a 9.4 mechanism), and the two gates",
+    "are independent: the pipeline judges 212 (is the space admitted?) then",
+    "213 (is the mechanism live?).  A document that folded them together would",
+    "make the second unfixable without widening the first.",
+    "The compile in packages/signal-agent/src/signal_agent/_dead_territory.py",
+    "refuses this file and any change to it that is not a marker plus a list",
+    "of well-formed slug/title entries - so the list below is not a convention",
+    "the next edit can forget: it is the configuration, checked, and a",
+    "proposal opening in a mechanism it names is refused with the code",
+    "dead_territory.  An empty list is refused by the compile (the absence of",
+    "9.4's decision); the builder fails OPEN to an empty denylist only when",
+    "this file cannot be read, because a down guardrail refuses fewer",
+    "proposals than a system that refuses them all.",
+    "The slugs are the machine spelling the node table's theme_root column",
+    "holds (docs/nullius-tech-architecture.md 9.1: 'theme_root TEXT NOT",
+    "NULL'); the titles are for the human reading a rejection.  Widening this",
+    "list (adding a mechanism a later finding proved dead) is widening the",
+    "denylist, which PRD 9 makes the human's own decision - the widen happens",
+    "here, in review, or not at all."
+  ],
+  "mechanisms": [
+    {
+      "slug": "triangular-arbitrage",
+      "title": "Triangular arbitrage"
+    },
+    {
+      "slug": "cross-exchange-latency-arbitrage",
+      "title": "Cross-exchange latency arbitrage"
+    },
+    {
+      "slug": "sub-30-minute-liquidity-taking",
+      "title": "Anything with a holding period under ~30 minutes taking liquidity"
+    }
+  ]
+}

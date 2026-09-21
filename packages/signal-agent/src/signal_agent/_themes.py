@@ -81,11 +81,12 @@ type.
 **The neighbouring refusal this is not.**  §9.4 lists what is *structurally
 dead at retail scale* — triangular arbitrage, anything with a holding period
 under ~30 minutes taking liquidity — and feature 213 makes refusing those a
-feature of its own, depending on this one.  The two questions are different:
-§9.4 is a finding about a root that is *already inside* the legal set, and a
-document that folded the two together would make the second unfixable without
-widening the first.  So the set here names §9.3's six and nothing else, and no
-entry of it carries a viability judgement.
+feature of its own, depending on this one and living beside it in
+:mod:`signal_agent._dead_territory`.  The two questions are different: §9.4 is
+a finding about a root that is *already inside* the legal set, and a document
+that folded the two together would make the second unfixable without widening
+the first.  So the set here names §9.3's six and nothing else, and no entry of
+it carries a viability judgement — feature 213 carries the denylist that does.
 
 Stdlib only, and import-cheap — :mod:`enum`, :mod:`json`, :mod:`pathlib`,
 :mod:`re` and the member's own errors — so the factory's scan, which imports
