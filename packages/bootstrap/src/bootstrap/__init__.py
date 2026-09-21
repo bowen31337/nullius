@@ -163,6 +163,24 @@ sibling features of this category:
   ladder's reading, while :meth:`~bootstrap.WorldCensus.row` hands a
   report the two figures and nothing else.
 
+* **The headline refusal** (:mod:`bootstrap._claim`).  Feature 187's
+  verdict over feature 186's two figures: :func:`~bootstrap.
+  rejects_dreaming_claim` takes a :class:`~bootstrap.DreamingClaim` — the
+  basis a dreaming cycle asserts, :data:`~bootstrap.FINANCIAL_BASIS` when
+  it rests on the gate's financial world count or :data:`~bootstrap.
+  TOTAL_BASIS` when it rests on the ladder's bootstrap-padded sum — and
+  the census, and answers whether the claim rests on bootstrap worlds
+  alone.  A claim is refused when the financial figure the M3 gate reads
+  (:data:`~bootstrap.M3_GATE_WORLDS` by default, §10.3.1's ``n > 53``)
+  falls short of the gate yet the claim would proceed — either because it
+  names the total as its basis or because the bootstrap half is what
+  carries it over the gate.  When ``n_financial`` meets the gate the claim
+  stands on the pool the gate was meant to see and is admitted.  It is a
+  free function beside :func:`~bootstrap.world_census`, the way
+  :func:`~bootstrap.ground_truth` is: the census reports the two figures
+  and this module judges what a claim may be claimed to support, and the
+  two figures are the seam between them.
+
 **What this member deliberately does not ship.**  The things this member
 does not ship are the ones that are statements about *callers* of its
 labels rather than about the labels: feature 187's headline refusal —
@@ -210,6 +228,14 @@ from ._census import (
     REPLAY_SCORE_WORLD_COLUMN,
     WorldCensus,
     world_census,
+)
+from ._claim import (
+    FINANCIAL_BASIS,
+    M3_GATE_WORLDS,
+    TOTAL_BASIS,
+    DreamingClaim,
+    claim_basis,
+    rejects_dreaming_claim,
 )
 from ._fit import FitResult, fit_and_score, solve_cholesky
 from ._pool import (
@@ -306,6 +332,7 @@ __all__ = [
     "DISCOVERY_BAR",
     "FEATURE_COUNT",
     "FEATURE_SCALES",
+    "FINANCIAL_BASIS",
     "GOLDEN_GAMMA",
     "HOLDOUT_STRIDE",
     "HYPERPARAMETER_AXES",
@@ -313,6 +340,7 @@ __all__ = [
     "INTERACTION_COEFFICIENTS",
     "INTERCEPT",
     "LINEAR_COEFFICIENTS",
+    "M3_GATE_WORLDS",
     "MASK64",
     "MAX_POOL_SIZE",
     "MIN_POOL_SIZE",
@@ -327,6 +355,7 @@ __all__ = [
     "REPLAY_SCORE_TABLE",
     "REPLAY_SCORE_WORLD_COLUMN",
     "SQUARE_COEFFICIENTS",
+    "TOTAL_BASIS",
     "BootstrapError",
     "BootstrapPool",
     "BootstrapPoolError",
@@ -336,6 +365,7 @@ __all__ = [
     "CellMeta",
     "ConfusionMatrix",
     "Dataset",
+    "DreamingClaim",
     "FitResult",
     "GroundTruth",
     "HyperparameterAxis",
@@ -352,6 +382,7 @@ __all__ = [
     "build_bootstrap_pool",
     "build_hyperparameter_world",
     "canonical_node_id",
+    "claim_basis",
     "column_statistics",
     "decode_node_id",
     "design_columns",
@@ -367,6 +398,7 @@ __all__ = [
     "ported_question_for",
     "ported_world",
     "question_for",
+    "rejects_dreaming_claim",
     "setting_dimensions",
     "setting_from_steps",
     "solve_cholesky",
