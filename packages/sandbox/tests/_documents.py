@@ -36,9 +36,14 @@ would be asserting a coincidence.
 
 from __future__ import annotations
 
+import datetime
 from typing import Any
 
-from sandbox import IMPORTS_POLICY_KIND, POLICY_KIND
+import polars as pl
+import pyarrow as pa
+from contract import MarketWindow
+from contract.signal import validate_signal_return
+from sandbox import IMPORTS_POLICY_KIND, POLICY_KIND, encode_scores
 
 #: The two Z1 boxes §3's component map draws — the same membership feature
 #: 148's committed credential grant and feature 149's committed egress policy
@@ -265,3 +270,141 @@ SOURCE_UNPARSABLE: str = "import math\ndef broken(:\n"
 #: half-check a prefix rule must close: an entry admitting ``numpy.linalg``
 #: does not admit ``numpy``, because importing the parent executes it.
 SOURCE_IMPORTING_PARENT: str = "import numpy\n"
+
+
+# ---------------------------------------------------------------------------
+# Feature 166 — the payload channel: a window, and the scores it returns.
+#
+# These are *builders*, not constants, and they are the one place in this
+# module where that matters for a reason beyond drift: the objects below are
+# mutable Arrow tables and mutable series, and a shared one would let a test
+# that wrote into a frame (or dispatched a channel) change what the next test
+# read.  The same fresh-object rule :func:`isolation_document` states for its
+# dicts, applied to the payload stack.
+# ---------------------------------------------------------------------------
+
+#: The decision time the windows below are sliced at.  Pinned rather than
+#: ``now()`` for the reason §12 gives for every other instant in this
+#: repository: a materialized window is a point-in-time fact, and a test
+#: that read the wall clock would assert against a moving target.
+WINDOW_DECISION_TIME: datetime.datetime = datetime.datetime(
+    2024, 1, 1, tzinfo=datetime.UTC
+)
+
+#: The symbols a window in these tests holds — three, so a positional score
+#: vector has an order to be checked against and a length that a
+#: wrong-length return can plausibly disagree with.
+WINDOW_UNIVERSE: tuple[str, ...] = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
+
+#: The one frame a window here materializes.  §5.2's call site sends a
+#: *materialized* window; a window with no frames is refused by feature 14's
+#: serializer, which is a case its own suite covers and this one re-checks
+#: through the channel's translation of the refusal.
+WINDOW_FRAME_NAME: str = "bars:1d"
+
+#: Scores aligned to :data:`WINDOW_UNIVERSE`, in a deliberately mixed sign
+#: and non-integral shape: a vector whose values were ``[1, 2, 3]`` could be
+#: read back correctly by an integer-tolerant reader that should have been
+#: refused, and one whose signs are all positive could hide a sign-flip.
+WINDOW_SCORES: tuple[float, ...] = (0.75, -1.25, 2.5)
+
+
+def window_frames(
+    *,
+    rows: int = 3,
+    frame_names: tuple[str, ...] = (WINDOW_FRAME_NAME,),
+) -> dict[str, Any]:
+    """A fresh frame mapping, one column of ``rows`` integers per frame.
+
+    Rebuilt per call because an Arrow table can be rebound into another
+    window and a test that drifted one would otherwise drift its sibling's.
+    Each frame is its own table, so a multi-frame window here carries
+    genuinely distinct payloads rather than one table bound under two names —
+    which is what makes a mis-indexed segment read *wrong* instead of
+    accidentally right.
+    """
+    return {
+        name: pa.table({"close": list(range(1, rows + 1))}) for name in frame_names
+    }
+
+
+def materialized_window(
+    *,
+    universe: tuple[str, ...] = WINDOW_UNIVERSE,
+    t: datetime.datetime = WINDOW_DECISION_TIME,
+    frame_names: tuple[str, ...] = (WINDOW_FRAME_NAME,),
+    rows: int = 3,
+) -> MarketWindow:
+    """A materialized window over the given universe, frames real Arrow.
+
+    A real :class:`contract.window.MarketWindow` over a real Arrow table — not
+    a stand-in — because feature 166's inbound leg is *feature 14's payload*,
+    and a hand-written substitute would test this module against bytes the
+    contract never produces.  The same discipline ``evaluator``'s sandbox
+    suite states for its own windows.
+
+    ``rows`` is settable because an empty universe and a frame of bars are
+    independent: a window can hold no symbols and no rows (the empty case), and
+    a test that wants one needs to say so rather than rely on a default that
+    happens to be true for the other.
+    """
+    return MarketWindow(
+        t, universe, frames=window_frames(rows=rows, frame_names=frame_names)
+    )
+
+
+def unmaterialized_window(
+    *,
+    universe: tuple[str, ...] = WINDOW_UNIVERSE,
+    t: datetime.datetime = WINDOW_DECISION_TIME,
+) -> MarketWindow:
+    """A window with no frames — what a host that never sliced has in hand.
+
+    Feature 14 refuses to serialize one, because the box has no mounts to read
+    a frame from; through the channel that refusal must arrive as this
+    member's own error rather than the contract's.
+    """
+    return MarketWindow(t, universe)
+
+
+def score_series(values: object = WINDOW_SCORES, *, name: str = "scores"):
+    """A fresh :class:`polars.Series` of the given values, Float64.
+
+    The type feature 11 declares a signal returns, so the encode path is
+    exercised with what a real producer hands back rather than with a list
+    that happened to work.
+    """
+    return pl.Series(name, list(values), dtype=pl.Float64)
+
+
+def contract_validate(series: object, universe: tuple[str, ...]) -> list[Any]:
+    """Feature 11's own verdict on a return, for the same universe.
+
+    The channel judges a score vector on the wire; the contract judges the
+    same vector inside the box.  A test that wants to compare the two
+    verdicts has to ask the contract directly, and this is that question —
+    named here rather than imported at each call site so the seam being
+    checked is visible in the test that checks it.
+    """
+    return validate_signal_return(series, universe)
+
+
+def score_payload(
+    values: object = WINDOW_SCORES,
+    *,
+    universe: tuple[str, ...] = WINDOW_UNIVERSE,
+    decision_time: str | None = None,
+    contract_version: str | None = None,
+) -> bytes:
+    """A score vector encoded for ``universe`` — a return leg, ready to send.
+
+    Built through the module's own encoder rather than by hand, so a test that
+    wants to *read* a payload, or to violate it and watch the reader refuse,
+    starts from bytes this implementation actually writes.
+    """
+    return encode_scores(
+        score_series(values),
+        universe=universe,
+        decision_time=decision_time,
+        contract_version=contract_version,
+    )

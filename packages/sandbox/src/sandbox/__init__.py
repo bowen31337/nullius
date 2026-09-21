@@ -76,6 +76,35 @@ registration of ``sandbox`` would overwrite feature 157's law, and one member
 carrying two controls means two components, each answering its own feature's
 question — the shape the tripwires' and the canary's members already give
 their later features.  The builder below is the entire wiring story for both.
+
+**Feature 166 rides the seat a third time.**  *System transfers the materialized
+window as Arrow IPC, which returns the resulting score vector over the same
+channel* is the category's payload-channel control, and its law lives in
+:mod:`sandbox.transfer`: one channel, two legs, each leg a self-describing
+framed container, with the return validated positionally against the universe
+the window carried.  It composes as :class:`SandboxTransfer` under
+:data:`sandbox.transfer.TRANSFER_COMPONENT_NAME` (``sandbox-transfer``) — a
+third seat beside the other two, for the same registry-replacement reason —
+and it is the first control in the category with **no committed artifact**,
+deliberately: the other two are laws about a *configuration* (which isolation a
+box declares, which imports a submission may reach) and a configuration has to
+be written down before it can be checked, while this one is about a *format*
+and an alignment, neither of which a deployment could set differently.
+Inventing a ``transfer_policy.json`` here would be inventing a knob nobody
+turns.
+
+It carries nothing at all — no channel, no buffer, no handle — a sharper
+version of the same choice the other two make by carrying no runtime: a
+transfer is a thing that *happens*, and a component shared across runs that
+held a channel would be a component letting two runs share a window.  The
+channel is therefore handed out per call (:meth:`SandboxTransfer.channel`), and
+:meth:`SandboxTransfer.round_trip` takes the run's producer as a *callable* so
+the box's execution stays where §6.1 step 2 puts it — the evaluator's
+host-side runner — and this member never grows one.  It is also the first
+control whose law is asymmetric in its error shape: the inbound leg raises
+(a dispatch by trusted host code, where "these are not a window" has one
+sensible response), while the *score* half keeps the category's habit of
+turning a per-run failure into a value rather than a traceback.
 """
 
 from __future__ import annotations
@@ -90,6 +119,9 @@ from .errors import (
     SandboxError,
     SandboxImportError,
     SandboxIsolationError,
+    SandboxTransferError,
+    ScoreChannelError,
+    WindowTransferError,
 )
 from .imports import (
     COMMITTED_IMPORTS_ALLOWLIST,
@@ -122,6 +154,24 @@ from .isolation import (
     compile_isolation_policy,
     load_isolation_policy,
 )
+from .transfer import (
+    SCORE_CHANNEL_CODE,
+    SCORE_FRAME_NAME,
+    SCORE_MAGIC,
+    SCORE_VERSION,
+    TRANSFER_COMPONENT_NAME,
+    WINDOW_TRANSFER_CODE,
+    SandboxTransfer,
+    ScoreVector,
+    TransferChannel,
+    TransferLeg,
+    WindowFacts,
+    decode_scores,
+    encode_scores,
+    inspect_window_payload,
+    sandbox_transfer,
+    scores_alias_payload,
+)
 
 __all__ = [
     "COMMITTED_IMPORTS_ALLOWLIST",
@@ -134,6 +184,12 @@ __all__ = [
     "IMPORTS_POLICY_KIND",
     "ISOLATION_REQUIRED_CODE",
     "POLICY_KIND",
+    "SCORE_CHANNEL_CODE",
+    "SCORE_FRAME_NAME",
+    "SCORE_MAGIC",
+    "SCORE_VERSION",
+    "TRANSFER_COMPONENT_NAME",
+    "WINDOW_TRANSFER_CODE",
     "AllowlistDocumentError",
     "ComponentIsolation",
     "DisallowedImportError",
@@ -151,15 +207,28 @@ __all__ = [
     "SandboxIsolation",
     "SandboxIsolationError",
     "SandboxRun",
+    "SandboxTransfer",
+    "SandboxTransferError",
+    "ScoreChannelError",
+    "ScoreVector",
+    "TransferChannel",
+    "TransferLeg",
+    "WindowFacts",
+    "WindowTransferError",
     "authorize_run",
     "committed_imports_allowlist",
     "committed_isolation_policy",
     "compile_imports_allowlist",
     "compile_isolation_policy",
+    "decode_scores",
+    "encode_scores",
+    "inspect_window_payload",
     "load_imports_allowlist",
     "load_isolation_policy",
     "sandbox_imports",
     "sandbox_isolation",
+    "sandbox_transfer",
+    "scores_alias_payload",
     "screen_module",
 ]
 
@@ -353,3 +422,44 @@ def build_sandbox_imports() -> SandboxImports:
     controls arrive on.
     """
     return SandboxImports(committed_imports_allowlist())
+
+
+@register(TRANSFER_COMPONENT_NAME)
+def build_sandbox_transfer() -> SandboxTransfer:
+    """Component builder: feature 166's payload channel (app_spec.xml §5.2).
+
+    The third component this member contributes, beside feature 157's
+    isolation law and feature 167's import allowlist, under its own name —
+    the registry is keyed by name and a later registration of ``sandbox``
+    would *replace* the isolation law, so one member carrying three controls
+    carries three components, each answering its own feature's question.
+
+    Unlike the other two builders it compiles **no artifact**, and that
+    difference is the feature rather than an omission: features 157 and 167
+    are laws about a *configuration* and a configuration must be written
+    down before it can be checked, while feature 166's sentence names a
+    format, a direction and an alignment — none of which a deployment could
+    set differently.  There is nothing here for a committed file to say, so
+    there is no committed file, and a caller reading the absence as an
+    unconfigured state has it backwards: the transfer is fully specified by
+    the contract between this member and feature 14's serializer.
+
+    Like the other two it takes no arguments (the factory's registration
+    protocol), never returns ``None`` and never raises — the factory builds
+    every registered component on every ``create_app()`` call, so a builder
+    that raised would take composition down for every unrelated feature in
+    the workspace, and a bare test process with no ``DATABASE_URL`` and no
+    lake still composes this one.  Importing this module is likewise free of
+    the payload stack: ``pyarrow`` and ``polars`` are reached lazily inside
+    the functions that need them, so a composition scan — including §1's
+    replay path — pays nothing for a channel it may never open.
+
+    It returns a :class:`SandboxTransfer` rather than a channel, necessarily
+    rather than by preference: a channel belongs to one run, and a component
+    held across runs that owned one would let two runs share a window.  What
+    the composed value gives a caller is the law — ``send`` to validate the
+    window leg, ``channel()`` for the per-run seam, ``round_trip`` to execute
+    the feature's sentence end to end with the run's producer supplied from
+    outside.
+    """
+    return sandbox_transfer()

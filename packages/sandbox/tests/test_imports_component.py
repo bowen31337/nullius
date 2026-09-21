@@ -62,20 +62,22 @@ def test_the_member_declares_the_component_name_the_feature_owns() -> None:
     assert sandbox.IMPORTS_COMPONENT_NAME == "sandbox-imports"
 
 
-def test_scanning_the_member_registers_the_two_components_it_owns() -> None:
+def test_scanning_the_member_registers_the_components_it_owns() -> None:
     # A fresh registry, not the process default: any earlier test that
     # called a bare ``create_app()`` has already imported every workspace
     # member into the current registry, so reading it back here would
     # assert accumulated process state, not this package's contribution.
     #
-    # The list is pinned exactly: the isolation law and the import law, no
-    # more and no less. A third component arriving unnoticed fails here —
-    # and a builder that had taken feature 157's name would fail here too,
-    # which is the registry-replacement hazard this file exists for.
+    # The list is pinned exactly: the isolation law, the import law and the
+    # payload channel, no more and no less. A fourth component arriving
+    # unnoticed fails here — and a builder that had taken feature 157's name
+    # would fail here too, which is the registry-replacement hazard this
+    # file exists for.
     components = scan_components(MEMBER_SRC, registry=Registration())
     assert sorted(component.name for component in components) == [
         "sandbox",
         "sandbox-imports",
+        "sandbox-transfer",
     ]
 
 
@@ -184,8 +186,10 @@ class TestTheSeat:
         assert set(seat.__all__) == {
             "COMPONENT_NAME",
             "IMPORTS_COMPONENT_NAME",
+            "TRANSFER_COMPONENT_NAME",
             "sandbox_imports_component",
             "sandbox_isolation_component",
+            "sandbox_transfer_component",
         }
         for leaked in ("ModuleDecision", "ModuleReason", "ImportsAllowlist", "SandboxImports"):
             assert not hasattr(seat, leaked), leaked

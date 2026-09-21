@@ -57,6 +57,26 @@ of the law's vocabulary for the same reason the first does: a caller who has
 the component calls its verbs (``screen`` for the decision a submission
 earns, ``require`` for the exception a launcher wants), and each returns the
 member's own type.
+
+**Feature 166's law has its own seat here too, and it is the third.**  The
+payload channel — *System transfers the materialized window as Arrow IPC,
+which returns the resulting score vector over the same channel* — composes as
+``sandbox-transfer``, so this module now answers three questions: *what is the
+composed isolation law?*, *what is the composed import allowlist?* and *what is
+the composed payload channel?*  :func:`sandbox_transfer_component` mirrors the
+other two in shape, and re-exports nothing of the law's vocabulary for the same
+reason they do not — a caller who has the component calls ``send`` to validate
+the window leg, ``channel()`` for the per-run seam, or ``round_trip`` to run
+the feature's sentence end to end with its own producer.
+
+It differs from the other two in exactly one respect, and the difference is
+the feature rather than a gap: there is **no committed artifact** behind it.
+Features 157 and 167 are laws about a configuration, and a configuration is
+written down before it can be checked — which is why a non-``None`` component
+at their seats proves a file compiled.  Feature 166 is a format, a direction
+and an alignment, none of which a deployment could set differently, so there
+is nothing for a committed file to say and no knob nobody turns. A caller
+should not read the missing artifact as an unconfigured state.
 """
 
 from __future__ import annotations
@@ -66,13 +86,15 @@ from typing import TYPE_CHECKING, Any
 from app.module_loader import Application, create_app
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a dependency
-    from sandbox import SandboxImports, SandboxIsolation
+    from sandbox import SandboxImports, SandboxIsolation, SandboxTransfer
 
 __all__ = [
     "COMPONENT_NAME",
     "IMPORTS_COMPONENT_NAME",
+    "TRANSFER_COMPONENT_NAME",
     "sandbox_imports_component",
     "sandbox_isolation_component",
+    "sandbox_transfer_component",
 ]
 
 #: The component name the sandbox member registers under. Kept here so
@@ -86,6 +108,14 @@ COMPONENT_NAME = "sandbox"
 #: Kept here for the same reason ``COMPONENT_NAME`` is: one spelling shared
 #: by everything that asks for the law through the app package.
 IMPORTS_COMPONENT_NAME = "sandbox-imports"
+
+#: The component name the member's payload channel registers under — the
+#: category's third control, kept beside the other two rather than over
+#: either, because the factory's registry replaces a name's earlier
+#: registration.  Kept here for the same reason the other two are: one
+#: spelling shared by everything that asks for the law through the app
+#: package.
+TRANSFER_COMPONENT_NAME = "sandbox-transfer"
 
 
 def sandbox_isolation_component(
@@ -132,3 +162,28 @@ def sandbox_imports_component(
     """
     application = app if app is not None else create_app()
     return application.get(IMPORTS_COMPONENT_NAME)
+
+
+def sandbox_transfer_component(
+    app: Application | None = None,
+) -> SandboxTransfer | Any:
+    """Return the composed sandbox payload channel (feature 166).
+
+    The same contract the other two accessors give their laws, for the
+    control that moves the materialized window into the box and the score
+    vector back out: with ``app`` given the component is read from that
+    application, without it the application is composed first, and ``None``
+    means no ``sandbox-transfer`` component was registered.
+
+    **One thing this accessor cannot mean, and it is worth stating rather
+    than inferring.**  The other two seats' ``None`` is *"no such component
+    was registered"* and a non-``None`` value is proof the committed
+    artifact compiled; here there is no committed artifact to compile — the
+    feature is a format and an alignment, not a configuration — so a
+    non-``None`` component is proof only that the law is loaded, which is
+    all there is for it to be.  The value carries no channel either, so a
+    caller does not get a transfer from this accessor: it gets the law, and
+    calls ``channel()`` for the per-run seam.
+    """
+    application = app if app is not None else create_app()
+    return application.get(TRANSFER_COMPONENT_NAME)

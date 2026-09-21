@@ -87,17 +87,19 @@ def test_scanning_the_member_registers_exactly_the_components_it_owns() -> None:
     # the current registry, so reading it back here would assert accumulated
     # process state, not this package's contribution.
     #
-    # The list is pinned exactly rather than by membership, so a *third*
+    # The list is pinned exactly rather than by membership, so a *fourth*
     # component arriving unnoticed fails here — which is the property this
     # test is for. Feature 157 contributed the first: the isolation law.
     # Feature 167 added the second: the import allowlist, under its own name
-    # because the registry replaces a name's earlier registration. The
+    # because the registry replaces a name's earlier registration. Feature
+    # 166 added the third, the payload channel, on the same terms. The
     # category's remaining features each add a control to the same box and
-    # will add their own seats beside these two.
+    # will add their own seats beside these three.
     components = scan_components(MEMBER_SRC, registry=Registration())
     assert sorted(component.name for component in components) == [
         "sandbox",
         "sandbox-imports",
+        "sandbox-transfer",
     ]
 
 
@@ -214,8 +216,10 @@ def test_the_app_seat_is_not_a_second_vocabulary() -> None:
     assert set(seat.__all__) == {
         "COMPONENT_NAME",
         "IMPORTS_COMPONENT_NAME",
+        "TRANSFER_COMPONENT_NAME",
         "sandbox_imports_component",
         "sandbox_isolation_component",
+        "sandbox_transfer_component",
     }
     for leaked in (
         "RunDecision",
@@ -225,5 +229,8 @@ def test_the_app_seat_is_not_a_second_vocabulary() -> None:
         "ModuleDecision",
         "ModuleReason",
         "ImportsAllowlist",
+        "ScoreVector",
+        "TransferChannel",
+        "WindowFacts",
     ):
         assert not hasattr(seat, leaked), leaked

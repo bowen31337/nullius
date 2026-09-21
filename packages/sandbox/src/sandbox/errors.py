@@ -74,6 +74,9 @@ __all__ = [
     "SandboxError",
     "SandboxImportError",
     "SandboxIsolationError",
+    "SandboxTransferError",
+    "ScoreChannelError",
+    "WindowTransferError",
 ]
 
 
@@ -218,4 +221,85 @@ class AllowlistDocumentError(SandboxImportError):
     allowlist is written by *trusted* code, and its refusals are facts about
     a deployment's configuration; the submissions screened against it are
     untrusted, and their refusals are the feature working.
+    """
+
+
+class SandboxTransferError(SandboxError):
+    """The payload-channel contract: what crosses the channel did not.
+
+    app_spec.xml, "Untrusted Code Sandbox", feature 166: *System transfers the
+    materialized window as Arrow IPC, which returns the resulting score vector
+    over the same channel.*  The subject is the *channel* — §5.2's payload
+    channel, the one path into and out of a box that has no mounts
+    (``Filesystem | No mounts. Data arrives over IPC only.``) — and this class
+    is its refusals.
+
+    **Why the transfer has refusals at all, when the box holds the bytes.**
+    The sandbox never reads a window or a score off disk; it reads them off a
+    buffer that arrived over the channel.  So a transfer can fail in ways no
+    computation can: bytes that are not a window payload, a payload whose
+    frames cannot be read, a score vector that is not a score vector, a channel
+    that was already spent.  Each of those is a fact about *the bytes that
+    crossed* rather than about the signal, and a caller that caught them as
+    :class:`SandboxIsolationError` would go looking for a misconfigured box
+    when the fault is in what it sent.
+
+    **Raised rather than returned, unlike the two laws' gates.**  Features
+    157's and 167's refusals are *answers* — a run and a submission are offered
+    unattended, thousands of them, so their gates return decisions and the
+    pipeline reads a value rather than surviving a traceback.  A transfer is
+    not offered in that sense: it is one dispatch by trusted host code
+    (§5.2's own call site), and there is exactly one sensible response to "the
+    bytes you sent are not a window" — do not run, fix the dispatch.  So the
+    channel raises, and the *score* half of feature 166 is where a per-run
+    failure stays a value: see :meth:`sandbox.transfer.ScoreVector.require`.
+    """
+
+
+class WindowTransferError(SandboxTransferError):
+    """The bytes that arrived are not a materialized window.
+
+    The inbound half of :class:`SandboxTransferError`.  A payload that is
+    empty, is not a serialized window at all, was built by a window that holds
+    no frames, or whose frames glued out of frames cannot be read.
+
+    Deliberately not a subclass of the contract's own
+    :class:`contract.payload.PayloadFormatError`, and deliberately not caught
+    from it either: the sandbox is the box agent-authored code is put inside,
+    and its vocabulary must not depend on the contract's — a caller that
+    catches :class:`SandboxError` gets every refusal of this member without
+    also being subscribed to the contract's.  The translation happens once, at
+    the seam, so the member's caller never sees a foreign type: the reason
+    :class:`infra.security.sandbox_egress` states for its own translation, and
+    the reason a shared helper raising another feature's error defeats the
+    caller's ``except``.
+    """
+
+
+class ScoreChannelError(SandboxTransferError):
+    """The bytes that arrived are not a score vector for the window sent.
+
+    The outbound half of :class:`SandboxTransferError` — the ``which returns
+    the resulting score vector over the same channel`` clause, when what came
+    back cannot be read as one.  A return that is empty, is not one of the
+    channel's messages, carries no scores, or whose scores disagree with the
+    window they are supposed to score: a different length, a non-finite value,
+    a dtype that cannot be ranked.
+
+    **The length check is the load-bearing one.**  A score vector is
+    positional against the window's universe (feature 11's "indexed by symbol"
+    is a positional correspondence, and :func:`contract.signal.validate_signal_return`
+    says so), so a return of the right shape but the wrong length is a
+    misalignment that would travel silently into the cross-sectional reduction
+    downstream and poison every number after it.  It is refused here, at the
+    seam, naming both lengths — the same "misaligned before any per-symbol
+    check could mean anything" judgement the contract's validator makes for a
+    live return, applied to one that crossed a channel.
+
+    Every message begins with ``score_channel``
+    (:data:`sandbox.transfer.SCORE_CHANNEL_CODE`) so an operator grepping a log
+    for the rejection finds it, the discipline feature 157's and 167's codes
+    take.  Kept apart from :class:`WindowTransferError` because the two name
+    opposite directions of one channel, and a caller reading a failure wants to
+    know which leg it was on before it wants the detail.
     """
