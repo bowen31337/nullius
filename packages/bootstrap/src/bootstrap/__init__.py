@@ -10,7 +10,9 @@ truth, which returns perfect sensitivity and specificity references for
 calibration"*; feature 190, the ported-world adapter; and feature 191,
 *"System persists source commit and dataset manifest hash for every
 ported world, which rejects a world whose recorded values no longer
-match its upstream"* — on the phase
+match its upstream"*; and feature 186, *"System tracks financial world
+count independently from bootstrap world count, which returns both figures
+separately"* — on the phase
 docs/nullius-tech-architecture.md §10.6 opens:
 
     Build the non-financial ground-truth worlds so pool size becomes a
@@ -145,16 +147,34 @@ sibling features of this category:
   scores ``1.0`` / ``1.0`` outright: the answer key a financial pool's
   estimated rates are calibrated against, published.
 
+* **The two pools' sizes, counted apart** (:mod:`bootstrap._census`).
+  Feature 186's answer to §10.6's *"Report the two pools separately"*:
+  :func:`~bootstrap.world_census` takes a bootstrap pool and returns a
+  :class:`~bootstrap.WorldCensus` holding ``n_financial`` and
+  ``n_bootstrap`` as two figures.  Both are *read from the one database*
+  the pool resolves — the bootstrap figure through
+  :meth:`~bootstrap.BootstrapPool.world_count` (authored and ported alike,
+  §10.6's *"both qualify"*), the financial figure as the distinct
+  ``replay_score.world_id`` values ``bootstrap_world`` does not hold, so a
+  bootstrap world can raise ``n`` but never ``n_financial`` (§10.6.1's
+  *"pads ``n``, never ``n_financial``"*).  A single count is deliberately
+  absent: §12.1's ladder reads the total, so
+  :attr:`~bootstrap.WorldCensus.total` exists and is documented as the
+  ladder's reading, while :meth:`~bootstrap.WorldCensus.row` hands a
+  report the two figures and nothing else.
+
 **What this member deliberately does not ship.**  The things this member
 does not ship are the ones that are statements about *callers* of its
-labels rather than about the labels: features 186-187's tallies and
-headline refusal are statements about both pools at once (financial and
-bootstrap, made where both are visible), feature 185's budget rule —
-*"System charges no statistical budget for a bootstrap world"* — is a
-fact about what the *trial* records rather than about what the world
-computes, so nothing here indexes, decrements or reports a budget, and
-§10.3's ``FDR_deploy`` reweighting is the scorer's arithmetic over rates
-this member makes exact, not a rate itself.  The world itself stays
+labels rather than about the labels: feature 187's headline refusal —
+*"System rejects a headline dreaming claim resting on bootstrap worlds
+alone"* — is a judgment about a claim, made where the claim and both
+figures are visible, so this member reports the two figures (feature 186)
+and renders no verdict on what they may be claimed to support.  Feature
+185's budget rule — *"System charges no statistical budget for a
+bootstrap world"* — is a fact about what the *trial* records rather than
+about what the world computes, so nothing here indexes, decrements or
+reports a budget, and §10.3's ``FDR_deploy`` reweighting is the scorer's
+arithmetic over rates this member makes exact, not a rate itself.  The world itself stays
 reveal-history-free by design — a world that owned a reveal history
 would be a world whose answers depended on it, which is why the
 bookkeeping lives in the question (:mod:`bootstrap._question`) and not
@@ -185,6 +205,12 @@ from __future__ import annotations
 
 from app.module_loader import register
 
+from ._census import (
+    REPLAY_SCORE_TABLE,
+    REPLAY_SCORE_WORLD_COLUMN,
+    WorldCensus,
+    world_census,
+)
 from ._fit import FitResult, fit_and_score, solve_cholesky
 from ._pool import (
     DATABASE_URL_ENV,
@@ -298,6 +324,8 @@ __all__ = [
     "PORTED_DOMAIN",
     "PRICED_ROWS",
     "PRICED_SEED",
+    "REPLAY_SCORE_TABLE",
+    "REPLAY_SCORE_WORLD_COLUMN",
     "SQUARE_COEFFICIENTS",
     "BootstrapError",
     "BootstrapPool",
@@ -319,6 +347,7 @@ __all__ = [
     "PortedWorld",
     "PortedWorldRecord",
     "Provenance",
+    "WorldCensus",
     "WorldRecord",
     "build_bootstrap_pool",
     "build_hyperparameter_world",
@@ -343,6 +372,7 @@ __all__ = [
     "solve_cholesky",
     "split_indices",
     "uniform",
+    "world_census",
     "world_id_for",
 ]
 
