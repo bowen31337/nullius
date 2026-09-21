@@ -2,9 +2,13 @@
 
 Implements app_spec.xml, "Bootstrap Worlds" — feature 181, *"System
 exposes a hyperparameter search world over a fixed model and dataset,
-which returns a ground-truth score per node"*, and feature 188, *"System
+which returns a ground-truth score per node"*; feature 184, the identical
+``question.*`` interface every bootstrap world fronts; feature 188, *"System
 persists 40 to 50 generated bootstrap worlds into the replay pool on
-demand"* — on the phase
+demand"*; feature 190, the ported-world adapter; and feature 191, *"System
+persists source commit and dataset manifest hash for every ported world,
+which rejects a world whose recorded values no longer match its
+upstream"* — on the phase
 docs/nullius-tech-architecture.md §10.6 opens:
 
     Build the non-financial ground-truth worlds so pool size becomes a
@@ -106,17 +110,39 @@ sibling features of this category:
   rather than clamped, and a second pool over a *different* seed adds
   worlds it can name rather than mutating rows it cannot.
 
-**What this member deliberately does not ship.**  The policy-facing
-runtime — the ``question.*`` object a policy is handed, the reveal
-bookkeeping, the commit — belongs to features 184 (identical interface
-across all bootstrap worlds), 189 (ground-truth labels as sensitivity and
-specificity references) and 190-191 (the ported-world adapter and its
-provenance check), all later features of this category; this member
-answers *labels*, and a world that owned a reveal history would be a world
-whose answers depended on it.  The budget rule — *"System charges no
-statistical budget for a bootstrap world"* — is feature 185's, and it is
-a statement about what the *trial* records rather than about what the
-world computes, so nothing here indexes, decrements or reports a budget.
+* **The ported world and its seat** (:mod:`bootstrap._ported`,
+  :mod:`bootstrap._pool`).  Feature 190's
+  :class:`~bootstrap.PortedWorld` fronts an external ground-truth
+  environment through the identical interface — its labels are the
+  environment's own, carried unchanged — and its identity is not a seed
+  but the :class:`~bootstrap.Provenance` that pinned them: the source
+  commit of the upstream code and the dataset manifest of the
+  label-bearing data.  Feature 191 gives that identity its persistence:
+  ``persist_ported_world`` seats the two digests into the same
+  ``bootstrap_world`` table the authored draw writes, under the
+  ``ported`` domain, with no seed and no draw, and
+  ``verify_ported_world`` is the check the category's provenance rule
+  turns on — the digests the row *recorded* against the digests the
+  upstream *now shows*, and a world whose two no longer match is
+  refused, not re-hashed (§10.6.1: *"an upstream that changes is a
+  different world, not an updated one"*).
+
+**What this member deliberately does not ship.**  The things this member
+does not ship are the ones that are statements about *callers* of its
+labels rather than about the labels: feature 189's sensitivity and
+specificity references are a calibration report made *over* bootstrap
+labels, features 186-187's tallies and headline refusal are statements
+about both pools at once (financial and bootstrap, made where both are
+visible), and feature 185's budget rule — *"System charges no statistical
+budget for a bootstrap world"* — is a fact about what the *trial* records
+rather than about what the world computes, so nothing here indexes,
+decrements or reports a budget.  The world itself stays
+reveal-history-free by design — a world that owned a reveal history
+would be a world whose answers depended on it, which is why the
+bookkeeping lives in the question (:mod:`bootstrap._question`) and not
+in the world — and the pool, for its part, records identities and
+refuses to record datasets, for the drift a cached dataset would invite
+(§10.6.1's rule, the same one the ported half's digests exist to check).
 
 **Two components, two questions.**  The world registers under
 ``"bootstrap"`` (:data:`COMPONENT_NAME`) and answers *what is the
@@ -151,8 +177,10 @@ from ._pool import (
     POOL_DOMAIN,
     POOL_SEED,
     POOL_TABLE,
+    PORTED_DOMAIN,
     BootstrapPool,
     PersistedPool,
+    PortedWorldRecord,
     WorldRecord,
     draw_world_seed,
     world_id_for,
@@ -241,6 +269,7 @@ __all__ = [
     "POOL_DOMAIN",
     "POOL_SEED",
     "POOL_TABLE",
+    "PORTED_DOMAIN",
     "PRICED_ROWS",
     "PRICED_SEED",
     "SQUARE_COEFFICIENTS",
@@ -259,6 +288,7 @@ __all__ = [
     "Observation",
     "PersistedPool",
     "PortedWorld",
+    "PortedWorldRecord",
     "Provenance",
     "WorldRecord",
     "build_bootstrap_pool",

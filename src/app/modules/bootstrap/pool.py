@@ -1,10 +1,12 @@
-"""The bootstrap pool's seat in the ``app`` package namespace — feature 188.
+"""The bootstrap pool's seat in the ``app`` package namespace — features 188 and 191.
 
 app_spec.xml, "Bootstrap Worlds", feature 188: *System persists 40 to 50
-generated bootstrap worlds into the replay pool on demand.*  The
-implementation lives in :mod:`bootstrap._pool`; this module is how the
-app package reaches the composed pool without importing the member at
-module scope.
+generated bootstrap worlds into the replay pool on demand*; feature 191:
+*System persists source commit and dataset manifest hash for every ported
+world, which rejects a world whose recorded values no longer match its
+upstream.*  Both implementations live in :mod:`bootstrap._pool`; this
+module is how the app package reaches the composed pool without
+importing the member at module scope.
 
 Feature 181's seat (:mod:`app.modules.bootstrap`) answers *what is the
 composed bootstrap world?*; this one answers the same shape of question
@@ -35,18 +37,23 @@ for the component and answers ``None`` — not an exception — when there
 is none, mirroring the factory's own "degrade, don't break" stance
 toward absent components.  It deliberately does **not** re-export the
 pool class, the size band, the committed pool seed or the authoring
-entry point: a caller who has the pool reaches ``persist_worlds()``,
-``worlds()``, ``world_count()`` and ``world()`` on it, and a second
-spelling of those here would be a second thing to keep in sync.  The one
-question this module answers is *what is the composed bootstrap pool?*
+entry points: a caller who has the pool reaches ``persist_worlds()``,
+``persist_ported_world()``, ``worlds()``, ``ported_worlds()``,
+``verify_ported_world()``, ``world_count()`` and ``world()`` on it —
+the authored half's draw and the ported half's provenance seating and
+upstream check are both the store's own surface — and a second spelling
+of those here would be a second thing to keep in sync.  The one question
+this module answers is *what is the composed bootstrap pool?*
 
 **Construction touches no database.**  The pool resolves its path on
 first use, so asking for the component is always safe — the same promise
 the member's builder makes and the poison store's seat makes for its
 component — and the worlds are persisted only when a caller demands
-them, which is the "on demand" of the feature's own sentence: composing
-an application never writes a row, and the first ``persist_worlds()``
-is where the authoring happens.
+them, which is the "on demand" of feature 188's own sentence: composing
+an application never writes a row, and the first ``persist_worlds()`` is
+where the authoring happens.  Feature 191's seating is on the same
+terms: a ported world's digests are recorded when the caller that holds
+the world asks the pool to record them, never at composition.
 """
 
 from __future__ import annotations

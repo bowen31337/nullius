@@ -1,8 +1,11 @@
-"""The bootstrap replay pool — feature 188's authoring and persistence.
+"""The bootstrap replay pool — feature 188's authoring, feature 191's ported seating.
 
 app_spec.xml, "Bootstrap Worlds", feature 188: *System persists 40 to 50
-generated bootstrap worlds into the replay pool on demand.*  §10.6 states
-what that converts the pool-size precondition into:
+generated bootstrap worlds into the replay pool on demand*; feature 191:
+*System persists source commit and dataset manifest hash for every ported
+world, which rejects a world whose recorded values no longer match its
+upstream.*  §10.6 states what the first of those converts the pool-size
+precondition into:
 
     This converts the §10.3.1 pool-size precondition from a calendar
     problem into a compute problem.  Target 40–50 bootstrap worlds before
@@ -14,6 +17,11 @@ Feature 181 built the world this pool is made of; this module builds the
 first dreaming cycle needs before it may run (§12.1's ladder blocks
 dreaming below 20 worlds and caps it at 8-10 revisions between 20 and 50,
 so the band this feature persists is the band that unlocks the target).
+Feature 190 built the adapter a ported world is; this module gives it the
+other half of its seat — the row its provenance is recorded in and the
+check that row is checked by — so *"every world carries its source commit
+and dataset manifest hash"* (§10.6's phase brief, §10.6.1's requirement)
+is a fact about the pool rather than a promise in the adapter.
 
 **A pool entry is an identity, not a dataset.**  §10.6.1's provenance rule
 — *"An upstream that changes is a different world, not an updated one"* —
@@ -30,6 +38,30 @@ is one allocation until the first label is asked of it, which is why
 holding 40-50 of them costs nothing (the property
 :meth:`~bootstrap.HyperparameterWorld.dataset` states for one world,
 restated for the pool that holds many).
+
+**The ported half of the row (feature 191).**  A ported world is the one
+kind of pool entry that *does* have an upstream, so its identity is not a
+seed but the pair of digests that pinned its labels — the
+``source_commit`` of the upstream code and the ``dataset_manifest`` of
+the label-bearing data, the two fields §10.6.1's provenance block names
+and :class:`~bootstrap.Provenance` holds.  :meth:`BootstrapPool.\
+persist_ported_world` seats that pair beside the authored rows, under the
+``ported`` domain §10.6's tree names fourth, with no seed and no draw —
+the row is either the authored half or the ported half, a shape the
+table's own CHECK states so a row that was neither could not be written
+even by hand.  And :meth:`BootstrapPool.verify_ported_world` is the check
+the feature's sentence turns on: the digests the row *recorded*, against
+the digests the upstream *now shows*, presented by the one caller who can
+see the upstream.  They match and it is the same world — admitted, its
+record answered.  They differ and the world is *refused*, not re-hashed
+under the name it no longer describes: §10.6.1's rule and the failure
+table's own instruction (*"Refuse the world.  A changed upstream is a
+different world, not an updated one"*), which is why the refusal raises
+:class:`~bootstrap.BootstrapWorldError` — the world's recorded identity
+no longer describes it — rather than the pool's own vocabulary, which is
+for asks that were never about a world at all.  The re-port that *is* a
+new upstream belongs under a new world id, and seating it there is the
+caller's one legal move.
 
 **The draw is a stream, and the worlds are its states.**  Every number a
 *world* contains is a content-addressed hash draw — indexed, not
@@ -73,7 +105,15 @@ the same pool the dreaming loop reads rather than about a side file.  A
 deployment that names no database composes no pool component — the
 degrade-don't-break stance every store here takes — while the operator
 who means to author worlds is the caller that must not find itself in
-that state.
+that state.  Feature 191 widened the table — ``seed`` and ``pool_seed``
+lost the ``NOT NULL`` they carried as the authored half's whole identity,
+because a ported row holds neither, and the two digest columns joined —
+and a database feature 188 already prepared is *evolved* to the widened
+shape rather than stranded by it: a guarded rebuild the member performs
+inside its own lazy schema work (check the columns, copy the rows, swap
+the tables), still no edit to the shared migration chain, because the
+table's shape remains a fact about this feature and its history, not
+about the database's.
 
 **On demand, and only on demand.**  Nothing here runs at composition:
 the builder resolves a URL and holds it (no I/O — the path is resolved
@@ -90,18 +130,19 @@ was re-asserting.
 
 **What this module deliberately does not ship.**  The pool reports what
 it holds (:meth:`~bootstrap.BootstrapPool.worlds`,
+:meth:`~bootstrap.BootstrapPool.ported_worlds`,
 :meth:`~bootstrap.BootstrapPool.world_count`) but does not tally it
 *against* the financial pool — feature 186's independent count and
 feature 187's headline refusal are statements about both pools, made
 where both are visible.  It draws only hyperparameter worlds (the
-``hpo`` domain §10.6's tree names first); the feature-selection and
-symbolic-regression domains (features 182-183) and the ported adapter
-(190-191) join the same table through the same ``domain`` column when
-they exist, which is why the column is part of the row rather than a
-fact about the table.  And it charges no budget, decrements nothing and
-consults no clock beyond the authoring stamp — feature 185's
-``charges_budget`` is a fact about the *trial*, and §10.6's *"no
-dependence on market time"* is a fact about the worlds.
+``hpo`` domain §10.6's tree names first) and seats only their ported
+counterparts; the feature-selection and symbolic-regression domains
+(features 182-183) join the same table through the same ``domain``
+column when they exist, which is why the column is part of the row
+rather than a fact about the table.  And it charges no budget,
+decrements nothing and consults no clock beyond the authoring stamp —
+feature 185's ``charges_budget`` is a fact about the *trial*, and
+§10.6's *"no dependence on market time"* is a fact about the worlds.
 
 Stdlib only, and import-cheap: ``sqlite3``, ``datetime``, ``os`` and
 ``urllib.parse``; no third-party import at module scope, so the factory's
@@ -118,11 +159,13 @@ import sqlite3
 from collections.abc import Mapping
 from contextlib import closing
 from pathlib import Path
+from typing import Any
 from urllib.parse import unquote, urlparse
 
+from ._ported import Provenance
 from ._stream import GOLDEN_GAMMA, MASK64, mix64
 from ._world import HyperparameterWorld
-from .errors import BootstrapPoolError
+from .errors import BootstrapPoolError, BootstrapWorldError
 
 __all__ = [
     "DATABASE_URL_ENV",
@@ -133,8 +176,10 @@ __all__ = [
     "POOL_DOMAIN",
     "POOL_SEED",
     "POOL_TABLE",
+    "PORTED_DOMAIN",
     "BootstrapPool",
     "PersistedPool",
+    "PortedWorldRecord",
     "WorldRecord",
     "draw_world_seed",
     "parsed_instant",
@@ -194,10 +239,19 @@ POOL_SEED = 20260922
 #: The domain every world of this pool belongs to, in §10.6's own tree
 #: vocabulary (``hpo/  # hyperparameter search over a fixed model+dataset``).
 #: A column on the row rather than a fact about the table because the
-#: tree has four branches and the other three — ``featsel``, ``symreg``,
-#: ``ported`` — are later features of this category that join this pool
-#: through this column without widening it.
+#: tree has four branches and no one row holds them all: ``featsel`` and
+#: ``symreg`` are later features of this category that will join this
+#: pool through this column, and ``ported`` (:data:`PORTED_DOMAIN`,
+#: feature 191) already has.
 POOL_DOMAIN = "hpo"
+
+#: The domain a *ported* world belongs to — §10.6's fourth branch
+#: (``ported/  # external ground-truth environments, manifest-hashed —
+#: §10.6.1``), the half of the pool feature 191 seats.  Spelled by the
+#: tree rather than invented here for the same reason ``POOL_DOMAIN`` is:
+#: the pool is reported per §10.6 and the domain is how a report tells
+#: the authored half from the ported one.
+PORTED_DOMAIN = "ported"
 
 #: The row's column names, in declaration order — the one spelling of
 #: what a pool row is made of, shared by the DDL, the insert and the
@@ -205,6 +259,61 @@ POOL_DOMAIN = "hpo"
 #: a positional ``SELECT *`` invites and the one the poison store's own
 #: ``_COLUMNS`` constant exists to prevent.
 _ROW_COLUMNS = ("world_id", "seed", "domain", "pool_seed", "created_at")
+
+#: The two columns feature 191 added — the digests a ported world's
+#: provenance is recorded under, keyed exactly the way
+#: :meth:`Provenance.row` keys them so the value and the row cannot
+#: drift apart (a test pins that equality; the insert spreads the row).
+_PROVENANCE_COLUMNS = ("source_commit", "dataset_manifest")
+
+#: Every column of the widened row — the authored half's identity five,
+#: then the ported half's digest two.  One row carries one half or the
+#: other, never both, which is the table's own CHECK to state.
+_ALL_COLUMNS = _ROW_COLUMNS + _PROVENANCE_COLUMNS
+
+#: The table the guarded rebuild stages the widened shape in, while the
+#: 188-shaped table it replaces is still the one the copy reads.
+_STAGING_TABLE = f"{POOL_TABLE}_191_seating"
+
+#: The shape of one row, both halves of it.  Authored (feature 188's
+#: rows, and 182-183's when they exist): a seed, the draw that drew it,
+#: and no digests — the world has no upstream to name.  Ported (feature
+#: 191's): both digests, the ``ported`` domain, and neither a seed nor a
+#: draw — the world's identity is its upstream, not a draw this member
+#: made.  The CHECK is the shape's own voice: a row that was neither
+#: half (a seed *and* a provenance, or neither) is refused by the table
+#: itself, which is what makes the either-or a fact about the store
+#: rather than a convention of this module's writers — and what makes a
+#: hand-edited row that would corrupt the pool refuse itself on insert.
+_TABLE_BODY = f"""
+(
+    world_id         TEXT    NOT NULL PRIMARY KEY,
+    seed             INTEGER UNIQUE,
+    domain           TEXT    NOT NULL,
+    pool_seed        INTEGER,
+    created_at       TEXT    NOT NULL,
+    source_commit    TEXT,
+    dataset_manifest TEXT,
+    CHECK (
+        (
+            seed IS NOT NULL
+            AND pool_seed IS NOT NULL
+            AND source_commit IS NULL
+            AND dataset_manifest IS NULL
+            AND domain <> {PORTED_DOMAIN!r}
+        )
+        OR (
+            seed IS NULL
+            AND pool_seed IS NULL
+            AND source_commit IS NOT NULL
+            AND source_commit <> ''
+            AND dataset_manifest IS NOT NULL
+            AND dataset_manifest <> ''
+            AND domain = {PORTED_DOMAIN!r}
+        )
+    )
+)
+"""
 
 _SCHEMA = f"""
 -- Feature 188: the bootstrap half of the replay pool.  One row per
@@ -226,13 +335,19 @@ _SCHEMA = f"""
 -- DEFAULT -- the writer stamps it, which is why there is no 0109-style
 -- dialect split here (SQLite's DEFAULT grammar accepts a function call
 -- only parenthesised, and a caller-stamped column never meets it).
-CREATE TABLE IF NOT EXISTS {POOL_TABLE} (
-    world_id    TEXT    NOT NULL PRIMARY KEY,
-    seed        INTEGER NOT NULL UNIQUE,
-    domain      TEXT    NOT NULL,
-    pool_seed   INTEGER NOT NULL,
-    created_at  TEXT    NOT NULL
-)
+--
+-- Feature 191: the ported half joins the same table, and `seed` and
+-- `pool_seed` lose the NOT NULL they wore as the authored half's whole
+-- identity, because a ported world's identity is the pair of digests its
+-- upstream pinned -- `source_commit` (§10.6.1: "not a tag, not a
+-- branch") and `dataset_manifest` -- and neither a draw nor a seed
+-- names it.  The CHECK keeps the halves exclusive: one row is one half
+-- or the other, and `ported` on the domain means the digest half (so an
+-- authored row cannot wear the ported domain, and a ported row cannot
+-- shed it).  UNIQUE on a nullable seed holds in SQLite (NULLs are
+-- distinct), so the ported rows cannot trip the one-seed-one-world
+-- constraint they have no seed to answer.
+CREATE TABLE IF NOT EXISTS {POOL_TABLE} {_TABLE_BODY}
 """
 
 #: The authoring write: an upsert on the world's own key.  The ``DO
@@ -249,6 +364,69 @@ ON CONFLICT(world_id) DO UPDATE SET
     domain    = excluded.domain,
     pool_seed = excluded.pool_seed
 """
+
+#: The ported seating (feature 191): a plain INSERT, deliberately with no
+#: ``ON CONFLICT`` arm.  The authored upsert may refresh because a re-draw
+#: of the same draw is the same world; a re-port of the same *name* is
+#: not the same world until the digests say so, and a conflict arm that
+#: rewrote the digests would be the exact "re-hash it into the existing
+#: pool" §10.6.1 forbids.  The collision is reconciled in Python instead:
+#: the seated row is read and compared (:func:`_reconcile_ported_row`),
+#: so the only write this statement ever performs is a world's *first*
+#: seating.
+_PORTED_INSERT = f"""
+INSERT INTO {POOL_TABLE} ({", ".join(_ALL_COLUMNS)})
+VALUES (?, ?, ?, ?, ?, ?, ?)
+"""
+
+#: One row by name, every column of it — the read both the seating and
+#: the upstream check reconcile against, and the read the ported half of
+#: the pool is enumerated by.
+_SELECT_ROW = f"SELECT {', '.join(_ALL_COLUMNS)} FROM {POOL_TABLE} WHERE world_id = ?"
+
+
+def _pool_columns(connection: sqlite3.Connection) -> tuple[str, ...]:
+    """The table's column names, in declaration order.
+
+    ``PRAGMA table_info`` rather than a guess, because the whole point of
+    the read is to learn which *shape* of this member's own table the
+    database holds — the fresh seven-column shape feature 191 creates, or
+    the five-column one feature 188 did.
+    """
+    return tuple(str(row[1]) for row in connection.execute(f"PRAGMA table_info({POOL_TABLE})"))
+
+
+def _evolve_pool_schema(connection: sqlite3.Connection) -> None:
+    """Bring a feature-188-shaped table to the shape feature 191 reads and writes.
+
+    A no-op against every database this member prepared after the
+    widening (the provenance columns are already there) and a one-time,
+    all-rows-kept rebuild against one it prepared before: stage the
+    widened shape beside the old table, copy the authored rows across
+    (their five columns unchanged, their digests honestly ``NULL`` — an
+    authored world has no upstream to name), then swap the tables.  The
+    statements run inside the caller's transaction, so a failure leaves
+    the 188 shape exactly as it was — SQLite rolls uncommitted DDL back
+    with everything else.
+
+    Spelled here rather than as a migration in the shared chain for the
+    reason :data:`POOL_TABLE`'s own comment states: the table has one
+    writer, this pool, so its shape is this member's to evolve — and a
+    chain edit would be an order-sensitive change to files this member
+    does not own.  A ``CHECK``-guarded evolution could not invent rows
+    the old table never held: the copy seats authored rows only, and the
+    widened shape's CHECK admits them unchanged.
+    """
+    if set(_PROVENANCE_COLUMNS) <= set(_pool_columns(connection)):
+        return
+    connection.execute(f"DROP TABLE IF EXISTS {_STAGING_TABLE}")
+    connection.execute(f"CREATE TABLE {_STAGING_TABLE} {_TABLE_BODY}")
+    connection.execute(
+        f"INSERT INTO {_STAGING_TABLE} ({', '.join(_ROW_COLUMNS)}) "
+        f"SELECT {', '.join(_ROW_COLUMNS)} FROM {POOL_TABLE}"
+    )
+    connection.execute(f"DROP TABLE {POOL_TABLE}")
+    connection.execute(f"ALTER TABLE {_STAGING_TABLE} RENAME TO {POOL_TABLE}")
 
 
 def draw_world_seed(pool_seed: int, index: int) -> int:
@@ -458,6 +636,132 @@ class WorldRecord:
         )
 
 
+class PortedWorldRecord:
+    """One persisted ported world, as the pool reads it back — feature 191's row.
+
+    The identity half of a ported world: its id, its domain (``ported``,
+    §10.6's fourth branch) and the pair of digests that pinned its labels
+    — the source commit of the upstream code and the dataset manifest of
+    the label-bearing data — held as an immutable value for the same
+    reason :class:`WorldRecord` holds a seed: it is what every report of
+    the pool is made of, and the two digests are the whole of what
+    §10.6.1 asks a ported world to carry.
+
+    The world itself cannot be rebuilt from the record the way an
+    authored one can, and that is a fact about the ported half rather
+    than an omission: an authored row *is* its world (the dataset is a
+    pure function of the seed the row holds), while the labels a ported
+    row names live in an environment this member cannot call — the label
+    function is the caller's to bring, the way the digests are the
+    pool's to hold.  So the replay engine's read is the record, and the
+    caller that re-ports supplies the labels through
+    :func:`~bootstrap.ported_world` and asks
+    :meth:`~bootstrap.BootstrapPool.verify_ported_world` whether the
+    upstream it can see is still the one the row recorded.
+
+    The digests are validated at construction the way
+    :class:`~bootstrap.Provenance` validates its own — a record a caller
+    built by hand, or read back from a row a hand had been to, is refused
+    if either digest is blank, because a blank digest names no upstream
+    a check could be checked against.
+    """
+
+    __slots__ = (
+        "created_at",
+        "dataset_manifest",
+        "domain",
+        "source_commit",
+        "world_id",
+    )
+
+    def __init__(
+        self,
+        *,
+        world_id: str,
+        source_commit: str,
+        dataset_manifest: str,
+        domain: str = PORTED_DOMAIN,
+        created_at: dt.datetime,
+    ) -> None:
+        if not isinstance(world_id, str) or not world_id.strip():
+            raise BootstrapPoolError(
+                f"a ported world id is a non-empty string — got {world_id!r} "
+                f"({type(world_id).__name__}); the id is how the row is "
+                "named and a re-port checked, and a record that cannot "
+                "name its world records nothing the pool could verify"
+            )
+        for field, value in (
+            ("source_commit", source_commit),
+            ("dataset_manifest", dataset_manifest),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise BootstrapWorldError(
+                    f"a ported world's {field} is a non-empty digest — got "
+                    f"{value!r} ({type(value).__name__}); the digest pins "
+                    "the labels to an upstream this member does not "
+                    "generate, and a record holding a blank one could not "
+                    "be checked against the upstream it claims (§10.6.1: "
+                    "an upstream that changes is a different world)"
+                )
+        self.world_id = world_id
+        self.source_commit = source_commit
+        self.dataset_manifest = dataset_manifest
+        self.domain = domain
+        self.created_at = created_at
+
+    @property
+    def provenance(self) -> Provenance:
+        """The digests as the value feature 190 made of them.
+
+        The record's two text columns, back as the frozen
+        :class:`~bootstrap.Provenance` a ported world is identified by —
+        so a caller that holds a record and a caller that holds a world
+        compare the same value, and the row and the adapter cannot drift
+        apart in what they mean by "the upstream".
+        """
+        return Provenance(
+            source_commit=self.source_commit,
+            dataset_manifest=self.dataset_manifest,
+        )
+
+    def row(self) -> dict[str, object]:
+        """The record as a store-shaped mapping — a fresh dict per call.
+
+        The full widened row, both halves' spelling: the ported half's
+        digests (spread from :meth:`provenance`'s own row, so the column
+        names cannot drift from the ones the value keys) and the authored
+        half's seed and draw as ``None`` — not omitted, but honestly
+        empty, the way the table's CHECK reads them.
+        """
+        return {
+            "world_id": self.world_id,
+            "seed": None,
+            "domain": self.domain,
+            "pool_seed": None,
+            "created_at": _stamp(self.created_at),
+            **self.provenance.row(),
+        }
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, PortedWorldRecord):
+            return NotImplemented
+        return (self.world_id, self.source_commit, self.dataset_manifest) == (
+            other.world_id,
+            other.source_commit,
+            other.dataset_manifest,
+        )
+
+    def __hash__(self) -> int:
+        return hash((self.world_id, self.source_commit, self.dataset_manifest))
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid only
+        return (
+            f"PortedWorldRecord(world_id={self.world_id!r}, "
+            f"source_commit={self.source_commit!r}, "
+            f"dataset_manifest={self.dataset_manifest!r})"
+        )
+
+
 class PersistedPool:
     """What an authoring call persisted — the report, not the pool.
 
@@ -514,24 +818,98 @@ def _record_from_row(row: tuple) -> WorldRecord:
     )
 
 
+def _ported_record_from_row(row: tuple) -> PortedWorldRecord:
+    """Unpack one widened row's ported half into the record it holds.
+
+    The inverse of :meth:`PortedWorldRecord.row`, read against a row the
+    table's CHECK already kept honest (a ported row's digests are
+    non-blank and its seed is ``NULL``, or the table refused to hold it),
+    so the unpack validates the digests only for the record's own
+    constructor's sake — a hand-corrupted row is refused here by name
+    rather than read into a record that could not be checked.
+    """
+    world_id, _, domain, _, created_at, source_commit, dataset_manifest = row
+    return PortedWorldRecord(
+        world_id=world_id,
+        source_commit=source_commit,
+        dataset_manifest=dataset_manifest,
+        domain=domain,
+        created_at=parsed_instant(created_at),
+    )
+
+
+def _reconcile_ported_row(row: tuple, provenance: Provenance) -> PortedWorldRecord:
+    """Compare a seated ported row against the upstream a caller presents.
+
+    The whole of the feature's second clause, applied to one row: the
+    digests the row *recorded* are the upstream the labels were pinned
+    to, the :class:`~bootstrap.Provenance` is the upstream the caller can
+    *see now*, and the two either name the same upstream — the same
+    world, whose record this answers, down to the first instant it was
+    seated — or they do not, and the world is refused.  Refused, not
+    updated: the caller's one legal move is to seat the changed upstream
+    under its own world id, which is §10.6.1's *"a different world, not
+    an updated one"* and the failure table's own instruction (*"Refuse
+    the world"*), and it is a :class:`~bootstrap.BootstrapWorldError`
+    because the ask was well-formed — the world's recorded identity is
+    simply no longer the world's.
+
+    A row that is not the ported half at all is a pool refusal instead:
+    an authored world's row answering a ported ask would be one name
+    seating two worlds, the exact confusion the world id exists to
+    prevent.
+    """
+    world_id, seed, _, _, _, source_commit, dataset_manifest = row
+    if seed is not None:
+        raise BootstrapPoolError(
+            f"the world {world_id!r} is an authored world of the pool, "
+            "seated by a draw rather than a port — one name is one world "
+            "(§10.6.1), and a ported world seated under an authored "
+            "world's name would answer labels the row never recorded; "
+            "name the ported world by its own id"
+        )
+    if (source_commit, dataset_manifest) != (
+        provenance.source_commit,
+        provenance.dataset_manifest,
+    ):
+        raise BootstrapWorldError(
+            f"the ported world {world_id!r} is recorded against a "
+            "different upstream — recorded source_commit "
+            f"{source_commit!r} and dataset_manifest {dataset_manifest!r}, "
+            f"presented source_commit {provenance.source_commit!r} and "
+            f"dataset_manifest {provenance.dataset_manifest!r}; an "
+            "upstream that changes is a different world, not an updated "
+            "one (§10.6.1), so the pool refuses the world rather than "
+            "re-hashing it under the name it no longer describes — seat "
+            "the re-port under its own world id"
+        )
+    return _ported_record_from_row(row)
+
+
 class BootstrapPool:
-    """Feature 188's store: the bootstrap half of the replay pool.
+    """The bootstrap half of the replay pool — features 188 and 191's store.
 
     Constructed with the database URL it persists into;
     :meth:`persist_worlds` authors 40-50 generated worlds into the table
-    on demand; :meth:`worlds` and :meth:`world_count` read what the pool
-    holds; :meth:`world` builds the :class:`~bootstrap.HyperparameterWorld`
-    a persisted row names, which is the read the replay engine makes —
-    the pool is the thing that turns a world id in a ``replay_score`` row
-    back into the world that score was earned on.
+    on demand; :meth:`persist_ported_world` seats a ported world's
+    provenance beside them; :meth:`worlds` and :meth:`ported_worlds` read
+    the two halves the pool holds, :meth:`world_count` the count of both;
+    :meth:`verify_ported_world` is the upstream check feature 191's
+    sentence turns on; :meth:`world` builds the
+    :class:`~bootstrap.HyperparameterWorld` a persisted *authored* row
+    names, which is the read the replay engine makes — the pool is the
+    thing that turns a world id in a ``replay_score`` row back into the
+    world that score was earned on.
 
     The class resolves its path lazily, so constructing one performs no
     I/O — composition-time work must not touch the disk, the contract
     every store in this workspace states — and authoring happens only
-    when a caller asks for it, which is the "on demand" of the feature's
+    when a caller asks for it, which is the "on demand" of feature 188's
     sentence: a composed application carries the pool *for* the
     deployment the process is running in, and writes nothing until the
-    operator's call does.
+    operator's call does.  Feature 191's seating is on the same terms:
+    nothing is recorded for a ported world until the caller that holds
+    one asks the pool to record it.
     """
 
     __slots__ = ("_database_url", "_path")
@@ -599,9 +977,11 @@ class BootstrapPool:
         it once, and a test seeds a pool into exactly the schema the
         store will read.  One ``CREATE TABLE IF NOT EXISTS``, so running
         it against a fresh database and one this pool already prepared
-        take the same path and leave the same schema — and there is no
-        ``ALTER TABLE`` half to guard, because the table is this
-        member's own and no migration can be ahead of it.
+        take the same path and leave the same schema — and a database
+        feature 188's shape is still in is *evolved* here rather than
+        stranded (:func:`_evolve_pool_schema`, a guarded rebuild that
+        keeps every authored row), because the table is this member's
+        own and no migration can be ahead of it.
 
         It opens its own connection and commits it, and it does **not**
         go through :meth:`_connect`: that method calls this one, and a
@@ -610,6 +990,7 @@ class BootstrapPool:
         """
         with closing(sqlite3.connect(self.path)) as connection, connection:
             connection.executescript(_SCHEMA)
+            _evolve_pool_schema(connection)
 
     def _connect(self) -> sqlite3.Connection:
         """Open the database, bringing it to this pool's shape first.
@@ -752,10 +1133,125 @@ class BootstrapPool:
             replayed=bool(seated.intersection(record.world_id for record in records)),
         )
 
+    # -- Feature 191: the ported seating ---------------------------------------
+
+    def persist_ported_world(
+        self,
+        world: Any,
+        *,
+        persisted_at: dt.datetime | None = None,
+    ) -> PortedWorldRecord:
+        """Persist a ported world's provenance — feature 191's whole write.
+
+        Takes the :class:`~bootstrap.PortedWorld` a caller ported — read
+        duck-typed, for its ``world_id`` and its ``provenance``, the two
+        facts a row can hold; the label function is the environment's and
+        is deliberately *not* recorded, for the reason no dataset is: a
+        ported row is an identity, not a cache — and seats the two
+        digests, the ``ported`` domain and the stamp into the same
+        ``bootstrap_world`` table the authored draw writes.  Returns the
+        :class:`PortedWorldRecord` the row now holds.
+
+        The reconciliation is the feature's own clause.  A world id the
+        pool does not hold seats a new row.  A world id the pool holds
+        *with the same digests* is the same world re-asserted — the
+        record answers with the row's own ``created_at``, the first
+        instant the upstream was seated, exactly as a re-run of the
+        authored draw keeps its first authoring.  A world id the pool
+        holds *with different digests* is an upstream that changed
+        wearing an old world's name, and the call refuses with
+        :class:`~bootstrap.BootstrapWorldError` rather than re-hashing
+        the row — §10.6.1's rule, which is why there is no ``ON
+        CONFLICT`` arm on the ported insert to silently do the forbidden
+        thing.  The changed upstream's one legal move is a world id of
+        its own, and seating it there is exactly what this method is for.
+
+        Refuses, in this order, each naming what it is about:
+
+        1. a world that cannot name itself (no usable ``world_id``), or
+           that carries no :class:`~bootstrap.Provenance` — the two
+           things the row is made of, refused before the database opens;
+        2. a world id that already names an *authored* world of the pool
+           — one name is one world, and an authored row answering a
+           ported ask would answer labels it never recorded;
+        3. a world id recorded against a different upstream — the
+           refusal above, with both digest pairs in the message so an
+           operator reading it can see *which* half of the upstream
+           moved.
+
+        ``persisted_at`` defaults to the current UTC instant truncated to
+        the second, and is a parameter for the same reason the draw's is.
+        """
+        world_id = getattr(world, "world_id", None)
+        if not isinstance(world_id, str) or not world_id.strip():
+            raise BootstrapPoolError(
+                f"a ported world is persisted under its id — got {world!r}; "
+                "the id is how the row is named and a re-port checked, and "
+                "a world that cannot name itself records nothing the pool "
+                "could verify against an upstream"
+            )
+        provenance = getattr(world, "provenance", None)
+        if not isinstance(provenance, Provenance):
+            raise BootstrapWorldError(
+                f"a ported world carries its provenance — got {provenance!r}; "
+                "the digests are the whole of what this store records for "
+                "a ported world, and a world that carries none has no "
+                "upstream a re-port could be checked against (§10.6.1: an "
+                "upstream that changes is a different world)"
+            )
+        stamp = _stamp(
+            persisted_at if persisted_at is not None else dt.datetime.now(dt.UTC)
+        )
+        with closing(self._connect()) as connection, connection:
+            row = connection.execute(_SELECT_ROW, (world_id,)).fetchone()
+            if row is not None:
+                # Seated already: same digests answer the held record
+                # (and keep its first instant); different ones are the
+                # refusal this feature exists to make.
+                return _reconcile_ported_row(row, provenance)
+            try:
+                connection.execute(
+                    _PORTED_INSERT,
+                    (
+                        world_id,
+                        None,
+                        PORTED_DOMAIN,
+                        None,
+                        stamp,
+                        provenance.source_commit,
+                        provenance.dataset_manifest,
+                    ),
+                )
+            except sqlite3.IntegrityError as refusal:
+                # Another writer seated this id between the read and the
+                # insert.  Translated through the reconciliation rather
+                # than leaked, so the refusal — if it is one — names the
+                # world and both upstreams instead of the constraint.
+                row = connection.execute(_SELECT_ROW, (world_id,)).fetchone()
+                if row is None:  # pragma: no cover - the insert's own subject
+                    raise BootstrapPoolError(
+                        f"the ported world {world_id!r} could not be "
+                        f"seated — the table refused the row ({refusal}); "
+                        "an operator reading this should not have to work "
+                        "out which constraint spoke"
+                    ) from refusal
+                return _reconcile_ported_row(row, provenance)
+            return PortedWorldRecord(
+                world_id=world_id,
+                source_commit=provenance.source_commit,
+                dataset_manifest=provenance.dataset_manifest,
+                created_at=parsed_instant(stamp),
+            )
+
     # -- The reads ------------------------------------------------------------
 
     def worlds(self) -> tuple[WorldRecord, ...]:
-        """Every world the pool holds, ascending by world id.
+        """Every authored world the pool holds, ascending by world id.
+
+        The authored half of the pool — rows with a seed, drawn by
+        :meth:`persist_worlds` — because a :class:`WorldRecord` is a seed
+        identity and a ported row has none; the ported half is read by
+        :meth:`ported_worlds`, and :meth:`world_count` counts both.
 
         Explicitly ordered (§12's ordering rule, restated for a store):
         two reads of one pool return the same sequence whatever the
@@ -768,24 +1264,107 @@ class BootstrapPool:
         with closing(self._connect()) as connection:
             rows = connection.execute(
                 f"SELECT {', '.join(_ROW_COLUMNS)} FROM {POOL_TABLE} "
-                f"ORDER BY world_id"
+                f"WHERE seed IS NOT NULL ORDER BY world_id"
             ).fetchall()
         return tuple(_record_from_row(row) for row in rows)
+
+    def ported_worlds(self) -> tuple[PortedWorldRecord, ...]:
+        """Every ported world the pool holds, ascending by world id.
+
+        The ported half — rows with provenance and no seed, seated by
+        :meth:`persist_ported_world` — read as
+        :class:`PortedWorldRecord` values because the pool cannot
+        rebuild what it never generated: the labels live in the
+        environment they were ported from, so the record (the two
+        digests, the domain, the instant) is the whole of what the pool
+        can answer for, and the caller that needs the *world* re-ports
+        it through :func:`~bootstrap.ported_world` and checks it with
+        :meth:`verify_ported_world`.
+
+        Ordered by world id under the same §12 rule as :meth:`worlds`,
+        so a report naming both halves of one pool reads them in one
+        order.
+        """
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                f"SELECT {', '.join(_ALL_COLUMNS)} FROM {POOL_TABLE} "
+                f"WHERE seed IS NULL ORDER BY world_id"
+            ).fetchall()
+        return tuple(_ported_record_from_row(row) for row in rows)
 
     def world_count(self) -> int:
         """How many worlds the pool holds — the bootstrap half of feature 186's tally.
 
-        A count of rows rather than ``len(self.worlds())``, because the
-        question the dreaming loop asks of the pool is a number (§12.1's
-        ladder reads "below 20 worlds", "between 20 and 50"), and a
-        number that built every record to answer would pay for 50
-        identities to return one integer.
+        Both halves, authored and ported: §10.6's target counts *worlds*
+        ("Authored worlds and ported external worlds both qualify"), and
+        §12.1's ladder reads the total — "below 20 worlds", "between 20
+        and 50" — not one half of it.  A count of rows rather than
+        ``len(self.worlds()) + len(self.ported_worlds())``, because the
+        question the dreaming loop asks of the pool is a number, and a
+        number that built every record of both halves to answer would
+        pay for a hundred identities to return one integer.
         """
         with closing(self._connect()) as connection:
             (held,) = connection.execute(
                 f"SELECT COUNT(*) FROM {POOL_TABLE}"
             ).fetchone()
         return int(held)
+
+    def verify_ported_world(
+        self, world_id: str, upstream: Provenance
+    ) -> PortedWorldRecord:
+        """Check a seated ported world against the upstream a caller can see.
+
+        The refusal half of feature 191's sentence, as a read: the row's
+        *recorded* digests against the ``upstream`` the caller presents —
+        the pair the source repo and its dataset manifest *now* hash to,
+        which only a caller positioned at the upstream can know.  They
+        match and the world is the one it claims to be: the record
+        answers, and a replay may attribute scores to it.  They differ
+        and the world is refused with
+        :class:`~bootstrap.BootstrapWorldError` — *"Refuse the world.  A
+        changed upstream is a different world, not an updated one"*
+        (§10.6.1, and the failure table's row for exactly this state) —
+        naming the world and both digest pairs, so an operator reading
+        the refusal can see which half of the upstream moved.
+
+        Refuses a world id that is not a usable identifier, an
+        ``upstream`` that is not a :class:`~bootstrap.Provenance`
+        (nothing else names an upstream this check could read), a world
+        id the pool does not hold (naming it and the count it does), and
+        a world id that names an *authored* world (the ask was never
+        about a ported one) — the last two as
+        :class:`~bootstrap.BootstrapPoolError`, because they are the
+        pool's own refusals rather than the world's.
+        """
+        if not isinstance(world_id, str) or not world_id.strip():
+            raise BootstrapPoolError(
+                f"a world id is a non-empty string — got {world_id!r} "
+                f"({type(world_id).__name__}); the id is how a pool row "
+                "is named and an upstream checked against it, and an id "
+                "that is not one addresses no world this pool holds"
+            )
+        if not isinstance(upstream, Provenance):
+            raise BootstrapWorldError(
+                f"an upstream is named by its digests — got {upstream!r} "
+                f"({type(upstream).__name__}); the check compares the "
+                "two digests the row recorded against the two the "
+                "upstream now shows, and a value that is not a "
+                "Provenance names no upstream either side of that "
+                "comparison"
+            )
+        with closing(self._connect()) as connection:
+            row = connection.execute(_SELECT_ROW, (world_id,)).fetchone()
+        if row is None:
+            held = self.world_count()
+            raise BootstrapPoolError(
+                f"the replay pool holds no world {world_id!r} — it holds "
+                f"{held} world(s); a world id is either one a seating "
+                "call seated or it is nothing, and a check that answered "
+                "for a neighbouring row would admit a world the pool "
+                "never recorded"
+            )
+        return _reconcile_ported_row(row, upstream)
 
     def world(self, world_id: str) -> HyperparameterWorld:
         """The world a persisted row names — the replay engine's read.
@@ -801,7 +1380,11 @@ class BootstrapPool:
         count it does: a caller that misspells an id wants a refusal it
         can read, not a world silently served from a neighbouring row —
         the same "refused, not created" discipline the poison store
-        applies to a node the tree does not hold.
+        applies to a node the tree does not hold.  Refuses a world id
+        that names a *ported* world for the plainer reason that this
+        read has no seed to build from — the ported half is read by
+        :meth:`ported_worlds`, and a ported world's labels are the
+        environment's to answer, not a draw's.
         """
         if not isinstance(world_id, str) or not world_id.strip():
             raise BootstrapPoolError(
@@ -824,6 +1407,15 @@ class BootstrapPool:
                 "persist_worlds call seated or it is nothing, and a pool "
                 "that answered from a neighbouring row would attribute a "
                 "score to a world that never earned it"
+            )
+        if row[1] is None:
+            raise BootstrapPoolError(
+                f"the world {world_id!r} is a ported world of the pool — "
+                "the authored read builds a HyperparameterWorld from a "
+                "seed, and a ported row holds none; its record is read "
+                "by ported_worlds() and its upstream checked by "
+                "verify_ported_world(), because its labels are the "
+                "environment's to answer, not a draw's"
             )
         record = _record_from_row(row)
         return HyperparameterWorld(record.world_id, seed=record.seed)
