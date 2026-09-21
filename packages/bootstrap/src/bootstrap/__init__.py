@@ -3,7 +3,9 @@
 Implements app_spec.xml, "Bootstrap Worlds" — feature 181, *"System
 exposes a hyperparameter search world over a fixed model and dataset,
 which returns a ground-truth score per node"*; feature 184, the identical
-``question.*`` interface every bootstrap world fronts; feature 188, *"System
+``question.*`` interface every bootstrap world fronts; feature 185,
+*"System charges no statistical budget for a bootstrap world, persisting
+charges_budget as false on those trials"*; feature 188, *"System
 persists 40 to 50 generated bootstrap worlds into the replay pool on
 demand"*; feature 189, *"System labels every bootstrap node with ground
 truth, which returns perfect sensitivity and specificity references for
@@ -92,6 +94,26 @@ sibling features of this category:
   and a world must not hold, so one policy runs unmodified against a
   bootstrap world and returns scores comparable with the financial pool —
   the identical interface every bootstrap world exposes.
+
+* **The trials' budget bit** (:mod:`bootstrap._trial`).  Feature 185's
+  persistence half: §10.6 gives a bootstrap world *"perfect labels, zero
+  statistical-budget cost, and no dependence on market time"*, and the
+  zero-cost clause reaches the accounting through §8's
+  ``charges_budget`` column — the one bit ``K_effective`` (feature 93)
+  filters on.  A :class:`~bootstrap.BootstrapTrialLedger` records *those
+  trials* — the probes a policy makes through the question interface,
+  revealed by the question's own ``probe_batch`` so the record and the
+  reveal cannot drift apart — into ``bootstrap_trial``, a table this
+  member owns in the database ``DATABASE_URL`` names (the same one the
+  worlds and ``replay_score`` live in), one row per newly revealed cell,
+  attributed from the observation's own payload.  Every row writes
+  ``charges_budget`` as the literal ``0`` of the INSERT — the write has
+  no parameter for the bit, because §10.6 publishes that a bootstrap
+  world's probes are free — and the table's own
+  ``CHECK (charges_budget = 0)`` makes the sentence a fact about the
+  store rather than a convention of its writers: no bootstrap trial, and
+  no hand that reached past the writer, can ever inflate the count
+  feature 93 takes.
 
 * **The seeded stream** (:mod:`bootstrap._stream`).  Every number a world
   contains is a pure integer-hash draw on a *cell*, not a step of a
@@ -183,16 +205,16 @@ sibling features of this category:
 
 **What this member deliberately does not ship.**  The things this member
 does not ship are the ones that are statements about *callers* of its
-labels rather than about the labels: feature 187's headline refusal —
-*"System rejects a headline dreaming claim resting on bootstrap worlds
-alone"* — is a judgment about a claim, made where the claim and both
-figures are visible, so this member reports the two figures (feature 186)
-and renders no verdict on what they may be claimed to support.  Feature
-185's budget rule — *"System charges no statistical budget for a
-bootstrap world"* — is a fact about what the *trial* records rather than
-about what the world computes, so nothing here indexes, decrements or
-reports a budget, and §10.3's ``FDR_deploy`` reweighting is the scorer's
-arithmetic over rates this member makes exact, not a rate itself.  The world itself stays
+labels rather than about the labels.  Feature 185 ships the trial's own
+record — the ``charges_budget`` row (:mod:`bootstrap._trial`) — and
+ships *only* that: the question keeps reporting the whole budget and
+nothing here indexes, decrements or reports a budget of its own, because
+a counter would be a budget and the budget is not the world's to keep.
+Feature 187's verdict is shipped as a judgment the *caller* renders over
+feature 186's two figures (:func:`~bootstrap.rejects_dreaming_claim`),
+and no verdict lives inside the census or the pool themselves.  And
+§10.3's ``FDR_deploy`` reweighting is the scorer's arithmetic over rates
+this member makes exact, not a rate itself.  The world itself stays
 reveal-history-free by design — a world that owned a reveal history
 would be a world whose answers depended on it, which is why the
 bookkeeping lives in the question (:mod:`bootstrap._question`) and not
@@ -270,6 +292,12 @@ from ._question import (
     question_for,
 )
 from ._stream import GOLDEN_GAMMA, MASK64, mix64, normal, uniform
+from ._trial import (
+    TRIAL_CHARGES_BUDGET,
+    TRIAL_TABLE,
+    BootstrapTrialLedger,
+    TrialRecord,
+)
 from ._truth import (
     DISCOVERY_BAR,
     ConfusionMatrix,
@@ -356,11 +384,14 @@ __all__ = [
     "REPLAY_SCORE_WORLD_COLUMN",
     "SQUARE_COEFFICIENTS",
     "TOTAL_BASIS",
+    "TRIAL_CHARGES_BUDGET",
+    "TRIAL_TABLE",
     "BootstrapError",
     "BootstrapPool",
     "BootstrapPoolError",
     "BootstrapQuestion",
     "BootstrapScoringError",
+    "BootstrapTrialLedger",
     "BootstrapWorldError",
     "CellMeta",
     "ConfusionMatrix",
@@ -377,6 +408,7 @@ __all__ = [
     "PortedWorld",
     "PortedWorldRecord",
     "Provenance",
+    "TrialRecord",
     "WorldCensus",
     "WorldRecord",
     "build_bootstrap_pool",

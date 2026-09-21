@@ -141,8 +141,9 @@ counterparts; the feature-selection and symbolic-regression domains
 column when they exist, which is why the column is part of the row
 rather than a fact about the table.  And it charges no budget,
 decrements nothing and consults no clock beyond the authoring stamp —
-feature 185's ``charges_budget`` is a fact about the *trial*, and
-§10.6's *"no dependence on market time"* is a fact about the worlds.
+feature 185's ``charges_budget`` is a fact about the *trial*, recorded
+by the trial ledger (:mod:`bootstrap._trial`) rather than by the pool,
+and §10.6's *"no dependence on market time"* is a fact about the worlds.
 
 Stdlib only, and import-cheap: ``sqlite3``, ``datetime``, ``os`` and
 ``urllib.parse``; no third-party import at module scope, so the factory's

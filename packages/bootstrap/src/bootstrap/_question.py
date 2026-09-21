@@ -462,7 +462,8 @@ class BootstrapQuestion:
         statistical degrees of freedom — and the adapter reports it as the
         budget untouched, rather than a counter it decrements: a counter
         would be a budget, and a budget is the trial's fact (feature 185's
-        ``charges_budget`` is a statement about what the trial records), not
+        ``charges_budget`` is a statement about what the trial records,
+        persisted by the trial ledger, :mod:`bootstrap._trial`), not
         the world's. The question therefore never tracks a budget; it states
         the world's stance, and a policy reading it sees a bootstrap world as
         a world whose probing is free.

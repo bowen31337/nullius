@@ -32,15 +32,22 @@ trees:
   can be trusted as the reference the financial worlds are calibrated
   against (§10.6, §10.6.1).
 
-* :class:`BootstrapPoolError` — the *pool* contract (feature 188).  The
-  replay pool could not be authored or read as the thing the caller
-  asked: a size outside the 40-50 band §10.6 targets, a ``DATABASE_URL``
-  the store cannot speak or that names no durable database, a world id
-  the pool does not hold, or a draw that would put one world into the
-  pool under two names.  Each refusal is about the *pool's* integrity
-  rather than about any one world — a pool that silently absorbed a
-  short draw or a duplicated seed would under-report the very
-  precondition (§10.3.1's pool size) the pool exists to satisfy.
+* :class:`BootstrapPoolError` — the *pool* contract (feature 188, and
+  the store contract feature 185's trial ledger shares).  The replay
+  pool could not be authored or read as the thing the caller asked: a
+  size outside the 40-50 band §10.6 targets, a ``DATABASE_URL`` the
+  store cannot speak or that names no durable database, a world id the
+  pool does not hold, or a draw that would put one world into the pool
+  under two names.  Each refusal is about the *pool's* integrity rather
+  than about any one world — a pool that silently absorbed a short draw
+  or a duplicated seed would under-report the very precondition
+  (§10.3.1's pool size) the pool exists to satisfy.  The trial ledger
+  (:mod:`bootstrap._trial`) refuses with the same class — an object that
+  is not a question, a payload a trial row cannot be attributed from, a
+  record that says a bootstrap trial charged budget — because its
+  refusals are the same *kind* of fact (the ask was never about a world)
+  and the caller's repair is the same: re-consider the ask, not the
+  world.
 
 The split matters to the two callers this category has.  A *policy* under
 replay asks a world for cells and needs :class:`BootstrapWorldError` to be
@@ -109,7 +116,13 @@ class BootstrapPoolError(BootstrapError):
     integrity rather than about any world in it: a size outside the 40-50
     band, a database the store cannot speak or that would not outlive the
     process that authored into it, a world id the pool does not hold, and
-    a draw that would seat one world under two names.
+    a draw that would seat one world under two names.  Feature 185's
+    trial ledger (:mod:`bootstrap._trial`) refuses with this class too —
+    an object that is not a question, a payload a trial row cannot be
+    attributed from, a hand-built record that says a bootstrap trial
+    charged budget — because those refusals are the same kind of fact:
+    the ask was never about a world, and the repair is to re-consider
+    the ask rather than re-aim or re-draw it.
 
     Kept as its own class — beside the world and scoring contracts rather
     than under either — because the caller's repair differs from both: a
