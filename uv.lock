@@ -15,6 +15,7 @@ members = [
     "nullius-feature-store",
     "nullius-ingest",
     "nulloracle",
+    "providers",
     "sandbox",
     "snapshot",
     "tripwires",
@@ -346,6 +347,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ba/e7/c61c1c7eea37705920fe7c1302d1dd80d1165db2b928f0da3eae6d1ebb75/polars_runtime_32-1.44.2-cp310-abi3-win_amd64.whl", hash = "sha256:8598e7a20efba70bb74978c7df7af7c606ff4d79b9b48fdd808250b189bc9a13", size = 51297967, upload-time = "2026-09-09T07:40:41.993Z" },
     { url = "https://files.pythonhosted.org/packages/e7/a0/d0dd0d2ec95fa328dd47055905fae53ba3cd79f11c8973326ebe75a49e4c/polars_runtime_32-1.44.2-cp310-abi3-win_arm64.whl", hash = "sha256:d51040d3ab40157f6db3c62be59cab5b80fb3c8d158924769c4982a1c8eef730", size = 44303345, upload-time = "2026-09-09T07:40:47.081Z" },
 ]
+
+[[package]]
+name = "providers"
+version = "0.1.0"
+source = { editable = "packages/providers" }
 
 [[package]]
 name = "pyarrow"

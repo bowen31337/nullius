@@ -1,0 +1,34 @@
+# nullius workspace member: the provider interface plugin
+# (app_spec.xml, "LLM Provider Tiering & Agent Pinning", feature 192:
+# "System defines one provider interface that every model call passes through,
+# which returns a normalized completion object"; docs/nullius-tech-architecture.md
+# §17-§19 for the trust-zone layout this seam sits inside).
+#
+# Registered by convention, not by edit: src/providers/__init__.py carries the
+# component builder, and the factory's module loader (src/app/module_loader.py)
+# discovers it by scanning the members the root pyproject.toml declares. No
+# central registry, router table or app factory is touched to wire this
+# package in — that is the one-way dependency the workspace contract pins.
+#
+# Stdlib-only by design. The provider interface is a contract and a set of
+# records — one shape a caller sends a request in and gets a completion out of
+# — and it holds no transport, no credential and no provider SDK: those belong
+# to a concrete provider on the trusted side of the boundary (feature 150's
+# orchestrator). An import-safe member with no dependencies cannot break
+# another member's resolution, and the interface it defines is what the
+# recorded-fixture backends of features 193-195 and the tiering/pinning
+# features 196-204 build on top of, by importing these seams directly.
+
+[project]
+name = "providers"
+version = "0.1.0"
+description = "The one provider interface every model call passes through, returning a normalized completion object."
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/providers"]
