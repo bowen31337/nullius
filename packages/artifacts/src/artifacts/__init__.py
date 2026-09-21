@@ -251,6 +251,36 @@ features persist land inside the directories this store keys.
   would feed every candidate an invented covariance and break the
   determinism §10.4 pins.
 
+* **Every candidate is a rank-1 update against that factor**
+  (:mod:`artifacts._update`, feature 178).  The second half of §9.3's
+  sentence — *"every candidate is a rank-1 update at ``O(kT + k²)``
+  — roughly 40 µs"*, closing *"``ir_marginal`` then becomes array
+  indexing plus a rank-1 update, with no canonical-book cache
+  anywhere"* — and the half the precompute exists to make cheap:
+  :func:`evaluate_rank1_update` indexes the candidate's T-vector out
+  of the resident array (``CampaignReturns.row``, §9.3's array
+  indexing), aligns it on the factor's own shared sample, and scores
+  it there — ``O(kT)`` for the means and the member–candidate
+  covariances, ``O(k²)`` for the forward substitution ``L·w = γ``,
+  the residual variance ``d² = σ_v² − wᵀw`` and both equal-weight
+  variances as quadratic forms through the factor, never ``O(k²T)``
+  or ``O(k³)`` again.  The answer is the evaluator's own definition
+  — §6.2's ``IR(book ∪ {v}) − IR(book)``, equal weights, population
+  ``1/T``, ``fsum`` — computed through the moments the factor
+  already paid for, and :class:`Rank1Update` carries those terms
+  beside the scalar so the record checks itself the way the
+  evaluator's does.  Nothing is held between calls: the factor is
+  read and never written (growing the book is the *next* replay's
+  precompute — the book is fixed during this one), no cache answers
+  what feature 176 declined, and the ~40 µs figure is anchored to
+  the sizing it was measured at
+  (:data:`RANK1_UPDATE_SIZING_BOOK` members over
+  :data:`RANK1_UPDATE_SIZING_SAMPLE` periods) and held inside a
+  checkable band by the suite's timing test.  A candidate the book
+  already spans refuses with its residual named — the same
+  no-jitter verdict the precompute takes on a dependent member,
+  taken here on the candidate.
+
 * **The two per-date series persist as Parquet** (:mod:`artifacts._series`,
   feature 171).  §9.2's ``ic_series.parquet`` and ``turnover_series.parquet``
   — the two lines between the returns grid and the edge's JSON documents —
@@ -343,6 +373,7 @@ from ._errors import (
     ArtifactNotFoundError,
     ArtifactPinError,
     ArtifactProposalError,
+    ArtifactRank1UpdateError,
     ArtifactsError,
     ArtifactStoreError,
 )
@@ -425,6 +456,14 @@ from ._store import (
     ArtifactStore,
     artifact_uri,
 )
+from ._update import (
+    RANK1_UPDATE_COST_MICROSECONDS,
+    RANK1_UPDATE_POLICY,
+    RANK1_UPDATE_SIZING_BOOK,
+    RANK1_UPDATE_SIZING_SAMPLE,
+    Rank1Update,
+    evaluate_rank1_update,
+)
 
 __all__ = [
     "ABSENT",
@@ -456,6 +495,10 @@ __all__ = [
     "NODE_CODE_HASH_INDEX",
     "NODE_TABLE",
     "PARQUET_COMPRESSION",
+    "RANK1_UPDATE_COST_MICROSECONDS",
+    "RANK1_UPDATE_POLICY",
+    "RANK1_UPDATE_SIZING_BOOK",
+    "RANK1_UPDATE_SIZING_SAMPLE",
     "REGIME_ATTRIBUTION_FILENAME",
     "RESIDENT_CACHE_POLICY",
     "RESIDENT_PIN_POLICY",
@@ -474,6 +517,7 @@ __all__ = [
     "ArtifactNotFoundError",
     "ArtifactPinError",
     "ArtifactProposalError",
+    "ArtifactRank1UpdateError",
     "ArtifactStore",
     "ArtifactStoreError",
     "ArtifactsError",
@@ -482,6 +526,7 @@ __all__ = [
     "CampaignPins",
     "CampaignReturns",
     "CodeHashIndex",
+    "Rank1Update",
     "ReturnRow",
     "ReturnSeriesCache",
     "SignalReturns",
@@ -499,6 +544,7 @@ __all__ = [
     "decode_signal_returns",
     "encode_series",
     "encode_signal_returns",
+    "evaluate_rank1_update",
     "executed_source",
     "execution_is_persisted",
     "execution_trace",

@@ -113,6 +113,34 @@ by which line of code failed:
   (:class:`~artifacts.BookCholesky`), whose lies are about the buffer
   rather than the book.
 
+* :class:`ArtifactRank1UpdateError` — the rank-1 update's contract
+  (app_spec.xml feature 178).  The update is a pure function of one
+  :class:`~artifacts.BookCholesky`, one resident
+  :class:`~artifacts.CampaignReturns` and one candidate node id — no
+  store, no I/O, nothing held between calls — so everything it
+  refuses is a lie about that triangle: a factor and an array of
+  different campaigns or horizons (the update would score candidates
+  against another campaign's covariance), a sample period the array
+  cannot address, a member the array holds no row for or one carrying
+  ABSENT on a sample period (a factor not precomputed over this
+  array's cells), a candidate the array holds no row for, one the
+  book already holds, one that missed a sample period (a hole, not a
+  zero return), one that never varied (its information ratio is
+  undefined), or one the book already explains to the last digit of
+  the arithmetic — the residual pivot the update refuses to take,
+  jitter never added, the same verdict feature 177 takes on a
+  dependent member taken here on the candidate.  Split from the
+  factor's contract the way the two halves of §9.3's sentence split:
+  feature 177 owns the honesty of the once-per-replay precompute,
+  feature 178 owns the honesty of the per-candidate arithmetic
+  against it, and a caller catching one does not swallow the other's
+  refusals.  The same validation guards the answer built by hand
+  (:class:`~artifacts.Rank1Update`), whose lies are about the terms —
+  a ratio that is not its own mean over its own standard deviation,
+  an increment that is not the difference of its own two ratios, a
+  variance split that does not sum, a combined variance that does not
+  fold.
+
 Every message names the offending value and the contract it broke, in
 the same discipline as the snapshot and null-oracle taxonomies: these
 errors are operational signals for a system whose replay determinism
@@ -131,6 +159,7 @@ __all__ = [
     "ArtifactNotFoundError",
     "ArtifactPinError",
     "ArtifactProposalError",
+    "ArtifactRank1UpdateError",
     "ArtifactStoreError",
     "ArtifactsError",
 ]
@@ -329,4 +358,44 @@ class ArtifactBookFactorError(ArtifactsError):
     non-positive diagonal, a non-finite cell, an axis out of order —
     so a caller catching it covers every way a factor can fail to be
     the book's own covariance.
+    """
+
+
+class ArtifactRank1UpdateError(ArtifactsError):
+    """A candidate could not be evaluated as a rank-1 update as given.
+
+    app_spec.xml feature 178: *System evaluates a candidate as a
+    rank-1 update against the precomputed factor, which returns
+    ir_marginal in roughly 40 microseconds.*  The update is a pure
+    function of feature 177's factor, feature 174's resident array
+    and one candidate node id — no store, no filesystem, nothing held
+    between calls — so every refusal it speaks is about that triangle
+    rather than about I/O: a factor that is not the precompute's
+    record, an array that is not the resident load, a factor and an
+    array of different campaigns or horizons, a sample period the
+    array's axis cannot address, a member the array holds no row for
+    or one carrying ABSENT on a sample period, a candidate the array
+    holds no row for, a candidate the book already holds, one that
+    missed a period of the sample (a hole in the resident array, not
+    a zero return), one that returned a constant over the sample (its
+    information ratio is undefined), or one the book already explains
+    to the last digit of this arithmetic — the residual variance at
+    or below zero, refused with both terms named.
+
+    The last of those is a *verdict about the candidate*, not a
+    breakage, and it is feature 177's verdict on a dependent member
+    taken on the candidate: nothing failed, the solve discovered that
+    the candidate adds no dimension the book does not hold (a
+    duplicate signal — §14.1's anti-convergence clause exists because
+    search keeps proposing them), and no jitter is added to smooth it
+    over, because a patched pivot would score an invented candidate
+    and break the determinism §10.4 pins.  The same class speaks for
+    the answer built by hand (:class:`~artifacts.Rank1Update`), where
+    the lies are about the terms — a ratio that is not its own mean
+    over its own standard deviation, an increment that is not the
+    difference of its own two ratios, a mean that is not the
+    equal-weight fold, a variance split that does not sum, a combined
+    variance that does not fold — so a caller catching it covers every
+    way a marginal this module answered can fail to be the increment
+    its own terms describe.
     """
