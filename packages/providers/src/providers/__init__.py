@@ -74,6 +74,47 @@ package's surface:
   a node stamped with an alias is not a model call that failed, and one
   ``except`` must not answer both questions.  See :mod:`providers._pin_errors`.
 
+Feature 204 — *"System persists ``agent_ckpt_hash`` for self-hosted weights plus
+``agent_sampling`` recording temperature, top_p, thinking and seed"* — is the
+rest of that same record.  Feature 203's sentence pins *which model*; feature
+204's pins *which weights* and *which dice*, and the two are two halves of one
+row because ``0115`` adds all three columns in one migration.  Its records:
+
+* :class:`AgentSampling` — the four settings, frozen and value-equal, every one
+  validated on construction and every one always present in the stored form:
+  ``temperature`` in ``[0, 2]``, ``top_p`` in ``(0, 1]``, ``thinking`` a strict
+  ``bool``, ``seed`` a non-negative int inside the signed 64-bit range.
+  :func:`require_agent_sampling` parses the canonical JSON the column holds and
+  requires all four keys of a document, because a record naming three settings
+  is not a smaller answer than one naming four — the setting most often left
+  out is ``seed``, the one that makes replay reproduce the node.  See
+  :mod:`providers._sampling`.
+
+* :func:`require_agent_ckpt_hash` — the checkpoint digest, 64 hex characters,
+  case-folded like :func:`artifacts.canonical_code_hash`, with the
+  ``sha256:``-prefixed *image-reference* spelling refused by name.  ``None`` is
+  not a malformed hash but the hosted-API case, spelled
+  :func:`hosted_api_weights` so that *"these weights are a provider's"* is a
+  state a caller **states** rather than a field it forgets.  See
+  :mod:`providers._ckpt`.
+
+* :class:`AgentWeights` and :class:`NodeProvenance` — the pair feature 204's
+  two columns are written and read as, and the ``recorded`` tri-state that says
+  whether *this* call wrote them (``True``), found them already there
+  (``False``), or had nothing to record (``None``).
+
+* :class:`~providers.AgentSamplingMalformedError`,
+  :class:`~providers.CkptHashMalformedError`,
+  :class:`~providers.CkptHashConflictError`,
+  :class:`~providers.SamplingConflictError` and
+  :class:`~providers.NodeProvenanceError` — feature 204's five, and they join
+  feature 203's taxonomy **under the same base** rather than minting a second
+  one.  The split is by column and the columns are one row: a caller asking
+  *could this node's authoring record be pinned?* is asking one question, and a
+  second base would make it two ``except`` clauses and one more way to write
+  only one of them.  Neither base is :class:`~providers.ProviderError`'s
+  ancestor, for the reason above.
+
 The error taxonomy (:mod:`providers._errors`) is the failure modes of *this*
 seam and no other — a malformed completion, a missing provider, an unknown
 model — raised at the interface's own guardrails, never by a provider's
@@ -113,6 +154,13 @@ from __future__ import annotations
 
 from app.module_loader import register
 
+from ._ckpt import (
+    AGENT_CKPT_HASH_COLUMN,
+    CKPT_HASH_LENGTH,
+    HOSTED_API_CKPT_HASH,
+    hosted_api_weights,
+    require_agent_ckpt_hash,
+)
 from ._completion import Completion, Usage
 from ._errors import (
     CompletionMalformedError,
@@ -121,13 +169,18 @@ from ._errors import (
     UnknownModelError,
 )
 from ._pin_errors import (
+    AgentSamplingMalformedError,
+    CkptHashConflictError,
+    CkptHashMalformedError,
     ModelPinConflictError,
     ModelPinError,
     NodeNotRecordedError,
+    NodeProvenanceError,
     PinColumnError,
     RollingAliasError,
+    SamplingConflictError,
 )
-from ._pin_store import AgentModelPins, NodePin
+from ._pin_store import AgentModelPins, AgentWeights, NodePin, NodeProvenance
 from ._pinning import (
     AGENT_MODEL_ID_COLUMN,
     MODEL_PIN_PARTS,
@@ -139,13 +192,35 @@ from ._pinning import (
 from ._provider import Provider
 from ._recorder import Exchange, RecordingProvider
 from ._request import Message, Request
+from ._sampling import (
+    AGENT_SAMPLING_COLUMN,
+    DEFAULT_SAMPLING,
+    MAX_TEMPERATURE,
+    SAMPLING_KEYS,
+    SEED_MAX,
+    AgentSampling,
+    require_agent_sampling,
+)
 
 __all__ = [
+    "AGENT_CKPT_HASH_COLUMN",
     "AGENT_MODEL_ID_COLUMN",
+    "AGENT_SAMPLING_COLUMN",
+    "CKPT_HASH_LENGTH",
+    "DEFAULT_SAMPLING",
+    "HOSTED_API_CKPT_HASH",
+    "MAX_TEMPERATURE",
     "MODEL_PIN_PARTS",
     "MODEL_PIN_REVISION",
+    "SAMPLING_KEYS",
+    "SEED_MAX",
     "SEPARATOR",
     "AgentModelPins",
+    "AgentSampling",
+    "AgentSamplingMalformedError",
+    "AgentWeights",
+    "CkptHashConflictError",
+    "CkptHashMalformedError",
     "Completion",
     "CompletionMalformedError",
     "Exchange",
@@ -155,6 +230,8 @@ __all__ = [
     "ModelPinError",
     "NodeNotRecordedError",
     "NodePin",
+    "NodeProvenance",
+    "NodeProvenanceError",
     "PinColumnError",
     "Provider",
     "ProviderError",
@@ -162,10 +239,14 @@ __all__ = [
     "RecordingProvider",
     "Request",
     "RollingAliasError",
+    "SamplingConflictError",
     "UnknownModelError",
     "Usage",
     "build_agent_model_pins",
+    "hosted_api_weights",
+    "require_agent_ckpt_hash",
     "require_agent_model_id",
+    "require_agent_sampling",
 ]
 
 #: The component name this package registers its pin store under.  The plugin

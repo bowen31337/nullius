@@ -32,25 +32,35 @@ established for the campaign table and states the reasoning for.  A suite that
 hand-wrote its own ``CREATE TABLE node`` would be pinning this store's
 behaviour against a schema the suite made up.
 
-**The two trees, and the one branch only one of them reaches.** Revision
-``0115`` emits a bare ``NOT NULL`` — no default — on ``agent_model_id``, which
-SQLite lands on an empty table and refuses on a populated one; the shipped
-chain runs the table's migration (``0118``) before the column's, so the
-constraint lands on an empty table and *holds from then on*.  A tree the chain
-built therefore cannot hold a node without an authoring model: the database
-itself is the first half of feature 203's guarantee, and on such a tree the
-store's job is the second half — refusing a *different* model, refusing an
-alias, and answering an idempotent retry.
+**The three trees, and the branches only two of them reach.** Revision ``0115``
+emits a bare ``NOT NULL`` — no default — on ``agent_model_id`` and on
+``agent_sampling``, which SQLite lands on an empty table and refuses on a
+populated one; the shipped chain runs the table's migration (``0118``) before
+the column's, so both constraints land on an empty table and *hold from then
+on*.  A tree the chain built therefore cannot hold a node without an authoring
+model or without a sampling record: the database itself is the first half of
+features 203 and 204's guarantee, and on such a tree the stores' job is the
+second half — refusing a *different* value, refusing an alias, and answering an
+idempotent retry.
 
-So :func:`pinned_database` is that tree, and :func:`nullable_trio_database` is
-the other one: a populated tree whose ``agent_model_id`` accepts NULL.  That
-shape is not invented for this suite — it is the state 0115's own docstring
-names as the repair (*"a backfill, not a spell"*), reached on either dialect by
-the three-step form the bare constraint forces (add nullable, backfill, then
-constrain).  A backfill is a **write**, so the store's write branch is only
-reachable there, and the fixture says so.  It builds that shape from 0115's own
-:data:`~0115.COLUMN_TYPES` map rather than from a spelling written here, so the
-state a test drives is one the schema's owner describes.
+The trio's third column is the exception and it is the point.
+``agent_ckpt_hash`` is nullable **by design** — §9.1's comment on it is
+``non-null for self-hosted weights`` — so its null is a recorded fact rather
+than an un-backfilled state, and it is the one column feature 204 can write on
+the chain-built tree.
+
+So :func:`pinned_database` is the chain-built tree, and the two backfill trees
+cover the two columns the chain cannot leave empty:
+:func:`nullable_trio_database` is a populated tree whose ``agent_model_id``
+accepts NULL, and :func:`weights_database` is one whose ``agent_sampling`` and
+``agent_ckpt_hash`` do.  Neither shape is invented for this suite — both are the
+state 0115's own docstring names as the repair (*"a backfill, not a spell"*),
+reached on either dialect by the three-step form the bare constraint forces
+(add nullable, backfill, then constrain).  A backfill is a **write**, so the
+stores' write branches are only reachable there, and the fixtures say so.  Both
+build that shape from 0115's own :data:`~0115.COLUMN_TYPES` map rather than from
+a spelling written here, so the state a test drives is one the schema's owner
+describes.
 """
 
 from __future__ import annotations
@@ -71,6 +81,7 @@ if str(_SRC) not in sys.path:
 
 from providers import (
     AgentModelPins,
+    AgentSampling,
     Completion,
     Message,
     ModelPin,
@@ -83,9 +94,9 @@ from providers import (
 REPO_ROOT = Path(__file__).resolve().parents[3]
 VERSIONS_DIR = REPO_ROOT / "migrations" / "versions"
 
-#: The two revisions feature 203's schema lives across, by id.  Spelled as
-#: constants so a reader can see which two tables the feature is about without
-#: reading the fixtures, and so a rename is one edit.
+#: The two revisions the ``node`` table's provenance lives across, by id.
+#: Spelled as constants so a reader can see which two tables the features are
+#: about without reading the fixtures, and so a rename is one edit.
 NODE_MIGRATION = "0118_node_table"
 TRIO_MIGRATION = "0115_agent_model_trio"
 
@@ -96,12 +107,21 @@ TRIO_MIGRATION = "0115_agent_model_trio"
 #: are about — and an agreement two places spell is one that can drift.
 DEFAULT_AUTHOR = "anthropic/claude-opus-5/20260401"
 
-#: The sampling record a planted node carries.  Not feature 203's column — it
-#: is 0115's third, and it is ``NOT NULL`` too, so a node row has to carry one
-#: to exist at all on a chain-built tree.  Feature 204 owns what belongs *in* it
-#: (temperature, top_p, thinking, seed — 0115's own docstring lists them), so
-#: this is that list at its defaults and nothing this suite has an opinion about.
-DEFAULT_SAMPLING = '{"temperature": 0.0, "top_p": 1.0, "thinking": false, "seed": 0}'
+#: The sampling record a planted node carries, as the column's own canonical
+#: spelling — feature 204's four settings at their defaults, key-sorted and
+#: compact, which is what ``AgentSampling().to_json()`` produces.  Written out
+#: rather than computed so that :func:`plant_node` can be handed a row by a test
+#: that has not imported the member's value type, and pinned against
+#: :func:`make_sampling`'s default by the suite rather than by a shared call.
+DEFAULT_SAMPLING = '{"seed":0,"temperature":0.0,"thinking":false,"top_p":1.0}'
+
+#: A checkpoint hash a planted node carries when a test supplies one — the
+#: digest of "a set of weights", spelled as 64 hex characters so it survives
+#: ``require_agent_ckpt_hash``.  Not a real digest of anything: this suite is
+#: about which value lands in the column and which is refused, and a constant
+#: that happened to hash some artifact would only invite a reader to think the
+#: suite was checking the artifact.
+DEFAULT_CKPT_HASH = "ab" * 32
 
 #: The columns :func:`plant_node` supplies values for, beyond 0118's five
 #: structural ones: exactly the columns 0115 constrains, because a node that
@@ -109,6 +129,14 @@ DEFAULT_SAMPLING = '{"temperature": 0.0, "top_p": 1.0, "thinking": false, "seed"
 #: :func:`pinned_database` — no more (which would be this suite inventing
 #: schema) and no fewer (which would make the insert incomplete).
 PLANTED_CONSTRAINED_COLUMNS = ("agent_model_id", "agent_sampling")
+
+#: The columns :func:`plant_node` supplies *when the tree has them*, beyond the
+#: constrained ones above.  ``agent_ckpt_hash`` is 0115's third column and it is
+#: the one the schema leaves nullable — deliberately, since §9.1's comment on it
+#: is ``non-null for self-hosted weights`` — so a planted node carries one only
+#: when the test asks.  A tuple rather than a literal so the fixture and the
+#: tests that reason about which columns exist share one list.
+PLANTED_OPTIONAL_COLUMNS = ("agent_ckpt_hash",)
 
 
 class ScriptedProvider(Provider):
@@ -376,6 +404,58 @@ def nullable_trio_database(database_url: str) -> str:
 
 
 @pytest.fixture
+def weights_database(database_url: str) -> str:
+    """A populated tree whose ``agent_sampling`` and ``agent_ckpt_hash`` accept NULL.
+
+    **The tree feature 204's write branch and its conflict refusals are
+    reachable on, and it exists because the chain-built tree cannot be it.**
+
+    Two of the three columns behave differently on the empty table the chain
+    actually builds.  ``agent_model_id`` and ``agent_sampling`` carry a bare
+    ``NOT NULL`` (0115), so on :func:`pinned_database` both landed on an empty
+    table and hold from then on — no node there can be missing either, and
+    ``persist_weights``' write branch is unreachable.  ``agent_ckpt_hash`` is
+    nullable by design, so *its* null is the hosted-API fact rather than an
+    un-backfilled state.
+
+    What this fixture adds is therefore the state ``0115`` calls the repair for
+    the *other* column — *"a backfill, not a spell"* — reached the same
+    three-step way :func:`nullable_trio_database` reaches it: 0118's table, then
+    the trio added **without** the constraints, which is a populated-safe
+    ``ADD COLUMN`` on both dialects.  A ``NULL`` sampling is then writable, so
+    there is a tree on which ``persist_weights`` genuinely writes rather than
+    answering the row it found.
+
+    Nothing about the columns is re-decided here: the list and the types come
+    from 0115's own :data:`~0115.COLUMNS` and :data:`~0115.COLUMN_TYPES`,
+    through 0115's own :func:`~0115._column_type`, called exactly as its
+    ``_add_statement`` calls it.  The only thing omitted is the constraint 0115
+    says cannot be expressed on a populated table, and that omission is this
+    fixture's whole declaration.
+
+    Its neighbours, so a reader knows which tree to reach for:
+    :func:`pinned_database` is the chain-built tree (both ``NOT NULL`` columns
+    in place, so only the retry and conflict answers are reachable);
+    :func:`nullable_trio_database` is the same shape seen by feature 203, where
+    a **model** can be NULL; and :func:`unpinned_database` has no trio at all,
+    which is why the missing-column case is tested there.
+    """
+    create_schema(database_url, NODE_MIGRATION)
+    trio = load_migration(TRIO_MIGRATION)
+    assert trio.COLUMNS, "0115 adds no columns, so this fixture has nothing to add"
+    statements = tuple(
+        f"ALTER TABLE {trio.NODE_TABLE} ADD COLUMN {column} "
+        f"{trio._column_type(column, 'sqlite')}"
+        for column in trio.COLUMNS
+    )
+    path = sqlite_path_of(database_url)
+    with closing(sqlite3.connect(path)) as connection, connection:
+        for statement in statements:
+            connection.execute(statement)
+    return database_url
+
+
+@pytest.fixture
 def node_id() -> str:
     """A fresh canonical node UUID — an id the caller supplies.
 
@@ -388,37 +468,43 @@ def node_id() -> str:
 
 @pytest.fixture
 def plant_node():
-    """Return a callable that inserts one node row, with its authoring model.
+    """Return a callable that inserts one node row, with its authoring record.
 
     Raw SQL against the table the migration created rather than a call into any
     node-planting feature: there is no such feature in this member, and the point
-    is to produce the *state* feature 203 is about — a node row exists, carrying
-    whatever authoring model it carries — not to reproduce the authoring path.
-    ``parent_id`` stays ``NULL``, which is what makes the row a root.
+    is to produce the *state* the features are about — a node row exists,
+    carrying whatever authoring record it carries — not to reproduce the
+    authoring path.  ``parent_id`` stays ``NULL``, which is what makes the row a
+    root.
 
-    **The authoring model is a parameter, with a real recorded author as its
-    default, because on a tree the chain built the column cannot be omitted.**
-    0115's ``NOT NULL`` — on this column and on ``agent_sampling`` — means
-    ``INSERT INTO node (id, parent_id, campaign_id, theme_root, depth)`` is not a
-    complete statement; SQLite refuses it, which is the database enforcing
-    feature 203's guarantee ahead of the store.  So a node planted on
-    :func:`pinned_database` is a node some model is recorded as having authored,
-    with its sampling recorded beside it, and ``agent_model_id=None`` is how a
-    test asks for the other state — a row with *no* recorded model — which only
-    :func:`nullable_trio_database` can hold and the chain-built tree correctly
-    refuses.
+    **Every value is a parameter, and each one's default is the recorded state
+    rather than an absence, because on a tree the chain built the columns cannot
+    be omitted.**  0115's ``NOT NULL`` — on ``agent_model_id`` and on
+    ``agent_sampling`` — means ``INSERT INTO node (id, parent_id, campaign_id,
+    theme_root, depth)`` is not a complete statement; SQLite refuses it, which is
+    the database enforcing the authoring record ahead of the store.  So a node
+    planted on :func:`pinned_database` is a node some model is recorded as
+    having authored, with its dice recorded beside it, and ``agent_model_id=None``
+    is how a test asks for the other state — a row with *no* recorded model —
+    which only :func:`nullable_trio_database` can hold and the chain-built tree
+    correctly refuses.
+
+    ``agent_ckpt_hash`` defaults to ``None`` and that default is the *hosted-API*
+    record rather than a missing value: it is 0115's one nullable column, and
+    §9.1's comment on it — ``non-null for self-hosted weights`` — makes the null
+    a fact about where the weights came from.  A test wanting a self-hosted node
+    passes :data:`DEFAULT_CKPT_HASH`.
 
     The columns supplied beyond 0118's five are exactly
-    :data:`PLANTED_CONSTRAINED_COLUMNS` — pinned against 0115 by
-    :func:`pinned_database` — **and only those the tree actually has**.  That
-    second clause is what lets one fixture plant on all three of this suite's
-    trees: a chain-built tree has the whole trio, the nullable tree has it too,
-    and :func:`unpinned_database` has none of it (revision 0118 has run and 0115
-    has not), where naming a column that does not exist would be an
+    :data:`PLANTED_CONSTRAINED_COLUMNS` plus :data:`PLANTED_OPTIONAL_COLUMNS` —
+    **and only those the tree actually has**.  That second clause is what lets
+    one fixture plant on all four of this suite's trees: a chain-built tree has
+    the whole trio, the two backfill trees have it too, and
+    :func:`unpinned_database` has none of it (revision 0118 has run and 0115 has
+    not), where naming a column that does not exist would be an
     ``OperationalError`` about *this fixture* rather than about the store under
     test.  So the statement is assembled from the table's own columns, and the
-    caller's ``agent_model_id`` is supplied wherever there is a column to supply
-    it to.
+    caller's values are supplied wherever there is a column to supply them to.
     """
 
     def _plant(
@@ -426,7 +512,8 @@ def plant_node():
         identifier: str,
         *,
         agent_model_id: str | None = DEFAULT_AUTHOR,
-        agent_sampling: str = DEFAULT_SAMPLING,
+        agent_sampling: str | None = DEFAULT_SAMPLING,
+        agent_ckpt_hash: str | None = None,
         depth: int = 0,
     ) -> str:
         campaign = str(uuid.uuid4())
@@ -439,6 +526,7 @@ def plant_node():
             for column, value in (
                 ("agent_model_id", agent_model_id),
                 ("agent_sampling", agent_sampling),
+                ("agent_ckpt_hash", agent_ckpt_hash),
             ):
                 if column in present:
                     columns.append(column)
@@ -451,6 +539,68 @@ def plant_node():
         return identifier
 
     return _plant
+
+
+@pytest.fixture
+def stored_weights():
+    """Return a callable reading a node's two feature-204 columns straight from the table.
+
+    A raw read rather than a call into the store, on the same grounds
+    ``test_pin_store.stored_value`` states for the triple: several of these
+    tests are about *what the store did not change*, and asking the store to
+    confirm that would be asking the thing under test.  Returns the pair
+    ``(ckpt_hash, sampling)`` as the row holds them — unparsed, so a test can
+    assert on a NULL and on the exact stored text.
+    """
+
+    def _read(database: str, identifier: str):
+        with closing(sqlite3.connect(sqlite_path_of(database))) as connection:
+            row = connection.execute(
+                "SELECT agent_ckpt_hash, agent_sampling FROM node WHERE id = ?",
+                (identifier,),
+            ).fetchone()
+        return None if row is None else tuple(row)
+
+    return _read
+
+
+@pytest.fixture
+def make_weights():
+    """Return a builder for the two arguments :meth:`persist_weights` takes.
+
+    A pair builder rather than one call per argument, because the two travel
+    together at every call site — this is feature 204's ask, and a test that
+    spelled the hash and the sampling on separate lines would be inviting a
+    reader to think they were independent.  Defaults are the hosted-API case and
+    the defaults of all four settings, which is what a deployment that runs
+    hosted and turns no knobs records.
+    """
+
+    def _make(ckpt_hash: str | None = None, **sampling):
+        return {
+            "ckpt_hash": ckpt_hash,
+            "sampling": AgentSampling(**sampling) if sampling else AgentSampling(),
+        }
+
+    return _make
+
+
+@pytest.fixture
+def make_sampling():
+    """Return a builder that makes an :class:`AgentSampling` with sensible defaults.
+
+    The defaults are :data:`~providers.DEFAULT_SAMPLING`'s, so a sampling a test
+    builds and the record a planted node carries agree without the test saying
+    so twice — the same agreement :func:`make_pin` and :data:`DEFAULT_AUTHOR`
+    have for the triple.
+    """
+
+    def _make(temperature=0.0, top_p=1.0, thinking=False, seed=0):
+        return AgentSampling(
+            temperature=temperature, top_p=top_p, thinking=thinking, seed=seed
+        )
+
+    return _make
 
 
 @pytest.fixture
@@ -474,6 +624,18 @@ def nullable_pins(nullable_trio_database: str) -> AgentModelPins:
     :func:`nullable_trio_database`.
     """
     return AgentModelPins(nullable_trio_database)
+
+
+@pytest.fixture
+def weights_pins(weights_database: str) -> AgentModelPins:
+    """The pin store, over the tree whose sampling and checkpoint columns accept NULL.
+
+    The tree feature 204's write branch is reachable on, for the reason
+    :func:`weights_database` sets out: on a chain-built tree the ``NOT NULL`` on
+    ``agent_sampling`` landed on the empty table and holds, so
+    ``persist_weights`` could only ever answer the row it found.
+    """
+    return AgentModelPins(weights_database)
 
 
 @pytest.fixture
