@@ -17,6 +17,7 @@ members = [
     "nulloracle",
     "providers",
     "sandbox",
+    "signal-agent",
     "snapshot",
     "tripwires",
     "universe",
@@ -479,6 +480,21 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "nullius", editable = "." }]
+
+[[package]]
+name = "signal-agent"
+version = "0.1.0"
+source = { editable = "packages/signal-agent" }
+dependencies = [
+    { name = "nullius" },
+    { name = "nullius-contract" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "nullius", editable = "." },
+    { name = "nullius-contract", editable = "packages/contract" },
+]
 
 [[package]]
 name = "snapshot"

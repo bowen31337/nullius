@@ -1,0 +1,48 @@
+# nullius workspace member: the hypothesis-authoring (signal) agent plugin
+# (app_spec.xml, "Hypothesis Authoring Agent", feature 205;
+# docs/nullius-tech-architecture.md §14.1 for the agent's roles, §5.1 for
+# the contract it writes against and §5.2 for the box that runs what it
+# writes).
+#
+# Joins the uv workspace by convention — packages/signal-agent with this
+# file — so the module loader (src/app/module_loader.py) discovers it by
+# scanning the members the root pyproject.toml declares.  No edit to any
+# central registry, router table or app factory is needed or wanted to
+# wire this package in.
+#
+# Dependencies: the workspace root, for the factory's registration
+# protocol (`import app.module_loader`), and the `nullius-contract`
+# member, whose signal ABI this member's whole subject is written against.
+# Both are workspace members, so neither needs a registry fetch and the
+# lockfile gains no third-party edge from this package.
+#
+# The contract import is *deferred to first use* even though the
+# dependency is declared, and that is the same discipline
+# `contract._arrow.require_arrow` takes toward pyarrow and
+# `evaluator._sandbox` takes toward `contract` itself: the factory's
+# workspace scan imports this package to fire its @register, and the scan
+# imports one member at a time with that member's own `src/` on sys.path,
+# so a module-scope `import contract` here would make this component's
+# presence in the composed application depend on scan order.  The builder
+# therefore allocates one stateless law and resolves the ABI on the first
+# question asked of it; a caller that asks in a workspace where the
+# contract member is absent gets a named, actionable error rather than a
+# silently missing component.
+
+[project]
+name = "signal-agent"
+version = "0.1.0"
+description = "The hypothesis-authoring agent's contract seam: agent-authored signal source is adopted only when it conforms to the declared signal contract, and what is adopted is source the sandbox executes."
+requires-python = ">=3.12"
+dependencies = ["nullius", "nullius-contract"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+nullius-contract = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/signal_agent"]
