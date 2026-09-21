@@ -1,0 +1,75 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 184 (System exposes the identical policy question interface from every bootstrap world, so one policy runs unmodified and returns comparable scores across both pools)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 184 in the bootstrap plugin: the system
+    wraps any bootstrap world in a single policy-facing adapter that exposes
+    the identical `question.*` API a financial campaign exposes, so one
+    exploration policy runs unmodified against a bootstrap world and returns
+    scores comparable with the financial pool. The world already owns the
+    answer-surface primitives — `label(node_id)` (the honest ground-truth
+    score), `legal_moves(node_id)` (the neighbours), `legal_roots()` (the
+    walk's start), `setting(node_id)` / `steps` / `node_id` / `depth` (the
+    address and its structural depth) — and deliberately carries no reveal
+    bookkeeping, no policy runtime and no budget, because a world whose
+    answers depended on how often it had been asked would not be a ground
+    truth (packages/bootstrap/src/bootstrap/_world.py, "The interface is the
+    question interface"). Feature 184 is that wrapper, and the seam the
+    category's later features build on: 189 labels every node with ground
+    truth for sensitivity/specificity references, 190 ports an external
+    environment through the identical interface, and both depend on there
+    being one interface to share. It stays on the member's stance: the
+    adapter is a pure function of `(world, node_id)` with no state of its
+    own, the label it reveals is the world's honest `FitResult` unchanged
+    (never a stand-in), every refusal names the world and the node, and no
+    shared file is touched.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/bootstrap member, import bootstrap) / pytest (ruff + mypy conventions)</stack>
+    <test_baseline>The bootstrap suite under packages/bootstrap/tests/, collected under its own conftest (same-basename files collide under one pytest run). Stdlib-only computation: the world's fit is a dense Cholesky solve in math.fsum over a pure integer-hash stream, so the adapter's suite adds no third-party dependency. Run the member suite (packages/bootstrap/tests) under its own conftest; the repository-level tests/ tree is separate and is not collected by this member's suite.</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, docstrings that
+      cite app_spec.xml feature numbers and docs/nullius-tech-architecture.md
+      sections, stdlib-only computation, @register only in the package
+      __init__ (never a submodule), degrade-don't-break composition. The member
+      never imports another workspace member. Values are validated at
+      construction and at the address seam; the label is the world's honest
+      FitResult unchanged; a refusal names the world and the node. Tests assert
+      on observed behaviour with long narrative docstrings explaining the "why",
+      and pin the adapter against the world's own primitives so the wrapper and
+      the world cannot drift.
+    </conventions>
+  </existing_context>
+  <!-- Layout mirrors the clean main app_spec.xml: uv-workspace is what makes
+       plugin="bootstrap" resolve to the real packages/bootstrap/ tree rather
+       than the single-package src/plugins/bootstrap/ default. Parsed before
+       features. -->
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Identical policy question interface">
+      <feature index="1" shape="plugin" plugin="bootstrap" depends_on="181">
+        <description>System exposes CellMeta, the structural metadata a node carries, as a frozen value read from the world's lattice rather than stored: branch (the axis the node's last legal step from its parent moved, or None at the root), depth (Sigma of absolute step counts from the root, the world's own structural depth), parent (the node id one legal step toward the root, or None at the root), and theme_root (the domain family the world belongs to — "hpo" for the authored hyperparameter world — the family-conditional overfit signature docs/nullius-tech-architecture.md §11.1 routes through meta()). CellMeta is a pure function of (world, node_id), so two adapters of one node agree to the last field and a policy reading meta() sees the same structure whatever world served it.</description>
+      </feature>
+      <feature index="2" shape="plugin" plugin="bootstrap" depends_on="181">
+        <description>System exposes Observation, the frozen payload a revealed node carries, holding the node's ground-truth label — the world's honest r2_holdout beside its r2_train and overfit_gap (the fit's own coefficients and column width, unchanged) — so a policy's observed() view is a dict of {node_id: Observation} and the honest label the bootstrap pool exists to give is the only thing a reveal returns. Observation carries the world_id it was earned on, because §10.6's pool is reported per pool and a policy comparing a bootstrap node with a financial one reads which world the score came from.</description>
+      </feature>
+      <feature index="3" shape="plugin" plugin="bootstrap" depends_on="1,2">
+        <description>System exposes BootstrapQuestion, the one adapter that wraps a HyperparameterWorld and answers the identical question.* API docs/nullius-tech-architecture.md §11 names — observed() (the node ids revealed so far, as {node_id: Observation}, each a pure label of (world, node_id), ascending by node id), legal_actions() (the neighbours of the committed frontier, ascending), legal_roots() (the single canonical root), meta(node_id) (the CellMeta, refusing a node outside the lattice), probe_batch(cells, on_reveal=...) (reveal a batch of cells at once, returning their Observations and calling on_reveal once per newly revealed cell, idempotent on an already-revealed cell), budget_remaining() (the whole budget, always, because §10.6's "zero statistical-budget cost" is a fact about bootstrap worlds the adapter reports rather than a counter it keeps), and commit(node_id) (the terminal act, recording the committed cell) — so one policy written against a financial campaign runs unmodified against a bootstrap world.</description>
+      </feature>
+      <feature index="4" shape="plugin" plugin="bootstrap" depends_on="3">
+        <description>System exposes question_for(world), the one factory that turns a bootstrap world into the question.* adapter a policy expects, so the identical-interface requirement is a single call site rather than a construction a caller could get wrong: the adapter is bound to the world it wraps (its legal_actions, its labels, its CellMeta are the world's), it refuses a non-world or an empty id at construction, and two adapters of one world answer identical Observations and CellMeta to the last field — the property that makes "one policy, both pools" a fact about the adapter rather than a promise in a docstring.</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <endpoints>
+    <endpoint name="BootstrapQuestion.observed">returns {node_id: Observation} for the revealed set, ascending by node id</endpoint>
+    <endpoint name="BootstrapQuestion.legal_actions">returns the neighbours of the committed frontier, ascending by node id</endpoint>
+    <endpoint name="BootstrapQuestion.legal_roots">returns the single canonical root node id</endpoint>
+    <endpoint name="BootstrapQuestion.meta">returns CellMeta(branch, depth, parent, theme_root) for a node, or refuses a node outside the lattice</endpoint>
+    <endpoint name="BootstrapQuestion.probe_batch">reveals a batch of cells, returns {node_id: Observation} and calls on_reveal per newly revealed cell</endpoint>
+    <endpoint name="BootstrapQuestion.budget_remaining">returns the whole budget, always (zero statistical-budget cost for a bootstrap world)</endpoint>
+    <endpoint name="BootstrapQuestion.commit">records the committed node id (the terminal act)</endpoint>
+    <endpoint name="question_for">factory: a bootstrap world in, the question.* adapter out</endpoint>
+  </endpoints>
+  <database_tables>
+  </database_tables>
+</project_specification>

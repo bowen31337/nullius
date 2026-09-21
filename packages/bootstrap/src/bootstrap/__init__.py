@@ -66,6 +66,25 @@ sibling features of this category:
   into a plausible number, because a stand-in score in a pool whose whole
   value is *honest labels* is worse than no score at all.
 
+* **The policy question interface** (:mod:`bootstrap._question`).  Feature
+  184 wraps the world in the one object a policy is handed — a
+  :class:`~bootstrap.BootstrapQuestion`, built by :func:`~bootstrap.
+  question_for` — that exposes the identical ``question.*`` API
+  docs/nullius-tech-architecture.md §11 names: :meth:`~bootstrap.
+  BootstrapQuestion.observed` (the revealed cells and their honest
+  observations), :meth:`~bootstrap.BootstrapQuestion.legal_actions` and
+  :meth:`~bootstrap.BootstrapQuestion.legal_roots` (the walk's moves and
+  its start), :meth:`~bootstrap.BootstrapQuestion.meta` (the structural
+  :class:`~bootstrap.CellMeta` — branch, depth, parent, theme_root),
+  :meth:`~bootstrap.BootstrapQuestion.probe_batch`,
+  :meth:`~bootstrap.BootstrapQuestion.budget_remaining` (the whole budget,
+  always — §10.6's zero statistical-budget cost) and
+  :meth:`~bootstrap.BootstrapQuestion.commit`.  The question is bound to
+  the world it wraps and adds only the reveal bookkeeping a replay needs
+  and a world must not hold, so one policy runs unmodified against a
+  bootstrap world and returns scores comparable with the financial pool —
+  the identical interface every bootstrap world exposes.
+
 * **The seeded stream** (:mod:`bootstrap._stream`).  Every number a world
   contains is a pure integer-hash draw on a *cell*, not a step of a
   generator: this is the property that makes a label independent of the
@@ -138,6 +157,13 @@ from ._pool import (
     draw_world_seed,
     world_id_for,
 )
+from ._question import (
+    BOOTSTRAP_THEME_ROOT,
+    BootstrapQuestion,
+    CellMeta,
+    Observation,
+    question_for,
+)
 from ._stream import GOLDEN_GAMMA, MASK64, mix64, normal, uniform
 from ._world import (
     AXIS_ORDER,
@@ -181,6 +207,7 @@ from .errors import (
 
 __all__ = [
     "AXIS_ORDER",
+    "BOOTSTRAP_THEME_ROOT",
     "DATABASE_URL_ENV",
     "DEFAULT_ALPHA",
     "DEFAULT_DEGREE",
@@ -212,13 +239,16 @@ __all__ = [
     "BootstrapError",
     "BootstrapPool",
     "BootstrapPoolError",
+    "BootstrapQuestion",
     "BootstrapScoringError",
     "BootstrapWorldError",
+    "CellMeta",
     "Dataset",
     "FitResult",
     "HyperparameterAxis",
     "HyperparameterSetting",
     "HyperparameterWorld",
+    "Observation",
     "PersistedPool",
     "WorldRecord",
     "build_bootstrap_pool",
@@ -235,6 +265,7 @@ __all__ = [
     "mix64",
     "node_steps",
     "normal",
+    "question_for",
     "setting_dimensions",
     "setting_from_steps",
     "solve_cholesky",
