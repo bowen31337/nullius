@@ -70,14 +70,13 @@ which is the whole of "returns a mapping of revealed node ids to
 observations", and the property that makes the information barrier a fact
 about the accessor rather than a promise in a docstring.
 
-Stdlib only, and import-cheap: ``json``, ``datetime`` and a dataclass; no
+Stdlib only, and import-cheap: ``json`` and a dataclass; no
 third-party import at module scope, so the factory's scan — which imports this
 package to fire its ``@register`` — pays nothing for the seam.
 """
 
 from __future__ import annotations
 
-import datetime as dt
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -85,12 +84,31 @@ from typing import Any
 
 from app.module_loader import register
 
+from .errors import PolicyAddressError, PolicyRuntimeError, PolicyTreeError
+from .planning import (
+    GridPlan,
+    GridPlanningContext,
+    PlanGridDecision,
+    PlanGridReason,
+    PlanGridRefusal,
+    plan_grid,
+)
+
 __all__ = [
     "CAMPAIGN_TREE_COMPONENT",
     "CampaignNode",
     "CampaignTree",
+    "GridPlan",
+    "GridPlanningContext",
+    "PlanGridDecision",
+    "PlanGridReason",
+    "PlanGridRefusal",
+    "PolicyAddressError",
     "PolicyObservation",
     "PolicyQuestion",
+    "PolicyRuntimeError",
+    "PolicyTreeError",
+    "plan_grid",
     "policy_question",
 ]
 
@@ -99,43 +117,6 @@ __all__ = [
 #: the app-namespace seat (``src/app/modules/policy-runtime``) and the spec
 #: cannot drift apart.
 CAMPAIGN_TREE_COMPONENT = "policy-runtime"
-
-
-class PolicyRuntimeError(Exception):
-    """The base class for every failure of the policy-runtime path.
-
-    One base class so a caller — the replay engine, the dreaming loop, an
-    operator script, a later feature in this category — can catch every
-    failure of the read-side question path with a single ``except``, the
-    discipline :mod:`bootstrap.errors` and :mod:`artifacts._errors` state for
-    their own trees.  The subclasses split by *which contract* was violated,
-    not by which line of code failed.
-    """
-
-
-class PolicyTreeError(PolicyRuntimeError):
-    """A campaign tree could not be addressed as the thing the caller named.
-
-    A node id that is empty or misspelled, a depth that is negative or not an
-    integer, a payload that is not canonical JSON, a duplicate node id, or a
-    parent reference that names a node the tree does not hold.  Raised before
-    any observation is computed, so a refused tree answers no node at all —
-    the same "name the subject in the refusal" discipline
-    :class:`bootstrap.BootstrapWorldError` applies to a world.
-    """
-
-
-class PolicyAddressError(PolicyTreeError):
-    """A node id named a cell no tree the question fronts can reach.
-
-    Kept apart from :class:`PolicyTreeError` because the tree itself was
-    well-formed — the ask reached the lattice — and it is the *node* that is
-    outside it.  A policy is shown its legal actions and reveals only cells it
-    was shown, so a node id a policy hands to the question is one it was
-    shown, and a node outside the lattice names a cell the policy never saw.
-    The refusal names the node and the tree, so an operator reading a replay's
-    failure can tell *which* node refused and *what tree* it was asked of.
-    """
 
 
 @dataclass(frozen=True)
@@ -187,7 +168,11 @@ class CampaignNode:
                 "reference is either absent (a root) or names a node, and an empty "
                 "string is neither"
             )
-        if isinstance(self.depth, bool) or not isinstance(self.depth, int) or self.depth < 0:
+        if (
+            isinstance(self.depth, bool)
+            or not isinstance(self.depth, int)
+            or self.depth < 0
+        ):
             raise PolicyTreeError(
                 f"campaign node {self.node_id!r} carries a depth of {self.depth!r}: "
                 "depth is a non-negative integer, zero at a root, and a negative one is "
