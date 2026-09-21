@@ -1,0 +1,47 @@
+# nullius workspace member: the discovery plugin
+# (app_spec.xml, "Discovery Orchestrator & Campaigns", feature 232;
+# docs/nullius-tech-architecture.md §5 for the three nested loops this
+# orchestrator drives, §4.1 for the campaign design it plans).
+#
+# Joins the uv workspace by convention — packages/discovery with this file
+# — so the module loader (src/app/module_loader.py) discovers it by scanning
+# the members the root pyproject.toml declares.  No edit to any central
+# registry, router table or app factory is needed or wanted to wire this
+# package in.
+#
+# Dependencies: the workspace root, and nothing else.  The factory's
+# registration protocol (`import app.module_loader`) is the whole of it —
+# the same one-dependency shape the bootstrap member ships, and for the
+# same reason: the orchestrator's first feature is a planning computation
+# (a clip of two over a count) over a relational store the *spec's own
+# migration* already created (``migrations/versions/0111_campaign_table.py``),
+# so there is no data file to ship, no download to declare and no
+# third-party numerics to trust.  ``sqlite3`` and ``urllib.parse`` are the
+# whole of the arithmetic and the whole of the I/O.
+#
+# That the member needs no dependency is a property of the feature rather
+# than an accident.  Eight stores across this workspace already open the
+# ``campaign`` table idempotently and *refuse to create its row*
+# (``nulloracle.phi``, ``.flipdepth``, ``.irprob``, ``.ksguard``,
+# ``.verdict``, ``.plan``, ``.selection``), each stating in as many words
+# that the planner is the writer the row belongs to and that a store which
+# inserted the missing campaign would be inventing the row the type and the
+# workspace count belong on.  This member is that writer, and its whole
+# first feature is the one row they were built to read.
+
+[project]
+name = "discovery"
+version = "0.1.0"
+description = "Plans a discovery campaign: its type, workspace count and planted-null fraction, recorded before any node is expanded."
+requires-python = ">=3.12"
+dependencies = ["nullius"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/discovery"]
