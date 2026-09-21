@@ -108,6 +108,7 @@ def test_scanning_the_member_registers_exactly_the_components_it_owns() -> None:
         "sandbox-failclass",
         "sandbox-imports",
         "sandbox-seed",
+        "sandbox-syscalls",
         "sandbox-threads",
         "sandbox-timeout",
         "sandbox-transfer",
@@ -223,7 +224,8 @@ def test_the_app_seat_is_not_a_second_vocabulary() -> None:
     # second thing to keep in sync. Feature 167 added its own name and
     # accessor beside feature 157's, feature 166 a third, feature 165 a
     # fourth, feature 164 a fifth, feature 163 a sixth, feature 168 the
-    # seventh and feature 162 the eighth, and nothing else.
+    # seventh, feature 162 the eighth and feature 160 the ninth, and nothing
+    # else.
     import app.modules.sandbox as seat
 
     assert set(seat.__all__) == {
@@ -232,6 +234,7 @@ def test_the_app_seat_is_not_a_second_vocabulary() -> None:
         "FAIL_CLASS_COMPONENT_NAME",
         "IMPORTS_COMPONENT_NAME",
         "SEED_COMPONENT_NAME",
+        "SYSCALLS_COMPONENT_NAME",
         "THREADS_COMPONENT_NAME",
         "TIMEOUT_COMPONENT_NAME",
         "TRANSFER_COMPONENT_NAME",
@@ -240,6 +243,7 @@ def test_the_app_seat_is_not_a_second_vocabulary() -> None:
         "sandbox_imports_component",
         "sandbox_isolation_component",
         "sandbox_seed_component",
+        "sandbox_syscalls_component",
         "sandbox_threads_component",
         "sandbox_timeout_component",
         "sandbox_transfer_component",
@@ -263,5 +267,12 @@ def test_the_app_seat_is_not_a_second_vocabulary() -> None:
         "ThreadReason",
         "ThreadPinningPolicy",
         "SandboxThreads",
+        "SyscallDecision",
+        "SyscallReason",
+        "SyscallPolicy",
+        "SyscallAttempt",
+        "SyscallFilter",
+        "Commitment",
+        "SandboxSyscalls",
     ):
         assert not hasattr(seat, leaked), leaked

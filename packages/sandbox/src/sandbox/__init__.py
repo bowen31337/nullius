@@ -248,6 +248,52 @@ nothing about how a run ended, or a class outside the vocabulary — and those t
 are refused by name rather than folded into ``error``, because a fabricated
 outcome would split every later "how did the trials end?" query into fragments the
 spec never named.
+
+**Feature 160 rides the seat a ninth time, and it is §5.2's last unwritten row.**
+*System applies a seccomp syscall allowlist, which rejects a process attempting a
+disallowed syscall* is the law whose subject is **one call**, and its law lives
+in :mod:`sandbox.syscalls`: the committed ceiling, a compiler that refuses a
+document whose ``default_action`` does not deny, a gate that answers an attempt
+with a :class:`~sandbox.syscalls.SyscallDecision`, and the filter specification a
+launcher hands its runtime.  It composes as :class:`SandboxSyscalls` under
+:data:`sandbox.syscalls.SYSCALLS_COMPONENT_NAME` (``sandbox-syscalls``) — a ninth
+seat beside the other eight, for the same registry-replacement reason.
+
+**It is the narrowest subject in this member, and the narrowing is the feature.**
+Every other law's unit is a *run* — feature 157's configuration, feature 164's
+environment, feature 165's invocation, feature 163's elapsed time, feature 162's
+measured consumption — while §5.2's control row is ``Syscalls | seccomp
+allowlist`` and the thing a seccomp filter actually matches is a single syscall a
+process reached for.  So :class:`~sandbox.syscalls.SyscallAttempt` carries one
+name and nothing else the law reads, and a caller asks about a call rather than
+about a candidate: *may this box call ``openat``?* is answerable from the compiled
+artifact without running anything, which is the same read side feature 167 gives
+its import ceiling.
+
+**It is feature 162's refusal shape rather than feature 163's, and §15 is what
+decides it.**  A syscall outside the ceiling is a **violation of the box** — §15's
+failure table entries it as *"Sandbox escape attempt | seccomp violation | Kill,
+record ``fail_class``, quarantine the node and its subtree"* — not an ordinary
+fate of a bad candidate, so the gate *answers* (the pipeline records the violation
+and hands the node to feature 161) and :meth:`SandboxSyscalls.require` raises on
+the launcher's last line.  Two things follow that a reader should not have to
+derive: the decision publishes :attr:`~sandbox.syscalls.SyscallDecision.violation`,
+a :class:`~sandbox.syscalls.Commitment` carrying §15's ``sandbox_escape``
+class, so the handoff to feature 161 is a value rather than a re-derivation from
+prose — and that class is deliberately **not** one of §9.1's four, so it is
+feature 168's table that places it under ``error``, exactly as line 224 above says.
+
+**It ships a committed artifact, and it is the sixth.**  :data:`sandbox.syscalls.COMMITTED_SYSCALLS_POLICY`
+sits beside feature 157's ``isolation_policy.json``, feature 167's
+``imports_allowlist.json``, feature 164's ``pinning_policy.json``, feature 163's
+``timeout_policy.json`` and feature 162's ``budget_policy.json``.  §5.2 fixes no
+syscall names, so the *list* is reviewed content rather than a pinned number — the
+reading feature 167 takes of its own terms — but the compiler holds the half that
+matters: the default action must deny, so an artifact drifted to ``allow`` (or to
+``log``/``trace``/``notify``, which observe a syscall and let it through) cannot
+compose at all.  A widened default is the one drift that turns this whole control
+into a container that believes it is sandboxed, and it is refused as a *document*
+error before any box is armed from it.
 """
 
 from __future__ import annotations
@@ -290,6 +336,7 @@ from .errors import (
     CgroupBudgetDocumentError,
     CgroupBudgetExceeded,
     DisallowedImportError,
+    DisallowedSyscall,
     GVisorIsolationRequired,
     InvocationSeedError,
     IsolationDocumentError,
@@ -300,10 +347,12 @@ from .errors import (
     SandboxImportError,
     SandboxIsolationError,
     SandboxSeedError,
+    SandboxSyscallError,
     SandboxThreadPinningError,
     SandboxTimeoutError,
     SandboxTransferError,
     ScoreChannelError,
+    SyscallsDocumentError,
     ThreadPinningDocumentError,
     ThreadPinningRequired,
     TimeoutBudgetDocumentError,
@@ -389,6 +438,31 @@ from .seed import (
     sandbox_seed,
     seed_record,
 )
+from .syscalls import (
+    ALLOWING_ACTIONS,
+    COMMITTED_SYSCALLS_POLICY,
+    DENYING_ACTIONS,
+    DISALLOWED_SYSCALL_CODE,
+    KILL_ACTION,
+    SYSCALLS_COMPONENT_NAME,
+    SYSCALLS_POLICY_KIND,
+    SYSCALLS_REQUIRED_CODE,
+    TERMINATION_SYSCALLS,
+    VIOLATION_CLASS,
+    Commitment,
+    SandboxSyscalls,
+    SyscallAttempt,
+    SyscallDecision,
+    SyscallFilter,
+    SyscallPolicy,
+    SyscallReason,
+    committed_syscalls_policy,
+    compile_syscalls_policy,
+    disallowed_syscall,
+    load_syscalls_policy,
+    reject_syscall,
+    sandbox_syscalls,
+)
 from .threads import (
     ABSENT,
     COMMITTED_PINNING_POLICY,
@@ -458,6 +532,7 @@ from .transfer import (
 
 __all__ = [
     "ABSENT",
+    "ALLOWING_ACTIONS",
     "BUDGET_COMPONENT_NAME",
     "BUDGET_POLICY_KIND",
     "CGROUP_BUDGET_CODE",
@@ -466,13 +541,16 @@ __all__ = [
     "COMMITTED_IMPORTS_ALLOWLIST",
     "COMMITTED_ISOLATION_POLICY",
     "COMMITTED_PINNING_POLICY",
+    "COMMITTED_SYSCALLS_POLICY",
     "COMMITTED_TIMEOUT_POLICY",
     "COMPONENT_NAME",
     "DEFAULT_CPU_S",
     "DEFAULT_MEM_MB",
     "DEFAULT_PIDS",
     "DEFAULT_WALL_S",
+    "DENYING_ACTIONS",
     "DISALLOWED_IMPORT_CODE",
+    "DISALLOWED_SYSCALL_CODE",
     "ENV_MKL",
     "ENV_OMP",
     "ENV_SIGNAL_SEED",
@@ -486,6 +564,7 @@ __all__ = [
     "IMPORTS_COMPONENT_NAME",
     "IMPORTS_POLICY_KIND",
     "ISOLATION_REQUIRED_CODE",
+    "KILL_ACTION",
     "MEASURED_FIELDS",
     "MEMORY_FAIL_CLASS",
     "MEM_DRIFT_REASON",
@@ -510,6 +589,10 @@ __all__ = [
     "SEED_REQUIRED_CODE",
     "SINGLE_THREADED",
     "SOURCE_CLASSES",
+    "SYSCALLS_COMPONENT_NAME",
+    "SYSCALLS_POLICY_KIND",
+    "SYSCALLS_REQUIRED_CODE",
+    "TERMINATION_SYSCALLS",
     "THREADS_COMPONENT_NAME",
     "THREAD_PINNING_CODE",
     "TIMEOUT_COMPONENT_NAME",
@@ -518,6 +601,7 @@ __all__ = [
     "TRANSFER_COMPONENT_NAME",
     "TRIPWIRE_FAIL_CLASS",
     "UNPINNED",
+    "VIOLATION_CLASS",
     "WINDOW_TRANSFER_CODE",
     "AllowlistDocumentError",
     "BudgetBreach",
@@ -529,8 +613,10 @@ __all__ = [
     "CgroupBudgetExceeded",
     "CgroupLimit",
     "CgroupPolicy",
+    "Commitment",
     "ComponentIsolation",
     "DisallowedImportError",
+    "DisallowedSyscall",
     "FailClass",
     "FailClassDecision",
     "FailClassReason",
@@ -557,6 +643,8 @@ __all__ = [
     "SandboxRun",
     "SandboxSeed",
     "SandboxSeedError",
+    "SandboxSyscallError",
+    "SandboxSyscalls",
     "SandboxThreadPinningError",
     "SandboxThreads",
     "SandboxTimeout",
@@ -568,6 +656,12 @@ __all__ = [
     "SeedDecision",
     "SeedReason",
     "SeedRecord",
+    "SyscallAttempt",
+    "SyscallDecision",
+    "SyscallFilter",
+    "SyscallPolicy",
+    "SyscallReason",
+    "SyscallsDocumentError",
     "ThreadCap",
     "ThreadDecision",
     "ThreadPinningDocumentError",
@@ -601,14 +695,17 @@ __all__ = [
     "committed_budget_policy",
     "committed_imports_allowlist",
     "committed_isolation_policy",
+    "committed_syscalls_policy",
     "committed_thread_pinning_policy",
     "committed_timeout_policy",
     "compile_budget_policy",
     "compile_imports_allowlist",
     "compile_isolation_policy",
+    "compile_syscalls_policy",
     "compile_thread_pinning_policy",
     "compile_timeout_policy",
     "decode_scores",
+    "disallowed_syscall",
     "encode_scores",
     "exceeded_budget",
     "inspect_window_payload",
@@ -616,16 +713,19 @@ __all__ = [
     "load_budget_policy",
     "load_imports_allowlist",
     "load_isolation_policy",
+    "load_syscalls_policy",
     "load_thread_pinning_policy",
     "load_timeout_policy",
     "mint_node_seed",
     "over_limits",
+    "reject_syscall",
     "resolve_seed",
     "sandbox_budget",
     "sandbox_fail_class",
     "sandbox_imports",
     "sandbox_isolation",
     "sandbox_seed",
+    "sandbox_syscalls",
     "sandbox_threads",
     "sandbox_timeout",
     "sandbox_transfer",
@@ -644,15 +744,18 @@ __version__ = "0.1.0"
 #: of the member, not by a hard-coded string — shares one spelling.
 COMPONENT_NAME: str = "sandbox"
 
-#: The other five component names — ``IMPORTS_COMPONENT_NAME``,
+#: The other eight component names — ``IMPORTS_COMPONENT_NAME``,
 #: ``TRANSFER_COMPONENT_NAME``, ``SEED_COMPONENT_NAME``,
-#: ``THREADS_COMPONENT_NAME`` and ``TIMEOUT_COMPONENT_NAME`` — are not respelled
-#: here.  Each is its own law's constant, read out of :mod:`sandbox.imports`,
-#: :mod:`sandbox.transfer`, :mod:`sandbox.seed`, :mod:`sandbox.threads` and
-#: :mod:`sandbox.timeout` at the top of this module, and the member re-exports
-#: them rather than shadowing them: the six component names are each owned by
-#: the law that registers under them, and a second assignment here would be a
-#: second place for one to drift.
+#: ``THREADS_COMPONENT_NAME``, ``TIMEOUT_COMPONENT_NAME``,
+#: ``FAIL_CLASS_COMPONENT_NAME``, ``BUDGET_COMPONENT_NAME`` and
+#: ``SYSCALLS_COMPONENT_NAME`` — are not respelled here.  Each is its own law's
+#: constant, read out of :mod:`sandbox.imports`, :mod:`sandbox.transfer`,
+#: :mod:`sandbox.seed`, :mod:`sandbox.threads`, :mod:`sandbox.timeout`,
+#: :mod:`sandbox.failclass`, :mod:`sandbox.budget` and :mod:`sandbox.syscalls`
+#: at the top of this module, and the member re-exports them rather than
+#: shadowing them: the nine component names are each owned by the law that
+#: registers under them, and a second assignment here would be a second place
+#: for one to drift.
 
 
 class SandboxIsolation:
@@ -1115,3 +1218,69 @@ def build_sandbox_budget() -> SandboxBudget:
     deployment audits with.
     """
     return sandbox_budget()
+
+
+@register(SYSCALLS_COMPONENT_NAME)
+def build_sandbox_syscalls() -> SandboxSyscalls:
+    """Component builder: feature 160's seccomp allowlist (app_spec.xml §5.2).
+
+    The ninth component this member contributes, beside feature 157's isolation
+    law, feature 167's import allowlist, feature 166's payload channel, feature
+    165's node seed, feature 164's thread-pinning law, feature 163's wall-clock
+    law, feature 168's fail-class law and feature 162's cgroup-limits law —
+    under its own name, because the registry is keyed by name and a later
+    registration of ``sandbox`` would *replace* the isolation law, so one member
+    carrying nine controls carries nine components.  With it §5.2's control
+    table has one component per row that is a law: the isolation, the imports,
+    the transfer, the seed, the threads, the timeout, the fail class, the
+    resources and now the syscalls.
+
+    Like :func:`build_sandbox_isolation`, :func:`build_sandbox_imports`,
+    :func:`build_sandbox_threads`, :func:`build_sandbox_timeout` and
+    :func:`build_sandbox_budget` it compiles a **committed artifact** at build
+    time (:data:`~sandbox.syscalls.COMMITTED_SYSCALLS_POLICY`) — the sixth in
+    this category, and for the reason the other five artifacts ship: §5.2's row is
+    ``Syscalls | seccomp allowlist`` and an *allowlist* is a list, so "this box
+    may read, write and allocate, and may not open a file, dial a socket, fork,
+    draw kernel entropy or arm a filter of its own" has to be written down
+    before a reviewer can read it and before a runtime can be armed from it.
+    Unlike feature 162's three limits, the compiler does **not** pin the term
+    list — §5.2 fixes no syscall names, so the list is reviewed content rather
+    than a number, the same reading feature 167's allowlist takes of its own
+    terms — and what it *does* hold is the load-bearing half: the document's
+    ``default_action`` must be a denying action, its terms must be well-formed
+    syscall names listed once, and the box must be able to end itself.  So the
+    artifact cannot drift to a *wider* posture — ``default_action: "allow"``,
+    or the ``log``/``trace``/``notify`` spellings that observe a syscall and let
+    it through — without the compile failing, which is the drift that matters:
+    a widened default turns the whole ceiling into a container that believes it
+    is sandboxed.
+
+    Like the other eight it takes no arguments (the factory's registration
+    protocol), never returns ``None`` and never raises: the factory builds every
+    registered component on every ``create_app()`` call, so a builder that
+    raised on a drifted artifact would take composition down for every unrelated
+    feature in the workspace, and a bare test process with no ``DATABASE_URL``
+    and no lake still composes this one.  It reads nothing ambient either — the
+    law's subject is *the name a runtime reports for a syscall it refused*, never
+    a probe of the running kernel and never ``os.environ`` — so composition
+    cannot depend on the shell that started the process, and a machine that
+    started pytest having never had seccomp compiled into its kernel composes
+    this component exactly as a hardened host does.  A drifted artifact is
+    reported the way the other five artifacts' are: the component is built over
+    the refusal-free path, and a caller that must know the file still declares a
+    denying ceiling asks :func:`sandbox.syscalls.committed_syscalls_policy`,
+    where a named :class:`~sandbox.errors.SandboxSyscallError` is the right
+    answer.
+
+    It returns a :class:`SandboxSyscalls` rather than a policy — the same shape
+    the other eight give — and this one's reason is feature 157's own restated:
+    a component held across runs that had *armed a filter* would be one box's
+    ceiling applied to another's process, and this law has no process to arm one
+    on.  What the composed value gives a caller is the law: ``check``/``allows``
+    for the answer as a value, ``require`` for the refusal on the line after the
+    filter is armed, ``filter`` for the specification a launcher hands its
+    runtime, and ``allowed``/``default_action`` for the read side a deployment
+    audits with.
+    """
+    return sandbox_syscalls()

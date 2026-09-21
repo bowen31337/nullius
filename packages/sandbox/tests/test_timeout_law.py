@@ -650,7 +650,7 @@ class TestTheCrossMemberSpellings:
 
     def test_the_component_name_is_the_categorys_sixth(self) -> None:
         # The registry replaces a name's earlier registration, so this must be
-        # its own name and not any of the other five seats'.
+        # its own name and not any of the other seats'.
         assert TIMEOUT_COMPONENT_NAME == "sandbox-timeout"
         assert TIMEOUT_COMPONENT_NAME not in {
             "sandbox",
@@ -658,6 +658,9 @@ class TestTheCrossMemberSpellings:
             "sandbox-transfer",
             "sandbox-seed",
             "sandbox-threads",
+            "sandbox-failclass",
+            "sandbox-budget",
+            "sandbox-syscalls",
         }
 
 

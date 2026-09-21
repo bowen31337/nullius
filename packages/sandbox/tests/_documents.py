@@ -260,9 +260,7 @@ SOURCE_WITHIN: str = (
 #: ``socket`` on line 3, so a refusal naming *both* with *both* lines is a
 #: test of the collective refusal rather than of whichever offender a
 #: screen happened to report first.
-SOURCE_WITH_OS_AND_SOCKET: str = (
-    "import os\n" "import math\n" "import socket\n"
-)
+SOURCE_WITH_OS_AND_SOCKET: str = "import os\nimport math\nimport socket\n"
 
 #: The wall-clock module §12 names — absent from the committed ceiling by
 #: construction, so this submission is refused *by the ceiling*, which is a
@@ -334,9 +332,7 @@ def window_frames(
     which is what makes a mis-indexed segment read *wrong* instead of
     accidentally right.
     """
-    return {
-        name: pa.table({"close": list(range(1, rows + 1))}) for name in frame_names
-    }
+    return {name: pa.table({"close": list(range(1, rows + 1))}) for name in frame_names}
 
 
 def materialized_window(
@@ -476,9 +472,7 @@ def invocation(
     this suite read as a seedless run, which is the state the law exists to
     refuse.
     """
-    return SandboxInvocation(
-        node_id=node_id, seed=seed, component=component, env=env
-    )
+    return SandboxInvocation(node_id=node_id, seed=seed, component=component, env=env)
 
 
 def seedless_invocation(
@@ -1119,3 +1113,300 @@ MEASURED_FIELDS: tuple[str, ...] = ("cpu_s", "mem_mb", "pids")
 CPU_FAIL_CLASS: str = "timeout"
 MEMORY_FAIL_CLASS: str = "oom"
 PIDS_FAIL_CLASS: str = "crash"
+
+
+# ---------------------------------------------------------------------------
+# Feature 160 — the seccomp syscall allowlist (app_spec.xml §5.2's syscall row)
+#
+# The sixth artifact-backed feature in this category, and the one whose subject
+# is a *single call* rather than a run: §5.2's control table row is
+# ``Syscalls | seccomp allowlist``, §3's zone map states what it serves
+# ("Sandboxed: no network, no FS, seccomp, cgroup limits"), and §15's failure
+# table names both the event and its consequence ("Sandbox escape attempt |
+# seccomp violation | Kill, record fail_class, quarantine the node and its
+# subtree").
+#
+# The syscall *names* below are spelled as data rather than imported from the
+# committed artifact, for the reason :data:`CPU_S` gives one section up: a test
+# that read the artifact would follow a rename of a term instead of catching
+# one, and the point of the artifact suite is that the file's own content is
+# what a deployment is held to.  Which of them the artifact *admits* is pinned
+# by :mod:`test_syscalls_artifact`, not by this module.
+# ---------------------------------------------------------------------------
+
+#: A syscall the committed ceiling admits — the common case, and the one every
+#: box is expected to make: ``read`` is how a signal reads its own payload.
+ADMITTED_SYSCALL: str = "read"
+
+#: Feature 160's own headline example, and the syscall §15's escape row is
+#: really about: opening a file reaches the world §3's zone map denies the box
+#: ("no network, no FS").  §5.2's isolation row states the same denial
+#: structurally ("No mounts. Data arrives over IPC only."), so a box that
+#: *called* ``openat`` is one whose filesystem posture failed rather than one
+#: whose code was merely unusual.
+DISALLOWED_SYSCALL: str = "openat"
+
+#: The other three families a seccomp allowlist exists to deny, one per reason
+#: the posture is stated: the network (a socket, denied by §3's "no network"),
+#: process creation (a fork, which escapes the cgroup's ``pids.max`` accounting
+#: and the box's whole containment), kernel entropy (a ``getrandom``, whose
+#: absence is what makes a run's randomness come from feature 165's seed rather
+#: than from the host), and the privilege/filter surface (a second ``seccomp``
+#: filter, which is how a process would lift its own ceiling).
+DISALLOWED_NETWORK_SYSCALL: str = "socket"
+DISALLOWED_FORK_SYSCALL: str = "clone"
+DISALLOWED_ENTROPY_SYSCALL: str = "getrandom"
+DISALLOWED_ESCAPE_SYSCALL: str = "ptrace"
+DISALLOWED_FILTER_SYSCALL: str = "seccomp"
+
+#: §5.2's two denying action spellings, and the three that do not deny —
+#: restated here as data so the compiler suite can name each one in a drift
+#: without reading the law's tuples back.  ``kill`` is §15's own consequence
+#: ("Kill, record fail_class, …"); ``errno`` is the other legal ceiling, which
+#: fails the offending call instead of the process.
+KILL_ACTION: str = "kill"
+ERRNO_ACTION: str = "errno"
+
+#: The three non-denying spellings that *look* like controls: each observes the
+#: syscall and, by seccomp's own defaults, lets it through.  ``notify`` is the
+#: near-miss worth a test of its own — a supervisor is handed the call and may,
+#: and by default does, allow it — because a deployment running under it would
+#: believe it was sandboxed.
+LOG_ACTION: str = "log"
+TRACE_ACTION: str = "trace"
+NOTIFY_ACTION: str = "notify"
+ALLOW_ACTION: str = "allow"
+
+#: An action no version of seccomp has: the *unreadable* drift, which is a
+#: different refusal from the widening one.  A filter's default is the action
+#: every unlisted syscall meets, so a compiler that read an unrecognised
+#: spelling as denying would be inventing a kernel behaviour from a string.
+UNKNOWN_ACTION: str = "SIGKILL"
+
+#: The spellings a *malformed* term arrives in: an upper-case name (what a
+#: documentation table or an OCI profile may carry), a dotted module term (a
+#: ceiling from feature 167's law arriving in this one's grammar), a padded
+#: spelling (which would match nothing if taken literally), a leading
+#: underscore (not a kernel spelling), an empty string, and a ``None``.
+UPPERCASE_TERM: str = "OpenAt"
+DOTTED_TERM: str = "os.open"
+PADDED_TERM: str = "  read  "
+LEADING_UNDERSCORE_TERM: str = "_exit"
+EMPTY_TERM: str = ""
+
+#: A syscall name that is well-formed and that no real kernel registers — the
+#: term that proves the *grammar* and the *membership* are different checks: it
+#: compiles into a document, and it is still not admitted for any process that
+#: never names it.
+INVENTED_SYSCALL: str = "zzz_not_a_syscall"
+
+
+def syscall_attempt(
+    *,
+    syscall: Any = DISALLOWED_SYSCALL,
+    node_id: str = "",
+    component: str = "signal-sandbox",
+) -> Any:
+    """A fresh attempt as the seccomp law sees it — outside the ceiling unless told.
+
+    Defaults to the *rejected* case, because the feature's subject is a process
+    attempting a *disallowed* syscall and a refusal sentence is only readable if
+    it names which one: a test that means "this call was admitted" passes
+    ``syscall=ADMITTED_SYSCALL`` and says so, and one that means "nothing this
+    law can read was offered" passes ``syscall=None``.
+
+    Imported from :mod:`sandbox.syscalls` rather than re-spelled as a dict, for
+    the reason :func:`budget_run` gives: an attempt is not a *document* — the law
+    reads it as an object carrying a ``syscall`` name — and the tolerance for
+    duck-typed subjects is exercised with explicit stand-ins in the law suite.
+    """
+    from sandbox.syscalls import SyscallAttempt
+
+    return SyscallAttempt(syscall=syscall, node_id=node_id, component=component)
+
+
+def syscalls_document(
+    *,
+    default_action: Any = KILL_ACTION,
+    allow: Any = None,
+    policy: str = "sandbox-syscalls",
+    omit: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """A well-formed seccomp ceiling, drifted only where the caller says.
+
+    ``policy``, ``default_action`` and the term list are parameters rather than
+    this builder reaching for the law's own constants, for the reason
+    :func:`budget_document` gives: a test that means "a document whose default
+    does not deny" says exactly that, and a test that means "the committed
+    ceiling" asks :func:`committed_syscalls_document` instead.  ``omit`` builds
+    the *silent* document — the one that drops a required key entirely — which
+    is a different refusal from one carrying a wrong value, and the law says so.
+
+    The default term list is a small, legally-shaped ceiling rather than the
+    committed forty: a drift test varies one thing, and a term list copied from
+    the artifact would make every such test's premise depend on the file it is
+    testing.  ``exit_group`` is in it because a ceiling with no way for the
+    process to end is refused by construction — the builder's default has to be
+    *compilable* or every caller would have to remember to add a termination.
+    """
+    from sandbox.syscalls import TERMINATION_SYSCALLS
+
+    document: dict[str, Any] = {"policy": policy}
+    if "default_action" not in omit:
+        document["default_action"] = default_action
+    if "allow" not in omit:
+        terms = (
+            [ADMITTED_SYSCALL, "write", *sorted(TERMINATION_SYSCALLS)]
+            if allow is None
+            else allow
+        )
+        document["allow"] = list(terms)
+    return document
+
+
+def committed_syscalls_document() -> dict[str, Any]:
+    """The committed artifact's shape: a denying default and a usable ceiling.
+
+    Shaped after the file on disk rather than read *from* it, for the reason
+    :func:`committed_budget_document` gives: the artifact's own tests read the
+    file (:mod:`test_syscalls_artifact`), so a builder that read it too would
+    make a drift in the file invisible to every test that meant to build a
+    document instead.
+    """
+    return syscalls_document()
+
+
+#: The syscall names the committed artifact is *expected* to admit, spelled as
+#: data so the artifact suite compares two literal lists rather than the file
+#: against itself.  A name moving in or out of this tuple is a posture change a
+#: reviewer should have to make deliberately — the reading feature 167's
+#: ``COMMITTED_ALLOWLIST_TERMS`` takes of its own ceiling.
+COMMITTED_SYSCALL_TERMS: tuple[str, ...] = (
+    # The data plane: a signal reads its payload and writes its answer.
+    "read",
+    "write",
+    "readv",
+    "writev",
+    "close",
+    "lseek",
+    "fcntl",
+    "dup",
+    # Readiness: waiting on an fd rather than spinning, which the wall clock
+    # budget depends on — a busy loop would consume cpu past feature 162's cap.
+    "pipe2",
+    "poll",
+    "ppoll",
+    "epoll_create1",
+    "epoll_ctl",
+    "epoll_wait",
+    "eventfd2",
+    # The interpreter's own memory management.
+    "brk",
+    "mmap",
+    "munmap",
+    "mprotect",
+    "madvise",
+    "mremap",
+    "membarrier",
+    "rseq",
+    # Signal handling, which the language runtime installs at startup.
+    "rt_sigaction",
+    "rt_sigprocmask",
+    "rt_sigreturn",
+    "sigaltstack",
+    # Runtime bookkeeping: the futex plane a thread pool needs, plus identity
+    # and limits reads that reach no world.
+    "futex",
+    "sched_yield",
+    "getpid",
+    "gettid",
+    "set_tid_address",
+    "set_robust_list",
+    "arch_prctl",
+    "prlimit64",
+    "uname",
+    # Clocks only.  ``getrandom`` is deliberately absent: a run's randomness is
+    # feature 165's seed, drawn by the dispatcher rather than by the box.
+    "clock_gettime",
+    "nanosleep",
+    # The way out.  Required by the compiler — a filter that admits nothing
+    # terminates every candidate at its first instruction.
+    "exit",
+    "exit_group",
+)
+
+#: The families the committed artifact must **not** admit, and the reason each
+#: is absent — the negative half of the ceiling, which is what makes the
+#: positive list a sandbox rather than a description.  Spelled as data so the
+#: artifact suite sweeps one tuple rather than re-deriving the omissions from
+#: the positive list (which would pass for an artifact that admitted nothing).
+FORBIDDEN_SYSCALL_TERMS: tuple[str, ...] = (
+    # The filesystem family — §5.2: "No mounts. Data arrives over IPC only."
+    "open",
+    "openat",
+    "openat2",
+    "creat",
+    "stat",
+    "fstat",
+    "lstat",
+    "newfstatat",
+    "statx",
+    "access",
+    "getdents64",
+    "mkdir",
+    "unlink",
+    "rename",
+    "chmod",
+    "chdir",
+    # The network family — §5.2: "Namespace with no interfaces. Not a firewall
+    # rule."  A socket call cannot be what enforces that, and the namespace is.
+    "socket",
+    "socketpair",
+    "connect",
+    "bind",
+    "listen",
+    "accept",
+    "accept4",
+    "sendto",
+    "recvfrom",
+    "sendmsg",
+    "recvmsg",
+    "setsockopt",
+    "getsockopt",
+    # Process creation — a fork escapes the containment entirely and is not
+    # accounted by feature 162's ``pids.max``.
+    "clone",
+    "clone3",
+    "fork",
+    "vfork",
+    "execve",
+    "execveat",
+    # The escape surface §15's row is about.
+    "ptrace",
+    "process_vm_readv",
+    "process_vm_writev",
+    "kcmp",
+    "pidfd_open",
+    "pidfd_getfd",
+    # Kernel entropy — the box draws its randomness from feature 165's seed.
+    "getrandom",
+    "getentropy",
+    # Namespace and filter manipulation: how a confined process would lift its
+    # own ceiling or leave the namespace that denies it a network.
+    "unshare",
+    "setns",
+    "mount",
+    "umount2",
+    "pivot_root",
+    "chroot",
+    "seccomp",
+    "prctl",
+    "capset",
+    "personality",
+    # Signalling out of the box, and the device/argument surface a name-based
+    # allowlist cannot bound.
+    "kill",
+    "tgkill",
+    "tkill",
+    "ioctl",
+)

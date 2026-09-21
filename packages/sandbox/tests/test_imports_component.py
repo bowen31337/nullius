@@ -81,6 +81,7 @@ def test_scanning_the_member_registers_the_components_it_owns() -> None:
         "sandbox-failclass",
         "sandbox-imports",
         "sandbox-seed",
+        "sandbox-syscalls",
         "sandbox-threads",
         "sandbox-timeout",
         "sandbox-transfer",
@@ -195,6 +196,7 @@ class TestTheSeat:
             "FAIL_CLASS_COMPONENT_NAME",
             "IMPORTS_COMPONENT_NAME",
             "SEED_COMPONENT_NAME",
+            "SYSCALLS_COMPONENT_NAME",
             "THREADS_COMPONENT_NAME",
             "TIMEOUT_COMPONENT_NAME",
             "TRANSFER_COMPONENT_NAME",
@@ -203,9 +205,18 @@ class TestTheSeat:
             "sandbox_imports_component",
             "sandbox_isolation_component",
             "sandbox_seed_component",
+            "sandbox_syscalls_component",
             "sandbox_threads_component",
             "sandbox_timeout_component",
             "sandbox_transfer_component",
         }
-        for leaked in ("ModuleDecision", "ModuleReason", "ImportsAllowlist", "SandboxImports"):
+        for leaked in (
+            "ModuleDecision",
+            "ModuleReason",
+            "ImportsAllowlist",
+            "SandboxImports",
+            "SyscallDecision",
+            "SyscallReason",
+            "SandboxSyscalls",
+        ):
             assert not hasattr(seat, leaked), leaked

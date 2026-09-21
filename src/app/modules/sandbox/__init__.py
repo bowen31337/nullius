@@ -174,7 +174,7 @@ a class outside the vocabulary — and those two raise rather than return a valu
 **Feature 162's law has its own seat here too, and it is the eighth.**  The
 cgroup limits — *System rejects a sandboxed run exceeding the cgroup limits for
 cpu, memory of 2048 MB or a process count of 32* — composes as
-``sandbox-budget``, so this module now answers eight questions, and
+``sandbox-budget``, so this module answers eight questions, and
 :func:`sandbox_budget_component` mirrors the other seven in shape and re-exports
 nothing of the law's vocabulary for the same reason they do not: a caller who has
 the component calls ``check`` for the answer as a decision, ``require`` for the
@@ -209,6 +209,43 @@ a run it cannot measure.  The gate still *answers* with the readings
 (``check`` returns a decision carrying the per-limit ``BudgetOverrun`` values, so
 the pipeline can record what was consumed), which is what keeps a breach from
 becoming a crashed evaluator over thousands of unattended candidates.
+
+**Feature 160's law has its own seat here too, and it is the ninth.**  The
+seccomp syscall allowlist — *System applies a seccomp syscall allowlist, which
+rejects a process attempting a disallowed syscall* — composes as
+``sandbox-syscalls``, so this module now answers nine questions, and
+:func:`sandbox_syscalls_component` mirrors the other eight in shape and
+re-exports nothing of the law's vocabulary for the same reason they do not: a
+caller who has the component calls ``check`` for the answer as a decision
+(``allows`` for the bare boolean, ``filter`` for the specification a launcher
+arms), and ``require`` for the refusal on the line after the filter is armed.
+
+**It is the sixth seat here backed by a committed artifact, and its artifact is
+the one §5.2 leaves its content to the deployment.**  §5.2's table is ``Syscalls
+| seccomp allowlist`` — the row names the *mechanism* and no names — so unlike
+feature 162's three numbers, feature 163's thirty seconds and feature 164's two
+pins, there is no spec value for a compiler to hold the file to.  What the
+compiler holds instead is the posture: the document's ``default_action`` must be
+a **denying** action, its terms must be well-formed syscall names listed once,
+and the ceiling must admit a way for the process to end.  That first check is the
+one this seat exists for — an artifact drifted to ``allow``, or to ``log``,
+``trace`` or ``notify`` (each of which observes a syscall and lets it through),
+is a *widened* box that still looks configured, and it is refused before any
+component is handed out.  So a non-``None`` component here is proof the committed
+ceiling compiled *and* that it denies by default, while *which* syscalls are
+admitted is read from ``allowed()`` rather than promised by this docstring.
+
+**This seat's refusal shape matches feature 162's, and §15 is what decides it.**
+``require`` passes ``None`` through for an attempt inside the ceiling, because a
+timeout's shape (§5.2's "Timeout | Hard kill, recorded as ``fail_class=timeout``")
+does not apply here: a syscall outside the ceiling is §15's *"Sandbox escape
+attempt | seccomp violation"*, a violation of the box rather than a bad
+candidate, so ``require`` raises for it exactly as it does for an attempt this
+law cannot read.  The gate still *answers* — ``check`` returns a decision whose
+``violation`` carries the syscall, the action it met and §15's ``sandbox_escape``
+class, which is the value feature 161 quarantines a node and its subtree for —
+and that class is deliberately **not** one of §9.1's four, so feature 168's table
+is what translates it to ``error`` at the seat one law above this one.
 """
 
 from __future__ import annotations
@@ -224,6 +261,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a depende
         SandboxImports,
         SandboxIsolation,
         SandboxSeed,
+        SandboxSyscalls,
         SandboxThreads,
         SandboxTimeout,
         SandboxTransfer,
@@ -235,6 +273,7 @@ __all__ = [
     "FAIL_CLASS_COMPONENT_NAME",
     "IMPORTS_COMPONENT_NAME",
     "SEED_COMPONENT_NAME",
+    "SYSCALLS_COMPONENT_NAME",
     "THREADS_COMPONENT_NAME",
     "TIMEOUT_COMPONENT_NAME",
     "TRANSFER_COMPONENT_NAME",
@@ -243,6 +282,7 @@ __all__ = [
     "sandbox_imports_component",
     "sandbox_isolation_component",
     "sandbox_seed_component",
+    "sandbox_syscalls_component",
     "sandbox_threads_component",
     "sandbox_timeout_component",
     "sandbox_transfer_component",
@@ -309,6 +349,20 @@ FAIL_CLASS_COMPONENT_NAME = "sandbox-failclass"
 #: ``packages/sandbox/tests/test_budget_component.py`` pins the two equal, so
 #: the pair cannot drift into a silent ``None`` at this seat.
 BUDGET_COMPONENT_NAME = "sandbox-budget"
+
+#: The component name the member's seccomp-allowlist law registers under — the
+#: category's ninth control, kept beside the other eight rather than over any of
+#: them, because the factory's registry replaces a name's earlier registration.
+#: Kept here for the same reason the other eight are: one spelling shared by
+#: everything that asks for the law through the app package.
+#:
+#: Named rather than respelled from the member for the reason the eight
+#: constants above are: the member's own ``sandbox.SYSCALLS_COMPONENT_NAME`` is
+#: the spelling the builder registers under, and this one is the spelling the app
+#: namespace reads it back with.
+#: ``packages/sandbox/tests/test_syscalls_component.py`` pins the two equal, so
+#: the pair cannot drift into a silent ``None`` at this seat.
+SYSCALLS_COMPONENT_NAME = "sandbox-syscalls"
 
 
 def sandbox_isolation_component(
@@ -546,3 +600,44 @@ def sandbox_budget_component(app: Application | None = None) -> SandboxBudget | 
     """
     application = app if app is not None else create_app()
     return application.get(BUDGET_COMPONENT_NAME)
+
+
+def sandbox_syscalls_component(
+    app: Application | None = None,
+) -> SandboxSyscalls | Any:
+    """Return the composed sandbox seccomp-allowlist law (feature 160).
+
+    The same contract the other eight accessors give their laws, for the control
+    that answers *may a process in this box make this call?* — §5.2's row
+    ``Syscalls | seccomp allowlist``: with ``app`` given the component is read
+    from that application, without it the application is composed first, and
+    ``None`` means no ``sandbox-syscalls`` component was registered.
+
+    **The artifact-backed reading is available here too, and this is the sixth
+    seat it applies to.**  The committed ceiling ships inside the member
+    (:data:`sandbox.syscalls.COMMITTED_SYSCALLS_POLICY`) and the builder compiles
+    it at build time, resolving nothing from the environment — so a non-``None``
+    component is proof the committed document compiled and this deployment's
+    boxes run under a seccomp allowlist whose default action *denies*, exactly
+    the conclusion features 157's, 167's, 164's, 163's and 162's seats entitle a
+    caller to draw.  There is no unconfigured state for a ``None`` to describe:
+    it means *no such component was registered*, and nothing else.  Note what the
+    proof is *not*: the compiler holds the default action and the well-formedness
+    of every term, not a pinned term list, because §5.2 fixes no syscall names —
+    so a reviewer reads *which* syscalls are admitted from ``allowed()`` rather
+    than from this docstring.
+
+    The value carries no process and no armed filter, so a caller does not get a
+    verdict from this accessor: it gets the law, and calls ``check(subject)`` /
+    ``allows(name)`` for the answer as a value, ``require(subject)`` for the
+    refusal on the line after the filter is armed, or ``filter()`` for the
+    specification a launcher hands its runtime.  Note that ``require`` here has
+    the other configuration laws' two outcomes rather than feature 163's three —
+    ``None`` for an attempt inside the ceiling, and a raise for a call outside it
+    *and* for an attempt this law cannot read — because a disallowed syscall is
+    §15's sandbox escape attempt rather than a bad candidate; the syscall, the
+    action it met and §15's ``sandbox_escape`` class come back from ``check`` as
+    the decision's ``violation``, which is what feature 161 quarantines for.
+    """
+    application = app if app is not None else create_app()
+    return application.get(SYSCALLS_COMPONENT_NAME)

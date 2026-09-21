@@ -137,7 +137,7 @@ class TestTheVocabulary:
 
     def test_the_component_name_is_the_categorys_seventh(self) -> None:
         # The registry replaces a name's earlier registration, so this must be
-        # its own name and not any of the other six seats'.
+        # its own name and not any of the other seats'.
         assert FAIL_CLASS_COMPONENT_NAME == "sandbox-failclass"
         assert FAIL_CLASS_COMPONENT_NAME not in {
             "sandbox",
@@ -146,6 +146,8 @@ class TestTheVocabulary:
             "sandbox-seed",
             "sandbox-threads",
             "sandbox-timeout",
+            "sandbox-budget",
+            "sandbox-syscalls",
         }
 
 

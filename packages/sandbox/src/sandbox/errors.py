@@ -152,6 +152,23 @@ failed — the discipline :mod:`infra.security.sandbox_egress`'s and
   that conflated them would go looking at its own writer when the drift is in
   the runner, or the reverse.
 
+* :class:`SandboxSyscallError` — the seccomp-allowlist contract, and feature
+  160's whole subject.  A process inside the box attempted a syscall the
+  committed ceiling does not name, or an attempt was offered that this law
+  cannot read: a syscall that is absent, not a string, blank, or spelled in
+  something that is not a syscall name at all.  §5.2's control table is
+  ``Syscalls | seccomp allowlist`` and §15's failure table entries the first
+  case as a sandbox escape attempt.  **The gate still *answers*** — the
+  rejection reaches a caller as a :class:`sandbox.syscalls.SyscallDecision`
+  carrying the syscall, the action it met and §15's ``sandbox_escape`` class, so
+  the pipeline can record the violation and hand its node to feature 161 — and
+  the raise lives on :meth:`sandbox.syscalls.SyscallDecision.require`, the
+  launcher's last line after the filter is armed.  The document half
+  (:class:`SyscallsDocumentError`) is the committed allowlist failing to
+  compile, which is the *widening* drift this law exists to catch: an artifact
+  whose ``default_action`` no longer denies is a box that admits everything it
+  does not name.
+
 There is deliberately no error for *"the run was not admitted"* beyond
 :class:`GVisorIsolationRequired`.  Feature 157's failure mode is one thing —
 a run configuration that is not gVisor's — and splitting it into an error per
@@ -161,7 +178,11 @@ deployment actually configured.  The same restraint shapes
 :class:`SandboxSeedError`: *"this run carries no seed this law can pass"* is
 one fact with several spellings (absent, ``None``, a string, a ``bool``, a
 negative integer), and a caller that had to catch each spelling would miss the
-one its deployment actually produced.
+one its deployment actually produced.  Feature 160's rejection follows it too:
+a syscall outside the ceiling and an attempt this law cannot read are one
+caller-side fact — *this call is not admitted* — and splitting them would make
+a launcher catch the spelling its runtime happened to report and miss the one
+its kernel actually produced.
 """
 
 from __future__ import annotations
@@ -171,6 +192,7 @@ __all__ = [
     "CgroupBudgetDocumentError",
     "CgroupBudgetExceeded",
     "DisallowedImportError",
+    "DisallowedSyscall",
     "GVisorIsolationRequired",
     "InvocationSeedError",
     "IsolationDocumentError",
@@ -181,10 +203,12 @@ __all__ = [
     "SandboxImportError",
     "SandboxIsolationError",
     "SandboxSeedError",
+    "SandboxSyscallError",
     "SandboxThreadPinningError",
     "SandboxTimeoutError",
     "SandboxTransferError",
     "ScoreChannelError",
+    "SyscallsDocumentError",
     "ThreadPinningDocumentError",
     "ThreadPinningRequired",
     "TimeoutBudgetDocumentError",
@@ -834,4 +858,107 @@ class NodeSeedDocumentError(SandboxSeedError):
     (:data:`sandbox.seed.SEED_MISMATCH_CODE`) and name both values, so the
     reader sees which of the two the disagreement is about rather than being
     told only that they differ.
+    """
+
+
+class SandboxSyscallError(SandboxError):
+    """The seccomp-allowlist contract: a call outside what the box is configured to admit.
+
+    app_spec.xml, "Untrusted Code Sandbox", feature 160: *System applies a
+    seccomp syscall allowlist, which rejects a process attempting a disallowed
+    syscall.*  §5.2's control table gives the posture its own row —
+    ``Syscalls | seccomp allowlist`` — §3's zone map states what it serves
+    (*"Z1 — Mutated by the loop … Sandboxed: no network, no FS, seccomp, cgroup
+    limits"*), and §15's failure table names both the event and its consequence:
+    *"Sandbox escape attempt | seccomp violation | Kill, record ``fail_class``,
+    quarantine the node and its subtree"*.  This class is the refusal for both
+    halves of that row.
+
+    **The violation is not raised by the gate, and that is the feature rather
+    than a gap.**  A process inside the box attempting ``openat`` is §15's escape
+    attempt, so it is the *most* serious thing this member sees — and it still
+    arrives at a caller as a :class:`sandbox.syscalls.SyscallDecision`, because
+    §6.1 runs the sandbox unattended over thousands of candidates and an
+    evaluator that died on the tenth would take the run with it, and because the
+    event has an owner: feature 161 quarantines the node and its subtree, which
+    it can only do if it is *handed* something.  So the gate *answers*, the
+    decision's :meth:`~sandbox.syscalls.SyscallDecision.violation` publishes the
+    ``sandbox_escape`` class the handoff is written from, and the raise lives on
+    :meth:`sandbox.syscalls.SyscallDecision.require` — the launcher's last line,
+    after the filter is armed and before the process is spawned.  This is the
+    split :class:`SandboxBudgetError` draws for feature 162's breach, for the
+    same reason: both are *violations of the box* rather than properties of a
+    hypothesis, and both end at an operator question rather than a retry.
+
+    What this class covers is therefore two facts: a *call* whose syscall the
+    configured ceiling does not name, or which this law cannot read as a syscall
+    name at all, and a *document* whose ceiling is not §5.2's.
+    """
+
+
+class DisallowedSyscall(SandboxSyscallError):
+    """The refusal itself: this call is not admitted by the configured ceiling.
+
+    Every message begins with a greppable code — ``disallowed_syscall``
+    (:data:`sandbox.syscalls.DISALLOWED_SYSCALL_CODE`) when a process reached for
+    a syscall the allowlist does not name, ``syscalls_required``
+    (:data:`sandbox.syscalls.SYSCALLS_REQUIRED_CODE`) when an attempt was offered
+    that this law cannot read as a syscall at all — so an operator grepping a log
+    finds the rejection by the feature's own words, the discipline feature 157's
+    ``gvisor_isolation_required``, feature 167's ``disallowed_import``, feature
+    164's ``thread_pinning_required``, feature 165's ``node_seed_required``,
+    feature 162's ``cgroup_budget_exceeded``, feature 163's ``timeout_required``
+    and feature 168's ``fail_class_required`` set for theirs.
+
+    **The two codes are one class because they are one repair.**  A box that
+    called a syscall nobody configured and a caller that offered a name no filter
+    could match both end at the same operator question — *what is this box
+    permitted to call, and who told it otherwise?* — and the caller's action is
+    identical in both: do not proceed, go read the ceiling.
+    :class:`GVisorIsolationRequired`'s docstring states the same restraint for
+    feature 157's several spellings of one fact, and a caller that had to catch
+    two classes would miss the one its runtime actually produced.
+
+    Deliberately *not* a ``PermissionError`` or an ``OSError``, though the event
+    is about permissions a kernel would enforce.  Those are the classes a
+    subprocess or ``os`` call raises, and the box this member puts untrusted code
+    inside must not carry a refusal a caller could confuse with its own — the
+    reason :mod:`sandbox.errors`' module docstring gives for the member's
+    vocabulary being its own.  Note also what this class does **not** claim: it
+    says a *name* was not admitted, never that an argument was judged.  Seccomp
+    filters can match argument values; this law names syscalls, and a refusal
+    that implied it had inspected ``openat``'s path would be asserting a decision
+    this seam did not make.
+    """
+
+
+class SyscallsDocumentError(SandboxSyscallError):
+    """The committed seccomp allowlist could not be read as an allowlist.
+
+    The counterpart of :class:`IsolationDocumentError`,
+    :class:`AllowlistDocumentError`, :class:`ThreadPinningDocumentError`,
+    :class:`TimeoutBudgetDocumentError`, :class:`CgroupBudgetDocumentError` and
+    :class:`NodeSeedDocumentError`, kept apart from :class:`DisallowedSyscall`
+    for the reason that pair is always split: *the document could not be read*
+    and *this call is outside the ceiling* are different facts about different
+    things, and a caller that conflated them would go looking at a candidate's
+    syscall trace when the fault is a policy file that no longer says what it is.
+
+    A document that does not declare itself
+    (:data:`sandbox.syscalls.SYSCALLS_POLICY_KIND`, the marker feature 157's
+    isolation policy, feature 167's allowlist, feature 164's pinning policy,
+    feature 163's budget, feature 162's cgroup budget and feature 165's node
+    record carry); a ``default_action`` that is **not a denying action** — the
+    drift this class exists for, because a filter whose default is ``allow``,
+    ``log``, ``trace`` or ``notify`` admits every syscall it does not name, and a
+    box running under it would be an ordinary container that believes it is
+    sandboxed; a ``default_action`` this law has never heard of, which leaves the
+    deployment's entire posture to be guessed from a string; an ``allow`` that is
+    not a list; a term that is not a ``lower_snake_case`` syscall name, or that
+    appears twice; or a ceiling that admits no way for the process to end (no
+    ``exit`` and no ``exit_group``), which kills every candidate at its first
+    instruction and leaves nobody to record that it did.  Refused whole, fail
+    closed, because a ceiling compiled from a partially-read document is one
+    whose file and whose box disagree — and that disagreement is a sandbox
+    confining agent-authored code under a filter nobody wrote down.
     """

@@ -81,7 +81,7 @@ def test_the_member_declares_the_component_name_the_feature_owns() -> None:
     assert sandbox.FAIL_CLASS_COMPONENT_NAME == "sandbox-failclass"
 
 
-def test_scanning_the_member_registers_the_eight_components_it_owns() -> None:
+def test_scanning_the_member_registers_the_nine_components_it_owns() -> None:
     # A fresh registry, not the process default: any earlier test that called a
     # bare ``create_app()`` has already imported every workspace member into the
     # current registry, so reading it back here would assert accumulated process
@@ -100,6 +100,7 @@ def test_scanning_the_member_registers_the_eight_components_it_owns() -> None:
         "sandbox-failclass",
         "sandbox-imports",
         "sandbox-seed",
+        "sandbox-syscalls",
         "sandbox-threads",
         "sandbox-timeout",
         "sandbox-transfer",
