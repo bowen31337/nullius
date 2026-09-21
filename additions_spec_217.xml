@@ -1,0 +1,166 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 217 (System exposes an observed accessor which returns a mapping of revealed node ids to observations)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 217 in a new policy-runtime plugin: the
+    read side of the identical `question.*` interface an exploration policy
+    is handed during replay. A policy-runtime `PolicyQuestion` fronts a
+    campaign tree — the same `(node_id -> parent_id, depth, payload)` node
+    model the frozen evaluator and the nightly canary already address — as
+    the `question.*` object docs/nullius-tech-architecture.md §11 names, and
+    feature 217 is its `observed()` accessor: the revealed cells and their
+    honest observations, as a mapping `{node_id: Observation}`. The tree
+    owns the answer surface (it can name a node, give its depth and parent,
+    and read the in-sample metrics a node's payload carries); the question
+    owns only the reveal bookkeeping — the set of cells a policy has
+    committed to look at — because a tree whose answers depended on how
+    often it had been asked would not be a ground truth (the same
+    world/question split feature 184 built for the bootstrap pool). The
+    accessor is prefix-only by construction: it answers the observations of
+    the revealed set and nothing else, so an unrevealed node is absent from
+    the returned mapping rather than filtered out of it, and a policy cannot
+    reach an unrevealed score, an absolute score target, a hardcoded node
+    id, or the node's `is_null` status by any path (docs
+    nullius-tech-architecture.md §10.2, §11; cq-8, cq-16; prd §4.2). The
+    observation is derived from the node's own payload — the in-sample
+    metrics and diagnostics the node carries — carried unchanged and
+    attributed to the node id it was earned on, never rescored, never
+    narrowed, and never carrying a field the barrier forbids. The plugin is
+    a new workspace member (`packages/policy-runtime`, import name
+    `policy_runtime`) discovered by the module loader's workspace scan, with
+    its app-namespace seat at `src/app/modules/policy-runtime`; no central
+    registry, router or app factory is edited.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/* members, import names are
+      underscored slugs) / pytest (ruff + mypy conventions). The module
+      loader (src/app/module_loader.py) discovers members from the root
+      pyproject.toml `[tool.uv.workspace] members = ["packages/*"]`, imports
+      each package so its module-level `@register` fires, and composes what
+      each `@register` builder contributes under a component name. `app`
+      (`src/app`) is a namespace package with no `__init__.py`; the seats in
+      `src/app/modules/&lt;member&gt;/` are reached by namespace import (e.g.
+      `app.modules.bootstrap`, `app.modules.artifacts`).</stack>
+    <test_baseline>The repository-level suite under `tests/` is collected by
+      `pytest` with `testpaths=tests`; each workspace member's own suite lives
+      under `packages/&lt;member&gt;/tests/` and is collected under its own
+      conftest (same-basename files collide under one pytest run), and is NOT
+      graded by the bare `uv run pytest` acceptance gate — a member suite must
+      be run explicitly. Stdlib-only computation is the norm for a member that
+      fronts already-computed values: the bootstrap member's fit is a dense
+      Cholesky solve in `math.fsum` over a pure integer-hash stream, the
+      canary replay is a plain sum over frozen bytes, so feature 217's member
+      adds no third-party dependency. Measure the real numbers by running the
+      suite before relying on them.</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, docstrings that
+      cite app_spec.xml feature numbers and docs/nullius-tech-architecture.md
+      sections, stdlib-only computation, `@register` only in the package
+      `__init__` (never a submodule — a submodule's registration fires only on
+      the first `create_app()` of a process), degrade-don't-break composition
+      (a builder that raises would take composition down for every unrelated
+      feature, so a builder returns `None` for a deployment that names no
+      store rather than raising). A member never imports another workspace
+      member — it reaches shared shapes through `app.*`, never through a
+      sibling package's import name — so the policy-runtime member owns its own
+      `CampaignTree`/`CampaignTreeNode` value types (the same
+      `(node_id -> parent_id, depth, payload)` node model the frozen evaluator
+      and the nightly canary address) rather than importing canary's. Values
+      are validated at construction and at the address seam; the observation is
+      the node's honest payload-derived metrics unchanged (never a stand-in,
+      never a field the information barrier forbids); a refusal names the node
+      and the tree. Tests assert on observed behaviour with long narrative
+      docstrings explaining the "why", and pin the adapter against the tree's
+      own primitives so the wrapper and the tree cannot drift.
+    </conventions>
+  </existing_context>
+  <!-- Layout mirrors the clean main app_spec.xml: uv-workspace is what makes
+       plugin="policy-runtime" resolve to the real packages/policy-runtime/ and
+       src/app/modules/policy-runtime/ trees rather than the single-package
+       src/plugins/policy-runtime/ default. Parsed before features. -->
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Observed accessor">
+      <feature index="217" shape="plugin" plugin="policy-runtime" covers="cq-8,cq-16">
+        <description>System exposes PolicyObservation, the frozen payload a revealed node carries, derived from the node's own payload — the in-sample metrics and diagnostics the node's canonical JSON carries — attributed to the node id it was earned on, so `observed()` is a dict of `{node_id: PolicyObservation}` and the honest in-sample reading the tree exists to give is the only thing a reveal returns; it carries the node id and the payload-derived metrics, never `is_null` (readable by exactly one component, the replay scorer — prd §4.2, cq-8), never an absolute score target, never an unrevealed node's score, and never a hardcoded node id, because a policy that could read any of those would be reading past the prefix the information barrier promises it. PolicyObservation is a frozen value, validated at construction: the node id is a non-empty string and the metrics are the node's own, so a policy comparing two revealed cells reads each cell's honest in-sample reading and cannot move either.</description>
+      </feature>
+      <feature index="217b" shape="plugin" plugin="policy-runtime" depends_on="217">
+        <description>System exposes CampaignTreeNode and CampaignTree, the policy-runtime's own frozen node and tree value types — `node_id` (a non-empty string, the one address a node is revealed on), `parent_id` (the parent node id, or `None` for a root), `depth` (a non-negative integer, zero at a root), and `payload` (the node's canonical JSON — the frozen bytes the replay reads back) — the same `(node_id -> parent_id, depth, payload)` node model the frozen evaluator and the nightly canary address, owned by this member rather than imported from canary because a member never imports another workspace member and reaches shared shapes through `app.*`, never through a sibling package's import name. CampaignTree is a set of nodes in a stable order: it sorts its nodes by `node_id` before anything is hashed or walked, refuses a node with an empty id, a negative depth, a non-canonical payload, a duplicate id, or a parent reference that is not a node in the tree, so a policy handed a tree can never be shown a dangling edge or a node it cannot address.</description>
+      </feature>
+      <feature index="217c" shape="plugin" plugin="policy-runtime" depends_on="217b">
+        <description>System exposes PolicyQuestion, the adapter that fronts one CampaignTree as the read side of the identical `question.*` interface docs/nullius-tech-architecture.md §11 names, and feature 217 is its `observed()` accessor. The tree owns the answer surface — it can name a node, give its depth and parent, and read the in-sample metrics a node's payload carries — and deliberately carries no reveal history, because a tree whose answers depended on how often it had been asked would not be a ground truth; PolicyQuestion adds only the reveal bookkeeping, the set of cells a policy has committed to look at, the one fact a replay needs and a tree must not hold. `observed()` returns `{node_id: PolicyObservation}` for the revealed set only, ascending by node id — an explicit sort before the reduction, the ordering rule §12 states for a search frontier, so two reads of one question agree whatever order the reveals came in — and each observation is the tree's honest payload-derived reading of the cell, so the map is a pure function of the revealed set: the same cells revealed in any order return the same observations.</description>
+      </feature>
+      <feature index="217d" shape="plugin" plugin="policy-runtime" depends_on="217c">
+        <description>System exposes `observed()` as prefix-only by construction, so an unrevealed node is absent from the returned mapping rather than filtered out of it — the accessor iterates the question's own reveal set and builds one observation per revealed node, and a node the policy has not revealed is never a key of the mapping, never a value, and never reachable by introspection, attribute walking, or a stray `__dict__` access (docs §10.2, cq-16). The reveal set is the question's private state and the accessor reads it read-only, so a policy holding the mapping holds only what it has already seen, and the accessor answers no node outside that set however it is asked — which is the whole of "returns a mapping of revealed node ids to observations", and the property that makes the information barrier (no unrevealed scores, no `is_null`, no absolute score target) a fact about the accessor rather than a promise in a docstring.</description>
+      </feature>
+      <feature index="217e" shape="plugin" plugin="policy-runtime" depends_on="217c">
+        <description>System exposes `policy_question(tree)`, the one factory that turns a CampaignTree into the read-side `question.*` adapter a policy expects, so the identical-interface requirement is a single call site rather than a construction a caller could get wrong: the adapter is bound to the tree it fronts (its node addressing, its payload-derived observations are the tree's), it refuses a non-tree or a tree with no nodes at construction naming what was wrong, and two adapters of one tree answer identical observations and cell meta to the last field — the property that makes "one policy, both pools" a fact about the adapter rather than a promise in a docstring. The policy-runtime member registers a `policy-runtime` component under the application factory (`@register` in the package `__init__`, never a submodule), whose builder resolves the tree the deployment's artifact store holds — returning `None` for a deployment that names no store rather than raising, the degrade-don't-break stance every store-bound builder in this workspace takes — so a composed application carries the read-side question for the tree the process is actually pointed at, and its app-namespace seat at `src/app/modules/policy-runtime` exposes the composed component without making the `app` package depend on any workspace member at import time.</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Fronts a campaign tree — the `(node_id -> parent_id, depth, payload)` node
+    model the frozen evaluator and the nightly canary already address — as the
+    read side of the `question.*` interface a policy is handed during replay.
+    Registers a `policy-runtime` component the module loader discovers by
+    workspace scan, beside the existing `bootstrap`, `artifacts`, `canary` and
+    sibling components, without editing the app factory, middleware or
+    settings. Adds the app-namespace seat `src/app/modules/policy-runtime`
+    beside `src/app/modules/bootstrap`, `src/app/modules/artifacts` — a member
+    seat per plugin, reached by namespace import. The observation it returns is
+    the in-sample reading the replay scorer's `is_null`-aware scoring reads
+    past: the barrier keeps `is_null` in exactly one component (the scorer), so
+    `observed()` returns the node's payload-derived metrics and never the null
+    flag.
+  </integration_points>
+  <constraints>
+    `observed()` must be prefix-only: an unrevealed node is absent from the
+    returned mapping, never filtered into it, and never reachable by
+    introspection, attribute walking, or a stray `__dict__` access (docs
+    §10.2, cq-16).
+    `observed()` must never expose `is_null` — readable by exactly one
+    component, the replay scorer (prd §4.2, cq-8) — nor an absolute score
+    target, nor a hardcoded node id, nor an unrevealed node's score.
+    The policy-runtime member must not import another workspace member (e.g.
+    canary); it owns its own `CampaignTree`/`CampaignTreeNode` value types and
+    reaches shared shapes through `app.*`.
+    `@register` must live only in the package `__init__`, never a submodule —
+    a submodule's registration fires only on the first `create_app()` of a
+    process.
+    The component builder must degrade to `None` for a deployment that names
+    no store, never raise — the factory builds every registered component on
+    every `create_app()` call.
+    No central registry, router, app factory, middleware, settings, or
+    migration is edited; the member joins by workspace-scan convention.
+    All existing tests across the repository-level `tests/` tree and every
+    sibling member suite must stay green.
+  </constraints>
+  <implementation_steps>
+    <phase name="Observed accessor">
+      Add the policy-runtime member `packages/policy-runtime` (import name
+      `policy_runtime`) with its own `CampaignTreeNode`/`CampaignTree` frozen
+      value types, the `PolicyObservation` payload, and the `PolicyQuestion`
+      adapter.
+      Implement `observed()` as the read side of the `question.*` interface —
+      prefix-only, returning `{node_id: PolicyObservation}` for the revealed
+      set, ascending by node id, never carrying `is_null` or an unrevealed
+      reading.
+      Add the `policy_question(tree)` factory and the `@register("policy-runtime")`
+      component builder (in the package `__init__`), plus the app-namespace
+      seat `src/app/modules/policy-runtime`.
+      Write the member's own suite under `packages/policy-runtime/tests`,
+      pinned against the tree's own primitives, and confirm the repository and
+      sibling suites stay green.
+    </phase>
+  </implementation_steps>
+  <success_criteria>
+    `observed()` returns `{node_id: PolicyObservation}` for the revealed set
+    only, ascending by node id, and an unrevealed node is absent from the
+    mapping rather than filtered into it.
+    No observation carries `is_null`, an absolute score target, a hardcoded
+    node id, or an unrevealed node's score; the information barrier holds.
+    The policy-runtime member joins by workspace-scan convention with no edit
+    to a central registry, router, app factory, middleware, settings, or
+    migration, and does not import another workspace member.
+    The member's own suite and every existing suite stay green.
+  </success_criteria>
+</project_specification>

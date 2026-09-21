@@ -1,0 +1,39 @@
+# nullius workspace member: the policy-runtime plugin
+# (app_spec.xml, "Exploration Policy Runtime", feature 217;
+# docs/nullius-tech-architecture.md §11 for the identical question.*
+# interface an exploration policy is handed during replay, and §10.2 for
+# the prefix-only enforcement the observed accessor is the read side of).
+#
+# Joins the uv workspace by convention — packages/policy-runtime with this
+# file — so the module loader (src/app/module_loader.py) discovers it by
+# scanning the members the root pyproject.toml declares. No edit to any
+# central registry, router table or app factory is needed or wanted to
+# wire this package in.
+#
+# Dependencies: the workspace root, and nothing else. The factory's
+# registration protocol (`import app.module_loader`) is the whole of it.
+# The member fronts a campaign tree the frozen evaluator and the nightly
+# canary already address — the same (node_id -> parent_id, depth, payload)
+# node model — but owns its own CampaignTree/CampaignTreeNode value types
+# rather than importing canary's, because a workspace member never imports
+# another workspace member and reaches shared shapes through app.*. The
+# observation a reveal returns is the node's payload-derived in-sample
+# metrics, carried unchanged; the arithmetic is a read of already-computed
+# bytes, so the member adds no third-party dependency and no numerics.
+
+[project]
+name = "policy-runtime"
+version = "0.1.0"
+description = "Exposes the read side of the identical question.* interface an exploration policy is handed during replay: the observed accessor over a campaign tree."
+requires-python = ">=3.12"
+dependencies = ["nullius"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/policy_runtime"]
