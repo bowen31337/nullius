@@ -79,6 +79,21 @@ by which line of code failed:
   verdict to code around (by caching the return series), and a caller
   that only needs "the cache refused" catches the base.
 
+* :class:`ArtifactPinError` — the resident campaign pins' contract
+  (app_spec.xml feature 175).  A pin arena bound to anything but an
+  :class:`~artifacts.ArtifactStore`, a pin released a second time, or
+  a released pin asked for the array it no longer holds.  Split from
+  :class:`ArtifactCacheError` because the two features own different
+  contracts over the same buffers: the cache's is a *content* policy —
+  which value may reside (the return series, never a marginal IR keyed
+  against a book) — and its residence never lets go; the pins' is a
+  *lifetime* policy — how long a hold lasts, namely while a holder
+  holds it — so every refusal this class speaks is a lie about a hold
+  rather than a wrong value.  As everywhere in this member, the load's
+  own refusals pass through the arena unchanged: a campaign the store
+  holds no nodes for stays :class:`ArtifactNotFoundError`, exactly as a
+  direct :func:`~artifacts.load_campaign_returns` answers it.
+
 Every message names the offending value and the contract it broke, in
 the same discipline as the snapshot and null-oracle taxonomies: these
 errors are operational signals for a system whose replay determinism
@@ -94,6 +109,7 @@ __all__ = [
     "ArtifactKeyError",
     "ArtifactMarginalIRDeclinedError",
     "ArtifactNotFoundError",
+    "ArtifactPinError",
     "ArtifactProposalError",
     "ArtifactStoreError",
     "ArtifactsError",
@@ -235,4 +251,30 @@ class ArtifactMarginalIRDeclinedError(ArtifactCacheError):
     keeps deterministic and §9.3 keeps cheap.  Catching
     :class:`ArtifactCacheError` covers both; catching this one
     separates the policy from the malformed input.
+    """
+
+
+class ArtifactPinError(ArtifactsError):
+    """The resident campaign pins could not take the hold as given.
+
+    app_spec.xml feature 175: *System pins each loaded campaign array in
+    memory, holding roughly 4 MB per campaign of 500 nodes.*  A pin is
+    a counted hold, so the contract it can break is about holds: an
+    arena bound to anything but an :class:`~artifacts.ArtifactStore`
+    cannot load through the read side §1 grants (this member trusts no
+    second decoder, and an arena without that store is an arena nothing
+    can be pinned in); a pin released twice speaks for a hold its
+    caller no longer holds — the second release would be subtracting
+    someone else's; and a released pin asked for its array is a handle
+    vouching for a residence it just let go of.  Every refusal names the
+    campaign and the horizon axis it is about, because a holder juggling
+    several pins must be able to tell which one let go.
+
+    Everything the *load* refuses passes through the arena unchanged,
+    on purpose, exactly as it passes feature 176's cache: a campaign
+    holding no node directories is :class:`ArtifactNotFoundError`, a
+    horizon some panel covers no date of is
+    :class:`ArtifactStoreError`, each the load's own vocabulary — this
+    class is the hold's seam, not a wrapper that would give one refusal
+    two spellings depending on which seam was crossed.
     """

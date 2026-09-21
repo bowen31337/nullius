@@ -196,6 +196,33 @@ features persist land inside the directories this store keys.
   any other entry kind, and the one ask shaped like one is the
   decline.
 
+* **Each loaded campaign array is pinned, held and measured**
+  (:mod:`artifacts._pins`, feature 175).  §9.3's instruction has a
+  second half the load alone does not answer — *"...and pin it in RAM:
+  500 nodes × 2000 periods × 4 B = 4 MB per campaign; 200 campaigns =
+  800 MB resident"* — and this module is that half:
+  :class:`CampaignPins` loads the campaign through feature 174's load
+  the first time a caller pins its ``(campaign, horizon)`` axis, counts
+  every holder, answers each of them the same resident
+  :class:`~artifacts.CampaignReturns`, and drops the buffer the moment
+  the last holder releases — a counted hold, so the several consumers
+  within one replay that share an array (the sweep, feature 177's
+  factor, feature 178's updates) can let go in any order without any
+  one of them owning the buffer's lifetime.  The hold is *measured*:
+  ``CampaignReturns.footprint_bytes`` answers §9.3's sizing per array
+  (the 500-node campaign answers exactly
+  :data:`CAMPAIGN_SIZING_FOOTPRINT_BYTES`, roughly 4 MB), and the
+  arena's ``footprint_bytes`` sums its residence — the 800 MB of
+  §9.3's second line is an operator's reading, not a hope.  The
+  :class:`CampaignPin` handle is honest in both directions (a released
+  pin refuses to answer, a second release refuses to spend what the
+  first already spent, the ``with`` scope releases what the block left
+  held), and beside feature 176's cache the division of labor is
+  spoken: the cache owns the *content* policy and never lets go, the
+  pins own the *lifetime* policy and the measurement — both load
+  through feature 174's load once per key, and neither is a second
+  decoder.
+
 * **The two per-date series persist as Parquet** (:mod:`artifacts._series`,
   feature 171).  §9.2's ``ic_series.parquet`` and ``turnover_series.parquet``
   — the two lines between the returns grid and the edge's JSON documents —
@@ -285,6 +312,7 @@ from ._errors import (
     ArtifactKeyError,
     ArtifactMarginalIRDeclinedError,
     ArtifactNotFoundError,
+    ArtifactPinError,
     ArtifactProposalError,
     ArtifactsError,
     ArtifactStoreError,
@@ -305,6 +333,14 @@ from ._keys import (
     validate_filename,
     validate_node_id,
     validate_segment,
+)
+from ._pins import (
+    CAMPAIGN_SIZING_FOOTPRINT_BYTES,
+    CAMPAIGN_SIZING_NODES,
+    CAMPAIGN_SIZING_PERIODS,
+    RESIDENT_PIN_POLICY,
+    CampaignPin,
+    CampaignPins,
 )
 from ._profiles import (
     DECAY_PROFILE_FILENAME,
@@ -359,6 +395,9 @@ __all__ = [
     "ABSENT",
     "ARTIFACT_ROOT_ENV",
     "CAMPAIGN_LOAD_HORIZON",
+    "CAMPAIGN_SIZING_FOOTPRINT_BYTES",
+    "CAMPAIGN_SIZING_NODES",
+    "CAMPAIGN_SIZING_PERIODS",
     "CHARGE_COLUMN",
     "CODE_HASH_COLUMN",
     "CODE_HASH_LENGTH",
@@ -382,6 +421,7 @@ __all__ = [
     "PARQUET_COMPRESSION",
     "REGIME_ATTRIBUTION_FILENAME",
     "RESIDENT_CACHE_POLICY",
+    "RESIDENT_PIN_POLICY",
     "SIGNAL_RETURNS_FILENAME",
     "SOURCE_FILENAME",
     "STAGING_ROOT_NAME",
@@ -394,10 +434,13 @@ __all__ = [
     "ArtifactKeyError",
     "ArtifactMarginalIRDeclinedError",
     "ArtifactNotFoundError",
+    "ArtifactPinError",
     "ArtifactProposalError",
     "ArtifactStore",
     "ArtifactStoreError",
     "ArtifactsError",
+    "CampaignPin",
+    "CampaignPins",
     "CampaignReturns",
     "CodeHashIndex",
     "ReturnRow",

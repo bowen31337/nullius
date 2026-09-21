@@ -319,6 +319,23 @@ class CampaignReturns:
         """
         return (len(self.node_ids), len(self.periods))
 
+    @property
+    def footprint_bytes(self) -> int:
+        """The RAM the resident buffer holds — cells × 4 B, §9.3's sizing.
+
+        The measurement half of feature 175's sentence (*"...holding
+        roughly 4 MB per campaign of 500 nodes"*): §9.3 sizes the
+        residency with ``500 nodes × 2000 periods × 4 B = 4 MB per
+        campaign``, and this is that arithmetic as a fact of the record
+        rather than a comment beside it — one cell per ``(node,
+        period)`` at the width :data:`FLOAT32_TYPECODE` pins, so the
+        campaign §9.3 describes answers exactly ``4_000_000`` and a hold
+        over any number of resident arrays (:mod:`artifacts._pins`) is
+        a sum of these, never a guess.  The axes are the array's
+        identity; this is what the payload *weighs*.
+        """
+        return len(self.values) * self.values.itemsize
+
     def row(self, node_id: str) -> _array.array:
         """One node's T-vector — its contiguous ``periods`` cells, float32.
 

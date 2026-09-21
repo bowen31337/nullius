@@ -1,0 +1,228 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 175 (pins each loaded campaign array in memory, holding roughly 4 MB per campaign of 500 nodes)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 175 in the artifacts plugin: the
+    system pins each loaded campaign array in RAM as a counted hold —
+    CampaignPins, an arena bound to one ArtifactStore, whose pin(campaign_id,
+    horizon=None) loads the campaign through feature 174's
+    load_campaign_returns the first time an axis is pinned, counts every
+    holder, answers each of them the same resident CampaignReturns object,
+    and drops the buffer the moment the last holder releases (the several
+    consumers within one replay that share an array — the sweep, feature
+    177's Cholesky factor, feature 178's rank-1 updates — can let go in
+    any order without any one of them owning the buffer's lifetime). The
+    hold is measured, not estimated: CampaignReturns gains a footprint_bytes
+    property (cells × itemsize, the §9.3 arithmetic as a fact of the
+    record), the sizing is spelled once as CAMPAIGN_SIZING_NODES (500) ×
+    CAMPAIGN_SIZING_PERIODS (2000) × 4 B = CAMPAIGN_SIZING_FOOTPRINT_BYTES
+    (4,000,000 — §9.3's decimal "roughly 4 MB"), and the arena's
+    footprint_bytes sums its residence, so §9.3's second line (200
+    campaigns = 800 MB resident) is an operator's reading. The CampaignPin
+    handle is honest in both directions: a released pin refuses to answer
+    (returns, footprint, scope re-entry), a second release refuses (the
+    first already spent the hold), and the with-scope releases exactly
+    what the block left held — every refusal is the new ArtifactPinError,
+    feature 175's own class in the member's taxonomy, naming the campaign
+    and the horizon axis. The arena keys by exactly the ask
+    ((campaign_id, horizon), the same spelling feature 176's cache keys
+    by), adds no second decoder (every refusal of the load passes through
+    unchanged and pins nothing), is per-replay state (no @register
+    builder, no lock — §10.4 pins a replay to a single core), and sits
+    beside feature 176's cache with the division of labor spoken: the
+    cache owns the content policy and never lets go, the pins own the
+    lifetime policy and the measurement. No shared file is touched; the
+    member never imports another workspace member.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/artifacts member, import artifacts) / pytest (ruff + mypy conventions)</stack>
+    <test_baseline>artifacts suite under packages/artifacts/tests/, stdlib-only modules plus pyarrow where the Parquet codecs and the campaign load are exercised (the pins load through feature 174's Parquet read, so their suite carries the same importorskip). The repository-level tests/ tree is separate and is not collected by this member's suite; run the member suite (packages/artifacts/tests) under its own conftest, because same-basename files collide under one pytest run.</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, docstrings
+      that cite app_spec.xml feature numbers and docs/nullius-tech-architecture.md
+      sections, stdlib-only computation, third-party imports (pyarrow)
+      deferred to the read seams that need them, @register only in the
+      package __init__ (never a submodule), degrade-don't-break
+      composition. The member never imports another workspace member.
+      Errors are a taxonomy (one base, subclasses split by which
+      contract was violated, verdicts split from malformed input the way
+      feature 179 split ArtifactDeduplicatedError from
+      ArtifactProposalError), messages name the offending value and the
+      contract they broke. Tests assert on observed behaviour with
+      long narrative docstrings explaining the "why".
+    </conventions>
+  </existing_context>
+  <!-- Layout mirrors the clean main app_spec.xml: uv-workspace is what makes
+       plugin="artifacts" resolve to the real packages/artifacts/ tree rather
+       than the single-package src/plugins/artifacts/ default. Parsed before
+       features. -->
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Resident campaign pins">
+      <feature index="1" shape="plugin" plugin="artifacts" depends_on="174">
+        <description>System pins each loaded campaign array in RAM as a counted hold: CampaignPins, bound to one ArtifactStore (refusing anything else by name, because it loads through the read side §1 grants and this member trusts no second decoder), answers a pin(campaign_id, horizon=None) whose first call on an axis runs feature 174's load_campaign_returns and whose every later call on that axis answers the same resident CampaignReturns object with no second Parquet sweep — the array outlives the campaign's directory being deleted under it, because it is pinned</description>
+      </feature>
+      <feature index="2" shape="plugin" plugin="artifacts" depends_on="1">
+        <description>System ends the hold at the last release: each CampaignPin handle holds a counted share of its axis's resident array (pin_count answers the count from the residence alone), a release decrements the count — an early release never drops a buffer another holder is still indexing into — and the last release drops the entry, its residence listing and its footprint, so the next pin re-loads through the store, which stays the truth (feature 174's loads are deterministic, and a node published since a hold was taken is visible to the next pin after the last release)</description>
+      </feature>
+      <feature index="3" shape="plugin" plugin="artifacts" depends_on="1">
+        <description>System keeps the handle honest in both directions: a released pin refuses to answer (returns, footprint_bytes and a with-scope re-entry all raise ArtifactPinError naming the campaign and the horizon axis they are about), a second release refuses because the first already spent this hold, and the with scope releases exactly what the block left held, so a caller that releases early inside the block leaves the scope cleanly</description>
+      </feature>
+      <feature index="4" shape="plugin" plugin="artifacts" depends_on="174">
+        <description>System measures the hold rather than estimating it: CampaignReturns answers footprint_bytes (cells × itemsize — the §9.3 arithmetic as a fact of the record, so the campaign §9.3 sizes answers exactly 4,000,000 bytes, "roughly 4 MB" because §9.3's MB is the decimal megabyte its arithmetic writes), the sizing is spelled once (CAMPAIGN_SIZING_NODES = 500, CAMPAIGN_SIZING_PERIODS = 2000, CAMPAIGN_SIZING_FOOTPRINT_BYTES = 4,000,000, with 200 such campaigns summing to §9.3's 800 MB resident), and the arena's footprint_bytes is the sum over its residence — 0 for an arena nothing holds, a refused load pins nothing, and a released hold weighs nothing</description>
+      </feature>
+      <feature index="5" shape="plugin" plugin="artifacts" depends_on="1,2,3,4">
+        <description>System keys the residence by exactly the ask and keeps the vocabularies straight: the key is (campaign_id, horizon) — the same spelling feature 176's ReturnSeriesCache keys by, the policy axis and each pinned horizon resident under their own keys, released independently; every refusal of the load passes through the arena unchanged in the load's own vocabulary (no wrapper class, no second decoder) and pins nothing; a malformed campaign is ArtifactKeyError and a horizon that is not a positive period count is ArtifactStoreError, both before any store is touched; and the arena's own contract is the new ArtifactPinError — feature 175's own class in the member's taxonomy (catchable by ArtifactsError, not a subclass of ArtifactCacheError, because the pins own a lifetime policy where the cache owns a content policy)</description>
+      </feature>
+      <feature index="6" shape="plugin" plugin="artifacts" depends_on="1,2,3,4,5">
+        <description>System keeps the pins per-replay state with a spoken division of labor against feature 176's cache: no @register builder (composition must be safe in any environment; the arena is built by the replay that holds it), no lock (§10.4 pins a replay to a single core), two arenas over one store are two residences, and the module docstrings state the split — the cache owns which value may reside (the return series, never a marginal IR keyed against a book) and never lets go, the pins own how long the hold lasts (while a holder holds it) and what it weighs; the module's public surface is exactly the arena, the handle, the sizing constants and the policy sentence (RESIDENT_PIN_POLICY), with no install, evict or second release spelling, exported through the package __init__ (never a submodule @register) alongside the existing seams</description>
+      </feature>
+    </category>
+    <category name="Resident campaign pins — verification">
+      <feature index="7" shape="plugin" plugin="artifacts" depends_on="1,2,3,4,5,6">
+        <description>System passes an end-to-end test which displays, over one published two-node campaign, that the first pin answers feature 174's own array while the second holder shares the resident object without a second read (the array outliving the campaign's directory being deleted under it, while a direct load raises ArtifactNotFoundError); that the first of two releases keeps the array for the holder that remains and the last drops it (the next pin re-loading through the store, proven by the deletion refusing it); that the with scope pins and releases and the early release leaves the scope cleanly; that the §9.3-sized record (500 nodes × 2000 periods) answers exactly the 4,000,000-byte footprint and the arena sums two campaigns' footprints and drops each with its hold; that the policy axis and a pinned horizon are two holds on two buffers released independently; and that the load's refusals pass through with nothing pinned while the arena's own refusals are ArtifactPinError naming the campaign and axis</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    New module packages/artifacts/src/artifacts/_pins.py owning feature
+    175: the constants (CAMPAIGN_SIZING_NODES, CAMPAIGN_SIZING_PERIODS,
+    CAMPAIGN_SIZING_FOOTPRINT_BYTES, RESIDENT_PIN_POLICY), the arena
+    (CampaignPins: pin/holds/pin_count/resident_campaigns/footprint_bytes
+    over feature 174's load_campaign_returns, the private
+    (campaign_id, horizon) → resident-array-and-holder-count residence),
+    and the handle (CampaignPin: returns/footprint_bytes/campaign_id/
+    horizon/released, release, the with scope, the honest refusals).
+    One additive property on feature 174's record
+    (packages/artifacts/src/artifacts/_campaign.py):
+    CampaignReturns.footprint_bytes (len(values) × itemsize), carrying
+    the §9.3 sizing its own module docstring already hands feature 175
+    ("the thing feature 175 holds in memory"). One new error class in
+    the member's taxonomy
+    (packages/artifacts/src/artifacts/_errors.py): ArtifactPinError
+    (the pins' lifetime contract — an arena bound to anything but an
+    ArtifactStore, a double release, a released pin asked for its
+    array), with the taxonomy's docstring entry and __all__ spelling;
+    the load's own refusals pass through the arena unchanged. New names
+    exported from the package __init__
+    (packages/artifacts/src/artifacts/__init__.py): CAMPAIGN_SIZING_
+    FOOTPRINT_BYTES, CAMPAIGN_SIZING_NODES, CAMPAIGN_SIZING_PERIODS,
+    RESIDENT_PIN_POLICY, CampaignPin, CampaignPins, ArtifactPinError —
+    plus the feature's bullet in the package docstring, beside features
+    174's and 176's. No new @register builder (the arena is per-replay
+    state, not a composed component, the same stance features 170-176
+    and 180 take). Covered by packages/artifacts/tests/test_pins.py
+    (the 174 suite's builders and importorskip stance). No shared file
+    is modified (src/app/middleware.py, src/app/settings.py,
+    migrations/**, alembic/**), and src/app/modules/artifacts/ needs no
+    change (the feature adds no component for the seat to expose).
+  </integration_points>
+  <constraints>
+    Must not modify the config, store, service or any shared file
+    (src/app/middleware.py, src/app/settings.py, migrations/**,
+    alembic/**)
+    The hold is counted: several holders share one resident buffer per
+    (campaign_id, horizon) axis, each pin/hold is matched by exactly one
+    release, an early release never drops a buffer another holder still
+    holds, and the last release drops the entry and its footprint — the
+    next pin re-loads through the store, which stays the truth
+    The handle is honest: a released pin refuses to answer (returns,
+    footprint, scope re-entry), a second release refuses, and the with
+    scope releases exactly what the block left held; every refusal is
+    ArtifactPinError naming the campaign and the horizon axis
+    The hold is measured: CampaignReturns.footprint_bytes is cells ×
+    itemsize, the §9.3 sizing is spelled once as the CAMPAIGN_SIZING_*
+    constants (500 × 2000 × 4 B = 4,000,000, roughly 4 MB), the arena
+    sums its residence, a refused load pins nothing and a released hold
+    weighs nothing
+    The arena adds no second decoder: it loads through feature 174's
+    load only, every load refusal passes through unchanged in the
+    load's own vocabulary, and a refused load pins nothing; malformed
+    keys refuse in the layout's and the load's own vocabularies
+    (ArtifactKeyError, ArtifactStoreError) before any store is touched
+    The arena is per-replay state over the store-as-truth: no
+    @register builder, no lock, two arenas over one store are two
+    residences, and the division of labor against feature 176's cache
+    is spoken in the docstrings (the cache owns the content policy and
+    never lets go; the pins own the lifetime policy and the measurement)
+    Follow the existing docstring discipline: cite app_spec.xml feature
+    175 and docs/nullius-tech-architecture.md §9.3 (the resident
+    campaign arrays, the "pin it in RAM" instruction and the
+    500 × 2000 × 4 B sizing with its 200-campaign second line) and
+    §10.4 (the single core that is the reason the arena takes no lock)
+    All existing artifacts tests must stay green
+  </constraints>
+  <implementation_steps>
+    <phase name="Phase 1: Resident campaign pins">
+      Add the new error class to the member's taxonomy
+      (packages/artifacts/src/artifacts/_errors.py): ArtifactPinError,
+      with the taxonomy's docstring entry and __all__ spelling (a
+      lifetime contract split from the cache's content contract)
+      Add the footprint property to feature 174's record
+      (packages/artifacts/src/artifacts/_campaign.py):
+      CampaignReturns.footprint_bytes (len(values) × itemsize), the
+      §9.3 sizing as a fact of the record, documented as the
+      measurement half of feature 175's sentence
+      Add the new module packages/artifacts/src/artifacts/_pins.py:
+      the constants (CAMPAIGN_SIZING_NODES, CAMPAIGN_SIZING_PERIODS,
+      CAMPAIGN_SIZING_FOOTPRINT_BYTES, RESIDENT_PIN_POLICY), CampaignPins
+      (constructor binding one ArtifactStore; pin loading through
+      feature 174's load on a first ask and counting holders after;
+      holds/pin_count/resident_campaigns answering from the residence
+      alone; footprint_bytes summing the residence; the private
+      _release spending one holder and dropping the entry at zero), and
+      CampaignPin (returns/footprint_bytes/campaign_id/horizon/released,
+      release with the double-release refusal, the with scope releasing
+      what the block left held)
+      Export the new names from the package __init__ (no new @register
+      builder in a submodule) and add the feature's bullet to the
+      package docstring, beside features 174's and 176's
+    </phase>
+    <phase name="Phase 2: Resident campaign pins — verification">
+      Add packages/artifacts/tests/test_pins.py (the 174 suite's
+      builders and importorskip stance) asserting: the first pin
+      answering the load and the second holder the same resident object
+      without a re-read (surviving the campaign directory's deletion
+      under it, while a direct load raises ArtifactNotFoundError); the
+      counted hold (an early release keeping the array for the
+      remaining holder, the last release dropping it and the next pin
+      re-loading, the refused load pinning nothing); the honest handle
+      (the with scope, the early release leaving the scope cleanly, the
+      double-release and use-after-release refusals naming the campaign
+      and axis); the measured hold (the §9.3-sized 500 × 2000 record
+      answering exactly 4,000,000 bytes, the 200-campaign second line,
+      the arena summing two campaigns and dropping each hold's weight
+      with its release); the (campaign, horizon) key with independent
+      releases; the per-replay stance (two arenas two residences, the
+      store staying the truth); the arena's own contract and the
+      vocabularies (binding refusal, key and horizon refusals,
+      ArtifactPinError's place in the taxonomy); the feature as one
+      behaviour; and the module surface being exactly the arena, the
+      handle, the sizing and the policy
+    </phase>
+  </implementation_steps>
+  <success_criteria>
+    Feature 175 implemented: each loaded campaign array is pinned in
+    RAM as a counted hold — loaded once per (campaign_id, horizon) axis
+    through feature 174's load, shared by every holder as the same
+    resident object, and dropped the moment the last holder releases
+    The hold is measured: the §9.3-sized campaign (500 nodes, 2000
+    periods) answers exactly the 4,000,000-byte footprint ("roughly
+    4 MB"), the arena sums its residence (200 such holds = §9.3's
+    800 MB), a refused load pins nothing and a released hold weighs
+    nothing
+    The handle is honest (a released pin refuses to answer, a second
+    release refuses, the with scope releases what the block left held)
+    and every arena refusal is ArtifactPinError naming the campaign
+    and the horizon axis; the load's refusals pass through unchanged
+    and pin nothing, and malformed keys refuse in their own
+    vocabularies before any store is touched
+    The arena is per-replay state over the store-as-truth (no
+    @register builder, no lock, two arenas two residences) with the
+    division of labor against feature 176's cache spoken in the
+    docstrings; the module surface is exactly the arena, the handle,
+    the sizing constants and the policy sentence
+    The new seams are exported from the artifacts package __init__ and
+    covered by packages/artifacts/tests/test_pins.py; all existing
+    artifacts tests stay green
+  </success_criteria>
+</project_specification>
