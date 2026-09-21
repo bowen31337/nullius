@@ -201,6 +201,53 @@ the recorded class the runner already wrote a second, disagreeing spelling.  Wha
 is not a number of seconds, a committed artifact that does not declare §5.2's
 thirty, a node record this law cannot write the class onto.  A caller that wants
 every kill raised re-raises on ``not None``, and that stays the caller's choice.
+
+**Feature 168 rides the seat a seventh time, and it is the category's last.**
+*System returns a structured fail class of ok, timeout, error or tripwire_fail
+from every sandboxed run* is the law that **owns §9.1's four-word vocabulary from
+the sandbox side**, and its law lives in :mod:`sandbox.failclass`: the table
+mapping every class the box can report onto one of §9.1's four, the structured
+value carrying the class *and* the class it was translated from, and a gate that
+classifies a run rather than raising for it.  It composes as
+:class:`SandboxFailClass` under
+:data:`sandbox.failclass.FAIL_CLASS_COMPONENT_NAME` (``sandbox-failclass``) — a
+seventh seat beside the other six, for the same registry-replacement reason.
+
+**It is the two handoffs the earlier laws already wrote down, collected into one
+place.**  Feature 163 restates the four in
+:data:`sandbox.timeout.NODE_FAIL_CLASSES` and says why in its own comment —
+*"Feature 168 is the law that owns this vocabulary from the sandbox side; this
+module knows it in order to leave the other three values alone"* — and its
+:func:`sandbox.timeout.timed_out_record` refuses to write its class over a record
+naming a different one, *"a quarantined seccomp violation that reads as a timeout,
+a crash that reads as a hang"*, with its suite naming the owner: *"re-labelling it
+is feature 168's job."*  Feature 161's ``sandbox_escape`` is **not** one of
+§9.1's four, so someone has to translate the box's finer vocabulary into the
+column's closed one — the runner's ``oom``, ``crash``, ``violation``, ``payload``
+and ``empty`` collapse to ``error``, ``sandbox_escape`` becomes ``error`` with its
+own spelling kept as the translation's provenance, and ``timeout`` is left exactly
+where feature 163 put it.
+
+**It ships no committed artifact, and it is the second law in this member that
+can say that.**  Features 165's and 166's seats argue theirs: a *value a run is
+handed* and a *format* are not things a deployment could set differently, so a
+file would hold a knob nobody turns.  Feature 168's subject is the third of that
+kind — a vocabulary §9.1 declares and a mapping §8's definitions of the four words
+fix — so a ``failclass_policy.json`` would be the same invented knob, and a
+non-``None`` component at this seat is proof only that the law is loaded.
+
+**And it inverts the member's verb shape one last time, in the opposite direction
+from feature 163.**  163 is the law whose subject is a failure, so its ``require``
+has a pass-through that returns ``None``.  Here ``ok`` is *one of the four the
+feature's sentence names* — a member of the vocabulary rather than the absence of
+one — so :meth:`SandboxFailClass.require` returns a
+:class:`~sandbox.failclass.FailClass` for **every** run it classifies, ``ok``
+included: "from every sandboxed run", enforced on the line after the spawn rather
+than remembered.  What it refuses is the *classification* — a record that says
+nothing about how a run ended, or a class outside the vocabulary — and those two
+are refused by name rather than folded into ``error``, because a fabricated
+outcome would split every later "how did the trials end?" query into fragments the
+spec never named.
 """
 
 from __future__ import annotations
@@ -215,6 +262,7 @@ from .errors import (
     IsolationDocumentError,
     NodeSeedDocumentError,
     SandboxError,
+    SandboxFailClassError,
     SandboxImportError,
     SandboxIsolationError,
     SandboxSeedError,
@@ -225,8 +273,39 @@ from .errors import (
     ThreadPinningDocumentError,
     ThreadPinningRequired,
     TimeoutBudgetDocumentError,
+    UnclassifiedRunError,
+    UnknownFailClassError,
     WindowTransferError,
 )
+from .failclass import (
+    ERROR_FAIL_CLASS,
+    FAIL_CLASS_COMPONENT_NAME,
+    FAIL_CLASS_REQUIRED_CODE,
+    FAIL_CLASS_TABLE,
+    FAIL_CLASS_UNKNOWN_CODE,
+    OK_FAIL_CLASS,
+    SANDBOX_ESCAPE_CLASS,
+    SANDBOX_RUNNER_CLASSES,
+    SOURCE_CLASSES,
+    TRIPWIRE_FAIL_CLASS,
+    FailClass,
+    FailClassDecision,
+    FailClassReason,
+    SandboxFailClass,
+    classify_fail_class,
+    classify_run,
+    sandbox_fail_class,
+)
+
+# ``NODE_FAIL_CLASSES`` and ``TIMEOUT_FAIL_CLASS`` are deliberately *not*
+# re-imported from :mod:`sandbox.failclass`, even though that module owns the
+# vocabulary: both names are already bound above from :mod:`sandbox.timeout`,
+# and a second import here would silently rebind them to a different module's
+# object — one name, two provenances, and the suite's
+# ``NODE_FAIL_CLASSES == SECTION_9_1_VOCABULARY`` assertion would stop saying
+# which module it was reading.  The law-side spellings stay reachable as
+# :data:`sandbox.failclass.NODE_FAIL_CLASSES` for a caller who wants the owner's
+# own constant.
 from .imports import (
     COMMITTED_IMPORTS_ALLOWLIST,
     DISALLOWED_IMPORT_CODE,
@@ -355,6 +434,11 @@ __all__ = [
     "ENV_MKL",
     "ENV_OMP",
     "ENV_SIGNAL_SEED",
+    "ERROR_FAIL_CLASS",
+    "FAIL_CLASS_COMPONENT_NAME",
+    "FAIL_CLASS_REQUIRED_CODE",
+    "FAIL_CLASS_TABLE",
+    "FAIL_CLASS_UNKNOWN_CODE",
     "GVISOR_MECHANISM",
     "GVISOR_RUNTIME",
     "IMPORTS_COMPONENT_NAME",
@@ -362,11 +446,14 @@ __all__ = [
     "ISOLATION_REQUIRED_CODE",
     "MINT_SALT",
     "NODE_FAIL_CLASSES",
+    "OK_FAIL_CLASS",
     "PINNED",
     "PINNING_POLICY_KIND",
     "POLICY_KIND",
     "POOL_FLOOR_VARIABLE",
     "REQUIRED_CAPS",
+    "SANDBOX_ESCAPE_CLASS",
+    "SANDBOX_RUNNER_CLASSES",
     "SCORE_CHANNEL_CODE",
     "SCORE_FRAME_NAME",
     "SCORE_MAGIC",
@@ -376,17 +463,22 @@ __all__ = [
     "SEED_MISMATCH_CODE",
     "SEED_REQUIRED_CODE",
     "SINGLE_THREADED",
+    "SOURCE_CLASSES",
     "THREADS_COMPONENT_NAME",
     "THREAD_PINNING_CODE",
     "TIMEOUT_COMPONENT_NAME",
     "TIMEOUT_FAIL_CLASS",
     "TIMEOUT_POLICY_KIND",
     "TRANSFER_COMPONENT_NAME",
+    "TRIPWIRE_FAIL_CLASS",
     "UNPINNED",
     "WINDOW_TRANSFER_CODE",
     "AllowlistDocumentError",
     "ComponentIsolation",
     "DisallowedImportError",
+    "FailClass",
+    "FailClassDecision",
+    "FailClassReason",
     "GVisorIsolationRequired",
     "ImportsAllowlist",
     "InvocationSeedError",
@@ -398,6 +490,8 @@ __all__ = [
     "RunDecision",
     "RunReason",
     "SandboxError",
+    "SandboxFailClass",
+    "SandboxFailClassError",
     "SandboxImportError",
     "SandboxImports",
     "SandboxInvocation",
@@ -432,6 +526,8 @@ __all__ = [
     "TimeoutRun",
     "TransferChannel",
     "TransferLeg",
+    "UnclassifiedRunError",
+    "UnknownFailClassError",
     "WindowFacts",
     "WindowTransferError",
     "authorize_run",
@@ -439,6 +535,8 @@ __all__ = [
     "check_thread_pinning",
     "classify_cap",
     "classify_duration",
+    "classify_fail_class",
+    "classify_run",
     "committed_imports_allowlist",
     "committed_isolation_policy",
     "committed_thread_pinning_policy",
@@ -458,6 +556,7 @@ __all__ = [
     "load_timeout_policy",
     "mint_node_seed",
     "resolve_seed",
+    "sandbox_fail_class",
     "sandbox_imports",
     "sandbox_isolation",
     "sandbox_seed",
@@ -853,3 +952,47 @@ def build_sandbox_timeout() -> SandboxTimeout:
     read side a deployment audits with.
     """
     return sandbox_timeout()
+
+
+@register(FAIL_CLASS_COMPONENT_NAME)
+def build_sandbox_fail_class() -> SandboxFailClass:
+    """Component builder: feature 168's fail-class law (app_spec.xml, category's last).
+
+    The seventh component this member contributes, beside feature 157's isolation
+    law, feature 167's import allowlist, feature 166's payload channel, feature
+    165's node seed, feature 164's thread-pinning law and feature 163's
+    wall-clock law, under its own name — the registry is keyed by name and a
+    later registration of ``sandbox`` would *replace* the isolation law, so one
+    member carrying seven controls carries seven components.
+
+    **It compiles nothing, and it is the second builder here that can say that.**
+    :func:`build_sandbox_transfer` and :func:`build_sandbox_seed` state the reason
+    for their own missing artifacts — a format and a value a run is handed are
+    not things a deployment could set differently — and this law is the third of
+    that kind: §9.1 declares the four classes and §8's definitions of the words
+    fix the mapping into them, so there is no file to compile and no number a
+    deployment could drift.  A ``failclass_policy.json`` would hold a knob nobody
+    turns, which is the objection :func:`build_sandbox_transfer` raises against
+    inventing one.
+
+    Like the other six it takes no arguments (the factory's registration
+    protocol), never returns ``None`` and never raises: the factory builds every
+    registered component on every ``create_app()`` call, so a builder that raised
+    would take composition down for every unrelated feature in the workspace, and
+    a bare test process with no ``DATABASE_URL`` and no lake still composes this
+    one.  It reads nothing ambient either — the law's subject is a run's
+    *reported* outcome, never a clock and never ``os.environ`` — so composition
+    cannot depend on the shell that started the process, and the component it
+    hands out holds no state at all.
+
+    It returns a :class:`SandboxFailClass` rather than the four classes as a bare
+    tuple, necessarily rather than by preference, and this one's reason is the
+    plainest of the seven: the law is not a value a caller could read off a
+    constant — it is the *table* and the gate that reads a run through it.  What
+    the composed value gives a caller is the law — ``check`` for the answer as a
+    decision, ``require`` for the class on the line after the spawn (**returning
+    a value for ``ok`` too**, which is the one place this verb differs from the
+    other six), and ``classes``/``sources`` for the read side a deployment audits
+    with.
+    """
+    return sandbox_fail_class()

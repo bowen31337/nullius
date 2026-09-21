@@ -12,9 +12,10 @@ control registered as ``sandbox``, ``sandbox-imports``, ``sandbox-transfer``,
 ``sandbox-seed`` or ``sandbox-threads`` would silently overwrite feature 157's
 isolation law, 167's import allowlist, 166's payload channel, 165's node seed or
 164's thread-pinning law — composition would look perfect and a category root
-would be gone.  The tests below pin that the member now carries exactly six
-components, each under its own feature's name, and that the five earlier laws
-are still beside the sixth after it registered.
+would be gone.  The tests below pin that the member now carries exactly seven
+components, each under its own feature's name, and that the six earlier laws
+are still beside the sixth after it registered — feature 168's fail-class law is
+the seventh and last, and it took its own seat rather than widening this one.
 
 Placement and re-execution carry the same loader properties the other suites
 pin: the builder lives in the package ``__init__`` (a ``@register`` in a
@@ -97,12 +98,13 @@ def test_scanning_the_member_registers_the_six_components_it_owns() -> None:
     #
     # The list is pinned exactly: the isolation law, the import law, the payload
     # channel, the node seed, the thread-pinning law and the wall-clock law, no
-    # more and no less.  A seventh component arriving unnoticed fails here — and
+    # more and no less.  An eighth component arriving unnoticed fails here — and
     # a builder that had taken any earlier feature's name would fail here too,
     # which is the registry-replacement hazard this file exists for.
     components = scan_components(MEMBER_SRC, registry=Registration())
     assert sorted(component.name for component in components) == [
         "sandbox",
+        "sandbox-failclass",
         "sandbox-imports",
         "sandbox-seed",
         "sandbox-threads",

@@ -69,13 +69,15 @@ def test_scanning_the_member_registers_the_components_it_owns() -> None:
     # assert accumulated process state, not this package's contribution.
     #
     # The list is pinned exactly: the isolation law, the import law, the
-    # payload channel, the node seed and the thread-pinning law, no more and
-    # no less. A sixth component arriving unnoticed fails here — and a
+    # payload channel, the node seed, the thread-pinning law, the wall-clock
+    # law and feature 168's fail-class law, no more and no less. An eighth
+    # component arriving unnoticed fails here — and a
     # builder that had taken feature 157's name would fail here too, which is
     # the registry-replacement hazard this file exists for.
     components = scan_components(MEMBER_SRC, registry=Registration())
     assert sorted(component.name for component in components) == [
         "sandbox",
+        "sandbox-failclass",
         "sandbox-imports",
         "sandbox-seed",
         "sandbox-threads",
@@ -188,11 +190,13 @@ class TestTheSeat:
 
         assert set(seat.__all__) == {
             "COMPONENT_NAME",
+            "FAIL_CLASS_COMPONENT_NAME",
             "IMPORTS_COMPONENT_NAME",
             "SEED_COMPONENT_NAME",
             "THREADS_COMPONENT_NAME",
             "TIMEOUT_COMPONENT_NAME",
             "TRANSFER_COMPONENT_NAME",
+            "sandbox_fail_class_component",
             "sandbox_imports_component",
             "sandbox_isolation_component",
             "sandbox_seed_component",

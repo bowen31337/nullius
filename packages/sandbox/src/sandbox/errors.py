@@ -108,6 +108,24 @@ failed — the discipline :mod:`infra.security.sandbox_egress`'s and
   budget that is not a positive number of seconds, a record this law cannot
   write the class onto.
 
+* :class:`SandboxFailClassError` — the fail-class contract, and feature 168's
+  whole subject.  A sandboxed run's outcome could not be stated as one of
+  §9.1's four (``ok | timeout | error | tripwire_fail``): the subject named no
+  class at all, or it named one this deployment's box is not known to report.
+  **There is deliberately no error for the run's fate**, which is the third
+  time this docstring states that absence and the last: a run that timed out,
+  crashed, escaped a seccomp filter or was scored is a *value* — §6.1 step 11's
+  charge, feature 79's "a failed evaluation still consumed a hypothesis" — and
+  feature 168's verb is *returns*.  What can fail loudly here is the
+  *classification*: :class:`UnclassifiedRunError` for a record that says
+  nothing about how the run ended (``fail_class_required``),
+  :class:`UnknownFailClassError` for a class outside the vocabulary
+  (``fail_class_unknown``).  Two refusals rather than one because the repairs
+  are on opposite sides of the seam — the caller's record is short a column, or
+  the box has begun reporting a spelling this law has never seen — and a caller
+  that conflated them would go looking at its own writer when the drift is in
+  the runner, or the reverse.
+
 There is deliberately no error for *"the run was not admitted"* beyond
 :class:`GVisorIsolationRequired`.  Feature 157's failure mode is one thing —
 a run configuration that is not gVisor's — and splitting it into an error per
@@ -130,6 +148,7 @@ __all__ = [
     "IsolationDocumentError",
     "NodeSeedDocumentError",
     "SandboxError",
+    "SandboxFailClassError",
     "SandboxImportError",
     "SandboxIsolationError",
     "SandboxSeedError",
@@ -140,6 +159,8 @@ __all__ = [
     "ThreadPinningDocumentError",
     "ThreadPinningRequired",
     "TimeoutBudgetDocumentError",
+    "UnclassifiedRunError",
+    "UnknownFailClassError",
     "WindowTransferError",
 ]
 
@@ -490,6 +511,106 @@ class TimeoutBudgetDocumentError(SandboxTimeoutError):
     budget compiled from a partially-read document is one whose file and whose
     watchdog disagree — and the disagreement is a run killed at a number
     nobody wrote down.
+    """
+
+
+class SandboxFailClassError(SandboxError):
+    """The fail-class contract: a run's outcome could not be stated as §9.1's.
+
+    app_spec.xml, "Untrusted Code Sandbox", feature 168 — the category's last:
+    *System returns a structured fail class of ok, timeout, error or
+    tripwire_fail from every sandboxed run.*  The subject is every run the box
+    hands back, and this class is the refusals around classifying one — not the
+    run's fate.
+
+    **The absences are the feature, and this is the last of them.**  The kill is
+    not an error here (:class:`SandboxTimeoutError` says why at length), a
+    refused contract is not one (:class:`SandboxImportError`), a seccomp
+    violation is not one, and a scored run is obviously not one: all four are
+    §9.1's stored vocabulary, and a law that raised for any of them would turn a
+    recorded outcome into a crashed evaluator over thousands of unattended
+    candidates.  Feature 168's verb is *returns*.  So what this class covers is
+    the two ways the *classification* fails:
+
+    * :class:`UnclassifiedRunError` — the subject says nothing about how the run
+      ended.  A record naming no class field and no ``problems`` field (an
+      unevaluated §9.1 row, a bare object, a writer that forgot the column).
+      Refused rather than read as ``ok``, because reading it as a scored run
+      would be the absence that reads as a result — the failure
+      :mod:`sandbox.transfer` states for its own missing vector — and a failed
+      node counted as a successful one is the one error this feature's word
+      *every* exists to prevent.
+    * :class:`UnknownFailClassError` — the subject names a class outside the
+      vocabulary this deployment's box is known to report.  Refused rather than
+      folded into ``error``, on :func:`evaluator._debit.failure_outcome`'s rule
+      that "a drifted vocabulary must not become a fabricated outcome": a
+      misspelt ``"TimeOut"`` becoming ``error`` would read every wall-clock kill
+      as a generic crash and send an operator after a fault that is not there.
+
+    Its two subclasses are siblings rather than one subclass of the other, for
+    the reason :class:`IsolationDocumentError` and :class:`GVisorIsolationRequired`
+    are: the repairs are on **opposite sides of the seam**.  The first is the
+    caller's record — a column was never written — and the second is the box's
+    vocabulary, which has drifted past what this law accepts.  A caller that
+    conflated them would go looking at its own writer when the fault is the
+    runner, or repair the runner when the fault is a store row assembled by
+    hand.
+
+    Both carry a greppable code — ``fail_class_required``
+    (:data:`sandbox.failclass.FAIL_CLASS_REQUIRED_CODE`) and
+    ``fail_class_unknown`` (:data:`sandbox.failclass.FAIL_CLASS_UNKNOWN_CODE`)
+    — so an operator grepping a log finds the refusal by the feature's own
+    words, the discipline feature 157's ``gvisor_isolation_required`` and
+    feature 167's ``disallowed_import`` set for theirs.
+    """
+
+
+class UnclassifiedRunError(SandboxFailClassError):
+    """A sandboxed run was offered with nothing saying how it ended.
+
+    The subject named no class under any of the fields a class is persisted
+    under — §9.1's ``fail_class``, §8's ``outcome``, the store rows'
+    ``terminal_class`` — and no sequence of contract problems either, which is
+    the evaluator's own way of saying a run was scored.
+
+    Raised rather than returned only at the bridge
+    (:meth:`sandbox.failclass.FailClassDecision.require`): the gate *answers* a
+    run with a decision carrying this reason, for the reason feature 157's gate
+    does — the pipeline classifies thousands of runs unattended, and a law that
+    raised per record would turn one short row into a crashed evaluation.  A
+    caller on the last line after the spawn calls ``require`` and takes the
+    raise, because a run whose outcome cannot be stated is one the pipeline
+    cannot honestly record.
+
+    Every message begins with ``fail_class_required``
+    (:data:`sandbox.failclass.FAIL_CLASS_REQUIRED_CODE`), the one spelling a
+    log-grepping operator looks for, and names the fields it looked under so
+    the missing column is findable rather than merely refused.
+    """
+
+
+class UnknownFailClassError(SandboxFailClassError):
+    """A sandboxed run was reported with a class outside the vocabulary.
+
+    The subject named a class — so the *record* is fine — and it is not one
+    this deployment's box is known to report: neither §9.1's four, nor one of
+    the six the runner records, nor feature 161's ``sandbox_escape``.  Either
+    the box has begun reporting a class this law has never seen, or the record
+    was written by something that is not the runner.
+
+    Deliberately **not** folded into ``error``, and the reason is the same one
+    that makes this a separate class rather than a message on the last one:
+    ``error`` is a *claim* about how a run failed — §8's "failed any other
+    way" — and asserting it for a class this law cannot read would fabricate
+    the very fact the column exists to record.  Folding a misspelt ``"TimeOut"``
+    in here would read every wall-clock kill as a generic crash, and the
+    operator would go looking for a fault that is not there while the real
+    repair — a spelling in whatever wrote the record — went unnoticed.  The
+    vocabulary is closed, and a member that is not in it is refused by name.
+
+    Every message begins with ``fail_class_unknown``
+    (:data:`sandbox.failclass.FAIL_CLASS_UNKNOWN_CODE`) and names the offending
+    class *and* the accepted vocabulary, so a reader sees which side drifted.
     """
 
 

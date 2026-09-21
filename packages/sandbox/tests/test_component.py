@@ -87,19 +87,20 @@ def test_scanning_the_member_registers_exactly_the_components_it_owns() -> None:
     # the current registry, so reading it back here would assert accumulated
     # process state, not this package's contribution.
     #
-    # The list is pinned exactly rather than by membership, so a *sixth*
+    # The list is pinned exactly rather than by membership, so an *eighth*
     # component arriving unnoticed fails here — which is the property this
     # test is for. Feature 157 contributed the first: the isolation law.
     # Feature 167 added the second: the import allowlist, under its own name
     # because the registry replaces a name's earlier registration. Feature
     # 166 added the third, the payload channel, on the same terms, feature
-    # 165 the fourth, the node seed, and feature 164 the fifth, the
-    # thread-pinning law. The category's remaining features each add a
-    # control to the same box and will add their own seats beside these
-    # five.
+    # 165 the fourth, the node seed, feature 164 the fifth, the
+    # thread-pinning law, feature 163 the sixth, the wall-clock law, and
+    # feature 168 the seventh and last, the fail-class vocabulary — the
+    # category is closed, so the list is now the whole of it.
     components = scan_components(MEMBER_SRC, registry=Registration())
     assert sorted(component.name for component in components) == [
         "sandbox",
+        "sandbox-failclass",
         "sandbox-imports",
         "sandbox-seed",
         "sandbox-threads",
@@ -216,16 +217,19 @@ def test_the_app_seat_is_not_a_second_vocabulary() -> None:
     # second spelling of the run decision or the reason codes here would be a
     # second thing to keep in sync. Feature 167 added its own name and
     # accessor beside feature 157's, feature 166 a third, feature 165 a
-    # fourth, feature 164 a fifth and feature 163 a sixth, and nothing else.
+    # fourth, feature 164 a fifth, feature 163 a sixth and feature 168 the
+    # seventh and last, and nothing else.
     import app.modules.sandbox as seat
 
     assert set(seat.__all__) == {
         "COMPONENT_NAME",
+        "FAIL_CLASS_COMPONENT_NAME",
         "IMPORTS_COMPONENT_NAME",
         "SEED_COMPONENT_NAME",
         "THREADS_COMPONENT_NAME",
         "TIMEOUT_COMPONENT_NAME",
         "TRANSFER_COMPONENT_NAME",
+        "sandbox_fail_class_component",
         "sandbox_imports_component",
         "sandbox_isolation_component",
         "sandbox_seed_component",

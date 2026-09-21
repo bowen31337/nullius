@@ -139,6 +139,37 @@ ledger carrying the same class, §6.1 step 11 charging the trial regardless).  S
 ``require`` here returns ``None`` for a run inside its budget, a ``TimeoutKill``
 for a run that outran it, and raises only when the run it was handed is
 unreadable.  A caller that wants every kill raised re-raises on ``not None``.
+
+**Feature 168's law has its own seat here too, and it is the seventh — and the
+category's last.**  The fail-class vocabulary — *System returns a structured fail
+class of ok, timeout, error or tripwire_fail from every sandboxed run* — composes
+as ``sandbox-failclass``, so this module now answers seven questions, and
+:func:`sandbox_fail_class_component` mirrors the other six in shape and re-exports
+nothing of the law's vocabulary for the same reason they do not: a caller who has
+the component calls ``check`` for the answer as a decision, ``require`` for the
+class on the line after the spawn, and ``classes``/``sources`` for the read side
+a deployment audits with.
+
+**It is the third seat here with no committed artifact, and its missing file is
+the same class of absence features 165's and 166's have.**  Features 157, 167, 164
+and 163 are laws about a *configuration* — which isolation, which imports, which
+pins, how long — and a configuration is written down before it can be checked, so
+a non-``None`` component at their seats proves a file compiled.  Feature 168's
+subject is a *vocabulary* §9.1 declares and a *mapping* §8's definitions of its
+four words fix; a deployment cannot set either differently, so there is no file
+for one to drift to and no knob nobody turns.  A caller should not read the
+missing artifact as an unconfigured state, and a non-``None`` component here is
+proof only that the law is loaded.
+
+**What makes this seat's verb shape different from all six others is worth knowing
+before calling it.**  Feature 163's ``require`` has a pass-through — ``None`` for
+a run inside its budget — because its subject is a failure and a run that was fine
+has nothing to persist.  Here ``ok`` is *one of the four the feature's sentence
+names*, a member of the vocabulary rather than the absence of one, so ``require``
+returns a ``FailClass`` for **every** run it classifies, ``ok`` included: "from
+every sandboxed run" enforced on the line after the spawn.  What it refuses is the
+*classification*, not the fate — a record naming nothing about how a run ended, or
+a class outside the vocabulary — and those two raise rather than return a value.
 """
 
 from __future__ import annotations
@@ -149,6 +180,7 @@ from app.module_loader import Application, create_app
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a dependency
     from sandbox import (
+        SandboxFailClass,
         SandboxImports,
         SandboxIsolation,
         SandboxSeed,
@@ -159,11 +191,13 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a depende
 
 __all__ = [
     "COMPONENT_NAME",
+    "FAIL_CLASS_COMPONENT_NAME",
     "IMPORTS_COMPONENT_NAME",
     "SEED_COMPONENT_NAME",
     "THREADS_COMPONENT_NAME",
     "TIMEOUT_COMPONENT_NAME",
     "TRANSFER_COMPONENT_NAME",
+    "sandbox_fail_class_component",
     "sandbox_imports_component",
     "sandbox_isolation_component",
     "sandbox_seed_component",
@@ -212,6 +246,13 @@ THREADS_COMPONENT_NAME = "sandbox-threads"
 #: Kept here for the same reason the other five are: one spelling shared by
 #: everything that asks for the law through the app package.
 TIMEOUT_COMPONENT_NAME = "sandbox-timeout"
+
+#: The component name the member's fail-class law registers under — the
+#: category's seventh and last control, kept beside the other six rather than
+#: over any of them, because the factory's registry replaces a name's earlier
+#: registration.  Kept here for the same reason the other six are: one spelling
+#: shared by everything that asks for the law through the app package.
+FAIL_CLASS_COMPONENT_NAME = "sandbox-failclass"
 
 
 def sandbox_isolation_component(
@@ -381,3 +422,35 @@ def sandbox_timeout_component(
     """
     application = app if app is not None else create_app()
     return application.get(TIMEOUT_COMPONENT_NAME)
+
+
+def sandbox_fail_class_component(
+    app: Application | None = None,
+) -> SandboxFailClass | Any:
+    """Return the composed sandbox fail-class law (feature 168).
+
+    The same contract the other six accessors give their laws, for the control
+    that answers *what is this sandboxed run's fail class?* — one of §9.1's
+    ``ok | timeout | error | tripwire_fail``, from every run: with ``app`` given
+    the component is read from that application, without it the application is
+    composed first, and ``None`` means no ``sandbox-failclass`` component was
+    registered.
+
+    **This is the third seat whose missing artifact is the honest state rather
+    than a gap.**  Features 166's and 165's accesses state theirs: a format and a
+    value a run is handed are not things a deployment could set differently.  So
+    is this law's subject — the four words §9.1 declares and the mapping §8's
+    definitions fix — so a non-``None`` component here is proof only that the law
+    is loaded, not that a file compiled, and there is nothing for a ``None`` to
+    describe beyond "no such component was registered".
+
+    The value carries no run and no record, so a caller does not get a class from
+    this accessor: it gets the law, and calls ``check(subject)`` for the answer as
+    a decision or ``require(subject)`` for the class itself.  Note that
+    ``require`` here returns a value for **every** run it classifies, ``ok``
+    included — unlike feature 163's, which passes ``None`` through — because
+    ``ok`` is one of the four the feature's sentence names, and it raises only
+    for a subject this law cannot read or a class outside the vocabulary.
+    """
+    application = app if app is not None else create_app()
+    return application.get(FAIL_CLASS_COMPONENT_NAME)

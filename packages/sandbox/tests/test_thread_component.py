@@ -12,7 +12,7 @@ control registered as ``sandbox``, ``sandbox-imports``, ``sandbox-transfer`` or
 ``sandbox-seed`` would silently overwrite feature 157's isolation law, 167's
 import allowlist, 166's payload channel or 165's node seed — composition would
 look perfect and a category root would be gone.  The tests below pin that the
-member now carries exactly five components, each under its own feature's name,
+member now carries exactly seven components, each under its own feature's name,
 and that the four earlier laws are still beside the fifth after it registered.
 
 Placement and re-execution carry the same loader properties the other suites
@@ -64,20 +64,22 @@ def test_the_member_declares_the_component_name_the_feature_owns() -> None:
     assert sandbox.THREADS_COMPONENT_NAME == "sandbox-threads"
 
 
-def test_scanning_the_member_registers_the_five_components_it_owns() -> None:
+def test_scanning_the_member_registers_the_seven_components_it_owns() -> None:
     # A fresh registry, not the process default: any earlier test that called a
     # bare ``create_app()`` has already imported every workspace member into the
     # current registry, so reading it back here would assert accumulated process
     # state, not this package's contribution.
     #
     # The list is pinned exactly: the isolation law, the import law, the payload
-    # channel, the node seed and the thread-pinning law, no more and no less.  A
-    # sixth component arriving unnoticed fails here — and a builder that had
+    # channel, the node seed, the thread-pinning law, the wall-clock law and
+    # feature 168's fail-class law, no more and no less.  An eighth component
+    # arriving unnoticed fails here — and a builder that had
     # taken any earlier feature's name would fail here too, which is the
     # registry-replacement hazard this file exists for.
     components = scan_components(MEMBER_SRC, registry=Registration())
     assert sorted(component.name for component in components) == [
         "sandbox",
+        "sandbox-failclass",
         "sandbox-imports",
         "sandbox-seed",
         "sandbox-threads",

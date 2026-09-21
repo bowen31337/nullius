@@ -784,3 +784,147 @@ def node_fail_class_record(
     if fail_class is not None:
         record[field] = fail_class
     return record
+
+
+# ---------------------------------------------------------------------------
+# Feature 168 — the fail-class vocabulary and its translation table.
+#
+# The constants below are spelled as *data* rather than imported from
+# :mod:`sandbox.failclass`, for the reason the wall-clock section above gives
+# about ``WALL_S``: a suite that read the law's own constants would follow a
+# rename instead of catching one, and it is §9.1's column comment — verbatim —
+# that the law is being held to.  The law's own spellings are pinned against
+# these in :mod:`test_failclass_law`.
+#
+# The classes the *box* reports are equally spelled here rather than read from
+# :class:`evaluator.SandboxResult`: the sandbox member imports no other workspace
+# member (one provenance), so the suite that makes the restatement safe is this
+# one, and it asserts the two agree by importing the evaluator in a single test.
+# ---------------------------------------------------------------------------
+
+#: §9.1's column comment, verbatim: ``fail_class TEXT -- ok | timeout | error |
+#: tripwire_fail``.  Written out so a reordering or a dropped class on the
+#: sandbox side fails here rather than being followed.
+NODE_CLASSES: tuple[str, ...] = ("ok", "timeout", "error", "tripwire_fail")
+
+#: The six classes the runner records, from :class:`evaluator.SandboxResult`'s
+#: own docstring — its four terminal states, spelled out.  ``timeout`` is one of
+#: §9.1's four already; the other five are §8's "failed any other way".
+RUNNER_CLASSES: tuple[str, ...] = (
+    "timeout",
+    "oom",
+    "crash",
+    "violation",
+    "payload",
+    "empty",
+)
+
+#: Feature 161's seccomp verdict — app_spec.xml's own spelling, with the
+#: underscore, and deliberately **not** one of §9.1's four: it is a genuine
+#: seccomp verdict rather than a terminal class of the column, which is why
+#: feature 163 refuses to write over it and why translating it is feature 168's
+#: job.
+ESCAPE_CLASS: str = "sandbox_escape"
+
+#: A class no deployment's box reports, for the *unknown* refusal.  Chosen to be
+#: a plausible misspelling of a real one — the drift this law exists to catch —
+#: rather than an obviously invented word: a law that folded ``"TimeOut"`` into
+#: ``error`` would read every wall-clock kill as a generic crash, and the test
+#: that says so is this constant's only job.
+UNKNOWN_CLASS: str = "TimeOut"
+
+#: The two spellings a *class* may arrive under that are not §9.1's column name
+#: — §8's ledger ``outcome`` and the store rows' ``terminal_class``.  The law
+#: reads all three, and a test that only ever wrote ``fail_class`` would not
+#: notice a reader that had dropped the other two.
+LEDGER_FIELD: str = "outcome"
+TERMINAL_FIELD: str = "terminal_class"
+
+
+def runner_result(
+    *,
+    fail_class: Any = "crash",
+    problems: list[Any] | None = None,
+    seed: Any = None,
+) -> Any:
+    """A fresh stand-in for the runner's own result — the object the box hands back.
+
+    Deliberately a plain class carrying the fields
+    :class:`evaluator.SandboxResult` declares, rather than that type itself: the
+    sandbox member imports no other workspace member, so a suite here cannot
+    build one without reaching across the seam the member refuses to cross.  The
+    law reads subjects duck-typed — the same tolerance
+    :func:`sandbox.timeout.kill_timeout` extends to an ``elapsed_s`` on anything
+    — and what matters to this feature is the field *names* it reads, not the
+    class name.
+
+    **It carries no node identity, because the real result does not either.**
+    :class:`evaluator.SandboxResult` is the *outcome of one signal execution* —
+    ``scores``, ``problems``, ``fail_class``, ``detail``, ``seed``,
+    ``contract_version`` — and names no node: the caller that dispatched the run
+    is the one that knows which node it belonged to.  So a test that means "this
+    class is recorded against node X" passes ``node_id=`` to
+    :func:`sandbox.failclass.classify_run` rather than smuggling an identity into
+    the result, which is exactly the courtesy that verb's own ``node_id``
+    parameter exists for.
+
+    Defaults to ``fail_class="crash"``, the *translated* case, because that is
+    the feature's headline: a class the box's own vocabulary has and §9.1's
+    column does not.  A test that means "this run was scored" passes
+    ``fail_class=None`` with the default empty ``problems``; one that means "the
+    contract refused the return" passes a non-empty ``problems``.
+    """
+    result = _RunnerResult()
+    result.fail_class = fail_class
+    result.problems = [] if problems is None else list(problems)
+    result.seed = seed
+    return result
+
+
+class _RunnerResult:
+    """The shape of the box's own result — its six fields, no behaviour.
+
+    Field for field what :class:`evaluator.SandboxResult` declares, so the
+    cross-member test that pins the two agree has something faithful to compare
+    against.  Not a dataclass: the suite's point is that the law reads
+    *attributes*, and a dataclass would make this look like the members' own
+    record type rather than a third thing that happens to carry the same names.
+    """
+
+    __slots__ = (
+        "contract_version",
+        "detail",
+        "fail_class",
+        "problems",
+        "scores",
+        "seed",
+    )
+
+    def __init__(self) -> None:
+        self.scores: Any = None
+        self.problems: list[Any] = []
+        self.fail_class: Any = None
+        self.detail: str = ""
+        self.seed: Any = None
+        self.contract_version: str = ""
+
+
+def tripwire_outcome(
+    *,
+    rejected: bool = True,
+    node_id: str = SEED_NODE_ID,
+) -> dict[str, Any]:
+    """A fresh tripwire verdict's shape — step 10's answer, as the law reads it.
+
+    The tripwires member's own verdict carries ``outcome`` alongside a dozen
+    other fields; this is the half this feature has a claim about, spelled as a
+    mapping so the *reader* is what is under test rather than a second copy of
+    another member's record type.  ``rejected=True`` gives the verdict that
+    failed — ``tripwire_fail`` — because that is the class §9.1's column has a
+    word for and the one the pipeline quarantines a subtree on.
+    """
+    return {
+        "node_id": node_id,
+        "outcome": "tripwire_fail" if rejected else "ok",
+        "rejected": rejected,
+    }
