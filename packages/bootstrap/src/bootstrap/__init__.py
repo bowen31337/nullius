@@ -2,9 +2,12 @@
 
 Implements app_spec.xml, "Bootstrap Worlds" — feature 181, *"System
 exposes a hyperparameter search world over a fixed model and dataset,
-which returns a ground-truth score per node"*; feature 183, *"System
-exposes a symbolic regression world, which returns a ground-truth score
-against known target expressions"*; feature 184, the identical
+which returns a ground-truth score per node"*; feature 182, *"System
+exposes a feature selection world over labeled machine-learning
+benchmarks, which returns a ground-truth objective per node"*; feature
+183, *"System exposes a symbolic regression world, which returns a
+ground-truth score against known target expressions"*; feature 184, the
+identical
 ``question.*`` interface every bootstrap world fronts; feature 185,
 *"System charges no statistical budget for a bootstrap world, persisting
 charges_budget as false on those trials"*; feature 188, *"System
@@ -44,9 +47,10 @@ perfect labels, zero statistical-budget cost, and no dependence on market
 time"*, and §10.6's instruction is that they are therefore *built*, 40-50
 at a time, rather than awaited.
 
-**What this member ships.**  Feature 181's world, feature 183's symbolic
-regression world, feature 188's pool, and the pieces the worlds are made
-of, all importable directly for the sibling features of this category:
+**What this member ships.**  Feature 181's world, feature 182's feature
+selection world, feature 183's symbolic regression world, feature 188's
+pool, and the pieces the worlds are made of, all importable directly for
+the sibling features of this category:
 
 * **The world** (:mod:`bootstrap._world`).  A
   :class:`~bootstrap.HyperparameterWorld` is a *fixed model* — an
@@ -68,7 +72,33 @@ of, all importable directly for the sibling features of this category:
   moves along edges can reach every cell, which is what makes the world
   addressable by the structural vocabulary §10.6.1's ``CellMeta`` speaks.
 
-* **The second world — symbolic regression** (:mod:`bootstrap._symreg`).
+* **The second world — feature selection** (:mod:`bootstrap._featsel`).
+  Feature 182's domain, named second in §10.6's own tree (``featsel/  #
+  feature selection on labeled ML benchmarks``): a
+  :class:`~bootstrap.FeatureSelectionWorld` searches *subsets* — the
+  features a fixed model is fit on, because the columns a model is
+  *given* are as much a modelling decision as any coefficient.  A node
+  is a subset, addressed as a point of its own four-axis lattice (the
+  decisive feature, a choice between two candidates; the weakly
+  relevant block, entered a column at a time; the redundant block,
+  proxies correlated with the candidates they copy — the
+  marginal-versus-conditional trap the domain exists to teach; and the
+  distractors), over a labeled benchmark the world generates from its
+  seed and publishes the sparse linear truth it drew the labels from
+  (:class:`~bootstrap.FeatureSupport`, the answer key a subset's
+  objective is audited against).  The label is the node's ground-truth
+  *objective* — the feature's own word: out-of-sample performance of
+  the fixed model over the chosen subset, the held-out ``R²`` of the
+  least-squares fit on the subset's columns through the same
+  :func:`~bootstrap.fit_and_score`, so a featsel node's objective and
+  an hpo node's score are one kind of number and a policy compared
+  across both pools is compared on one scale.
+  :class:`~bootstrap.FeatureQuestion` fronts the world through feature
+  184's adapter inherited whole, re-answering only ``meta`` so a featsel
+  node reports the ``featsel`` family §11.1's conditioning reads;
+  :func:`~bootstrap.featsel_question_for` builds it.
+
+* **The third world — symbolic regression** (:mod:`bootstrap._symreg`).
   Feature 183's domain, named third in §10.6's own tree (``symreg/  #
   symbolic regression against known target expressions``): a
   :class:`~bootstrap.SymbolicRegressionWorld` searches *expressions*
@@ -246,11 +276,14 @@ in the world — and the pool, for its part, records identities and
 refuses to record datasets, for the drift a cached dataset would invite
 (§10.6.1's rule, the same one the ported half's digests exist to check).
 
-**Three components, three questions.**  The hyperparameter world
+**Four components, four questions.**  The hyperparameter world
 registers under ``"bootstrap"`` (:data:`COMPONENT_NAME`) and answers
 *what is the composed bootstrap world?* — the one world a bare
 ``create_app()`` carried from the start, still the seat that name
-resolves.  The symbolic regression world registers under
+resolves.  The feature selection world registers under
+``"bootstrap-featsel"`` (:data:`FEATSEL_COMPONENT_NAME`) and answers
+*what is the composed feature selection world?* — feature 182's own
+seat.  The symbolic regression world registers under
 ``"bootstrap-symreg"`` (:data:`SYMREG_COMPONENT_NAME`) and answers
 *what is the composed symbolic regression world?* — feature 183's own
 seat, added beside the first rather than by renaming it, for the reason
@@ -258,10 +291,10 @@ a registry key is a name: every caller already holding ``"bootstrap"``
 must keep resolving to the world it always did.  The pool registers
 under ``"bootstrap-pool"`` (:data:`POOL_COMPONENT_NAME`) and answers
 *what is the composed bootstrap pool?* — the store a deployment's
-``DATABASE_URL`` names, or ``None`` when nothing does.  Three names
-rather than one component with three faces, the convention
-:mod:`tripwires` states for its own seats: both worlds are ready the
-instant they are built and never degrade, while the pool is a
+``DATABASE_URL`` names, or ``None`` when nothing does.  Four names
+rather than one component with four faces, the convention
+:mod:`tripwires` states for its own seats: the three worlds are ready
+the instant they are built and never degrade, while the pool is a
 deployment state that may legitimately be absent, and a caller holding
 ``None`` from one wants a *refusal to author*, not a label — facts that
 different should not share one component key.
@@ -289,6 +322,40 @@ from ._claim import (
     DreamingClaim,
     claim_basis,
     rejects_dreaming_claim,
+)
+from ._featsel import (
+    FEATSEL_COMPONENT_NAME,
+    FEATSEL_DOMAIN,
+    FEATSEL_FEATURE_COUNT,
+    FEATSEL_INTERCEPT,
+    FEATSEL_NOISE_SCALE,
+    FEATSEL_RIDGE,
+    FEATSEL_ROWS,
+    FEATSEL_SEED,
+    FEATSEL_THEME_ROOT,
+    FEATSEL_WORLD_ID,
+    FEATURE_AXES,
+    FEATURE_AXIS_ORDER,
+    NOISE_TERMS,
+    PROXY_CORRELATION,
+    PROXY_TERMS,
+    STRONG_MAGNITUDE,
+    STRONG_TERMS,
+    WEAK_MAGNITUDES,
+    WEAK_TERMS,
+    FeatureAxis,
+    FeatureQuestion,
+    FeatureSelectionWorld,
+    FeatureSetting,
+    FeatureSupport,
+    LabeledBenchmark,
+    canonical_featsel_node_id,
+    decode_featsel_node_id,
+    encode_featsel_node_id,
+    featsel_question_for,
+    featsel_setting_dimensions,
+    generate_benchmark,
+    support_for_seed,
 )
 from ._fit import FitResult, fit_and_score, solve_cholesky
 from ._pool import (
@@ -425,6 +492,18 @@ __all__ = [
     "DEFAULT_STANDARDIZE",
     "DEFAULT_WORLD_ID",
     "DISCOVERY_BAR",
+    "FEATSEL_COMPONENT_NAME",
+    "FEATSEL_DOMAIN",
+    "FEATSEL_FEATURE_COUNT",
+    "FEATSEL_INTERCEPT",
+    "FEATSEL_NOISE_SCALE",
+    "FEATSEL_RIDGE",
+    "FEATSEL_ROWS",
+    "FEATSEL_SEED",
+    "FEATSEL_THEME_ROOT",
+    "FEATSEL_WORLD_ID",
+    "FEATURE_AXES",
+    "FEATURE_AXIS_ORDER",
     "FEATURE_COUNT",
     "FEATURE_SCALES",
     "FINANCIAL_BASIS",
@@ -442,6 +521,7 @@ __all__ = [
     "MAX_POOL_SIZE",
     "MIN_POOL_SIZE",
     "NOISE_SCALE",
+    "NOISE_TERMS",
     "POOL_COMPONENT_NAME",
     "POOL_DOMAIN",
     "POOL_SEED",
@@ -451,10 +531,14 @@ __all__ = [
     "PRICED_SEED",
     "PRODUCT_MAGNITUDE",
     "PRODUCT_TERMS",
+    "PROXY_CORRELATION",
+    "PROXY_TERMS",
     "REPLAY_SCORE_TABLE",
     "REPLAY_SCORE_WORLD_COLUMN",
     "SPURIOUS_TERMS",
     "SQUARE_COEFFICIENTS",
+    "STRONG_MAGNITUDE",
+    "STRONG_TERMS",
     "SYMBOLIC_AXES",
     "SYMBOLIC_AXIS_ORDER",
     "SYMREG_COMPONENT_NAME",
@@ -470,6 +554,8 @@ __all__ = [
     "TOTAL_BASIS",
     "TRIAL_CHARGES_BUDGET",
     "TRIAL_TABLE",
+    "WEAK_MAGNITUDES",
+    "WEAK_TERMS",
     "BootstrapError",
     "BootstrapPool",
     "BootstrapPoolError",
@@ -482,11 +568,17 @@ __all__ = [
     "Dataset",
     "DreamingClaim",
     "ExpressionSetting",
+    "FeatureAxis",
+    "FeatureQuestion",
+    "FeatureSelectionWorld",
+    "FeatureSetting",
+    "FeatureSupport",
     "FitResult",
     "GroundTruth",
     "HyperparameterAxis",
     "HyperparameterSetting",
     "HyperparameterWorld",
+    "LabeledBenchmark",
     "NodeTruth",
     "Observation",
     "PersistedPool",
@@ -502,19 +594,27 @@ __all__ = [
     "WorldCensus",
     "WorldRecord",
     "build_bootstrap_pool",
+    "build_feature_selection_world",
     "build_hyperparameter_world",
     "build_symbolic_world",
+    "canonical_featsel_node_id",
     "canonical_node_id",
     "canonical_symbolic_node_id",
     "claim_basis",
     "column_statistics",
+    "decode_featsel_node_id",
     "decode_node_id",
     "decode_symbolic_node_id",
     "design_columns",
     "draw_world_seed",
+    "encode_featsel_node_id",
     "encode_node_id",
     "encode_symbolic_node_id",
+    "featsel_question_for",
+    "featsel_setting_dimensions",
+    "feature_selection_world",
     "fit_and_score",
+    "generate_benchmark",
     "generate_dataset",
     "generate_symbolic_dataset",
     "ground_truth",
@@ -530,6 +630,7 @@ __all__ = [
     "setting_from_steps",
     "solve_cholesky",
     "split_indices",
+    "support_for_seed",
     "symbolic_regression_world",
     "symbolic_setting_dimensions",
     "symreg_question_for",
@@ -546,7 +647,8 @@ __all__ = [
 #: the sibling domains, and renaming a composed key that callers already
 #: hold is the one change a new domain must not require of them.  A domain
 #: that grows its own world takes its own component beside this one —
-#: feature 183's symbolic regression world registers as
+#: features 182-183's feature selection and symbolic regression worlds
+#: register as :data:`FEATSEL_COMPONENT_NAME` and
 #: :data:`SYMREG_COMPONENT_NAME` — while the pool stays one pool with one
 #: seat, because the worlds are many and the replay pool they persist into
 #: is a single store.
@@ -622,6 +724,30 @@ def symbolic_regression_world() -> SymbolicRegressionWorld:
 #: terms — an ordinary function a script or a sibling suite calls
 #: directly, not a component and not registered.
 build_symbolic_world = symbolic_regression_world
+
+
+@register(FEATSEL_COMPONENT_NAME)
+def feature_selection_world() -> FeatureSelectionWorld:
+    """Component builder: the feature selection world (feature 182).
+
+    Takes no arguments — the factory's registration protocol — and
+    builds the world bound to :data:`FEATSEL_WORLD_ID` and
+    :data:`FEATSEL_SEED`, which draws its known support from that seed
+    and publishes it.  On the sibling worlds' own terms throughout:
+    construction performs no arithmetic (the support is one pure hash
+    read, published whole; the benchmark waits for the first
+    :meth:`~bootstrap.FeatureSelectionWorld.label`), the builder never
+    raises and needs no configuration, and a world whose whole
+    configuration is its seed keeps §10.6's pool-size precondition on
+    the compute side of the ledger where it belongs.
+    """
+    return FeatureSelectionWorld(FEATSEL_WORLD_ID, seed=FEATSEL_SEED)
+
+
+#: A second spelling of the builder, on the sibling worlds' own terms —
+#: an ordinary function a script or a sibling suite calls directly, not
+#: a component and not registered.
+build_feature_selection_world = feature_selection_world
 
 
 @register(POOL_COMPONENT_NAME)

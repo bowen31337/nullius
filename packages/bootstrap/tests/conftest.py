@@ -60,10 +60,13 @@ for _root in (APP_SRC, PACKAGE_SRC):
         sys.path.insert(0, _root_str)
 
 from bootstrap import (
+    FEATSEL_SEED,
+    FEATSEL_WORLD_ID,
     HYPERPARAMETER_WORLD_ID,
     PRICED_SEED,
     SYMREG_SEED,
     SYMREG_WORLD_ID,
+    FeatureSelectionWorld,
     HyperparameterSetting,
     HyperparameterWorld,
     SymbolicRegressionWorld,
@@ -149,6 +152,30 @@ def symreg_world() -> SymbolicRegressionWorld:
 def symreg_root_node(symreg_world: SymbolicRegressionWorld) -> str:
     """The symbolic world's root node id — where a symreg walk starts."""
     return symreg_world.canonical_node()
+
+
+# -- Feature 182's world: the feature selection vocabulary ----------------------
+
+
+@pytest.fixture
+def featsel_world() -> FeatureSelectionWorld:
+    """The committed feature selection world — 182's published id and seed.
+
+    Built through the public constructor, on the same terms as ``world``
+    and ``symreg_world``: a test of the world should not depend on the
+    factory having scanned anything.  Its known support is drawn from
+    the committed seed and published whole, and the oracle cell its
+    lattice holds is derived from that support by the tests rather than
+    named by the world — the answer key is the support, published, and
+    the cell is a fact about it.
+    """
+    return FeatureSelectionWorld(FEATSEL_WORLD_ID, seed=FEATSEL_SEED)
+
+
+@pytest.fixture
+def featsel_root_node(featsel_world: FeatureSelectionWorld) -> str:
+    """The feature selection world's root node id — where a featsel walk starts."""
+    return featsel_world.canonical_node()
 
 
 # -- Feature 188's reach: a database, on purpose, for the pool's tests ---------
