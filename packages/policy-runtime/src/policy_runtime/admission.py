@@ -1,5 +1,5 @@
-"""Feature 230, the admission gate — a policy is admitted only if static checks
-find none of the three barrier-breaking anti-patterns.
+"""Features 230 and 231, the admission gate — a policy is admitted only if
+static checks find none of the barrier-breaking anti-patterns.
 
 app_spec.xml, "Exploration Policy Runtime", feature 230: *System rejects a
 policy admission when static checks detect absolute score constants, hardcoded
@@ -10,6 +10,21 @@ hard constraints restated as an admission gate: prefix-only, no absolute score
 targets, and ``commit()`` mandatory (a policy that terminates without committing
 scores ``-inf``; docs §436, §438).
 
+Feature 231 adds the fourth check to the same gate — *System rejects a policy
+admission that loads a model checkpoint or calls inference, because a learned
+component stays deferred until the triage measurement decides it* (app_spec.xml
+feature 231; docs §11.2, §12, §15).  It is a sibling of 230's three rather than a
+second gate: the refusal is returned by this module's :func:`screen_policy`,
+carried by this module's :class:`PolicyAdmissionDecision`, raised by this
+module's :meth:`PolicyAdmissionDecision.require`, and reported under its own
+:class:`AdmissionReason`, so the retrying agent is told *which* decision it ran
+ahead of.  The detector itself lives in :mod:`.learned` — the shape of what a
+learned component looks like in source is 231's business, and this module's is
+the verdict — the same split :mod:`.planning` keeps from the component.
+
+The checks run in order — readability, absolute score, node id, commit, learned
+component — so the most fundamental problem is named first.
+
 Feature 230 is the *read side* of that enforcement, and it is deliberately
 narrow: it owns the verdict gate a caller runs against a policy's authored
 **source** — parse it, walk it, answer admitted or refused, why, in what words.
@@ -17,8 +32,9 @@ It does **not** run a policy, score a policy, replay a campaign, or read a
 store — those are the *discovery* member's features (232–237), which build on
 this one's guarantee that an admitted policy is clean.  The split is the feature:
 229 says *a plan must exist and be well-formed*; 230 says *the policy's source
-must not break the information barrier*; 233–237 say *the plan's contents must
-be sound*.  Keeping them apart is why 230 ``depends_on=229`` and 231–237 build
+must not break the information barrier*; 231 says *it must not reach for a
+learned component either*; 233–237 say *the plan's contents must be sound*.
+Keeping them apart is why 230 ``depends_on=229`` and 231–237 build
 on 230 — a caller cannot admit a policy it has not first screened.
 
 **A law, not a policy.**  The requirement is a property of *any* policy's
@@ -29,12 +45,17 @@ is a check the runtime makes on the policy's authored code — the same shape
 take: a gate that returns a verdict, never raises, and lets the caller decide.
 The policy-runtime member owns that gate for the admission path.
 
-**The three checks, each its own reason, split by repair.**  The gate answers in
-order — readability, then absolute score, then node id, then commit — and each
-step's refusal is its own :class:`AdmissionReason`, so a retrying agent is told
-*which* contract it broke and how to repair it, not a disjunction.  The order is
-the order of the sentence: the most fundamental problem (the source cannot be
-read) is named first, the most policy-specific (a path that never commits) last.
+**The checks, each its own reason, split by repair.**  The gate answers in
+order — readability, then absolute score, then node id, then commit, then
+learned component — and each step's refusal is its own
+:class:`AdmissionReason`, so a retrying agent is told *which* contract it broke
+and how to repair it, not a disjunction.  The order is the order of the
+sentence: the most fundamental problem (the source cannot be read) is named
+first, the most policy-specific (a path that never commits) last, and the one
+that is a *deferral* rather than a barrier (feature 231's) after it — because a
+policy with no reachable ``commit()`` is broken whatever else it carries, while
+a policy that commits correctly on every path is wrong only about what may
+exist.
 
 **No false negatives over false positives — that is the barrier's whole point.**
 The information barrier (docs §10.2) is a hard rule, not a heuristic, and the
@@ -86,6 +107,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from .errors import PolicyAdmissionRefusal
+from .learned import find_learned_component
 
 __all__ = [
     "AdmissionReason",
@@ -99,15 +121,18 @@ class AdmissionReason(str, Enum):
 
     A :class:`str` enum whose *value* is the token every refusal's detail opens
     with, so the reason is greppable in an admission log without a lookup table
-    and a reader never has to match a sentence to a category by eye.  The six
-    are split by *repair*, not by which check happened to fail: two policies
-    that both break the barrier for different reasons are two different prompts
-    to the retrying agent, so they are two reasons.
+    and a reader never has to match a sentence to a category by eye.  The
+    reasons are split by *repair*, not by which check happened to fail: two
+    policies that both break the barrier for different reasons are two different
+    prompts to the retrying agent, so they are two reasons.  (Feature 230's
+    spec prose counts "the six" as the vocabulary stood then; the value of each
+    member is the contract, not the tally, so this docstring does not restate a
+    count that every later check would have to re-edit.)
     """
 
     #: Admitted: the source is readable, parses, and carries no absolute score
-    #: constant, no hardcoded node id, and no terminating path that fails to
-    #: reach ``commit()``.
+    #: constant, no hardcoded node id, no terminating path that fails to reach
+    #: ``commit()``, and no learned component.
     CLEAN = "clean"
 
     #: Refused: the source is not text, is blank, or does not parse, so the
@@ -137,6 +162,17 @@ class AdmissionReason(str, Enum):
     #: mandatory, so a path that can end without committing is a policy that can
     #: score on a pick it never made; the repair is "commit on every path".
     UNREACHABLE_COMMIT = "unreachable-commit"
+
+    #: Refused: the source reaches for a learned component — it imports a model
+    #: framework, loads a checkpoint, or calls inference (feature 231).  Its own
+    #: reason because the repair is not a repair at all but a *wait*: docs §11.2
+    #: defers the learned component until the M1 triage measures the
+    #: perturbation-stability AUC, and §12 forbids inference in the replay path
+    #: outright, so a policy written against one is written against a premise
+    #: the system has not yet decided — the repair is "write the policy against
+    #: ``question.*`` and the thresholds dreaming revises; a learned component is
+    #: not available".
+    LEARNED_COMPONENT = "learned-component"
 
 
 #: A node id is an indexed address: lowercase alphanumeric segments joined by
@@ -414,9 +450,9 @@ class PolicyAdmissionDecision:
         wants on its last line before admitting a policy: an admitted source is
         returned unchanged (adoption is a judgement, never an edit — the bytes a
         later stage hashes are exactly these), so a caller can write ``source =
-        law.screen_policy(source).require()`` and have feature 230 enforced
-        there rather than remembered.  A refusal raises naming the policy, so the
-        admission log and the retry prompt say the same thing.
+        law.screen_policy(source).require()`` and have features 230 and 231
+        enforced there rather than remembered.  A refusal raises naming the
+        policy, so the admission log and the retry prompt say the same thing.
         """
         if self.source is None:
             raise PolicyAdmissionRefusal(self.detail)
@@ -440,14 +476,17 @@ def _refusal(
 
     One builder so every refusal renders the same way: the reason's value token
     leads (greppable), the offenders are listed (name every offender, so the
-    author repairs them all), and the barrier rationale closes.  The gate returns
+    author repairs them all), and the rationale closes — citing the feature the
+    refusal belongs to, 231's learned-component deferral or 230's barrier, so a
+    reader of the log can follow the sentence back to the spec.  The gate returns
     these; it never raises.
     """
     listed = "; ".join(offenders)
+    feature = "231" if reason is AdmissionReason.LEARNED_COMPONENT else "230"
     return PolicyAdmissionDecision(
         reason=reason,
         detail=(
-            f"{reason.value}: {lead} — {listed}. {tail} (feature 230)."
+            f"{reason.value}: {lead} — {listed}. {tail} (feature {feature})."
         ),
         offenders=tuple(offenders),
     )
@@ -483,12 +522,27 @@ def screen_policy(source: object) -> PolicyAdmissionDecision:
        ``commit()`` is an offender, refused with :attr:`AdmissionReason.
        UNREACHABLE_COMMIT``; a source with no ``commit()`` at all is refused the
        same way, because ``commit()`` is mandatory.
+    5. **it reaches for no learned component** (feature 231) — a model-framework
+       import, a checkpoint load, or an inference call is an offender, refused
+       with :attr:`AdmissionReason.LEARNED_COMPONENT`; docs §11.2 defers the
+       learned component until the M1 triage's AUC decides it, so a policy that
+       builds one has run ahead of a decision the system has not made.  The
+       detector is :func:`learned.find_learned_component`, and it runs **last**:
+       a policy whose ``commit()`` is unreachable is broken whatever else it
+       carries, while a policy that commits correctly is wrong only about what
+       may exist, so the reachability is named first.
 
     Returns a :class:`PolicyAdmissionDecision` — admitted or refused, why, in
     what words, naming every offender — never raising.  The checks are a pure
     read of the source's AST: no I/O, no store, no campaign, so the gate is
     import-cheap and free of a hard dependency on the store, the same reason
     feature 229's :func:`plan_grid` defers nothing to module scope.
+
+    The first refusal found wins, and the order is the order above: the most
+    fundamental problem is named first, so the retrying agent repairs the
+    policy's *shape* before its *premises*.  Feature 231's check is last because
+    it is the one that is a deferral rather than a broken barrier — a policy
+    that never reaches ``commit()`` is broken whatever else it carries.
     """
     if not isinstance(source, str) or not source.strip():
         described = type(source).__name__ if not isinstance(source, str) else "blank source"
@@ -612,13 +666,40 @@ def screen_policy(source: object) -> PolicyAdmissionDecision:
             ),
         )
 
+    # (5) Learned components — a framework import, a checkpoint load, or a call
+    # to inference (feature 231).  Last, because it is the one refusal that is a
+    # deferral rather than a broken barrier: a policy with no reachable commit()
+    # is broken whatever else it carries, while a policy that commits correctly
+    # is wrong only about what may exist yet (docs §11.2).
+    learned_offenders = find_learned_component(tree)
+    if learned_offenders:
+        return _refusal(
+            AdmissionReason.LEARNED_COMPONENT,
+            learned_offenders,
+            lead=(
+                "the policy reaches for a learned component — it imports a model "
+                "framework, loads a checkpoint, or calls inference, and none of "
+                "those are available to a policy"
+            ),
+            tail=(
+                "The learned component is deferred until the M1 triage measures "
+                "the perturbation-stability AUC (docs §11.2) — the policy writes "
+                "thresholds and dreaming revises them, and that stays true until "
+                "the measurement decides otherwise — while inference in the "
+                "replay path is forbidden outright (docs §12). A policy is "
+                "written against question.* and the thresholds dreaming revises "
+                "it to; it is not written against a model"
+            ),
+        )
+
     return PolicyAdmissionDecision(
         reason=AdmissionReason.CLEAN,
         detail=(
             f"{AdmissionReason.CLEAN.value}: the policy's source carries no "
-            f"absolute score constant, no hardcoded node id, and no terminating "
-            f"path that fails to reach commit() — every check in feature 230 is "
-            f"satisfied and the policy is admitted (feature 230)."
+            f"absolute score constant, no hardcoded node id, no terminating "
+            f"path that fails to reach commit(), and no learned component — "
+            f"every check in features 230 and 231 is satisfied and the policy is "
+            f"admitted (features 230, 231)."
         ),
         source=source,
     )

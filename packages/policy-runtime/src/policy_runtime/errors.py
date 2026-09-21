@@ -12,9 +12,11 @@ Two of them — :class:`PolicyTreeError` and its child :class:`PolicyAddressErro
 — are the tree's: a node that is empty or misspelled, a depth that is not an
 integer, a payload that is not canonical JSON, a dangling parent reference, or a
 node id that names a cell no tree can reach.  The third —
-:class:`PolicyAdmissionRefusal` (feature 230) — is the admission gate's: a
-policy's authored source that carries an absolute score constant, a hardcoded
-node id, or a terminating path that never reaches ``commit()``.  It is kept
+:class:`PolicyAdmissionRefusal` (features 230 and 231) — is the admission
+gate's: a policy's authored source that carries an absolute score constant, a
+hardcoded node id, a terminating path that never reaches ``commit()``, or a
+learned component (a model-framework import, a checkpoint load, an inference
+call, deferred by docs §11.2 until the M1 triage decides it).  It is kept
 apart from the tree's two because the tree itself was well-formed and the ask
 reached the lattice — it is the *source* that broke the contract, not a node the
 question fronted — but a :class:`PolicyRuntimeError` all the same, so the one

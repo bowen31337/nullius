@@ -1,0 +1,178 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 231 (System rejects a policy admission that loads a model checkpoint or calls inference, because a learned component stays deferred until the triage measurement decides it)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 231 in the existing policy-runtime plugin
+    (packages/policy-runtime, import name policy_runtime): a fourth static check
+    on feature 230's admission gate, refusing a policy whose authored source
+    reaches for a learned component — it imports a model framework, loads a
+    model checkpoint, or calls inference. The check is the sibling of 230's
+    three rather than a second gate: the refusal is returned by the same
+    `screen_policy(source)`, carried by the same `PolicyAdmissionDecision`,
+    raised by the same `require()` (a `PolicyAdmissionRefusal`, a
+    `PolicyRuntimeError`), and reported under a new `AdmissionReason.
+    LEARNED_COMPONENT`, so a retrying agent is told which decision it ran ahead
+    of. The rationale is docs §11.2, which defers the learned component until
+    the M1 triage measures the perturbation-stability AUC — recorded there "so
+    it is not quietly reopened" — with §12 forbidding inference in the replay
+    path outright and §15 filing the un-materialized-learned-component failure.
+    The detector lives in a new module `learned.py` (`find_learned_component`),
+    a pure function over an AST answering what was found, by line; the gate
+    judges it. Three shapes are detected on their own terms: a framework import
+    (root module name, `import` and `from` alike), a checkpoint load (matched by
+    the load verb alone, and by a checkpoint-suffixed path literal handed to any
+    call), and an inference call (matched on the attribute name only — a bare
+    `predict(x)` helper is deliberately not flagged). The check runs last, after
+    230's reachability, because it is the one refusal that is a deferral rather
+    than a broken barrier. It adds no new `@register` component (the existing
+    `policy-runtime` component, the campaign tree of feature 217, is untouched),
+    is import-cheap (stdlib `ast` only), and does not import another workspace
+    member. No central registry, router, app factory, middleware, settings, or
+    migration is edited; the member joins by workspace-scan convention.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/* members, import names are
+      underscored slugs) / pytest (ruff + mypy conventions). The module loader
+      (src/app/module_loader.py) discovers members from the root pyproject.toml
+      `[tool.uv.workspace] members = ["packages/*"]`, imports each package so
+      its module-level `@register` fires, and composes what each `@register`
+      builder contributes under a component name. `app` (src/app) is a namespace
+      package with no `__init__.py`; the seats in src/app/modules/&lt;member&gt;/
+      are reached by namespace import (e.g. app.modules.policy-runtime). A
+      member never imports another member — it reaches shared shapes through
+      `app.*`, never through a sibling package's import name. Feature 231's
+      sibling is already in place: `admission.py` (feature 230) owns
+      `AdmissionReason`, `PolicyAdmissionDecision` and `screen_policy`, and the
+      gate's four-step order is readability, absolute score, node id, commit.
+      Feature 146 (canary's `_inference`) already refuses a model inference
+      *call made from the replay path*, and its module docstring names feature
+      231 by number as "a later member's" question — the complementary line this
+      feature draws (the source, not the call site) is what it deferred.</stack>
+    <test_baseline>The repository-level suite under tests/ is collected by
+      pytest with testpaths=tests; each workspace member's own suite lives under
+      packages/&lt;member&gt;/tests/ and is collected under its own conftest
+      (same-basename files collide under one pytest run), and is NOT graded by
+      the bare `uv run pytest` acceptance gate — a member suite must be run
+      explicitly. Measure the real numbers by running the suite before relying
+      on them: the policy-runtime member suite is 100 tests before this feature
+      and 122 after (the new file `test_learned.py` contributes 22). The repo
+      lint is red on main (mypy absent, pre-existing ruff errors — RUF022 in
+      `__init__.py`, UP037, N999 for the `policy-runtime` seat directory), so
+      lint only the changed files and compare to a sibling: the new `learned.py`
+      and `test_learned.py` are clean, and the five findings in the touched
+      files are all pre-existing.
+    </test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, docstrings that
+      cite app_spec.xml feature numbers and docs/nullius-tech-architecture.md
+      sections, stdlib-only computation, `@register` only in the package
+      `__init__` (never a submodule — a submodule's registration fires only on
+      the first `create_app()` of a process), degrade-don't-break composition. A
+      member never imports another workspace member. A verdict gate returns a
+      decision, never raises; only `require()` on the caller's last line raises,
+      carrying the refusal's own sentence so the admission log and the retry
+      prompt say the same thing (the shape feature 229's `PlanGridDecision` and
+      sandbox's `ModuleDecision` take). The reason enum's value is the token
+      every refusal's detail opens with, so the reason is greppable in an
+      admission log. A deployment's *ceiling* is a committed document (feature
+      167's `imports_allowlist.json`, feature 241's `legal_themes.json`) because
+      the deployment owns it; feature 231's deferral is deliberately NOT a
+      document, because §11.2 records it as the system's own decision, lifted by
+      the triage measurement and nothing else — a JSON file would make reopening
+      the question a configuration edit. Tests assert on observed behaviour with
+      long narrative docstrings explaining the "why", and pin the check against
+      the three shapes plus the boundary it deliberately does not cross.
+    </conventions>
+  </existing_context>
+  <!-- Layout mirrors the clean main app_spec.xml: uv-workspace is what makes
+       plugin="policy-runtime" resolve to the real packages/policy-runtime/ and
+       src/app/modules/policy-runtime/ trees rather than the single-package
+       src/plugins/policy-runtime/ default. Parsed before features. -->
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Admission gate">
+      <feature index="231" shape="plugin" plugin="policy-runtime" covers="cq-15" depends_on="230">
+        <description>System refuses a policy admission whose authored source reaches for a learned component, because docs §11.2 defers that component until the M1 triage measures the perturbation-stability AUC. It is a fourth static check on feature 230's gate, not a second gate: `screen_policy(source)` returns the refusal in the same `PolicyAdmissionDecision`, `require()` raises the same `PolicyAdmissionRefusal`, and the reason is the new `AdmissionReason.LEARNED_COMPONENT`, whose value token leads the detail so the refusal is greppable in an admission log. The check runs **last** — after readability, absolute score, node id and commit reachability — because it is the one refusal that is a deferral rather than a broken barrier: a policy whose `commit()` is unreachable is broken whatever else it carries, while a policy that commits correctly on every path is wrong only about what may exist yet. The refusal names every offender with its line, so the author repairs them all rather than resubmitting to learn the rest. The detector is `learned.find_learned_component(tree)`, a pure function over an AST answering what was found (never what it means), kept a separate module the way 229's planning law is kept from the component. It adds no new `@register` component, no store, no deployment state and no I/O, and it is import-cheap (stdlib `ast` only).</description>
+      </feature>
+      <feature index="231a" shape="plugin" plugin="policy-runtime" depends_on="231">
+        <description>System detects a model-framework import as a learned component: a policy that imports one has authored a learned component whether or not it gets as far as calling it, so the root module name of every `import` and `from ... import` statement is matched against a named set of frameworks. Both spellings are matched — `import torch` and `from sklearn.ensemble import GradientBoostingClassifier` both name the root `torch` / `sklearn`, because the framework is imported by whichever form reaches it — and the root rather than the whole dotted name, because a framework reached through a submodule is still a framework. `pickle` is in the set not as a framework but as the checkpoint *serialization*: a policy importing it is unpickling a fitted object, which is the deferred component however it was written to disk. An ordinary deterministic import (`math`, feature 167's committed allowlist's own working set) is deliberately not in the set: the set is named frameworks, not "any import at all" — feature 167 owns the deployment's ceiling, this owns the deferral, and both refusals are correct without being duplicates (167 answers a question a deployment may answer differently tomorrow; this answers one no deployment may answer at all). A relative import contributes nothing, since a submitted policy is one module and feature 167's screen already refuses one.</description>
+      </feature>
+      <feature index="231b" shape="plugin" plugin="policy-runtime" depends_on="231">
+        <description>System detects a checkpoint load, matched two ways because either half of the phrase can be the whole of the evidence. By **verb alone**: a call whose name is one of the checkpoint-load verbs (`from_pretrained`, `load_state_dict`, `load_checkpoint`, `read_checkpoint`, `load_weights`, `unpickle`, `InferenceSession`, …) is a load whatever its arguments are — no legitimate policy calls one, so the verb is the whole of the evidence — matched as an attribute (`model.load_state_dict(...)`) and as a bare name alike. By **path alone**: a string literal whose leaf ends in a model-artifact suffix (`.pt`, `.pth`, `.ckpt`, `.safetensors`, `.onnx`, `.pkl`, `.pickle`, `.joblib`, `.h5`, `.tflite`, `.gguf`, `.mlmodel`, `.mar`, `.npy`, `.npz`, `.pb`, …) handed to *any* call is a checkpoint load whatever the call is named, so a plainly-named `load(path="head.safetensors")` is refused and the file is named. Both positional and keyword arguments are read, so `load("m.pt")`, `load(path="m.pt")` and `from_pretrained(ckpt="m.pt")` are one load written three ways. `.bin` is deliberately NOT a checkpoint suffix: this system's own ingest writes `.bin` snapshots, so the suffix alone does not name a checkpoint — a `.bin` *load* is still caught by its load verb, because the verb is strong evidence on its own.</description>
+      </feature>
+      <feature index="231c" shape="plugin" plugin="policy-runtime" depends_on="231">
+        <description>System detects an inference call, matched on the **attribute name only**: `model.predict(x)`, `net.forward(t)`, `llm.generate(prompt)`, `clf.predict_proba(obs)` — the shape a learned component is called through, an object being asked to infer. A bare `predict(x)` is deliberately NOT flagged: a policy's own top-level helper can be named anything, and refusing a policy for naming a function is the false positive that has nothing to do with the deferral. `score`, `fit` and `train` are deliberately absent from the verb set — they are ordinary English in this system's own vocabulary (§14's reporting, the scoring path), so matching them would refuse policies that never touch a model. The whole tree is walked, nested scopes included, and that is the contrast with feature 230's commit matcher rather than an oversight: a nested `def load_weights(...)` never *runs* when the enclosing statement does, so 230 does not count it as a commit — but a `model.predict(...)` inside a nested helper runs exactly when the helper is called, so the deferral is broken by it just the same. Where a call sits in the source is not a fact that excuses it.</description>
+      </feature>
+      <feature index="231d" shape="plugin" plugin="policy-runtime" depends_on="231">
+        <description>System reports the refusal under `AdmissionReason.LEARNED_COMPONENT` (`"learned-component"`), and the refusal's detail names the deferral as a deferral rather than as a barrier break, so the retrying agent knows the repair is to *wait* and write against `question.*` — the thresholds dreaming revises — rather than to try a different model or a different framework. The reason is split from 230's three by repair, the enum's stated discipline: the three tell an author how to fix a policy's shape, this one tells them the premise does not yet hold. The detail cites docs §11.2 (deferred until the M1 triage's AUC), §12 (no inference in the replay path) and the `question.*` surface, and its citation line names feature 231 while the barrier refusals keep naming feature 230.</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Lives in the existing policy-runtime member (packages/policy-runtime), beside
+    feature 230's `admission.py` — the fourth check on the same gate. Adds a new
+    module `learned.py` exporting `find_learned_component`, and extends
+    `admission.py` with the `LEARNED_COMPONENT` reason and the check that calls
+    it. Exports `find_learned_component` from the package `__init__` beside
+    `screen_policy` and `AdmissionReason`, so the detector is reachable as a pure
+    function the way `plan_grid` is. Reuses feature 230's error vocabulary
+    unchanged — `PolicyAdmissionRefusal` already covers it, because the refusal
+    is the same refusal — so `errors.py` changes only in its docstring, to say
+    the admission gate's fourth check is a learned component. Adds no new
+    `@register` component (the existing `policy-runtime` component, feature 217's
+    campaign tree, is untouched). The app-namespace seat
+    (src/app/modules/policy-runtime) is extended in its docstring only, to note
+    that feature 231's check is the fourth on that same gate rather than a gate
+    with a seat of its own. The member does not import another workspace member;
+    the check uses `ast` and the member's own errors.
+  </integration_points>
+  <constraints>
+    The deferral check must be a check on feature 230's gate, not a second gate:
+    one `screen_policy`, one `PolicyAdmissionDecision`, one `PolicyAdmissionRefusal`
+    to catch, one reason enum — so a caller does not have two admission paths to
+    keep in step.
+    The gate must still return a verdict and never raise; only `require()` raises.
+    The check must run last, after commit reachability, because it is the one
+    refusal that is a deferral rather than a broken barrier.
+    The check must be conservative about what it *refuses* — a policy that hands
+    a modeled path to a call it never reaches is refused and named, per §11.2's
+    "do not quietly reopen" — while deliberately leaving two shapes alone: `.bin`
+    (this system's own ingest writes it) and a bare inference-named helper.
+    No new `@register` component is added; the existing `policy-runtime`
+    component (feature 217's campaign tree) is untouched.
+    `@register` must live only in the package `__init__`, never a submodule.
+    The member must not import another workspace member (e.g. canary, sandbox);
+    it owns the check with stdlib `ast` and its own errors, and reaches shared
+    shapes through `app.*`. Feature 146's replay-path inference refusal stays the
+    canary's: this check reads the *source*, that one reads the *call site*, and
+    neither reaches into the other's member.
+    No central registry, router, app factory, middleware, settings, or migration
+    is edited; the member joins by workspace-scan convention.
+    The gate must stay import-cheap: stdlib `ast` only, nothing at module scope
+    the factory's scan pays for.
+    All existing tests across the repository-level `tests/` tree and every
+    sibling member suite must stay green — in particular feature 230's own 100
+    tests, which must not need editing for this feature to land.
+  </constraints>
+  <implementation_steps>
+    <phase name="Admission gate">
+      Add packages/policy-runtime/src/policy_runtime/learned.py with `find_learned_component(tree)` — the AST detector over the three shapes (framework import, checkpoint load, inference call) — naming every offender by line, sorted in source order.
+      Extend packages/policy-runtime/src/policy_runtime/admission.py with `AdmissionReason.LEARNED_COMPONENT` and the fifth check in `screen_policy`, running after commit reachability; the refusal cites feature 231 while the barrier refusals keep citing 230.
+      Export `find_learned_component` from packages/policy-runtime/src/policy_runtime/__init__.py (no new `@register`).
+      Extend packages/policy-runtime/src/policy_runtime/errors.py's docstring to name the fourth check (no code change: `PolicyAdmissionRefusal` already covers it).
+      Extend the app-namespace seat src/app/modules/policy-runtime/__init__.py docstring only.
+      Write the member's own suite packages/policy-runtime/tests/test_learned.py, pinned against the three shapes, the two deliberate exclusions, the check's place in the order, and the unchanged verdict-gate properties, with long narrative docstrings.
+      Confirm the member's own 100 tests still pass unedited, and lint only the changed files against a sibling.
+    </phase>
+  </implementation_steps>
+  <success_criteria>
+    A policy whose source loads a model checkpoint (`torch.load("policy.pt")`, `load_state_dict(...)`, `from_pretrained(...)`) is refused with `LEARNED_COMPONENT`, naming the checkpoint.
+    A policy whose source calls inference (`model.predict(...)`, `net.forward(...)`, `llm.generate(...)`) is refused with `LEARNED_COMPONENT`, naming the call.
+    A policy whose source imports a model framework (`import torch`, `from sklearn.ensemble import ...`, `import pickle`) is refused with `LEARNED_COMPONENT`, naming the root module.
+    The refusal names every offender with its line, and its detail says the component is *deferred* until the M1 triage — the repair is to wait, not to retry.
+    The check does not flag a bare helper named like an inference verb, an ordinary stdlib import, or a `.bin` path on its own; it does still flag a `.bin` file loaded by a checkpoint verb.
+    The check runs last: a source that breaks both commit reachability and the deferral is refused with `UNREACHABLE_COMMIT`.
+    `require()` still raises `PolicyAdmissionRefusal` (a `PolicyRuntimeError`) on any refusal including this one, and returns the source unchanged on an admission; `screen_policy` still never raises.
+    The policy-runtime member joins by workspace-scan convention with no edit to a central registry, router, app factory, middleware, settings, or migration, and does not import another workspace member.
+    Feature 230's existing 100 tests pass unedited, and the member's own suite is green.
+  </success_criteria>
+</project_specification>

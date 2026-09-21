@@ -95,6 +95,9 @@ from .errors import (
     PolicyRuntimeError,
     PolicyTreeError,
 )
+from .learned import (
+    find_learned_component,
+)
 from .planning import (
     GridPlan,
     GridPlanningContext,
@@ -121,6 +124,7 @@ __all__ = [
     "PolicyQuestion",
     "PolicyRuntimeError",
     "PolicyTreeError",
+    "find_learned_component",
     "plan_grid",
     "policy_question",
     "screen_policy",
