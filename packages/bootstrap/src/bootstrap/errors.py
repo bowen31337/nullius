@@ -32,19 +32,33 @@ trees:
   can be trusted as the reference the financial worlds are calibrated
   against (§10.6, §10.6.1).
 
+* :class:`BootstrapPoolError` — the *pool* contract (feature 188).  The
+  replay pool could not be authored or read as the thing the caller
+  asked: a size outside the 40-50 band §10.6 targets, a ``DATABASE_URL``
+  the store cannot speak or that names no durable database, a world id
+  the pool does not hold, or a draw that would put one world into the
+  pool under two names.  Each refusal is about the *pool's* integrity
+  rather than about any one world — a pool that silently absorbed a
+  short draw or a duplicated seed would under-report the very
+  precondition (§10.3.1's pool size) the pool exists to satisfy.
+
 The split matters to the two callers this category has.  A *policy* under
 replay asks a world for cells and needs :class:`BootstrapWorldError` to be
 distinguishable from :class:`BootstrapScoringError`, because the repairs
 differ: the first is "ask a cell this world has", the second is "this
 world cannot answer any cell of this shape" — and a pool builder
 (feature 188) that catches a scoring refusal knows to draw another world
-rather than to re-aim the ask.
+rather than to re-aim the ask.  The pool's own refusals are a third
+thing again — "the ask was never about a world" — which is why they sit
+beside the other two under the same base rather than being folded into
+either.
 """
 
 from __future__ import annotations
 
 __all__ = [
     "BootstrapError",
+    "BootstrapPoolError",
     "BootstrapScoringError",
     "BootstrapWorldError",
 ]
@@ -85,4 +99,23 @@ class BootstrapScoringError(BootstrapError):
     zero statistical-budget cost, and no dependence on market time"*), and
     a stand-in score would be a false ground truth reaching every policy
     comparison scored against this world.
+    """
+
+
+class BootstrapPoolError(BootstrapError):
+    """The replay pool could not be authored or read as the thing asked.
+
+    Feature 188's own refusals, and every one of them is about the pool's
+    integrity rather than about any world in it: a size outside the 40-50
+    band, a database the store cannot speak or that would not outlive the
+    process that authored into it, a world id the pool does not hold, and
+    a draw that would seat one world under two names.
+
+    Kept as its own class — beside the world and scoring contracts rather
+    than under either — because the caller's repair differs from both: a
+    world refusal is re-aimed, a scoring refusal is re-drawn, and a pool
+    refusal is *re-considered* (the deployment, the size, or the id was
+    wrong before any world was reached).  And kept under
+    :class:`BootstrapError` so the single ``except`` that catches the
+    bootstrap path catches the pool's failures too.
     """

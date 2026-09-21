@@ -2,7 +2,9 @@
 
 Implements app_spec.xml, "Bootstrap Worlds" — feature 181, *"System
 exposes a hyperparameter search world over a fixed model and dataset,
-which returns a ground-truth score per node"* — on the phase
+which returns a ground-truth score per node"*, and feature 188, *"System
+persists 40 to 50 generated bootstrap worlds into the replay pool on
+demand"* — on the phase
 docs/nullius-tech-architecture.md §10.6 opens:
 
     Build the non-financial ground-truth worlds so pool size becomes a
@@ -30,9 +32,9 @@ perfect labels, zero statistical-budget cost, and no dependence on market
 time"*, and §10.6's instruction is that they are therefore *built*, 40-50
 at a time, rather than awaited.
 
-**What this member ships.**  Feature 181's world, and the pieces it is
-made of, all importable directly for the sibling features of this
-category:
+**What this member ships.**  Feature 181's world, feature 188's pool,
+and the pieces the world is made of, all importable directly for the
+sibling features of this category:
 
 * **The world** (:mod:`bootstrap._world`).  A
   :class:`~bootstrap.HyperparameterWorld` is a *fixed model* — an
@@ -72,6 +74,19 @@ category:
   changes is a different world, not an updated one"* — has nothing to
   check when the world has no upstream).
 
+* **The pool** (:mod:`bootstrap._pool`).  A
+  :class:`~bootstrap.BootstrapPool` is the replay pool's bootstrap half:
+  ``persist_worlds`` draws 40-50 seeds from a pool seed (the SplitMix
+  stream — the one place a generator-shaped use of the hash is idiomatic,
+  because a pool is authored as a batch where a world's cells are
+  content-addressed), names each world, and upserts one identity row per
+  world into ``bootstrap_world`` — the database ``replay_score`` lives
+  in, so *"persists into the replay pool"* is a statement about the pool
+  the dreaming loop reads.  A re-run is a refresh (``created_at`` keeps
+  the world's first authoring instant), a size outside 40-50 is refused
+  rather than clamped, and a second pool over a *different* seed adds
+  worlds it can name rather than mutating rows it cannot.
+
 **What this member deliberately does not ship.**  The policy-facing
 runtime — the ``question.*`` object a policy is handed, the reveal
 bookkeeping, the commit — belongs to features 184 (identical interface
@@ -79,11 +94,23 @@ across all bootstrap worlds), 189 (ground-truth labels as sensitivity and
 specificity references) and 190-191 (the ported-world adapter and its
 provenance check), all later features of this category; this member
 answers *labels*, and a world that owned a reveal history would be a world
-whose answers depended on it.  The pool builder that authors 40-50 worlds
-is feature 188's.  The budget rule — *"System charges no statistical
-budget for a bootstrap world"* — is feature 185's, and it is a statement
-about what the *trial* records rather than about what the world computes,
-so nothing here indexes, decrements or reports a budget.
+whose answers depended on it.  The budget rule — *"System charges no
+statistical budget for a bootstrap world"* — is feature 185's, and it is
+a statement about what the *trial* records rather than about what the
+world computes, so nothing here indexes, decrements or reports a budget.
+
+**Two components, two questions.**  The world registers under
+``"bootstrap"`` (:data:`COMPONENT_NAME`) and answers *what is the
+composed bootstrap world?* — the one world a bare ``create_app()``
+carries.  The pool registers under ``"bootstrap-pool"``
+(:data:`POOL_COMPONENT_NAME`) and answers *what is the composed bootstrap
+pool?* — the store a deployment's ``DATABASE_URL`` names, or ``None``
+when nothing does.  Two names rather than one component with two faces,
+the convention :mod:`tripwires` states for its own seats: the world is
+ready the instant it is built and never degrades, while the pool is a
+deployment state that may legitimately be absent, and a caller holding
+``None`` from one wants a *refusal to author*, not a label — two facts
+that different should not share one component key.
 
 The tests that hold this package to §10.6 and to §10.3.1's reproducibility
 live in ``packages/bootstrap/tests``, inside this member's own file claim,
@@ -96,6 +123,21 @@ from __future__ import annotations
 from app.module_loader import register
 
 from ._fit import FitResult, fit_and_score, solve_cholesky
+from ._pool import (
+    DATABASE_URL_ENV,
+    DEFAULT_POOL_SIZE,
+    MAX_POOL_SIZE,
+    MIN_POOL_SIZE,
+    POOL_COMPONENT_NAME,
+    POOL_DOMAIN,
+    POOL_SEED,
+    POOL_TABLE,
+    BootstrapPool,
+    PersistedPool,
+    WorldRecord,
+    draw_world_seed,
+    world_id_for,
+)
 from ._stream import GOLDEN_GAMMA, MASK64, mix64, normal, uniform
 from ._world import (
     AXIS_ORDER,
@@ -130,13 +172,20 @@ from ._world import (
     setting_from_steps,
     split_indices,
 )
-from .errors import BootstrapError, BootstrapScoringError, BootstrapWorldError
+from .errors import (
+    BootstrapError,
+    BootstrapPoolError,
+    BootstrapScoringError,
+    BootstrapWorldError,
+)
 
 __all__ = [
     "AXIS_ORDER",
+    "DATABASE_URL_ENV",
     "DEFAULT_ALPHA",
     "DEFAULT_DEGREE",
     "DEFAULT_INTERACTIONS",
+    "DEFAULT_POOL_SIZE",
     "DEFAULT_RIDGE",
     "DEFAULT_STANDARDIZE",
     "DEFAULT_WORLD_ID",
@@ -150,11 +199,19 @@ __all__ = [
     "INTERCEPT",
     "LINEAR_COEFFICIENTS",
     "MASK64",
+    "MAX_POOL_SIZE",
+    "MIN_POOL_SIZE",
     "NOISE_SCALE",
+    "POOL_COMPONENT_NAME",
+    "POOL_DOMAIN",
+    "POOL_SEED",
+    "POOL_TABLE",
     "PRICED_ROWS",
     "PRICED_SEED",
     "SQUARE_COEFFICIENTS",
     "BootstrapError",
+    "BootstrapPool",
+    "BootstrapPoolError",
     "BootstrapScoringError",
     "BootstrapWorldError",
     "Dataset",
@@ -162,11 +219,15 @@ __all__ = [
     "HyperparameterAxis",
     "HyperparameterSetting",
     "HyperparameterWorld",
+    "PersistedPool",
+    "WorldRecord",
+    "build_bootstrap_pool",
     "build_hyperparameter_world",
     "canonical_node_id",
     "column_statistics",
     "decode_node_id",
     "design_columns",
+    "draw_world_seed",
     "encode_node_id",
     "fit_and_score",
     "generate_dataset",
@@ -179,6 +240,7 @@ __all__ = [
     "solve_cholesky",
     "split_indices",
     "uniform",
+    "world_id_for",
 ]
 
 #: The component name this member registers under — the plugin name the
@@ -238,3 +300,40 @@ def hyperparameter_world() -> HyperparameterWorld:
 #: ``app.module_loader.Registration.add`` documents — so this is an
 #: ordinary function a script or a sibling suite calls directly.
 build_hyperparameter_world = hyperparameter_world
+
+
+@register(POOL_COMPONENT_NAME)
+def build_bootstrap_pool() -> BootstrapPool | None:
+    """Component builder: the replay pool the worlds persist into (feature 188).
+
+    Takes no arguments — that is the factory's registration protocol — and
+    resolves ``DATABASE_URL`` at build time, so a composed application
+    carries the pool for the deployment the process is actually running
+    in.  It is this member's second component and, unlike the first, one
+    that may legitimately be ``None``: the world's whole configuration is
+    its seed, while the pool's is a deployment's database.
+
+    Returns ``None`` when nothing names a relational store — the
+    degrade-don't-break stance every store in this workspace takes toward
+    an absent ``DATABASE_URL``, and the same one
+    :func:`tripwires.build_poison_store` takes for the poison store.  An
+    unconfigured pool is a discoverable state, and the operator who means
+    to author §10.6's 40-50 worlds is the caller that must not find
+    itself in it — which is why a pool that *must* exist is resolved
+    explicitly (:meth:`bootstrap.BootstrapPool.resolve`) or refused
+    against, never silently defaulted.
+
+    Never raises — including for a URL whose scheme the store cannot
+    speak.  The factory builds every registered component on every
+    :func:`~app.module_loader.create_app` call, so a builder that raised
+    would take composition down for every unrelated feature in the
+    workspace; a process that *requires* a pool passes a URL to
+    :class:`~bootstrap.BootstrapPool` directly, where a named
+    :class:`~bootstrap.BootstrapPoolError` is the right answer.
+    Construction performs no I/O — the path is resolved on first use —
+    so composing the application never opens a database, and the worlds
+    are authored only when a caller demands them
+    (:meth:`~bootstrap.BootstrapPool.persist_worlds`): the "on demand" of
+    the feature's own sentence, kept true at the composition seam.
+    """
+    return BootstrapPool.resolve()

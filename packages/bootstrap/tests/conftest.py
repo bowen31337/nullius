@@ -11,17 +11,27 @@ There is very little to isolate here, and that is a fact about the feature
 rather than an omission.  The siblings that *do* need isolation are the
 ones bound to a deployment — the artifact store's ``ARTIFACT_ROOT``, the
 null sidecar's ``NULL_SIDECAR_PATH``, the dedup gate's ``DATABASE_URL`` —
-and a bootstrap world is bound to nothing but its own seed.  It writes no
-file, opens no database, reads no environment variable and consults no
+and a bootstrap *world* is bound to nothing but its own seed.  It writes
+no file, opens no database, reads no environment variable and consults no
 clock (docs/nullius-tech-architecture.md §10.6: the worlds give *"no
-dependence on market time"*).  So there is no ambient state for a test to
-leak into, and no autouse fixture guarding one.
+dependence on market time"*).  So there is no ambient state for a world
+test to leak into, and no autouse fixture guarding one.
+
+Feature 188's pool changed that for exactly one object, and the fixtures
+grew with it: the pool persists into the database ``DATABASE_URL`` names,
+so its tests need a per-test SQLite file the way the tripwires member's
+do — a fixture asked for by name, never autouse, because a *world* test
+must not acquire a database by accident and the world half of this suite
+stays as ambient-free as it was.  The pool fixture is derived from the
+same URL rather than given its own file for the tests that need two
+stores over one database (a re-read proving persistence, a second store
+proving refresh).
 
 What the fixtures below are, then, is the *vocabulary* the tests are
-written in: the canonical world, a couple of named cells, and the
-committed seed and id the package publishes.  Naming them once keeps the
-tests reading as claims about the world rather than as constructions of
-it.
+written in: the canonical world, a couple of named cells, the committed
+seed and id the package publishes, and — for the pool's suite — the
+database URL and the pool over it.  Naming them once keeps the tests
+reading as claims about the world rather than as constructions of it.
 
 The path bootstrap puts both import roots on ``sys.path`` regardless of how
 pytest was invoked — the workspace's ``src/`` (for ``app.module_loader``,
@@ -35,6 +45,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -54,6 +65,9 @@ from bootstrap import (
     HyperparameterSetting,
     HyperparameterWorld,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - typing only; the fixture imports lazily
+    from bootstrap import BootstrapPool
 
 
 @pytest.fixture
@@ -109,3 +123,37 @@ def setting() -> HyperparameterSetting:
     return HyperparameterSetting(
         degree=2, interactions=True, standardize=True, alpha=1.0
     )
+
+
+# -- Feature 188's reach: a database, on purpose, for the pool's tests ---------
+
+
+@pytest.fixture
+def database_url(tmp_path: Path) -> str:
+    """A ``sqlite:///`` URL for a pool file only this test can see.
+
+    The repository-level conftest points ``DATABASE_URL`` at a per-test
+    SQLite file for every suite under ``tests/``; this suite is not under
+    ``tests/``, so the isolation is restated rather than inherited — the
+    same fixture the tripwires member's conftest spells for its own
+    stores.  Deliberately **not** autouse and deliberately not exported
+    into the environment: a world test must not acquire a database by
+    accident, and a pool test that wants one asks for this fixture by
+    name.
+    """
+    return f"sqlite:///{tmp_path / 'bootstrap-pool-test.db'}"
+
+
+@pytest.fixture
+def pool(database_url: str) -> BootstrapPool:
+    """Feature 188's pool, pointed at this test's own database.
+
+    Imported inside the fixture so the module-level import list of this
+    file stays what it was for every world test — the member's package
+    ``__init__`` is reached either way, but a reader scanning the imports
+    should not have to work out that ``pool`` is the only thing that
+    pulls the store in.
+    """
+    from bootstrap import BootstrapPool
+
+    return BootstrapPool(database_url)

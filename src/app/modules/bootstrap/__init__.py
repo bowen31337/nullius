@@ -39,6 +39,21 @@ facts, and §10.6's *"Report the two pools separately"* is precisely the
 rule that keeps them apart: an absent component is a statement about
 composition, while an empty bootstrap pool is a statement about what has
 been authored (feature 188's count, feature 186's independent tally).
+
+**A second seat grew beside this one.**  Feature 188 — *"System persists
+40 to 50 generated bootstrap worlds into the replay pool on demand"* —
+gave the member a second component, the pool, and this directory grew
+the same way ``app.modules.tripwires`` grew for features 131 and 132: a
+sibling module (:mod:`app.modules.bootstrap.pool`) holds the pool's own
+seat, answering *what is the composed bootstrap pool?* while this module
+goes on answering *what is the composed bootstrap world?*.  Two seats
+rather than one accessor with two keys, because the two components are
+different things on different lifecycles — the world is ready the
+instant it is built and never degrades, while the pool is a deployment
+state (``DATABASE_URL``) that may legitimately be ``None`` — and a
+caller that wants the world never pays for the pool's deployment state.
+This module's exports are untouched by the growth: still exactly
+:data:`COMPONENT_NAME` and :func:`hyperparameter_world_component`.
 """
 
 from __future__ import annotations
