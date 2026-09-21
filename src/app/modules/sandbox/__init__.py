@@ -291,6 +291,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a depende
         SandboxFailClass,
         SandboxImports,
         SandboxIsolation,
+        SandboxNetwork,
         SandboxPayload,
         SandboxQuarantine,
         SandboxSeed,
@@ -305,6 +306,7 @@ __all__ = [
     "COMPONENT_NAME",
     "FAIL_CLASS_COMPONENT_NAME",
     "IMPORTS_COMPONENT_NAME",
+    "NETWORK_COMPONENT_NAME",
     "PAYLOAD_COMPONENT_NAME",
     "QUARANTINE_COMPONENT_NAME",
     "SEED_COMPONENT_NAME",
@@ -316,6 +318,7 @@ __all__ = [
     "sandbox_fail_class_component",
     "sandbox_imports_component",
     "sandbox_isolation_component",
+    "sandbox_network_component",
     "sandbox_payload_component",
     "sandbox_quarantine_component",
     "sandbox_seed_component",
@@ -428,6 +431,26 @@ QUARANTINE_COMPONENT_NAME = "sandbox-quarantine"
 #: pins the two equal, so the pair cannot drift into a silent ``None`` at this
 #: seat.
 PAYLOAD_COMPONENT_NAME = "sandbox-payload"
+
+#: Feature 158's network-namespace law: ``sandbox-network``. The twelfth
+#: component this member contributes, and the seat beside the other eleven —
+#: distinct from each of them because the factory's registry replaces a name's
+#: earlier registration. Kept here for the same reason the other eleven are: one
+#: spelling shared by everything that asks for the law through the app package.
+#:
+#: Named rather than respelled from the member for the reason the eleven
+#: constants above are: the member's own ``sandbox.NETWORK_COMPONENT_NAME`` is
+#: the spelling the builder registers under, and this one is the spelling the
+#: app namespace reads it back with.
+#: ``packages/sandbox/tests/test_network_component.py`` pins the two equal, so
+#: the pair cannot drift into a silent ``None`` at this seat.
+#:
+#: Note what this name is *not*: ``sandbox-egress`` would name feature 149's
+#: law — the *written* policy that denies egress by default, which lives in
+#: ``infra/security/sandbox_egress.py`` and is not a component of this member
+#: at all. This one is the mechanism that policy is written against, and one
+#: spelling each is what keeps the two tellable apart at this seat.
+NETWORK_COMPONENT_NAME = "sandbox-network"
 
 
 def sandbox_isolation_component(
@@ -784,3 +807,49 @@ def sandbox_payload_component(
     """
     application = app if app is not None else create_app()
     return application.get(PAYLOAD_COMPONENT_NAME)
+
+
+def sandbox_network_component(
+    app: Application | None = None,
+) -> SandboxNetwork | Any:
+    """Return the composed sandbox network-namespace law (feature 158).
+
+    The same contract the other eleven accessors give their laws, for the
+    control that answers *was this egress attempt rejected at the namespace
+    level?* — §5.2's row ``Network | Namespace with no interfaces. Not a
+    firewall rule.``: with ``app`` given the component is read from that
+    application, without it the application is composed first, and ``None``
+    means no ``sandbox-network`` component was registered.
+
+    **This seat has the missing-artifact property in common with the transfer,
+    seed, fail-class, quarantine and payload seats.**  Those five state theirs:
+    a format, a value a run is handed, a vocabulary, a rule and a structure are
+    not things a deployment could set differently, and neither is this law's
+    subject — §5.2 fixes the box's network posture for every box in this
+    deployment.  So a non-``None`` component here is proof only that the law is
+    loaded, and there is nothing for a ``None`` to describe beyond "no such
+    component was registered".  The *written* egress posture a deployment does
+    configure is feature 149's committed policy, which is not a component of
+    this member and is not reachable from this seat.
+
+    The value carries no namespace and no socket, so a caller does not get a
+    placement from this accessor: it gets the law, and hands it the attempt
+    *and the namespace the box was placed in* — built from what the runtime
+    reported, via the component's own ``namespace()`` — calling ``check(path,
+    namespace)`` for the answer as a decision or ``require(...)`` for
+    :class:`~sandbox.errors.EgressRejected` on the last line before the spawn.
+    The component's other two verbs are the read side a deployment audits its
+    runtime configuration with: ``isolated(namespace)`` and
+    ``interfaces(namespace)``, which answer *what network posture is this box
+    in?* without running a candidate to find out.
+
+    Note the split the law draws, which this accessor preserves: the gate
+    *answers* every attempt, so a pipeline reading thousands of unattended
+    candidates sees decisions rather than tracebacks, while
+    :class:`~sandbox.errors.NamespacePlacementError` — a placement that cannot
+    be described as §5.2's namespace because it holds an interface — is raised
+    outright, because a placement is trusted host code and a launcher must not
+    hand its runtime a specification for a box that is not in one.
+    """
+    application = app if app is not None else create_app()
+    return application.get(NETWORK_COMPONENT_NAME)

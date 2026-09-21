@@ -21,7 +21,7 @@ is :class:`SandboxIsolation` — a stateless facade over
 :mod:`sandbox.isolation` and the committed policy compiled from
 :data:`~sandbox.isolation.COMMITTED_ISOLATION_POLICY` — rather than a runner or
 a service.  The distinction matters to every later feature in the category:
-network namespace (158), the payload-only channel (159), seccomp (160),
+the network namespace (158), the payload-only channel (159), seccomp (160),
 cgroups (162) and the timeout (163) are each *further* controls on the same run,
 and each attaches to this member's law rather than replacing it.  A facade that
 already resolved a store, a pinned image or a runtime would take composition
@@ -391,6 +391,59 @@ with the raise living on :meth:`SandboxPayload.require` /
 :class:`~sandbox.errors.PayloadChannelRequired`, a sibling of the transfer's
 error rather than a subclass of it, for the same reason the two laws split the
 channel: a caller reading a refusal wants to know which half fired.
+
+**Feature 158 rides the seat a twelfth time, and it is the mechanism §17's
+egress posture is written against.**  *System places the sandbox in a network
+namespace with no interfaces, which rejects egress at the namespace level
+rather than by firewall rule* — the row §5.2's control table writes ``Network |
+Namespace with no interfaces.  Not a firewall rule.`` and §17 restates as "Z1
+sandboxes: egress denied by default".  Its law lives in :mod:`sandbox.network`,
+and it composes as :class:`SandboxNetwork` under
+:data:`sandbox.network.NETWORK_COMPONENT_NAME` (``sandbox-network``) — a
+twelfth seat beside the other eleven, for the same registry-replacement reason.
+Unlike the eleven it is the only control whose subject is a **placement** rather
+than a run: the box's namespace arrives as the interfaces a runtime reported
+(:class:`~sandbox.network.NetworkNamespace`), an attempt to dial out arrives as
+a :class:`~sandbox.network.EgressPath`, and the gate answers by consulting the
+placement's *egress surface* — the reported interfaces minus loopback
+(:data:`~sandbox.network.LOOPBACK_NAMES`), which is empty for every box placed
+as §5.2 requires.  That emptiness is the mechanism: nothing wrote a rule that
+denies, there is no interface a packet could leave by.
+
+**It is the runtime half of feature 149's policy, and neither can ask the
+other's question.**  :mod:`infra.security.sandbox_egress` owns the *written*
+egress posture — its refusals are about rules, allowances and destinations —
+and its own docstring names this feature as what enforces it at runtime: *"at
+runtime the sandbox runs in a network namespace with no interfaces, so egress is
+rejected at the namespace level rather than by firewall rule (§2's 'Sandboxed:
+no network'; feature 158's plugin)."*  So every reason here names an
+*interface*, never a rule, and
+:attr:`~sandbox.network.NetworkDecision.at_namespace` is the feature's contrast
+clause as a value: ``True`` when the namespace itself refused, ``False`` when
+something above it did — which is the finding an operator wants, because a
+refusal with it ``False`` means this deployment is relying on a firewall for a
+rejection §5.2 makes structural.
+
+**It compiles no committed artifact**, joining the builders that can say so —
+the transfer's, the seed's, the fail-class law's, the quarantine's and feature
+159's payload law — because its subject is the box's *structure* in the same
+sense and for the same reason: §5.2 fixes the row for every box in this
+deployment, so a ``network_policy.json`` here would be a knob nobody turns, and
+:data:`infra.security.sandbox_egress.COMMITTED_SANDBOX_EGRESS_POLICY` is where
+a deployment's *written* posture already lives.  What it does ship is the
+runtime's own spelling of the row
+(:data:`~sandbox.network.NO_NETWORK_MODE`, ``NetworkMode: "none"``), produced
+by :meth:`NetworkNamespace.specification` for a launcher to hand its runtime —
+and refused outright
+(:class:`~sandbox.errors.NamespacePlacementError`) for a placement holding an
+interface, because describing §5.2's namespace for a box that is not in one
+would be a deployment believing it applied the row.  Like features 157's and
+159's it *answers* every attempt with a
+:class:`~sandbox.network.NetworkDecision` — thousands of unattended candidates
+reach an operator as facts about runs — with the raise living on
+:meth:`SandboxNetwork.require`, as
+:class:`~sandbox.errors.EgressRejected`, a sibling of the isolation's and of
+feature 149's refusals rather than a subclass of either.
 """
 
 from __future__ import annotations
@@ -434,9 +487,11 @@ from .errors import (
     CgroupBudgetExceeded,
     DisallowedImportError,
     DisallowedSyscall,
+    EgressRejected,
     GVisorIsolationRequired,
     InvocationSeedError,
     IsolationDocumentError,
+    NamespacePlacementError,
     NodeSeedDocumentError,
     PayloadChannelRequired,
     QuarantineTreeError,
@@ -446,7 +501,8 @@ from .errors import (
     SandboxFailClassError,
     SandboxImportError,
     SandboxIsolationError,
-    SandboxPayloadError,
+    SandboxNetworkError,
+SandboxPayloadError,
     SandboxQuarantineError,
     SandboxSeedError,
     SandboxSyscallError,
@@ -521,6 +577,22 @@ from .isolation import (
     committed_isolation_policy,
     compile_isolation_policy,
     load_isolation_policy,
+)
+from .network import (
+    EGRESS_REJECTED_CODE,
+    LOOPBACK_NAMES,
+    NAMESPACE_REQUIRED_CODE,
+    NETWORK_COMPONENT_NAME,
+    NO_NETWORK_MODE,
+    EgressPath,
+    NetworkDecision,
+    NetworkNamespace,
+    NetworkReason,
+    SandboxNetwork,
+    egress_rejected,
+    isolated_namespace,
+    reject_egress,
+    sandbox_network,
 )
 from .payload import (
     PAYLOAD_CHANNEL_CODE,
@@ -682,6 +754,7 @@ __all__ = [
     "DENYING_ACTIONS",
     "DISALLOWED_IMPORT_CODE",
     "DISALLOWED_SYSCALL_CODE",
+    "EGRESS_REJECTED_CODE",
     "ENV_MKL",
     "ENV_OMP",
     "ENV_SIGNAL_SEED",
@@ -696,12 +769,16 @@ __all__ = [
     "IMPORTS_POLICY_KIND",
     "ISOLATION_REQUIRED_CODE",
     "KILL_ACTION",
+    "LOOPBACK_NAMES",
     "MEASURED_FIELDS",
     "MEMORY_FAIL_CLASS",
     "MEM_DRIFT_REASON",
     "MINT_SALT",
+    "NAMESPACE_REQUIRED_CODE",
+    "NETWORK_COMPONENT_NAME",
     "NODE_FAIL_CLASSES",
     "NODE_QUARANTINED_COLUMN",
+    "NO_NETWORK_MODE",
     "OK_FAIL_CLASS",
     "PAYLOAD_CHANNEL_CODE",
     "PAYLOAD_COMPONENT_NAME",
@@ -758,6 +835,8 @@ __all__ = [
     "ComponentIsolation",
     "DisallowedImportError",
     "DisallowedSyscall",
+    "EgressPath",
+    "EgressRejected",
     "FailClass",
     "FailClassDecision",
     "FailClassReason",
@@ -768,6 +847,10 @@ __all__ = [
     "IsolationPolicy",
     "ModuleDecision",
     "ModuleReason",
+    "NamespacePlacementError",
+    "NetworkDecision",
+    "NetworkNamespace",
+    "NetworkReason",
     "NodeSeedDocumentError",
     "NodeTree",
     "PayloadChannelRequired",
@@ -792,6 +875,8 @@ __all__ = [
     "SandboxInvocation",
     "SandboxIsolation",
     "SandboxIsolationError",
+    "SandboxNetwork",
+    "SandboxNetworkError",
     "SandboxPayload",
     "SandboxQuarantine",
     "SandboxQuarantineError",
@@ -862,9 +947,11 @@ __all__ = [
     "compile_timeout_policy",
     "decode_scores",
     "disallowed_syscall",
+    "egress_rejected",
     "encode_scores",
     "exceeded_budget",
     "inspect_window_payload",
+    "isolated_namespace",
     "kill_timeout",
     "load_budget_policy",
     "load_imports_allowlist",
@@ -876,12 +963,14 @@ __all__ = [
     "over_limits",
     "quarantine_violation",
     "quarantines",
+    "reject_egress",
     "reject_syscall",
     "resolve_seed",
     "sandbox_budget",
     "sandbox_fail_class",
     "sandbox_imports",
     "sandbox_isolation",
+    "sandbox_network",
     "sandbox_payload",
     "sandbox_quarantine",
     "sandbox_seed",
@@ -904,19 +993,20 @@ __version__ = "0.1.0"
 #: of the member, not by a hard-coded string — shares one spelling.
 COMPONENT_NAME: str = "sandbox"
 
-#: The other ten component names — ``IMPORTS_COMPONENT_NAME``,
+#: The other eleven component names — ``IMPORTS_COMPONENT_NAME``,
 #: ``TRANSFER_COMPONENT_NAME``, ``SEED_COMPONENT_NAME``,
 #: ``THREADS_COMPONENT_NAME``, ``TIMEOUT_COMPONENT_NAME``,
 #: ``FAIL_CLASS_COMPONENT_NAME``, ``BUDGET_COMPONENT_NAME``,
-#: ``SYSCALLS_COMPONENT_NAME``, ``QUARANTINE_COMPONENT_NAME`` and
-#: ``PAYLOAD_COMPONENT_NAME`` — are not respelled here.  Each is its own law's
-#: constant, read out of :mod:`sandbox.imports`, :mod:`sandbox.transfer`,
-#: :mod:`sandbox.seed`, :mod:`sandbox.threads`, :mod:`sandbox.timeout`,
-#: :mod:`sandbox.failclass`, :mod:`sandbox.budget`, :mod:`sandbox.syscalls`,
-#: :mod:`sandbox.quarantine` and :mod:`sandbox.payload` at the top of this
-#: module, and the member re-exports them rather than shadowing them: the
-#: eleven component names are each owned by the law that registers under them,
-#: and a second assignment here would be a second place for one to drift.
+#: ``SYSCALLS_COMPONENT_NAME``, ``QUARANTINE_COMPONENT_NAME``,
+#: ``PAYLOAD_COMPONENT_NAME`` and ``NETWORK_COMPONENT_NAME`` — are not respelled
+#: here.  Each is its own law's constant, read out of :mod:`sandbox.imports`,
+#: :mod:`sandbox.transfer`, :mod:`sandbox.seed`, :mod:`sandbox.threads`,
+#: :mod:`sandbox.timeout`, :mod:`sandbox.failclass`, :mod:`sandbox.budget`,
+#: :mod:`sandbox.syscalls`, :mod:`sandbox.quarantine`, :mod:`sandbox.payload`
+#: and :mod:`sandbox.network` at the top of this module, and the member
+#: re-exports them rather than shadowing them: the twelve component names are
+#: each owned by the law that registers under them, and a second assignment
+#: here would be a second place for one to drift.
 
 
 class SandboxIsolation:
@@ -1047,9 +1137,11 @@ def build_sandbox_isolation() -> SandboxIsolation:
 
     It returns a :class:`SandboxIsolation` rather than the bare policy so the
     composed component is duck-checkable and extensible: the category's eleven
-    later features attach to this member — the network namespace, the
-    payload-only channel, the seccomp allowlist, the cgroup limits, the
-    timeout — and a caller that has the component has the seam they arrive on.
+    later features attach to this member — the payload-only channel, the node
+    seed, the thread pinning, the wall-clock limit, the fail class, the cgroup
+    limits, the seccomp allowlist, the quarantine, the payload delivery and the
+    network namespace — and a caller that has the component has the seam they
+    arrive on.
     """
     return SandboxIsolation(committed_isolation_policy())
 
@@ -1548,3 +1640,60 @@ def build_sandbox_payload() -> SandboxPayload:
     or the refusal on the last line before the spawn.
     """
     return sandbox_payload()
+
+
+@register(NETWORK_COMPONENT_NAME)
+def build_sandbox_network() -> SandboxNetwork:
+    """Component builder: feature 158's network-namespace law (app_spec.xml §5.2).
+
+    The twelfth component this member contributes, beside feature 157's
+    isolation law, feature 167's import allowlist, feature 166's payload
+    channel, feature 165's node seed, feature 164's thread-pinning law, feature
+    163's wall-clock law, feature 168's fail-class law, feature 162's
+    cgroup-limits law, feature 160's seccomp allowlist, feature 161's
+    quarantine law and feature 159's payload-delivery law — under its own name,
+    because the registry is keyed by name and a later registration of
+    ``sandbox`` would *replace* the isolation law, so one member carrying
+    twelve controls carries twelve components.  With it §5.2's Network row has
+    the mechanism its own words describe: "Namespace with no interfaces.  Not
+    a firewall rule."
+
+    **It compiles no committed artifact**, and it joins the five builders here
+    that can say that — the transfer's, the seed's, the fail-class law's, the
+    quarantine's and the payload law's — because its subject is the box's
+    *structure* rather than a deployment's setting: §5.2 fixes the row for
+    every box in this deployment, so a ``network_policy.json`` would be a knob
+    nobody turns, and the *written* egress posture a deployment does configure
+    already lives with feature 149
+    (:data:`infra.security.sandbox_egress.COMMITTED_SANDBOX_EGRESS_POLICY`).
+    The runtime's own spelling of the row is not an artifact either: it is
+    :data:`sandbox.network.NO_NETWORK_MODE`, a constant the compilers of the
+    six artifacts beside this one would have nothing to compile *from*.
+
+    Like the other eleven it takes no arguments (the factory's registration
+    protocol), never returns ``None`` and never raises: the factory builds
+    every registered component on every ``create_app()`` call, so a builder
+    that raised would take composition down for every unrelated feature in the
+    workspace, and a bare test process with no ``DATABASE_URL`` and no lake
+    still composes this one.  It reads nothing ambient either — not
+    ``os.environ``, not ``/sys/class/net``, not a socket — so composition
+    cannot depend on the shell that started the process or on whether a network
+    stack happens to be visible.  That restraint is the feature itself, one
+    level up: a builder that probed the host's interfaces to decide whether the
+    box had any would be this law consulting the *host's* namespace rather than
+    the box's.
+
+    It returns a :class:`SandboxNetwork` rather than a namespace, necessarily
+    rather than by preference: a namespace belongs to one box, and a component
+    held across runs that carried one would be a component letting two boxes
+    share a network posture — the property :func:`build_sandbox_transfer` and
+    :func:`build_sandbox_payload` state for their own quantities.  It does not
+    create namespaces either: a Python object graph cannot call ``unshare``,
+    and producing one would make this law the runtime feature 157 states it is
+    not.  What the composed value gives a caller is the law: ``check`` for the
+    answer as a decision, ``require`` for the refusal on the last line before
+    the spawn, ``namespace`` to build the placement a launcher describes its
+    runtime with, and ``isolated``/``interfaces`` for the read side a
+    deployment audits its runtime configuration with.
+    """
+    return sandbox_network()

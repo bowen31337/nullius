@@ -194,6 +194,28 @@ failed — the discipline :mod:`infra.security.sandbox_egress`'s and
   raise lives on :meth:`sandbox.payload.PayloadDecision.require`, the
   launcher's last line before the spawn.
 
+* :class:`SandboxNetworkError` — the network-namespace contract, and feature
+  158's whole subject.  A sandboxed box was placed in a network namespace with
+  no interfaces, so a dial-out from inside it has no path to leave by and the
+  rejection is the namespace's own rather than a firewall rule's.  §5.2's
+  control table gives the law its row — ``Network | Namespace with no
+  interfaces. Not a firewall rule.`` — and every refusal carries it.  Two
+  subclasses on the two sides of the seam: :class:`EgressRejected` is the
+  refusal the gate **returns** for an attempt (``at-namespace``,
+  ``not-placed``, ``unknown-sandbox``) and raises only at the bridge
+  :meth:`sandbox.network.NetworkDecision.require`, so the pipeline reads a
+  fact about a run instead of surviving a traceback;
+  :class:`NamespacePlacementError` is the one **raised** outright, on the
+  trusted side, when a placement cannot be described as §5.2's namespace
+  because it holds an interface — the specification would otherwise tell a
+  runtime the box has no network while the box has a way out.  **A sibling of
+  :class:`SandboxIsolationError`**, not a subclass: *which runtime executed
+  the box* and *what network surface it was placed with* are separate rows of
+  §5.2's table, and a deployment running ``runsc`` can still hand a box an
+  interface.  **A sibling of feature 149's refusals too**: that law answers
+  egress from a written policy and its refusals are about rules, this one
+  answers from the namespace itself and every message names an interface.
+
 There is deliberately no error for *"the run was not admitted"* beyond
 :class:`GVisorIsolationRequired`.  Feature 157's failure mode is one thing —
 a run configuration that is not gVisor's — and splitting it into an error per
@@ -218,9 +240,11 @@ __all__ = [
     "CgroupBudgetExceeded",
     "DisallowedImportError",
     "DisallowedSyscall",
+    "EgressRejected",
     "GVisorIsolationRequired",
     "InvocationSeedError",
     "IsolationDocumentError",
+    "NamespacePlacementError",
     "NodeSeedDocumentError",
     "PayloadChannelRequired",
     "QuarantineTreeError",
@@ -230,6 +254,7 @@ __all__ = [
     "SandboxFailClassError",
     "SandboxImportError",
     "SandboxIsolationError",
+    "SandboxNetworkError",
     "SandboxPayloadError",
     "SandboxQuarantineError",
     "SandboxSeedError",
@@ -1187,4 +1212,126 @@ class PayloadChannelRequired(SandboxPayloadError):
     launcher puts ``require`` on the last line before the spawn, where a run
     offered against bytes that did not cross is refused there rather than
     remembered.
+    """
+
+
+class SandboxNetworkError(SandboxError):
+    """The network-namespace contract, and feature 158's whole subject.
+
+    *System places the sandbox in a network namespace with no interfaces,
+    which rejects egress at the namespace level rather than by firewall rule.*
+    §5.2's control table gives the law its row — ``Network | Namespace with no
+    interfaces. Not a firewall rule.`` — and §3's zone map states what the row
+    serves: a Z1 box running *"Signal code, exploration policy code"* is
+    *"Sandboxed: no network, no FS, seccomp, cgroup limits"*.  This class is
+    the two refusals that keep the row from being a claim, one on each side of a
+    seam whose audiences differ:
+
+    * :class:`EgressRejected` — the refusal **returned** by the gate and
+      **raised** at the bridge.  A dial-out from inside the box was answered
+      against the interfaces the box's namespace holds: an attempt in a
+      namespace that holds none is the feature firing (``at-namespace``), an
+      attempt for a box nobody placed is a placement that was never made
+      (``not-placed``), and an attempt attributed to a box this namespace is not
+      is one no placement here can speak about (``unknown-sandbox``).  The gate
+      *answers* rather than raising, for the reason features 157's, 159's,
+      160's and 162's gates do: §6.1 dispatches thousands of unattended
+      candidates and *"this one tried to dial out"* must reach an operator as a
+      fact about a run.  The raise lives on
+      :meth:`sandbox.network.NetworkDecision.require`, the launcher's last line
+      before the spawn.
+
+    * :class:`NamespacePlacementError` — the refusal **raised** outright, on the
+      trusted side.  A placement cannot be described as §5.2's namespace because
+      the namespace handed in holds an interface that could carry a packet off
+      the box, so there is no specification to hand a runtime; or the thing
+      handed to the gate as a placement is not one at all.  Raised rather than
+      returned because the subject is built by trusted host code from what a
+      runtime reported and a caller cannot ignore it — handing a runtime the
+      spec for a namespace the box is not actually in would be a deployment
+      believing it applied the row while the box has a way out.
+
+    **A sibling of :class:`SandboxIsolationError`, not a subclass of it.**  Both
+    laws are about *where the box is*, but the questions are different facts:
+    feature 157 owns *which runtime executed the box* (§5.2's ``Isolation |
+    gVisor (runsc)``), this one owns *what network surface the box was placed
+    with* (``Network | Namespace with no interfaces``).  A deployment can be
+    running ``runsc`` and still hand the box an interface — the two controls sit
+    on separate rows of the same table for exactly that reason — so a caller
+    that caught the isolation class believing it had covered the network would
+    be wrong in the one way this law exists to prevent.
+
+    **A sibling of :class:`SandboxSyscallError` and of
+    :class:`~infra.security.sandbox_egress`'s refusals too**, and the third
+    sibling is the one worth stating: feature 149 answers *"may this egress
+    proceed under the data lake's written policy?"* from a document, and its
+    refusals are about rules — an allowance, a destination, an unlisted origin.
+    This class answers *"is there an interface to leave by?"* from the namespace
+    itself, and every message here names an interface rather than a rule.  Same
+    question one layer apart, which is why the two laws are separate modules and
+    why neither class subclasses the other: a caller repairing one is looking at
+    a policy document, a caller repairing the other is looking at the runtime
+    configuration that built the namespace.
+    """
+
+
+class EgressRejected(SandboxNetworkError):
+    """The refusal itself: this attempt had no interface to leave by.
+
+    Every message begins with ``egress_rejected``
+    (:data:`sandbox.network.EGRESS_REJECTED_CODE`), the one spelling a
+    log-grepping operator or CI check looks for, and names which of the
+    spellings of not-having-a-path it found — no interface in the box's
+    namespace could carry the packet (``at-namespace``), no namespace was handed
+    in for the box at all (``not-placed``), or the attempt names an origin this
+    namespace does not belong to (``unknown-sandbox``) — because an operator
+    repairing a box needs to know which side of the placement went wrong.  Every
+    message also carries §5.2's row verbatim, the same one-body discipline the
+    seed law's and the payload law's refusals take, so a reader of any one
+    refusal can find the law the others cite without grep.
+
+    **One class for three spellings, because they are one repair.**  The
+    spellings are told apart in the decision's reason
+    (:class:`sandbox.network.NetworkReason`), not as subclasses here, for the
+    restraint :class:`GVisorIsolationRequired`'s docstring states for feature
+    157's spellings of one fact: a caller that had to catch each spelling would
+    catch the ones it thought of and miss the one its deployment actually
+    produced.
+
+    Deliberately *not* a subclass of any feature 149 class.  Feature 149's
+    docstring names this feature as the mechanism its policy is written against
+    — *"at runtime the sandbox runs in a network namespace with no interfaces,
+    so egress is rejected at the namespace level rather than by firewall
+    rule"* — and nesting one under the other would make a caller's ``except``
+    decide which of two layers refused a packet, when the whole point of the
+    feature's contrast clause is that the layers are distinguishable by
+    :attr:`sandbox.network.NetworkDecision.at_namespace` and not by type.
+    """
+
+
+class NamespacePlacementError(SandboxNetworkError):
+    """A box could not be described as placed in §5.2's namespace.
+
+    Raised from :meth:`sandbox.network.NetworkNamespace.specification` when the
+    namespace a caller built holds an interface that could carry a packet off
+    the box, and from :func:`sandbox.network.reject_egress` when the thing
+    offered as a placement is not a :class:`sandbox.network.NetworkNamespace`
+    at all.  Every message begins with ``network_namespace_required``
+    (:data:`sandbox.network.NAMESPACE_REQUIRED_CODE`).
+
+    **Raised rather than returned, unlike :class:`EgressRejected`.**  The
+    subject is a placement — built by trusted host code from what a runtime
+    reported, not offered by untrusted code thousands of times — and the refusal
+    is the point rather than a fact to record: the specification this law would
+    produce from such a placement is §5.2's row, so writing one would hand a
+    runtime the row while the box being spawned is in a namespace that does not
+    hold it, and the deployment would report a confined trial for a candidate
+    that had a path out.  The split between the two classes in this module is
+    the split feature 157 draws between its admission check and its document
+    failure, restated one control over.
+
+    Note what this class does **not** claim: it never says an attempt was made or
+    that anything escaped.  It says a placement was not §5.2's namespace, which
+    is a fact about the runtime configuration a deployment hands its launcher —
+    and the repair is there, not in the box.
     """
