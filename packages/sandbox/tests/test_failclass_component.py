@@ -81,21 +81,22 @@ def test_the_member_declares_the_component_name_the_feature_owns() -> None:
     assert sandbox.FAIL_CLASS_COMPONENT_NAME == "sandbox-failclass"
 
 
-def test_scanning_the_member_registers_the_seven_components_it_owns() -> None:
+def test_scanning_the_member_registers_the_eight_components_it_owns() -> None:
     # A fresh registry, not the process default: any earlier test that called a
     # bare ``create_app()`` has already imported every workspace member into the
     # current registry, so reading it back here would assert accumulated process
     # state, not this package's contribution.
     #
-    # The list is pinned exactly: the isolation law, the import law, the payload
-    # channel, the node seed, the thread-pinning law, the wall-clock law and the
-    # fail-class law, no more and no less.  An eighth component arriving unnoticed
-    # fails here — and a builder that had taken any earlier feature's name would
-    # fail here too, which is the registry-replacement hazard this file exists
-    # for.
+    # The list is pinned exactly: the isolation law, the cgroup-limits law, the
+    # import law, the payload channel, the node seed, the thread-pinning law, the
+    # wall-clock law and the fail-class law, no more and no less.  A ninth
+    # component arriving unnoticed fails here — and a builder that had taken any
+    # earlier feature's name would fail here too, which is the
+    # registry-replacement hazard this file exists for.
     components = scan_components(MEMBER_SRC, registry=Registration())
     assert sorted(component.name for component in components) == [
         "sandbox",
+        "sandbox-budget",
         "sandbox-failclass",
         "sandbox-imports",
         "sandbox-seed",
@@ -106,12 +107,13 @@ def test_scanning_the_member_registers_the_seven_components_it_owns() -> None:
 
 
 def test_the_fail_class_builder_does_not_replace_any_earlier_law() -> None:
-    # The hazard, stated as behaviour: after all seven builders have fired, the
-    # composed application still carries features 157's, 167's, 166's, 165's,
-    # 164's and 163's laws under their own names — a seventh registration of any
-    # of those names would have replaced one.
+    # The hazard, stated as behaviour: after all eight builders have fired, the
+    # composed application still carries features 157's, 162's, 167's, 166's,
+    # 165's, 164's and 163's laws under their own names — an eighth registration
+    # of any of those names would have replaced one.
     app = create_app(MEMBER_SRC, registry=Registration())
     assert type(app.get("sandbox")).__name__ == "SandboxIsolation"
+    assert type(app.get("sandbox-budget")).__name__ == "SandboxBudget"
     assert type(app.get("sandbox-imports")).__name__ == "SandboxImports"
     assert type(app.get("sandbox-transfer")).__name__ == "SandboxTransfer"
     assert type(app.get("sandbox-seed")).__name__ == "SandboxSeed"

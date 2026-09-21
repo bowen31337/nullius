@@ -87,7 +87,7 @@ def test_scanning_the_member_registers_exactly_the_components_it_owns() -> None:
     # the current registry, so reading it back here would assert accumulated
     # process state, not this package's contribution.
     #
-    # The list is pinned exactly rather than by membership, so an *eighth*
+    # The list is pinned exactly rather than by membership, so a *ninth*
     # component arriving unnoticed fails here — which is the property this
     # test is for. Feature 157 contributed the first: the isolation law.
     # Feature 167 added the second: the import allowlist, under its own name
@@ -95,11 +95,16 @@ def test_scanning_the_member_registers_exactly_the_components_it_owns() -> None:
     # 166 added the third, the payload channel, on the same terms, feature
     # 165 the fourth, the node seed, feature 164 the fifth, the
     # thread-pinning law, feature 163 the sixth, the wall-clock law, and
-    # feature 168 the seventh and last, the fail-class vocabulary — the
-    # category is closed, so the list is now the whole of it.
+    # feature 168 the seventh, the fail-class vocabulary — the category is
+    # closed, so that was the whole of it until feature 162's cgroup-limits
+    # law, the eighth, arrived: the one control whose subject is what a run
+    # *consumed* — a quantity §5.2's call site states in the same ``Limits(…)``
+    # clause feature 163 reads its wall clock from, and which neither the
+    # isolation law nor the wall-clock law has a claim about.
     components = scan_components(MEMBER_SRC, registry=Registration())
     assert sorted(component.name for component in components) == [
         "sandbox",
+        "sandbox-budget",
         "sandbox-failclass",
         "sandbox-imports",
         "sandbox-seed",
@@ -217,11 +222,12 @@ def test_the_app_seat_is_not_a_second_vocabulary() -> None:
     # second spelling of the run decision or the reason codes here would be a
     # second thing to keep in sync. Feature 167 added its own name and
     # accessor beside feature 157's, feature 166 a third, feature 165 a
-    # fourth, feature 164 a fifth, feature 163 a sixth and feature 168 the
-    # seventh and last, and nothing else.
+    # fourth, feature 164 a fifth, feature 163 a sixth, feature 168 the
+    # seventh and feature 162 the eighth, and nothing else.
     import app.modules.sandbox as seat
 
     assert set(seat.__all__) == {
+        "BUDGET_COMPONENT_NAME",
         "COMPONENT_NAME",
         "FAIL_CLASS_COMPONENT_NAME",
         "IMPORTS_COMPONENT_NAME",
@@ -229,6 +235,7 @@ def test_the_app_seat_is_not_a_second_vocabulary() -> None:
         "THREADS_COMPONENT_NAME",
         "TIMEOUT_COMPONENT_NAME",
         "TRANSFER_COMPONENT_NAME",
+        "sandbox_budget_component",
         "sandbox_fail_class_component",
         "sandbox_imports_component",
         "sandbox_isolation_component",

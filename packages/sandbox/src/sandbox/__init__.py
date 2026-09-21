@@ -254,13 +254,47 @@ from __future__ import annotations
 
 from app.module_loader import register
 
+from .budget import (
+    BUDGET_COMPONENT_NAME,
+    BUDGET_POLICY_KIND,
+    CGROUP_BUDGET_CODE,
+    CGROUP_LIMITS_REQUIRED_CODE,
+    COMMITTED_BUDGET_POLICY,
+    DEFAULT_CPU_S,
+    DEFAULT_MEM_MB,
+    DEFAULT_PIDS,
+    MEASURED_FIELDS,
+    MEM_DRIFT_REASON,
+    MEMORY_FAIL_CLASS,
+    RUNNER_MEM_MB,
+    BudgetBreach,
+    BudgetDecision,
+    BudgetOverrun,
+    BudgetReason,
+    BudgetRun,
+    CgroupLimit,
+    CgroupPolicy,
+    SandboxBudget,
+    check_cgroup_budget,
+    classify_amount,
+    classify_count,
+    classify_seconds,
+    committed_budget_policy,
+    compile_budget_policy,
+    load_budget_policy,
+    over_limits,
+    sandbox_budget,
+)
 from .errors import (
     AllowlistDocumentError,
+    CgroupBudgetDocumentError,
+    CgroupBudgetExceeded,
     DisallowedImportError,
     GVisorIsolationRequired,
     InvocationSeedError,
     IsolationDocumentError,
     NodeSeedDocumentError,
+    SandboxBudgetError,
     SandboxError,
     SandboxFailClassError,
     SandboxImportError,
@@ -424,11 +458,19 @@ from .transfer import (
 
 __all__ = [
     "ABSENT",
+    "BUDGET_COMPONENT_NAME",
+    "BUDGET_POLICY_KIND",
+    "CGROUP_BUDGET_CODE",
+    "CGROUP_LIMITS_REQUIRED_CODE",
+    "COMMITTED_BUDGET_POLICY",
     "COMMITTED_IMPORTS_ALLOWLIST",
     "COMMITTED_ISOLATION_POLICY",
     "COMMITTED_PINNING_POLICY",
     "COMMITTED_TIMEOUT_POLICY",
     "COMPONENT_NAME",
+    "DEFAULT_CPU_S",
+    "DEFAULT_MEM_MB",
+    "DEFAULT_PIDS",
     "DEFAULT_WALL_S",
     "DISALLOWED_IMPORT_CODE",
     "ENV_MKL",
@@ -444,6 +486,9 @@ __all__ = [
     "IMPORTS_COMPONENT_NAME",
     "IMPORTS_POLICY_KIND",
     "ISOLATION_REQUIRED_CODE",
+    "MEASURED_FIELDS",
+    "MEMORY_FAIL_CLASS",
+    "MEM_DRIFT_REASON",
     "MINT_SALT",
     "NODE_FAIL_CLASSES",
     "OK_FAIL_CLASS",
@@ -452,6 +497,7 @@ __all__ = [
     "POLICY_KIND",
     "POOL_FLOOR_VARIABLE",
     "REQUIRED_CAPS",
+    "RUNNER_MEM_MB",
     "SANDBOX_ESCAPE_CLASS",
     "SANDBOX_RUNNER_CLASSES",
     "SCORE_CHANNEL_CODE",
@@ -474,6 +520,15 @@ __all__ = [
     "UNPINNED",
     "WINDOW_TRANSFER_CODE",
     "AllowlistDocumentError",
+    "BudgetBreach",
+    "BudgetDecision",
+    "BudgetOverrun",
+    "BudgetReason",
+    "BudgetRun",
+    "CgroupBudgetDocumentError",
+    "CgroupBudgetExceeded",
+    "CgroupLimit",
+    "CgroupPolicy",
     "ComponentIsolation",
     "DisallowedImportError",
     "FailClass",
@@ -489,6 +544,8 @@ __all__ = [
     "NodeSeedDocumentError",
     "RunDecision",
     "RunReason",
+    "SandboxBudget",
+    "SandboxBudgetError",
     "SandboxError",
     "SandboxFailClass",
     "SandboxFailClassError",
@@ -531,16 +588,22 @@ __all__ = [
     "WindowFacts",
     "WindowTransferError",
     "authorize_run",
+    "check_cgroup_budget",
     "check_invocation",
     "check_thread_pinning",
+    "classify_amount",
     "classify_cap",
+    "classify_count",
     "classify_duration",
     "classify_fail_class",
     "classify_run",
+    "classify_seconds",
+    "committed_budget_policy",
     "committed_imports_allowlist",
     "committed_isolation_policy",
     "committed_thread_pinning_policy",
     "committed_timeout_policy",
+    "compile_budget_policy",
     "compile_imports_allowlist",
     "compile_isolation_policy",
     "compile_thread_pinning_policy",
@@ -550,12 +613,15 @@ __all__ = [
     "exceeded_budget",
     "inspect_window_payload",
     "kill_timeout",
+    "load_budget_policy",
     "load_imports_allowlist",
     "load_isolation_policy",
     "load_thread_pinning_policy",
     "load_timeout_policy",
     "mint_node_seed",
+    "over_limits",
     "resolve_seed",
+    "sandbox_budget",
     "sandbox_fail_class",
     "sandbox_imports",
     "sandbox_isolation",
@@ -996,3 +1062,56 @@ def build_sandbox_fail_class() -> SandboxFailClass:
     with.
     """
     return sandbox_fail_class()
+
+
+@register(BUDGET_COMPONENT_NAME)
+def build_sandbox_budget() -> SandboxBudget:
+    """Component builder: feature 162's cgroup-limits law (app_spec.xml §5.2).
+
+    The eighth component this member contributes, beside feature 157's isolation
+    law, feature 167's import allowlist, feature 166's payload channel, feature
+    165's node seed, feature 164's thread-pinning law, feature 163's wall-clock
+    law and feature 168's fail-class law — under its own name, because the
+    registry is keyed by name and a later registration of ``sandbox`` would
+    *replace* the isolation law, so one member carrying eight controls carries
+    eight components.  With it the category's twelve features (157–168) each
+    have their law in place.
+
+    Like :func:`build_sandbox_isolation`, :func:`build_sandbox_threads` and
+    :func:`build_sandbox_timeout` it compiles a **committed artifact** at build
+    time (:data:`~sandbox.budget.COMMITTED_BUDGET_POLICY`) — the fifth in this
+    category, and for the same reason the fourth one ships: the feature's
+    sentence fixes three numbers (*"the cgroup limits for cpu, memory of 2048 MB
+    or a process count of 32"*) that a deployment enforces by writing
+    ``cpu.max``/``memory.max``/``pids.max``, and a limit a kernel is written
+    from has to be written down before it can be audited.  The compiler holds
+    the file to §5.2's ``cpu_s=30``/``mem_mb=2048``/``pids=32`` exactly, so the
+    artifact cannot drift to a box nobody sized.
+
+    Like the other seven it takes no arguments (the factory's registration
+    protocol), never returns ``None`` and never raises: the factory builds every
+    registered component on every ``create_app()`` call, so a builder that
+    raised on a drifted artifact would take composition down for every unrelated
+    feature in the workspace, and a bare test process with no ``DATABASE_URL``
+    and no lake still composes this one.  It reads nothing ambient either — the
+    law's subject is a run's *measured* cpu time, memory peak and process count,
+    never a probe and never ``os.environ`` — so composition cannot depend on the
+    shell that started the process, and the component it hands out holds no
+    cgroup, no counter and no file descriptor.  A drifted artifact is reported
+    the way the other four artifacts' are: the component is built over the
+    refusal-free path, and a caller that must know the file still declares
+    §5.2's limits asks :func:`sandbox.budget.committed_budget_policy`, where a
+    named :class:`~sandbox.errors.SandboxBudgetError` is the right answer.
+
+    It returns a :class:`SandboxBudget` rather than a policy, necessarily rather
+    than by preference, and this one's reason is the same as
+    :func:`build_sandbox_timeout`'s one law over: a component held across runs
+    that carried a *cgroup* — or a probe that read one — would be reading
+    counters that belong to a single run, so two dispatches would share a box
+    and the second would be rejected for the first's consumption.  What the
+    composed value gives a caller is the law — ``check``/``over_limits`` for the
+    answer as a value, ``require`` for the refusal on the line after the spawn,
+    and ``cpu_s``/``mem_mb``/``pids``/``described`` for the read side a
+    deployment audits with.
+    """
+    return sandbox_budget()

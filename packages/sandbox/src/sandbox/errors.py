@@ -91,6 +91,32 @@ failed — the discipline :mod:`infra.security.sandbox_egress`'s and
   and it is why the two features both refuse at the seam rather than trusting a
   deployment to have exported its environment.
 
+* :class:`SandboxBudgetError` — the cgroup-limits contract, and feature 162's
+  whole subject.  A sandboxed run was measured against §5.2's
+  ``cpu.max``/``memory.max``/``pids.max`` — ``cpu_s=30``, ``mem_mb=2048``,
+  ``pids=32`` — and the measurement could not be taken or could not be
+  compared.  Its subclass :class:`CgroupBudgetExceeded` is the refusal the
+  feature's own word *rejects* names, every message beginning with the
+  greppable code :data:`sandbox.budget.CGROUP_BUDGET_CODE`
+  (``cgroup_budget_exceeded``) when a run outran a limit and
+  :data:`sandbox.budget.CGROUP_LIMITS_REQUIRED_CODE`
+  (``cgroup_limits_required``) when the law could not measure it at all — the
+  discipline :data:`sandbox.isolation.ISOLATION_REQUIRED_CODE` applies to
+  feature 157's — and :class:`CgroupBudgetDocumentError` is the *document*
+  half: the committed budget could not be read as one.
+
+  **Why the breach is an error here when feature 163's kill is deliberately
+  not one.**  The two features share §5.2's call site and split its five
+  arguments between them, and they split the *outcome* the same way: dying at
+  the wall clock is an ordinary fate of a bad candidate (the pipeline records
+  ``fail_class=timeout`` and moves on), while a run that held the core past
+  its budget, allocated past ``memory.max`` or forked past ``pids.max`` is a
+  *violation of the box* rather than a property of the hypothesis.  A node that
+  gets there is not a candidate that failed; it is a candidate whose
+  consumption has to be looked at, which is why the gate still *answers* with
+  the readings (so the pipeline can record them) and the raise lives on
+  :meth:`sandbox.budget.BudgetDecision.require`, the launcher's last line.
+
 * :class:`SandboxTimeoutError` — the wall-clock-budget contract, and feature
   163's whole subject.  The committed *budget* could not be read as a budget
   (the document half), or a caller asked this law to record a run whose
@@ -142,11 +168,14 @@ from __future__ import annotations
 
 __all__ = [
     "AllowlistDocumentError",
+    "CgroupBudgetDocumentError",
+    "CgroupBudgetExceeded",
     "DisallowedImportError",
     "GVisorIsolationRequired",
     "InvocationSeedError",
     "IsolationDocumentError",
     "NodeSeedDocumentError",
+    "SandboxBudgetError",
     "SandboxError",
     "SandboxFailClassError",
     "SandboxImportError",
@@ -452,6 +481,106 @@ class ThreadPinningDocumentError(SandboxThreadPinningError):
     the fault is a policy file that does not say what it is — or, worse, would
     treat a well-formed document that had already drifted to another pin as a
     launcher bug.
+    """
+
+
+class SandboxBudgetError(SandboxError):
+    """The cgroup-limits contract: a run's resource consumption could not be held to the box.
+
+    app_spec.xml, "Untrusted Code Sandbox", feature 162: *System rejects a
+    sandboxed run exceeding the cgroup limits for cpu, memory of 2048 MB or a
+    process count of 32.*  The subject is the run's *consumption* — §5.2's
+    ``limits=Limits(wall_s=30, cpu_s=30, mem_mb=2048, network=False,
+    filesystem=False, pids=32)`` clause and the control table's row
+    ``Resources | cgroup v2: cpu.max, memory.max, pids.max`` — and this class is
+    that clause's refusals.
+
+    **The three quantities are told apart from the fourth argument on purpose.**
+    §5.2's call site carries five arguments and the feature sentence names three
+    of them; ``wall_s`` belongs to feature 163's wall-clock law and
+    :class:`SandboxTimeoutError` answers for it, while ``network`` and
+    ``filesystem`` are structural denials of the *isolation* rather than
+    budgets of a *count* and feature 157's class answers for them.  A member
+    that folded all five into one refusal would report a run that exhausted its
+    cpu budget and a run that was handed a socket as the same failure, and the
+    operator — or the quarantine decision — needs them apart.
+
+    **Why an exceeded limit is an error here.**  Feature 163's docstring argues
+    at length that a wall-clock kill is deliberately *not* one of its refusals:
+    the run died at the wall, the pipeline records the class, and feature 79's
+    "a failed evaluation still consumed a hypothesis" says the failure is a
+    value.  This class's headline refusal reads the other way, and the
+    difference is what the two facts *mean*.  A run that ran out of wall clock
+    is a bad candidate; a run that held a core past its budget, allocated past
+    ``memory.max`` or forked past ``pids.max`` is a *box violation* — §3's zone
+    map puts it in Z1 ("Mutated by the loop … Sandboxed: no network, no FS,
+    seccomp, cgroup limits"), and a candidate that reached a cgroup limit is one
+    whose consumption an operator has to look at rather than one to score and
+    drop.  So the gate answers with the readings (the pipeline must still record
+    them) and the raise lives on :meth:`sandbox.budget.BudgetDecision.require`,
+    the line after the spawn — the split
+    :class:`SandboxIsolationError` draws for feature 157's own configuration.
+
+    What this class covers is therefore two facts: a *run* whose measured
+    consumption outran a deployed limit, or which this law could not measure at
+    all, and a *document* whose limits are not §5.2's.
+    """
+
+
+class CgroupBudgetExceeded(SandboxBudgetError):
+    """The refusal itself: this run is rejected, or the budget is not §5.2's.
+
+    Every message begins with a greppable code — ``cgroup_budget_exceeded``
+    (:data:`sandbox.budget.CGROUP_BUDGET_CODE`) when a run outran a limit,
+    ``cgroup_limits_required``
+    (:data:`sandbox.budget.CGROUP_LIMITS_REQUIRED_CODE`) when the law could not
+    measure it or when the committed document declares a limit other than the
+    call site's — so an operator grepping a log finds the rejection by the
+    feature's own words, the discipline feature 157's
+    ``gvisor_isolation_required`` and feature 167's ``disallowed_import`` set
+    for theirs.
+
+    **The two codes are one class because they are one repair.**  A run refused
+    on a reading and a deployment refused on its own file both end at the same
+    operator question — *what is this box allowed to consume?* — and the
+    caller's action is identical in both: do not dispatch, go look at the
+    budget.  Splitting them would make a caller catch two spellings and miss the
+    one its deployment produced, which is the restraint
+    :class:`GVisorIsolationRequired`'s docstring states for feature 157's
+    several spellings of one fact.
+
+    Raised rather than returned only at the bridge
+    (:meth:`sandbox.budget.BudgetDecision.require`): the gate *answers* a run
+    with a decision, because the pipeline dispatches thousands of unattended
+    candidates and "this one outran a cgroup" must reach an operator as a fact
+    about a run rather than a crashed evaluator.  A launcher on the last line
+    after the spawn calls ``require`` and takes the raise, because a run that
+    proceeded would report an ordinary trial outcome for a candidate that was
+    never confined.
+    """
+
+
+class CgroupBudgetDocumentError(SandboxBudgetError):
+    """The committed cgroup budget could not be read as a budget.
+
+    The counterpart of :class:`IsolationDocumentError`,
+    :class:`AllowlistDocumentError`, :class:`ThreadPinningDocumentError` and
+    :class:`TimeoutBudgetDocumentError`, kept apart from
+    :class:`CgroupBudgetExceeded` for the reason that pair is always split: *the
+    document could not be read* and *this run outran its limits* are different
+    facts about different things, and a caller that conflated them would go
+    looking at a runner's counters when the fault is a policy file that does not
+    say what it is — or, worse, would treat a well-formed budget that had
+    drifted to another number as a runner bug.
+
+    A document that does not declare itself (:data:`sandbox.budget.BUDGET_POLICY_KIND`,
+    the marker feature 157's isolation policy, feature 167's allowlist, feature
+    164's pinning policy and feature 163's budget carry), a ``cpu_s``,
+    ``mem_mb`` or ``pids`` that is absent, is not a number, is text or bytes, is
+    a ``bool``, is a fractional count, or is negative: refused whole, fail
+    closed, because a budget compiled from a partially-read document is one
+    whose file and whose cgroup disagree — and that disagreement is a box
+    confining untrusted code at a number nobody wrote down.
     """
 
 

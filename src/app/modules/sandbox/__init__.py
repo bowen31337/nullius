@@ -170,6 +170,45 @@ returns a ``FailClass`` for **every** run it classifies, ``ok`` included: "from
 every sandboxed run" enforced on the line after the spawn.  What it refuses is the
 *classification*, not the fate — a record naming nothing about how a run ended, or
 a class outside the vocabulary — and those two raise rather than return a value.
+
+**Feature 162's law has its own seat here too, and it is the eighth.**  The
+cgroup limits — *System rejects a sandboxed run exceeding the cgroup limits for
+cpu, memory of 2048 MB or a process count of 32* — composes as
+``sandbox-budget``, so this module now answers eight questions, and
+:func:`sandbox_budget_component` mirrors the other seven in shape and re-exports
+nothing of the law's vocabulary for the same reason they do not: a caller who has
+the component calls ``check`` for the answer as a decision, ``require`` for the
+refusal on the line after the spawn, and ``cpu_s``/``mem_mb``/``pids``/``limits``
+for the read side a deployment audits with.
+
+**It is the fifth seat here backed by a committed artifact, and it shares its
+subject with feature 163's.**  §5.2 describes a run with one call —
+``limits=Limits(wall_s=30, cpu_s=30, mem_mb=2048, network=False,
+filesystem=False, pids=32)`` — whose five arguments three different features own:
+``wall_s`` is feature 163's wall-clock law, ``network`` and ``filesystem`` are
+structural denials inside feature 157's isolation, and ``cpu_s``/``mem_mb``/
+``pids`` are the cgroup limits this law enforces.  Three of those are *numbers a
+deployment writes down* — a watchdog's budget and three ``cgroup v2`` values —
+which is why the artifacts ship and their compilers hold each file to §5.2's own
+number: a non-``None`` component here is proof the committed budget compiled and
+this deployment confines untrusted code to §5.2's cpu, memory and process count,
+the same conclusion features 157's, 167's, 164's and 163's seats entitle a caller
+to draw.
+
+**This seat's refusal shape matches the other configuration laws', not feature
+163's, and the difference is worth knowing before calling it.**  Feature 163's
+``require`` passes ``None`` through for a run inside its budget, because a
+timeout is the pipeline's *recorded outcome* (§5.2's "Timeout | Hard kill,
+recorded as ``fail_class=timeout``") and a run that was fine has nothing to
+persist.  Here a run that outran its limits is a *violation of the box* rather
+than a bad candidate — §3's zone map makes the cgroup limits a property of Z1, so
+reaching one is something an operator has to look at — and ``require`` therefore
+returns ``None`` only for a run measured inside every limit and raises
+:class:`~sandbox.errors.CgroupBudgetExceeded` for a breach exactly as it does for
+a run it cannot measure.  The gate still *answers* with the readings
+(``check`` returns a decision carrying the per-limit ``BudgetOverrun`` values, so
+the pipeline can record what was consumed), which is what keeps a breach from
+becoming a crashed evaluator over thousands of unattended candidates.
 """
 
 from __future__ import annotations
@@ -180,6 +219,7 @@ from app.module_loader import Application, create_app
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a dependency
     from sandbox import (
+        SandboxBudget,
         SandboxFailClass,
         SandboxImports,
         SandboxIsolation,
@@ -190,6 +230,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a depende
     )
 
 __all__ = [
+    "BUDGET_COMPONENT_NAME",
     "COMPONENT_NAME",
     "FAIL_CLASS_COMPONENT_NAME",
     "IMPORTS_COMPONENT_NAME",
@@ -197,6 +238,7 @@ __all__ = [
     "THREADS_COMPONENT_NAME",
     "TIMEOUT_COMPONENT_NAME",
     "TRANSFER_COMPONENT_NAME",
+    "sandbox_budget_component",
     "sandbox_fail_class_component",
     "sandbox_imports_component",
     "sandbox_isolation_component",
@@ -253,6 +295,20 @@ TIMEOUT_COMPONENT_NAME = "sandbox-timeout"
 #: registration.  Kept here for the same reason the other six are: one spelling
 #: shared by everything that asks for the law through the app package.
 FAIL_CLASS_COMPONENT_NAME = "sandbox-failclass"
+
+#: The component name the member's cgroup-limits law registers under — the
+#: category's eighth control, kept beside the other seven rather than over any
+#: of them, because the factory's registry replaces a name's earlier
+#: registration.  Kept here for the same reason the other seven are: one
+#: spelling shared by everything that asks for the law through the app package.
+#:
+#: Named rather than respelled from the member for the reason features 167's,
+#: 166's, 165's, 164's, 163's and 168's constants above are: the member's own
+#: ``sandbox.BUDGET_COMPONENT_NAME`` is the spelling the builder registers
+#: under, and this one is the spelling the app namespace reads it back with.
+#: ``packages/sandbox/tests/test_budget_component.py`` pins the two equal, so
+#: the pair cannot drift into a silent ``None`` at this seat.
+BUDGET_COMPONENT_NAME = "sandbox-budget"
 
 
 def sandbox_isolation_component(
@@ -454,3 +510,39 @@ def sandbox_fail_class_component(
     """
     application = app if app is not None else create_app()
     return application.get(FAIL_CLASS_COMPONENT_NAME)
+
+
+def sandbox_budget_component(app: Application | None = None) -> SandboxBudget | Any:
+    """Return the composed sandbox cgroup-limits law (feature 162).
+
+    The same contract the other seven accessors give their laws, for the control
+    that decides whether a run's measured consumption — cpu seconds, memory
+    peak, process count — outran §5.2's ``cpu.max``/``memory.max``/``pids.max``:
+    with ``app`` given the component is read from that application, without it
+    the application is composed first, and ``None`` means no ``sandbox-budget``
+    component was registered.
+
+    **The artifact-backed reading is available here too, and this is the fifth
+    seat it applies to.**  The committed budget ships inside the member
+    (:data:`sandbox.budget.COMMITTED_BUDGET_POLICY`) and the builder compiles it
+    at build time, resolving nothing from the environment — so a non-``None``
+    component is proof the committed document compiled and this deployment
+    confines untrusted code at §5.2's ``cpu_s=30``, ``mem_mb=2048`` and
+    ``pids=32``, exactly the conclusion features 157's, 167's, 164's and 163's
+    seats entitle a caller to draw.  There is no unconfigured state for a
+    ``None`` to describe: it means *no such component was registered*, and
+    nothing else.
+
+    The value carries no cgroup, no counter and no probe, so a caller does not
+    get a measurement from this accessor: it gets the law, and calls
+    ``check(subject)``/``over_limits(subject)`` for the answer as a value or
+    ``require(subject)`` for the refusal on the line after the spawn.  Note that
+    ``require`` here has the other configuration laws' two outcomes rather than
+    feature 163's three — ``None`` for a run measured inside every limit, and a
+    raise for a breach *and* for a run this law cannot measure — because a run
+    that outran a cgroup limit is a violation of the box rather than a bad
+    candidate; the readings it was rejected on come back from ``check`` as the
+    decision's per-limit overruns.
+    """
+    application = app if app is not None else create_app()
+    return application.get(BUDGET_COMPONENT_NAME)

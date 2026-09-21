@@ -928,3 +928,194 @@ def tripwire_outcome(
         "outcome": "tripwire_fail" if rejected else "ok",
         "rejected": rejected,
     }
+
+
+# ---------------------------------------------------------------------------
+# Feature 162 — the cgroup limits (app_spec.xml §5.2's resource row)
+#
+# The fifth artifact-backed feature in this category, and the one whose subject
+# is a run's *measured consumption* — §5.2's ``limits=Limits(wall_s=30,
+# cpu_s=30, mem_mb=2048, network=False, filesystem=False, pids=32)`` clause, of
+# which feature 163 owns ``wall_s`` and this law owns the other three.  §5.2's
+# control table row is ``Resources | cgroup v2: cpu.max, memory.max, pids.max``.
+#
+# The three numbers are spelled here as *data* rather than imported from
+# :data:`sandbox.budget.DEFAULT_CPU_S` &c., for the reason :data:`WALL_S` gives
+# one law over: a test that read the constants would follow a rename of the
+# limits instead of catching one, and the feature's own sentence ("the cgroup
+# limits for cpu, memory of 2048 MB or a process count of 32") is what this
+# suite holds the law to.
+# ---------------------------------------------------------------------------
+
+#: §5.2's cpu budget, in seconds — the same number feature 163 reads as its wall
+#: clock, and deliberately the same *value*: §5.2's call site passes ``cpu_s=30``
+#: beside ``wall_s=30``, and a deployment where they drifted apart would be one
+#: whose cpu budget the watchdog could never reach.
+CPU_S: float = 30.0
+
+#: The feature's own memory limit: "memory of 2048 MB".  Two gigabytes, spelled
+#: as the sentence spells it, and *not* the 4096 an ``RLIMIT_AS`` fallback needs
+#: — see :data:`RUNNER_MEM_MB`.
+MEM_MB: int = 2048
+
+#: The feature's own process-count limit: "a process count of 32".  §12's
+#: eight-task executor bound is a different plane and a coincidentally different
+#: number; a test that meant *this* limit says ``PIDS``.
+PIDS: int = 32
+
+#: The host runner's portable address-space fallback, published beside the
+#: cgroup limit — larger than :data:`MEM_MB` because jemalloc's address-space
+#: *reservation* for the interpreter and polars exceeds two gigabytes even at a
+#: small resident set, so a 2 GiB ``RLIMIT_AS`` lets the child die before it can
+#: run the signal.  The two numbers are different facts about different
+#: mechanisms, and a document that published either in the other's place is a
+#: reviewer reading a cgroup limit out of an ``RLIMIT_AS`` default.
+RUNNER_MEM_MB: int = 4096
+
+#: A cpu time a cgroup would report for a run that outran its budget —
+#: comfortably past it rather than a hair, so a test that means "rejected" is
+#: not secretly a boundary test.
+OVER_CPU_S: float = 44.0
+
+#: A cpu time comfortably *inside* the budget — the run that was never in
+#: danger.  The common case: most candidates consume a fraction of a second.
+WITHIN_CPU_S: float = 12.5
+
+#: The boundary case, and its own constant because the reading of it is the one
+#: judgement in this law that could reasonably have gone the other way.
+#: *Exceeding* is strict — the feature's own word — so a run that consumed
+#: exactly its budget did **not** exceed it, and a test asserting that says so
+#: by name.
+AT_CPU_S: float = CPU_S
+
+#: Memory peaks above and below the feature's limit, with room in them rather
+#: than a hair past: ``OVER_MEM_MB`` is the first of the two numbers a breach
+#: sentence prints.
+OVER_MEM_MB: int = 3072
+WITHIN_MEM_MB: int = 300
+AT_MEM_MB: int = MEM_MB
+
+#: Process counts above and below the limit, on the same terms.
+OVER_PIDS: int = 64
+WITHIN_PIDS: int = 4
+AT_PIDS: int = PIDS
+
+#: The shapes a *malformed* measurement arrives in: text (what a JSON document,
+#: an environment variable or a §9.1 column hands one over as), bytes (no cgroup
+#: counter reports its reading as bytes), a flag (``True`` is an ``int`` in
+#: Python and is deliberately not a quantity here), a fractional count (no
+#: counter produces one), and a negative one (not a budget under any reading).
+TEXT_MEASUREMENT: str = "3072"
+BYTES_MEASUREMENT: bytes = b"\x00\x0c\x00\x00"
+FLAG_MEASUREMENT: bool = True
+FRACTIONAL_MEM_MB: float = 3072.5
+NEGATIVE_PIDS: int = -1
+
+#: How far apart the two memory numbers are — *derived* from the pair above
+#: rather than written down twice, so a test that means "the fallback is twice
+#: the limit" compares against the same arithmetic the law's compiler does.
+RUNNER_MEM_DRIFT_MB: int = RUNNER_MEM_MB - MEM_MB
+
+
+def budget_run(
+    *,
+    cpu_s: Any = OVER_CPU_S,
+    mem_mb: Any = WITHIN_MEM_MB,
+    pids: Any = WITHIN_PIDS,
+    node_id: str = "",
+    component: str = "signal-sandbox",
+) -> Any:
+    """A fresh run as the cgroup law sees it — over its cpu budget unless told.
+
+    Defaults to the *rejected* case on the cpu axis and inside the other two,
+    because the feature's subject is a run that exceeded a limit and a breach
+    sentence is only readable if it names which one: a test that means "this run
+    was confined" passes ``cpu_s=WITHIN_CPU_S`` and says so, and one that means
+    "it forked without bound" passes ``cpu_s=WITHIN_CPU_S, pids=OVER_PIDS``.
+
+    Imported from :mod:`sandbox.budget` rather than re-spelled as a dict, for
+    the reason :func:`timeout_run` gives: a run is not a *document* — the law
+    reads it as an object carrying three measurements — and the tolerance for
+    duck-typed subjects is exercised with explicit stand-ins in the law suite.
+
+    ``cpu_s`` is positional-compatible with every measured field being ``None``
+    on purpose: a caller testing the *unmeasured* refusal builds one with
+    ``mem_mb=None`` or asks :func:`budget_run` with ``cpu_s=None`` for the
+    unreadable subject.
+    """
+    from sandbox.budget import BudgetRun
+
+    return BudgetRun(
+        cpu_s=cpu_s,
+        mem_mb=mem_mb,
+        pids=pids,
+        node_id=node_id,
+        component=component,
+    )
+
+
+def budget_document(
+    *,
+    cpu_s: Any = CPU_S,
+    mem_mb: Any = MEM_MB,
+    pids: Any = PIDS,
+    runner_mem_mb: Any = RUNNER_MEM_MB,
+    policy: str = "sandbox-cgroup-limits",
+    omit: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """A well-formed cgroup budget, drifted only where the caller says.
+
+    ``policy`` and the four numbers are parameters rather than this builder
+    reaching for the law's own constants, for the reason
+    :func:`timeout_document` gives: a test that means "a document that does not
+    declare itself" says exactly that, and a test that means "the committed
+    policy" asks :func:`committed_budget_document` instead.  ``omit`` builds the
+    *silent* document — the one that drops a limit entirely — which is a
+    different refusal from a limit of the wrong value, and the law says so.
+
+    The marker is written as the literal ``"sandbox-cgroup-limits"`` rather than
+    read from :data:`sandbox.budget.BUDGET_POLICY_KIND`, deliberately: a document
+    is an *input* to the compile, and a builder that had to import the module
+    under test to be constructible would couple every drift test's premise to the
+    thing being tested.
+    """
+    document: dict[str, Any] = {"policy": policy}
+    for field, value in (
+        ("cpu_s", cpu_s),
+        ("mem_mb", mem_mb),
+        ("pids", pids),
+        ("runner_mem_mb", runner_mem_mb),
+    ):
+        if field not in omit:
+            document[field] = value
+    return document
+
+
+def committed_budget_document() -> dict[str, Any]:
+    """The committed artifact's shape: §5.2's three limits, and the marker.
+
+    Shaped after the file on disk rather than read *from* it, for the reason
+    :func:`committed_timeout_document` gives: the artifact's own tests read the
+    file (:mod:`test_budget_artifact`), so a builder that read it too would make
+    a drift in the file invisible to every test that meant to build a document
+    instead.
+    """
+    return budget_document()
+
+
+#: The three fields §5.2's limits clause names for this law, in the order the
+#: committed artifact lists them — spelled as data so a test sweeping "every
+#: measured field" has one list to sweep rather than three literals per test.
+MEASURED_FIELDS: tuple[str, ...] = ("cpu_s", "mem_mb", "pids")
+
+#: The runner's spelling for each of the three breaches, restated as data so the
+#: law suite can pin them against feature 168's own vocabulary
+#: (:data:`sandbox.failclass.SANDBOX_RUNNER_CLASSES`) in one cross-member test
+#: rather than reading the law's constants back.  The precedence is the
+#: cgroup's: a run that exhausted its cpu budget is throttled and killed
+#: (``timeout``), one that allocated past ``memory.max`` is OOM-killed (``oom``),
+#: and one that forked past ``pids.max`` had its ``fork`` fail outright
+#: (``crash``).
+CPU_FAIL_CLASS: str = "timeout"
+MEMORY_FAIL_CLASS: str = "oom"
+PIDS_FAIL_CLASS: str = "crash"

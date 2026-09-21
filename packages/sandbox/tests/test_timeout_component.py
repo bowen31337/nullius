@@ -90,20 +90,22 @@ def test_the_member_declares_the_component_name_the_feature_owns() -> None:
     assert sandbox.TIMEOUT_COMPONENT_NAME == "sandbox-timeout"
 
 
-def test_scanning_the_member_registers_the_six_components_it_owns() -> None:
+def test_scanning_the_member_registers_the_seven_components_it_owns() -> None:
     # A fresh registry, not the process default: any earlier test that called a
     # bare ``create_app()`` has already imported every workspace member into the
     # current registry, so reading it back here would assert accumulated process
     # state, not this package's contribution.
     #
-    # The list is pinned exactly: the isolation law, the import law, the payload
-    # channel, the node seed, the thread-pinning law and the wall-clock law, no
-    # more and no less.  An eighth component arriving unnoticed fails here — and
-    # a builder that had taken any earlier feature's name would fail here too,
-    # which is the registry-replacement hazard this file exists for.
+    # The list is pinned exactly: the isolation law, feature 162's
+    # cgroup-limits law, the import law, the payload channel, the node seed,
+    # the thread-pinning law and the wall-clock law, no more and no less.  A
+    # ninth component arriving unnoticed fails here — and a builder that had
+    # taken any earlier feature's name would fail here too, which is the
+    # registry-replacement hazard this file exists for.
     components = scan_components(MEMBER_SRC, registry=Registration())
     assert sorted(component.name for component in components) == [
         "sandbox",
+        "sandbox-budget",
         "sandbox-failclass",
         "sandbox-imports",
         "sandbox-seed",
