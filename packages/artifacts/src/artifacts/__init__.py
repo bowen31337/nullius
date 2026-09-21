@@ -121,6 +121,30 @@ features persist land inside the directories this store keys.
   column carries from the very text staged as ``code.py``, so the row
   and the directory cannot disagree about which code a node ran.
 
+* **The post-cost returns persist as one Parquet grid** (:mod:`artifacts.
+  _returns`, feature 170).  §9.2's first line — ``signal_returns.parquet``,
+  "per-symbol, per-period, post-cost" — is the artifact the layout calls
+  *the key artifact*, and the one whose completeness §9.2 spells out:
+  *"Because it is stored in full, marginal contribution against any book
+  can be recomputed at replay time, so the same node scores differently
+  depending on the path a policy took to reach it, while replay stays fully
+  deterministic."*  So nothing is reduced on the way in: a
+  :class:`~artifacts.SignalReturns` carries one
+  :class:`~artifacts.ReturnRow` per ``(rebalance date, horizon, symbol)``
+  the evaluation priced, with the schedule's deduction and the post-cost
+  return on every row, and :func:`persist_signal_returns` stages the whole
+  grid through feature 169's write path as one file —
+  :func:`signal_returns` answers it back by the same two keys and
+  :func:`signal_returns_is_persisted` reports the invariant.  The file is
+  typed (``date32``/``int32``/``string``/``float64``) because §4.1's
+  analytics row reads it in place through DuckDB, the panel's identity —
+  the node, the sealed snapshot and feature 59's ``(venue, version)`` pair
+  — rides in the Parquet schema's metadata rather than on every row, and
+  rows are sorted by date, horizon and symbol so two equal panels stage
+  identical bytes.  The gross return is *derived* on the record from the
+  charge and the net, so the writer cannot stage a row its own reader — which
+  re-checks every stored gross against its own terms — would refuse.
+
 * **The two per-date series persist as Parquet** (:mod:`artifacts._series`,
   feature 171).  §9.2's ``ic_series.parquet`` and ``turnover_series.parquet``
   — the two lines between the returns grid and the edge's JSON documents —
@@ -219,6 +243,21 @@ from ._profiles import (
     regime_attribution,
     regime_attribution_is_persisted,
 )
+from ._returns import (
+    CHARGE_COLUMN,
+    GROSS_COLUMN,
+    HORIZON_COLUMN,
+    NET_COLUMN,
+    SIGNAL_RETURNS_FILENAME,
+    SYMBOL_COLUMN,
+    ReturnRow,
+    SignalReturns,
+    decode_signal_returns,
+    encode_signal_returns,
+    persist_signal_returns,
+    signal_returns,
+    signal_returns_is_persisted,
+)
 from ._series import (
     DATE_COLUMN,
     IC_SERIES_FILENAME,
@@ -245,6 +284,7 @@ from ._store import (
 
 __all__ = [
     "ARTIFACT_ROOT_ENV",
+    "CHARGE_COLUMN",
     "CODE_HASH_COLUMN",
     "CODE_HASH_LENGTH",
     "COMPONENT_NAME",
@@ -254,13 +294,18 @@ __all__ = [
     "DEDUP_COMPONENT_NAME",
     "DEFAULT_ROOT_NAME",
     "DUPLICATE_CODE_HASH",
+    "GROSS_COLUMN",
+    "HORIZON_COLUMN",
     "IC_SERIES_FILENAME",
+    "NET_COLUMN",
     "NODE_CODE_HASH_INDEX",
     "NODE_TABLE",
     "PARQUET_COMPRESSION",
     "REGIME_ATTRIBUTION_FILENAME",
+    "SIGNAL_RETURNS_FILENAME",
     "SOURCE_FILENAME",
     "STAGING_ROOT_NAME",
+    "SYMBOL_COLUMN",
     "TRACE_FILENAME",
     "TURNOVER_SERIES_FILENAME",
     "VALUE_COLUMN",
@@ -272,6 +317,8 @@ __all__ = [
     "ArtifactStoreError",
     "ArtifactsError",
     "CodeHashIndex",
+    "ReturnRow",
+    "SignalReturns",
     "StoredCodeHash",
     "artifact_uri",
     "build_dedup_gate",
@@ -280,7 +327,9 @@ __all__ = [
     "decay_profile",
     "decay_profile_is_persisted",
     "decode_series",
+    "decode_signal_returns",
     "encode_series",
+    "encode_signal_returns",
     "executed_source",
     "execution_is_persisted",
     "execution_trace",
@@ -291,11 +340,14 @@ __all__ = [
     "persist_execution",
     "persist_ic_series",
     "persist_regime_attribution",
+    "persist_signal_returns",
     "persist_turnover_series",
     "regime_attribution",
     "regime_attribution_is_persisted",
     "reject_duplicate",
     "require_arrow",
+    "signal_returns",
+    "signal_returns_is_persisted",
     "source_code_hash",
     "turnover_series",
     "turnover_series_is_persisted",

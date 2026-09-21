@@ -18,8 +18,9 @@ directory:
       code.py
 
 **One shape, two metrics.**  Every other §9.2 line has a shape of its
-own: ``signal_returns.parquet`` is a *grid* (symbol × period, feature
-170), the two JSON documents are a positional array and a per-stratum
+own: ``signal_returns.parquet`` is a *grid* — symbol × period × horizon,
+three axes, written and read by :mod:`artifacts._returns` (feature 170) —
+the two JSON documents are a positional array and a per-stratum
 split (feature 172), and the execution pair is text and a fingerprint
 (feature 173).  These two are the same thing twice: **a date-keyed
 scalar series** — one number per rebalance date, the information
