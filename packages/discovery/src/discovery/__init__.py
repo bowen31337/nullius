@@ -5,12 +5,27 @@ Implements app_spec.xml, "Discovery Orchestrator & Campaigns", feature
 and null fraction before any node is expanded"* — against §5's discovery
 tree and §4.1.1's planted-null fraction.
 
-The member's whole surface is :mod:`discovery.campaign`: the clip that
-derives φ from ``W``, §7.3's two regimes as a closed set, the frozen
+The member's surface is two modules.  :mod:`discovery.campaign` is the clip
+that derives φ from ``W``, §7.3's two regimes as a closed set, the frozen
 :class:`~discovery.campaign.CampaignRecord` and the store that creates one
-row in the ``campaign`` table the migration already declares.  This module
-re-exports it and registers the component; it carries no logic of its own,
-which is the same shape every member in this workspace takes.
+row in the ``campaign`` table the migration already declares.
+:mod:`discovery.themes` is feature 241 — *"System rejects a root theme
+outside the configured legal set when assigning a research theme"* — the
+deployment's configured research space and the verb that refuses an
+assignment outside it.  This module re-exports both and registers the one
+component; it carries no logic of its own, which is the same shape every
+member in this workspace takes.
+
+**Feature 241 adds no component, and that is a decision rather than an
+omission.**  The factory's registration protocol is for *state a deployment
+holds* — a store, a device, a materialised pool.  A legal set resolved from
+:data:`~discovery.themes.LEGAL_THEMES_ENV` is not that: it opens nothing,
+writes nothing, and holds no state; and a builder for it could never return
+``None``, because an unconfigured deployment still has PRD §9.3's space.  A
+component whose builder always answers the same value is a function wearing a
+component's name, so the member's first component stays the campaign store and
+feature 232's component suite — which asserts this member registers exactly
+one unprefixed name — is untouched by this feature.
 
 **Why this member exists at all.**  The ``campaign`` table is feature
 104's (``migrations/versions/0111_campaign_table.py``) and eight stores
@@ -84,7 +99,22 @@ from .campaign import (
     create_campaign,
     null_fraction,
 )
-from .errors import CampaignOrderError, CampaignPlanningError, DiscoveryError
+from .errors import (
+    CampaignOrderError,
+    CampaignPlanningError,
+    DiscoveryError,
+    IllegalThemeError,
+)
+from .themes import (
+    DEFAULT_LEGAL_THEMES,
+    DEFAULT_THEME_SET,
+    ILLEGAL_THEME,
+    LEGAL_THEMES_ENV,
+    THEME_ROOT_COLUMN,
+    ThemeSet,
+    assign_theme,
+    legal_themes_from_env,
+)
 
 __all__ = [
     "CALIBRATION_STATUS_DEFAULT",
@@ -93,12 +123,17 @@ __all__ = [
     "COMPONENT_NAME",
     "CREATED_AT_COLUMN",
     "DATABASE_URL_ENV",
+    "DEFAULT_LEGAL_THEMES",
+    "DEFAULT_THEME_SET",
     "ID_COLUMN",
+    "ILLEGAL_THEME",
+    "LEGAL_THEMES_ENV",
     "NODE_TABLE",
     "NULL_FRACTION_COLUMN",
     "PHI_CEILING",
     "PHI_FLOOR",
     "REGIMES",
+    "THEME_ROOT_COLUMN",
     "TYPE_D_CAMPAIGN_TYPE",
     "TYPE_R_CAMPAIGN_TYPE",
     "WORKSPACE_COUNT_COLUMN",
@@ -107,8 +142,12 @@ __all__ = [
     "CampaignRecord",
     "CampaignRecords",
     "DiscoveryError",
+    "IllegalThemeError",
+    "ThemeSet",
+    "assign_theme",
     "build_campaign_records",
     "create_campaign",
+    "legal_themes_from_env",
     "null_fraction",
 ]
 

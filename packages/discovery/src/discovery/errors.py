@@ -57,6 +57,22 @@ contract is that no member imports another, and a caller reading
 module for the cause — the fraction's store refuses a write onto a
 campaign nobody planned, while this member refuses a *plan* that cannot be
 recorded.  Different acts, different vocabularies.
+
+Feature 241 adds a third class, and it sits **beside** the first two rather
+than under either of them.  :class:`IllegalThemeError` is raised when a
+research theme is assigned (or a legal set is configured) and the value is
+not in the configured legal set — the refusal app_spec.xml names with the
+code ``illegal_theme``.  It is not a
+:class:`CampaignPlanningError` because the offending fact is not about the
+*request*: a perfectly well-formed theme name is refused here solely
+because the **deployment's configured space** does not contain it, and the
+repair is to widen ``NULLIUS_LEGAL_THEMES`` or to pick a different theme —
+not, as with a malformed ``W`` or a mistyped regime, to re-send a corrected
+ask.  PRD §9 states the distinction from the other side: *"Choosing the
+space is the highest-value human input in the system, and it should be
+encoded as the set of legal ``theme_root`` values."*  A caller that catches
+:class:`DiscoveryError` gets every failure of this member's path, which is
+the one ``except`` the base class exists for.
 """
 
 from __future__ import annotations
@@ -65,6 +81,7 @@ __all__ = [
     "CampaignOrderError",
     "CampaignPlanningError",
     "DiscoveryError",
+    "IllegalThemeError",
 ]
 
 
@@ -92,4 +109,43 @@ class CampaignOrderError(DiscoveryError):
     already recorded.  Both name the campaign and the offending fact, so
     an operator learns *what* is out of order rather than merely that
     something is.
+    """
+
+
+class IllegalThemeError(DiscoveryError):
+    """A research theme is not in the deployment's configured legal set.
+
+    app_spec.xml feature 241: *"System rejects a root theme outside the
+    configured legal set when assigning a research theme."*  Every message
+    this class carries begins with the code
+    :data:`discovery.themes.ILLEGAL_THEME` (``illegal_theme``) — the one
+    spelling the spec names — so an operator grepping a log for the
+    rejection finds it by the feature's own word, the convention §7.3's
+    ``heterogeneous_world`` and §7.1's ``is_null_column`` refusals already
+    follow in this workspace.
+
+    The class carries **both** faces of that one question, the way
+    :class:`~canary.CanaryImportError` carries both faces of §12's
+    determinism floor:
+
+    * a theme being *assigned* that the configured set does not admit —
+      feature 241's own sentence, refused before any node is planted; and
+    * a term in a *configured* legal set that is not a theme identifier at
+      all — refused at configuration, because a legal set is how the space
+      is enforced and a term it cannot judge is one no assignment could be
+      checked against.
+
+    They are one class because they are one predicate — *can this value be
+    a legal theme here?* — split by *who* got it wrong (the planner's
+    assignment, or the operator's configuration), and because the two
+    refusals a caller acts on are "widen the set" and "pick a legal theme",
+    which is one repair decision read from either side.
+
+    Deliberately **not** a subclass of
+    :class:`CampaignPlanningError`, and the reason is the repair rather
+    than the shape: a malformed ask is fixed by re-sending a corrected one,
+    while an illegal theme is a fact about a *configured space* that a
+    well-formed ask ran into.  Kept out of :class:`CampaignOrderError` for
+    the same reason: nothing about the store's state is in question — the
+    theme is refused before any row or node exists.
     """
