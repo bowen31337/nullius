@@ -88,11 +88,13 @@ for _root in workspace_scan_roots():
         sys.path.insert(0, _entry)
 
 from signal_agent import (
+    AntiConvergenceGate,
     DeadTerritoryGate,
     MechanismStore,
     SignalContract,
     SignalThemeGate,
     StatedMechanism,
+    anti_convergence_gate,
     dead_territory_gate,
     signal_contract,
     signal_theme_gate,
@@ -150,6 +152,27 @@ def territory() -> DeadTerritoryGate:
     questions, and a test of one must not hold the other.
     """
     return dead_territory_gate()
+
+
+@pytest.fixture
+def clause_gate() -> AntiConvergenceGate:
+    """Feature 210's law, built directly — the same discipline as ``territory``.
+
+    Like the two gates above it *is* configured rather than declared
+    elsewhere, so building it reads the committed ``anti_convergence.json``
+    beside it.  It is still a fixture and not a composed application — the
+    file ships inside the member — and the component tests reach the composed
+    gate separately.
+
+    A separate fixture rather than reusing ``gate`` or ``territory``, for the
+    same reason those two are separate from each other: the three laws answer
+    three questions about a proposal (is its space admitted? is its mechanism
+    live? is its structure one the tree already holds in other parameters?),
+    and a test of one must not hold the others.  ``clause_gate`` rather than
+    ``clause`` because what this fixture builds is the gate; the clause is
+    ``clause_gate.clause``.
+    """
+    return anti_convergence_gate()
 
 
 @pytest.fixture

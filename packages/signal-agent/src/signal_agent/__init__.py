@@ -38,6 +38,25 @@ is admitted only when feature 212 admits its space *and* feature 213 clears its
 mechanism; the two refusals are distinct classes (:class:`IllegalThemeError`
 and :class:`DeadTerritoryError`), each greppable on its own.
 
+**Feature 211 and feature 210 each ride their own seat too.**  Feature 211's
+*stated mechanism* lives in :mod:`signal_agent._mechanism`; feature 210's
+*explicit anti-convergence clause* lives in
+:mod:`signal_agent._anti_convergence`, and it is the member's only law whose
+subject is a *pair* — the prompt a campaign ships against the proposal it is
+about to open.  It compiles one committed clause
+(:data:`COMMITTED_ANTI_CONVERGENCE`, PRD §C3's, quoted verbatim from the PRD),
+screens a campaign's authoring prompt against it verbatim
+(:meth:`AntiConvergenceGate.require_in`), and judges each proposal's
+*structure with every numeric literal erased* against the campaign's own
+history (:meth:`AntiConvergenceGate.admit`) — which is the one axis
+docs/nullius-tech-architecture.md §14.1 says nothing downstream catches: a bad
+proposal costs one trial charge to refuse, but *"a converged tree is not caught
+by anything"*.  It composes as a fifth component under
+:data:`ANTI_CONVERGENCE_COMPONENT_NAME`.  It is deliberately not folded into
+feature 211's law, which compares what the agent *claims*: a weak model asked
+for the 400th variant of one indicator states it in fresh prose, so the claim
+differs while the structure repeats.
+
 **What this member is, and what it deliberately is not.**  §14.1 gives the
 signal agent its seat — *"Signal agent, roots (depth 0-1) ... Signal agent,
 depth >= 2"* — and PRD §C3 describes it as *"a coding agent writing signal
@@ -91,6 +110,25 @@ from __future__ import annotations
 from app.module_loader import register
 
 from . import _dead_territory, _mechanism, _themes
+from ._anti_convergence import (
+    ANTI_CONVERGENCE_COMPONENT_NAME,
+    ANTI_CONVERGENCE_POLICY_KIND,
+    CLAUSE_ABSENT_CODE,
+    COMMITTED_ANTI_CONVERGENCE,
+    NOT_A_PROPOSAL_CODE,
+    NOVEL_CODE,
+    PARAMETER_TWEAK_CODE,
+    AntiConvergenceClause,
+    AntiConvergenceGate,
+    AntiConvergenceReason,
+    AntiConvergenceVerdict,
+    anti_convergence_gate,
+    committed_anti_convergence,
+    compile_anti_convergence,
+    load_anti_convergence,
+    proposal_skeleton,
+    skeleton_digest,
+)
 from ._authoring import (
     CONFORMS_CODE,
     AdoptionReason,
@@ -149,6 +187,8 @@ from ._themes import (
 )
 from .errors import (
     AgentSourceError,
+    AntiConvergenceClauseError,
+    AntiConvergenceError,
     DeadTerritoryError,
     DeadTerritorySetError,
     IllegalThemeError,
@@ -164,7 +204,11 @@ from .errors import (
 
 __all__ = [
     "AGENT_ROLES",
+    "ANTI_CONVERGENCE_COMPONENT_NAME",
+    "ANTI_CONVERGENCE_POLICY_KIND",
     "CANONICAL_MECHANISM_MAX_WORDS",
+    "CLAUSE_ABSENT_CODE",
+    "COMMITTED_ANTI_CONVERGENCE",
     "COMMITTED_DEAD_TERRITORY",
     "COMMITTED_LEGAL_THEMES",
     "COMPONENT_NAME",
@@ -180,14 +224,23 @@ __all__ = [
     "MECHANISM_CONFLICT_CODE",
     "MECHANISM_POLICY_REVISION",
     "NEVER_SCORED_CODE",
+    "NOT_A_PROPOSAL_CODE",
     "NOT_A_ROOT_CODE",
     "NOT_A_STATEMENT_CODE",
     "NOT_A_THEME_CODE",
+    "NOVEL_CODE",
+    "PARAMETER_TWEAK_CODE",
     "STATED_MECHANISM_CODE",
     "STATED_MECHANISM_COMPONENT_NAME",
     "THEMES_COMPONENT_NAME",
     "AdoptionReason",
     "AgentSourceError",
+    "AntiConvergenceClause",
+    "AntiConvergenceClauseError",
+    "AntiConvergenceError",
+    "AntiConvergenceGate",
+    "AntiConvergenceReason",
+    "AntiConvergenceVerdict",
     "DeadTerritory",
     "DeadTerritoryError",
     "DeadTerritoryGate",
@@ -214,22 +267,29 @@ __all__ = [
     "ThemeAdmission",
     "ThemeReason",
     "ThemeSetError",
+    "anti_convergence_gate",
+    "build_anti_convergence",
     "build_dead_territory_gate",
     "build_signal_contract",
     "build_signal_theme_gate",
     "build_stated_mechanism",
     "canonical_mechanism",
+    "committed_anti_convergence",
     "committed_dead_territory",
     "committed_legal_themes",
+    "compile_anti_convergence",
     "compile_dead_territory",
     "compile_legal_themes",
     "dead_territory_gate",
+    "load_anti_convergence",
     "load_dead_territory",
     "load_legal_themes",
     "mechanism_digest",
+    "proposal_skeleton",
     "require_contract",
     "signal_contract",
     "signal_theme_gate",
+    "skeleton_digest",
     "source_code_hash",
     "stated_mechanism",
 ]
@@ -485,3 +545,79 @@ def build_stated_mechanism() -> StatedMechanism:
     Holding the handle computes nothing and can fail at nothing.
     """
     return stated_mechanism()
+
+
+@register(ANTI_CONVERGENCE_COMPONENT_NAME)
+def build_anti_convergence() -> AntiConvergenceGate:
+    """Contribute feature 210's law to the composed application.
+
+    The fifth component this member contributes, beside feature 205's law and
+    features 212's, 213's and 211's gates, each under its own name — the
+    registry is keyed by name and a later registration of any of them would
+    *replace* that law, so a member carrying five controls carries five
+    components, each answering its own feature's question.  Its name sorts
+    between ``signal-agent`` and ``signal-agent-dead-territory``, so the five
+    stay contiguous in the name-sorted ``app.order``.  Like the four builders
+    above it takes no arguments (the factory's registration protocol) and
+    returns a law rather than a service, a session or an LLM client.
+
+    **It compiles the committed artifact at build time**, like features 212's
+    and 213's builders and unlike feature 205's: feature 210's clause ships
+    inside this package (:data:`~signal_agent.COMMITTED_ANTI_CONVERGENCE`), so
+    there is nothing to defer and no member to reach.
+
+    That compile can raise, and the raising is confined to the module-level
+    convenience (:func:`~signal_agent.anti_convergence_gate`), not here — the
+    same division feature 213's builder draws, and for the same reason: the
+    factory builds every registered component on every ``create_app()`` call, so
+    a builder that raised on a drifted artifact would take composition down for
+    every unrelated feature in the workspace.  A caller that must know the
+    clause still says what PRD §C3 requires asks
+    :func:`~signal_agent.committed_anti_convergence`, where a named
+    :class:`~signal_agent.errors.AntiConvergenceClauseError` is the right
+    answer.
+
+    **This is the one builder whose fallback is a gate that certifies nothing,
+    and the fallback is built by construction rather than through the
+    compiler.**  The compiler *refuses* a clause with blank text — a clause that
+    names nothing is the absence of PRD §C3's decision — so a drifted artifact
+    would have to be admitted here as a hand-built empty clause, which is
+    exactly why this branch cannot reach for the compiler.
+
+    Which polarity the empty clause takes is the load-bearing decision, and here
+    it is the *opposite* of feature 213's, deliberately.  Feature 213's builder
+    fails **open** on a drifted denylist: an empty denylist refuses nothing, and
+    a down guardrail is less catastrophic than refusing every proposal in a
+    space that still exists.  Feature 210's applied half fails the same way — an
+    empty comparison set refuses nothing, because a campaign with no proposals
+    yet has nowhere to have converged to.  But the *clause* half must fail
+    **closed**, and the reason is arithmetic rather than caution: the screen is
+    a substring test, the empty string is a substring of every string, so a
+    hand-built empty clause would certify **every prompt** — a silent green tick
+    on a prompt nobody checked, which is precisely §14.1's "a converged tree is
+    not caught by anything" arriving as this member's own answer.  So
+    :meth:`~signal_agent.AntiConvergenceGate.carries` refuses to certify when
+    its own clause is unreadable, and a drifted artifact means no campaign can
+    be screened — refused loudly and by name, until the file is fixed.
+
+    Holding the handle computes nothing beyond that one file read, and it can
+    fail at nothing.
+    """
+    try:
+        return AntiConvergenceGate(committed_anti_convergence())
+    except AntiConvergenceClauseError:
+        # Fail *closed* on the clause half, as a value rather than by raising:
+        # an unreadable clause certifies no prompt at all, so `carries` answers
+        # False for everything until the artifact is fixed.  Built by
+        # construction rather than through the compiler on purpose — the
+        # compiler refuses a blank clause, and that refusal is exactly why this
+        # branch cannot reach for it.  A caller that must know why asks
+        # `committed_anti_convergence()` for the named refusal.
+        return AntiConvergenceGate(
+            AntiConvergenceClause(
+                kind=ANTI_CONVERGENCE_POLICY_KIND,
+                slug="anti-convergence",
+                title="The explicit anti-convergence clause (unreadable artifact)",
+                text="",
+            )
+        )

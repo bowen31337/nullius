@@ -65,6 +65,34 @@ state for their own trees:
   (§9.4), and folding the two refusals into one class would make "how often
   did we open in dead territory?" unanswerable without reading messages.
 
+* :class:`AntiConvergenceError` — the *convergence* contract.  A proposal's
+  structure — every numeric literal erased — is one the campaign already
+  holds, so the branch would re-open a mechanism the tree already contains
+  under different parameters.  Feature 210's own sentence is the refusal —
+  *"a tree never collapses into 400 parameter tweaks of one indicator"* —
+  and, like :class:`IllegalThemeError` and :class:`DeadTerritoryError`, it
+  is a subclass of :class:`AgentSourceError` because the subject is what
+  the agent proposed and the repair is the same re-prompt.  It is a
+  distinct class because this is the one failure §14.1 says nothing else
+  catches, so an operator asking "how often did the tree re-submit a
+  structure it already held?" is asking the question the feature exists to
+  make answerable.  It is also raised, on its own path, when a proposal is
+  not parseable source at all — the ``not_a_proposal`` case, which opens
+  with its own code because the defect is at the call site rather than in
+  the tree.
+
+* :class:`AntiConvergenceClauseError` — the *configuration* contract for
+  feature 210's clause and for the prompt that must carry it: an
+  ``anti_convergence.json`` that cannot be compiled, or a campaign's
+  authoring prompt that does not carry the committed clause (the
+  ``clause_absent`` refusal).  Like :class:`ThemeSetError` and
+  :class:`DeadTerritorySetError` it is a statement about the *deployment*
+  rather than about a proposal: no agent action repairs it, and the
+  campaign driver's retry logic must not see one and re-prompt — a dropped
+  clause is fixed by editing the prompt, not by spending trial budget
+  asking a model to fix a template.  It is a sibling of those two, not a
+  subclass, because the artifact that drifted is a third file.
+
 * :class:`ThemeSetError` — the *configuration* contract for the legal
   theme set.  The committed legal theme set could not be read as a set: a
   missing marker, a slug that is not a slug, a theme listed twice, or an
@@ -163,6 +191,8 @@ from __future__ import annotations
 
 __all__ = [
     "AgentSourceError",
+    "AntiConvergenceClauseError",
+    "AntiConvergenceError",
     "DeadTerritoryError",
     "DeadTerritorySetError",
     "IllegalThemeError",
@@ -236,6 +266,86 @@ class IllegalThemeError(AgentSourceError):
     class from ``require`` with the not-a-theme sentence inside it: the
     two reasons differ to a caller branching on the returned value, and
     both are refusals to the caller on its last line.
+    """
+
+
+class AntiConvergenceError(AgentSourceError):
+    """A proposal is a parameter tweak of a structure the campaign already holds.
+
+    Raised by :meth:`~signal_agent.AntiConvergenceGate.require` — feature
+    210's bridge between the gate's returned refusal and the exception a
+    caller wants on its last line before it opens a node — and, on its own
+    path, by :func:`~signal_agent.proposal_skeleton` and
+    :func:`~signal_agent.skeleton_digest` when a proposal's structure cannot
+    be read at all.  The message is the gate's own sentence, opening with
+    the code of the verdict that produced it — ``parameter_tweak`` for the
+    §14.1 collapse, ``not_a_proposal`` when there was nothing to screen — so
+    a campaign log and a retry prompt say the same thing.
+
+    **It subclasses :class:`AgentSourceError`, and that is load-bearing.**
+    The subject either way is *what the agent proposed*: a 400th variant of
+    one indicator is a perfectly conforming signal, written in conforming
+    source, that opens no mechanism the tree lacks.  The repair is the same
+    repair feature 212's and 213's refusals ask for — re-prompt the agent,
+    with the duplicates named — and a caller that already writes
+    ``except AgentSourceError`` must not lose a convergence refusal because
+    its clause stopped matching.  A sibling class would have done exactly
+    that at every call site written before feature 210 existed, and this is
+    the one refusal in the member that fires *most often in practice*, so
+    losing it silently is the worst of the five to lose.
+
+    What the distinct class buys is the *query*.  "How often did the tree
+    re-submit a structure it already held?" is a question about
+    *convergence*, and docs/nullius-tech-architecture.md §14.1 says nothing
+    else in the pipeline answers it: a bad proposal is caught by the
+    evaluator at a cost of one trial charge, while a converged tree is not
+    caught by anything — every node scores plausibly, the budget is fully
+    consumed, and no other class in this vocabulary fires.  Folding this
+    into :class:`AgentSourceError` would make a collapse indistinguishable
+    from ordinary conformance churn, which is precisely the blind spot the
+    feature exists to close.
+    """
+
+
+class AntiConvergenceClauseError(SignalAgentError):
+    """The anti-convergence clause, or the prompt that must carry it, is unusable.
+
+    One class for both halves of feature 210's *deployment* side, because
+    they have one repair and one reader:
+
+    * the committed clause at ``anti_convergence.json`` cannot be compiled —
+      a missing or wrong marker, a ``clause`` that is not a clause, a
+      ``slug``/``title``/``text`` that is not a non-empty string, or a slug
+      outside the member's shared grammar.  Refused at compile time rather
+      than applied, the same stance :class:`ThemeSetError` and
+      :class:`DeadTerritorySetError` take for their own documents: a prompt
+      screened against a clause that cannot be read is a prompt screened
+      against nothing, and the campaign would author with PRD §C3's clause
+      missing while believing it carried it.
+    * the campaign's authoring prompt does not carry the clause — the
+      refusal :meth:`~signal_agent.AntiConvergenceGate.require_in` raises,
+      opening with the ``clause_absent`` code.  This is the half that makes
+      *explicit* in "an explicit anti-convergence clause" a checked fact
+      about a shipped prompt rather than a sentence somebody meant to write.
+
+    **It is deliberately not an :class:`AgentSourceError`.**  Neither half
+    is a statement about a proposal: no agent action repairs a drifted
+    document, and a prompt that dropped the clause is repaired by editing
+    the prompt rather than by re-prompting the model — which is precisely
+    the distinction the campaign driver's retry logic turns on.  A driver
+    that saw this class and re-prompted would spend trial budget asking a
+    model to fix a template.
+
+    **It is deliberately a sibling of :class:`ThemeSetError` and
+    :class:`DeadTerritorySetError` rather than a subclass**, exactly as
+    those two are siblings of each other: the three are three different
+    committed artifacts (§9.3's legal set, §9.4's denylist, PRD §C3's
+    clause) and an operator reading the refusal must know which file
+    drifted.  The prompt half lives here rather than in a fourth class
+    because it is a fact about *this* document — the prompt is refused for
+    not carrying this clause, and a class that covered only the compile
+    failures would leave the refusals an operator greps for most (prompts
+    shipped without the clause) outside the class named after the clause.
     """
 
 
