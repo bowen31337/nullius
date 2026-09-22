@@ -1,0 +1,224 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 234 (System rejects a campaign plan spanning fewer than three distinct theme roots, failing at planning time so the campaign is never created)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 234 in the existing discovery plugin
+    (packages/discovery, import name discovery): the planning-time check that a
+    campaign plan spans at least three distinct theme roots, failing at planning
+    time so the campaign is never created. app_spec.xml already places this
+    feature on the planning path (`depends_on=233`) and docs §11.1 states the law
+    verbatim — "A single-theme campaign shows the policy a constant, it learns a
+    family-specific rule, and it fails on transfer" — so the orchestrator must
+    refuse a plan that opens fewer than three distinct roots *before* feature
+    232's campaign record is created, which is the whole of "the campaign is
+    never created".
+
+    The seam is a new function on the planning path, reached the way feature
+    233's `plan_grid` is — directly from `discovery`, with the plan the policy
+    authored (feature 229's `GridPlan`, which already carries `theme_roots`) and
+    the deployment's legal theme set (feature 241's `ThemeSet`). It refuses,
+    before any node is planted and before any campaign row is written, a plan
+    whose distinct theme roots number fewer than three. The refusal is a
+    planning-time refusal — `CampaignPlanningError`, the member's existing
+    "the request cannot be planned" class — not an ordering refusal and not a
+    new class, because the repair is to re-send a wider plan, exactly as with a
+    malformed width or a mistyped regime.
+
+    The check counts **distinct** roots, not assignments: a plan that names the
+    same root twice (or in two casings of it) still spans one theme, and one
+    theme is refused. Distinctness is taken over the canonical form — the same
+    casefold-and-strip canonicalisation feature 241 applies — so `"Momentum"`
+    and `"momentum"` collapse to one and a plan of `"momentum", "MOMENTUM"` is
+    still a single-theme plan and is refused. This is feature 241's `assign_all`
+    deliberately *not* doing (it keeps duplicates, because distinctness is
+    feature 234's law, checked at planning time): the two features split the one
+    fact, each owning its half.
+
+    It adds no new `@register` component (the member's surface stays feature
+    232's single store — the seam closes over no deployment state, taking the
+    plan and the legal set as arguments the caller already holds), is
+    import-cheap (stdlib only), and does not import another workspace member. No
+    central registry, router, app factory, middleware, settings, or migration is
+    edited; the member joins by workspace-scan convention. Feature 241's
+    membership check and feature 234's diversity check stay in their own modules
+    and their own error shapes: this feature judges the *count of distinct
+    roots the plan spans*, not whether any one root is in the configured set.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/* members, import names are
+      underscored slugs) / pytest (ruff + mypy conventions). The module loader
+      (src/app/module_loader.py) discovers members from the root pyproject.toml
+      `[tool.uv.workspace] members = ["packages/*"]`, imports each package so its
+      module-level `@register` fires, and composes what each `@register` builder
+      contributes under a component name. `app` (src/app) is a namespace package
+      with no `__init__.py`; the seats in src/app/modules/&lt;member&gt;/ are
+      reached by namespace import (e.g. app.modules.discovery). A member never
+      imports another workspace member — it reaches shared shapes through `app.*`,
+      never through a sibling package's import name. Feature 232 (the campaign
+      record) is the writer the member's stores defer to and the point before
+      which feature 234 must fire. Feature 229 (policy-runtime) owns the planning
+      law and the `GridPlan` value (`branch_count`, `refine_count`, `theme_roots`)
+      a policy's `plan_grid` returns; feature 233 owns the planning boundary and
+      `plan_grid`'s four-step check; feature 235 derives the grid's two counts;
+      feature 241 owns the legal theme set (`ThemeSet`) and the per-theme
+      membership refusal (`IllegalThemeError`). Feature 234 is the one remaining
+      planning-path refusal the member's own docstrings name as "not this
+      module's" — the diversity of the plan as a whole.</stack>
+    <test_baseline>The repository-level suite under tests/ is collected by
+      pytest with testpaths=tests and is the graded acceptance gate; each
+      workspace member's own suite lives under packages/&lt;member&gt;/tests/ and
+      is collected under its own conftest (same-basename files collide under one
+      pytest run), and is NOT graded by the bare `uv run pytest` — a member suite
+      must be run explicitly. Measure the real numbers by running the suite
+      before relying on them. The repo lint is red on main (mypy absent, 163
+      pre-existing ruff errors), so lint only the changed files and compare to a
+      sibling. A bare `uv run pytest tests` collection needs the workspace
+      synced (`uv sync --all-packages`); without polars/pyarrow the contract
+      modules fail to import, which is an environment gap, not a regression.
+      (Run the discovery member suite and the repository-level suite before
+      relying on any count.)</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, docstrings that cite
+      app_spec.xml feature numbers and docs/nullius-tech-architecture.md sections,
+      stdlib-only computation, `@register` only in the package `__init__` (never a
+      submodule — a submodule's registration fires only on the first
+      `create_app()` of a process), degrade-don't-break composition. A member
+      never imports another workspace member. The discovery member's planning
+      path *raises* named refusals (`assign_theme`, `admit_completed_campaigns`,
+      `finish_campaign`), unlike the policy-runtime family's verdict objects —
+      this feature follows its own member. One `DiscoveryError` base so a
+      caller's single `except` catches everything, subclasses split by *the
+      repair the caller must make* rather than by which line raised, and every
+      message opens with a greppable lowercase code token. Tests assert on
+      observed behaviour with long narrative docstrings explaining the "why", and
+      a test that would iterate the module's own constant to check it agrees with
+      itself instead transcribes the vocabulary independently from the spec.
+    </conventions>
+    <constraints_vocabulary>
+      The diversity check is a law, not a configured threshold: the "three" is
+      PRD §11.1's floor, not a deployment's tuning knob, and must not become one —
+      a JSON file or environment variable would make "how many themes must a plan
+      span?" a configuration edit, when §11.1 makes it a property of the plan.
+    </constraints_vocabulary>
+  </existing_context>
+  <!-- Layout mirrors the clean main app_spec.xml: uv-workspace is what makes
+       plugin="discovery" resolve to the real packages/discovery/ and
+       src/app/modules/discovery/ trees rather than the single-package
+       src/plugins/discovery/ default. Parsed before features. -->
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Discovery Orchestrator &amp; Campaigns">
+      <feature index="234" shape="plugin" plugin="discovery" covers="cq-16" depends_on="233">
+        <description>System rejects a campaign plan spanning fewer than three distinct theme roots, failing at planning time so the campaign is never created. docs §11.1 states the law — "A single-theme campaign shows the policy a constant, it learns a family-specific rule, and it fails on transfer" — and PRD §9.3's six legal roots are the space a plan draws from. A plan is what a campaign is opened with (§5: one campaign = one discovery tree), so a plan that opens fewer than three distinct roots is a campaign that cannot transfer, and the refusal must fire at planning time — before feature 232's campaign record is created — which is the whole of "the campaign is never created". The seam is a planning-time check reached directly from `discovery`, taking the plan the policy authored (feature 229's `GridPlan`, which carries `theme_roots`) and the deployment's legal theme set (feature 241's `ThemeSet`), and refusing a plan whose *distinct* theme roots number fewer than three. Distinctness is over the canonical form (feature 241's casefold-and-strip), so `"Momentum"` and `"momentum"` collapse to one and a plan naming only those is still refused. The refusal is `CampaignPlanningError` — the member's existing malformed-ask class — not a new class and not feature 241's `IllegalThemeError`, because the repair is to re-send a wider plan, the same repair as a malformed width. It adds no new `@register` component (the seam closes over no deployment state), no store and no I/O, and is import-cheap (stdlib only).</description>
+      </feature>
+      <feature index="234a" shape="plugin" plugin="discovery" depends_on="234">
+        <description>System counts **distinct** roots, not assignments, and takes them in canonical form. A plan that names one root twice — or in two casings of it, or with surrounding whitespace — still spans one theme, and one theme is refused: the floor is on the diversity the plan *opens*, not on the length of the list the policy handed over. The count is over feature 241's canonicalisation (strip, casefold, then the theme-identifier grammar), so the collapse happens on the same spelling the tree will later plant and join on — `"momentum"`, `"Momentum"` and `"  momentum  "` are one root, and a plan of `["momentum", "MOMENTUM"]` is a single-theme plan and is refused. This is the deliberate counterpart of feature 241's `assign_all`, which keeps duplicates on purpose: 241 owns the membership of each assignment, 234 owns the diversity of the plan, and the split is the feature — a batch helper that deduplicated would be pre-empting 234's decision, while 234 counting raw assignments would let a policy pass three spellings of one theme. The check is a set over the canonical forms, and its size is compared against the floor of three.</description>
+      </feature>
+      <feature index="234b" shape="plugin" plugin="discovery" depends_on="234">
+        <description>System refuses the plan as a *planning* failure and names the roots it got. The refusal is `CampaignPlanningError`, the member's existing "the request cannot be planned" class, raised before feature 232's campaign record and before any node is planted — a fact about the request, repaired by re-sending a wider plan, the same repair as a malformed `branch_count`. It is deliberately **not** feature 241's `IllegalThemeError` and not a new error class: the offending fact is not that a root is outside the configured set (that is 241's membership question, refused per-theme) but that the plan as a whole is too narrow, and minting a third planning-path class would be a second vocabulary for one sentence, the drift `tests/test_cross_member.py` exists to prevent. Every message opens with a greppable code token (the member's convention — `illegal-theme`, `void-campaign`, `heterogeneous-world`) and names the distinct roots the plan actually spans and the floor it fell short of, so an operator reads *"plan spans 2 distinct roots (momentum, order-flow-imbalance); a campaign must open at least 3"* rather than a bare number. A plan that spans three or more distinct roots passes untouched — the check judges the count, never the themes' legality, which is 241's.</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Lives in the existing discovery member (packages/discovery) as a new
+    planning-time function on the planning path, reached directly from the
+    package the way feature 233's `plan_grid` and feature 235's
+    `derive_grid_plan` are — taking feature 229's `GridPlan` (which carries
+    `theme_roots`) and feature 241's `ThemeSet` as arguments the caller already
+    holds. It refuses a plan whose distinct theme roots number fewer than three,
+    as `CampaignPlanningError`, before feature 232's campaign record is created.
+    Reuses the member's existing `CampaignPlanningError` and `DiscoveryError`
+    unchanged; adds no new error class. Adds no new `@register` component: the
+    existing discovery components are untouched, because the seam closes over no
+    deployment state. The app-namespace seat (src/app/modules/discovery) is
+    extended in its docstring only, to note that feature 234's diversity check
+    is reached directly from the member on the planning path. The member does not
+    import another workspace member: it takes `GridPlan` and `ThemeSet` as
+    duck-typed arguments (a plan is a value with a `theme_roots` sequence; the
+    legal set is a `ThemeSet`), and the member's `tests/test_cross_member.py`
+    keeps the restatement honest. Feature 241's membership check and feature
+    234's diversity check stay in their own modules and their own error shapes.
+  </integration_points>
+  <constraints>
+    The check must fire at **planning time** — before feature 232's campaign
+    record is created and before any node is planted — so a refused plan means
+    the campaign is never created. It is a refusal, not an edit: the plan the
+    policy authored is never widened or rewritten by the check.
+    The count is over **distinct** roots in **canonical** form (feature 241's
+    strip-and-casefold), so repeated or differently-cased spellings of one root
+    collapse to one and a plan naming only those is refused. A plan naming three
+    or more distinct roots passes.
+    The refusal is `CampaignPlanningError`, the member's existing malformed-ask
+    class — not feature 241's `IllegalThemeError` and not a new class — because
+    the repair is to re-send a wider plan, and the offending fact is the plan's
+    diversity, not any one root's membership. Every message opens with a
+    greppable code token and names the distinct roots spanned and the floor.
+    The check judges the *count of distinct roots the plan spans*, never the
+    themes' legality: a plan may span three legal roots (which passes 234) and
+    still be refused per-theme by 241, and the two refusals stay independent.
+    No new `@register` component is added; `@register` must live only in the
+    package `__init__`, never a submodule.
+    The member must not import another workspace member (e.g. policy-runtime);
+    it takes `GridPlan` and `ThemeSet` as duck-typed arguments and owns the check
+    in its own vocabulary.
+    No central registry, router, app factory, middleware, settings, or migration
+    is edited, and no migration is added; the member joins by workspace-scan
+    convention.
+    The seam must read no store and open no file — planning runs against values
+    the caller already holds — and must stay import-cheap (stdlib only, nothing
+    at module scope the factory's scan pays for).
+    The "three" is PRD §11.1's floor, a law, not a configured threshold: it must
+    not become an environment variable or a JSON file.
+    All existing tests across the repository-level `tests/` tree and every sibling
+    member suite must stay green — in particular feature 232's, 233's, 235's and
+    241's existing tests, which must not need editing for this feature to land.
+  </constraints>
+  <implementation_steps>
+    <phase name="Discovery Orchestrator &amp; Campaigns">
+      Add a planning-time diversity check to the discovery member that refuses a
+      campaign plan spanning fewer than three distinct theme roots. Place it on
+      the planning path (a new function reached directly from `discovery`, beside
+      `plan_grid`), taking feature 229's `GridPlan` (duck-typed: a value with a
+      `theme_roots` sequence) and feature 241's `ThemeSet` as arguments, counting
+      distinct roots in canonical form, and refusing with `CampaignPlanningError`
+      (naming the roots spanned and the floor) before feature 232's campaign
+      record is created. Reuse `CampaignPlanningError` and `DiscoveryError`
+      unchanged; add no new error class and no new `@register` component. Export
+      the new function from packages/discovery/src/discovery/__init__.py (no new
+      `@register`) and extend the module narrative. Extend the app-namespace seat
+      src/app/modules/discovery/__init__.py docstring only. Write the member's
+      own suite packages/discovery/tests/test_planning_diversity.py (or a
+      distinctly-named file that does not collide with a sibling member's
+      basename), pinned against the claims: a plan of fewer than three distinct
+      roots is refused at planning time; distinctness is over canonical form (two
+      casings of one root collapse and are refused); a plan of three or more
+      distinct roots passes; the refusal is `CampaignPlanningError` and names the
+      roots and the floor; the check is independent of feature 241's membership
+      (three legal roots pass 234; the check never judges legality). Confirm the
+      member's existing tests still pass unedited, the repository-level `tests/`
+      tree is unmoved, and lint only the changed files against a sibling.
+    </phase>
+  </implementation_steps>
+  <success_criteria>
+    A plan whose distinct theme roots number fewer than three — one root, or two
+    roots, or three spellings of one root — is refused with `CampaignPlanningError`
+    at planning time, before feature 232's campaign record is created, so the
+    campaign is never created.
+    Distinctness is over canonical form: a plan of `["momentum", "MOMENTUM"]` or
+    `["momentum", "  momentum  "]` is refused as a single-theme plan, because the
+    two spellings collapse to one root under feature 241's strip-and-casefold.
+    A plan spanning three or more distinct roots passes the check untouched.
+    The refusal is `CampaignPlanningError` (the member's existing malformed-ask
+    class), not feature 241's `IllegalThemeError` and not a new class; every
+    message opens with a greppable code token and names the distinct roots the
+    plan spans and the floor of three.
+    The check judges the count of distinct roots the plan spans, never the
+    themes' legality: three legal roots pass 234, and a plan that passes 234 may
+    still be refused per-theme by 241 — the two refusals are independent.
+    The check reads no store and opens no file, needs no migration and no new
+    component, and the discovery member joins by workspace-scan convention with
+    no edit to a central registry, router, app factory, middleware, settings, or
+    migration, and does not import another workspace member.
+    Feature 232's, 233's, 235's and 241's existing tests and the discovery
+    member's existing tests pass unedited, and the member's own suite is green.
+  </success_criteria>
+</project_specification>
