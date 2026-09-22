@@ -75,6 +75,21 @@ the prefix view and feature 229's :func:`policy_runtime.plan_grid` are.  This
 module does not wrap it, because there is nothing here to compose: the guard
 belongs to the episode the replay runs, not to the composed application.
 
+Feature 224 lives in the same member and is likewise not reached through this
+seat: the policy answer surface (:func:`policy_runtime.policy_surface`) is a
+pure construction over an episode — it reads the answers the deployment
+configured out of it and copies them into a fresh object that refuses every
+other name, so ``question.best_so_far`` and ``question.budget_spent`` are
+unreachable by an attribute walk (docs/nullius-tech-architecture.md §10.2) —
+with no store, no deployment state and no component, so it is reached directly
+from the member — ``from policy_runtime import policy_surface`` — exactly the
+way the admission gate, the beta scalar, the prefix view and feature 229's
+:func:`policy_runtime.plan_grid` are.  This module does not wrap it, because
+there is nothing here to compose: the surface belongs to the episode a replay
+hands a policy, not to the composed application, and a second spelling of it
+would be a second thing to keep in sync — and, worse, a second place the
+answer-set law would have to hold.
+
 That last point is worth stating rather than leaving to be inferred, because
 feature 225 *does* read a composed artifact — the configured allowlist — and a
 seat here would be the natural place to hand one over.  The read is the

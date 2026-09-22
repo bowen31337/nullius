@@ -88,6 +88,30 @@ made one *return value* prefix-only; feature 223 makes the object the
 policy holds prefix-only, and lives in :mod:`.prefix` beside the question
 it projects.
 
+**The object an episode *hands* a policy answers a configured set and nothing
+else (feature 224).**  The prefix view closes the object; the surface closes
+the world around it.  docs §10.2's next sentence — *"The policy runtime
+additionally blocks: ``question.best_so_far``, ``question.budget_spent``,
+filesystem access, and any import outside an allowlist"* — names two facts
+that are not nodes and not reaches: the best score the replay has seen so far,
+and the statistical budget already debited.  Both are facts about **the
+episode**, so a deployment that hands authored policy code its own episode
+object has handed it both behind one attribute walk.  :func:`policy_surface`
+lives in :mod:`.surface` and wraps an episode in a :class:`PolicySurface` that
+answers the names the deployment configured and refuses **every other name** —
+not only the two the document names, because the feature's sentence rejects an
+*attribute walk*, and a walk is stopped by enumerating what is admitted rather
+than what is forbidden.  The episode is read out **once, at construction**, and
+never stored: an answer that arrived as a bound method would carry the episode
+inside it (``__self__``), so the answers are called and copied, and an
+attribute walk from the surface reaches the values a policy was configured to
+receive and no object behind them.  It is one seam weaker than a guard in the
+same way the view is: there is no verb for asking for a blocked answer at all,
+and the refusal it is met with — :class:`PolicyAnswerSurfaceError` — is an
+:class:`AttributeError` as well as a :class:`PolicyRuntimeError`, so
+``hasattr``, ``getattr`` with a default and a ``dir()``-driven walk all behave
+over the surface exactly as they do over any other object.
+
 **The episode's beta is one number, read once and fixed.**  Feature 226
 (docs/nullius-tech-architecture.md §609: *"``beta`` is read once in ``__init__``,
 fixed for the episode"*) lives in :mod:`.beta` as :class:`EpisodeBeta` and
@@ -166,6 +190,7 @@ from .errors import (
     BetaFixedError,
     FamilyThresholdError,
     PolicyAddressError,
+    PolicyAnswerSurfaceError,
     PolicyAdmissionRefusal,
     PolicyFilesystemError,
     PolicyImportError,
@@ -200,6 +225,12 @@ from .prefix import (
     PrefixView,
     prefix_view,
 )
+from .surface import (
+    DEFAULT_ANSWERS,
+    FORBIDDEN_ANSWERS,
+    PolicySurface,
+    policy_surface,
+)
 from .schedule import (
     EXPLORE_EXPLOIT,
     OVERFIT_AVERSION,
@@ -220,6 +251,8 @@ __all__ = [
     "FamilyConditional",
     "FamilySchedule",
     "FamilyThresholdError",
+    "DEFAULT_ANSWERS",
+    "FORBIDDEN_ANSWERS",
     "GUARD_ACTIVE",
     "GridPlan",
     "GridPlanningContext",
@@ -234,6 +267,7 @@ __all__ = [
     "PolicyAdmissionDecision",
     "PolicyAdmissionRefusal",
     "PolicyAddressError",
+    "PolicyAnswerSurfaceError",
     "PolicyCeiling",
     "PolicyFilesystemError",
     "PolicyGuard",
@@ -241,6 +275,7 @@ __all__ = [
     "PolicyObservation",
     "PolicyQuestion",
     "PolicyRuntimeError",
+    "PolicySurface",
     "PolicyTreeError",
     "PrefixView",
     "SCHEDULE_KEYS",
@@ -249,6 +284,7 @@ __all__ = [
     "guard_policy",
     "plan_grid",
     "policy_question",
+    "policy_surface",
     "prefix_view",
     "read_beta",
     "schedule",

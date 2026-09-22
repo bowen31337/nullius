@@ -1,6 +1,6 @@
 """The policy-runtime error vocabulary — one base class, split by contract.
 
-The base class for every failure of the policy-runtime path, and the seven
+The base class for every failure of the policy-runtime path, and the eight
 subclasses that path raises.  One base class so a caller — the replay engine,
 the dreaming loop, an operator script, a later feature in this category — can
 catch every failure of the read-side question path with a single ``except``,
@@ -60,6 +60,25 @@ a computed name — which is exactly what feature 225's runtime enforcement
 catches and no static screen can.  Both are :class:`PolicyRuntimeError`, so a
 caller catching the read-side path's one base class catches a guarded policy's
 refusal too.
+
+The eighth — :class:`PolicyAnswerSurfaceError` (feature 224) — is the *answer
+surface's*: an attribute of an episode's answer surface that is one of the two
+docs §10.2 names as forbidden (``best_so_far``, ``budget_spent``), or that is
+not a legal-action query at all.  It is the one refusal in this module that is
+**also** an :class:`AttributeError`, and the doubling is the feature rather
+than an accident of the hierarchy: docs §10.2's third escape hatch is that a
+policy *"cannot reach them by introspection, attribute walking…"*, and the
+attribute protocol's own error is what ``getattr``, ``hasattr`` and a
+``dir()``-driven walk all terminate in.  A caller reaches this refusal by the
+ordinary act of reading an attribute, so it has to be catchable the way an
+attribute read is caught — while remaining a :class:`PolicyRuntimeError`, so
+the one base class still catches it and a caller who never heard of the
+attribute protocol is not left holding an unnamed failure.  It is kept apart
+from the runtime guard's pair (feature 225) because the surface it defends is
+a different one: 225 refuses what a running policy *does to its environment*
+(a file, an import), while this refuses what the policy is *handed* — the
+answers an episode may give — and the two are repaired in different places, by
+different owners.
 
 These live in their own module rather than in the package ``__init__`` for two
 reasons.  One, it is the house shape — every sibling member (``sandbox``,
@@ -235,4 +254,43 @@ class PolicyImportError(PolicyRuntimeError):
     authored source before it runs, while this one refuses the running
     episode's own import.  The refusal names the module and the ceiling, so
     the author reads what was refused and against what.
+    """
+
+
+class PolicyAnswerSurfaceError(PolicyRuntimeError, AttributeError):
+    """An episode's answer surface was asked for an attribute it does not answer.
+
+    Feature 224's contract: docs/nullius-tech-architecture.md §10.2 — *"The
+    policy runtime additionally blocks: ``question.best_so_far``,
+    ``question.budget_spent``, filesystem access, and any import outside an
+    allowlist."* The first two of those four are this class's, and they are the
+    two the *surface* can refuse rather than the two a running policy has to be
+    caught doing: an attribute read is a request to an object the runtime
+    already controls, so the refusal is available one seam earlier than 225's
+    pair, before anything has been reached for at all.
+
+    **It is an :class:`AttributeError` as well as a
+    :class:`PolicyRuntimeError`**, and this is the only class in this module
+    that is two things.  The feature's own sentence names the mechanism —
+    *"rejects an attribute walk that attempts to reach them"* — and §10.2 names
+    the same act from the prefix side: a policy *"cannot reach them by
+    introspection, attribute walking, or a stray ``__dict__`` access."* An
+    attribute walk is spelled ``getattr``, ``hasattr`` or a ``dir()``-driven
+    loop, and every one of those terminates on :class:`AttributeError`; a
+    refusal that were only a :class:`PolicyRuntimeError` would raise *through*
+    a walk that had already decided the name was absent, so ``hasattr`` would
+    answer a question about the law rather than about the surface and a
+    defensive ``try/except AttributeError`` in the policy would not see it.
+    Doubling the base keeps both readings true at once: a policy's own
+    attribute-protocol handling catches it exactly as ``hasattr`` would have,
+    and a caller that catches the read-side path's one base class catches it
+    too — the single-``except`` discipline the rest of this module keeps.
+
+    It is kept apart from the runtime guard's pair because the surface it
+    defends is not the same one.  :class:`PolicyFilesystemError` and
+    :class:`PolicyImportError` refuse what a *running* policy does to its
+    environment; this refuses what the policy is *handed* — the answers an
+    episode is willing to give — and the repair belongs to a different owner
+    (the runtime's surface, not the sandbox's ceiling).  Every refusal names
+    the attribute that was asked for.
     """
