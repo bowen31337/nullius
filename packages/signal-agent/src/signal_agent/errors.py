@@ -89,6 +89,55 @@ state for their own trees:
   different artifacts and an operator reading the refusal must know which
   committed file drifted.
 
+* :class:`MechanismStatementError` — the *statement* contract for feature
+  211's ``stated_mechanism``.  A proposal's economic rationale could not be
+  established as the thing it claims to be: a value that is not text at all,
+  text with nothing in it, or — on the write path — a statement that
+  disagrees with the one the node already records.  It is a sibling of
+  :class:`AgentSourceError`, not a subclass: the subject is the *rationale*
+  the agent gave rather than the source it wrote, and an operator asking
+  "how often did the agent state no mechanism?" is asking a question the
+  source contract's own failures do not answer.  Neither is it a
+  :class:`ThemeSetError` shape: a blank rationale is a proposal-level fact
+  that a re-prompt repairs, unlike a drifted committed document.
+
+  * :class:`MechanismConflictError` — the *same* contract, distinguished by
+  repair.  The row already states a different mechanism, so the caller must
+  stop trying to re-state a node's history, which is not something a re-prompt
+  of the agent changes.  It is a subclass of
+  :class:`MechanismStatementError` for the same reason
+  :class:`IllegalThemeError` is one of :class:`AgentSourceError`: the subject
+  is still the statement being persisted, and a caller that catches the
+  statement contract must not lose this refusal through a clause that no
+  longer matches.
+
+* :class:`MechanismNotScoredError` — the *barrier* clause of feature 211's
+  own sentence, *"never as a scored input"*.  Raised by
+  :meth:`~signal_agent.StatedMechanism.require_scored_input`, and only by
+  it: a caller asked to admit the mechanism into a scoring path is refused
+  by name, because the mechanism is the agent's prose rationale and every
+  metric this system reports is a measurement of the *source* — letting
+  prose in would make ``agent_model_id`` stratification, the M3 paired
+  comparison and the deflation term functions of what an LLM wrote.  It is
+  deliberately **not** under :class:`AgentSourceError` and deliberately not
+  under :class:`MechanismStatementError`: no agent action repairs it and no
+  re-prompt changes it, because the defect is in the *caller's wiring*
+  rather than in the agent's answer.  The separation is the one
+  :class:`ThemeSetError` draws between a broken document and a refused
+  proposal, restated for a refusal that is about this system's own code.
+
+* :class:`MechanismNodeNotRecordedError`,
+  :class:`MechanismColumnError` and
+  :class:`MechanismStoreUnavailableError` — the three *deployment* facts the
+  mechanism's write path can meet.  There is no node to carry the column, the
+  tree has not reached the revision that adds it, or the composed component
+  was built with no ``DATABASE_URL`` at all.  Each is a statement about a
+  database rather than about a proposal, so none is an
+  :class:`AgentSourceError`, and the three are siblings of one another rather
+  than subclasses because the three repairs are three different actions: write
+  the node, run the migration chain, or point the deployment at a store.  An
+  operator who could not tell them apart would not know which to do.
+
 The split matters to this member's callers, and they are different
 callers.  A *campaign driver* retrying a proposal needs
 :class:`AgentSourceError` to be raised rather than a rejection value,
@@ -117,6 +166,12 @@ __all__ = [
     "DeadTerritoryError",
     "DeadTerritorySetError",
     "IllegalThemeError",
+    "MechanismColumnError",
+    "MechanismConflictError",
+    "MechanismNodeNotRecordedError",
+    "MechanismNotScoredError",
+    "MechanismStatementError",
+    "MechanismStoreUnavailableError",
     "SignalAgentError",
     "ThemeSetError",
 ]
@@ -271,4 +326,148 @@ class DeadTerritorySetError(SignalAgentError):
     and which to widen.  Folding the two set errors together would make
     "the denylist is broken" indistinguishable from "the legal set is
     broken", and the two are fixed in two different documents.
+    """
+
+
+class MechanismStatementError(SignalAgentError):
+    """A proposal's stated mechanism is not a statement this member can persist.
+
+    Raised when the agent's economic rationale cannot be established as the
+    thing it claims to be: a value that is not text at all, text whose
+    canonical form is empty (whitespace, or nothing), or — on the write path —
+    a statement that disagrees with the one the node already records.  §9.1
+    annotates the column ``-- dedup + human review ONLY, never scored``, and
+    the first two refusals are about the *dedup* half: a rationale that
+    normalizes to nothing names no mechanism for a reviewer to compare, and
+    two of them would compare equal without stating anything.
+
+    **It is a sibling of :class:`AgentSourceError`, and that is
+    load-bearing.**  The two have different subjects — feature 205's is the
+    *source* the agent wrote, this one is the *rationale* it gave for writing
+    it — and different greps: an operator asking "how many proposals carried
+    no economic rationale?" is asking a question the source contract's own
+    failures do not answer.  A subclass would have made that query
+    unanswerable without reading messages, and an agent that emits a flawless
+    signal while stating no mechanism is a real and distinguishable case.
+
+    **It is not a :class:`ThemeSetError` shape either.**  A blank rationale is
+    a proposal-level fact that a re-prompt repairs; a drifted committed
+    document is a deployment fact that no agent action touches.  The two are
+    separated here for the same reason the member separates them everywhere
+    else: the campaign driver's retry logic must re-prompt for one and must
+    not for the other.
+    """
+
+
+class MechanismNotScoredError(SignalAgentError):
+    """A caller tried to admit the stated mechanism into a scoring path.
+
+    Raised by :meth:`~signal_agent.StatedMechanism.require_scored_input` — the
+    bridge between the barrier's returned verdict and the exception a caller
+    wants on its last line before it feeds the value into a scorer.  Feature
+    211's own sentence is the refusal — a stated mechanism string is *"used for
+    deduplication and human review, never as a scored input"* — and this is the
+    exception that clause arrives as.
+
+    **What it prevents is a leakage channel, not a wrong number.**  The stated
+    mechanism is free text an authoring model wrote.  Every figure this system
+    reports is a measurement of the *source* the same model wrote, and the
+    workspace's provenance story rests on the two being separable: a score
+    conditioned on the rationale would make ``agent_model_id`` stratification
+    (PRD §5a), the M3 paired comparison (architecture §14.1) and the
+    ``β₃`` deflation term all functions of what an LLM said about itself.  The
+    failure would not look like a bug; it would look like a feature.
+
+    **It is deliberately not an :class:`AgentSourceError` and deliberately not
+    a :class:`MechanismStatementError`.**  No agent action repairs it and no
+    re-prompt changes it: the defect is in this *system's* wiring rather than
+    in an agent's answer, so a caller catching the proposal-level vocabulary
+    must not catch this one by accident.  That is the same distinction
+    :class:`ThemeSetError` draws between a broken document and a refused
+    proposal, applied to a refusal that is about the caller's own code.
+    """
+
+
+class MechanismNodeNotRecordedError(SignalAgentError):
+    """There is no node for the stated mechanism to be a column on.
+
+    Raised by the mechanism store's write and read paths when the tree does not
+    hold the id it was handed.  A stated mechanism is a column on a node —
+    ``stated_mechanism TEXT`` on feature 97's table, added by feature 98's
+    revision ``0117_identity_trio`` — so persisting one for an id the tree does
+    not hold would mean writing a **row**, and the ``node`` table is the
+    discovery tree's rather than this member's.
+
+    It is a statement about the *caller's* tree rather than about a proposal,
+    so it is not an :class:`AgentSourceError`: no re-prompt repairs it, and the
+    repair is to record the node first.  It is a sibling of the two classes
+    below rather than a subclass of either, because the three name three
+    different repairs — write the node, run the migration chain, point the
+    deployment at a store — and an operator who could not tell them apart would
+    not know which to do.
+    """
+
+
+class MechanismColumnError(SignalAgentError):
+    """The tree store has not reached the revision that adds the column.
+
+    Raised when the database is reachable and holds no ``node`` table, or holds
+    one without ``stated_mechanism``.  Both depths are one fact — this tree has
+    not reached revision ``0117_identity_trio`` (feature 98) — seen at two
+    levels, and the refusal names the revision because that is the whole
+    actionable content: a mechanism has a documented prerequisite and this is
+    the report that says so.
+
+    The store probes the table rather than letting SQLite raise, which is the
+    move :meth:`providers.AgentModelPins._require_columns` makes for its own
+    trio and for the same reason: the driver answers *"no such column"* only
+    once a statement mentions it, which reports the gap at a point where the
+    message is about a statement rather than about the deployment.
+    """
+
+
+class MechanismConflictError(MechanismStatementError):
+    """The node already states a *different* mechanism.
+
+    Raised by the mechanism store's write path when a caller offers a statement
+    that disagrees with the one the row holds.  A node's stated mechanism is
+    history, on the same grounds its authoring model is
+    (:class:`providers.ModelPinConflictError`): the rationale is what a human
+    reviewer read and what the dedup pass compared against when the node's
+    scores were recorded, so replacing it silently would leave every stored
+    comparison referring to a claim the row no longer makes.
+
+    **It is a subclass of :class:`MechanismStatementError`, and that is the
+    opposite of the choice the four deployment classes make.**  The subject here
+    *is* the proposal's statement — the caller is trying to record one, and
+    recording a statement is what the write path's statement contract governs —
+    so a caller that already catches *"this mechanism cannot be persisted as
+    stated"* must not lose the conflict through a clause that no longer matches.
+    The difference is *repair*, which is why it is also its own class rather
+    than a bare ``MechanismStatementError``: a value that is not text or is
+    blank is repaired by re-prompting the agent, and a conflict is repaired by
+    the caller accepting that the node is spoken for.  Two repairs, one
+    contract, one class each, and
+    :data:`~signal_agent._mechanism.MECHANISM_CONFLICT_CODE` is the token that
+    tells them apart in a log — the same arrangement
+    :class:`IllegalThemeError` has under :class:`AgentSourceError`.
+    """
+
+
+class MechanismStoreUnavailableError(SignalAgentError):
+    """The composed component carries no store, so nothing can be persisted.
+
+    Raised when the mechanism law was composed with ``store=None`` — the state
+    a deployment reaches by naming no ``DATABASE_URL`` — and a caller then asks
+    it to persist, read back, or report duplicates.  The barrier clause is
+    still answerable in that state, because it is a fact about the *caller*
+    rather than about a row, and that is why ``None`` is a discoverable
+    composition state rather than a builder that raises.
+
+    **It is not an empty store.**  An empty store answers *no node states a
+    mechanism here* about every id; this class says there is no database to
+    have recorded one in.  The distinction is the one
+    :func:`providers.build_agent_model_pins` draws for its own ``None``, and it
+    matters here for the same reason: a mechanism persisted into nothing is a
+    rationale no reviewer will ever read.
     """

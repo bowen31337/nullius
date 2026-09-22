@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import uuid
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,7 @@ MEMBER_SRC = Path(member.__file__).resolve().parent.parent
 seat = importlib.import_module("app.modules.signal-agent")
 theme_seat = importlib.import_module("app.modules.signal-agent.themes")
 dead_seat = importlib.import_module("app.modules.signal-agent.dead_territory")
+mechanism_seat = importlib.import_module("app.modules.signal-agent.mechanism")
 
 _CONFORMING = (
     "def signal(ctx, seed):\n"
@@ -80,6 +82,15 @@ _ILLEGAL_THEME = "sub-30-minute-liquidity-taking"
 #: a claim about the deployment's denylist.
 _DEAD_MECHANISM = "sub-30-minute-liquidity-taking"
 _LIVE_MECHANISM = "order-flow-imbalance"
+
+#: A stated mechanism for the composed-law check.  Not from any committed
+#: artifact — feature 211 has none, its subject is what the *agent* wrote — so
+#: this is prose of the shape a rationale takes, spelled once and compared
+#: across the loader's two copies of the member.
+_STATED_MECHANISM = (
+    "Cross-sectional momentum decays after liquidity shocks; fade the "
+    "third-day reversal."
+)
 
 
 def _assert_is_the_authoring_law(component: object) -> None:
@@ -228,6 +239,41 @@ def _assert_is_the_dead_territory_law(component: object) -> None:
     )
 
 
+def _assert_is_the_mechanism_law(component: object) -> None:
+    """The composed stated-mechanism law is the law, across the loader's copies.
+
+    Name, then behaviour — never ``isinstance``, for the same reason the three
+    checks above are not.  The decisive check here is feature 211's own
+    *barrier* clause: the composed law must refuse the mechanism as a scored
+    input with the same ``never_scored`` sentence, because that clause is the
+    half of the feature that is answerable with no store at all and therefore
+    the half every composition carries.  The store is *not* asserted present —
+    a deployment composes this law with ``DATABASE_URL`` naming whatever it
+    names, and the component test must not depend on the machine's environment.
+    """
+    assert type(component).__name__ == "StatedMechanism"
+    assert type(component).__module__.endswith("signal_agent._mechanism")
+
+    for verb in ("persist", "load", "duplicates", "stated", "scored_input"):
+        assert callable(getattr(component, verb)), verb
+    assert hasattr(type(component), "store"), "the store property is the handle's"
+
+    composed = component.scored_input(_STATED_MECHANISM)  # type: ignore[attr-defined]
+    direct = member.stated_mechanism().scored_input(_STATED_MECHANISM)
+    assert composed.scored == direct.scored is False
+    assert composed.detail == direct.detail
+    # And the record's digest, compared by value across the boundary: the
+    # composed law hashes with the scanned copy's module, so the digests are
+    # equal but the strings are not the same object.  The digest is the claim.
+    composed_record = member.MechanismRecord(
+        node_id=str(uuid.uuid4()),
+        reason=member.MechanismReason.STATED,
+        detail="composed",
+        statement=_STATED_MECHANISM,
+    )
+    assert composed_record.digest == member.mechanism_digest(_STATED_MECHANISM)
+
+
 def test_the_member_registers_the_theme_gate_under_its_own_name() -> None:
     # The registry is keyed by name, so this prefix is not cosmetic: a builder
     # that registered "signal-agent" a second time would *replace* feature
@@ -238,37 +284,47 @@ def test_the_member_registers_the_theme_gate_under_its_own_name() -> None:
     assert member.THEMES_COMPONENT_NAME != member.COMPONENT_NAME
 
 
-def test_the_scanned_application_carries_all_three_laws() -> None:
-    # The three, in one composition: feature 205's law, feature 212's gate and
-    # feature 213's gate, each under its own name, none having replaced another.
+def test_the_scanned_application_carries_all_four_laws() -> None:
+    # The four, in one composition: feature 205's law, feature 212's gate,
+    # feature 213's gate and feature 211's law, each under its own name, none
+    # having replaced another.
     app = create_app(MEMBER_SRC, registry=Registration())
     assert "signal-agent" in app
     assert member.DEAD_TERRITORY_COMPONENT_NAME in app
     assert member.THEMES_COMPONENT_NAME in app
+    assert member.STATED_MECHANISM_COMPONENT_NAME in app
     _assert_is_the_authoring_law(app.get("signal-agent"))
     _assert_is_the_dead_territory_law(app.get(member.DEAD_TERRITORY_COMPONENT_NAME))
     _assert_is_the_theme_law(app.get(member.THEMES_COMPONENT_NAME))
+    _assert_is_the_mechanism_law(app.get(member.STATED_MECHANISM_COMPONENT_NAME))
 
 
-def test_the_three_laws_stay_contiguous_in_the_name_sorted_order() -> None:
+def test_the_four_laws_stay_contiguous_in_the_name_sorted_order() -> None:
     # ``app.order`` is name-sorted, so the prefixed names are what keep the
-    # member's three components together in the category they belong to rather
-    # than scattered by whatever the prefixes happened to be.  The three names
+    # member's four components together in the category they belong to rather
+    # than scattered by whatever the prefixes happened to be.  The four names
     # sort as ``signal-agent`` < ``signal-agent-dead-territory`` <
-    # ``signal-agent-themes``, so the dead-territory gate lands between the
-    # authoring law and the theme gate — and the three are contiguous, with no
-    # unrelated component wedged between them.
+    # ``signal-agent-stated-mechanism`` < ``signal-agent-themes``, so feature
+    # 211's law lands between the dead-territory gate and the theme gate — and
+    # the four are contiguous, with no unrelated component wedged between them.
     app = create_app(MEMBER_SRC, registry=Registration())
     order = list(app.order)
     positions = sorted(order.index(name) for name in (
         member.COMPONENT_NAME,
         member.DEAD_TERRITORY_COMPONENT_NAME,
+        member.STATED_MECHANISM_COMPONENT_NAME,
         member.THEMES_COMPONENT_NAME,
     ))
-    assert positions == [positions[0], positions[0] + 1, positions[0] + 2]
+    assert positions == [
+        positions[0],
+        positions[0] + 1,
+        positions[0] + 2,
+        positions[0] + 3,
+    ]
     assert order[positions[0]] == member.COMPONENT_NAME
     assert order[positions[1]] == member.DEAD_TERRITORY_COMPONENT_NAME
-    assert order[positions[2]] == member.THEMES_COMPONENT_NAME
+    assert order[positions[2]] == member.STATED_MECHANISM_COMPONENT_NAME
+    assert order[positions[3]] == member.THEMES_COMPONENT_NAME
 
 
 def test_the_theme_component_survives_a_second_composition() -> None:
@@ -409,6 +465,106 @@ def test_the_dead_territory_builder_takes_no_arguments() -> None:
     assert list(
         inspect.signature(builders[member.DEAD_TERRITORY_COMPONENT_NAME]).parameters
     ) == []
+
+
+def test_the_member_registers_the_mechanism_law_under_its_own_name() -> None:
+    # The registry is keyed by name, so this prefix is not cosmetic: a builder
+    # that registered "signal-agent" a fourth time would *replace* feature 205's
+    # law rather than sit beside it.  Asserted against the unprefixed name and
+    # against the other two prefixed ones, either of which it must not collide
+    # with — the assertion that would catch a copy-pasted constant.
+    assert member.STATED_MECHANISM_COMPONENT_NAME == "signal-agent-stated-mechanism"
+    assert member.STATED_MECHANISM_COMPONENT_NAME != member.COMPONENT_NAME
+    assert (
+        member.STATED_MECHANISM_COMPONENT_NAME != member.THEMES_COMPONENT_NAME
+    )
+    assert (
+        member.STATED_MECHANISM_COMPONENT_NAME
+        != member.DEAD_TERRITORY_COMPONENT_NAME
+    )
+
+
+def test_the_mechanism_component_survives_a_second_composition() -> None:
+    # The submodule-registration hazard, checked on the *second* application:
+    # a ``@register`` outside ``__init__.py`` fires once and drops out.
+    first = create_app(MEMBER_SRC, registry=Registration())
+    second = create_app(MEMBER_SRC, registry=Registration())
+    assert member.STATED_MECHANISM_COMPONENT_NAME in first
+    assert member.STATED_MECHANISM_COMPONENT_NAME in second
+    _assert_is_the_mechanism_law(second.get(member.STATED_MECHANISM_COMPONENT_NAME))
+
+
+def test_the_mechanism_builder_takes_no_arguments() -> None:
+    # The factory's protocol: a zero-argument builder.  It is the one builder in
+    # this member that reads the environment — through
+    # ``MechanismStore.resolve`` — and it still takes no *arguments*, which is
+    # what the protocol requires; the environment is the seam, not a parameter.
+    from app.module_loader import scan_components
+
+    builders = {
+        component.name: component.builder
+        for component in scan_components(MEMBER_SRC, registry=Registration())
+    }
+    assert builders[member.STATED_MECHANISM_COMPONENT_NAME].__name__ == (
+        "build_stated_mechanism"
+    )
+    assert list(
+        inspect.signature(builders[member.STATED_MECHANISM_COMPONENT_NAME]).parameters
+    ) == []
+
+
+def test_a_missing_database_does_not_take_composition_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The builder's documented contract, held to behaviour rather than to its
+    # own prose: the factory builds every registered component on every
+    # ``create_app()`` call, so a builder that *raised* when ``DATABASE_URL``
+    # names nothing would take composition down for every unrelated feature in
+    # the workspace.  Instead it composes the law with ``store=None``.
+    #
+    # ``monkeypatch.delenv`` rather than a fixture that clears the environment:
+    # this is the one claim in the suite that *is* about the absent variable,
+    # and it is made once, in the open, with pytest undoing it.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    law = member.build_stated_mechanism()
+    # The barrier still answers — that is the whole reason ``None`` is composed
+    # rather than refused.
+    assert law.scored_input(_STATED_MECHANISM).scored is False
+    assert law.store is None
+    # And the store-backed verbs refuse by name, which is what makes the
+    # ``None`` a discoverable state rather than a silent one.
+    with pytest.raises(member.MechanismStoreUnavailableError):
+        law.stated()
+    # It is *not* an empty store: an empty store answers "no node states a
+    # mechanism here", and this answers that there is nowhere to have recorded
+    # one.  The two are different facts with different repairs.
+    assert "not an empty store" in str(
+        _refusal_of(member.MechanismStoreUnavailableError, law.stated)
+    )
+
+
+def _refusal_of(error: type[BaseException], call) -> BaseException:
+    """The exception ``call`` raises, asserted to be ``error``.
+
+    A helper for the message assertions above: ``pytest.raises`` yields the
+    exception through ``.value``, and spelling that out twice for one claim
+    reads worse than naming what is being fetched.
+    """
+    with pytest.raises(error) as refusal:
+        call()
+    return refusal.value
+
+
+def test_the_mechanism_builder_does_not_open_the_store_at_composition() -> None:
+    # Construction performs no I/O: the URL is translated on first use, so a
+    # ``DATABASE_URL`` whose scheme this member cannot speak is refused by name
+    # the first time a mechanism is actually persisted, not when the component
+    # is built.  Held to behaviour by building over a URL no SQLite store could
+    # accept and showing the build succeeds.
+    law = member.StatedMechanism(member.MechanismStore("postgresql://host/tree"))
+    assert law.store is not None
+    with pytest.raises(member.MechanismStoreUnavailableError):
+        law.stated()
 
 
 # -- The seats -----------------------------------------------------------------
@@ -619,3 +775,79 @@ def test_the_dead_territory_seat_is_reachable_by_its_hyphenated_path() -> None:
     assert dead_seat.__name__ == "app.modules.signal-agent.dead_territory"
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("app.modules.signal_agent.dead_territory")
+
+
+# -- The mechanism seat -------------------------------------------------------
+
+
+def test_the_mechanism_seat_names_line_up() -> None:
+    assert mechanism_seat.COMPONENT_NAME == (
+        member.STATED_MECHANISM_COMPONENT_NAME
+    ) == "signal-agent-stated-mechanism"
+
+
+def test_the_mechanism_seat_answers_the_composed_law() -> None:
+    app = create_app(MEMBER_SRC, registry=Registration())
+    law = mechanism_seat.stated_mechanism_component(app)
+    _assert_is_the_mechanism_law(law)
+
+
+def test_the_mechanism_seat_returns_none_when_nothing_is_registered() -> None:
+    # An absent component is a discoverable state, not an exception — and this
+    # seat's ``None`` is *narrower* than it looks, which is what this test says.
+    # It means the member was not scanned.  It does **not** mean the law has no
+    # store: a composed law carrying ``store=None`` is a *present* component
+    # whose barrier still answers, and reading this ``None`` as that one would
+    # collapse a scan problem into a deployment problem.  The two have different
+    # repairs and the module docstring states both.
+    empty = Application(components={}, order=())
+    assert mechanism_seat.stated_mechanism_component(empty) is None
+
+
+def test_the_mechanism_seat_does_not_import_the_member_at_module_scope() -> None:
+    # The same two-sided assertion the other three seats get, for the same
+    # reason: the app package must not depend on any workspace member at import
+    # time, and the member's type must still be *present* under the guard or the
+    # typing the guard exists for was lost.
+    import ast
+
+    tree = ast.parse(inspect.getsource(mechanism_seat))
+    live: list[str] = []
+    guarded: list[str] = []
+
+    def _collect(nodes, into: list[str]) -> None:
+        for node in nodes:
+            if isinstance(node, ast.If) and "TYPE_CHECKING" in ast.dump(node.test):
+                for nested in node.body:
+                    _collect([nested], guarded)
+                continue
+            if isinstance(node, ast.Import):
+                into.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                into.append(node.module or "")
+            for child in ast.iter_child_nodes(node):
+                if isinstance(
+                    child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                ):
+                    _collect(child.body, into)
+
+    _collect(tree.body, live)
+
+    assert not any(name.startswith("signal_agent") for name in live), live
+    assert "signal_agent" in guarded, guarded
+
+
+def test_the_mechanism_seat_exports_only_the_component_accessor() -> None:
+    # Asserted as an exact set: the failure this guards against is the seat
+    # growing a re-export of the member's record, reasons, barrier verdict or
+    # store.
+    assert set(mechanism_seat.__all__) == {
+        "COMPONENT_NAME",
+        "stated_mechanism_component",
+    }
+
+
+def test_the_mechanism_seat_is_reachable_by_its_hyphenated_path() -> None:
+    assert mechanism_seat.__name__ == "app.modules.signal-agent.mechanism"
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("app.modules.signal_agent.mechanism")

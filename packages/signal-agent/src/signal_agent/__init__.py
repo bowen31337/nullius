@@ -90,7 +90,7 @@ from __future__ import annotations
 
 from app.module_loader import register
 
-from . import _dead_territory, _themes
+from . import _dead_territory, _mechanism, _themes
 from ._authoring import (
     CONFORMS_CODE,
     AdoptionReason,
@@ -115,6 +115,23 @@ from ._dead_territory import (
     dead_territory_gate,
     load_dead_territory,
 )
+from ._mechanism import (
+    CANONICAL_MECHANISM_MAX_WORDS,
+    MECHANISM_COLUMN,
+    MECHANISM_CONFLICT_CODE,
+    MECHANISM_POLICY_REVISION,
+    NEVER_SCORED_CODE,
+    NOT_A_STATEMENT_CODE,
+    STATED_MECHANISM_CODE,
+    MechanismReason,
+    MechanismRecord,
+    MechanismScoredInput,
+    MechanismStore,
+    StatedMechanism,
+    canonical_mechanism,
+    mechanism_digest,
+    stated_mechanism,
+)
 from ._themes import (
     COMMITTED_LEGAL_THEMES,
     ILLEGAL_THEME_CODE,
@@ -135,12 +152,19 @@ from .errors import (
     DeadTerritoryError,
     DeadTerritorySetError,
     IllegalThemeError,
+    MechanismColumnError,
+    MechanismConflictError,
+    MechanismNodeNotRecordedError,
+    MechanismNotScoredError,
+    MechanismStatementError,
+    MechanismStoreUnavailableError,
     SignalAgentError,
     ThemeSetError,
 )
 
 __all__ = [
     "AGENT_ROLES",
+    "CANONICAL_MECHANISM_MAX_WORDS",
     "COMMITTED_DEAD_TERRITORY",
     "COMMITTED_LEGAL_THEMES",
     "COMPONENT_NAME",
@@ -152,8 +176,15 @@ __all__ = [
     "LEGAL_THEMES_POLICY_KIND",
     "LEGAL_THEME_CODE",
     "LIVE_TERRITORY_CODE",
+    "MECHANISM_COLUMN",
+    "MECHANISM_CONFLICT_CODE",
+    "MECHANISM_POLICY_REVISION",
+    "NEVER_SCORED_CODE",
     "NOT_A_ROOT_CODE",
+    "NOT_A_STATEMENT_CODE",
     "NOT_A_THEME_CODE",
+    "STATED_MECHANISM_CODE",
+    "STATED_MECHANISM_COMPONENT_NAME",
     "THEMES_COMPONENT_NAME",
     "AdoptionReason",
     "AgentSourceError",
@@ -165,16 +196,29 @@ __all__ = [
     "DeadTerritoryVerdict",
     "IllegalThemeError",
     "LegalThemes",
+    "MechanismColumnError",
+    "MechanismConflictError",
+    "MechanismNodeNotRecordedError",
+    "MechanismNotScoredError",
+    "MechanismReason",
+    "MechanismRecord",
+    "MechanismScoredInput",
+    "MechanismStatementError",
+    "MechanismStore",
+    "MechanismStoreUnavailableError",
     "SignalAgentError",
     "SignalContract",
     "SignalThemeGate",
     "SourceAdoption",
+    "StatedMechanism",
     "ThemeAdmission",
     "ThemeReason",
     "ThemeSetError",
     "build_dead_territory_gate",
     "build_signal_contract",
     "build_signal_theme_gate",
+    "build_stated_mechanism",
+    "canonical_mechanism",
     "committed_dead_territory",
     "committed_legal_themes",
     "compile_dead_territory",
@@ -182,10 +226,12 @@ __all__ = [
     "dead_territory_gate",
     "load_dead_territory",
     "load_legal_themes",
+    "mechanism_digest",
     "require_contract",
     "signal_contract",
     "signal_theme_gate",
     "source_code_hash",
+    "stated_mechanism",
 ]
 
 #: The component name this member registers under.  The spec's own plugin name
@@ -234,6 +280,23 @@ THEMES_COMPONENT_NAME = _themes.THEMES_COMPONENT_NAME
 #: ``signal-agent-themes`` in the name-sorted ``app.order``, so the member's
 #: three components stay contiguous in the category they belong to.
 DEAD_TERRITORY_COMPONENT_NAME = _dead_territory.DEAD_TERRITORY_COMPONENT_NAME
+
+#: The component name feature 211's law registers under.  Imported from
+#: :mod:`signal_agent._mechanism` rather than re-spelled — the ``__all__`` entry
+#: above re-exports it, so this is a name, not a second literal.  Unlike
+#: :data:`COMPONENT_NAME`, which the spec's plugin declaration owns and which
+#: this module is the single spelling of, this one is *also* the live name the
+#: submodule's own doc references and its tests assert on, and two literals for
+#: it would be the drift the single spelling exists to prevent.
+#:
+#: Prefixed, for the same reason :data:`THEMES_COMPONENT_NAME` and
+#: :data:`DEAD_TERRITORY_COMPONENT_NAME` are — an unprefixed ``signal-agent`` a
+#: fourth time would replace feature 205's law — and
+#: ``signal-agent-stated-mechanism`` sorts between
+#: ``signal-agent-dead-territory`` and ``signal-agent-themes`` in the
+#: name-sorted ``app.order``, so the member's four components stay contiguous in
+#: the category they belong to.
+STATED_MECHANISM_COMPONENT_NAME = _mechanism.STATED_MECHANISM_COMPONENT_NAME
 
 
 @register(COMPONENT_NAME)
@@ -375,3 +438,50 @@ def build_dead_territory_gate() -> DeadTerritoryGate:
         return DeadTerritoryGate(
             DeadTerritory(kind=DEAD_TERRITORY_POLICY_KIND, mechanisms=())
         )
+
+
+@register(STATED_MECHANISM_COMPONENT_NAME)
+def build_stated_mechanism() -> StatedMechanism:
+    """Contribute feature 211's law to the composed application.
+
+    The fourth component this member contributes, beside feature 205's law,
+    feature 212's gate and feature 213's gate, each under its own name — the
+    registry is keyed by name and a later registration of any of them would
+    *replace* that law, so a member carrying four controls carries four
+    components, each answering its own feature's question.  Like the three
+    builders above it takes no arguments (the factory's registration protocol)
+    and returns a law rather than a service, a session or an LLM client.
+
+    **This is the one builder in the member that touches the environment, and
+    the touching is the whole of what it does differently.**
+    :meth:`~signal_agent.MechanismStore.resolve` reads ``DATABASE_URL`` — the
+    variable every store on the data spine reads — and answers ``None`` when
+    the deployment names none.  That ``None`` is composed rather than refused,
+    and the reason is the shape of this feature:
+
+    * The **barrier clause** — *"never as a scored input"* — is a fact about a
+      caller's wiring and about §9.1's annotation, not about a row, so it
+      answers in a deployment with no database at all.  Composing nothing here
+      would make the one guardrail that needs no storage unavailable in exactly
+      the deployment that has the least other protection.
+    * The **store clause** is then a discoverable absence:
+      :attr:`~signal_agent.StatedMechanism.store` reports the ``None`` and the
+      four store-backed verbs raise
+      :class:`~signal_agent.errors.MechanismStoreUnavailableError` by name.
+      That is **not an empty store** — an empty store answers *no node states a
+      mechanism here* about every id, while this says there is no database to
+      have recorded one in — and the distinction is the one
+      :func:`providers.build_agent_model_pins` draws for its own ``None``.
+
+    **No I/O happens here.**  ``MechanismStore.resolve`` constructs a store and
+    does not open one: the URL is translated on first use, so building this
+    component never touches the disk and a ``DATABASE_URL`` whose scheme this
+    member cannot speak is refused by name the first time a mechanism is
+    actually persisted.  That is the contract every store in this workspace
+    states, and here it also keeps composition free of the file system — which
+    is what makes the factory's scan safe to run from any member's ``src/`` on
+    ``sys.path``.
+
+    Holding the handle computes nothing and can fail at nothing.
+    """
+    return stated_mechanism()
