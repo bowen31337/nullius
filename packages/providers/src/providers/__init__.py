@@ -71,6 +71,43 @@ criterion consulted before any call is placed has nothing to instantiate):
   sentence's one property can be missing, window first, since a model that
   physically cannot hold the history fails before what it costs matters.
 
+Feature 199 — *"System rejects a depth model whose verified served context
+limit is below the campaign history size, rather than trusting a published
+figure"* — is the **verification layer** of that same criterion, and its
+records join the interface's as direct imports beside 198's.  Where 198 reads
+the window a candidate's **card declares** and compares it to a fixed bar,
+199 reads the limit a deployment **verified it serves** and compares it to
+**this campaign's** history — architecture §14.1's *"Verify the served context
+limit (``--max-model-len``), not the marketing number"*, applied to the
+history §14.1 measures at roughly 500K tokens in a 500-node campaign:
+
+* :class:`ServedContextLimit` — what a deployment serves for one model: the
+  model's name, the ``served_tokens`` window, and ``verified`` — ``True`` for
+  a served measurement, :data:`UNVERIFIED_SERVED_LIMIT` (best spelled
+  :func:`published_figure`) for the marketing number.  ``verified`` has no
+  default, because the published figure must not be admissible by omission.
+  Shape-validated on construction and deliberately not bar-validated: measuring
+  a 262K window is a well-formed measurement, since §14.1 serves exactly such a
+  window for early-depth nodes, narrow campaigns and the bootstrap worlds.
+
+* :func:`require_served_context` — the gate.  A model serves a campaign only
+  with a **verified** limit **at least** the campaign's history, which the
+  caller **states** (:func:`providers.choose_run_window`'s ``duration``
+  precedent — the module carries no bar of its own, because the bar here is the
+  campaign's and changes per campaign).  Refused as
+  :class:`~providers.ServedContextUnverifiedError` for a published figure,
+  **before and independently of** the counts, since an unverified number cannot
+  be compared at all; then as
+  :class:`~providers.ServedContextBelowHistoryError` for a verified limit under
+  the history.  The answer is a :class:`VerifiedServedContext` — the pair plus
+  its derived ``headroom_tokens``, the margin §14.1's own reasoning reads.
+
+Both of feature 199's refusals join :class:`~providers.DepthModelError` rather
+than minting a seventh base: 198 and 199 ask **one** question — *may this model
+take the depth role's calls?* — of one axis, at one moment, and differ only in
+the fact (published window against served limit) and the bar (one million fixed
+against the campaign's history).  See :mod:`providers._served`.
+
 Feature 203 — *"System persists ``agent_model_id`` per node as a provider,
 model and version triple rather than a rolling alias"* — is the other half of
 that story, and the reason this member's second registered component exists.
@@ -276,7 +313,11 @@ transport or the model.  Keeping it narrow is deliberate: a caller catching
 and the pin store's, unrelated to both: a model refused for the depth role
 has not been called (so no provider contract failed) and pins no node (so
 no authoring record is unreadable) — it is a *selection* that failed,
-before the campaign spent anything on it.  Feature 202's
+before the campaign spent anything on it.  Feature 199's two refusals join
+that same base rather than adding a seventh, because they ask 198's one
+question of a **measured** fact instead of a declared one — the model's
+capacity to hold the role's history — so a caller's ``except
+DepthModelError:`` catches a refusal from either layer.  Feature 202's
 (:mod:`providers._schedule_errors`) is a fourth, for the same kind of
 reason: a scheduling that found no window, named a campaign nobody
 planned, or met a decision already made, has not called, pinned, or
@@ -390,6 +431,8 @@ from ._depth_errors import (
     DepthModelError,
     InsufficientContextError,
     LongContextSurchargeError,
+    ServedContextBelowHistoryError,
+    ServedContextUnverifiedError,
 )
 from ._errors import (
     CompletionMalformedError,
@@ -454,6 +497,13 @@ from ._schedule_errors import (
     RunWindowConflictError,
     UnknownCampaignError,
 )
+from ._served import (
+    UNVERIFIED_SERVED_LIMIT,
+    ServedContextLimit,
+    VerifiedServedContext,
+    published_figure,
+    require_served_context,
+)
 
 __all__ = [
     "AGENT_CKPT_HASH_COLUMN",
@@ -492,6 +542,7 @@ __all__ = [
     "START_AT_COLUMN",
     "SYNCHRONOUS_ENDPOINT",
     "SYNCHRONOUS_RATE_MULTIPLE",
+    "UNVERIFIED_SERVED_LIMIT",
     "AgentModelPins",
     "AgentSampling",
     "AgentSamplingMalformedError",
@@ -540,22 +591,28 @@ __all__ = [
     "SamplingConflictError",
     "ScheduledRun",
     "SelectedDepthModel",
+    "ServedContextBelowHistoryError",
+    "ServedContextLimit",
+    "ServedContextUnverifiedError",
     "UnknownCampaignError",
     "UnknownModelError",
     "UnknownProviderError",
     "UnplannedCampaignError",
     "UnpricedModelError",
     "Usage",
+    "VerifiedServedContext",
     "build_agent_model_pins",
     "build_depth_cache_rates",
     "choose_run_window",
     "flat_pricing",
     "hosted_api_weights",
     "measure_cache_rate",
+    "published_figure",
     "require_agent_ckpt_hash",
     "require_agent_model_id",
     "require_agent_sampling",
     "require_depth_model",
+    "require_served_context",
     "route_depth_call",
     "schedule_depth_run",
     "select_depth_model",

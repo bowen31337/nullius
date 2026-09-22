@@ -82,11 +82,15 @@ verified served context limit is below the campaign history size, rather
 than trusting a published figure* — is the verification layer: §14.1's
 *"verify the served context limit (``--max-model-len``), not the marketing
 number"*, measured against a specific campaign's history rather than the
-1M bar.  Feature 200 is the cache-hit economics layer — §14.1's *select the
-depth model on cache-hit price, not list price* — which is why this record
-carries no price at all: a field this criterion does not read is a field
-that would drift, and the price the depth role is selected on is not the
-list price in any case.
+1M bar.  It lives in :mod:`providers._served`, it reads a
+:class:`~providers.ServedContextLimit` rather than a candidate, and its two
+refusals join this module's base (:class:`~providers.DepthModelError`)
+because they ask this gate's one question of a measured fact — so a caller
+that runs both layers still writes one ``except``.  Feature 200 is the
+cache-hit economics layer — §14.1's *select the depth model on cache-hit
+price, not list price* — which is why this record carries no price at all:
+a field this criterion does not read is a field that would drift, and the
+price the depth role is selected on is not the list price in any case.
 
 Recognition across the workspace's double import
 ------------------------------------------------
@@ -391,11 +395,14 @@ def require_depth_model(candidate: object) -> DepthModel:
     for pins, for the same reason.
 
     This gate reads the candidate's *declared* window and threshold, and
-    nothing else.  Verifying the served limit against a published figure
-    (§14.1's ``--max-model-len``) and measuring it against a campaign's
-    history is feature 199's layer, and selecting on cache-hit input price
-    is feature 200's; a caller wanting those answers runs those checks,
-    which is why this one states its facts rather than deriving them.
+    nothing else.  Verifying the served limit (§14.1's
+    ``--max-model-len``, not the marketing number) and measuring it against
+    a campaign's history is feature 199's layer —
+    :func:`providers.require_served_context`, which takes a
+    :class:`~providers.ServedContextLimit` and a declared history and shares
+    this gate's base — and selecting on cache-hit input price is feature
+    200's; a caller wanting those answers runs those checks, which is why
+    this one states its facts rather than deriving them.
     """
     parts = _candidate_parts_or_none(candidate)
     if parts is None:

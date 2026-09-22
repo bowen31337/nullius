@@ -37,10 +37,10 @@ taxonomy stops describing anything.  The subclasses below each answer a
 question a caller can act on; "your int is not an int" has no such question
 beyond the message itself.
 
-The two refusals, and why there are exactly two
-------------------------------------------------
+The four refusals, and why they share one base
+----------------------------------------------
 
-The feature's sentence names **one property** — *a 1 million token context
+Feature 198's sentence names **one property** — *a 1 million token context
 at flat pricing* — and a property that is a conjunction fails in exactly as
 many ways as it has conjuncts.  Two, then:
 
@@ -77,9 +77,66 @@ fails on physics, and what it would have cost never becomes relevant.  A
 caller meeting both lacks (a cheap tier with a short window *and* a
 surcharge) is told the one that no pricing choice can repair.
 
-Stdlib-only, like the rest of this tree: these errors describe a selection
-criterion over facts a deployment states about a rate card, and nothing here
-dials a provider, reads a price list, or imports an SDK.
+**Feature 199 is the role criterion's second layer, and its two refusals
+join the same base rather than minting a new one.**  app_spec.xml feature
+199: *"System rejects a depth model whose verified served context limit is
+below the campaign history size, rather than trusting a published figure"* —
+architecture §14.1's own instruction, in the same paragraph the 256K clause
+comes from: *"Verify the served context limit (``--max-model-len``), not the
+marketing number."*  So the second layer asks the **same question** feature
+198's gate asks — *may this model take the depth role's calls?* — with two
+differences: the fact is the number the deployment actually **serves**
+rather than the number the card **publishes**, and the bar is **this
+campaign's** history rather than the fixed one million.  Its property is
+again a conjunction — *a verified served limit at or above the campaign's
+history* — and fails in its own two ways:
+
+* :class:`ServedContextUnverifiedError` — the number is a published figure
+  rather than the served limit.  The load-bearing refusal of the second
+  layer, and the whole of the sentence's *rather than*: the marketing number
+  is a claim about a model, and ``--max-model-len`` is the fact about the
+  deployment serving it.  A 1M published window behind a 262K served limit
+  is a 262K model, and §14.1's 256K clause is exactly the failure that
+  arrives through the spec sheet.
+
+* :class:`ServedContextBelowHistoryError` — the served limit is verified and
+  it is under the campaign's history: §14.1's *"a model with a 256K window
+  physically cannot execute the defining prompt of this system in a mature
+  wide campaign"*, measured against this campaign's own history (at ~1k
+  tokens per ``proposal.md`` plus its ``score.json``, a 500-node campaign
+  carries roughly 500K tokens of it by the late rounds; §14.2 measures the
+  average depth call at ~300K and late calls beyond 600K).
+
+The two are separate classes because the repairs are separate — *re-probe
+the served model* against *shorten the campaign or serve a larger window* —
+and they are ordered as listed: **an unverified number cannot be compared at
+all**, so a caller holding a published figure that also looks too small is
+told the figure was never a measurement, not that a measurement came up
+short.  You cannot conclude *this deployment's served limit is below the
+history* from a marketing number; that inference is precisely what the
+sentence forbids.
+
+**Why these two join :class:`DepthModelError` rather than a seventh base.**
+The package's bases split along the *axis of the question*, and this is the
+same axis as 198's: the model's capacity to hold the role's history.  Both
+layers are consulted by the same actor at the same moment — before any call
+is placed and any node is authored — and a caller's ``except
+DepthModelError:`` should mean *my depth model was refused* whichever layer
+refused it.  Forcing two ``except`` clauses here would make the one question
+two, which is the collapse each of this package's taxonomies refuses in its
+own docstring.  The contrast is the other bases, which split along genuinely
+different facts: :class:`providers.ModelPinError` is a *provenance record*
+(and feature 204's five join it because *"the columns are one row"*),
+:class:`providers.DepthCacheError` is the *money*, :class:`providers.
+DepthScheduleError` the *time*, :class:`providers.BatchRoutingError` the
+*endpoint*, and :class:`providers.ProviderError` the *call* itself.  Feature
+199 is none of those; it is the same capacity question asked of a measured
+fact, so it extends this base the way feature 204 extended feature 203's.
+
+Stdlib-only, like the rest of this tree: these errors describe selection
+criteria over facts a deployment states about a rate card and measures about
+a served model, and nothing here dials a provider, reads a price list, or
+imports an SDK.
 """
 
 from __future__ import annotations
@@ -88,6 +145,8 @@ __all__ = [
     "DepthModelError",
     "InsufficientContextError",
     "LongContextSurchargeError",
+    "ServedContextBelowHistoryError",
+    "ServedContextUnverifiedError",
 ]
 
 
@@ -95,20 +154,32 @@ class DepthModelError(Exception):
     """Base of the depth-role taxonomy — a model was refused for the depth role.
 
     One base class so a deployment's campaign launcher, its registry check
-    and a suite can catch every failure of feature 198's sentence — a window
-    below the bar, a surcharge under it, a candidate that is not a candidate
-    — with a single ``except``, the way :class:`providers.ProviderError`
-    gives the call seam one handle and :class:`providers.ModelPinError`
-    gives the authoring record one.  The base is deliberately unrelated to
-    both: refusing a model *before* the campaign runs is not a call that
-    failed and not a node that cannot be pinned, and a caller that catches
-    those must not have this answered in their place.
+    and a suite can catch every failure of the role's criterion — feature
+    198's bar (*a 1 million token context at flat pricing*) and feature 199's
+    verification (*a verified served limit at or above the campaign's
+    history*) — with a single ``except``: a window below the bar, a
+    surcharge under it, a served limit nobody measured, a served limit
+    under the history, a candidate that is not a candidate.  The same
+    one-handle discipline :class:`providers.ProviderError` gives the call
+    seam and :class:`providers.ModelPinError` gives the authoring record.
+    The base is deliberately unrelated to those: refusing a model *before*
+    the campaign runs is not a call that failed and not a node that cannot
+    be pinned, and a caller that catches those must not have this answered
+    in their place.
+
+    Features 198 and 199 share this base because they answer **one
+    question** — *may this model take the depth role's calls?* — asked by
+    the same actor at the same moment, of the same axis (the model's
+    capacity to hold the role's history).  They differ in the *fact* (the
+    published window against the served limit) and the *bar* (one million
+    fixed against this campaign's history), not in the question; see the
+    module docstring for why that is a shared base rather than a seventh.
 
     Also raised directly for the malformations no subclass describes — a
-    non-record candidate, a blank model name, a non-positive token count —
-    on the grounds the module docstring gives: those are bad *descriptions*
-    rather than failed *criteria*, and the taxonomy splits by question, not
-    by call site.
+    non-record candidate, a blank model name, a non-positive token count, a
+    history size that is not a positive count — on the grounds the module
+    docstring gives: those are bad *descriptions* rather than failed
+    *criteria*, and the taxonomy splits by question, not by call site.
     """
 
 
@@ -147,4 +218,70 @@ class LongContextSurchargeError(DepthModelError):
     :func:`providers.require_depth_model` for a candidate whose
     ``surcharge_threshold`` is below
     :data:`providers.MIN_DEPTH_CONTEXT_TOKENS`.
+    """
+
+
+class ServedContextUnverifiedError(DepthModelError):
+    """A depth model whose context figure is a published number, not a served limit.
+
+    Feature 199's first refusal, and the whole of the sentence's *rather than
+    trusting a published figure*: architecture §14.1 does not merely prefer
+    the measurement, it instructs the reader to **"verify the served context
+    limit (``--max-model-len``), not the marketing number."**  The two are
+    different facts about different things — the published figure is a claim
+    about a model, and the served limit is what the deployment that will
+    actually take the calls has been configured to attend over — and they
+    come apart in exactly the direction that hurts, because a self-hosted
+    deployment serving MIT weights behind a 262K ``--max-model-len`` is a
+    262K model no matter what the checkpoint's card advertises.  §14.1's own
+    clause (*"a model with a 256K window physically cannot execute the
+    defining prompt of this system in a mature wide campaign"*) is the
+    failure that arrives through the spec sheet when the figure is trusted.
+
+    Raised by :func:`providers.require_served_context` for a measurement
+    that carries :func:`providers.published_figure` — the named state, so a
+    caller who holds only the marketing number **says so** rather than
+    leaving a flag unset.  The repair is to probe the served model and state
+    what it answered; the one repair this refusal rules out is admitting the
+    candidate on the strength of the published number, which is the
+    inference feature 199 exists to forbid.
+
+    It is refused *before* the comparison against the campaign's history and
+    independently of it, because **an unverified number cannot be compared
+    at all**: a published figure that happens to look large enough is not a
+    measurement that cleared the bar, and one that looks too small is not a
+    measurement that failed it.
+    """
+
+
+class ServedContextBelowHistoryError(DepthModelError):
+    """A verified served context limit below the campaign's history size.
+
+    Feature 199's second refusal, on the law architecture §14.1 states in as
+    many words: *"A model with a 256K window physically cannot execute the
+    defining prompt of this system in a mature wide campaign."*  The depth
+    role's C3 prompt reads every prior ``proposal.md`` **in full**, so the
+    history *is* the prompt: at ~1k tokens per proposal plus its
+    ``score.json``, a 500-node campaign carries roughly 500K tokens of it by
+    the late rounds (§14.2 measures the average depth call at ~300K tokens
+    and late calls beyond 600K).  A served window under that figure cannot
+    hold the call the role exists to make, and the failure is physical — the
+    request does not fit — so no pricing or routing choice downstream can
+    repair it.
+
+    Raised by :func:`providers.require_served_context` for a **verified**
+    measurement whose ``served_tokens`` is below the ``history_tokens`` the
+    caller declared for the campaign.  The refusal names both counts, because
+    the difference between them is the margin the campaign would have to shed
+    (or the window it would have to gain), and that number is the repair.
+
+    The refusal confines rather than condemns, exactly as
+    :class:`InsufficientContextError` does for the fixed bar: §14.1's own
+    resolution is that such models *"are confined to early-depth nodes,
+    narrow campaigns, and the §10.6 bootstrap worlds, where histories are
+    short and self-contained"* — and this refusal is the same confinement
+    arrived at per campaign, since a history under the served limit admits
+    the very same model for that campaign.  Unlike feature 198's bar, the
+    bar here is the campaign's own, so the same deployment may be admitted
+    for a narrow campaign and refused for a wide one.
     """
