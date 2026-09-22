@@ -296,6 +296,18 @@ had failed on a missing model column or a correlation on a cohort of two
 branches.  Each is a sibling of the three classes its own feature raises beside
 it, and neither is an :class:`AgentSourceError`: nothing in either is about a
 proposal's *source*.
+
+:class:`CandidateModelError` is feature 216's, and it is the third of that
+family — but it is *not* a third cohort class, and the difference is the whole
+of its argument.  The two above are about a cohort that cannot be paired or
+cannot answer; this one is about a figure that cannot be **attributed to the
+candidate model it was declared for**.  Feature 216 persists §14.1's
+``mechanism_discrimination`` *per candidate model* rather than per campaign, and
+the attribution is the half of that reading the member can actually verify: the
+branch's authoring model is a column on a table this member may read (§9.1's
+``agent_model_id``, indexed "to stratify the M3 paired test").  So a declared
+branch authored by a different model is refused by name rather than stratified
+around — which is the repair this class names and no other class does.
 """
 
 from __future__ import annotations
@@ -304,6 +316,7 @@ __all__ = [
     "AgentSourceError",
     "AntiConvergenceClauseError",
     "AntiConvergenceError",
+    "CandidateModelError",
     "DeadTerritoryError",
     "DeadTerritorySetError",
     "DiscriminationCohortError",
@@ -1049,4 +1062,52 @@ class DiscriminationCohortError(SignalAgentError):
     repair it names for feature 207's own callers.  Minting feature-214 spellings
     of those three would be the duplicate class the member refuses: *"the same
     fact with the same repair, whoever asks"*.
+    """
+
+
+class CandidateModelError(SignalAgentError):
+    """A ``mechanism_discrimination`` cannot be attributed to a candidate model.
+
+    Raised by feature 216's ``mechanism_discrimination_by_model`` when the
+    figure is asked for *per candidate model* and the attribution cannot be
+    established — or when a value claiming to be such a reading could not have
+    been measured.  The families, in the order the law raises them:
+
+    * **the argument** — the candidate model is not a non-blank, non-``bool``
+      string, so it names no stratum a report could print beside the real ones;
+    * **the tree's shape** — no ``node`` table (feature 97's ``0118``), or a
+      ``node`` table holding no ``agent_model_id`` (feature 100's
+      ``0115_agent_model_trio``), so the per-model half of §14.1's instrument
+      cannot be answered at all and no flat number is offered in its place;
+    * **the attribution** — a declared real branch whose node the tree does not
+      hold, one whose node carries no authoring model, or one authored by a
+      **different** model than the declaration names;
+    * **the value** — a stored row whose fields do not reconstruct into a reading
+      of a named candidate model.
+
+    **It is deliberately not an :class:`DiscriminationCohortError`**, though it
+    is raised by the feature that depends on 214 and shares most of 214's own
+    refusals.  The two classes name two different repairs, and the difference is
+    the feature: 214's class means *this cohort cannot be paired or cannot
+    answer* — expand the campaign, freeze one the store holds both halves for —
+    while this one means *this reading cannot be attributed to the candidate
+    model it was declared for* — declare the model that authored the branches, or
+    stop mixing providers inside one campaign's pool.  A caller that caught
+    :class:`DiscriminationCohortError` while holding a mixed campaign would
+    re-measure a cohort that is the wrong shape for the question it asked.
+
+    **It is a sibling of :class:`DiversityCohortError` and
+    :class:`DiscriminationCohortError`, not a superclass or a subclass of
+    either**, on the member's usual grounds: a new class must buy a distinction
+    a caller's handler can act on.  This one buys exactly one — *which model
+    authored these branches* — and nothing more.
+
+    **Two of the refusals beside it keep the classes that already own them.**  An
+    absent ``node_proposal`` table raises
+    :class:`ProposalHistoryStoreUnavailableError`, an absent ``replay_score`` or
+    ``campaign`` table raises :class:`DiscriminationCohortError`, a cohort below
+    §14.1's floor or one the arithmetic cannot answer raises
+    :class:`DiscriminationCohortError`, and an unparseable score document raises
+    :class:`ProposalContentError` — each the same fact with the same repair for
+    whoever asks, which is the duplicate class this member refuses.
     """
