@@ -205,6 +205,23 @@ the derivation the only way the spec allows: by calling
 own store read — or by handing it to :func:`~discovery.planner.plan_grid`
 as the hook, where it runs inside 233's aperture unchanged.
 
+**Feature 236 adds no component, and its reason is 235's with one turn of the
+screw.**  :func:`discovery.difficulty.allocate_depth` *does* make a decision —
+it splits the grid's refinement budget across the branches the prefix
+measured — and it is reached the same way 235's derivation is: by calling it,
+with the :class:`~discovery.grid.GridPlan` the history justified and the
+per-branch census the caller's prefix counted.  What disqualifies a
+``@register`` here is narrower than 235's even: the derivation at least reads
+the history the factory could have opened a store for, while this allocation
+additionally reads the *current episode's* revealed refinements — the one thing
+feature 233's boundary forbids a planning step from reaching — so a builder
+that registered one would be a component pointed at an episode no composition
+can supply, and a plan derived from it would be a description of the campaign
+rather than a decision taken before it.  The member's registered surface
+therefore stays feature 232's single store, unchanged by the whole of §428's
+difficulty targeting, and the sibling member's ``_schedule(beta)`` dict that
+PRD §434 says the band *"drops into"* stays the policy's own concern.
+
 **Registration is the entire wiring story.**  The module loader
 (``app.module_loader``) scans the members the root ``pyproject.toml``
 declares, imports each package, and composes whatever each package's
@@ -261,6 +278,15 @@ from .campaign import (
     CampaignRecords,
     create_campaign,
     null_fraction,
+)
+from .difficulty import (
+    DIFFICULTY_BAND,
+    TARGET_SUCCESS_RATE,
+    TARGET_WEIGHT,
+    BranchDifficulty,
+    DepthAllocation,
+    allocate_depth,
+    difficulty_weight,
 )
 from .errors import (
     AttemptLogError,
@@ -375,6 +401,7 @@ __all__ = [
     "DEFAULT_THEME_SET",
     "DEMANDS_EPISODE",
     "DEPTH_MAX_COLUMN",
+    "DIFFICULTY_BAND",
     "EPISODE_SURFACE",
     "EXPANSION_NAMESPACE",
     "FAIL_CLASSES",
@@ -398,6 +425,8 @@ __all__ = [
     "REGIMES",
     "SLOT_THREAD_PREFIX",
     "SOURCE_FILENAME",
+    "TARGET_SUCCESS_RATE",
+    "TARGET_WEIGHT",
     "THEME_ROOTS_COLUMN",
     "THEME_ROOT_COLUMN",
     "TRACE_FILENAME",
@@ -412,12 +441,14 @@ __all__ = [
     "AttemptProvenance",
     "AttemptRecord",
     "BatchDispatchError",
+    "BranchDifficulty",
     "CampaignManifest",
     "CampaignManifests",
     "CampaignOrderError",
     "CampaignPlanningError",
     "CampaignRecord",
     "CampaignRecords",
+    "DepthAllocation",
     "DiscoveryError",
     "ExpansionError",
     "GridPlan",
@@ -434,12 +465,14 @@ __all__ = [
     "WorkerInterrupted",
     "WorkerResult",
     "admit_completed_campaigns",
+    "allocate_depth",
     "assign_theme",
     "attempt_node_id",
     "build_campaign_records",
     "classify_failure",
     "create_campaign",
     "derive_grid_plan",
+    "difficulty_weight",
     "expand_node",
     "finish_campaign",
     "is_interruption",

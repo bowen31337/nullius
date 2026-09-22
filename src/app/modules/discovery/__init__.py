@@ -41,6 +41,24 @@ answered by the composed store this module *does* seat — the store is what
 makes the history readable at all — and neither is a second thing for
 ``campaign_records_component`` to return.
 
+**Feature 236's depth allocation is the third seam with no seat, and it is the
+one a builder must not be given for the sharpest reason of the three.**
+:func:`discovery.difficulty.allocate_depth` splits the grid's refinement budget
+across the branches a prefix has measured — PRD §428's frontier-difficulty
+targeting — and it is reached the way 235's derivation is: directly, from
+:mod:`discovery`, with a plan and a census the *caller* holds.  Both of the
+earlier arguments apply and a third is added: the factory composes one object
+per registered name on every ``create_app()`` call, while this allocation reads
+the *current episode's* revealed refinements — precisely the thing feature 233's
+prior-manifests-only boundary exists to keep a planning step away from.  A
+builder that registered one would be a component pointed at an episode
+composition cannot supply, and the plan it produced would be a description of
+the campaign rather than a decision taken before it.  So the member's registered
+surface is unchanged by the whole of §428's difficulty targeting, and the
+sibling member's ``_schedule(beta)`` dict that PRD §434 says the band *"drops
+into"* stays the policy's own concern rather than becoming a second component
+here.
+
 **The seat's ``None`` is about the deployment, not about the member.**
 ``None`` means *nothing named a database* — ``DATABASE_URL`` is unset, so
 there is no table for a campaign row to land in.  It does **not** mean the
