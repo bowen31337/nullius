@@ -23,6 +23,24 @@ exists to answer *what did composition build for this deployment?*, and this
 seam closes over no deployment state at all.  A reader looking for it will
 not find it here, which is why this paragraph is here rather than nothing.
 
+**Feature 235's planner is the second such seam, and its absence from this
+module is the more interesting one.**  :func:`discovery.grid.derive_grid_plan`
+authors the grid a campaign is opened with — a branch count and a refine count
+derived from the prior manifests — which is exactly the sort of *decision* a
+component is usually the vehicle for, so it is worth being explicit about why
+there is no seat for it either.  A builder takes no arguments and is
+discovered by the factory; a plan is a function of evidence the factory does
+not hold and must not go looking for.  A registered planner would have to read
+a history on its own initiative, and the only history it could reach that way
+is one it opened a store to read — which is feature 233's prior-manifests-only
+boundary broken by composition rather than by a hook.  So the derivation is
+reached the way 233's seam is: directly, from :mod:`discovery`, with the
+manifests the *caller* read through feature 242's
+:meth:`discovery.manifest.CampaignManifests.completed`.  Both seams are
+answered by the composed store this module *does* seat — the store is what
+makes the history readable at all — and neither is a second thing for
+``campaign_records_component`` to return.
+
 **The seat's ``None`` is about the deployment, not about the member.**
 ``None`` means *nothing named a database* — ``DATABASE_URL`` is unset, so
 there is no table for a campaign row to land in.  It does **not** mean the

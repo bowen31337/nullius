@@ -5,7 +5,7 @@ Implements app_spec.xml, "Discovery Orchestrator & Campaigns", feature
 and null fraction before any node is expanded"* — against §5's discovery
 tree and §4.1.1's planted-null fraction.
 
-The member's surface is eight modules.  :mod:`discovery.campaign` is the clip
+The member's surface is nine modules.  :mod:`discovery.campaign` is the clip
 that derives φ from ``W``, §7.3's two regimes as a closed set, the frozen
 :class:`~discovery.campaign.CampaignRecord` and the store that creates one
 row in the ``campaign`` table the migration already declares.
@@ -40,6 +40,12 @@ rejects a plan_grid implementation that inspects the current episode,
 because planning may read only prior campaign manifests"* — the boundary
 feature 229's law names and declines to check: the orchestrator runs the
 hook against the history it read and refuses one that reaches past it.
+:mod:`discovery.grid` is feature 235 — *"System returns a grid plan
+carrying a branch count plus a refine count derived from prior
+manifests"* — the system's own planner: the derivation that runs *inside*
+233's aperture, rebalancing the refinement budget the history actually
+spent away from the history's own aspect so the next campaign is not the
+400th tweak of the last one's indicator.
 This module re-exports all of them and registers the one component; it
 carries no logic of its own, which is the same shape every member in this
 workspace takes.
@@ -180,6 +186,25 @@ reads the prior manifests through
 authority on which campaigns are complete — and hands them to
 :func:`~discovery.planner.plan_grid` before it creates the campaign's record.
 
+**Feature 235 adds no component, and its reason is 233's exactly.**  The
+distinction worth drawing is that 235, unlike 233, *does* make a decision —
+it authors the grid a campaign is opened with, which is the sort of thing
+a component exists to contribute.  What disqualifies it is narrower and
+still decisive: a component is built by a builder that takes no arguments
+and is *discovered* by the factory, while a plan is a function of evidence
+the factory does not hold and cannot read.  A registered planner would
+have to plan from a history nobody handed it, and the only history a
+builder could find on its own is the one it opened a store to read —
+which is feature 233's boundary broken by composition rather than by a
+hook, and feature 242's *"which campaign does this hold?"* question
+arriving at the one object that may not ask it.  The member's registered
+surface stays feature 232's single store, and the orchestrator reaches
+the derivation the only way the spec allows: by calling
+:func:`~discovery.grid.derive_grid_plan` with the
+:class:`~discovery.planner.PlanContext` it built from the manifests its
+own store read — or by handing it to :func:`~discovery.planner.plan_grid`
+as the hook, where it runs inside 233's aperture unchanged.
+
 **Registration is the entire wiring story.**  The module loader
 (``app.module_loader``) scans the members the root ``pyproject.toml``
 declares, imports each package, and composes whatever each package's
@@ -256,6 +281,12 @@ from .expansion import (
     RefinedSignal,
     expand_node,
     refined_node_id,
+)
+from .grid import (
+    REFERENCE_BRANCH_COUNT,
+    REFERENCE_REFINE_COUNT,
+    GridPlan,
+    derive_grid_plan,
 )
 from .manifest import (
     BRANCH_COUNT_COLUMN,
@@ -361,6 +392,8 @@ __all__ = [
     "PARENT_ID_COLUMN",
     "PHI_CEILING",
     "PHI_FLOOR",
+    "REFERENCE_BRANCH_COUNT",
+    "REFERENCE_REFINE_COUNT",
     "REFINE_COUNT_COLUMN",
     "REGIMES",
     "SLOT_THREAD_PREFIX",
@@ -387,6 +420,7 @@ __all__ = [
     "CampaignRecords",
     "DiscoveryError",
     "ExpansionError",
+    "GridPlan",
     "IllegalThemeError",
     "NodeExpansion",
     "NodeWorkspace",
@@ -405,6 +439,7 @@ __all__ = [
     "build_campaign_records",
     "classify_failure",
     "create_campaign",
+    "derive_grid_plan",
     "expand_node",
     "finish_campaign",
     "is_interruption",
