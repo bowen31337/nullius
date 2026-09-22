@@ -182,6 +182,39 @@ state for their own trees:
   :class:`ThemeSetError` draws between a broken document and a refused
   proposal, restated for a refusal that is about this system's own code.
 
+* :class:`TruncatedHistoryError` — feature 206's *history* contract.  A round
+  handed its authoring step a history of prior proposals that is not the whole
+  history: a subset chosen by a rule (a count, a recency window, a summary of
+  a proposal standing in for it), a proposal read cut short, or a declared
+  prior proposal silently absent.  Architecture §14.1 states the requirement
+  the refusal is about — every prior ``proposal.md`` *"**in full** — not a
+  sample, not recent cycles"* — and it is raised by
+  :meth:`~signal_agent.ProposalHistory.require` and only by it, on the last
+  line before the authoring call.
+
+  **It is a sibling of :class:`AgentSourceError` and of
+  :class:`FlawedMechanismError`, and the asymmetry is the same one both of
+  those state.**  The three refusals under :class:`AgentSourceError` are facts
+  about *what the agent wrote*, and a caller's existing
+  ``except AgentSourceError:`` handler repairs them by re-prompting the agent.
+  This refusal has nothing to do with what the agent wrote: the agent has not
+  been called yet, and the defect is in the *run's own assembly* — the read
+  that produced the prompt.  Letting that handler catch it would re-prompt an
+  agent whose prompt was assembled from a cut history, buying a second
+  proposal from the same cut history, which is the waste this feature exists
+  to prevent.  The repair is to fix the assembler: fetch the missing nodes,
+  finish the reads, then re-run the step.
+
+  It is not under :class:`FlawedMechanismError` either, though both assert
+  "do not re-prompt": that class is a judgment about a *hypothesis* reached
+  from a failure the evaluator reported, and this one is a judgment about the
+  *caller's own wiring*, reached before any proposal exists.  Keeping them
+  apart preserves the query — "how often did the diagnosis close a branch?"
+  and "how often did a round read a partial history?" are different questions
+  about different parts of the system, and the second one is exactly the
+  untested assumption §14.1:773 says *"should be measured before it is relied
+  on"*.
+
 * :class:`MechanismNodeNotRecordedError`,
   :class:`MechanismColumnError` and
   :class:`MechanismStoreUnavailableError` — the three *deployment* facts the
@@ -239,6 +272,7 @@ __all__ = [
     "MechanismStoreUnavailableError",
     "SignalAgentError",
     "ThemeSetError",
+    "TruncatedHistoryError",
 ]
 
 
@@ -656,4 +690,49 @@ class MechanismStoreUnavailableError(SignalAgentError):
     :func:`providers.build_agent_model_pins` draws for its own ``None``, and it
     matters here for the same reason: a mechanism persisted into nothing is a
     rationale no reviewer will ever read.
+    """
+
+
+class TruncatedHistoryError(SignalAgentError):
+    """A history of prior proposals is not the whole history.
+
+    Raised by :meth:`~signal_agent.ProposalHistory.require` — feature 206's
+    bridge between the law's returned verdict and the exception a caller wants
+    on its last line before the authoring call.  The message is the law's own
+    sentence, opening with the code of the reason that produced it —
+    ``truncated_history``, ``sampled_history``, ``missing_proposal`` or
+    ``not_a_history`` — so a campaign log and an operator's grep say the same
+    thing.
+
+    **It is a sibling of :class:`AgentSourceError`, not a subclass, and the
+    asymmetry is the one :class:`FlawedMechanismError` states.**  The three
+    refusals under that base are facts about *what the agent wrote*, and a
+    caller's pre-existing ``except AgentSourceError:`` handler exists to
+    re-prompt.  This refusal is a fact about the *run*: the agent has not been
+    called, because the prompt it would be called with was assembled from a
+    history that is a sample, or cut short, or missing proposals the round
+    declared.  A caller that caught this through the source contract's clause
+    would re-prompt against the same partial history and get another proposal
+    from it, which is the failure §14.1's *"not a sample, not recent cycles"*
+    is written against.
+
+    **It is also a sibling of :class:`FlawedMechanismError`**, though both
+    say "do not re-prompt", because the subjects differ in kind: that one is a
+    judgment about a hypothesis reached from a failure the evaluator reported,
+    and this one is a judgment about the caller's own read, reached before any
+    proposal exists.  The repairs differ too — the diagnosis closes the branch
+    and opens another mechanism; this one fixes the assembler and re-runs the
+    step.
+
+    The distinct class buys the query: "how often did a round read a partial
+    history?" is precisely the measurement §14.1:773 says is missing, because
+    *"Truncating complete proposals is a different operation from compressing
+    them into prose, and is probably safer — but it is an untested assumption
+    and should be measured before it is relied on."*  A caller that had to
+    match message text to count that would not measure it.
+
+    No agent action repairs it, so it is not raised for anything the agent
+    wrote; the offending entries are **named** in the sentence and never
+    quoted, because the text of a proposal belongs in §9.2's artifact
+    directory rather than in a log line.
     """

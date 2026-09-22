@@ -84,6 +84,33 @@ re-prompt a branch the diagnosis just closed).  It is the one law here whose
 verdict is about the *idea* rather than about the source, which is feature 211's
 subject too and the reason that one's refusals are siblings as well.
 
+**Feature 206 rides a seventh seat, and it is the member's first law about the
+*input* to authoring rather than about a proposal.**  *Agent rejects a
+truncated history sample, reading every prior proposal in full before
+proposing* lives in :mod:`signal_agent._history`: no document (what counts as
+the whole history is *the caller's own tree query* — a fact about the round,
+not a deployment decision), no committed artifact, and :class:`ProposalHistory`
+— the law, whose ``admit`` answers as a value and whose ``require`` is the one
+place it raises.  It composes as a seventh component under
+:data:`HISTORY_COMPONENT_NAME`, sorting between ``signal-agent-diagnosis`` and
+``signal-agent-stated-mechanism`` so the seven stay contiguous.
+
+Its *shape* is §14.1's two-clause requirement, refused as two reasons because
+the repairs differ: *"not a sample, not recent cycles"* is about the **set** of
+prior proposals the assembler went and got (:data:`SAMPLED_HISTORY_CODE` and
+:data:`MISSING_PROPOSAL_CODE`), and *"in full"* is about each one it got
+(:data:`TRUNCATED_HISTORY_CODE`).  The load-bearing check is **recomputed
+identity** — an entry carrying both a prior proposal's text and the
+``code_hash`` §9.1 recorded for it is refused when
+:func:`source_code_hash` over the carried text disagrees — because a law that
+only read the loader's own declarations would be satisfied by silence, and a
+loader that truncates without saying so is the whole failure mode.  That is
+why this member's vocabulary gained exactly one class for feature 206 and it
+is the *refusal* (:class:`TruncatedHistoryError`, a **sibling** of
+:class:`AgentSourceError` **and** of :class:`FlawedMechanismError`, because no
+agent action repairs it — the agent has not been called, and the defect is in
+the run's own assembly).
+
 **What this member is, and what it deliberately is not.**  §14.1 gives the
 signal agent its seat — *"Signal agent, roots (depth 0-1) ... Signal agent,
 depth >= 2"* — and PRD §C3 describes it as *"a coding agent writing signal
@@ -136,7 +163,7 @@ from __future__ import annotations
 
 from app.module_loader import register
 
-from . import _dead_territory, _diagnosis, _mechanism, _themes
+from . import _dead_territory, _diagnosis, _history, _mechanism, _themes
 from ._anti_convergence import (
     ANTI_CONVERGENCE_COMPONENT_NAME,
     ANTI_CONVERGENCE_POLICY_KIND,
@@ -195,6 +222,19 @@ from ._diagnosis import (
     locate_defect,
     mechanism_diagnosis,
 )
+from ._history import (
+    COMPLETE_HISTORY_CODE,
+    MAX_LISTED_OFFENDERS,
+    MISSING_PROPOSAL_CODE,
+    NOT_A_HISTORY_CODE,
+    SAMPLED_HISTORY_CODE,
+    TRUNCATED_HISTORY_CODE,
+    HistoryReason,
+    HistoryVerdict,
+    PriorProposal,
+    ProposalHistory,
+    proposal_history,
+)
 from ._mechanism import (
     CANONICAL_MECHANISM_MAX_WORDS,
     MECHANISM_COLUMN,
@@ -243,6 +283,7 @@ from .errors import (
     MechanismStoreUnavailableError,
     SignalAgentError,
     ThemeSetError,
+    TruncatedHistoryError,
 )
 
 __all__ = [
@@ -254,6 +295,7 @@ __all__ = [
     "COMMITTED_ANTI_CONVERGENCE",
     "COMMITTED_DEAD_TERRITORY",
     "COMMITTED_LEGAL_THEMES",
+    "COMPLETE_HISTORY_CODE",
     "COMPONENT_NAME",
     "CONFORMS_CODE",
     "DEAD_TERRITORY_CODE",
@@ -261,28 +303,34 @@ __all__ = [
     "DEAD_TERRITORY_POLICY_KIND",
     "DIAGNOSIS_COMPONENT_NAME",
     "FLAWED_MECHANISM_CODE",
+    "HISTORY_COMPONENT_NAME",
     "ILLEGAL_THEME_CODE",
     "LEGAL_THEMES_POLICY_KIND",
     "LEGAL_THEME_CODE",
     "LIVE_TERRITORY_CODE",
     "LOCATED_BUG_CODE",
     "MAX_LISTED_COMPLAINTS",
+    "MAX_LISTED_OFFENDERS",
     "MECHANISM_COLUMN",
     "MECHANISM_CONFLICT_CODE",
     "MECHANISM_POLICY_REVISION",
+    "MISSING_PROPOSAL_CODE",
     "MODULE_SYMBOL",
     "NEVER_SCORED_CODE",
     "NOT_A_DIAGNOSIS_CODE",
+    "NOT_A_HISTORY_CODE",
     "NOT_A_PROPOSAL_CODE",
     "NOT_A_ROOT_CODE",
     "NOT_A_STATEMENT_CODE",
     "NOT_A_THEME_CODE",
     "NOVEL_CODE",
     "PARAMETER_TWEAK_CODE",
+    "SAMPLED_HISTORY_CODE",
     "SIGNAL_SOURCE_FILENAME",
     "STATED_MECHANISM_CODE",
     "STATED_MECHANISM_COMPONENT_NAME",
     "THEMES_COMPONENT_NAME",
+    "TRUNCATED_HISTORY_CODE",
     "AdoptionReason",
     "AgentSourceError",
     "AntiConvergenceClause",
@@ -300,6 +348,8 @@ __all__ = [
     "DiagnosisReason",
     "DiagnosisVerdict",
     "FlawedMechanismError",
+    "HistoryReason",
+    "HistoryVerdict",
     "IllegalThemeError",
     "LegalThemes",
     "LocatedDefect",
@@ -314,6 +364,8 @@ __all__ = [
     "MechanismStatementError",
     "MechanismStore",
     "MechanismStoreUnavailableError",
+    "PriorProposal",
+    "ProposalHistory",
     "SignalAgentError",
     "SignalContract",
     "SignalThemeGate",
@@ -322,10 +374,12 @@ __all__ = [
     "ThemeAdmission",
     "ThemeReason",
     "ThemeSetError",
+    "TruncatedHistoryError",
     "anti_convergence_gate",
     "build_anti_convergence",
     "build_dead_territory_gate",
     "build_mechanism_diagnosis",
+    "build_proposal_history",
     "build_signal_contract",
     "build_signal_theme_gate",
     "build_stated_mechanism",
@@ -344,6 +398,7 @@ __all__ = [
     "locate_defect",
     "mechanism_diagnosis",
     "mechanism_digest",
+    "proposal_history",
     "proposal_skeleton",
     "require_contract",
     "signal_contract",
@@ -430,9 +485,26 @@ STATED_MECHANISM_COMPONENT_NAME = _mechanism.STATED_MECHANISM_COMPONENT_NAME
 #: :data:`STATED_MECHANISM_COMPONENT_NAME` are — an unprefixed ``signal-agent``
 #: a sixth time would replace feature 205's law — and
 #: ``signal-agent-diagnosis`` sorts between ``signal-agent-dead-territory`` and
-#: ``signal-agent-stated-mechanism`` in the name-sorted ``app.order``, so the
-#: member's six components stay contiguous in the category they belong to.
+#: ``signal-agent-history`` in the name-sorted ``app.order``, so the member's
+#: seven components stay contiguous in the category they belong to.
 DIAGNOSIS_COMPONENT_NAME = _diagnosis.DIAGNOSIS_COMPONENT_NAME
+
+#: The component name feature 206's law registers under.  Imported from
+#: :mod:`signal_agent._history` rather than re-spelled — the ``__all__`` entry
+#: above re-exports it, so this is a name, not a second literal.  Unlike
+#: :data:`COMPONENT_NAME`, which the spec's plugin declaration owns and which
+#: this module is the single spelling of, this one is *also* the live name the
+#: submodule's own doc references and its tests assert on, and two literals for
+#: it would be the drift the single spelling exists to prevent.
+#:
+#: Prefixed, for the same reason :data:`THEMES_COMPONENT_NAME`,
+#: :data:`DEAD_TERRITORY_COMPONENT_NAME`, :data:`STATED_MECHANISM_COMPONENT_NAME`
+#: and :data:`DIAGNOSIS_COMPONENT_NAME` are — an unprefixed ``signal-agent`` a
+#: seventh time would replace feature 205's law — and
+#: ``signal-agent-history`` sorts between ``signal-agent-diagnosis`` and
+#: ``signal-agent-stated-mechanism`` in the name-sorted ``app.order``, so the
+#: member's seven components stay contiguous in the category they belong to.
+HISTORY_COMPONENT_NAME = _history.HISTORY_COMPONENT_NAME
 
 
 @register(COMPONENT_NAME)
@@ -736,3 +808,40 @@ def build_mechanism_diagnosis() -> MechanismDiagnosis:
     branch is judged.
     """
     return mechanism_diagnosis()
+
+
+@register(HISTORY_COMPONENT_NAME)
+def build_proposal_history() -> ProposalHistory:
+    """Contribute feature 206's law to the composed application.
+
+    The seventh component this member contributes, beside feature 205's law and
+    features 210's, 211's, 212's, 213's and 209's gates and diagnosis, each
+    under its own name — the registry is keyed by name and a later registration
+    of any of them would *replace* that law, so a member carrying seven
+    controls carries seven components, each answering its own feature's
+    question.  Like the six builders above it takes no arguments (the factory's
+    registration protocol) and returns a law rather than a service, a session
+    or an LLM client.
+
+    **This builder has no fallback branch, and that is the feature rather than
+    an omission.**  Features 212's, 213's and 210's builders each compile a
+    committed artifact and therefore each need a documented answer for a
+    drifted one.  Feature 206's law compiles *nothing*: what counts as the
+    whole history is *the caller's own tree query for the round*, which is a
+    fact about the run handed in at call time rather than a deployment decision
+    recorded in a file.  So there is no artifact to drift, no ``except`` to
+    write, and nothing this builder can fail at.
+
+    **It is the member's third builder of feature 205's shape** — a law whose
+    construction computes nothing and resolves nothing — and for the same
+    reason: presence in the composed application must not depend on scan order.
+    This builder imports nothing outside this package and reaches no member, so
+    the scan that puts one member's ``src/`` on ``sys.path`` at a time cannot
+    make this component absent.
+
+    Holding the handle therefore computes nothing and can fail at nothing, and
+    the first :meth:`~signal_agent.ProposalHistory.admit` is where a round's
+    history is judged — *before* the agent is called, which is the one place
+    the refusal is still cheap.
+    """
+    return proposal_history()
