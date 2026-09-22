@@ -5,7 +5,7 @@ Implements app_spec.xml, "Discovery Orchestrator & Campaigns", feature
 and null fraction before any node is expanded"* — against §5's discovery
 tree and §4.1.1's planted-null fraction.
 
-The member's surface is three modules.  :mod:`discovery.campaign` is the clip
+The member's surface is four modules.  :mod:`discovery.campaign` is the clip
 that derives φ from ``W``, §7.3's two regimes as a closed set, the frozen
 :class:`~discovery.campaign.CampaignRecord` and the store that creates one
 row in the ``campaign`` table the migration already declares.
@@ -16,9 +16,14 @@ assignment outside it.  :mod:`discovery.workers` is feature 238 — *"System
 runs W parallel evaluation workers as concurrent slots, which returns
 batch results as each worker completes"* — the dispatch seam that runs a
 selected batch across the W slots the campaign was planned with and
-yields each answer as its slot finishes.  This module re-exports all
-three and registers the one component; it carries no logic of its own,
-which is the same shape every member in this workspace takes.
+yields each answer as its slot finishes.  :mod:`discovery.retry` is
+feature 244 — *"System retries an interrupted evaluation worker
+idempotently, so spot-instance reclamation returns no duplicate ledger
+debit"* — the caller-side seam that re-runs the jobs §14's reclamation
+took away, on the same asks their interrupted attempts carried, under a
+budget the caller states.  This module re-exports all four and registers
+the one component; it carries no logic of its own, which is the same
+shape every member in this workspace takes.
 
 **Feature 241 adds no component, and that is a decision rather than an
 omission.**  The factory's registration protocol is for *state a deployment
@@ -45,6 +50,21 @@ its missing default — so the verb stays a function and the member's
 registered surface stays feature 232's single store.  W reaches the pool
 the only way the spec allows: the caller that planned the campaign passes
 ``width=record.workspace_count``.
+
+**Feature 244 adds no component, and it inherits 238's reason the way
+238 inherited 241's.**  :func:`discovery.retry.retry_interrupted` is
+the retry of the workers 238's pool answered interrupted — §14's
+spot-instance reclamation, *"Failures retry; ledger debits are
+idempotent by ``node_id``"* — and it holds even less between calls
+than a pool does: no slots, no records, nothing but the outcome stream
+for the length of the call.  Its two numbers are per-call facts the
+caller states — ``retries``, the budget (§14 gives no number, so a
+default would be this module inventing an interruption policy), and
+``width``, the campaign's W again — and a builder that baked either
+would freeze a policy no campaign stated.  The member's registered
+surface stays feature 232's single store, and the campaign loop
+reaches the retry the only way the spec allows: by calling it, with
+the campaign's own width and its own tolerance for reclamation.
 
 **Why this member exists at all.**  The ``campaign`` table is feature
 104's (``migrations/versions/0111_campaign_table.py``) and eight stores
@@ -124,6 +144,12 @@ from .errors import (
     CampaignPlanningError,
     DiscoveryError,
     IllegalThemeError,
+    WorkerInterrupted,
+)
+from .retry import (
+    RetriedResult,
+    is_interruption,
+    retry_interrupted,
 )
 from .themes import (
     DEFAULT_LEGAL_THEMES,
@@ -170,13 +196,17 @@ __all__ = [
     "CampaignRecords",
     "DiscoveryError",
     "IllegalThemeError",
+    "RetriedResult",
     "ThemeSet",
+    "WorkerInterrupted",
     "WorkerResult",
     "assign_theme",
     "build_campaign_records",
     "create_campaign",
+    "is_interruption",
     "legal_themes_from_env",
     "null_fraction",
+    "retry_interrupted",
     "run_batch",
 ]
 

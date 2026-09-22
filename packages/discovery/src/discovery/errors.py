@@ -90,6 +90,25 @@ is never this class — a failed run is a value the stream reports
 (:class:`~discovery.workers.WorkerResult` carries it), because every
 attempt must be answered for the tree to log it — so this class is
 reserved for asks the pool could not even begin.
+
+Feature 244 adds the fifth class, and it is the one member of this
+vocabulary that is **not a refusal at all**.  :class:`WorkerInterrupted`
+is a fact — the evaluation worker was interrupted before its evaluation
+finished, §14's spot-instance reclamation arriving as data — and where
+every other class here answers *"what did this member refuse, and what
+must the caller do about it?"*, this one answers *"what happened, and
+which verb exists for it?"*: the worker of record raises it, feature
+238's pool captures it on its :class:`~discovery.workers.WorkerResult`
+like any failure, and :func:`discovery.retry.retry_interrupted` — the
+retry that same sentence names — is the act it exists for.  It is a
+subclass of :class:`DiscoveryError` anyway, so the caller that catches
+the orchestrator's path with one ``except`` catches an interruption
+too; the distinction it keeps is the load-bearing one:
+:func:`discovery.retry.is_interruption` is true of **exactly** this
+class, so nothing else — not an evaluation failure (§6.1 step 11: a
+failed evaluation still consumed a hypothesis, and is a completed,
+debited, logged attempt) and not an operator's raw ``KeyboardInterrupt``
+— is ever retried as though the cloud had taken the machine.
 """
 
 from __future__ import annotations
@@ -100,6 +119,7 @@ __all__ = [
     "CampaignPlanningError",
     "DiscoveryError",
     "IllegalThemeError",
+    "WorkerInterrupted",
 ]
 
 
@@ -187,11 +207,50 @@ class BatchDispatchError(DiscoveryError):
     holds no store, so no store's state can contradict the law.  And it is
     emphatically not the class a *failing worker* raises through: a worker
     that fails mid-batch is a value the stream carries on its
-    :class:`~discovery.workers.WorkerResult` (the
     :class:`~discovery.workers.WorkerResult` (the signal sandbox's
     *a failed run is a value* discipline — ``evaluator._sandbox`` states
     it for its own failures — and PRD §5's *"every attempt is logged to
     the tree with its full artifact"*, feature 240's "including
     failures"), so a batch whose evaluations fail never sees this class.
-    It is reserved for asks the pool could not even start.
+    It is reserved for asks the pool could not even start — and feature
+    244's re-dispatch joins it rather than minting a twin, because its
+    refusals are the same repair spelled for one more act: a retry
+    budget that is not a genuine positive integer, a value that is not
+    a :class:`~discovery.workers.WorkerResult` at all, a result that is
+    not an interruption (a completed run, or an evaluation failure the
+    tree must log rather than re-spend), and two interrupted results
+    naming one job — the state whose retry *would* be the duplicate
+    ledger debit feature 244 exists to prevent.  All fire before any
+    slot starts, on the call rather than at first consumption.
+    """
+
+
+class WorkerInterrupted(DiscoveryError):
+    """An evaluation worker was interrupted before its evaluation finished.
+
+    app_spec.xml feature 244: *"System retries an interrupted evaluation
+    worker idempotently, so spot-instance reclamation returns no duplicate
+    ledger debit"* — and this class is the *interrupted* of that sentence,
+    §14's scheduled event arriving as data: *"Eval workers … Spot-eligible.
+    Failures retry; ledger debits are idempotent by ``node_id``."*
+
+    Raised by the **worker of record** (feature 239's expansion, a
+    deployment's evaluator driver), which translates the machine-level
+    fact — the sandbox child dying of the provider's reclaim signal, the
+    host going away mid-evaluation — into the one vocabulary this member
+    can act on.  It is not raised by the retry itself and it is never a
+    refusal: it is the fact :func:`discovery.retry.retry_interrupted`
+    exists to answer, captured by feature 238's pool onto its
+    :class:`~discovery.workers.WorkerResult` like any failure and
+    classified by :func:`discovery.retry.is_interruption` — which is true
+    of exactly this class, so an **evaluation failure** (a completed,
+    debited, logged attempt — §6.1 step 11 debits it because *"a failed
+    evaluation still consumed a hypothesis"*) and an operator's raw
+    ``KeyboardInterrupt`` are never mistaken for reclamation and retried.
+
+    A subclass of :class:`DiscoveryError` so the one-``except`` property
+    holds for the whole orchestrator's path, interruptions included.
+    The message is the worker's own account of the interruption; the
+    retry's refusals never carry this class, and a caller that sees it
+    raised knows a worker, not a seam, is speaking.
     """
