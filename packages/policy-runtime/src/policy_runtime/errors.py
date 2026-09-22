@@ -1,6 +1,6 @@
 """The policy-runtime error vocabulary — one base class, split by contract.
 
-The base class for every failure of the policy-runtime path, and the nine
+The base class for every failure of the policy-runtime path, and the ten
 subclasses that path raises.  One base class so a caller — the replay engine,
 the dreaming loop, an operator script, a later feature in this category — can
 catch every failure of the read-side question path with a single ``except``,
@@ -100,6 +100,26 @@ terminal act *during* the episode's closing — the same before/during split
 :class:`PolicyFilesystemError` and :class:`PolicyImportError` draw against
 the gate.  A subclass of :class:`PolicyRuntimeError` all the same, so the one
 base class catches a refused commit too.
+
+The tenth — :class:`PolicyBudgetError` (feature 221) — is the *budget's*: a
+reading taken from a value that names no quantity of statistical budget (a
+``bool``, a NaN, text, ``None``), a reassignment of a budget already read, an
+allowance that is negative or not an amount, or a charge row that cannot say
+whether it consumed statistical budget — including the one mistake feature
+221's sentence is written against, a row carrying §8's ``charge_units`` (which
+*"prices compute"*) where its ``charges_budget`` directive belongs.  It is kept
+apart from :class:`BetaFixedError`, its nearest sibling — both guard a number
+read during an episode, and both refuse reassignment — because the contracts
+are different ones: beta is *fixed* by the deployment and does not move for the
+whole episode (docs §609), while a budget reading is a *measurement* that
+legitimately differs every time it is taken, so the refusal here is against a
+value that names no budget rather than against a value that moved after it was
+set.  It is kept apart from :class:`PolicyAnswerSurfaceError` because 224
+refuses the *name* ``budget_spent`` at the surface while this refuses the
+*arithmetic* beneath it — a caller that assembles an account from charge rows
+has met this class long before any policy could ask for a name.  A subclass of
+:class:`PolicyRuntimeError` all the same, so the one base class catches a
+refused budget read too.
 
 These live in their own module rather than in the package ``__init__`` for two
 reasons.  One, it is the house shape — every sibling member (``sandbox``,
@@ -364,4 +384,39 @@ class PolicyCommitError(PolicyRuntimeError):
     not prove), which is exactly the case the −∞ exists to score.  A subclass
     of :class:`PolicyRuntimeError` all the same, so a caller catching the
     read-side path's one base class catches a refused commit too.
+    """
+
+
+class PolicyBudgetError(PolicyRuntimeError):
+    """A statistical budget could not be read, or was not a statistical budget.
+
+    Feature 221's contract, from three sides.  On the *value* side: a reading
+    taken from something that names no quantity of statistical budget — a
+    ``bool``, text, ``None``, a non-number (refused rather than coerced),
+    a NaN (which compares false against every threshold, so a policy's
+    ``while budget_remaining() > 0`` would never see it), or ``-inf``; and
+    every path by which a budget already read could be moved —
+    ``budget.value = x``, ``budget._x = x``, a shadow attribute,
+    ``del budget.value`` — because a reading is what the episode's spend *was*
+    when it was taken.  On the *allowance* side: a stated allowance that is
+    negative, a NaN, a :class:`bool` or not a real number, since an allowance
+    below zero is a spend wearing an allowance's name.  On the *row* side: a
+    charge row that cannot say whether it consumed statistical budget, which
+    includes the mistake this feature's sentence is aimed at — a row carrying
+    §8's ``charge_units``, the column the ledger member's own module states
+    *"prices compute"*, where the ``charges_budget`` directive belongs.
+
+    Kept apart from :class:`BetaFixedError`, its nearest sibling in this
+    module, because the contracts differ in the one way that matters to a
+    caller: beta is *fixed* by the deployment and does not move for the whole
+    episode (docs §609), while a budget reading is a *measurement* that
+    legitimately differs every time it is taken — the refusal here is against
+    a value that names no budget, not against a value that moved after it was
+    set.  Kept apart from :class:`PolicyAnswerSurfaceError` because feature 224
+    refuses the *name* ``budget_spent`` at the surface one seam above, while
+    this refuses the *arithmetic* beneath it: a caller assembling an account
+    from charge rows meets this class long before a policy can ask for a name.
+    A subclass of :class:`PolicyRuntimeError` all the same, so a caller
+    catching the read-side path's one base class catches a refused budget read
+    too — the single-``except`` discipline the rest of this module keeps.
     """

@@ -112,6 +112,29 @@ and the refusal it is met with — :class:`PolicyAnswerSurfaceError` — is an
 ``hasattr``, ``getattr`` with a default and a ``dir()``-driven walk all behave
 over the surface exactly as they do over any other object.
 
+**The budget a policy reads is statistical, and the other one is not
+reported (feature 221).**  §11's interface has a second read verb —
+``question.budget_remaining()  # statistical, not compute`` — and the eight
+words after the hash are the feature: the system meters two things and calls
+both of them budgets.  The **statistical** budget is degrees of freedom, what
+§10.3's score subtracts (``− β₁ · trials_charged``) and what §8's
+``charges_budget`` column stamps a trial with; the **compute** budget is the
+machine — §5.2's cgroup plane (features 162/163), the agent's calls, §10.1's
+``K2`` rounds — and prd §123 records that it is *not* the binding resource
+(*"compute is cheap and degrees of freedom are the binding resource"*).  The
+distinction is not ours to invent: prd §705 is a table of the paper's Equation
+1 as it was changed, and its first row replaces ``β₁ N (agent calls)`` — a
+compute quantity — with ``β₁ · trials charged (statistical budget)``.
+:mod:`.budget` therefore reads §8's directive and **only** the directive:
+:func:`budget_account` counts the rows whose ``charges_budget`` is true and
+never sums §8's ``charge_units``, which the ledger member's own module states
+*"prices compute"*.  The account is the runtime's object — it holds the
+allowance and the charges, so it can answer how much has been *spent* — while
+what :meth:`PolicyQuestion.budget_remaining` hands a policy is a
+:class:`StatisticalBudget`: one number, carrying its denomination and nothing
+else, which is feature 224's law (§10.2 withholds ``budget_spent``) kept
+structurally one seam beneath the surface that refuses the name.
+
 **The episode's beta is one number, read once and fixed.**  Feature 226
 (docs/nullius-tech-architecture.md §609: *"``beta`` is read once in ``__init__``,
 fixed for the episode"*) lives in :mod:`.beta` as :class:`EpisodeBeta` and
@@ -194,6 +217,7 @@ nothing for the seam.
 from __future__ import annotations
 
 import json
+import numbers
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -209,6 +233,14 @@ from .beta import (
     EpisodeBeta,
     read_beta,
 )
+from .budget import (
+    COMPUTE_UNITS,
+    STATISTICAL_UNIT,
+    UNBOUNDED_BUDGET,
+    BudgetAccount,
+    StatisticalBudget,
+    budget_account,
+)
 from .commit import (
     NON_COMMITTING_SCORE,
     CommittedPick,
@@ -222,6 +254,7 @@ from .errors import (
     PolicyAddressError,
     PolicyAnswerSurfaceError,
     PolicyAdmissionRefusal,
+    PolicyBudgetError,
     PolicyCommitError,
     PolicyFilesystemError,
     PolicyImportError,
@@ -275,6 +308,8 @@ __all__ = [
     "CAMPAIGN_TREE_COMPONENT",
     "AdmissionReason",
     "BetaFixedError",
+    "BudgetAccount",
+    "COMPUTE_UNITS",
     "CampaignNode",
     "CampaignTree",
     "CommittedPick",
@@ -302,6 +337,7 @@ __all__ = [
     "PolicyAdmissionRefusal",
     "PolicyAddressError",
     "PolicyAnswerSurfaceError",
+    "PolicyBudgetError",
     "PolicyCeiling",
     "PolicyCommitError",
     "PolicyFilesystemError",
@@ -314,7 +350,11 @@ __all__ = [
     "PolicyTreeError",
     "PrefixView",
     "SCHEDULE_KEYS",
+    "STATISTICAL_UNIT",
+    "StatisticalBudget",
     "Termination",
+    "UNBOUNDED_BUDGET",
+    "budget_account",
     "episode_commit",
     "family_schedule",
     "find_learned_component",
@@ -648,11 +688,24 @@ class PolicyQuestion:
     so a question built over a non-tree or an empty tree is refused before it
     can hand a policy an interface that would answer differently from the tree
     it claims to front.
+
+    The question also answers **the other half of §11's read side** —
+    :meth:`budget_remaining`, feature 221's statistical budget — and it is
+    configured at construction, out of the same one-factory discipline: a
+    caller passes the :class:`BudgetAccount` its campaign's charges make, and
+    the question answers :attr:`BudgetAccount.remaining`.  The *account* is the
+    runtime's object and the *reading* is what the policy is handed, which is
+    the audience split :meth:`budget_remaining` documents at length; a question
+    built with no account is a question over a deployment that stated no
+    statistical ceiling, and answers :data:`UNBOUNDED_BUDGET` — the same
+    statement :meth:`bootstrap.BootstrapQuestion.budget_remaining` makes for a
+    bootstrap world's zero statistical cost, so "one policy, both pools" holds
+    for this verb as it does for :meth:`observed`.
     """
 
-    __slots__ = ("_revealed", "_tree")
+    __slots__ = ("_budget", "_revealed", "_tree")
 
-    def __init__(self, tree: CampaignTree) -> None:
+    def __init__(self, tree: CampaignTree, budget: BudgetAccount | None = None) -> None:
         # Duck-typed, not ``isinstance``: the module loader imports the member
         # under a synthetic name and re-executes it, so the composed tree is a
         # *second* CampaignTree class object, distinct from this module's.  An
@@ -675,7 +728,53 @@ class PolicyQuestion:
                 "fronts a policy over a tree, and a tree with no nodes is a surface "
                 "the policy could not walk"
             )
+        if budget is not None:
+            # Duck-typed for the same reason the tree is: a composed account is
+            # a *second* BudgetAccount class object, so ``isinstance`` would
+            # refuse the very account ``budget_account()`` handed a sibling
+            # caller.  The seam is checked for the one answer the question
+            # reads off it — ``remaining``, a *property* rather than a verb,
+            # which is why the check is a read and not ``callable()``: a bound
+            # method here would be a different shape answering the same name.
+            # Everything else is refused naming what arrived — neither skipped
+            # (a question answering an arbitrary number) nor coerced back
+            # through ``budget_account()``, which would make a *bare float*
+            # look like a budget: the substitution feature 221's sentence is
+            # written against. ``5.0`` names no resource, and "is this five
+            # trials or five seconds?" is the question the feature answers.
+            try:
+                remaining: Any = budget.remaining
+            except Exception as exc:  # any failure to read the answer is this law's
+                raise PolicyBudgetError(
+                    f"a question's budget is an object answering `remaining` — "
+                    f"the statistical budget left, the reading a policy is "
+                    f"handed — and a bare number is refused rather than "
+                    f"wrapped, because a float names no resource and 'is this "
+                    f"five trials or five seconds?' is the question feature "
+                    f"221 exists to answer. Build one with "
+                    f"budget_account(allowance, rows), whose own `remaining` is "
+                    f"that reading, or pass a live account the replay updates "
+                    f"as trials charge — or pass no budget at all for a "
+                    f"deployment that stated no statistical ceiling. Got "
+                    f"{budget!r} ({type(budget).__name__}), which answers none: "
+                    f"reading `remaining` raised {exc!r} (feature 221)"
+                ) from exc
+            if isinstance(remaining, bool) or not isinstance(remaining, numbers.Real):
+                raise PolicyBudgetError(
+                    f"a question's budget must answer `remaining` as a real "
+                    f"number of remaining trials charged — the runtime's "
+                    f"BudgetAccount does, so the reading a policy is handed is "
+                    f"the campaign's own; got {budget!r} "
+                    f"({type(budget).__name__}), whose `remaining` is "
+                    f"{remaining!r} ({type(remaining).__name__}). A bare number "
+                    f"is refused here rather than wrapped: a float names no "
+                    f"resource, and 'is this five trials or five seconds?' is "
+                    f"the question feature 221 exists to answer. Build one with "
+                    f"budget_account(allowance, rows) — or pass no budget at "
+                    f"all for a deployment that stated no statistical ceiling"
+                )
         self._tree = tree
+        self._budget = budget
         self._revealed: set[str] = set()
 
     @property
@@ -746,11 +845,91 @@ class PolicyQuestion:
             self._revealed.add(node.node_id)
         return {node.node_id: PolicyObservation.from_node(node) for node in newly}
 
+    def budget_remaining(self) -> StatisticalBudget:
+        """The episode's statistical budget — feature 221, and not the compute one.
+
+        docs/nullius-tech-architecture.md §597's line in the identical
+        ``question.*`` interface — ``question.budget_remaining()  # statistical,
+        not compute`` — which prd §422 repeats verbatim.  The answer is the
+        campaign's charge account read against its allowance:
+        :attr:`BudgetAccount.remaining`, one :data:`STATISTICAL_UNIT` per trial
+        whose §8 ``charges_budget`` directive says it consumed degrees of
+        freedom.
+
+        **What it is not is the feature.**  §8's ``charge_units`` (*"1.0
+        default; CV folds may cost more"*, feature 89 — the column the ledger
+        member's own module states *"prices compute"*), §5.2's cgroup plane
+        (``cpu_s``, ``mem_mb``, ``pids``, feature 162), feature 163's wall-clock
+        budget, the agent's calls and §10.1's ``K2`` rounds are all budgets this
+        verb does **not** report — and prd §705 records why the distinction is
+        load-bearing rather than tidy: the paper's penalty counted
+        ``β₁ N (agent calls)``, a compute quantity, and was replaced by
+        ``β₁ · trials charged`` precisely because *"backtests are embarrassingly
+        parallel and cheap. Parallelism is not the bottleneck. Data is."*
+        (§315).  A caller that wants the machine's budget has features 162 and
+        163; a policy that got one here would be metering the resource the
+        system already decided was not binding.
+
+        **The value carries its denomination and nothing else.**  What is
+        returned is a :class:`StatisticalBudget` — a number, in the unit prd
+        §705 names — and not the account: no allowance, no charge list, no
+        :attr:`BudgetAccount.spent`.  That last omission is feature 224's law,
+        one seam beneath the surface that enforces it (§10.2 withholds
+        ``budget_spent``; :mod:`policy_runtime.surface` refuses the *name*),
+        and it is kept structurally rather than by convention: a policy holding
+        the reading holds one float, so there is no attribute to walk to the
+        number the law withholds.
+
+        **The reading is live, and that is not the same as the reading being
+        movable.**  The account is read afresh on every call, so a policy that
+        spends its budget across rounds watches the figure fall — which is the
+        whole point of the verb (a policy's own mandate must let it terminate,
+        and a frozen figure could not tell it when).  What cannot move is a
+        *reading already taken*: :class:`StatisticalBudget` refuses every
+        reassignment path, so the number in a policy's hand is what the
+        campaign's charges said at the moment it was read.  The two rules are
+        the two halves of one fact — the budget changes, a reading of it does
+        not — and feature 226's fixed scalar is the contrast rather than the
+        precedent: beta is fixed *by the deployment*, while this figure is a
+        *measurement* of a spend that keeps happening.
+
+        A question built with no account answers :data:`UNBOUNDED_BUDGET` —
+        the deployment stated no statistical ceiling, which is not a ceiling of
+        zero.
+        """
+        account = self._budget
+        if account is None:
+            return StatisticalBudget(UNBOUNDED_BUDGET)
+        try:
+            remaining = account.remaining
+        except PolicyBudgetError:
+            raise
+        except Exception as exc:  # a live account that cannot answer is this law's
+            # The account is read *live*, so unlike the construction-time seam
+            # this read happens during the episode, against an object a replay
+            # owns. A bare exception escaping here would reach authored policy
+            # code as a failure of no named law — and the policy's own
+            # ``except PolicyRuntimeError`` (the member's one base class) would
+            # not catch it. Translated rather than propagated, the rule every
+            # seam in this member keeps; a refusal that is *already* this law's
+            # passes through unchanged so the specific message survives.
+            raise PolicyBudgetError(
+                f"the episode's statistical budget could not be read: the "
+                f"account answered `remaining` with {exc!r}. The reading is "
+                f"one trials-charged figure and a policy's termination test "
+                f"depends on it, so an account that cannot answer leaves the "
+                f"policy no way to stop on its budget (feature 221). Got "
+                f"{account!r} ({type(account).__name__})"
+            ) from exc
+        return StatisticalBudget(remaining)
+
     def __repr__(self) -> str:  # pragma: no cover - debugging aid only
         return f"PolicyQuestion(tree_id={self._tree.tree_id!r}, revealed={len(self._revealed)})"
 
 
-def policy_question(tree: CampaignTree) -> PolicyQuestion:
+def policy_question(
+    tree: CampaignTree, budget: BudgetAccount | None = None
+) -> PolicyQuestion:
     """Turn a campaign tree into the read-side question.* adapter a policy expects.
 
     The one factory for the identical interface: a :class:`CampaignTree` in,
@@ -762,8 +941,27 @@ def policy_question(tree: CampaignTree) -> PolicyQuestion:
     identical observations to the last field — the property that makes "one
     policy, both pools" a fact about the adapter rather than a promise in a
     docstring.
+
+    ``budget`` is the campaign's :class:`BudgetAccount` — feature 221's other
+    half of the read side, passed through to :meth:`PolicyQuestion.budget_remaining`
+    so a replay hands the policy one adapter answering both verbs rather than
+    two objects it must keep together.  It stays optional and defaults to
+    ``None`` because a deployment that stated no statistical ceiling is the
+    ordinary case for a campaign tree fronted out of a store, and a factory
+    that *demanded* an account would make every existing construction of a
+    question a refusal — the call sites feature 217 already has.  A question
+    built without one answers :data:`UNBOUNDED_BUDGET`.
+
+    The two are separate arguments rather than one nested object — the
+    deployment's allowance, which is a campaign fact, and the charges, which
+    are read from the ledger — because the seam this factory serves is the
+    *read side*, and a factory that resolved the charges itself would have to
+    reach a store and would stop being a pure function of what it was handed.
+    The account is built by :func:`budget_account` at the call site that owns
+    the rows; this factory's job is to hand what it was given to the adapter,
+    unchanged.
     """
-    return PolicyQuestion(tree)
+    return PolicyQuestion(tree, budget)
 
 
 @register(CAMPAIGN_TREE_COMPONENT)

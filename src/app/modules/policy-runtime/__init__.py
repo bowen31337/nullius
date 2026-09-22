@@ -114,6 +114,26 @@ closes, not to the composed application, and a second spelling of the −∞ or
 of the one-commit door would be a second place the termination protocol would
 have to hold.
 
+Feature 221 lives in the same member and is likewise not reached through this
+seat: the statistical budget (:func:`policy_runtime.budget_account` and the
+:meth:`policy_runtime.PolicyQuestion.budget_remaining` reading it feeds) is a
+pure function of a stated allowance and the campaign's §8 ``charges_budget``
+directives — no store, no deployment state and no component — so it is reached
+directly from the member — ``from policy_runtime import budget_account`` —
+exactly the way the admission gate, the beta scalar, the prefix view, feature
+229's :func:`policy_runtime.plan_grid`, feature 224's
+:func:`policy_surface` and feature 222's :func:`policy_runtime.episode_commit`
+are.  This module does not wrap it, because there is nothing here to compose:
+the allowance belongs to the episode the replay opens and the charges come from
+the ledger's rows at the call site that holds them, not to the composed
+application — and a second spelling of the statistical-versus-compute
+discriminant would be a second place for §10.3's ``− β₁ · trials_charged`` to
+be read against the wrong resource.  Note in particular that the seat composes
+the *question's tree* and not its budget: a question built from
+:func:`policy_runtime.policy_question` with no account answers
+:data:`policy_runtime.UNBOUNDED_BUDGET`, which is the honest state of a
+composed deployment that has stated no statistical ceiling.
+
 Where the composed tree is ``None``, that is a statement about the deployment,
 not an error: the member was not scanned, or the workspace is empty, or the
 deployment's artifact store holds no committed campaign, so there is no tree to
