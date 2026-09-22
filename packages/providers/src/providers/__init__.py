@@ -42,6 +42,35 @@ interface's entire surface:
   record (that is feature 193's separate provider) or write a fixture file
   (that is feature 194's).
 
+Feature 198 — *"System rejects a depth model without a 1 million token
+context at flat pricing, because calls at depth 2 or greater carry a large
+history"* — is the depth role's selection criterion, and the reason the
+category is called *tiering*: feature 192's interface normalizes the call,
+and this one decides which model may take the cheap half of them.  Its
+records join the interface's as direct imports rather than components (see
+:func:`provider_interface` for why a contract registers no service — a
+criterion consulted before any call is placed has nothing to instantiate):
+
+* :class:`DepthModel` — a candidate for the depth role as the registry
+  describes it: the model's name, the context window it serves in tokens,
+  and the long-context surcharge threshold its rate card reprices the whole
+  request above (:func:`flat_pricing` spells the flat case — no threshold,
+  flat at any context).  Shape-validated on construction and deliberately
+  not bar-validated: a 262K-window model is a well-formed candidate — §14.1
+  lists exactly such a tier for early depth, narrow campaigns and the
+  bootstrap worlds — because describing one is not serving one.
+
+* :func:`require_depth_model` — the gate.  A candidate serves the depth ≥ 2
+  role only with at least :data:`MIN_DEPTH_CONTEXT_TOKENS` (one million)
+  tokens of context **at flat pricing** — the window at least the bar, and
+  no surcharge threshold below it, because §14.2's average depth call
+  (~300K tokens, late calls beyond 600K) sits above every major provider's
+  repricing threshold.  Refused as
+  :class:`~providers.InsufficientContextError` or
+  :class:`~providers.LongContextSurchargeError` — the two ways the
+  sentence's one property can be missing, window first, since a model that
+  physically cannot hold the history fails before what it costs matters.
+
 Feature 203 — *"System persists ``agent_model_id`` per node as a provider,
 model and version triple rather than a rolling alias"* — is the other half of
 that story, and the reason this member's second registered component exists.
@@ -120,7 +149,12 @@ seam and no other — a malformed completion, a missing provider, an unknown
 model — raised at the interface's own guardrails, never by a provider's
 transport or the model.  Keeping it narrow is deliberate: a caller catching
 :class:`ProviderError` is catching "the provider contract was violated", not
-"the HTTP client sneezed".
+"the HTTP client sneezed".  Feature 198's taxonomy
+(:mod:`providers._depth_errors`) is a third base alongside the interface's
+and the pin store's, unrelated to both: a model refused for the depth role
+has not been called (so no provider contract failed) and pins no node (so
+no authoring record is unreadable) — it is a *selection* that failed,
+before the campaign spent anything on it.
 
 This package is a workspace member discovered by convention. The module loader
 (``app.module_loader``) scans the members the root ``pyproject.toml`` declares
@@ -162,6 +196,19 @@ from ._ckpt import (
     require_agent_ckpt_hash,
 )
 from ._completion import Completion, Usage
+from ._depth import (
+    FLAT_AT_ANY_CONTEXT,
+    LARGE_HISTORY_FROM_DEPTH,
+    MIN_DEPTH_CONTEXT_TOKENS,
+    DepthModel,
+    flat_pricing,
+    require_depth_model,
+)
+from ._depth_errors import (
+    DepthModelError,
+    InsufficientContextError,
+    LongContextSurchargeError,
+)
 from ._errors import (
     CompletionMalformedError,
     ProviderError,
@@ -208,8 +255,11 @@ __all__ = [
     "AGENT_SAMPLING_COLUMN",
     "CKPT_HASH_LENGTH",
     "DEFAULT_SAMPLING",
+    "FLAT_AT_ANY_CONTEXT",
     "HOSTED_API_CKPT_HASH",
+    "LARGE_HISTORY_FROM_DEPTH",
     "MAX_TEMPERATURE",
+    "MIN_DEPTH_CONTEXT_TOKENS",
     "MODEL_PIN_PARTS",
     "MODEL_PIN_REVISION",
     "SAMPLING_KEYS",
@@ -223,7 +273,11 @@ __all__ = [
     "CkptHashMalformedError",
     "Completion",
     "CompletionMalformedError",
+    "DepthModel",
+    "DepthModelError",
     "Exchange",
+    "InsufficientContextError",
+    "LongContextSurchargeError",
     "Message",
     "ModelPin",
     "ModelPinConflictError",
@@ -243,10 +297,12 @@ __all__ = [
     "UnknownModelError",
     "Usage",
     "build_agent_model_pins",
+    "flat_pricing",
     "hosted_api_weights",
     "require_agent_ckpt_hash",
     "require_agent_model_id",
     "require_agent_sampling",
+    "require_depth_model",
 ]
 
 #: The component name this package registers its pin store under.  The plugin
