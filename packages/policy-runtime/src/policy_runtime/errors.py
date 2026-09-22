@@ -1,6 +1,6 @@
 """The policy-runtime error vocabulary — one base class, split by contract.
 
-The base class for every failure of the policy-runtime path, and the three
+The base class for every failure of the policy-runtime path, and the four
 subclasses that path raises.  One base class so a caller — the replay engine,
 the dreaming loop, an operator script, a later feature in this category — can
 catch every failure of the read-side question path with a single ``except``,
@@ -21,6 +21,16 @@ apart from the tree's two because the tree itself was well-formed and the ask
 reached the lattice — it is the *source* that broke the contract, not a node the
 question fronted — but a :class:`PolicyRuntimeError` all the same, so the one
 base class still catches it.
+
+The fourth — :class:`BetaFixedError` (feature 226) — is the *episode scalar's*:
+a value that is not a finite real number at the one moment beta is read, or a
+reassignment of a beta already read.  It is kept apart from the admission
+gate's because the contract is a different one in a different place: the gate
+judges a policy's authored *source* before an episode begins, while this one
+guards a value *during* an episode — and a caller that catches a policy refusal
+and retries the authoring agent is not the caller that should catch a moved
+scalar.  A :class:`PolicyRuntimeError` all the same, so the one base class
+still catches every failure of the read-side path.
 
 These live in their own module rather than in the package ``__init__`` for two
 reasons.  One, it is the house shape — every sibling member (``sandbox``,
@@ -95,4 +105,31 @@ class PolicyAddressError(PolicyTreeError):
     shown, and a node outside the lattice names a cell the policy never saw.
     The refusal names the node and the tree, so an operator reading a replay's
     failure can tell *which* node refused and *what tree* it was asked of.
+    """
+
+
+class BetaFixedError(PolicyRuntimeError):
+    """An episode's beta scalar could not be read, or was reassigned after it was.
+
+    Feature 226's contract, from both sides.  At initialization: a value that is
+    not a finite real number — a ``bool``, text, ``None``, a NaN — is refused
+    rather than coerced, because the scalar is one number the whole episode is
+    compared under and a mistyped configuration that becomes a silent episode is
+    the failure the check exists for.  After initialization: *every* path by
+    which a caller could move it — ``beta.value = x``, ``beta._value = x``, a
+    shadow attribute, ``del beta.value`` — raises here, because docs §609 fixes
+    beta for the episode so every threshold in it (feature 227's schedule)
+    derives from one number that does not move, and "carried over from the paper
+    unchanged because it is what makes cross-cycle comparison legible".
+
+    Kept apart from :class:`PolicyAdmissionRefusal` because it is a different
+    contract in a different place: that refusal judges a policy's authored
+    *source* before an episode begins and is repaired by resubmitting, while
+    this one guards a value *during* an episode and is not repaired at all — a
+    different beta is a different episode, not a reassignment of this one.  The
+    precedent is feature 10's :class:`contract.MarketWindow`, which fixes a
+    decision time at construction and refuses reassignment in the same shape and
+    for the same reason.  A subclass of :class:`PolicyRuntimeError` all the
+    same, so a caller catching the read-side path's one base class catches a
+    moved scalar too.
     """

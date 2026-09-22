@@ -70,7 +70,20 @@ which is the whole of "returns a mapping of revealed node ids to
 observations", and the property that makes the information barrier a fact
 about the accessor rather than a promise in a docstring.
 
-Stdlib only, and import-cheap: ``json`` and a dataclass; no
+**The episode's beta is one number, read once and fixed.**  Feature 226
+(docs/nullius-tech-architecture.md §609: *"``beta`` is read once in ``__init__``,
+fixed for the episode"*) lives in :mod:`.beta` as :class:`EpisodeBeta` and
+:func:`read_beta` — a scalar that is *the* number every threshold in the episode
+is derived from (feature 227's ``_schedule(beta) -> dict``) and that refuses
+every path by which a caller could move it, so the thresholds a policy explored
+under are the thresholds its score was earned under.  It is a value type in the
+same sense the tree's node model is: it is not part of the ``question.*`` surface
+a policy is handed, and no policy reads or moves it — the runtime reads it once,
+before the policy runs, and the policy sees only the thresholds that follow from
+it.  The immutability shape is feature 10's :class:`contract.MarketWindow`
+restated for a scalar rather than a window.
+
+Stdlib only, and import-cheap: ``json``, ``math`` and a dataclass; no
 third-party import at module scope, so the factory's scan — which imports this
 package to fire its ``@register`` — pays nothing for the seam.
 """
@@ -89,7 +102,12 @@ from .admission import (
     PolicyAdmissionDecision,
     screen_policy,
 )
+from .beta import (
+    EpisodeBeta,
+    read_beta,
+)
 from .errors import (
+    BetaFixedError,
     PolicyAddressError,
     PolicyAdmissionRefusal,
     PolicyRuntimeError,
@@ -110,8 +128,10 @@ from .planning import (
 __all__ = [
     "CAMPAIGN_TREE_COMPONENT",
     "AdmissionReason",
+    "BetaFixedError",
     "CampaignNode",
     "CampaignTree",
+    "EpisodeBeta",
     "GridPlan",
     "GridPlanningContext",
     "PlanGridDecision",
@@ -127,6 +147,7 @@ __all__ = [
     "find_learned_component",
     "plan_grid",
     "policy_question",
+    "read_beta",
     "screen_policy",
 ]
 

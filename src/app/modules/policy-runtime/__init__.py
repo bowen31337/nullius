@@ -41,6 +41,16 @@ gate has no component to compose.  Feature 231's deferral check (a learned
 component reached from a policy's source) is the fourth static check on that
 same gate rather than a second one, so it needs no seat of its own either.
 
+Feature 226 lives in the same member and is likewise not reached through this
+seat: the beta scalar (:func:`policy_runtime.read_beta`) is an episode's own
+value, read once at initialization and fixed for the episode, with no store and
+no component — so it is reached directly from the member — ``from
+policy_runtime import read_beta`` — exactly the way the admission gate and
+feature 229's :func:`policy_runtime.plan_grid` are.  This module does not wrap
+it, because there is nothing here to compose: the scalar belongs to the episode
+the replay opens, not to the composed application, and a second spelling of it
+would be a second thing to keep in sync.
+
 Where the composed tree is ``None``, that is a statement about the deployment,
 not an error: the member was not scanned, or the workspace is empty, or the
 deployment's artifact store holds no committed campaign, so there is no tree to
