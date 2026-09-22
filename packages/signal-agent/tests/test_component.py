@@ -14,12 +14,12 @@ Three contracts, all held from the side this member owns:
   their own components: the synthetic-name copy (pin by name, module suffix and
   behaviour — never ``isinstance``), the second composition (a ``@register``
   outside ``__init__.py`` would fire once and silently drop out of every later
-  ``create_app()``; all eight builders live in ``__init__.py`` and the test
+  ``create_app()``; all nine builders live in ``__init__.py`` and the test
   asserts on the *second* application or it passes vacuously), and the
   **registry-replacement** hazard a second component introduces — the registry
   is keyed by name, so a builder that took ``signal-agent`` for itself would
   silently replace feature 205's law rather than sit beside it, which is why
-  the eight are asserted together and each law is checked *after* all eight
+  the nine are asserted together and each law is checked *after* all nine
   fired.
 
 * **the seats** — ``app.modules.signal-agent`` answers *what is the composed
@@ -414,6 +414,38 @@ def _assert_is_the_diagnosis_law(component: object) -> None:
     assert composed_flawed.detail == expected_flawed.detail
 
 
+def _assert_is_the_proposal_history_law(component: object) -> None:
+    """The composed proposal-history store-law is the law, across the loader's copies.
+
+    Name, then behaviour — never ``isinstance``, for the same reason the eight
+    checks above are not.  Feature 207 takes feature 211's store-within-a-law
+    shape, so the decisive check here is the store-absence barrier: the composed
+    law must raise ``ProposalHistoryStoreUnavailableError`` from a store-backed
+    verb when the deployment names no store, because that clause is the half of
+    the feature that is answerable with no database at all and therefore the
+    half every composition carries.  The store is *not* asserted present — a
+    deployment composes this law with ``DATABASE_URL`` naming whatever it names,
+    and the component test must not depend on the machine's environment.
+    """
+    assert type(component).__name__ == "ProposalHistoryStore"
+    assert type(component).__module__.endswith("signal_agent._proposal")
+
+    for verb in ("persist", "load", "history", "counted", "recorded_nodes"):
+        assert callable(getattr(component, verb)), verb
+    assert hasattr(type(component), "store"), "the store property is the handle's"
+
+    direct = member.proposal_history_store()
+    assert component.store == direct.store is None
+    # The composed law is the scanned copy, so its error class is a distinct
+    # object across the loader boundary — the file's own "never isinstance"
+    # discipline — so the refusal is matched by its name, not its identity.
+    for verb in ("history", "counted", "recorded_nodes"):
+        with pytest.raises(Exception) as refusal:
+            getattr(component, verb)(str(uuid.uuid4()))  # type: ignore[attr-defined]
+        assert type(refusal.value).__name__ == "ProposalHistoryStoreUnavailableError"
+        assert "not an empty store" in str(refusal.value)
+
+
 def _assert_is_the_history_law(component: object) -> None:
     """The composed history law is the law, across the loader's copies.
 
@@ -525,11 +557,11 @@ def test_the_member_registers_the_theme_gate_under_its_own_name() -> None:
     assert member.THEMES_COMPONENT_NAME != member.COMPONENT_NAME
 
 
-def test_the_scanned_application_carries_all_eight_laws() -> None:
-    # The eight, in one composition: feature 205's law, feature 206's history,
-    # feature 208's gate, feature 209's diagnosis, feature 210's gate, feature
-    # 212's gate, feature 213's gate and feature 211's law, each under its own
-    # name, none having replaced another.
+def test_the_scanned_application_carries_all_nine_laws() -> None:
+    # The nine, in one composition: feature 205's law, feature 206's history,
+    # feature 207's proposal-history store, feature 208's gate, feature 209's
+    # diagnosis, feature 210's gate, feature 212's gate, feature 213's gate and
+    # feature 211's law, each under its own name, none having replaced another.
     app = create_app(MEMBER_SRC, registry=Registration())
     assert "signal-agent" in app
     assert member.ANTI_CONVERGENCE_COMPONENT_NAME in app
@@ -537,6 +569,7 @@ def test_the_scanned_application_carries_all_eight_laws() -> None:
     assert member.DIAGNOSIS_COMPONENT_NAME in app
     assert member.GUIDANCE_COMPONENT_NAME in app
     assert member.HISTORY_COMPONENT_NAME in app
+    assert member.PROPOSAL_HISTORY_COMPONENT_NAME in app
     assert member.THEMES_COMPONENT_NAME in app
     assert member.STATED_MECHANISM_COMPONENT_NAME in app
     _assert_is_the_authoring_law(app.get("signal-agent"))
@@ -545,19 +578,21 @@ def test_the_scanned_application_carries_all_eight_laws() -> None:
     _assert_is_the_diagnosis_law(app.get(member.DIAGNOSIS_COMPONENT_NAME))
     _assert_is_the_guidance_law(app.get(member.GUIDANCE_COMPONENT_NAME))
     _assert_is_the_history_law(app.get(member.HISTORY_COMPONENT_NAME))
+    _assert_is_the_proposal_history_law(app.get(member.PROPOSAL_HISTORY_COMPONENT_NAME))
     _assert_is_the_theme_law(app.get(member.THEMES_COMPONENT_NAME))
     _assert_is_the_mechanism_law(app.get(member.STATED_MECHANISM_COMPONENT_NAME))
 
 
-def test_the_eight_laws_stay_contiguous_in_the_name_sorted_order() -> None:
+def test_the_nine_laws_stay_contiguous_in_the_name_sorted_order() -> None:
     # ``app.order`` is name-sorted, so the prefixed names are what keep the
-    # member's eight components together in the category they belong to rather
-    # than scattered by whatever the prefixes happened to be.  The eight names
+    # member's nine components together in the category they belong to rather
+    # than scattered by whatever the prefixes happened to be.  The nine names
     # sort as ``signal-agent`` < ``signal-agent-anti-convergence`` <
     # ``signal-agent-dead-territory`` < ``signal-agent-diagnosis`` <
     # ``signal-agent-guidance`` < ``signal-agent-history`` <
-    # ``signal-agent-stated-mechanism`` < ``signal-agent-themes``, so feature
-    # 210's gate lands immediately after feature 205's law — and the eight are
+    # ``signal-agent-proposal-history`` < ``signal-agent-stated-mechanism`` <
+    # ``signal-agent-themes``, so feature 207's store lands immediately after
+    # feature 206's history and before feature 211's law — and the nine are
     # contiguous, with no unrelated component wedged between them.
     app = create_app(MEMBER_SRC, registry=Registration())
     order = list(app.order)
@@ -568,6 +603,7 @@ def test_the_eight_laws_stay_contiguous_in_the_name_sorted_order() -> None:
         member.DIAGNOSIS_COMPONENT_NAME,
         member.GUIDANCE_COMPONENT_NAME,
         member.HISTORY_COMPONENT_NAME,
+        member.PROPOSAL_HISTORY_COMPONENT_NAME,
         member.STATED_MECHANISM_COMPONENT_NAME,
         member.THEMES_COMPONENT_NAME,
     ))
@@ -580,6 +616,7 @@ def test_the_eight_laws_stay_contiguous_in_the_name_sorted_order() -> None:
         positions[0] + 5,
         positions[0] + 6,
         positions[0] + 7,
+        positions[0] + 8,
     ]
     assert order[positions[0]] == member.COMPONENT_NAME
     assert order[positions[1]] == member.ANTI_CONVERGENCE_COMPONENT_NAME
@@ -587,8 +624,9 @@ def test_the_eight_laws_stay_contiguous_in_the_name_sorted_order() -> None:
     assert order[positions[3]] == member.DIAGNOSIS_COMPONENT_NAME
     assert order[positions[4]] == member.GUIDANCE_COMPONENT_NAME
     assert order[positions[5]] == member.HISTORY_COMPONENT_NAME
-    assert order[positions[6]] == member.STATED_MECHANISM_COMPONENT_NAME
-    assert order[positions[7]] == member.THEMES_COMPONENT_NAME
+    assert order[positions[6]] == member.PROPOSAL_HISTORY_COMPONENT_NAME
+    assert order[positions[7]] == member.STATED_MECHANISM_COMPONENT_NAME
+    assert order[positions[8]] == member.THEMES_COMPONENT_NAME
 
 
 def test_the_theme_component_survives_a_second_composition() -> None:

@@ -301,6 +301,10 @@ __all__ = [
     "MechanismNotScoredError",
     "MechanismStatementError",
     "MechanismStoreUnavailableError",
+    "ProposalConflictError",
+    "ProposalContentError",
+    "ProposalHistoryStoreUnavailableError",
+    "ProposalNodeNotRecordedError",
     "SignalAgentError",
     "ThemeSetError",
     "TruncatedHistoryError",
@@ -827,4 +831,117 @@ class InjectedGuidanceError(SignalAgentError):
     assumption before relying on it — applied to the other side of the
     truncation trade, and a caller that had to match message text to count it
     would not measure it.
+    """
+
+
+class ProposalContentError(SignalAgentError):
+    """A proposal document or a score record is not something that can be stored.
+
+    Raised by :mod:`signal_agent._proposal` for a value the *caller* got wrong
+    rather than a fact about the proposal: a document that is not text or has
+    no content, a score that is not a :class:`~signal_agent.ScoreRecord`, a
+    node id or campaign id that is not UUID text, a stored row whose document
+    does not hash to the identity beside it, or a stored score document that
+    does not parse.
+
+    **It is a sibling of :class:`AgentSourceError`, not a subclass, and the
+    asymmetry is the one :class:`TruncatedHistoryError` states.**  The refusals
+    under that base are facts about *what the agent wrote*, and a caller's
+    pre-existing ``except AgentSourceError:`` handler exists to re-prompt.  A
+    caller that caught this through that clause would re-prompt an agent whose
+    proposal was never the problem — the document it wrote may be perfectly
+    good and the *store* be holding a row with a corrupted digest, or the
+    caller have passed a mapping where a record belongs.  None of those
+    repairs is a re-prompt, so none of them may be reachable through that
+    clause.
+
+    The subclass :class:`ProposalConflictError` splits off the one case a
+    caller can act on without a repair: the node it named already holds a
+    different pair.  Both are greppable — this one by its own class, that one
+    by its own.
+    """
+
+
+class ProposalHistoryStoreUnavailableError(SignalAgentError):
+    """The composed component carries no store, so no history can be persisted.
+
+    Raised when the proposal-history law was composed with ``store=None`` — the
+    state a deployment reaches by naming no ``DATABASE_URL`` — and a caller
+    then asks it to persist a pair or read one back.  It is the same split
+    :class:`MechanismStoreUnavailableError` draws for feature 211's store, and
+    it exists for the same reason: the factory builds every registered
+    component on every ``create_app()``, so a builder that raised on a
+    deployment with no database would take composition down workspace-wide.
+
+    **It is not an empty store.**  An empty store answers *no proposal is
+    recorded here* about every node; this class says there is no database to
+    have recorded one in.  The distinction matters more here than it does for
+    a single column, because this feature's subject is a *history*: an empty
+    store is a campaign that has not proposed anything yet, and a missing store
+    is a campaign whose proposals are being thrown away — and §14.1's whole
+    read-everything requirement rests on the first being distinguishable from
+    the second.
+
+    It is also raised by :func:`signal_agent._proposal._sqlite_path` for a
+    ``DATABASE_URL`` this store cannot speak (a non-SQLite scheme, a host, an
+    in-memory database).  Those are the same statement at a different moment —
+    the deployment has named no store *this member can use* — and a caller's
+    repair is the same one: point ``DATABASE_URL`` at the tree.
+    """
+
+
+class ProposalNodeNotRecordedError(SignalAgentError):
+    """A node's proposal cannot be recorded, or read, because the tree has no such node.
+
+    Raised on both paths, and the two sentences differ because they answer
+    different asks — one was about to write, the other about to read — while
+    naming the same repair.  A node's proposal is keyed by the node id
+    ``0118`` mints and its score half is *read off that node's row*, so a node
+    the tree does not hold has no id to hang a history entry on and no metrics
+    to snapshot: the discovery loop records the node first, and feature 232's
+    campaign record is the writer that does it.
+
+    It is a distinct class from :class:`ProposalContentError` because the
+    repairs are different in kind: that one is a caller's value being wrong,
+    and this one is the *tree* being a step behind — an operator reading a
+    campaign that recorded nothing needs to know which, because one is a bug
+    and the other is a loop that has not reached its persisting step yet.
+
+    It is also raised when the database holds no ``node`` table at all, naming
+    ``0118`` — the deployment's migration chain stopping short of the tree
+    rather than a missing row.  Same class, because the fix is the same
+    operation: bring the chain forward, then record the node.
+    """
+
+
+class ProposalConflictError(ProposalContentError):
+    """A node already records a different proposal document, or a different score.
+
+    Raised by :meth:`~signal_agent.ProposalStore.persist` when a node that
+    already holds a recorded pair is offered one that disagrees — the same
+    document under a different score, or a different document outright.  The
+    message names both digests (or both score documents) so an operator can see
+    which two writes are claiming one node.
+
+    **The document half is history, not a field.**  It is what a later round
+    reads *in full* (architecture §14.1) and what feature 206's identity check
+    recomputes over, so replacing it would leave every stored score referring
+    to a proposal the row no longer holds — the same argument
+    :class:`MechanismConflictError` makes for a node's stated mechanism.  Two
+    documents that differ are two proposals, and two proposals are two nodes.
+
+    **The score half is evidence about a round.**  §14.1 reads the history —
+    the proposal *plus its score* — to decide what to try next, so the figure
+    beside a proposal is what a prior round saw.  A store that updated it in
+    place would make every earlier round's reasoning describe a number that no
+    longer exists, which is exactly the property feature 207's *"replayable"*
+    is written against.  A genuinely new measurement belongs to the new
+    attempt's node, and feature 239's derived identity already gives that
+    attempt its own id.
+
+    It subclasses :class:`ProposalContentError` because a caller branching on
+    *"this value is not storable"* should catch it — and because the retry that
+    is **not** a conflict (the identical pair re-issued) returns a record
+    rather than raising, so a caller that sees this class knows it is holding a
+    genuine disagreement rather than a repeat.
     """

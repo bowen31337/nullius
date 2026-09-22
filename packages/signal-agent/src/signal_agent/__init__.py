@@ -111,6 +111,42 @@ is the *refusal* (:class:`TruncatedHistoryError`, a **sibling** of
 agent action repairs it — the agent has not been called, and the defect is in
 the run's own assembly).
 
+**Feature 207 rides a ninth seat, and it is the member's first law that
+*persists* a proposal rather than judging one.**  *System persists one
+proposal document plus a score record per node, which together form the
+replayable history* lives in :mod:`signal_agent._proposal`: the pair §14.1:769
+prices the authoring step's context in (``proposal.md`` plus its
+``score.json``, *"at ~1k tokens per proposal"*), a member-owned table created
+lazily, and :class:`ProposalHistoryStore` — the law, which carries an optional
+store and delegates every verb to it.  It composes as a ninth component under
+:data:`PROPOSAL_HISTORY_COMPONENT_NAME`, sorting between
+``signal-agent-history`` and ``signal-agent-stated-mechanism`` so the nine stay
+contiguous.
+
+Its *shape* is the sentence's one seam with feature 206, and it is the reason
+the two features are one reading: what this law returns from ``history(...)``
+is :class:`PriorProposal` — 206's own value, not a new type — so the writer's
+output is *literally* the reader's input and the two cannot disagree about what
+a history is made of.  206 refuses a history that is a partial one; 207 is the
+store that makes a whole one exist to be refused or admitted.  Two decisions
+are load-bearing and both are argued at their definitions: the pair lives in a
+table this member owns rather than in §9.2's directory, because feature 240
+publishes that directory through a wholesale ``commit`` that would delete it
+silently on the next attempt of the same node; and the score record is
+**captured** at the moment the proposal is recorded rather than joined from the
+``node`` row, because feature 240 refreshes that row in place on every retry —
+so a joined score would answer *what does this node score now?* where §14.1's
+whole read-everything argument needs *what did this proposal score when the
+round read it?*.  That is what the word *replayable* is doing in the sentence.
+That is why this member's vocabulary gained four classes for feature 207 —
+:class:`ProposalContentError`, its subclass
+:class:`ProposalConflictError` for the one case a caller can act on,
+:class:`ProposalNodeNotRecordedError` for the tree being a step behind, and
+:class:`ProposalHistoryStoreUnavailableError` for the deployment having no
+store — all **siblings** of :class:`AgentSourceError`, because a proposal the
+agent wrote may be perfectly good while the database cannot hold it, and
+re-prompting repairs none of those.
+
 **Feature 208 rides an eighth seat, and it is the member's second law about
 the *input* to authoring.**  *System rejects injecting summarized directional
 guidance into the prompt, because prose priors over-constrain the search
@@ -191,7 +227,7 @@ from __future__ import annotations
 
 from app.module_loader import register
 
-from . import _dead_territory, _diagnosis, _guidance, _history, _mechanism, _themes
+from . import _dead_territory, _diagnosis, _guidance, _history, _mechanism, _proposal, _themes
 from ._anti_convergence import (
     ANTI_CONVERGENCE_COMPONENT_NAME,
     ANTI_CONVERGENCE_POLICY_KIND,
@@ -290,6 +326,20 @@ from ._mechanism import (
     mechanism_digest,
     stated_mechanism,
 )
+from ._proposal import (
+    METRIC_COLUMNS,
+    NODE_PROPOSAL_TABLE,
+    PROPOSAL_DOCUMENT_NAME,
+    PROPOSAL_HISTORY_COMPONENT_NAME,
+    PROPOSAL_PERSISTED_CODE,
+    SCORE_COLUMNS,
+    SCORE_RECORD_NAME,
+    ProposalHistoryStore,
+    ProposalRecord,
+    ProposalStore,
+    ScoreRecord,
+    proposal_history_store,
+)
 from ._themes import (
     COMMITTED_LEGAL_THEMES,
     ILLEGAL_THEME_CODE,
@@ -320,6 +370,10 @@ from .errors import (
     MechanismNotScoredError,
     MechanismStatementError,
     MechanismStoreUnavailableError,
+    ProposalConflictError,
+    ProposalContentError,
+    ProposalHistoryStoreUnavailableError,
+    ProposalNodeNotRecordedError,
     SignalAgentError,
     ThemeSetError,
     TruncatedHistoryError,
@@ -356,9 +410,11 @@ __all__ = [
     "MECHANISM_COLUMN",
     "MECHANISM_CONFLICT_CODE",
     "MECHANISM_POLICY_REVISION",
+    "METRIC_COLUMNS",
     "MISSING_PROPOSAL_CODE",
     "MODULE_SYMBOL",
     "NEVER_SCORED_CODE",
+    "NODE_PROPOSAL_TABLE",
     "NOT_A_DIAGNOSIS_CODE",
     "NOT_A_HISTORY_CODE",
     "NOT_A_PROPOSAL_CODE",
@@ -368,7 +424,12 @@ __all__ = [
     "NOT_PROMPT_PARTS_CODE",
     "NOVEL_CODE",
     "PARAMETER_TWEAK_CODE",
+    "PROPOSAL_DOCUMENT_NAME",
+    "PROPOSAL_HISTORY_COMPONENT_NAME",
+    "PROPOSAL_PERSISTED_CODE",
     "SAMPLED_HISTORY_CODE",
+    "SCORE_COLUMNS",
+    "SCORE_RECORD_NAME",
     "SIGNAL_SOURCE_FILENAME",
     "STATED_MECHANISM_CODE",
     "STATED_MECHANISM_COMPONENT_NAME",
@@ -413,7 +474,15 @@ __all__ = [
     "MechanismStoreUnavailableError",
     "PriorProposal",
     "PromptGuidanceGate",
+    "ProposalConflictError",
+    "ProposalContentError",
     "ProposalHistory",
+    "ProposalHistoryStore",
+    "ProposalHistoryStoreUnavailableError",
+    "ProposalNodeNotRecordedError",
+    "ProposalRecord",
+    "ProposalStore",
+    "ScoreRecord",
     "SignalAgentError",
     "SignalContract",
     "SignalThemeGate",
@@ -448,6 +517,7 @@ __all__ = [
     "mechanism_digest",
     "prompt_guidance_gate",
     "proposal_history",
+    "proposal_history_store",
     "proposal_skeleton",
     "require_contract",
     "signal_contract",
@@ -571,6 +641,21 @@ HISTORY_COMPONENT_NAME = _history.HISTORY_COMPONENT_NAME
 #: ``signal-agent-history`` in the name-sorted ``app.order``, so the member's
 #: eight components stay contiguous in the category they belong to.
 GUIDANCE_COMPONENT_NAME = _guidance.GUIDANCE_COMPONENT_NAME
+
+#: The component name feature 207's law registers under.  Imported from
+#: :mod:`signal_agent._proposal` rather than re-spelled — the ``__all__`` entry
+#: above re-exports it, so this is a name, not a second literal.  Unlike
+#: :data:`COMPONENT_NAME`, which the spec's plugin declaration owns and which
+#: this module is the single spelling of, this one is *also* the live name the
+#: submodule's own doc references and its tests assert on, and two literals for
+#: it would be the drift the single spelling exists to prevent.
+#:
+#: Prefixed, for the same reason the seven before it are — an unprefixed
+#: ``signal-agent`` a ninth time would replace feature 205's law — and
+#: ``signal-agent-proposal-history`` sorts between ``signal-agent-history`` and
+#: ``signal-agent-stated-mechanism`` in the name-sorted ``app.order``, so the
+#: member's nine components stay contiguous in the category they belong to.
+PROPOSAL_HISTORY_COMPONENT_NAME = _proposal.PROPOSAL_HISTORY_COMPONENT_NAME
 
 
 @register(COMPONENT_NAME)
@@ -949,3 +1034,44 @@ def build_prompt_guidance() -> PromptGuidanceGate:
     the one place the refusal costs nothing at all.
     """
     return prompt_guidance_gate()
+
+@register(PROPOSAL_HISTORY_COMPONENT_NAME)
+def build_proposal_history_store() -> ProposalHistoryStore:
+    """Contribute feature 207's law to the composed application.
+
+    The ninth component this member contributes, beside feature 205's law and
+    features 206's, 209's, 210's, 211's, 212's and 213's history, diagnosis,
+    gates and laws and feature 208's guidance gate, each under its own name —
+    the registry is keyed by name and a later registration of any of them would
+    *replace* that law, so a member carrying nine controls carries nine
+    components, each answering its own feature's question.  Like the eight
+    builders above it takes no arguments (the factory's registration protocol)
+    and returns a law rather than a service, a session or an LLM client.
+
+    **It is the member's second store-resolving builder, beside feature 211's**
+    — :func:`build_stated_mechanism` — and it follows the same rule for the same
+    reason: the store is resolved from ``DATABASE_URL`` at composition time and
+    a deployment that names none gets ``store=None`` rather than a builder that
+    raises, because the factory builds every registered component on every
+    ``create_app()`` and a raise here would take composition down
+    workspace-wide for a deployment that simply has no database yet.  A caller
+    that must persist a proposal is the caller that must not find itself in
+    that state, and it gets a named
+    :class:`~signal_agent.ProposalHistoryStoreUnavailableError` from the verb
+    rather than a component that is absent.
+
+    **This builder has no fallback branch, and that is the feature rather than
+    an omission.**  Features 212's, 213's and 210's builders each compile a
+    committed artifact and therefore each need a documented answer for a
+    drifted one.  Feature 207's law compiles *nothing*: what a history is made
+    of is a row this member wrote and a row of someone else's table it
+    projected, both read at call time rather than decided in a file.  So there
+    is no artifact to drift, no ``except`` to write, and nothing this builder
+    can fail at beyond the store resolution it shares with feature 211's.
+
+    Holding the handle computes nothing and touches no disk — the store
+    resolves its URL on first use — and the first
+    :meth:`~signal_agent.ProposalHistoryStore.persist` is where a round's
+    proposal enters the history.
+    """
+    return proposal_history_store()

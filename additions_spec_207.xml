@@ -1,0 +1,280 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 207 (System persists one proposal document plus a score record per node, which together form the replayable history)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 207 in the existing signal-agent plugin
+    (packages/signal-agent, import name signal_agent): the persistence half of
+    the proposal/score pair that feature 206 reads. Where feature 206 is the
+    reader that refuses a history unless every prior proposal is present and
+    whole, feature 207 is the writer that records each node's proposal document
+    plus its score record so the collection of those records across a campaign
+    is the replayable history both features speak about. It is a new
+    `@register` component (`signal-agent-proposal-history`) beside feature 206's
+    `signal-agent-history`, following feature 211's store-within-a-law shape: a
+    stateless `ProposalHistoryStore` law carries an optional `ProposalStore`,
+    the store resolves `DATABASE_URL` lazily and never at construction, and
+    `store=None` is a discoverable deployment state (no relational store) rather
+    than a broken one — the composed handle exists in every deployment, the
+    store-backed verbs raise `ProposalHistoryStoreUnavailableError` on `None`,
+    and the `store` property reports the absence so a caller can branch on it.
+
+    The pair is one row in a **member-owned `node_proposal` table** that the
+    store creates at runtime , the precedent
+    `bootstrap_world` (feature 188), `depth_run_window` (feature 202),
+    `bootstrap_trial` (feature 185) and `depth_cache_rate` (feature 200) all
+    set: no shared migration declares this row, and a member that refused to
+    create its own table would be refusing its own feature. **No migration or
+    alembic revision is written or edited by this feature** — the table is
+    created by the store at runtime, and the `node` table beside it is probed
+    read-only. The
+    pair is **not** written into §9.2's per-node directory — the layout
+    `artifacts.ArtifactStore` and feature 206's reader share — because feature
+    240's `record` publishes the node's *whole* directory through a wholesale
+    `commit`, carrying forward exactly the five measured files, so a pair staged
+    alongside them would be silently erased by the next attempt on the same
+    node; a history that erases itself when its own node is retried is not a
+    history. The storage decision is argued in the module's `_SCHEMA` constant.
+
+    The proposal document is stored verbatim (never trimmed, normalised or
+    re-encoded), and its identity is checked by recomputed `source_code_hash` —
+    `sha256(text.encode("utf-8")).hexdigest()`, the fourth place a source is
+    hashed after the evaluator's step 6, the artifact store's copy and
+    `signal_agent.source_code_hash` at adoption — both on write and on every
+    read, because feature 206's load-bearing check recomputes exactly this over
+    the text it reads. The score record is a **snapshot**, not a join: the seven
+    metric columns 0114 declares sit on the `node` row, and feature 240 refreshes
+    that row in place on every retry while feature 244 re-runs interrupted
+    attempts, so a history that resolved its scores by joining `node` would
+    answer *what does this node score now?* rather than *what did this proposal
+    score when the round read it?* — and §14.1's whole argument is built on the
+    second. So the score is read off the node's row once, at the moment the
+    proposal is recorded, and stored; a read re-verifies the document's identity
+    but deliberately does not refuse a row whose live metrics have since moved
+    on. A `None` metric is an absent measurement, not a zero, and renders as JSON
+    `null` rather than being dropped or defaulted.
+
+    The writer's `history(campaign_id)` returns `tuple[PriorProposal, ...]` —
+    feature 206's own type, imported rather than re-spelled — so the writer's
+    output is *literally* the reader's input and feature 206's `admit` cannot
+    disagree with this store about what a history is made of. The write runs the
+    same four-state machine feature 211's `MechanismStore.persist` runs, with the
+    document in the place of the rationale: a first write inserts and reports
+    `recorded=True`; the identical pair re-issued is the idempotent retry
+    (reporting the stored instants and score rather than the caller's); a
+    different document or a different score for a node that already has one is
+    `ProposalConflictError`, naming both digests. The score defaults to
+    snapshotting the node's own row now (the documented path after feature 85's
+    step 12), or may be passed as a `ScoreRecord` explicitly. The campaign id is
+    read off the `node` row, never taken as an argument, so the history's scope
+    is the tree's own rather than a caller-supplied pairing.
+
+    It adds one module (`_proposal.py`), four error classes, one `@register`
+    builder and one app-namespace seat; it is stdlib-only (`json`, `sqlite3`,
+    `hashlib`, `uuid`, `datetime`, `pathlib`) and imports no workspace member.
+    No central registry, router, app factory, middleware, settings, or migration
+    is edited; the member joins by workspace-scan convention.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/* members, import names are
+      underscored slugs) / pytest (ruff + mypy conventions). The module loader
+      (src/app/module_loader.py) discovers members from the root pyproject.toml
+      `[tool.uv.workspace] members = ["packages/*"]`, imports each package so
+      its module-level `@register` fires, and composes what each `@register`
+      builder contributes under a component name; `app.order` sorts the
+      components by name, so `signal-agent-proposal-history` lands between
+      `signal-agent-history` and `signal-agent-stated-mechanism`. `app` (src/app)
+      is a namespace package with no `__init__.py`; the seats in
+      src/app/modules/&lt;member&gt;/ are reached by namespace import (e.g.
+      app.modules.signal-agent.proposal). A member never imports another
+      workspace member — it reaches shared shapes through `app.*`, never through
+      a sibling package's import name, and restates a sibling's convention with
+      a docstring pointer rather than importing it (the reason every restatement
+      in this workspace exists). Feature 207's two neighbours are already in
+      place: feature 206's `_history.py` owns `PriorProposal` and the
+      recomputed-identity check (`source_code_hash(proposal) == code_hash`,
+      refused as `truncated_history` when it disagrees), and feature 211's
+      `_mechanism.py` owns the store-within-a-law shape this feature takes —
+      `StatedMechanism(store: MechanismStore | None = None)` carrying an
+      optional store that `MechanismStore.resolve(env)` builds (``None`` when no
+      `DATABASE_URL`) and `from_env` refuses to build, the store resolving its
+      path lazily so construction performs no I/O, the four-state persist
+      machine (`_state`), and the four store-backed verbs raising
+      `MechanismStoreUnavailableError` on `None`. Feature 240's `persist.py`
+      owns the row-refresh pattern this feature's score snapshot must not join:
+      *"a re-record is therefore a refresh — the row is updated in place"*, and
+      feature 244 re-runs interrupted attempts, which is why a second score for
+      one node is an expected event rather than a corruption, and why the score
+      is snapshotted rather than joined. Feature 232's campaign record is the
+      writer of the `node` rows this feature's score half is projected from.
+      Feature 207 is depended on by features 214 and 215 (mechanism
+      discrimination and tree diversity, which read the persisted score records
+      across a campaign's real branches).</stack>
+    <test_baseline>The repository-level suite under tests/ is collected by
+      pytest with testpaths=tests; each workspace member's own suite lives under
+      packages/&lt;member&gt;/tests/ and is collected under its own conftest
+      (same-basename files collide under one pytest run), and is NOT graded by
+      the bare `uv run pytest` acceptance gate — a member suite must be run
+      explicitly. Measure the real numbers by running the suite before relying
+      on them: the signal-agent member suite is 58 tests in `test_history.py`
+      and 34 in `test_mechanism.py` before this feature; the new file
+      `test_proposal.py` adds its own count, which the author must measure and
+      state rather than guess. The repo lint is red on main (mypy absent,
+      pre-existing ruff errors — RUF022 in `__init__.py`, UP037, N999 for the
+      `signal-agent` seat directory), so lint only the changed files and compare
+      to a sibling: the new `_proposal.py`, `test_proposal.py` and seat are
+      clean against a sibling, and any findings in the touched files are
+      pre-existing.
+    </test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses / `__slots__` for value types,
+      docstrings that cite app_spec.xml feature numbers and
+      docs/nullius-tech-architecture.md sections (this feature is docs §14.1's
+      *"reading every prior proposal.md **in full** ... at ~1k tokens per
+      proposal plus its `score.json`"* and the *"~500 nodes at ~1.2k tokens of
+      `proposal.md` + `score.json` each"* that make the pair the replayable
+      history), stdlib-only computation, `@register` only in the package
+      `__init__` (never a submodule — a submodule's registration fires only on
+      the first `create_app()` of a process), degrade-don't-break composition. A
+      member never imports another workspace member. A law returns a verdict and
+      never raises; only the store-backed verbs raise, carrying their own
+      sentence so the campaign log and the retry prompt say the same thing. A
+      store resolves its path lazily and performs no I/O at construction, so
+      building the component from the factory's scan pays nothing and a
+      `DATABASE_URL` this member cannot speak is refused by name the first time
+      a persist is attempted, never at composition. The reason/error enum's
+      value is the token every refusal's detail opens with, so the reason is
+      greppable in a campaign log. A deployment's *ceiling* is a committed
+      document; a store's absence is a discoverable composition state, not an
+      empty store — an empty store answers *no proposal is recorded here* about
+      every node, while `store=None` says there is no database to have recorded
+      one in, the distinction `ProposalHistoryStoreUnavailableError` draws for
+      its own `None`. Tests assert on observed behaviour with long narrative
+      docstrings explaining the "why", and pin the writer against the reader it
+      feeds: a proposal this feature records is one feature 206 reads back whole,
+      and the recomputed-identity guard is the seam between them. The `node`
+      table is brought to shape by running the discovery-tree migrations' own
+      `apply` (loaded by file path, because migrations/ is not a package), the
+      environment is passed as an
+      explicit mapping rather than mutating os.environ, and no fixture consults
+      a clock — a persisted pair must outlive the recording call, so the
+      recording and generated instants are the test's, passed in.
+    </conventions>
+  </existing_context>
+  <!-- Layout mirrors the clean main app_spec.xml: uv-workspace is what makes
+       plugin="signal-agent" resolve to the real packages/signal-agent/ and
+       src/app/modules/signal-agent/ trees rather than the single-package
+       src/plugins/signal-agent/ default. Parsed before features. -->
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Hypothesis Authoring Agent">
+      <feature index="207" shape="plugin" plugin="signal-agent" covers="cq-15" depends_on="206">
+        <description>System persists one proposal document plus a score record per node, which together form the replayable history. It is the write half of the pair feature 206 reads: each node's proposal document and its measured score record are recorded as one row in a member-owned `node_proposal` table, and the collection of those rows across a campaign — ordered by the recorded instant, then by node id — is the replayable history feature 206 refuses to read cut. It is a new `@register` component, `signal-agent-proposal-history`, beside feature 206's `signal-agent-history`, and it takes feature 211's store-within-a-law shape: a stateless `ProposalHistoryStore` law carries an optional `ProposalStore`, `ProposalStore.resolve(env)` builds the store from `DATABASE_URL` (returning ``None`` when the deployment names none) and `from_env` refuses to build one, the store resolves its SQLite path lazily so construction performs no I/O, and `store=None` is a discoverable deployment state rather than a broken one — the composed handle exists in every deployment, its `store` property reports the absence, and its store-backed verbs raise `ProposalHistoryStoreUnavailableError` on `None`. The pair is one row in a member-owned table the store creates itself at runtime — the precedent features 188/202/185/200 set for a member-owned table that lives outside the shared, ordered chain, so no other feature declares this row, nothing else writes to it, and none is edited here; the `node` table beside it is probed read-only. The pair is **not** written into §9.2's per-node directory because feature 240's whole-directory `commit` would erase it on the next attempt on the same node — the storage decision is argued in the module's `_SCHEMA` constant, where the table's shape lives. The proposal document is stored verbatim and its identity is checked by recomputed `source_code_hash` on write and on every read; the score record is a snapshot read off the node's own row once, at the moment the proposal is recorded, never joined (feature 240 refreshes that row in place and feature 244 re-runs interrupted attempts). The writer's `history(campaign_id)` returns feature 206's own `tuple[PriorProposal, ...]`, so the writer's output is literally the reader's input. The write runs feature 211's four-state machine with the document in the place of the rationale: first write inserts (`recorded=True`), the identical pair re-issued is the idempotent retry (reporting the stored instants and score), a different document or score is `ProposalConflictError`. It adds one module (`_proposal.py`), two value types (`ScoreRecord`, `ProposalRecord`), the store and law, four error classes, one `@register` builder and one app-namespace seat; it is stdlib-only and imports no workspace member.</description>
+      </feature>
+      <feature index="207a" shape="plugin" plugin="signal-agent" depends_on="207">
+        <description>System persists the **proposal document** — the agent's proposal text, stored verbatim as the first half of the pair. The document is never trimmed, normalised or re-encoded: it is the artefact §14.1 requires the history to read *in full*, and the digest beside it is taken over exactly these bytes, so a normalisation would also silently break every identity check feature 206 makes. Empty text is refused rather than accepted as a blank document — feature 205 refuses a blank source before it is ever adopted, so a blank document here is a caller that lost its text, and recording it would put a node in the history whose document can never be read as anything. The identity is checked by recomputed `source_code_hash` (`sha256(text.encode("utf-8")).hexdigest()`, restated with a pointer rather than calling `signal_agent.source_code_hash`, because that function raises the authoring law's error for a non-string and this module's refusals are its own), and a stored row whose document does not hash to the `code_hash` the row carries is refused on *every* read — the single-node read, the history read, and the retry — because the history read is the one that feeds feature 206, and the failure mode of a bad digest is a proposal the authoring step believes is whole. A node id and campaign id that are not UUID text are refused, because the pair is keyed by the node id 0118's table mints and every reader joins by, and an id that cannot join it names no node whose history could be replayed.</description>
+      </feature>
+      <feature index="207b" shape="plugin" plugin="signal-agent" depends_on="207">
+        <description>System persists the **score record** — the node's measured outcome, as §14.1's `score.json`, the second half of the pair. The `ScoreRecord` value carries the node's seven measured metrics (`ic_mean`, `ic_tstat`, `ir_standalone`, `ir_marginal`, `turnover`, `cost_adjusted_ir`, `perturb_stability`) plus `fail_class` (feature 240's `ok | timeout | error | tripwire_fail`, part of the record because a failed attempt's metrics are NULL and the class is what says whether that NULL means "not measured yet" or "measured as a failure"). The record is a **snapshot**: the values are read off the `node` row once, at the moment the proposal is recorded, and stored — never joined, because feature 240 refreshes that row in place and feature 244 re-runs interrupted attempts, so a join would answer *what does this node score now?* rather than *what did this proposal score when the round read it?*, and §14.1's whole argument is built on the second. The record is rendered with `json.dumps(..., sort_keys=True, separators=(",", ":"), allow_nan=False)` — `allow_nan=False` is load-bearing because `NaN` is not JSON and another reader's decoder would refuse it, and `sort_keys` so two records with equal fields are byte-identical strings, the canonicalisation feature 211's store makes for its own text. A `None` metric is an absent measurement, not a zero — the tree declares all seven metrics nullable with no default, so an attempt that failed before the evaluator reached it has genuinely unmeasured metrics, and the honest record is the absence, written as JSON `null` rather than dropped or defaulted. A score that is not a `ScoreRecord` and not `None` is refused; a mapping is deliberately not accepted, because doing the conversion implicitly would mean a caller's typo in a key became an absent measurement, which is the one direction this module refuses to launder. A stored score that does not parse, does not hold an object, or carries a metric that is neither a number nor an absence is refused by name, naming the node — a read side that returned whatever it found would make the number a reader sees a fact about the database's corruption rather than about the proposal.</description>
+      </feature>
+      <feature index="207c" shape="plugin" plugin="signal-agent" depends_on="207">
+        <description>System resolves and reports the store's absence as `ProposalHistoryStoreUnavailableError`, and keeps the composed handle present in every deployment. `ProposalStore.resolve(env)` reads `DATABASE_URL` — an empty or whitespace-only value counts as unset — and returns ``None`` when the deployment names none; `from_env(env)` raises `ProposalHistoryStoreUnavailableError` instead. The `ProposalHistoryStore` law composed with `store=None` still exists — its `store` property reports the ``None`` and its store-backed verbs raise `ProposalHistoryStoreUnavailableError` on `None` — and that is **not an empty store**: an empty store answers *no proposal is recorded here* about every node, while this says there is no database to have recorded one in, and a proposal recorded into nothing is a history no round will ever replay. `ProposalHistoryStoreUnavailableError` is a sibling of `MechanismStoreUnavailableError`, not a subclass: the two have one repair (point the deployment at a store) and one reader, but they are two different stores — the node table versus the member-owned `node_proposal` table — and an operator must know which knob to turn. The store resolves its SQLite path lazily and performs no I/O at construction, so a `DATABASE_URL` this member cannot speak (a non-SQLite scheme, a host, an in-memory database) is refused by name the first time a persist is attempted, never at composition — which is what keeps the factory's scan, that imports this package with one member's `src/` on `sys.path` at a time, free of the file system. The store holds no cache: the row is the only record of what a round read, which is the entire point — a later round replays it days afterwards, in another process.</description>
+      </feature>
+      <feature index="207d" shape="plugin" plugin="signal-agent" depends_on="207">
+        <description>System records the pair into a **member-owned `node_proposal` table** and reads it back, and the writer's output is literally the reader's input. The table is created by the store itself at runtime, the precedent features 188/202/185/200 set for a member-owned table that lives outside the shared, ordered chain: no other feature declares this row, nothing else writes to it, and none is edited here, and its shape lives in the module's `_SCHEMA` constant rather than in any shared file — the store's own definition, not a chain-authoring task. The pair is keyed by the node id the discovery tree's `node` table mints (feature 97), and every field is required — a document plus a score record written whole or not at all. The score half is a **projection** over the live `node` row: the store reads whatever metrics the deployment's tree actually has and answers honestly when the tree has fewer of them 188/202/185/200 set for a member-owned table that lives outside the shared, ordered chain: no other feature declares this row, nothing else writes to it, and none is edited here, and its shape lives in the module's `_SCHEMA` constant rather than in any shared file — the store's own definition, not a chain-authoring task. The pair is keyed by the node id the discovery tree's `node` table mints (feature 97), and every field is required — a document plus a score record written whole or not at all. The score half is a **projection** over the live `node` row: the store reads whatever metrics the deployment's tree actually has and answers honestly when the tree has fewer of them (the score carries `fail_class` alone and every metric is an absence) rather than refusing — the same read-only projection feature 240 makes over the tree it writes. The writer's `history(campaign_id, node_ids=None)` returns `tuple[PriorProposal, ...]` — feature 206's own type, imported rather than re-spelled — ordered by the recorded instant then by node id (siblings of one batch are recorded in the same microsecond, so the node id is the tie-break), so a caller's whole history step is one line: `history_law.admit(store.history(campaign), prior_nodes=...)`. `node_ids` scopes and filters rather than fetching: asking for an id with no recorded proposal returns a shorter tuple rather than raising, because that is exactly the state feature 206's `prior_nodes` declaration exists to detect. `counted(campaign_id)` and `recorded_nodes(campaign_id)` are the cheap completeness reads a driver uses to decide whether a round has a history to hand over at all. The write runs feature 211's four-state machine with the document in the place of the rationale: a first write inserts and reports `recorded=True`; the identical pair re-issued is the idempotent retry (comparing the score by its rendered document, so two spellings of one measurement are one measurement, and reporting the stored instants rather than the caller's); a different document, or a different score for the same document, is `ProposalConflictError`, naming both digests — because a node's proposal is history rather than a field, and §14.1 reads the history to decide what to try next, so the figure beside a proposal is evidence about the round that read it. The campaign id is read off the `node` row, never taken as an argument, so the history's scope is the tree's own. `agent_model_id` is deliberately absent from the table — which model authored the proposal is a field on `node`, indexed for the M3 stratification, and a copy here would be a second spelling that can drift from the stratum the paired comparison groups by; a reader that wants it joins.</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Lives in the existing signal-agent member (packages/signal-agent), beside
+    feature 206's `_history.py` and feature 211's `_mechanism.py`. Adds a new
+    module `_proposal.py` exporting `ScoreRecord`, `ProposalRecord`,
+    `ProposalStore`, `ProposalHistoryStore`, `proposal_history_store`, and the
+    constants `PROPOSAL_HISTORY_COMPONENT_NAME`, `NODE_PROPOSAL_TABLE`,
+    `PROPOSAL_DOCUMENT_NAME`, `SCORE_RECORD_NAME`, `PROPOSAL_PERSISTED_CODE`,
+    `DATABASE_URL_ENV`, `NODE_TABLE`, `METRIC_COLUMNS`, `SCORE_COLUMNS`,
+    `CODE_HASH_COLUMN`, `CAMPAIGN_ID_COLUMN`, `NODE_ID_COLUMN`,
+    `NODE_PROPOSAL_COLUMNS`. Reuses feature 206's `PriorProposal` (imported from
+    `signal_agent._history`) as the return type of `history`, so the writer's
+    output is literally the reader's input, and restates `source_code_hash` with
+    a pointer (deliberately not calling `signal_agent.source_code_hash`, because
+    that function raises the authoring law's error for a non-string). Extends
+    `errors.py` with `ProposalContentError`, `ProposalHistoryStoreUnavailableError`,
+    `ProposalNodeNotRecordedError` and `ProposalConflictError` (the last a
+    subclass of `ProposalContentError`, the others siblings of `SignalAgentError`),
+    and extends the module docstring to place them in the vocabulary's
+    caller-value / deployment / conflict split. Exports the new public names from
+    the package `__init__` beside `ProposalHistory` and `StatedMechanism`, and
+    adds the ninth `@register` builder `build_proposal_history_store` under
+    `PROPOSAL_HISTORY_COMPONENT_NAME = "signal-agent-proposal-history"` (which
+    sorts between `signal-agent-history` and `signal-agent-stated-mechanism` in
+    the name-sorted `app.order`), modelled on `build_proposal_history`. Adds an
+    app-namespace seat src/app/modules/signal-agent/proposal.py
+    (`proposal_history_component()`), the pattern of the history seat, returning
+    ``None`` when the component is absent — a ``None`` that is a statement about
+    composition, distinct from the law's own `store is None`. The member imports
+    no workspace member: it reaches `PriorProposal` through its own `_history`,
+    restates the workspace's store conventions with pointers, and pins its
+    identity hash against `signal_agent.source_code_hash` in a test so the two
+    cannot drift.
+  </integration_points>
+  <constraints>
+    The pair must be one row in a member-owned `node_proposal` table, created
+    by the store at runtime — no shared migration declares it and no migration
+    or alembic revision is written or edited by this feature; the `node` table
+    is probed read-only.
+    The pair must **not** be written into §9.2's per-node directory, because
+    feature 240's whole-directory `commit` would erase it on the next attempt on
+    the same node.
+    The store must resolve `DATABASE_URL` lazily and perform no I/O at
+    construction, so building the component from the factory scan pays nothing
+    and an unspeakable URL is refused by name on first use, never at composition.
+    `store=None` must be a discoverable composition state, not a builder that
+    raises: the composed handle exists in every deployment, its `store` property
+    reports the absence, and only the store-backed verbs raise
+    `ProposalHistoryStoreUnavailableError` on `None` — which is not an empty
+    store.
+    The proposal document must be stored verbatim and its identity checked by
+    recomputed `source_code_hash` on write and on every read.
+    The score record must be a snapshot read off the node's row once, at the
+    moment the proposal is recorded — never joined — because feature 240 refreshes
+    that row in place and feature 244 re-runs interrupted attempts. A `None`
+    metric is an absent measurement, not a zero, and renders as JSON `null`.
+    The writer's `history` must return feature 206's own `tuple[PriorProposal,
+    ...]`, so the writer's output is literally the reader's input.
+    The write must run feature 211's four-state machine: first write inserts, the
+    identical pair re-issued is the idempotent retry, a different document or
+    score is `ProposalConflictError`.
+    No central registry, router, app factory, middleware, settings, or migration
+    is edited; the member joins by workspace-scan convention.
+    `@register` must live only in the package `__init__`, never a submodule.
+    The member must not import another workspace member.
+    The new module must be stdlib-only — `json`, `sqlite3`, `hashlib`, `uuid`,
+    `datetime`, `pathlib` — nothing at module scope the factory's scan pays for.
+    All existing tests across the repository-level `tests/` tree and every
+    sibling member suite must stay green — in particular feature 206's own suite
+    and feature 211's, which must not need editing for this feature to land.
+  </constraints>
+  <implementation_steps>
+    <phase name="Hypothesis Authoring Agent">
+      Add packages/signal-agent/src/signal_agent/_proposal.py: the constants (`PROPOSAL_HISTORY_COMPONENT_NAME`, `NODE_PROPOSAL_TABLE`, `PROPOSAL_DOCUMENT_NAME`, `SCORE_RECORD_NAME`, `PROPOSAL_PERSISTED_CODE`, `DATABASE_URL_ENV`, `NODE_TABLE`, `METRIC_COLUMNS`, `SCORE_COLUMNS`, `CODE_HASH_COLUMN`, `CAMPAIGN_ID_COLUMN`, `NODE_ID_COLUMN`, `NODE_PROPOSAL_COLUMNS`, `_SCHEMA`), the `ScoreRecord` value type (`__slots__`, `from_row`, `to_json`, `from_json`, `measured`, `__eq__` over fields not `isinstance`), the `ProposalRecord` write-answer, the `ProposalStore` (resolves `DATABASE_URL` lazily via a `resolve`/`from_env` pair like `MechanismStore`, creates `node_proposal` lazily, probes `node` read-only, projects the score columns, runs the four-state persist machine and the reads `load`/`history`/`counted`/`recorded_nodes`), and the `ProposalHistoryStore(store=None)` law delegating every verb to the store and raising `ProposalHistoryStoreUnavailableError` on `None`, plus the `proposal_history_store(env)` convenience.
+      Extend packages/signal-agent/src/signal_agent/errors.py with `ProposalContentError`, `ProposalHistoryStoreUnavailableError`, `ProposalNodeNotRecordedError` and `ProposalConflictError` (subclass of `ProposalContentError`), and extend the module docstring to place them in the caller-value / deployment / conflict split alongside `MechanismStoreUnavailableError` and `MechanismConflictError`.
+      Export the new public names from packages/signal-agent/src/signal_agent/__init__.py, add `PROPOSAL_HISTORY_COMPONENT_NAME = _proposal.PROPOSAL_HISTORY_COMPONENT_NAME`, and add the `@register(PROPOSAL_HISTORY_COMPONENT_NAME) def build_proposal_history_store() -> ProposalHistoryStore` builder (ninth component, sorting between history and stated-mechanism), modelled on `build_proposal_history`.
+      Add the app-namespace seat src/app/modules/signal-agent/proposal.py (`proposal_history_component()`), modelled on the history seat, returning ``None`` when the component is absent — distinct from the law's own `store is None`.
+      Write the member's own suite packages/signal-agent/tests/test_proposal.py, pinned against the two persist verbs, the verbatim proposal write, the recomputed-identity check on write and read, the opaque verbatim score snapshot (absent metric = null, not zero), the four-state machine (first write / idempotent retry / conflict), the writer→reader seam (`history` returns `PriorProposal`), the `store=None` handle-present/verbs-raise split, and the deployment refusals (no `node` table, unknown node, unspeakable URL), with long narrative docstrings.
+      Extend the conftest fixtures with a `node_proposal`-shaped fixture (bring 0118's `node` table and 0114's metrics by running the discovery-tree migrations' own `apply`, loaded by file path because migrations/ is not a package, over a tmp_path sqlite URL) and a planted-node fixture, following the feature-211 fixture discipline (migrations by path, explicit env mapping, no os.environ mutation, no clock — the recording and generated instants are passed in).
+      Confirm feature 206's and feature 211's suites still pass unedited, and lint only the changed files against a sibling.
+    </phase>
+  </implementation_steps>
+  <success_criteria>
+    A proposal document plus its score record is persisted as one row in a member-owned `node_proposal` table (created lazily), verbatim, and feature 206 reads it back whole with a matching recomputed identity.
+    `persist` refuses a document that is not non-empty text, a node id or campaign id that is not UUID text, and a stored row whose document does not hash to the identity beside it — on write and on every read.
+    A score record is persisted opaque and verbatim (sorted-key JSON, `allow_nan=False`), a `None` metric renders as JSON `null` (not a zero, not dropped), and a non-`ScoreRecord` non-`None` score is refused.
+    The write runs the four-state machine: a first write inserts (`recorded=True`), the identical pair re-issued is the idempotent retry (reporting the stored instants and score), and a different document or score is `ProposalConflictError` naming both digests.
+    `ProposalHistoryStore` composed with `store=None` still exists and reports the absence via its `store` property, and both store-backed verbs raise `ProposalHistoryStoreUnavailableError` on `None` — which is not an empty store.
+    `ProposalStore.resolve(env)` returns ``None`` on an unset `DATABASE_URL`, and an unspeakable URL (non-SQLite scheme, host, in-memory) is refused by name on first use.
+    The writer's `history(campaign_id)` returns `tuple[PriorProposal, ...]` (feature 206's type), ordered by recorded instant then node id, and `node_ids` filters rather than fetches.
+    The score is a snapshot read off the node's row once, projected over whatever metrics the deployment actually has, and a read does not refuse a row whose live metrics have since moved on.
+    `ProposalContentError`, `ProposalHistoryStoreUnavailableError`, `ProposalNodeNotRecordedError` are siblings of `SignalAgentError` and `ProposalConflictError` is a subclass of `ProposalContentError`, each greppable on its own class, and the errors docstring places them in the caller-value / deployment / conflict split.
+    The signal-agent member joins by workspace-scan convention with no edit to a central registry, router, app factory, middleware, settings, or migration, and imports no workspace member.
+    Feature 206's and feature 211's existing suites pass unedited, and the member's own suite is green.
+  </success_criteria>
+</project_specification>
