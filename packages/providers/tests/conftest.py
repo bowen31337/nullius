@@ -70,6 +70,7 @@ import sqlite3
 import sys
 import uuid
 from contextlib import closing
+from datetime import time
 from pathlib import Path
 from types import ModuleType
 
@@ -99,6 +100,14 @@ VERSIONS_DIR = REPO_ROOT / "migrations" / "versions"
 #: about without reading the fixtures, and so a rename is one edit.
 NODE_MIGRATION = "0118_node_table"
 TRIO_MIGRATION = "0115_agent_model_trio"
+
+#: The revision that creates the ``campaign`` table — feature 104's, the
+#: planned rows feature 232's planner writes and feature 202's scheduler
+#: probes read-only.  Brought by the fixture the same way the ``node``
+#: revisions above are: through the migration's own ``apply``, never a
+#: hand-written ``CREATE TABLE``, so the campaign shape a scheduling test
+#: probes against is the schema its owner describes.
+CAMPAIGN_MIGRATION = "0111_campaign_table"
 
 #: The authoring model a test's planted node is recorded under when the test
 #: does not say, as the column's own spelling.  One constant rather than a
@@ -658,3 +667,84 @@ def make_pin():
         return ModelPin(provider=provider, model=model, version=version)
 
     return _make
+
+
+# ── Feature 202's fixtures ─────────────────────────────────────────────────────
+#
+# The scheduler probes the campaign table read-only and owns its own
+# depth_run_window table, so the two database fixtures below are: one that
+# brings 0111's campaign table the way a deployment does (through the
+# migration's own apply), and the shared file-only URL this suite already
+# uses, on which the store's lazily-created table is exercised as the
+# *first* thing that happens to a fresh database.
+
+
+@pytest.fixture
+def campaign_database(database_url: str) -> str:
+    """A database holding the ``campaign`` table, with no rows planned.
+
+    Revision ``0111`` has run and nothing has been planned into it — the
+    state a scheduler meets on a deployment whose planner has not yet run,
+    and the one whose repair (:class:`providers.UnknownCampaignError`)
+    names the campaign record rather than the migrations.
+    """
+    create_schema(database_url, CAMPAIGN_MIGRATION)
+    return database_url
+
+
+@pytest.fixture
+def plant_campaign():
+    """Return a callable that inserts one planned campaign row, by id.
+
+    Raw SQL against the table the migration created rather than a call
+    into the discovery member: no member imports another, and the point
+    is to produce the *state* feature 202 schedules against — a campaign
+    row exists, keyed by the id the scheduler will be handed — not to
+    reproduce the planning path.  The three NOT NULL planning columns are
+    supplied because ``0111`` refuses a row without them; a fresh UUID is
+    minted for the id when the test does not supply one, so the callable's
+    return value is always the id to schedule by.
+    """
+
+    def _plant(
+        database: str,
+        campaign_id: str | None = None,
+        *,
+        campaign_type: str = "Type-R",
+        workspace_count: int = 16,
+    ) -> str:
+        identifier = campaign_id or str(uuid.uuid4())
+        null_fraction = min(max(2.0 / workspace_count, 0.15), 0.35)
+        with closing(
+            sqlite3.connect(sqlite_path_of(database))
+        ) as connection, connection:
+            connection.execute(
+                "INSERT INTO campaign (id, campaign_type, workspace_count, "
+                "null_fraction) VALUES (?, ?, ?, ?)",
+                (identifier, campaign_type, workspace_count, null_fraction),
+            )
+        return identifier
+
+    return _plant
+
+
+@pytest.fixture
+def deepseek_peaks():
+    """§14.2's own time-of-day card, as the configuration's test data.
+
+    The card the lever is stated on — *"peak is 01:00–04:00 and 06:00–10:00
+    UTC"* — spelled as :class:`providers.PeakPricing` so a scheduling test
+    reads like the deployment it stands in for.  It is test data, not a
+    default the module carries: §14.2's own preamble (*"rates move monthly
+    … the numbers are not"*) is the reason the module holds only the
+    arithmetic and never the windows, the same reason feature 198's record
+    carries no price at all.
+    """
+    from providers import PeakPricing, PeakWindow
+
+    return PeakPricing(
+        windows=(
+            PeakWindow(start=time(1, 0), end=time(4, 0)),
+            PeakWindow(start=time(6, 0), end=time(10, 0)),
+        )
+    )

@@ -144,6 +144,46 @@ row because ``0115`` adds all three columns in one migration.  Its records:
   only one of them.  Neither base is :class:`~providers.ProviderError`'s
   ancestor, for the reason above.
 
+Feature 202 — *"System schedules depth campaigns outside a configured peak
+pricing window, persisting the chosen window with each run"* — is the
+category's second economics lever, and §14.2's second of its *"two free
+levers worth ~50%"*: the depth role *"is pure asynchronous batch work.
+Nothing waits on it"*, so its campaigns can wait out the hours a rate card
+prices higher (*"DeepSeek prices by time of day — peak is 01:00–04:00 and
+06:00–10:00 UTC, off-peak is 50% lower. Schedule campaigns outside those
+windows."*).  Its records join the depth criterion's as direct imports
+alongside one registered component — the store, because a scheduling
+decision is a fact that must actually land in a table (see
+:mod:`providers._schedule` for the surface's shape and its reasons):
+
+* :class:`PeakWindow` and :class:`PeakPricing` — **the configuration**: a
+  rate card's peak windows as daily UTC time-of-day intervals, stated
+  rather than baked (§14.2's own preamble: *"rates move monthly … the
+  selection logic is stable, the numbers are not"*), with empty meaning
+  flat by time of day for the same reason
+  :func:`flat_pricing` exists — the null is load-bearing.
+
+* :func:`choose_run_window` and :class:`RunWindow` — **the choice**: the
+  earliest window at or after the scheduling instant that touches no
+  configured peak minute, refused as
+  :class:`~providers.NoOffPeakWindowError` when the declared run length
+  exceeds the largest off-peak gap the card leaves.
+
+* :class:`DepthRunWindows` and :class:`ScheduledRun` — **the
+  persistence**: the store that owns the ``depth_run_window`` table (the
+  bootstrap pool's member-owned-table precedent, no edit to the shared
+  migration chain), schedules one campaign's runs in one call, and
+  answers the row the table holds — window, premise and decision instant
+  together, so a decision can be audited against the card that was
+  current when it was made.
+
+* :class:`~providers.DepthScheduleError` and its three subclasses
+  (:class:`~providers.NoOffPeakWindowError`,
+  :class:`~providers.UnknownCampaignError`,
+  :class:`~providers.RunWindowConflictError`) — a **fourth** base, for
+  the question none of the other three answers: *when may this
+  campaign's runs happen?*  See :mod:`providers._schedule_errors`.
+
 The error taxonomy (:mod:`providers._errors`) is the failure modes of *this*
 seam and no other — a malformed completion, a missing provider, an unknown
 model — raised at the interface's own guardrails, never by a provider's
@@ -154,16 +194,21 @@ transport or the model.  Keeping it narrow is deliberate: a caller catching
 and the pin store's, unrelated to both: a model refused for the depth role
 has not been called (so no provider contract failed) and pins no node (so
 no authoring record is unreadable) — it is a *selection* that failed,
-before the campaign spent anything on it.
+before the campaign spent anything on it.  Feature 202's
+(:mod:`providers._schedule_errors`) is a fourth, for the same kind of
+reason: a scheduling that found no window, named a campaign nobody
+planned, or met a decision already made, has not called, pinned, or
+selected anything — it is the campaign's *time* that could not be
+decided.
 
 This package is a workspace member discovered by convention. The module loader
 (``app.module_loader``) scans the members the root ``pyproject.toml`` declares
 (``packages/*``), imports each package, and composes whatever the package's
 ``@register`` builder contributes — so the registration below is the entire
 wiring story. Nothing edits a registry, router or factory to make the provider
-plugin exist; importing this module *is* joining the application.  **Two**
+plugin exist; importing this module *is* joining the application.  **Three**
 components are registered from this one package, and the split is the split
-between the category's first feature and its last-but-one.  Feature 192's
+between the category's contract and its services.  Feature 192's
 interface (``providers``) contributes no long-lived component to the composed
 application: the provider interface is a contract and a set of records, not a
 service the deployment instantiates once — a caller binds whatever provider it
@@ -174,8 +219,14 @@ and the sibling features of this category.  Feature 203's pin store
 (``agent-model-pins``) is the opposite: it *is* a deployment-bound service —
 a store over the tree the process is pointed at — so its builder resolves
 ``DATABASE_URL`` and composes an :class:`AgentModelPins` (or nothing, when no
-store is named).  Both registrations live in this ``__init__`` and neither in
-a submodule, because a submodule's ``@register`` fires only on the first
+store is named).  Feature 202's run-window store
+(``depth-run-windows``) is the same kind of service for the same kind of
+reason — a scheduling decision that must actually land in a table is a
+deployment-bound fact, not a contract a caller holds — so its builder
+resolves ``DATABASE_URL`` the same way and composes a
+:class:`DepthRunWindows` (or nothing, when no store is named).  All three
+registrations live in this ``__init__`` and none in a submodule, because a
+submodule's ``@register`` fires only on the first
 ``create_app()`` of a process and would silently drop out of every later one.
 
 Stdlib-only, like the rest of this tree.  The interface holds no transport, no
@@ -248,23 +299,56 @@ from ._sampling import (
     AgentSampling,
     require_agent_sampling,
 )
+from ._schedule import (
+    CAMPAIGN_ID_COLUMN,
+    CAMPAIGN_TABLE,
+    CAMPAIGN_TABLE_ID_COLUMN,
+    DEPTH_RUN_WINDOW_TABLE,
+    END_AT_COLUMN,
+    MINUTES_PER_DAY,
+    PEAK_WINDOWS_COLUMN,
+    SCHEDULED_AT_COLUMN,
+    START_AT_COLUMN,
+    DepthRunWindows,
+    PeakPricing,
+    PeakWindow,
+    RunWindow,
+    ScheduledRun,
+    choose_run_window,
+    schedule_depth_run,
+)
+from ._schedule_errors import (
+    DepthScheduleError,
+    NoOffPeakWindowError,
+    RunWindowConflictError,
+    UnknownCampaignError,
+)
 
 __all__ = [
     "AGENT_CKPT_HASH_COLUMN",
     "AGENT_MODEL_ID_COLUMN",
     "AGENT_SAMPLING_COLUMN",
+    "CAMPAIGN_ID_COLUMN",
+    "CAMPAIGN_TABLE",
+    "CAMPAIGN_TABLE_ID_COLUMN",
     "CKPT_HASH_LENGTH",
     "DEFAULT_SAMPLING",
+    "DEPTH_RUN_WINDOW_TABLE",
+    "END_AT_COLUMN",
     "FLAT_AT_ANY_CONTEXT",
     "HOSTED_API_CKPT_HASH",
     "LARGE_HISTORY_FROM_DEPTH",
     "MAX_TEMPERATURE",
+    "MINUTES_PER_DAY",
     "MIN_DEPTH_CONTEXT_TOKENS",
     "MODEL_PIN_PARTS",
     "MODEL_PIN_REVISION",
+    "PEAK_WINDOWS_COLUMN",
     "SAMPLING_KEYS",
+    "SCHEDULED_AT_COLUMN",
     "SEED_MAX",
     "SEPARATOR",
+    "START_AT_COLUMN",
     "AgentModelPins",
     "AgentSampling",
     "AgentSamplingMalformedError",
@@ -275,6 +359,8 @@ __all__ = [
     "CompletionMalformedError",
     "DepthModel",
     "DepthModelError",
+    "DepthRunWindows",
+    "DepthScheduleError",
     "Exchange",
     "InsufficientContextError",
     "LongContextSurchargeError",
@@ -282,10 +368,13 @@ __all__ = [
     "ModelPin",
     "ModelPinConflictError",
     "ModelPinError",
+    "NoOffPeakWindowError",
     "NodeNotRecordedError",
     "NodePin",
     "NodeProvenance",
     "NodeProvenanceError",
+    "PeakPricing",
+    "PeakWindow",
     "PinColumnError",
     "Provider",
     "ProviderError",
@@ -293,16 +382,22 @@ __all__ = [
     "RecordingProvider",
     "Request",
     "RollingAliasError",
+    "RunWindow",
+    "RunWindowConflictError",
     "SamplingConflictError",
+    "ScheduledRun",
+    "UnknownCampaignError",
     "UnknownModelError",
     "Usage",
     "build_agent_model_pins",
+    "choose_run_window",
     "flat_pricing",
     "hosted_api_weights",
     "require_agent_ckpt_hash",
     "require_agent_model_id",
     "require_agent_sampling",
     "require_depth_model",
+    "schedule_depth_run",
 ]
 
 #: The component name this package registers its pin store under.  The plugin
@@ -314,6 +409,16 @@ __all__ = [
 #: key, with the behaviour — a test, not a shared constant — as the thing
 #: that keeps them from drifting silently.
 AGENT_MODEL_PIN_COMPONENT = "agent-model-pins"
+
+#: The component name feature 202's run-window store registers under.  The
+#: plugin name plus what it contributes, on the ``agent-model-pins``
+#: precedent for a member's *later* components: the interface took the bare
+#: plugin name first, the pin store spelled its own contribution second, and
+#: this one spells its the same way.  Spelled here so the seat
+#: (``src/app/modules/providers``) and the composed application agree on the
+#: key, with the behaviour — a test, not a shared constant — as the thing
+#: that keeps them from drifting silently.
+DEPTH_RUN_WINDOW_COMPONENT = "depth-run-windows"
 
 #: The component name feature 192's interface seam registers under.  It
 #: contributes ``None`` (see :func:`provider_interface`), so nothing is stored
@@ -371,3 +476,34 @@ def build_agent_model_pins() -> AgentModelPins | None:
     written until a caller demands a pin.
     """
     return AgentModelPins.resolve()
+
+
+@register(DEPTH_RUN_WINDOW_COMPONENT)
+def build_depth_run_windows() -> DepthRunWindows | None:
+    """Component builder: the store that schedules campaigns' depth runs.
+
+    Feature 202's contribution to the composed application: the
+    :class:`~providers.DepthRunWindows` store this deployment schedules runs
+    into and reads them back from.  Takes no arguments — that is the
+    factory's registration protocol — and resolves ``DATABASE_URL`` at build
+    time, on exactly the :func:`build_agent_model_pins` pattern: a
+    scheduling decision is a deployment-bound fact that must actually land
+    in a table, so the composed application carries the store for the
+    deployment the process is actually running in.
+
+    Returns ``None`` when nothing names a relational store, and that
+    ``None`` is the same refusal-to-proceed the pin store's is rather than
+    an empty store: an empty store would answer *no run is scheduled here*
+    about every campaign, while this ``None`` says there is no database to
+    have scheduled one in — and a launcher that must persist a run's chosen
+    window has to treat it as a refusal rather than as a schedule that
+    happened to find nothing.
+
+    Never raises for the URL itself: a URL whose scheme this member cannot
+    speak is refused by name the first time an operation needs the path,
+    not here.  Construction performs no I/O — the path is resolved on first
+    use, and the member-owned ``depth_run_window`` table is created by the
+    store's first write — so composing the application never opens a
+    database, and nothing is written until a caller schedules a run.
+    """
+    return DepthRunWindows.resolve()

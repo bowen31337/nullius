@@ -64,16 +64,19 @@ def app_on_the_path(monkeypatch):
 
 def test_the_member_registers_its_store_under_its_own_name():
     # The decorator fired when this test module imported the member, and the
-    # name it registered under is feature 203's — not feature 192's, and not the
-    # plugin name.  Two components from one package is the shape this member
-    # has, and the split is the split between a contract that contributes
-    # nothing and a service that contributes a store.
+    # name it registered under is feature 203's — not feature 192's, not
+    # feature 202's, and not the plugin name.  Three components from one
+    # package is the shape this member has (192's contract, 203's pin store,
+    # 202's run-window store), and the split is the split between a contract
+    # that contributes nothing and services that contribute stores.
     from app.module_loader import registered_components
 
     names = {component.name for component in registered_components()}
     assert providers.AGENT_MODEL_PIN_COMPONENT in names
     assert providers.PROVIDERS_COMPONENT in names
-    assert providers.AGENT_MODEL_PIN_COMPONENT != providers.PROVIDERS_COMPONENT
+    assert providers.DEPTH_RUN_WINDOW_COMPONENT in names
+    assert len({providers.AGENT_MODEL_PIN_COMPONENT, providers.PROVIDERS_COMPONENT,
+                providers.DEPTH_RUN_WINDOW_COMPONENT}) == 3
 
 
 def test_scanning_composes_the_store_without_a_central_registry():
@@ -290,13 +293,20 @@ def test_the_seat_answers_none_for_an_empty_workspace(app_on_the_path, tmp_path)
     assert app_on_the_path.agent_model_pins_component(empty) is None
 
 
-def test_the_seat_exports_its_name_and_its_caller_and_nothing_else(app_on_the_path):
+def test_the_seat_exports_its_names_and_its_callers_and_nothing_else(app_on_the_path):
     # The seat deliberately does not re-export the triple, the answer record or
     # the error vocabulary: those are reached from the member, which is where
     # their one spelling lives.  A seat that grew a second spelling of
     # ``ModelPin`` would invite a caller to import the value type from the app
-    # package, and the two would drift.
-    assert set(app_on_the_path.__all__) == {"COMPONENT_NAME", "agent_model_pins_component"}
+    # package, and the two would drift.  Four exports, two per seated service:
+    # feature 202's run-window store joined 203's pin store under this seat,
+    # each contributing its component name and its accessor.
+    assert set(app_on_the_path.__all__) == {
+        "COMPONENT_NAME",
+        "agent_model_pins_component",
+        "DEPTH_RUN_WINDOWS_NAME",
+        "depth_run_windows_component",
+    }
 
 
 def test_importing_the_member_does_not_import_its_own_seat():
