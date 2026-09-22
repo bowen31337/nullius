@@ -163,6 +163,29 @@ not fitted: the conditional is plain floats the policy-development agent wrote
 — the positive half of feature 231's refusal — and the composition is
 arithmetic, with no model class, no checkpoint and no inference anywhere in it.
 
+**The terminal commit: one call, one node, and −∞ for the policy that never
+makes it.**  Feature 222 (docs §598: ``question.commit(node_id)  # REQUIRED;
+omitting scores −inf``; prd §438: *"``commit()`` is mandatory. A policy that
+terminates without committing scores ``−∞``."*) lives in :mod:`.commit` as
+:class:`EpisodeCommit` and :func:`episode_commit` over the question's address
+seam, :class:`CommittedPick` (the one node the episode named) and
+:class:`Termination` (the frozen read at termination, whose
+:meth:`~policy_runtime.Termination.score` answers
+:data:`NON_COMMITTING_SCORE` for the non-committing policy and never calls the
+scorer it was handed on a pick that was never made).  Where the rest of the
+``question.*`` surface is *during* — reads, probes, budget — the commit is the
+terminal act, and the two halves of its law are asymmetric on purpose: the
+malformed acts around the call are refused (:class:`PolicyCommitError` — a
+call naming zero or several nodes, a second commit, a commit after
+termination), while the *absence* of the call is not an error at all but the
+worst score, so the dreaming loop's argmax ranks a non-committing revision
+last instead of dropping it from the comparison.  The address refusal is the
+tree's own (:class:`PolicyAddressError`, the same seam ``reveal`` refuses
+through), and the static half of the same law — ``commit()`` reachable on
+every terminating path — is feature 230's screen over the authored source,
+the before/during split this member already draws between the admission gate
+and the runtime guard.
+
 Stdlib only, and import-cheap: no third-party import at module scope, so the
 factory's scan — which imports this package to fire its ``@register`` — pays
 nothing for the seam.
@@ -186,12 +209,20 @@ from .beta import (
     EpisodeBeta,
     read_beta,
 )
+from .commit import (
+    NON_COMMITTING_SCORE,
+    CommittedPick,
+    EpisodeCommit,
+    Termination,
+    episode_commit,
+)
 from .errors import (
     BetaFixedError,
     FamilyThresholdError,
     PolicyAddressError,
     PolicyAnswerSurfaceError,
     PolicyAdmissionRefusal,
+    PolicyCommitError,
     PolicyFilesystemError,
     PolicyImportError,
     PolicyRuntimeError,
@@ -246,7 +277,9 @@ __all__ = [
     "BetaFixedError",
     "CampaignNode",
     "CampaignTree",
+    "CommittedPick",
     "EpisodeBeta",
+    "EpisodeCommit",
     "EXPLORE_EXPLOIT",
     "FamilyConditional",
     "FamilySchedule",
@@ -256,6 +289,7 @@ __all__ = [
     "GUARD_ACTIVE",
     "GridPlan",
     "GridPlanningContext",
+    "NON_COMMITTING_SCORE",
     "OVERFIT_AVERSION",
     "PATIENCE",
     "POLICY_MODULE_NAME",
@@ -269,6 +303,7 @@ __all__ = [
     "PolicyAddressError",
     "PolicyAnswerSurfaceError",
     "PolicyCeiling",
+    "PolicyCommitError",
     "PolicyFilesystemError",
     "PolicyGuard",
     "PolicyImportError",
@@ -279,6 +314,8 @@ __all__ = [
     "PolicyTreeError",
     "PrefixView",
     "SCHEDULE_KEYS",
+    "Termination",
+    "episode_commit",
     "family_schedule",
     "find_learned_component",
     "guard_policy",

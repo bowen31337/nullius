@@ -1,6 +1,6 @@
 """The policy-runtime error vocabulary — one base class, split by contract.
 
-The base class for every failure of the policy-runtime path, and the eight
+The base class for every failure of the policy-runtime path, and the nine
 subclasses that path raises.  One base class so a caller — the replay engine,
 the dreaming loop, an operator script, a later feature in this category — can
 catch every failure of the read-side question path with a single ``except``,
@@ -79,6 +79,27 @@ a different one: 225 refuses what a running policy *does to its environment*
 (a file, an import), while this refuses what the policy is *handed* — the
 answers an episode may give — and the two are repaired in different places, by
 different owners.
+
+The ninth — :class:`PolicyCommitError` (feature 222) — is the *termination
+protocol's*: a commit call that carried no node or several, a second commit
+after the episode's one pick is made, a commit landing after termination has
+read the episode, a scorer that is not callable, an object that is not a
+question handed where the commit record's seam belongs.  What it deliberately
+does **not** carry is the headline case: a policy that terminates *without*
+committing is never refused — it is scored −∞
+(:data:`policy_runtime.NON_COMMITTING_SCORE`), because docs §598 spells the
+law "omitting scores −inf" and prd §438 "a policy that terminates without
+committing scores ``−∞``" — the miss is a score, not an error, which is the
+feature's whole point.  It is kept apart from :class:`PolicyAddressError`
+because a node the tree does not hold is the *tree's* contract, raised by the
+same seam ``reveal`` refuses through and propagated unchanged, while these
+refusals are the commit protocol's own; and apart from the admission gate's
+unreachable-commit check (feature 230) because that screen judges a policy's
+authored **source** before an episode begins, while this one guards the
+terminal act *during* the episode's closing — the same before/during split
+:class:`PolicyFilesystemError` and :class:`PolicyImportError` draw against
+the gate.  A subclass of :class:`PolicyRuntimeError` all the same, so the one
+base class catches a refused commit too.
 
 These live in their own module rather than in the package ``__init__`` for two
 reasons.  One, it is the house shape — every sibling member (``sandbox``,
@@ -293,4 +314,54 @@ class PolicyAnswerSurfaceError(PolicyRuntimeError, AttributeError):
     episode is willing to give — and the repair belongs to a different owner
     (the runtime's surface, not the sandbox's ceiling).  Every refusal names
     the attribute that was asked for.
+    """
+
+
+class PolicyCommitError(PolicyRuntimeError):
+    """An episode's terminal commit broke the termination protocol
+    (feature 222).
+
+    docs/nullius-tech-architecture.md §598 — ``question.commit(node_id)  #
+    REQUIRED; omitting scores −inf`` — and docs/alpha-engine-prd.md §438:
+    *"``commit()`` is mandatory. A policy that terminates without committing
+    scores ``−∞``."*  The refusals this class carries are the malformed acts
+    *around* the required one, each naming what was wrong:
+
+    * a commit call that carried **no node or several** — ``None``, a blank,
+      a list or tuple of ids, a ``bool`` — because the call is *"a commit call
+      naming one node"* and one id is its one argument;
+    * a **second commit**, naming the pick already made, because the terminal
+      act is one act and the score is earned under the pick as it stood;
+    * a commit **after termination** has read the episode, because a pick
+      landing then is a pick the score never saw;
+    * a **scorer that is not callable** handed to
+      :meth:`policy_runtime.Termination.score`, because that is a wiring
+      fault the caller should hear named rather than a bare
+      :class:`TypeError` escaping the seam;
+    * an object that is **not a question** handed where the commit record's
+      seam belongs, because the record refuses through the question's address
+      seam and an object without one names no node a policy could commit to.
+
+    What this class deliberately does **not** carry is the headline case: a
+    policy that terminates *without* committing is never refused.  It is
+    scored −∞ (:data:`policy_runtime.NON_COMMITTING_SCORE`), stays in the
+    dreaming loop's comparison ranked last, and its ``replay_score`` row is
+    written with the pick absent — "a decision that was never made must stay
+    distinguishable from one that was" (migration 0109).  The miss is a
+    score, not an error; refusing it would take the policy out of the
+    comparison, which is the slot a crashed policy occupies, and the
+    documents spell the other design twice.
+
+    Kept apart from :class:`PolicyAddressError` because a node id the tree
+    does not hold is the *tree's* contract: the commit record refuses it
+    through the same seam ``reveal`` refuses through (``tree.node``) and
+    propagates it unchanged, so the one refusal keeps one class.  Kept apart
+    from :class:`PolicyAdmissionRefusal` because that screen judges a
+    policy's authored **source** before an episode begins — the unreachable-
+    commit check among its reasons — while this one guards the terminal act
+    at the episode's closing: a source can pass the screen and still
+    terminate without committing (a runtime branch the static analysis could
+    not prove), which is exactly the case the −∞ exists to score.  A subclass
+    of :class:`PolicyRuntimeError` all the same, so a caller catching the
+    read-side path's one base class catches a refused commit too.
     """

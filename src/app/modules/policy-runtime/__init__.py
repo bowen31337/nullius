@@ -100,6 +100,20 @@ would be a second spelling of *which* ceiling a policy is judged by — the one
 thing §10.2 says is singular — so this module leaves the resolution where it
 belongs and exposes only the tree.
 
+Feature 222 lives in the same member and is likewise not reached through this
+seat: the terminal commit (:func:`policy_runtime.episode_commit`) is an
+episode's own protocol object — one commit naming one node, read once at
+termination, with a non-committing policy scored −∞ rather than refused
+(docs §598, prd §438) — with no store, no deployment state and no component,
+so it is reached directly from the member — ``from policy_runtime import
+episode_commit`` — exactly the way the admission gate, the beta scalar, the
+prefix view, feature 229's :func:`policy_runtime.plan_grid` and feature 224's
+:func:`policy_surface` are.  This module does not wrap it, because there is
+nothing here to compose: the commit record belongs to the episode a replay
+closes, not to the composed application, and a second spelling of the −∞ or
+of the one-commit door would be a second place the termination protocol would
+have to hold.
+
 Where the composed tree is ``None``, that is a statement about the deployment,
 not an error: the member was not scanned, or the workspace is empty, or the
 deployment's artifact store holds no committed campaign, so there is no tree to
