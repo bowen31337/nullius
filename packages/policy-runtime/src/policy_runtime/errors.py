@@ -1,6 +1,6 @@
 """The policy-runtime error vocabulary — one base class, split by contract.
 
-The base class for every failure of the policy-runtime path, and the five
+The base class for every failure of the policy-runtime path, and the seven
 subclasses that path raises.  One base class so a caller — the replay engine,
 the dreaming loop, an operator script, a later feature in this category — can
 catch every failure of the read-side question path with a single ``except``,
@@ -41,6 +41,25 @@ was well-formed — it is the conditioning authored *over* them that broke the
 routing law, and the repair is a resubmitted conditional, not a different
 episode.  A :class:`PolicyRuntimeError` all the same, so the one base class
 catches it too.
+
+The sixth and seventh — :class:`PolicyFilesystemError` and
+:class:`PolicyImportError` (feature 225) — are the *runtime guard's*: the two
+halves of §10.2's closing sentence, *"The policy runtime additionally blocks:
+``question.best_so_far``, ``question.budget_spent``, filesystem access, and any
+import outside an allowlist."*  They are one feature's two refusals and they
+are kept apart from *each other* because they are repaired differently — a
+policy that opened a file has reached past every prefix it was shown, while one
+that imported a module outside the ceiling reached for a capability the ceiling
+never admitted — and they are kept apart from :class:`PolicyAdmissionRefusal`
+because they are raised at a different *moment*.  That refusal judges a
+policy's authored **source** statically, before an episode begins; this pair
+refuses the policy's **execution** while it runs.  The gap is the reason the
+feature exists: a source can pass every static check in features 230 and 231
+and still reach for a file — a path spelled at runtime, a module named through
+a computed name — which is exactly what feature 225's runtime enforcement
+catches and no static screen can.  Both are :class:`PolicyRuntimeError`, so a
+caller catching the read-side path's one base class catches a guarded policy's
+refusal too.
 
 These live in their own module rather than in the package ``__init__`` for two
 reasons.  One, it is the house shape — every sibling member (``sandbox``,
@@ -170,4 +189,50 @@ class FamilyThresholdError(PolicyRuntimeError):
     A subclass of :class:`PolicyRuntimeError` all the same, so a caller
     catching the read-side path's one base class catches a refused conditional
     too.
+    """
+
+
+class PolicyFilesystemError(PolicyRuntimeError):
+    """A policy reached the filesystem while the guard held its episode.
+
+    Feature 225's first half: docs §10.2 — *"The policy runtime additionally
+    blocks: … filesystem access …"* — and the sentence's subject is a policy
+    that has already been admitted.  The runtime guard
+    (:func:`policy_runtime.guard_policy`) raises this from the interpreter's
+    own audit channel, where the filesystem call is visible as the call it is:
+    :func:`open`, :func:`os.listdir`, :func:`os.remove`, :func:`shutil.copyfile`
+    and their kind, each refused before it can touch a byte, naming the
+    operation and its argument.
+
+    It is kept apart from :class:`PolicyRuntimeError`'s other children because
+    the *repair* is its own — a policy that reads a file is reaching past the
+    prefix it was shown, and the fix is to take the data as an argument rather
+    than to reach for it — and apart from :class:`PolicyImportError` because
+    the two halves of the sentence are two different reaches: importing ``os``
+    is a capability the ceiling never admitted, while opening a path is an
+    access the capability would have bought.  One is refused at the import,
+    the other at the call, and a caller reading a refusal is told which.
+    """
+
+
+class PolicyImportError(PolicyRuntimeError):
+    """A policy imported a module outside the configured allowlist.
+
+    Feature 225's second half: docs §10.2's *"… and any import outside an
+    allowlist"*, and §11.1's *"no imports outside the allowlist"* among the
+    static checks before any policy is admitted — stated here as the runtime
+    enforcement behind those checks.  The ceiling is the same configured
+    document feature 167 screens a submitted module against
+    (:data:`sandbox.imports.COMMITTED_IMPORTS_ALLOWLIST`); this refusal is
+    what happens when a policy reaches an import the *static* screen could not
+    see, which is exactly the case a computed module name creates.
+
+    It is kept apart from :class:`PolicyFilesystemError` because the repair is
+    its own — a policy that imports ``subprocess`` has reached for a capability
+    the ceiling never admitted, and the fix is to stay inside the allowlist,
+    not to pass a path differently — and apart from
+    :class:`PolicyAdmissionRefusal` because that one refuses a policy's
+    authored source before it runs, while this one refuses the running
+    episode's own import.  The refusal names the module and the ceiling, so
+    the author reads what was refused and against what.
     """

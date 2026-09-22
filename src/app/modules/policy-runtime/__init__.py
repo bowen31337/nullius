@@ -64,6 +64,27 @@ view belongs to the round a replay hands a policy, not to the composed
 application, and a second spelling of it would be a second thing to keep in
 sync — and, worse, a second place the prefix-only law would have to hold.
 
+Feature 225 lives in the same member and is likewise not reached through this
+seat: the runtime guard (:func:`policy_runtime.guard_policy`) is a *runtime*
+extent a replay opens around a policy's episode — the two halves of
+docs/nullius-tech-architecture.md §10.2's closing sentence, filesystem access
+and any import outside the configured allowlist — with no store and no
+component, so it is reached directly from the member — ``from policy_runtime
+import guard_policy`` — exactly the way the admission gate, the beta scalar,
+the prefix view and feature 229's :func:`policy_runtime.plan_grid` are.  This
+module does not wrap it, because there is nothing here to compose: the guard
+belongs to the episode the replay runs, not to the composed application.
+
+That last point is worth stating rather than leaving to be inferred, because
+feature 225 *does* read a composed artifact — the configured allowlist — and a
+seat here would be the natural place to hand one over.  The read is the
+member's own: the guard resolves feature 167's ``sandbox-imports`` ceiling
+through the sandbox's seat (:mod:`app.modules.sandbox`) and memoises it, which
+is the composition the guard needs and the only one it has.  A wrapper here
+would be a second spelling of *which* ceiling a policy is judged by — the one
+thing §10.2 says is singular — so this module leaves the resolution where it
+belongs and exposes only the tree.
+
 Where the composed tree is ``None``, that is a statement about the deployment,
 not an error: the member was not scanned, or the workspace is empty, or the
 deployment's artifact store holds no committed campaign, so there is no tree to
