@@ -5,7 +5,7 @@ Implements app_spec.xml, "Discovery Orchestrator & Campaigns", feature
 and null fraction before any node is expanded"* — against §5's discovery
 tree and §4.1.1's planted-null fraction.
 
-The member's surface is nine modules.  :mod:`discovery.campaign` is the clip
+The member's surface is ten modules.  :mod:`discovery.campaign` is the clip
 that derives φ from ``W``, §7.3's two regimes as a closed set, the frozen
 :class:`~discovery.campaign.CampaignRecord` and the store that creates one
 row in the ``campaign`` table the migration already declares.
@@ -45,7 +45,16 @@ carrying a branch count plus a refine count derived from prior
 manifests"* — the system's own planner: the derivation that runs *inside*
 233's aperture, rebalancing the refinement budget the history actually
 spent away from the history's own aspect so the next campaign is not the
-400th tweak of the last one's indicator.
+400th tweak of the last one's indicator.  :mod:`discovery.difficulty` is
+feature 236 — *"System computes a per-branch difficulty weight targeting a
+success rate near 0.2, which returns a depth allocation favouring the agent
+frontier"* — PRD §428's kernel and the proportional apportionment that
+skews 235's flat base per branch.  :mod:`discovery.saturation` is feature
+237 — *"System reduces allocation for a saturated branch where nearly every
+refinement succeeds, which returns a lowered depth budget"* — the one
+response 236's *relative* split cannot make: a level, applied to one branch
+rather than to a comparison between branches, so a census whose branches are
+*all* saturated is lowered rather than split evenly among them.
 This module re-exports all of them and registers the one component; it
 carries no logic of its own, which is the same shape every member in this
 workspace takes.
@@ -222,6 +231,27 @@ therefore stays feature 232's single store, unchanged by the whole of §428's
 difficulty targeting, and the sibling member's ``_schedule(beta)`` dict that
 PRD §434 says the band *"drops into"* stays the policy's own concern.
 
+**Feature 237 adds no component, and its reason is 236's unchanged — which is
+worth saying, because it is the one feature in this pair where a component
+looks most tempting.**  :func:`discovery.saturation.reduce_saturated` is the
+step §434's *"saturated and loses allocation"* asks for at the level 236's
+proportional split cannot reach, and a *response* to saturation is exactly the
+kind of policy a deployment might want to configure: the threshold and the
+retention are both named defaults this member's own comments invite a
+deployment to replace.  It still composes nothing, and the reason is that a
+component is built by a builder that takes **no arguments** — so a registered
+``SATURATION_RETENTION`` would have to be read from the environment by a member
+that already has a configured surface for exactly that purpose (feature 241's
+legal set) and no business adding a second one — and, more decisively, that a
+builder is built on *every* ``create_app()`` call while this verb is a function
+of an allocation and a census the factory holds neither of.  The census is
+current-episode evidence, which is 236's own disqualification; the knobs are
+constants the caller's own tuning replaces, which is 227's and 228's.  So the
+member's registered surface stays feature 232's single store, and the tuning
+reaches this rule the way every other band in the workspace is tuned: by
+replacing the named constant, or by having planned the campaign through a
+policy whose ``_schedule(beta)`` dict carries the value.
+
 **Registration is the entire wiring story.**  The module loader
 (``app.module_loader``) scans the members the root ``pyproject.toml``
 declares, imports each package, and composes whatever each package's
@@ -367,6 +397,12 @@ from .retry import (
     is_interruption,
     retry_interrupted,
 )
+from .saturation import (
+    SATURATION_RATE,
+    SATURATION_RETENTION,
+    is_saturated,
+    reduce_saturated,
+)
 from .themes import (
     DEFAULT_LEGAL_THEMES,
     DEFAULT_THEME_SET,
@@ -423,6 +459,8 @@ __all__ = [
     "REFERENCE_REFINE_COUNT",
     "REFINE_COUNT_COLUMN",
     "REGIMES",
+    "SATURATION_RATE",
+    "SATURATION_RETENTION",
     "SLOT_THREAD_PREFIX",
     "SOURCE_FILENAME",
     "TARGET_SUCCESS_RATE",
@@ -476,10 +514,12 @@ __all__ = [
     "expand_node",
     "finish_campaign",
     "is_interruption",
+    "is_saturated",
     "legal_themes_from_env",
     "null_fraction",
     "plan_grid",
     "record_attempts",
+    "reduce_saturated",
     "refined_node_id",
     "retry_interrupted",
     "run_batch",

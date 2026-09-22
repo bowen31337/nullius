@@ -59,6 +59,30 @@ sibling member's ``_schedule(beta)`` dict that PRD §434 says the band *"drops
 into"* stays the policy's own concern rather than becoming a second component
 here.
 
+**Feature 237's saturation response is the fourth seam with no seat, and it is
+the one where the temptation is strongest and the answer the most useful to
+have written down.**  :func:`discovery.saturation.reduce_saturated` lowers the
+depth feature 236 allocated to a branch where nearly every refinement
+succeeded — and unlike 233's hook, 235's derivation and 236's allocation, this
+one has *two knobs* (:data:`discovery.SATURATION_RATE` and
+:data:`discovery.SATURATION_RETENTION`) written as named defaults whose own
+comments invite a deployment to replace them.  *Policy a deployment tunes* is
+the closest thing to a component this member has produced, so the reason it is
+still not one is worth stating in full.  A builder takes no arguments, so a
+registered threshold would have to be read from the environment by the member
+at build time — a second configured surface beside feature 241's, which is the
+member's one deliberate environment read and is one because a *set of themes*
+is a deployment's research space rather than a number its own loop can retune.
+And a builder is built on every ``create_app()`` call, while this verb is a
+function of an allocation and a census the factory holds neither of — the
+census being current-episode evidence, 236's own disqualification, inherited
+whole.  So the tuning reaches this rule the way 227's and 228's bands reach
+theirs: the caller replaces the named constant, or plans through a policy whose
+``_schedule(beta)`` dict carries the value.  The member's registered surface
+stays feature 232's single store, and the four sections above are now four
+seams answering to one component: the store is what makes a campaign's history
+readable, and everything after it is a function of evidence the caller read.
+
 **The seat's ``None`` is about the deployment, not about the member.**
 ``None`` means *nothing named a database* — ``DATABASE_URL`` is unset, so
 there is no table for a campaign row to land in.  It does **not** mean the
