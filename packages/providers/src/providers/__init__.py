@@ -184,6 +184,36 @@ decision is a fact that must actually land in a table (see
   the question none of the other three answers: *when may this
   campaign's runs happen?*  See :mod:`providers._schedule_errors`.
 
+Feature 201 — *"System routes depth calls through a batch endpoint when
+available, which returns roughly half the synchronous rate"* — is §14.2's
+**first** of its *"two free levers worth ~50%"* (202 is the second), and it
+rests on the same fact 202's does: the depth role *"is pure asynchronous
+batch work.  Nothing waits on it"*.  Its records join the depth criterion's
+as direct imports and add no component — a routing decision is a property of
+a single call, not a deployment-bound fact that must land in a table (see
+:mod:`providers._batch` for the surface's shape and its reasons):
+
+* :class:`BatchEndpoint` and :class:`BatchPricing` — **the
+  configuration**: one provider's batch offering (its name, whether it
+  offers a batch endpoint at all, and the fraction of the synchronous rate
+  it bills) and the card collecting them.  §14.2's *"roughly half"* is a
+  description, not a constant: no fraction is baked into the module, for
+  the same reason feature 202 bakes in no peak window — *"rates move
+  monthly … the selection logic is stable, the numbers are not"*.
+
+* :func:`route_depth_call` and :class:`RoutedCall` — **the choice**: the
+  endpoint a depth call goes to, the provider it is served by, and the
+  **rate multiple** it is billed at (``1.0`` synchronously, the card's
+  fraction batched).  A provider with no batch endpoint, and a call the
+  caller did not declare batchable, both route synchronously — the
+  sentence's own *"when available"* is a condition the routing reads, not
+  an error it reports.
+
+* :class:`~providers.BatchRoutingError` and its one subclass
+  (:class:`~providers.UnknownProviderError`) — a **fifth** base, for the
+  question none of the other four answers: *which endpoint does this call
+  go to?*  See :mod:`providers._batch_errors`.
+
 The error taxonomy (:mod:`providers._errors`) is the failure modes of *this*
 seam and no other — a malformed completion, a missing provider, an unknown
 model — raised at the interface's own guardrails, never by a provider's
@@ -239,6 +269,24 @@ from __future__ import annotations
 
 from app.module_loader import register
 
+from ._batch import (
+    BATCH_ENDPOINT,
+    BATCH_RATE_MULTIPLE,
+    BATCHED_COLUMN,
+    ENDPOINT_COLUMN,
+    PROVIDER_COLUMN,
+    RATE_MULTIPLE_COLUMN,
+    SYNCHRONOUS_ENDPOINT,
+    SYNCHRONOUS_RATE_MULTIPLE,
+    BatchEndpoint,
+    BatchPricing,
+    RoutedCall,
+    route_depth_call,
+)
+from ._batch_errors import (
+    BatchRoutingError,
+    UnknownProviderError,
+)
 from ._ckpt import (
     AGENT_CKPT_HASH_COLUMN,
     CKPT_HASH_LENGTH,
@@ -328,12 +376,16 @@ __all__ = [
     "AGENT_CKPT_HASH_COLUMN",
     "AGENT_MODEL_ID_COLUMN",
     "AGENT_SAMPLING_COLUMN",
+    "BATCHED_COLUMN",
+    "BATCH_ENDPOINT",
+    "BATCH_RATE_MULTIPLE",
     "CAMPAIGN_ID_COLUMN",
     "CAMPAIGN_TABLE",
     "CAMPAIGN_TABLE_ID_COLUMN",
     "CKPT_HASH_LENGTH",
     "DEFAULT_SAMPLING",
     "DEPTH_RUN_WINDOW_TABLE",
+    "ENDPOINT_COLUMN",
     "END_AT_COLUMN",
     "FLAT_AT_ANY_CONTEXT",
     "HOSTED_API_CKPT_HASH",
@@ -344,15 +396,22 @@ __all__ = [
     "MODEL_PIN_PARTS",
     "MODEL_PIN_REVISION",
     "PEAK_WINDOWS_COLUMN",
+    "PROVIDER_COLUMN",
+    "RATE_MULTIPLE_COLUMN",
     "SAMPLING_KEYS",
     "SCHEDULED_AT_COLUMN",
     "SEED_MAX",
     "SEPARATOR",
     "START_AT_COLUMN",
+    "SYNCHRONOUS_ENDPOINT",
+    "SYNCHRONOUS_RATE_MULTIPLE",
     "AgentModelPins",
     "AgentSampling",
     "AgentSamplingMalformedError",
     "AgentWeights",
+    "BatchEndpoint",
+    "BatchPricing",
+    "BatchRoutingError",
     "CkptHashConflictError",
     "CkptHashMalformedError",
     "Completion",
@@ -382,12 +441,14 @@ __all__ = [
     "RecordingProvider",
     "Request",
     "RollingAliasError",
+    "RoutedCall",
     "RunWindow",
     "RunWindowConflictError",
     "SamplingConflictError",
     "ScheduledRun",
     "UnknownCampaignError",
     "UnknownModelError",
+    "UnknownProviderError",
     "Usage",
     "build_agent_model_pins",
     "choose_run_window",
@@ -397,6 +458,7 @@ __all__ = [
     "require_agent_model_id",
     "require_agent_sampling",
     "require_depth_model",
+    "route_depth_call",
     "schedule_depth_run",
 ]
 
