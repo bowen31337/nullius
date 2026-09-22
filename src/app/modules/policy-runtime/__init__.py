@@ -134,6 +134,25 @@ the *question's tree* and not its budget: a question built from
 :data:`policy_runtime.UNBOUNDED_BUDGET`, which is the honest state of a
 composed deployment that has stated no statistical ceiling.
 
+Feature 220 lives in the same member and is likewise not reached through this
+seat: the batch reveal
+(:meth:`policy_runtime.PolicyQuestion.probe_batch`, with its optional
+``on_reveal`` callback and the :meth:`policy_runtime.PolicyQuestion.reveal_many`
+delegation beside it) is a *method on the read-side question* rather than a
+construction of its own — it grows the question's own reveal set and returns
+the observations it newly revealed (docs/nullius-tech-architecture.md §596,
+prd §421) — with no store, no deployment state and no component, so it is
+reached the way every other read of the question is: a caller who holds the
+tree takes ``policy_runtime.policy_question(tree)`` and calls the verb on it,
+exactly as it calls :meth:`~policy_runtime.PolicyQuestion.observed` or
+:meth:`~policy_runtime.PolicyQuestion.reveal`.  This module does not wrap it,
+because there is nothing here to compose: the batch belongs to the episode a
+replay runs, not to the composed application, and a second spelling of the verb
+would be a second place the prefix-only law, the all-or-nothing validation and
+the once-per-new-cell callback would each have to hold.  This is also where the
+seat's earlier sentence earns its keep — feature 220 needs the read-side
+interface, and what it asks this module for is the *tree*, not a probe.
+
 Where the composed tree is ``None``, that is a statement about the deployment,
 not an error: the member was not scanned, or the workspace is empty, or the
 deployment's artifact store holds no committed campaign, so there is no tree to

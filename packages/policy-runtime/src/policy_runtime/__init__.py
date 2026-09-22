@@ -40,11 +40,12 @@ no reveal history, no policy runtime and no budget, because a tree whose
 answers depended on how often it had been asked would not be a ground truth.
 Feature 217's :class:`PolicyQuestion` is the wrapper that turns that answer
 surface into the *policy-facing* object a replay hands a policy: the thing
-that remembers which cells have been revealed.  The tree answers *what is
-true here?*; the question answers *what has this policy seen?* — two facts
-that should not share one object, and the reason the category's later
-features (218's frontier, 219's meta, 220's probe, 222's commit) build on
-*this* seam rather than on the tree's.
+that remembers which cells have been revealed, and the thing a policy
+*extends* that set through (feature 220's ``probe_batch``, the verb the read
+side is read over).  The tree answers *what is true here?*; the question
+answers *what has this policy seen?* — two facts that should not share one
+object, and the reason the category's later features (218's frontier, 219's
+meta, 222's commit) build on *this* seam rather than on the tree's.
 
 **The observation is the node's honest payload-derived reading, unchanged.**
 The :class:`PolicyObservation` a reveal returns carries the in-sample metrics
@@ -111,6 +112,36 @@ and the refusal it is met with — :class:`PolicyAnswerSurfaceError` — is an
 :class:`AttributeError` as well as a :class:`PolicyRuntimeError`, so
 ``hasattr``, ``getattr`` with a default and a ``dir()``-driven walk all behave
 over the surface exactly as they do over any other object.
+
+**The prefix grows through one verb, and a batch is what a policy selects
+(feature 220).**  §11's next line is the *write* side of the read side 217
+built — ``question.probe_batch(cells, on_reveal=...)`` (docs §596, prd §421) —
+and it is the verb a policy's whole exploration is made of: prd §436's
+*"must terminate when no batch is selected"* names the batch as the unit of
+decision, so a probe is how a policy spends a round and how the prefix it is
+prefix-only *over* comes to exist.  :meth:`PolicyQuestion.probe_batch` reveals
+a batch at once — deduplicated and in ascending node-id order (docs §12's
+ordering rule, already fixed for ``observed()``), validated in full against
+the tree **before** any cell is revealed so a bad cell refuses the whole batch
+and leaves the reveal set half-applied never, and returning
+``{node_id: Observation}`` for the cells revealed *by this call*, so a
+re-probe of a cell the question already holds returns nothing new and the call
+is idempotent on the revealed set.  ``on_reveal`` is the reveal callback the
+sentence names: called **once per newly revealed cell**, in the same ascending
+order, and never for a cell already held — the hook a replay uses to record
+what a policy looked at, with the batch already applied by the time it fires,
+and refused up front in this member's own vocabulary when it is not a
+callable.  It is the *same signature* feature 184's
+:meth:`bootstrap.BootstrapQuestion.probe_batch` answers, which is what makes
+"one policy, both pools" a fact about the seam: the canonical policy the
+admission suite screens and the trial recorder (feature 185) duck-types on
+both spell this verb, and neither knows which pool it is running against.
+:meth:`PolicyQuestion.reveal_many` remains the name feature 217 shipped this
+act under, now a delegation to :meth:`PolicyQuestion.probe_batch` rather than
+a second implementation, so the two names cannot drift; :meth:`PolicyQuestion.reveal`
+is the one-cell verb beside them, and the split is the one feature 222's
+commit draws from the other side.  Nothing is charged: what a probe costs is
+the ledger's accounting, not a counter this object keeps.
 
 **The budget a policy reads is statistical, and the other one is not
 reported (feature 221).**  §11's interface has a second read verb —
@@ -218,7 +249,7 @@ from __future__ import annotations
 
 import json
 import numbers
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -684,6 +715,16 @@ class PolicyQuestion:
     node_id)``, computed afresh each call, so the same node revealed twice
     answers the identical observation whatever order the reveals came in.
 
+    The reveal set grows through the write side of the same interface:
+    :meth:`probe_batch` (feature 220) reveals a batch of cells at once and
+    returns the observations it newly revealed, calling an optional
+    ``on_reveal`` hook once per new cell; :meth:`reveal` is the one-cell verb
+    beside it, and :meth:`reveal_many` the name feature 217 shipped the batch
+    under, kept as a delegation so the two spellings of one act cannot drift.
+    ``probe_batch`` carries the signature §11 states and the sibling pool
+    answers, which is what makes the identical-interface claim a fact about
+    the seam rather than a promise.
+
     Constructed from the tree it fronts; the tree is validated at construction,
     so a question built over a non-tree or an empty tree is refused before it
     can hand a policy an interface that would answer differently from the tree
@@ -806,10 +847,21 @@ class PolicyQuestion:
         §10.2, cq-16).  A policy holding the mapping holds only what it has
         already seen.
         """
-        return {
-            node_id: PolicyObservation.from_node(self._tree.node(node_id))
-            for node_id in sorted(self._revealed)
-        }
+        return {node_id: self._observe(node_id) for node_id in sorted(self._revealed)}
+
+    def _observe(self, node_id: str) -> PolicyObservation:
+        """The observation a revealed cell holds — the tree's reading, attributed.
+
+        The one spelling of "a node's observation": :meth:`observed`,
+        :meth:`reveal` and :meth:`probe_batch` all route through it, so an
+        observation made by a batch sweep and one made by a single reveal
+        cannot drift — the discipline
+        :meth:`bootstrap.BootstrapQuestion._observe` keeps on the other pool's
+        side of the identical interface.  The reading is the tree's honest
+        payload-derived one, read through the address seam, so an observation
+        and the node it was earned on are one act.
+        """
+        return PolicyObservation.from_node(self._tree.node(node_id))
 
     def reveal(self, node_id: str) -> PolicyObservation:
         """Reveal one cell, returning its observation — the write side of the set.
@@ -821,29 +873,139 @@ class PolicyQuestion:
         let the policy think it had seen one.  The observation is the tree's
         honest payload-derived reading, so the reveal and the record are one
         act and cannot drift apart.
+
+        One cell is the whole of what this verb reveals; a batch is
+        :meth:`probe_batch`'s, and the split is the one feature 222's commit
+        draws from the other side (a commit names one node and refuses a
+        collection — *"probe_batch is the batch verb"*).
         """
         node = self._tree.node(node_id)  # refuses a node outside the tree
         self._revealed.add(node_id)
         return PolicyObservation.from_node(node)
 
-    def reveal_many(self, node_ids: Iterable[str]) -> dict[str, PolicyObservation]:
-        """Reveal a batch of cells at once, returning their observations.
+    def probe_batch(
+        self,
+        cells: Iterable[str],
+        on_reveal: Callable[[str], None] | None = None,
+    ) -> dict[str, PolicyObservation]:
+        """Reveal a batch of cells at once — §11's ``probe_batch``.
 
-        Reveals a batch of cells at once, returning ``{node_id:
-        PolicyObservation}`` for the cells revealed *by this call* (an
-        already-revealed cell is not re-returned — the call is idempotent on
-        the revealed set, so a policy that re-reveals a cell it holds does not
-        see it as new).  The whole batch is validated against the tree before
-        any cell is revealed, so a batch that names a cell the tree does not
-        hold is refused naming the cell and the tree and reveals none of them —
-        a policy cannot slip one invalid reveal past a batch of valid ones, and
+        docs/nullius-tech-architecture.md §596's line in the identical
+        ``question.*`` interface — ``question.probe_batch(cells, on_reveal=...)``
+        — which prd §421 repeats verbatim in §C4's listing.  The batch is the
+        unit a policy selects (prd §436: *"must terminate when no batch is
+        selected"*), so this is the verb that extends the prefix, and it is
+        the *same verb* on both pools: feature 184's
+        :meth:`bootstrap.BootstrapQuestion.probe_batch` answers this exact
+        signature, which is what makes "one policy, both pools" a fact about
+        the seam rather than a promise in a docstring.
+
+        Reveals each cell of ``cells``, returning ``{node_id:
+        PolicyObservation}`` for the cells revealed **by this call** — an
+        already-revealed cell is not re-returned, so a policy that re-probes a
+        cell it holds does not see it as new, and the call is idempotent on
+        the revealed set.  ``on_reveal``, when given, is called **once per
+        newly revealed cell**, and never for a cell the question already held:
+        it is the hook a replay uses to record what a policy looked at
+        (feature 185's trial recorder reads this verb's return value; a
+        deployment watching a walk in flight reads the callback), so a
+        re-probe is not a double-count.  Passing ``None`` — the default —
+        means no hook, and a policy that wants only the readings pays nothing
+        for it.
+
+        **Ascending, deduplicated, and all-or-nothing.**  The batch is
+        reduced to ``sorted(set(cells))`` before anything happens, so a
+        duplicate in the batch is one cell and the whole call — the reveal
+        set's growth, the callbacks, the returned mapping — runs in ascending
+        node-id order, the ordering rule docs §12 states for a search frontier
+        and the one feature 217 already fixed for :meth:`observed`.  Every
+        cell is then validated against the tree **before** any is revealed, so
+        a batch naming a cell the tree does not hold is refused with
+        :class:`PolicyAddressError` — naming the node and the tree, the same
+        class :meth:`reveal` refuses through — and **reveals none of them**: a
+        policy cannot slip one invalid reveal past a batch of valid ones, and
         the reveal set is never left half-applied.
+
+        **The acts are ordered, and the order is load-bearing.**  The cells
+        are revealed, *then* the callbacks fire, *then* the mapping is
+        returned — so a hook that reads :meth:`observed` inside ``on_reveal``
+        sees the batch already applied rather than the prefix as it stood
+        before, and a hook that raises leaves the reveal set correct rather
+        than half-written.  The callback receives the **node id**, not the
+        observation: the id is the address the reveal set is keyed by and the
+        one fact a hook needs to act on, while the readings are what the
+        return value is for — and it is what the other pool's ``on_reveal``
+        passes, so a hook written against one pool runs unmodified against the
+        other.
+
+        ``on_reveal`` is validated **before** any cell is revealed, so a hook
+        that is not a callable refuses the call in this member's own
+        vocabulary rather than as a bare :class:`TypeError` escaping the loop
+        after the reveal set had already grown — the error-vocabulary
+        discipline every seam in this member keeps, and the reason a caller's
+        own ``except PolicyRuntimeError`` catches it.
+
+        Nothing is charged here.  §11's ``probe_batch`` is the batch *verb*;
+        what a probe costs is the ledger's accounting (feature 185's
+        ``charges_budget`` row, feature 221's :meth:`budget_remaining` reading
+        it against the allowance), and the two are deliberately apart —
+        ``commit.py``'s own text has probe_batch *"spend budget to extend"* the
+        prefix, which is a fact about the campaign's charges rather than a
+        counter this object keeps.  A question holding no account answers
+        :data:`UNBOUNDED_BUDGET` before and after a probe.
         """
-        nodes = [self._tree.node(candidate) for candidate in node_ids]
+        if on_reveal is not None and not callable(on_reveal):
+            raise PolicyTreeError(
+                f"a probe's on_reveal hook is a callable the question calls "
+                f"once per newly revealed cell — got {on_reveal!r} "
+                f"({type(on_reveal).__name__}), which cannot be called; the "
+                f"hook is how a replay records what a policy looked at, and a "
+                f"value the question cannot call would be a reveal the caller "
+                f"never heard about (feature 220, docs §596). Pass a callable, "
+                f"or pass nothing at all for a probe that only returns its "
+                f"readings"
+            )
+        # Reduced and ordered first: a duplicate in the batch is one cell, and
+        # every act below — the validation, the reveal set's growth, the
+        # callbacks, the returned mapping — runs in ascending node id order,
+        # the ordering rule docs §12 states for a search frontier.
+        ordered = sorted(set(cells))
+        # Validated up front, so a bad cell refuses before any cell is
+        # revealed: a half-applied batch would leave the reveal set in a
+        # state the policy did not ask for, and a probe is all-or-nothing.
+        nodes = [self._tree.node(candidate) for candidate in ordered]
         newly = [node for node in nodes if node.node_id not in self._revealed]
         for node in newly:
             self._revealed.add(node.node_id)
-        return {node.node_id: PolicyObservation.from_node(node) for node in newly}
+        # The hook fires after the reveal set has grown, so a callback reading
+        # ``observed()`` sees the batch already applied.
+        if on_reveal is not None:
+            for node in newly:
+                on_reveal(node.node_id)
+        return {node.node_id: self._observe(node.node_id) for node in newly}
+
+    def reveal_many(self, node_ids: Iterable[str]) -> dict[str, PolicyObservation]:
+        """Reveal a batch of cells at once, returning their observations.
+
+        The batch verb under the name feature 217 shipped it with, kept as a
+        **delegation** to :meth:`probe_batch` rather than as a second
+        implementation: ``probe_batch`` is what §11 calls this act
+        (docs §596, prd §421) and what the sibling pool, the trial recorder
+        and the planning boundary all spell, so the two names must front one
+        behaviour — and a second body here would be a second set of
+        guarantees free to drift from the first.  Every property below is
+        :meth:`probe_batch`'s, read through the same code: the batch is
+        deduplicated and handled in ascending node-id order, it is validated
+        against the tree before any cell is revealed so a bad cell refuses the
+        whole batch and leaves the reveal set untouched, and only the cells
+        revealed *by this call* are returned — an already-revealed cell is not
+        re-returned, so the call is idempotent on the revealed set.
+
+        It takes no ``on_reveal``: a caller that wants the hook — the replay
+        recording what a policy looked at — calls :meth:`probe_batch`, which
+        is the spelling the spec and the other pool use.
+        """
+        return self.probe_batch(node_ids)
 
     def budget_remaining(self) -> StatisticalBudget:
         """The episode's statistical budget — feature 221, and not the compute one.
