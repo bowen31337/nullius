@@ -131,11 +131,41 @@ own exception: an agent that raises passes through untouched, because
 :func:`discovery.retry.is_interruption` to classify it, and an
 evaluation failure must arrive as itself for §6.1's step 11 to have
 charged a real attempt.  The expansion wraps nothing it did not refuse.
+
+Feature 240 adds the seventh class, and it is the last link of the same
+chain: :class:`AttemptLogError` is raised when *"System persists every
+attempt into the node table together with its full artifact, including
+failures"* cannot be honoured.  It carries three faces, and they are the
+three things the act needs — the *ask* (a value that is not an attempt, a
+batch spelled without its brackets, an attempt whose ``fail_class`` is
+not one of §9.1's four, whose identity is not its parent's derivation,
+whose code hash is not ``sha256`` of its code, whose run ordinal is above
+its own run count), the *tree* (a database holding no ``node`` table, a
+``parent_id`` the tree does not hold, a ``NOT NULL`` column neither the
+attempt nor a ``DEFAULT`` fills) and the *address* (a ``DATABASE_URL``
+that names no SQLite file, because a node row must outlive the attempt
+that wrote it).  One class rather than three because the caller's
+position is the same in all three cases and it is unlike every class
+above: the attempt has already been *run* — the hypothesis is spent,
+§6.1's step 11 has debited it — so the repair is never to re-send an ask.
+It is to make the tree writable and record the attempt again, which the
+derived identity makes idempotent.
+
+It sits beside :class:`ExpansionError` rather than under it, and the
+reason is the split rule this module opens with.  A failed *expansion* is
+a fact about one attempt, and feature 240 is where that fact goes — as a
+row, not as a refusal.  A failed *record* is a fact about the deployment:
+the attempt is complete and the tree could not take it, which is an
+operator's problem (the migration has not run, the parent was never
+planted, the URL points at the wrong file) and not the campaign loop's.
+Folding them would make the loop's per-node policy catch a store fault it
+cannot act on, and would put two different repairs behind one ``except``.
 """
 
 from __future__ import annotations
 
 __all__ = [
+    "AttemptLogError",
     "BatchDispatchError",
     "CampaignOrderError",
     "CampaignPlanningError",
@@ -313,4 +343,49 @@ class ExpansionError(DiscoveryError):
     reason from the other side: §6.1's step 11 charges it, and the tree
     logs what actually happened.  This class speaks only for the
     expansion's own two faces.
+    """
+
+
+class AttemptLogError(DiscoveryError):
+    """An attempt could not be written into the tree with its artifact.
+
+    app_spec.xml feature 240: *"System persists every attempt into the
+    node table together with its full artifact, including failures."*
+    This is the refusal when that sentence cannot be honoured, and it is
+    **not** the class a *failed attempt* raises — a failure that reached
+    the log is persisted by the same call as a success, in the same table,
+    with the same artifact directory.  What this class reports is that the
+    attempt could not be *recorded*, and the three faces are the three
+    things the act needs:
+
+    * the **ask** — a value that is not an attempt, a batch spelled
+      without its brackets, or an attempt whose own facts do not hold
+      (§9.1's ``fail_class`` outside its four words, an identity that is
+      not the parent's derivation, a code hash that is not ``sha256`` of
+      its code, a run ordinal above its own run count);
+    * the **tree** — a database holding no ``node`` table, a ``parent_id``
+      the tree does not hold, or a ``NOT NULL`` column neither the attempt
+      nor a ``DEFAULT`` fills;
+    * the **address** — a ``DATABASE_URL`` that names no SQLite file,
+      because a node row must outlive the attempt that wrote it.
+
+    One class rather than three, and the reason is the *caller's position*
+    rather than the shapes of the failures.  By the time this is raised
+    the attempt has already been **run**: the hypothesis is spent, §6.1's
+    step 11 has debited it, and the sandbox's seconds are gone.  So the
+    repair is never to re-consider an ask — it is to make the tree
+    writable and record the attempt again, which the derived identity
+    makes idempotent by construction (re-recording refreshes the row and
+    re-publishes the directory).  That is a different repair from
+    :class:`CampaignPlanningError`'s (re-send a corrected ask) and from
+    :class:`CampaignOrderError`'s (repair the store, then re-plan), and it
+    is the one class of this vocabulary whose messages are addressed to an
+    **operator** — the deployment's tree, not the loop's logic.
+
+    Beside :class:`ExpansionError` rather than under it, because a failed
+    *expansion* is a fact about one attempt that feature 240 persists as
+    a row, while a failed *record* is a fact about the deployment that the
+    campaign loop cannot act on at all.  Every message names the node it
+    was refused for, so an operator's log line says which attempt of which
+    campaign is missing from the tree.
     """

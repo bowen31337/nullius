@@ -5,7 +5,7 @@ Implements app_spec.xml, "Discovery Orchestrator & Campaigns", feature
 and null fraction before any node is expanded"* — against §5's discovery
 tree and §4.1.1's planted-null fraction.
 
-The member's surface is five modules.  :mod:`discovery.campaign` is the clip
+The member's surface is six modules.  :mod:`discovery.campaign` is the clip
 that derives φ from ``W``, §7.3's two regimes as a closed set, the frozen
 :class:`~discovery.campaign.CampaignRecord` and the store that creates one
 row in the ``campaign`` table the migration already declares.
@@ -27,10 +27,15 @@ creates exactly one refined signal for evaluation"* — the worker of
 record those two modules name: the callable a slot runs once per
 selected node, resuming the tree's record of it and answering one
 refined signal whose node id is derived from the parent, so a
-reclamation's re-run is the same attempt in identity.  This module
-re-exports all five and registers the one component; it carries no
-logic of its own, which is the same shape every member in this
-workspace takes.
+reclamation's re-run is the same attempt in identity.
+:mod:`discovery.persist` is feature 240 — *"System persists every
+attempt into the node table together with its full artifact, including
+failures"* — the act the other five exist to feed: one `node` row and
+one §9.2 artifact directory per attempt, a failure written by the same
+call as a success, and a retry refreshing the row its derived identity
+already names rather than adding a second.  This module re-exports all
+six and registers the one component; it carries no logic of its own,
+which is the same shape every member in this workspace takes.
 
 **Feature 241 adds no component, and that is a decision rather than an
 omission.**  The factory's registration protocol is for *state a deployment
@@ -86,6 +91,26 @@ builder that registered an expansion with no agent would be
 registering a refusal.  The caller reaches the worker the only way the
 spec allows: by constructing it with the agent it planned to run, and
 handing it to the pool as the worker of record.
+
+**Feature 240 adds no component, and its reason has 239's face plus a
+second one.**  :class:`discovery.persist.AttemptLog` *does* close over
+state a deployment holds — a database URL and an artifact directory —
+and composes nothing.  The first face is 239's: the artifact directory
+is a **sibling member's** component, and a builder takes no arguments,
+so a registered log would have to invent one — and an invented store is
+the tree row and the artifact directory disagreeing about where a node
+lives, which is the one thing §9.1's ``artifact_uri TEXT NOT NULL``
+cannot tolerate.  The second face is this feature's own and it is the
+sharper one: a component is built on **every** ``create_app()`` call,
+and a log that resolved its tree at build time would have to answer
+*which campaign's attempts does this writer hold?* — a question with no
+answer, because the log holds every campaign's, and a builder that
+picked one would be a store that silently wrote a campaign's nodes into
+another campaign's directory.  The caller reaches the record the only
+way the spec allows: by constructing the log with the tree it writes
+into and the store it publishes through, and calling it once per
+attempt.  :func:`discovery.persist.record_attempts` is the same act
+without the intermediate object, for the caller that holds neither.
 
 **Why this member exists at all.**  The ``campaign`` table is feature
 104's (``migrations/versions/0111_campaign_table.py``) and eight stores
@@ -160,6 +185,7 @@ from .campaign import (
     null_fraction,
 )
 from .errors import (
+    AttemptLogError,
     BatchDispatchError,
     CampaignOrderError,
     CampaignPlanningError,
@@ -175,6 +201,23 @@ from .expansion import (
     RefinedSignal,
     expand_node,
     refined_node_id,
+)
+from .persist import (
+    ARTIFACT_URI_COLUMN,
+    ATTEMPT_DATABASE_URL_ENV,
+    FAIL_CLASS_COLUMN,
+    FAIL_CLASSES,
+    MEASURED_FILENAMES,
+    SOURCE_FILENAME,
+    TRACE_FILENAME,
+    ArtifactDirectory,
+    Attempt,
+    AttemptLog,
+    AttemptProvenance,
+    AttemptRecord,
+    attempt_node_id,
+    classify_failure,
+    record_attempts,
 )
 from .retry import (
     RetriedResult,
@@ -198,6 +241,8 @@ from .workers import (
 )
 
 __all__ = [
+    "ARTIFACT_URI_COLUMN",
+    "ATTEMPT_DATABASE_URL_ENV",
     "CALIBRATION_STATUS_DEFAULT",
     "CAMPAIGN_TABLE",
     "CAMPAIGN_TYPE_COLUMN",
@@ -207,19 +252,30 @@ __all__ = [
     "DEFAULT_LEGAL_THEMES",
     "DEFAULT_THEME_SET",
     "EXPANSION_NAMESPACE",
+    "FAIL_CLASSES",
+    "FAIL_CLASS_COLUMN",
     "ID_COLUMN",
     "ILLEGAL_THEME",
     "LEGAL_THEMES_ENV",
+    "MEASURED_FILENAMES",
     "NODE_TABLE",
     "NULL_FRACTION_COLUMN",
     "PHI_CEILING",
     "PHI_FLOOR",
     "REGIMES",
     "SLOT_THREAD_PREFIX",
+    "SOURCE_FILENAME",
     "THEME_ROOT_COLUMN",
+    "TRACE_FILENAME",
     "TYPE_D_CAMPAIGN_TYPE",
     "TYPE_R_CAMPAIGN_TYPE",
     "WORKSPACE_COUNT_COLUMN",
+    "ArtifactDirectory",
+    "Attempt",
+    "AttemptLog",
+    "AttemptLogError",
+    "AttemptProvenance",
+    "AttemptRecord",
     "BatchDispatchError",
     "CampaignOrderError",
     "CampaignPlanningError",
@@ -236,12 +292,15 @@ __all__ = [
     "WorkerInterrupted",
     "WorkerResult",
     "assign_theme",
+    "attempt_node_id",
     "build_campaign_records",
+    "classify_failure",
     "create_campaign",
     "expand_node",
     "is_interruption",
     "legal_themes_from_env",
     "null_fraction",
+    "record_attempts",
     "refined_node_id",
     "retry_interrupted",
     "run_batch",

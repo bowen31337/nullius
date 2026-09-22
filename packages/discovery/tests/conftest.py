@@ -51,6 +51,7 @@ the *clip* must not acquire a database by accident.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import sqlite3
 import sys
@@ -78,6 +79,25 @@ from discovery import CampaignRecords
 #: reading the fixtures, and so a rename is one edit.
 CAMPAIGN_MIGRATION = "0111_campaign_table"
 NODE_MIGRATION = "0118_node_table"
+
+#: The migrations that widen the tree with the columns an *attempt* fills:
+#: ``0114``'s seven nullable metrics, ``0115``'s authoring trio,
+#: ``0116``'s provenance trio and ``0117``'s ``code_hash`` /
+#: ``artifact_uri`` pair.  Feature 240's writer names the intersection of
+#: the columns an attempt carries with the columns the table has, so this
+#: suite needs **both** states of the world: a tree at ``0118`` alone, to
+#: pin that the writer serves a chain whose widenings have not run, and a
+#: tree at the full set, to pin that the columns it does write land.  The
+#: order is the *assembled chain's* rather than the file numbering's —
+#: ``0118`` creates ``node`` and ``0113``-``0117`` are written against it,
+#: which is the renumbering ``0118``'s own docstring documents, so
+#: applying them in numeric order fails with ``no such table: node``.
+NODE_COLUMN_MIGRATIONS = (
+    "0117_identity_trio",
+    "0116_provenance_trio",
+    "0115_agent_model_trio",
+    "0114_node_metrics",
+)
 
 VERSIONS_DIR = REPO_ROOT / "migrations" / "versions"
 
@@ -154,6 +174,28 @@ def migrated_with_tree(database_url: str) -> str:
 
 
 @pytest.fixture
+def migrated_with_attempt_columns(database_url: str) -> str:
+    """A database whose ``node`` table carries every column an attempt fills.
+
+    The full chain — ``0111``, ``0118``, then ``0117``-``0114`` — which is
+    the deployment shape feature 240 writes into: the five structural
+    columns feature 97 declares, the ``code_hash`` / ``artifact_uri`` /
+    ``stated_mechanism`` triple feature 99 adds, the provenance and
+    authoring trios features 100 and 101 add, and the seven nullable
+    metrics ``0114`` adds.
+
+    The widening revisions are run through each file's own ``apply``, the
+    same standalone entry point the other fixtures use, and each is safe
+    to re-run because each probes for the column it is about before
+    altering.  The order is the assembled chain's, not the numbering's —
+    see :data:`NODE_COLUMN_MIGRATIONS`.
+    """
+    _create_schema(database_url, CAMPAIGN_MIGRATION, NODE_MIGRATION)
+    _create_schema(database_url, *NODE_COLUMN_MIGRATIONS)
+    return database_url
+
+
+@pytest.fixture
 def migrate_at():
     """Bring a database URL the *test* chooses to a revision set.
 
@@ -207,16 +249,51 @@ def plant_root(migrated_with_tree: str):
     ``0118`` declares — the five columns feature 97 names and no sixth.
 
     Returns a callable so a test can plant more than one node, or plant under
-    a campaign other than its own.
+    a campaign other than its own.  The callable carries **every** ``NOT NULL``
+    column the database actually has, read from ``PRAGMA table_info`` and
+    filled with a placeholder when the caller does not state one: a root
+    planted at ``migrated_with_tree`` needs the five columns ``0118``
+    declares, and a root planted at :fixture:`migrated_with_attempt_columns`
+    needs ``0117``'s ``code_hash`` / ``artifact_uri`` pair, ``0116``'s
+    provenance trio and ``0115``'s authoring pair as well.  The probe is what
+    keeps one fixture serving both trees, rather than a second planter that
+    would drift from this one — and it is the same intersection rule feature
+    240's writer applies from the other side.
+
+    ``parent_id`` stays ``NULL`` by default, which is what makes the row a
+    root.
     """
 
-    def _plant(campaign: str, *, parent_id: str | None = None, depth: int = 0) -> str:
+    def _plant(
+        campaign: str,
+        *,
+        parent_id: str | None = None,
+        depth: int = 0,
+        **overrides: object,
+    ) -> str:
         identifier = str(uuid.uuid4())
+        digest = hashlib.sha256(identifier.encode()).hexdigest()
+        columns = ["id", "parent_id", "campaign_id", "theme_root", "depth"]
+        values: list[object] = [identifier, parent_id, campaign, "macro", depth]
         with closing(sqlite3.connect(_path_of(migrated_with_tree))) as connection, connection:
+            shape = {
+                str(row[1]): (bool(row[3]), row[4] is not None)
+                for row in connection.execute("PRAGMA table_info(node)")
+            }
+            for name, (not_null, has_default) in shape.items():
+                if name in columns or not not_null or has_default:
+                    continue
+                columns.append(name)
+                if name in overrides:
+                    values.append(overrides[name])
+                elif name.endswith("_hash"):
+                    values.append(digest)
+                else:
+                    values.append(f"planted-{name}")
             connection.execute(
-                "INSERT INTO node (id, parent_id, campaign_id, theme_root, depth) "
-                "VALUES (?, ?, ?, 'macro', ?)",
-                (identifier, parent_id, campaign, depth),
+                f"INSERT INTO node ({', '.join(columns)}) "
+                f"VALUES ({', '.join('?' for _ in columns)})",
+                values,
             )
         return identifier
 

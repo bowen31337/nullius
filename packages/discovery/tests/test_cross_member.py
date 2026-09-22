@@ -343,3 +343,245 @@ class TestTheSeamActuallyOpens:
             assert stored in plan.REGIMES, stored
             written.add(stored)
         assert written == set(plan.REGIMES)
+
+
+# -- Feature 240: §9.2's two orchestrator-owned filenames -------------------------
+
+
+def _artifacts():
+    """The artifacts member, imported in-function and by path if need be.
+
+    The same bootstrap :func:`_nulloracle` performs, for the same reason: a
+    workspace without the sibling loses these tests and nothing else.
+    """
+    src = REPO_ROOT / "packages" / "artifacts" / "src"
+    if str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+    return pytest.importorskip(
+        "artifacts", reason="the artifacts member is not in this workspace"
+    )
+
+
+def _ledger():
+    """The ledger member, imported in-function and by path if need be."""
+    src = REPO_ROOT / "packages" / "ledger" / "src"
+    if str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+    return pytest.importorskip(
+        "ledger", reason="the ledger member is not in this workspace"
+    )
+
+
+class TestTheAttemptsSeamIsOneContract:
+    """Feature 240's three restatements, pinned against their owners.
+
+    This member writes an attempt's source and trace into §9.2's layout
+    and records how it ended in §9.1's ``fail_class``.  Three spellings of
+    the layout and the vocabulary are therefore *shared* with two sibling
+    members, and no import carries any of them across:
+
+    * §9.2's two filenames this feature owns — ``code.py`` and
+      ``exec_trace.json`` — are feature 173's contract, written by
+      :func:`artifacts.persist_execution`.  A rename on either side would
+      leave the layout holding two files the reader of the other side
+      never looks for.
+    * §9.1's four-word failure vocabulary is the **trial ledger's**
+      ``outcome`` vocabulary — §8 records the same four words for a
+      trial — and a member that wrote ``failed`` where the ledger writes
+      ``error`` would have two names for one fact and no way to count
+      either.  This is the pin that makes that drift loud.
+    * the ``file:`` URI grammar: this module renders an attempt's address
+      the way :func:`artifacts.artifact_uri` renders it, because both are
+      one line over the *same* directory — the seam hands this member the
+      path the store resolved, so the agreement is structural rather than
+      coincidental, and this test is what says so out loud.
+    """
+
+    def test_the_two_files_this_feature_writes_are_the_layouts_own(self) -> None:
+        artifacts = _artifacts()
+        assert discovery.SOURCE_FILENAME == artifacts.SOURCE_FILENAME
+        assert discovery.TRACE_FILENAME == artifacts.TRACE_FILENAME
+
+    def test_the_layout_puts_the_two_files_where_this_feature_does(self) -> None:
+        # ``code.py`` is §9.2's seventh-listed name and the trace its
+        # sixth; the *values* are what a reader opens by, so the names are
+        # asserted as literals too rather than only against each other —
+        # two members agreeing on a misspelling would pass the check
+        # above and fail a deployment.
+        artifacts = _artifacts()
+        assert discovery.SOURCE_FILENAME == "code.py"
+        assert discovery.TRACE_FILENAME == "exec_trace.json"
+        assert artifacts.SOURCE_FILENAME == "code.py"
+        assert artifacts.TRACE_FILENAME == "exec_trace.json"
+
+    def test_the_two_trace_keys_this_feature_uses_are_the_layouts(self) -> None:
+        # The artifacts member's write path refuses a trace filed under a
+        # node it does not fingerprint, keyed by these two names — and
+        # this feature's ``Attempt.trace`` spells them from the same
+        # signal the address came from, which is what makes the check
+        # pass by construction.  Imported from the submodule rather than
+        # the package because ``_execution`` is where feature 173
+        # declares them and the package's ``__all__`` deliberately does
+        # not re-export every constant of every private module.
+        artifacts = _artifacts()
+        execution = pytest.importorskip("artifacts._execution")
+        assert execution.TRACE_NODE_KEY == "node_id"
+        assert execution.TRACE_CAMPAIGN_KEY == "campaign_id"
+        assert artifacts.TRACE_FILENAME == execution.TRACE_FILENAME
+
+    def test_the_measured_five_are_the_layouts_and_the_siblings_names(self) -> None:
+        # §9.2's seven files split three ways: this feature owns the pair
+        # (``code.py``, ``exec_trace.json``), features 170-173 own the
+        # measured five, and one directory holds all seven.  The five are
+        # carried across a whole-directory commit by *name*, so a rename on
+        # the artifacts side would leave this module carrying a file
+        # nothing writes and dropping the one thing it was there for — the
+        # exact silent loss the carry-forward exists to prevent, made loud
+        # here.
+        #
+        # Each name is reached through the submodule that declares it
+        # rather than the package root, because the constants live beside
+        # the writers that stage them and the package's ``__all__``
+        # re-exports only some of them.
+        _artifacts()
+        returns = pytest.importorskip("artifacts._returns")
+        series = pytest.importorskip("artifacts._series")
+        profiles = pytest.importorskip("artifacts._profiles")
+        owners = (
+            returns.SIGNAL_RETURNS_FILENAME,
+            series.IC_SERIES_FILENAME,
+            series.TURNOVER_SERIES_FILENAME,
+            profiles.DECAY_PROFILE_FILENAME,
+            profiles.REGIME_ATTRIBUTION_FILENAME,
+        )
+        assert tuple(discovery.MEASURED_FILENAMES) == owners
+        # And as the doc writes them, so two members drifting together are
+        # still caught.
+        assert tuple(discovery.MEASURED_FILENAMES) == (
+            "signal_returns.parquet",
+            "ic_series.parquet",
+            "turnover_series.parquet",
+            "decay_profile.json",
+            "regime_attribution.json",
+        )
+
+    def test_the_seven_names_are_seven_and_do_not_overlap(self) -> None:
+        # The partition itself: the pair this feature stages and the five
+        # it carries are disjoint, and together they are §9.2's seven.
+        # An overlap would mean this module carrying forward a file it had
+        # just written from a stale copy instead of from the caller.
+        owned = {discovery.SOURCE_FILENAME, discovery.TRACE_FILENAME}
+        measured = set(discovery.MEASURED_FILENAMES)
+        assert not owned & measured
+        assert len(owned) + len(measured) == 7
+
+    def test_the_failure_vocabulary_is_the_trial_ledgers_outcome(self) -> None:
+        # §9.1 annotates the ``fail_class`` column with four words and §8
+        # records the same four for a trial's outcome.  The two are one
+        # vocabulary because they answer one question — how did this
+        # attempt end? — and a system that spelled them differently would
+        # have a failure histogram per member.
+        ledger = _ledger()
+        assert tuple(discovery.FAIL_CLASSES) == tuple(ledger.OUTCOMES)
+
+    def test_the_four_words_are_section_9_1s_literals(self) -> None:
+        # The closed set as the architecture doc writes it, so a pair of
+        # members drifting together is still caught.
+        assert discovery.FAIL_CLASSES == ("ok", "timeout", "error", "tripwire_fail")
+
+    def test_both_sides_refuse_the_same_drifted_word(self) -> None:
+        # Neither side passes an unrecognised word through: the ledger's
+        # :func:`ledger.validated_outcome` is the validator feature 240's
+        # :func:`discovery.classify_failure` is the sibling of, and the
+        # two agree on the words *and* on refusing the near-misses.  A
+        # case variant is the near-miss that matters — ``OK`` looks like
+        # ``ok`` and would silently split a failure histogram in two.
+        _ledger()
+        outcome = pytest.importorskip("ledger.outcome")
+        validate = outcome.validated_outcome
+        for word in discovery.FAIL_CLASSES:
+            assert validate(word) == word
+            assert discovery.classify_failure(word) == word
+        # The ledger's own refusal class, named rather than caught blind:
+        # this member may not import the sibling, so the class is reached
+        # through the module the validator comes from.
+        refusal = outcome.TrialRecordError
+        for drifted in ("failed", "crashed", "OK", "tripwire-fail"):
+            with pytest.raises(refusal):
+                validate(drifted)
+            with pytest.raises(discovery.AttemptLogError):
+                discovery.classify_failure(drifted)
+
+    def test_a_raised_failure_is_classified_as_the_evaluator_classifies_it(
+        self,
+    ) -> None:
+        # The one classification rule that is not obvious, pinned against
+        # the sibling that already ruled on it: **every raised failure is
+        # ``error``, including a raised ``TimeoutError``.**  §5.2's timeout
+        # is a control — the sandbox hard-kills the child and returns its
+        # class as a *value* — so a timeout reaches the column by being
+        # stated, never by being inferred from an exception, and a raised
+        # ``TimeoutError`` is a host-side fault wearing a familiar name.
+        #
+        # This is worth a pin rather than only a test in this member's own
+        # suite, because "``TimeoutError`` means ``timeout``" is the
+        # reading a reasonable person arrives at unaided, and this module
+        # had it wrong until the sibling's docstring was read.  A reader
+        # who changes it back will now be told why not.
+        pytest.importorskip(
+            "evaluator", reason="the evaluator member is not in this workspace"
+        )
+        debit = pytest.importorskip("evaluator._debit")
+        outcome = debit.failure_outcome
+        for raised in (
+            TimeoutError("hard kill"),
+            RuntimeError("boom"),
+            MemoryError(),
+            ValueError("payload"),
+        ):
+            assert outcome(raised) == "error", raised
+            assert discovery.classify_failure(raised) == "error", raised
+        # The kill's own class still lands on the column — stated, not
+        # inferred — so this is a change of *route* for ``timeout``, not a
+        # loss of the class.
+        assert discovery.classify_failure("timeout") == "timeout"
+        assert outcome("timeout") == "timeout"
+
+    def test_the_address_a_row_carries_is_the_artifacts_members_address(
+        self, tmp_path: Path
+    ) -> None:
+        # ``file://`` over the node's directory, percent-encoded.  The
+        # store here is the *real* :class:`artifacts.ArtifactStore` rather
+        # than a double, because the thing under test is the agreement
+        # between two members and a double would be this member agreeing
+        # with itself.  Comparing the two spellings over one directory is
+        # the pin; what it catches is this module drifting to a *different*
+        # path (a root it resolved itself, a segment order it assumed),
+        # which is the drift the seam exists to make impossible.
+        #
+        # ``AttemptLog.record`` is not called: it needs a tree to hang the
+        # row from, and the address is rendered from the directory the
+        # seam answers *before* any row is written — so the two spellings
+        # are compared directly.
+        artifacts = _artifacts()
+        campaign = str(uuid_module.uuid4())
+        node = str(uuid_module.uuid4())
+        store = artifacts.ArtifactStore(tmp_path / "artifacts")
+        directory = store.node_directory(campaign, node)
+        assert discovery.persist._artifact_uri(directory) == artifacts.artifact_uri(
+            store, campaign, node
+        )
+
+    def test_the_store_this_member_writes_through_speaks_the_whole_seam(
+        self, tmp_path: Path
+    ) -> None:
+        # The structural claim the injected ``ArtifactDirectory`` makes:
+        # the artifacts member's own store satisfies it by name, with no
+        # adapter.  A store that grew a changed signature would fail here
+        # rather than at the first attempt of a campaign.
+        artifacts = _artifacts()
+        store = artifacts.ArtifactStore(tmp_path / "artifacts")
+        for method in ("node_directory", "write", "commit", "discard"):
+            assert callable(getattr(store, method, None)), method
+        # And the constructor's own check accepts it.
+        discovery.AttemptLog("sqlite:///unused.db", store)
