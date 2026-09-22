@@ -52,6 +52,7 @@ from providers import (
     Provider,
     ProviderError,
     Request,
+    UnknownModelError,
     Usage,
     require_batch_completion,
 )
@@ -162,7 +163,7 @@ def test_base_validates_each_request_model_before_the_backend_runs():
                 completions=tuple(_comp(model=r.model) for r in batch.requests)
             )
 
-    with pytest.raises(Exception):
+    with pytest.raises(UnknownModelError):
         Pinned().complete_batch(
             BatchRequest(requests=(_req(model="allowed"), _req(model="denied")))
         )
@@ -202,7 +203,9 @@ def test_the_good_batch_answer_is_returned_unwrapped():
         def _complete_batch(self, batch):
             return answer
 
-    assert Passthrough().complete_batch(BatchRequest(requests=(_req(), _req()))) is answer
+    assert (
+        Passthrough().complete_batch(BatchRequest(requests=(_req(), _req()))) is answer
+    )
 
 
 def test_a_provider_without_a_batch_endpoint_refuses_the_batch():
