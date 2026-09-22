@@ -96,6 +96,8 @@ from signal_agent import (
     MechanismStore,
     PromptGuidanceGate,
     ProposalHistory,
+    ProposalStore,
+    ScoreRecord,
     SignalContract,
     SignalThemeGate,
     StatedMechanism,
@@ -558,4 +560,192 @@ def diversity_database(diversity_database_url: str) -> str:
     """
     create_diversity_schema(diversity_database_url)
     return diversity_database_url
+
+
+# ── Feature 214's database ────────────────────────────────────────────────────
+#
+# Feature 214 correlates across two tables that live in *one* database: the
+# in-sample half is ``node_proposal``'s score snapshot (feature 207, created
+# lazily by that member's own store) and the out-of-sample half is
+# ``replay_score``'s rows (``0109``), scoped by ``campaign`` (``0111``).  So this
+# database is feature 215's tree **plus two migrations**, and the tree half is
+# reused rather than restated: the cohort is real branches recorded against
+# modelled nodes, and there is no reason for a second schema builder to disagree
+# with the first about what a tree is.
+#
+# **The ``replay_score`` rows are hand-written here, and that is a fact about the
+# workspace rather than a shortcut.**  The replay member (features 245-255) has
+# no writer in this tree — ``packages/bootstrap/tests/test_census.py`` says the
+# same thing about the same table for the same reason — so a suite that refused
+# to write one could not test this feature at all.  What it writes is derived
+# *from the migration* (see :func:`_replay_score_ddl`) rather than restated, so
+# the columns are the ones ``0109`` creates and the values below are the only
+# hand-made part.
+
+#: The revision that creates ``replay_score`` and the out-of-sample half with it.
+REPLAY_MIGRATION = "0109_replay_score_and_policy_revision"
+
+#: The revision that creates ``campaign`` — the row a reading is scoped to.
+CAMPAIGN_MIGRATION = "0111_campaign_table"
+
+#: The regime ``0111``'s ``campaign_type`` carries for a Type-R campaign, as
+#: ``nulloracle.plan`` spells it.  A literal rather than an import, for the
+#: reason every restated name in this member is restated: ``nulloracle`` is a
+#: different workspace member and a member never imports another.  It is planted
+#: because the column is ``NOT NULL``, and it is *spelled here* because a test in
+#: ``test_discrimination.py`` asserts the reading never consults it.
+_TYPE_R = "Type-R"
+
+
+def create_discrimination_schema(database_url: str) -> None:
+    """Bring ``database_url`` to the shape feature 214 reads across.
+
+    Feature 215's tree, then ``0111``'s campaign, then ``0109``'s replay pool —
+    the three facts a reading needs.  ``0109`` runs **last** and after ``0113``
+    for the reason :func:`create_diversity_schema` documents: it creates its own
+    indexes and a fresh database must have every column they name before they are
+    created.  ``0111`` is order-independent among these (it references nothing)
+    and is applied before the pool only so the list reads in the order the
+    reading uses the tables: campaign, proposals, runs.
+    """
+    create_diversity_schema(database_url)
+    create_schema(database_url, CAMPAIGN_MIGRATION, REPLAY_MIGRATION)
+
+
+def plant_campaign(
+    database_url: str,
+    campaign_id: str,
+    *,
+    campaign_type: str = _TYPE_R,
+    workspace_count: int = 4,
+    null_fraction: float = 0.7,
+) -> str:
+    """Insert one campaign row and return its id.
+
+    ``campaign_type`` defaults to ``_TYPE_R`` because §4.1.2's two regimes name
+    which of the two a campaign *is*, and this suite's cohorts are always real
+    branches — so a Type-R default is the honest one for the rows here, and the
+    string is ``_TYPE_R`` rather than a second spelling of it.
+
+    **Nothing about this feature reads the type.**  It is planted because
+    ``0111``'s table declares it ``NOT NULL`` and the row could not exist
+    without it — the same reason :func:`plant_node` supplies ``0117``'s two
+    constrained members — and because the refusal *not* to read it is a claim
+    this suite makes explicitly: the cohort is caller-declared, and the one place
+    the type is spelled in the reading's own names is ``_TYPE_R``, which a test
+    asserts is *not* consulted.
+    """
+    with (
+        closing(sqlite3.connect(sqlite_path_of(database_url))) as connection,
+        connection,
+    ):
+        connection.execute(
+            "INSERT INTO campaign "
+            "(id, campaign_type, workspace_count, null_fraction) "
+            "VALUES (?, ?, ?, ?)",
+            (campaign_id, campaign_type, workspace_count, null_fraction),
+        )
+    return campaign_id
+
+
+def plant_run(
+    database_url: str,
+    *,
+    committed_pick: str | None,
+    score: float,
+    policy_version: str = "policy-v1",
+) -> str:
+    """Insert one ``replay_score`` row and return its id.
+
+    The columns written are ``0109``'s own: ``policy_version``, ``world_id``,
+    ``beta``, ``score``, ``committed_pick`` and ``is_holdout`` (the last two
+    nullable/defaulted — ``committed_pick`` is nullable *because a candidate
+    scored but never selected has no pick*, which is the fact the ``None`` case
+    below is about).  ``world_id`` is drawn fresh per row so two runs of the same
+    branch are two worlds rather than one world scored twice, and ``beta`` is a
+    placeholder with no claim behind it: nothing in feature 214 reads it.
+    """
+    run = str(uuid.uuid4())
+    with (
+        closing(sqlite3.connect(sqlite_path_of(database_url))) as connection,
+        connection,
+    ):
+        connection.execute(
+            "INSERT INTO replay_score "
+            "(id, policy_version, world_id, beta, score, committed_pick, "
+            "is_holdout) "
+            "VALUES (?, ?, ?, 0.0, ?, ?, 0)",
+            (run, policy_version, str(uuid.uuid4()), score, committed_pick),
+        )
+    return run
+
+
+def record_gain(
+    database_url: str,
+    campaign_id: str,
+    model: str,
+    document: str,
+    gain: float | None,
+    *,
+    runs: tuple[float, ...] = (),
+    policy_version: str = "policy-v1",
+) -> str:
+    """Plant a node, record a proposal with a score snapshot, plant its runs.
+
+    The one construction every claim in ``test_discrimination.py`` is built
+    from: one real branch with both halves.  The in-sample half is written
+    **through feature 207's own writer** — so the snapshot is a document that
+    store really produces, and a change to what it records shows up as a change
+    in the figure — and the out-of-sample half is :func:`plant_run` per entry in
+    ``runs``, because the replay member's writer does not exist here.
+
+    ``gain`` is the ``ir_marginal`` the snapshot carries and is the *only* one of
+    the seven metrics this feature reads, so the other six are left ``None`` —
+    which is the honest shape for a test whose subject is one column, and also
+    the shape that would catch an implementation that reached for a different
+    metric and read an absence as a zero.  ``gain=None`` plants a measured-but-
+    absent snapshot, the pre-metric state ``0114`` describes.
+
+    ``runs=()`` is a real state and not a defaulted convenience: a branch the
+    policy never committed to has no out-of-sample reading.
+    """
+    node = plant_modelled_node(
+        database_url, model, campaign_id=campaign_id
+    )
+    ProposalStore(database_url).persist(
+        node, document, score=ScoreRecord(ir_marginal=gain)
+    )
+    for value in runs:
+        plant_run(
+            database_url,
+            committed_pick=node,
+            score=value,
+            policy_version=policy_version,
+        )
+    return node
+
+
+@pytest.fixture
+def discrimination_database_url(tmp_path: Path) -> str:
+    """A ``sqlite:///`` URL for a database only this test can see.
+
+    Nothing is created, which is what lets the *first* thing that happens to a
+    fresh database be the case under test — the absent-store and absent-table
+    refusals both need a file no fixture has touched.
+    """
+    return f"sqlite:///{tmp_path / 'discrimination.db'}"
+
+
+@pytest.fixture
+def discrimination_database(discrimination_database_url: str) -> str:
+    """The database feature 214 reads across: tree, campaign, replay pool.
+
+    The tree half is feature 215's own chain, so a cohort here is a cohort of
+    modelled nodes recorded by feature 207's writer.  What this fixture adds is
+    the out-of-sample side — ``0111``'s campaign and ``0109``'s pool — which no
+    other fixture in this file brings, because no other feature in this member
+    reads them.
+    """
+    create_discrimination_schema(discrimination_database_url)
+    return discrimination_database_url
 

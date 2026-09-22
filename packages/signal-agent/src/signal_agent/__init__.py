@@ -211,6 +211,48 @@ nothing here is about a proposal's source, and no re-prompt repairs a tree that
 has not reached the model column), with the two states that already have a name
 in feature 207's vocabulary raised as those classes rather than re-minted.
 
+**Feature 214 is the same reader one step further on, and it is where the
+member first writes.**  *System persists mechanism_discrimination per
+campaign, computed as the correlation between in-sample gain and out-of-sample
+gain across real branches* is the other half of §14.1's M2 instrument, and it
+lives in :mod:`signal_agent._discrimination`: one correlating read over the
+score snapshot 207 persists and the ``replay_score`` rows the replay wrote
+(``0109``), and :class:`~signal_agent.MechanismDiscrimination` — the figure,
+**with its interval**, per campaign.  It is a free function reached as
+``from signal_agent import mechanism_discrimination`` for feature 215's reason
+word for word — it resolves no configuration of its own — so **there is no
+tenth component and no seat file** here either, and 207's
+``signal-agent-proposal-history`` remains the one deployment seat for the very
+database this joins.  It differs from 215 in exactly one respect and the
+difference is the feature sentence's: 215 *computes ... which returns the
+figure* and this one *persists*, so it is this member's first writer outside the
+component seats, into a table the member owns
+(:data:`~signal_agent.DISCRIMINATION_TABLE`) rather than into one the shared
+migration tree declares.
+
+Its *shape* is the two things a reader could get wrong by guessing, and the
+module argues both at their constants.  The **in-sample half** is
+:data:`~signal_agent.IS_GAIN_METRIC` — ``ir_marginal``, the one of ``0114``'s
+seven metrics that is a *gain* by definition (PRD §6.2: ``IR(book ∪ {v}) −
+IR(book)``) — read from the snapshot 207 froze beside each proposal rather than
+from ``node``'s live column, because feature 240 refreshes that row in place.
+The **real-branch cohort is declared by the caller and never derived**, because
+the discriminant §14.1's formula selects on is not readable from anything this
+member may open: §7.1 keeps the tree store free of any such column (*"Absent.
+The only way to learn a node's status is to hold the sidecar key"*), §4.2 makes
+the bit visible to the replay scorer alone, and 207's ``node_proposal`` records
+no such flag — so the module never names it, in a symbol, a constant or a
+string, and refuses a default rather than attenuating the correlation with the
+exactly-zero half (§4.1).  What it does instead is §14.1's rule 1:
+:attr:`~signal_agent.MechanismDiscrimination.cohort_digest` hashes the frozen
+inputs, so a published figure's cohort stays auditable after the fact.  That is
+why this member's vocabulary gained exactly one class for feature 214 and it is
+the *cohort* refusal (:class:`DiscriminationCohortError`, a **sibling** of
+:class:`DiversityCohortError` — a different cohort object with a different
+repair — and, like it, deliberately not an
+:class:`AgentSourceError`), with feature 207's three classes raised unchanged
+where they name 207's own prerequisites.
+
 **What this member is, and what it deliberately is not.**  §14.1 gives the
 signal agent its seat — *"Signal agent, roots (depth 0-1) ... Signal agent,
 depth >= 2"* — and PRD §C3 describes it as *"a coding agent writing signal
@@ -330,6 +372,15 @@ from ._diagnosis import (
     locate_defect,
     mechanism_diagnosis,
 )
+from ._discrimination import (
+    CONFIDENCE_LEVEL,
+    DISCRIMINATION_TABLE,
+    IS_GAIN_METRIC,
+    MINIMUM_PAIRS,
+    MechanismDiscrimination,
+    load_mechanism_discrimination,
+    mechanism_discrimination,
+)
 from ._diversity import (
     MODEL_COLUMN,
     NODE_PROPOSAL_NODE_COLUMN,
@@ -411,6 +462,7 @@ from .errors import (
     AntiConvergenceError,
     DeadTerritoryError,
     DeadTerritorySetError,
+    DiscriminationCohortError,
     DiversityCohortError,
     FlawedMechanismError,
     IllegalThemeError,
@@ -441,16 +493,19 @@ __all__ = [
     "COMMITTED_LEGAL_THEMES",
     "COMPLETE_HISTORY_CODE",
     "COMPONENT_NAME",
+    "CONFIDENCE_LEVEL",
     "CONFORMS_CODE",
     "DEAD_TERRITORY_CODE",
     "DEAD_TERRITORY_COMPONENT_NAME",
     "DEAD_TERRITORY_POLICY_KIND",
     "DIAGNOSIS_COMPONENT_NAME",
+    "DISCRIMINATION_TABLE",
     "FLAWED_MECHANISM_CODE",
     "GUIDANCE_COMPONENT_NAME",
     "HISTORY_COMPONENT_NAME",
     "ILLEGAL_THEME_CODE",
     "INJECTED_GUIDANCE_CODE",
+    "IS_GAIN_METRIC",
     "LEGAL_THEMES_POLICY_KIND",
     "LEGAL_THEME_CODE",
     "LIVE_TERRITORY_CODE",
@@ -462,6 +517,7 @@ __all__ = [
     "MECHANISM_CONFLICT_CODE",
     "MECHANISM_POLICY_REVISION",
     "METRIC_COLUMNS",
+    "MINIMUM_PAIRS",
     "MISSING_PROPOSAL_CODE",
     "MODEL_COLUMN",
     "MODULE_SYMBOL",
@@ -505,6 +561,7 @@ __all__ = [
     "DeadTerritoryVerdict",
     "DiagnosisReason",
     "DiagnosisVerdict",
+    "DiscriminationCohortError",
     "DiversityCohortError",
     "FlawedMechanismError",
     "GuidanceReason",
@@ -518,6 +575,7 @@ __all__ = [
     "MechanismColumnError",
     "MechanismConflictError",
     "MechanismDiagnosis",
+    "MechanismDiscrimination",
     "MechanismNodeNotRecordedError",
     "MechanismNotScoredError",
     "MechanismReason",
@@ -567,9 +625,11 @@ __all__ = [
     "load_anti_convergence",
     "load_dead_territory",
     "load_legal_themes",
+    "load_mechanism_discrimination",
     "locate_defect",
     "mechanism_diagnosis",
     "mechanism_digest",
+    "mechanism_discrimination",
     "prompt_guidance_gate",
     "proposal_history",
     "proposal_history_store",

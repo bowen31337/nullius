@@ -282,6 +282,20 @@ is a shape there is nothing to reason about.  What is *here* is the other
 half: :class:`FlawedMechanismError`, the refusal, raised on the last line
 before a retry prompt where a caller that established no location must not
 be allowed to write one.
+
+The **reader** classes arrived with the readers, and the reader's own split is
+the same discipline one level on.  :class:`DiversityCohortError` is feature
+215's and :class:`DiscriminationCohortError` is feature 214's, and they are
+siblings rather than one class over one noun: the two features are handed
+*different cohorts* — one a campaign's proposal history to count clusters over,
+the other a caller-declared set of real branches to correlate a pair of gains
+across — and each class's message has to say which cohort, in which table,
+under which revision, cannot answer.  A shared *cohort* class would make an
+operator reading *"the cohort cannot answer"* unable to tell whether a count
+had failed on a missing model column or a correlation on a cohort of two
+branches.  Each is a sibling of the three classes its own feature raises beside
+it, and neither is an :class:`AgentSourceError`: nothing in either is about a
+proposal's *source*.
 """
 
 from __future__ import annotations
@@ -292,6 +306,7 @@ __all__ = [
     "AntiConvergenceError",
     "DeadTerritoryError",
     "DeadTerritorySetError",
+    "DiscriminationCohortError",
     "DiversityCohortError",
     "FlawedMechanismError",
     "IllegalThemeError",
@@ -981,4 +996,57 @@ class DiversityCohortError(SignalAgentError):
     0117's and 0118's prerequisites for their own features, and feature 215
     raises ``ProposalNodeNotRecordedError`` unchanged for the shared one (an
     absent ``node`` table) rather than minting a duplicate here.
+    """
+
+
+class DiscriminationCohortError(SignalAgentError):
+    """A campaign's ``mechanism_discrimination`` cannot be read from the cohort.
+
+    Raised by feature 214's ``mechanism_discrimination`` when §14.1's figure
+    cannot be computed — or when a value claiming to *be* it could not have been
+    measured.  The four families, in the order the law raises them:
+
+    * **the handle or the arguments** — the object is not feature 207's proposal
+      history, the campaign id is not a UUID, or the declared real-branch cohort
+      is not a non-empty collection of node ids;
+    * **the store's shape** — no ``replay_score`` table (``0109`` unreached, so
+      there is no out-of-sample half), no ``campaign`` table (``0111``
+      unreached), or a campaign the table does not hold;
+    * **the cohort's pairing** — a declared branch with no recorded proposal,
+      one whose recorded row belongs to another campaign, one whose snapshot
+      carries no ``ir_marginal``, one with no committed run, or runs spanning
+      more than one policy version;
+    * **the arithmetic** — fewer than four pairs, a constant series on either
+      side, an exactly perfect correlation, a gain that is not finite, or a
+      stored row whose fields do not reconstruct into a reading.
+
+    **It is deliberately not an :class:`AgentSourceError`**, for
+    :class:`DiversityCohortError`'s reason word for word: the proposals behind
+    the cohort may all be perfectly good, and no re-prompt of a model produces
+    a ``replay_score`` row, a fourth branch, or a run under the cohort's
+    revision.  It is not a :class:`ProposalContentError` either — that class is
+    about a value the caller is trying to *store*, and this one is about a
+    figure the caller is trying to *read*.  A caller holding this class has four
+    different repairs in front of it and the message names which: bring the
+    chain to ``0109``/``0111``, plan the campaign, freeze a cohort the store can
+    pair, or expand the campaign until the interval exists.
+
+    **It is a sibling of :class:`DiversityCohortError`, not a superclass or a
+    subclass**, and the distinction is load-bearing rather than cosmetic.  The
+    two features are handed different cohorts and read different tables, and a
+    caller that caught the one while expecting the other would get the wrong
+    remediation for a *plausible* reason: both messages say *cohort*, and a
+    shared class would make them indistinguishable at the ``except`` line.  The
+    member's rule is that a new class must buy a distinction a caller's handler
+    can act on — this one buys exactly
+    that, and nothing more.
+
+    **Three of the refusals beside it are 207's, reused unchanged.**  An absent
+    ``node_proposal`` table raises
+    :class:`ProposalHistoryStoreUnavailableError`, an unparseable score document
+    raises :class:`ProposalContentError`, and an absent ``node`` table raises
+    :class:`ProposalNodeNotRecordedError` — each naming the one fact and the one
+    repair it names for feature 207's own callers.  Minting feature-214 spellings
+    of those three would be the duplicate class the member refuses: *"the same
+    fact with the same repair, whoever asks"*.
     """
