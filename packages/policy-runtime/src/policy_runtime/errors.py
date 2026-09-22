@@ -1,6 +1,6 @@
 """The policy-runtime error vocabulary — one base class, split by contract.
 
-The base class for every failure of the policy-runtime path, and the four
+The base class for every failure of the policy-runtime path, and the five
 subclasses that path raises.  One base class so a caller — the replay engine,
 the dreaming loop, an operator script, a later feature in this category — can
 catch every failure of the read-side question path with a single ``except``,
@@ -31,6 +31,16 @@ guards a value *during* an episode — and a caller that catches a policy refusa
 and retries the authoring agent is not the caller that should catch a moved
 scalar.  A :class:`PolicyRuntimeError` all the same, so the one base class
 still catches every failure of the read-side path.
+
+The fifth — :class:`FamilyThresholdError` (feature 228) — is the *family
+conditioning's*: a policy-authored conditional over the schedule that names a
+threshold key outside the one mapping, carries a magnitude that is not one, or
+is keyed on a theme that cannot be keyed.  It is kept apart from
+:class:`BetaFixedError` because the scalar was read honestly and the schedule
+was well-formed — it is the conditioning authored *over* them that broke the
+routing law, and the repair is a resubmitted conditional, not a different
+episode.  A :class:`PolicyRuntimeError` all the same, so the one base class
+catches it too.
 
 These live in their own module rather than in the package ``__init__`` for two
 reasons.  One, it is the house shape — every sibling member (``sandbox``,
@@ -132,4 +142,32 @@ class BetaFixedError(PolicyRuntimeError):
     for the same reason.  A subclass of :class:`PolicyRuntimeError` all the
     same, so a caller catching the read-side path's one base class catches a
     moved scalar too.
+    """
+
+
+class FamilyThresholdError(PolicyRuntimeError):
+    """A family-conditional threshold could not be routed through the schedule.
+
+    Feature 228's contract, from both ends of it.  On the *authored* end: a
+    conditional whose ``theme_root`` cannot be keyed (not a non-empty string),
+    whose ``adjustments`` name a threshold key outside the one mapping
+    :func:`policy_runtime.schedule` returns (a threshold derived anywhere but
+    through that mapping is a second beta — docs §609 — arriving here through a
+    family key instead of a second formula), whose adjustments carry a
+    magnitude that is not a finite real number, or that adjust nothing at all
+    (a conditional that adjusts nothing conditions nothing).  On the *composed*
+    end: an evidence count that is negative or not a magnitude (evidence
+    accumulates from zero; a NaN weight shrinks no threshold toward anything),
+    or two conditionals keyed on one theme (which one wins is not a question
+    the schedule answers silently).
+
+    Kept apart from :class:`BetaFixedError` because it is a different law in a
+    different place: that one guards the *scalar* an episode was opened on and
+    is not repaired at all, while this one guards the *family conditioning* a
+    policy authored over that scalar's schedule and is repaired by resubmitting
+    the conditional — the split 226/227/228 draw across the beta knob (the
+    scalar, the mapping, the family dimension), each refusing its own failure.
+    A subclass of :class:`PolicyRuntimeError` all the same, so a caller
+    catching the read-side path's one base class catches a refused conditional
+    too.
     """

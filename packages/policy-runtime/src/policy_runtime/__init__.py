@@ -100,8 +100,30 @@ under identical thresholds, which is the cross-cycle legibility §609 names.  It
 is a value type in the same sense the scalar is: the mapping is read-only, so a
 threshold once derived cannot be moved, and it is not part of the ``question.*``
 surface a policy is handed.
-third-party import at module scope, so the factory's scan — which imports this
-package to fire its ``@register`` — pays nothing for the seam.
+
+**Family-conditional thresholds, keyed on ``theme_root``.**  Feature 228
+(docs/nullius-tech-architecture.md §11.1: the overfit signature is only partly
+family-invariant, and a single global threshold averages the inverted features
+into uselessness) lives in :mod:`.families` as :class:`FamilyConditional`,
+:class:`FamilySchedule` and :func:`family_schedule` — the family dimension
+*over* the one mapping, and the third half of the beta knob: 226 the scalar,
+227 the mapping, 228 the families.  A conditional authors, per theme, an
+additive adjustment per threshold plus the evidence the theme has accumulated,
+and the composition anchors every family threshold at ``schedule(beta)``'s
+value, shrunk by the partial-pooling weight
+``evidence / (evidence + PRIOR_STRENGTH)`` — empirical-Bayes shrinkage without
+the machinery.  A theme carrying no evidence yet answers the global default
+itself, so a new theme starts at the prior and differentiates only as evidence
+accumulates; an adjustment naming a key outside the one mapping is refused as a
+second beta; and the key is the slug ``meta()`` exposes, while which themes may
+exist stays feature 241's config rather than a second spelling here.  Authored,
+not fitted: the conditional is plain floats the policy-development agent wrote
+— the positive half of feature 231's refusal — and the composition is
+arithmetic, with no model class, no checkpoint and no inference anywhere in it.
+
+Stdlib only, and import-cheap: no third-party import at module scope, so the
+factory's scan — which imports this package to fire its ``@register`` — pays
+nothing for the seam.
 """
 
 from __future__ import annotations
@@ -124,10 +146,17 @@ from .beta import (
 )
 from .errors import (
     BetaFixedError,
+    FamilyThresholdError,
     PolicyAddressError,
     PolicyAdmissionRefusal,
     PolicyRuntimeError,
     PolicyTreeError,
+)
+from .families import (
+    PRIOR_STRENGTH,
+    FamilyConditional,
+    FamilySchedule,
+    family_schedule,
 )
 from .learned import (
     find_learned_component,
@@ -157,10 +186,14 @@ __all__ = [
     "CampaignTree",
     "EpisodeBeta",
     "EXPLORE_EXPLOIT",
+    "FamilyConditional",
+    "FamilySchedule",
+    "FamilyThresholdError",
     "GridPlan",
     "GridPlanningContext",
     "OVERFIT_AVERSION",
     "PATIENCE",
+    "PRIOR_STRENGTH",
     "PRUNE_AGGRESSIVENESS",
     "PlanGridDecision",
     "PlanGridReason",
@@ -173,6 +206,7 @@ __all__ = [
     "PolicyRuntimeError",
     "PolicyTreeError",
     "SCHEDULE_KEYS",
+    "family_schedule",
     "find_learned_component",
     "plan_grid",
     "policy_question",
