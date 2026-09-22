@@ -175,6 +175,42 @@ class for feature 208 and it is the *refusal*
 no agent action repairs it — the agent has not been called, and the repair is
 deleting the section from the prompt).
 
+**Feature 215 is the member's first *reader* rather than its tenth law, and it
+composes nothing.**  *System computes tree_diversity as the count of distinct
+mechanism clusters per campaign, which returns the figure per authoring model*
+is §14.1's M2 model-adequacy instrument, and it lives in
+:mod:`signal_agent._diversity`: one counting read over the pairs feature 207
+persists (:data:`~signal_agent.NODE_PROPOSAL_TABLE`), joined to the tree for
+the stratum, and :class:`~signal_agent.TreeDiversity` — the figure per model,
+with its campaign scope and its cohort size.  **There is no tenth component and
+no seat file**, and that is the feature's shape rather than an omission: the
+count resolves no configuration of its own — the table to read, the column to
+join and the figure's shape are all facts about state the existing builders
+already expose — so it is a free function reached as
+``from signal_agent import tree_diversity``, exactly as feature 186's
+``world_census`` sits beside the bootstrap pool and features 222/223/226-231
+sit directly in their own members.
+
+Its *shape* is the one decision a reader could get wrong by guessing, and the
+module argues it at the constant: **a cluster is a distinct proposal document**
+(``code_hash``), *not* the stated mechanism and *not* feature 210's
+numeric-erased skeleton.  The rationale is refused because §9.1 annotates that
+column ``dedup + human review ONLY`` and feature 211's barrier names *this
+feature's own subject* — the ``agent_model_id`` stratification — as the thing
+a rationale-conditioned figure would corrupt; the module therefore never
+imports :mod:`signal_agent._mechanism` and never selects the column, which is
+a structural refusal rather than a guard.  The skeleton is refused because it is
+feature 210's unit, and 210's own docstring assigns the count away (*"a count
+of distinct mechanism clusters rather than anything this module computes"*),
+and because erasing constants would score forty structurally distinct
+noise-chasers as forty clusters — the flattering direction §14.1's reporting
+rules warn about.  That is why this member's vocabulary gained exactly one
+class for feature 215 and it is the *cohort* refusal
+(:class:`DiversityCohortError`, a **sibling** of :class:`AgentSourceError` —
+nothing here is about a proposal's source, and no re-prompt repairs a tree that
+has not reached the model column), with the two states that already have a name
+in feature 207's vocabulary raised as those classes rather than re-minted.
+
 **What this member is, and what it deliberately is not.**  §14.1 gives the
 signal agent its seat — *"Signal agent, roots (depth 0-1) ... Signal agent,
 depth >= 2"* — and PRD §C3 describes it as *"a coding agent writing signal
@@ -227,7 +263,15 @@ from __future__ import annotations
 
 from app.module_loader import register
 
-from . import _dead_territory, _diagnosis, _guidance, _history, _mechanism, _proposal, _themes
+from . import (
+    _dead_territory,
+    _diagnosis,
+    _guidance,
+    _history,
+    _mechanism,
+    _proposal,
+    _themes,
+)
 from ._anti_convergence import (
     ANTI_CONVERGENCE_COMPONENT_NAME,
     ANTI_CONVERGENCE_POLICY_KIND,
@@ -285,6 +329,12 @@ from ._diagnosis import (
     first_defect,
     locate_defect,
     mechanism_diagnosis,
+)
+from ._diversity import (
+    MODEL_COLUMN,
+    NODE_PROPOSAL_NODE_COLUMN,
+    TreeDiversity,
+    tree_diversity,
 )
 from ._guidance import (
     INJECTED_GUIDANCE_CODE,
@@ -361,6 +411,7 @@ from .errors import (
     AntiConvergenceError,
     DeadTerritoryError,
     DeadTerritorySetError,
+    DiversityCohortError,
     FlawedMechanismError,
     IllegalThemeError,
     InjectedGuidanceError,
@@ -412,8 +463,10 @@ __all__ = [
     "MECHANISM_POLICY_REVISION",
     "METRIC_COLUMNS",
     "MISSING_PROPOSAL_CODE",
+    "MODEL_COLUMN",
     "MODULE_SYMBOL",
     "NEVER_SCORED_CODE",
+    "NODE_PROPOSAL_NODE_COLUMN",
     "NODE_PROPOSAL_TABLE",
     "NOT_A_DIAGNOSIS_CODE",
     "NOT_A_HISTORY_CODE",
@@ -452,6 +505,7 @@ __all__ = [
     "DeadTerritoryVerdict",
     "DiagnosisReason",
     "DiagnosisVerdict",
+    "DiversityCohortError",
     "FlawedMechanismError",
     "GuidanceReason",
     "GuidanceVerdict",
@@ -491,6 +545,7 @@ __all__ = [
     "ThemeAdmission",
     "ThemeReason",
     "ThemeSetError",
+    "TreeDiversity",
     "TruncatedHistoryError",
     "anti_convergence_gate",
     "build_anti_convergence",
@@ -525,6 +580,7 @@ __all__ = [
     "skeleton_digest",
     "source_code_hash",
     "stated_mechanism",
+    "tree_diversity",
 ]
 
 #: The component name this member registers under.  The spec's own plugin name

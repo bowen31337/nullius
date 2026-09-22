@@ -292,6 +292,7 @@ __all__ = [
     "AntiConvergenceError",
     "DeadTerritoryError",
     "DeadTerritorySetError",
+    "DiversityCohortError",
     "FlawedMechanismError",
     "IllegalThemeError",
     "InjectedGuidanceError",
@@ -944,4 +945,40 @@ class ProposalConflictError(ProposalContentError):
     is **not** a conflict (the identical pair re-issued) returns a record
     rather than raising, so a caller that sees this class knows it is holding a
     genuine disagreement rather than a repeat.
+    """
+
+
+class DiversityCohortError(SignalAgentError):
+    """A campaign's diversity figure cannot be counted from the cohort handed in.
+
+    Raised by feature 215's ``tree_diversity`` when the *cohort* it would count
+    is not one a figure can be derived from: the handle it was given is not
+    feature 207's proposal history, the campaign id names no campaign, the tree
+    has not reached revision ``0115_agent_model_trio`` so no per-model stratum
+    exists, a recorded proposal's node carries no ``agent_model_id``, or a
+    value handed to :class:`~signal_agent.TreeDiversity`'s constructor — or
+    built by it — is not a shape a count could have produced.
+
+    **It is deliberately not an :class:`AgentSourceError`.**  Nothing here is
+    about a proposal's *source*: the documents themselves may all be perfectly
+    good, and no re-prompt repairs a missing column or an unmodellable row.  It
+    is not a :class:`ProposalContentError` either, though it is the nearest
+    neighbour — that class is about a *value the caller is trying to store*,
+    and this one is about a *figure the caller is trying to read*.  A caller's
+    ``except ProposalContentError`` handler exists to correct a document before
+    writing it, and a diversity refusal moved through that clause would send it
+    looking for a document to fix when the fault is in the tree or in the
+    arguments.
+
+    **It is a sibling of the two classes feature 215 raises beside it**, on the
+    member's usual grounds (feature 186's *"no fourth error class"*, feature
+    223's decision 6): the three name three different repairs — fix the tree's
+    migration chain, fix the row that lost its model, fix the argument — and a
+    single class would leave an operator unable to tell which of the three it
+    was holding.  It is deliberately **not** a third spelling of
+    :class:`~signal_agent.MechanismColumnError` or
+    :class:`~signal_agent.ProposalNodeNotRecordedError`: those two already name
+    0117's and 0118's prerequisites for their own features, and feature 215
+    raises ``ProposalNodeNotRecordedError`` unchanged for the shared one (an
+    absent ``node`` table) rather than minting a duplicate here.
     """

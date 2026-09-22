@@ -66,6 +66,7 @@ statement ``packages/sandbox/tests/conftest`` makes for its own laws.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sqlite3
 import sys
 import uuid
@@ -329,8 +330,16 @@ def plant_node(database_url: str, node_id: str | None = None, **columns) -> str:
         "code_hash": "c" * 64,
         "artifact_uri": f"file:///artifacts/{node}",
     }
+    # ``campaign_id`` belongs to the structural five and is *overridable*: the
+    # tree's own default here is a fresh campaign per planted node, which is
+    # what a suite wanting unrelated nodes relies on, but a suite that has to
+    # say "these two nodes are one campaign" — feature 215's, whose whole scope
+    # is that column — must be able to pass one instead of having it overwritten
+    # by the default.  The default is applied first and the caller's columns
+    # second, so a passed ``campaign_id`` wins.
+    values.setdefault("campaign_id", str(uuid.uuid4()))
     values.update(columns)
-    names = ["id", "parent_id", "campaign_id", "theme_root", "depth", *values]
+    names = ["id", "parent_id", "theme_root", "depth", *values]
     placeholders = ", ".join("?" for _ in names)
     with (
         closing(sqlite3.connect(sqlite_path_of(database_url))) as connection,
@@ -338,14 +347,7 @@ def plant_node(database_url: str, node_id: str | None = None, **columns) -> str:
     ):
         connection.execute(
             f"INSERT INTO node ({', '.join(names)}) VALUES ({placeholders})",
-            (
-                node,
-                None,
-                str(uuid.uuid4()),
-                PLANTED_THEME_ROOT,
-                0,
-                *values.values(),
-            ),
+            (node, None, PLANTED_THEME_ROOT, 0, *values.values()),
         )
     return node
 
@@ -426,3 +428,134 @@ def mechanism(mechanism_database: str) -> StatedMechanism:
     :func:`mechanism_store` above; the three seams are separate on purpose.
     """
     return stated_mechanism({"DATABASE_URL": mechanism_database})
+
+
+# ── Feature 215's tree fixtures ───────────────────────────────────────────────
+#
+# Feature 215 counts over feature 207's rows, and groups them by a column
+# migration ``0115`` adds to ``node`` — so a database this feature can be tested
+# against needs the tree *and* the authoring-model trio *and* the recorded
+# history, and it needs all three to be the ones the shipped chain builds.  The
+# fixtures below therefore run four real migrations by file path, in dependency
+# order, for the reason the section above gives: a suite that hand-wrote any of
+# these DDL statements would be pinning the feature against a schema it invented.
+#
+# ``0113`` and ``0114`` come along because they are what the node task queue
+# dispatched *between* the table and the trio, and ``0114``'s seven metrics are
+# what feature 207's score record projects over — so bringing the tree to the
+# shape a real deployment has costs nothing and keeps the score half honest
+# rather than absent.
+
+#: The metrics revision feature 207's score record is projected from.  Applied
+#: rather than skipped so a recorded pair carries the seven metric columns a
+#: real deployment's tree holds — feature 207 answers honestly with fewer of
+#: them, but a test that never had them would not be exercising the deployment.
+METRICS_MIGRATION = "0114_node_metrics"
+
+#: The authoring-model trio — feature 100's revision, and the one feature 215's
+#: *"per authoring model"* half is a statement about.  Nothing in this suite
+#: hand-writes ``agent_model_id``: the column is added by the migration that
+#: owns it and its ``NOT NULL`` is that migration's own decision.
+MODEL_MIGRATION = "0115_agent_model_trio"
+
+
+def create_diversity_schema(database_url: str) -> None:
+    """Bring ``database_url`` to the shape feature 215 counts over.
+
+    The table first (``0118``), then the column features the shipped chain
+    dispatches *before* it (``0113``-``0115``) — the ordering fact every one of
+    those migrations documents from inside, applied here in the order that makes
+    them runnable rather than the order the dispatcher queued them in.
+
+    **``0113`` goes last, and that is not a stylistic choice.**  It is the one
+    revision in the chain that creates no column and no table — three
+    ``CREATE INDEX`` statements, on ``(campaign_id, parent_id)``, on
+    ``code_hash`` and on ``agent_model_id`` — so it depends on *three* other
+    migrations' columns, and on SQLite an index against a missing column is an
+    ``OperationalError`` rather than a silent no-op (0113's own docstring
+    records the measurement).  The dispatcher queued it first; applied first it
+    fails on a fresh database with ``no such column: code_hash`` — which is what
+    this fixture found when it applied the queue's order.  So the index feature
+    comes once the columns it indexes all exist: ``0118``, ``0117``, ``0115``,
+    ``0114``, then ``0113``.
+
+    **``0116`` is deliberately absent**, and the reason is the fixture's rather
+    than the feature's: its three ``NOT NULL`` provenance hashes are feature
+    70/§4.2/feature 60's subjects, and this suite can only plant placeholders
+    for them — a fabricated ``evaluator_hash`` is not a more honest row than an
+    absent one, it is a row that looks evaluated.  Stopping the chain at the
+    columns this feature groups by is what keeps every row here a row whose
+    fields mean what they say, and :func:`plant_node`'s
+    :data:`PLANTED_CONSTRAINED_COLUMNS` claim about 0117 stays exactly true.
+    """
+    create_schema(
+        database_url,
+        NODE_MIGRATION,
+        TRIO_MIGRATION,
+        MODEL_MIGRATION,
+        METRICS_MIGRATION,
+        "0113_node_indexes",
+    )
+
+
+def plant_modelled_node(
+    database_url: str,
+    model: str,
+    node_id: str | None = None,
+    campaign_id: str | None = None,
+    **columns,
+) -> str:
+    """Insert one node row carrying an authoring model; return its id.
+
+    :func:`plant_node` above supplies 0117's two ``NOT NULL`` members; this one
+    adds the third and fourth constraints a diversity suite meets — ``0115``'s
+    ``agent_model_id`` (``NOT NULL``) and ``0114``'s ``agent_sampling``
+    (``NOT NULL``, and a JSON *document* on SQLite, so a bare string would be a
+    plausible-looking value the sampling member would refuse).  ``campaign_id``
+    is a parameter rather than a fresh UUID per call, because the whole feature
+    is scoped by it and a test that wanted two nodes in one campaign would
+    otherwise be unable to say so.
+
+    ``agent_model_id`` is passed through *verbatim* — the model id is feature
+    203's subject and this suite must be able to plant a value that migration
+    ``0115`` would have accepted whatever it spells, so nothing here normalises,
+    validates or reshapes it.
+    """
+    return plant_node(
+        database_url,
+        node_id,
+        campaign_id=campaign_id or str(uuid.uuid4()),
+        agent_model_id=model,
+        agent_sampling=json.dumps(
+            {"temperature": 0.0, "top_p": 1.0, "thinking": False, "seed": 1}
+        ),
+        **columns,
+    )
+
+
+@pytest.fixture
+def diversity_database_url(tmp_path: Path) -> str:
+    """A ``sqlite:///`` URL for a tree file only this test can see.
+
+    Nothing is created, which is what lets the "no ``node_proposal`` table at
+    all" case be tested as the *first* thing that happens to a fresh database —
+    the property :func:`mechanism_database_url` provides for feature 211's own
+    absent-table case.
+    """
+    return f"sqlite:///{tmp_path / 'diversity-tree.db'}"
+
+
+@pytest.fixture
+def diversity_database(diversity_database_url: str) -> str:
+    """The tree a real deployment counts over: ``node`` with the model column.
+
+    The starting point for every claim in ``test_diversity.py``.  It is the
+    tree *before* feature 207 has run — the ``node_proposal`` table does not
+    exist yet, because that member creates it lazily on its first connection —
+    which is deliberate: the suite then builds the history through feature 207's
+    own writer, so the rows feature 215 counts are rows the real store produced
+    rather than rows this suite inserted.
+    """
+    create_diversity_schema(diversity_database_url)
+    return diversity_database_url
+
