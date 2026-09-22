@@ -5,16 +5,20 @@ Implements app_spec.xml, "Discovery Orchestrator & Campaigns", feature
 and null fraction before any node is expanded"* — against §5's discovery
 tree and §4.1.1's planted-null fraction.
 
-The member's surface is two modules.  :mod:`discovery.campaign` is the clip
+The member's surface is three modules.  :mod:`discovery.campaign` is the clip
 that derives φ from ``W``, §7.3's two regimes as a closed set, the frozen
 :class:`~discovery.campaign.CampaignRecord` and the store that creates one
 row in the ``campaign`` table the migration already declares.
 :mod:`discovery.themes` is feature 241 — *"System rejects a root theme
 outside the configured legal set when assigning a research theme"* — the
 deployment's configured research space and the verb that refuses an
-assignment outside it.  This module re-exports both and registers the one
-component; it carries no logic of its own, which is the same shape every
-member in this workspace takes.
+assignment outside it.  :mod:`discovery.workers` is feature 238 — *"System
+runs W parallel evaluation workers as concurrent slots, which returns
+batch results as each worker completes"* — the dispatch seam that runs a
+selected batch across the W slots the campaign was planned with and
+yields each answer as its slot finishes.  This module re-exports all
+three and registers the one component; it carries no logic of its own,
+which is the same shape every member in this workspace takes.
 
 **Feature 241 adds no component, and that is a decision rather than an
 omission.**  The factory's registration protocol is for *state a deployment
@@ -26,6 +30,21 @@ component whose builder always answers the same value is a function wearing a
 component's name, so the member's first component stays the campaign store and
 feature 232's component suite — which asserts this member registers exactly
 one unprefixed name — is untouched by this feature.
+
+**Feature 238 adds no component either, and it inherits 241's reason rather
+than merely borrowing it.**  :func:`discovery.workers.run_batch` is the
+orchestrator's evaluation dispatch — W concurrent slots over a selected
+batch — and a pool of slots is emphatically *state a deployment holds*
+while it is running, but it exists only for the length of one call: the
+dispatch creates its slots, the stream's end joins them, and nothing
+persists between batches.  The one honest builder for it would have to
+bake the width at composition time — a pool whose W was decided by the
+process rather than by the campaign record is precisely the
+invented-campaign refusal :func:`discovery.workers.run_batch` states for
+its missing default — so the verb stays a function and the member's
+registered surface stays feature 232's single store.  W reaches the pool
+the only way the spec allows: the caller that planned the campaign passes
+``width=record.workspace_count``.
 
 **Why this member exists at all.**  The ``campaign`` table is feature
 104's (``migrations/versions/0111_campaign_table.py``) and eight stores
@@ -100,6 +119,7 @@ from .campaign import (
     null_fraction,
 )
 from .errors import (
+    BatchDispatchError,
     CampaignOrderError,
     CampaignPlanningError,
     DiscoveryError,
@@ -114,6 +134,11 @@ from .themes import (
     ThemeSet,
     assign_theme,
     legal_themes_from_env,
+)
+from .workers import (
+    SLOT_THREAD_PREFIX,
+    WorkerResult,
+    run_batch,
 )
 
 __all__ = [
@@ -133,10 +158,12 @@ __all__ = [
     "PHI_CEILING",
     "PHI_FLOOR",
     "REGIMES",
+    "SLOT_THREAD_PREFIX",
     "THEME_ROOT_COLUMN",
     "TYPE_D_CAMPAIGN_TYPE",
     "TYPE_R_CAMPAIGN_TYPE",
     "WORKSPACE_COUNT_COLUMN",
+    "BatchDispatchError",
     "CampaignOrderError",
     "CampaignPlanningError",
     "CampaignRecord",
@@ -144,11 +171,13 @@ __all__ = [
     "DiscoveryError",
     "IllegalThemeError",
     "ThemeSet",
+    "WorkerResult",
     "assign_theme",
     "build_campaign_records",
     "create_campaign",
     "legal_themes_from_env",
     "null_fraction",
+    "run_batch",
 ]
 
 #: The name the discovery member registers its campaign store under.

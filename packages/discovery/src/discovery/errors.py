@@ -73,11 +73,29 @@ space is the highest-value human input in the system, and it should be
 encoded as the set of legal ``theme_root`` values."*  A caller that catches
 :class:`DiscoveryError` gets every failure of this member's path, which is
 the one ``except`` the base class exists for.
+
+Feature 238 adds a fourth class, and it is the dispatch twin of the first:
+:class:`BatchDispatchError` is raised when the orchestrator's *evaluation
+dispatch* — *"System runs W parallel evaluation workers as concurrent
+slots, which returns batch results as each worker completes"* — is handed
+an ask that cannot be run as W slots at all.  A ``width`` that is not the
+genuine positive integer a campaign's ``workspace_count`` is, a ``worker``
+that is not callable, a ``jobs`` that is not a batch: each is refused
+**before any slot starts**, which is the property that makes this the same
+repair as :class:`CampaignPlanningError`'s (re-consider the ask) rather
+than :class:`CampaignOrderError`'s (repair the world).  It sits beside the
+other three rather than under either planning or ordering for a second
+reason the split above states generally: a worker that *fails mid-batch*
+is never this class — a failed run is a value the stream reports
+(:class:`~discovery.workers.WorkerResult` carries it), because every
+attempt must be answered for the tree to log it — so this class is
+reserved for asks the pool could not even begin.
 """
 
 from __future__ import annotations
 
 __all__ = [
+    "BatchDispatchError",
     "CampaignOrderError",
     "CampaignPlanningError",
     "DiscoveryError",
@@ -148,4 +166,32 @@ class IllegalThemeError(DiscoveryError):
     well-formed ask ran into.  Kept out of :class:`CampaignOrderError` for
     the same reason: nothing about the store's state is in question — the
     theme is refused before any row or node exists.
+    """
+
+
+class BatchDispatchError(DiscoveryError):
+    """The evaluation dispatch could not be run as W slots at all.
+
+    app_spec.xml feature 238: *"System runs W parallel evaluation workers
+    as concurrent slots, which returns batch results as each worker
+    completes."*  This is the refusal when the *ask* cannot begin: a
+    ``width`` that is not the genuine positive integer a campaign's
+    ``workspace_count`` is, a ``worker`` that is not callable, or a
+    ``jobs`` that is not a batch.  Every refusal fires **before any slot
+    starts** — :func:`discovery.workers.run_batch` validates eagerly,
+    precisely so that a malformed dispatch is refused as an ask rather
+    than discovered broken mid-batch with slots already holding work.
+
+    The repair is :class:`CampaignPlanningError`'s — re-consider what was
+    asked for — which is why this is not an ordering refusal: the pool
+    holds no store, so no store's state can contradict the law.  And it is
+    emphatically not the class a *failing worker* raises through: a worker
+    that fails mid-batch is a value the stream carries on its
+    :class:`~discovery.workers.WorkerResult` (the
+    :class:`~discovery.workers.WorkerResult` (the signal sandbox's
+    *a failed run is a value* discipline — ``evaluator._sandbox`` states
+    it for its own failures — and PRD §5's *"every attempt is logged to
+    the tree with its full artifact"*, feature 240's "including
+    failures"), so a batch whose evaluations fail never sees this class.
+    It is reserved for asks the pool could not even start.
     """
