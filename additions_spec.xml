@@ -1,141 +1,175 @@
 <project_specification mode="brownfield">
-  <project_name>nullius — feature 68 (borrow cost from the recorded exchange borrow rate series)</project_name>
+  <project_name>nullius — feature 242 (terminate a campaign when the policy selects no batch, persisting a campaign manifest)</project_name>
   <addition_summary>
-    Implement app_spec.xml feature 68 in the cost-model plugin: the system
-    sources borrow cost from the recorded exchange borrow rate series and
-    returns a carry adjustment per holding period. The borrow series is the
-    recorded funding/borrow stream — one row per symbol per poll, each row a
-    (reading_time, borrow_rate) pair, retained forever, with the rate kept
-    verbatim in the venue's own string spelling (packages/ingest member,
-    nullius_ingest.funding). Feature 68 adds the cost-model's borrow-cost
-    half: a pure, deterministic function that takes that series for one symbol
-    and the holding period's bounds and returns the carry adjustment the
-    holding period accrues — the time-weighted borrow cost of holding the
-    position across the recorded rates. The function is added to the shared
-    cost library (packages/cost-model), so research evaluation and live
-    execution compute borrow cost from one code path rather than two. It
-    depends on feature 59 (the cost-model plugin and its configuration
-    identity) and stays on the cost path's stance: verbatim rates are
-    decimalised here, the series is consumed as data (never read from the
-    ingest store by the cost model), a series that does not cover the holding
-    period is refused loudly rather than extrapolated, and a missing rate
-    inside the period is refused rather than interpolated.
+    Implement app_spec.xml feature 242 in the discovery plugin: the system
+    terminates a campaign when the policy selects no batch, persisting a
+    campaign manifest summarizing the completed tree. This is the caller-side
+    termination judgement that feature 238's worker pool and feature 244's
+    retry both defer — run_batch and retry_interrupted return an empty stream
+    (iter(()), no slots, no error) when the selected batch is empty, because
+    "nothing was selected" is a state the caller must judge, not the pool.
+    Feature 242 is that caller: when the policy's selected batch is empty (or
+    the round cap is reached with nothing left to expand), the orchestrator
+    pronounces the campaign complete and persists a manifest that summarizes
+    the tree it walked — the branch count, the refine count, the leaf count,
+    the node count, the deepest depth and the number of distinct theme roots,
+    together with the campaign's calibration_status. The manifest is a consumed
+    artifact: feature 235's plan_grid derives its branch and refine counts from
+    prior campaign manifests, and feature 243 reads the manifest's
+    calibration_status to refuse a VOID campaign when adding completed campaigns
+    to the replay pool. A new module packages/discovery/src/discovery/manifest.py
+    owns the value and its self-initializing store; the store brings its own
+    campaign_manifest table into being on first use (the writer owns its table,
+    as the ledger does, so no migration is touched — migrations are
+    core-task territory and out of scope). No new @register component is added:
+    the manifest is a value the loop persists and a reader consumes, not a
+    policy decision the factory must discover. It depends on feature 240 (the
+    node table holds the attempts the census counts) and stays on the
+    discovery member's stance: stdlib only, frozen dataclasses, no
+    cross-member imports, the node tree consumed as data through a read-only
+    census, and every refusal naming what it refused.
   </addition_summary>
   <existing_context>
-    <stack>Python 3.12 / uv-workspace (packages/cost-model member, import cost_model) / pytest (ruff + mypy conventions)</stack>
-    <test_baseline>cost-model suite under packages/cost-model/tests/, stdlib-only modules plus PyYAML where the config layer is exercised</test_baseline>
+    <stack>Python 3.12 / uv-workspace (packages/discovery member, import discovery) / pytest (ruff + mypy conventions)</stack>
+    <test_baseline>discovery suite under packages/discovery/tests/ (test_campaign, test_workers, test_expansion, test_persist, test_retry, test_themes, test_cross_member, test_component) plus the seat suite at src/app/modules/discovery; stdlib-only modules</test_baseline>
     <conventions>
       snake_case modules, frozen dataclasses for value types, docstrings that
       cite app_spec.xml feature numbers and docs/nullius-tech-architecture.md
-      sections, stdlib-only computation, third-party imports (PyYAML) deferred
-      to first use, @register only in the package __init__ (never a submodule),
-      degrade-don't-break composition. The cost model is a pure shared library:
-      it consumes the borrow series as data and never imports the ingest member.
-      Rates arrive verbatim in the venue's own string spelling and are
-      decimalised on the cost path; a holding period the series does not cover is
-      refused, not extrapolated. Tests assert on observed behaviour with long
-      narrative docstrings explaining the "why".
+      sections, stdlib-only computation, @register only in the package __init__
+      (never a submodule), degrade-don't-break composition, and no member
+      importing another. The discovery member already holds the campaign record
+      writer (feature 232, campaign.py), the worker pool (feature 238,
+      workers.py), node expansion (feature 239, expansion.py), attempt
+      persistence (feature 240, persist.py), idempotent retry (feature 244,
+      retry.py), the legal theme set (feature 241, themes.py) and the shared
+      error taxonomy (errors.py); each restates the sqlite path translation,
+      the node-id canonicalization and the sqlite_master probe rather than
+      importing a sibling. The seat src/app/modules/discovery/__init__.py
+      re-exports the one registered component "discovery". Tests assert on
+      observed behaviour with long narrative docstrings explaining the "why".
     </conventions>
   </existing_context>
   <!-- Layout mirrors the clean main app_spec.xml: uv-workspace is what makes
-       plugin="cost-model" resolve to the real packages/cost-model/ tree rather
-       than the single-package src/plugins/cost-model/ default. Parsed before
+       plugin="discovery" resolve to the real packages/discovery/ tree rather
+       than the single-package src/plugins/discovery/ default. Parsed before
        features. -->
   <layout profile="uv-workspace"/>
   <features_to_add>
-    <category name="Borrow Cost">
-      <feature index="1" shape="plugin" plugin="cost-model">
-        <description>System constructs a frozen BorrowRateRow for one recorded borrow-rate observation with the symbol, the timezone-aware reading_time instant and the borrow_rate kept verbatim in the venue's own string spelling, refusing a blank or non-string rate and a naive or non-monotonic instant with a named error message</description>
+    <category name="Campaign Termination">
+      <feature index="1" shape="plugin" plugin="discovery">
+        <description>System constructs a frozen CampaignManifest value carrying a campaign_id, a calibration_status, a branch_count, a refine_count, a leaf_count, a node_count, a depth_max and a theme_roots, refusing a non-integer or negative count and a node_count below one with a named error message</description>
       </feature>
-      <feature index="2" shape="plugin" plugin="cost-model" depends_on="1">
-        <description>System decimalises a verbatim borrow-rate string to a Decimal on the cost path, refusing a value that is not a finite non-negative decimal with a named error message so an exchange spelling such as "0.00003" becomes a number without a float rounding and a corrupt or negative rate is never silently priced</description>
+      <feature index="2" shape="plugin" plugin="discovery" depends_on="1">
+        <description>System classifies each node of a completed campaign's tree as a root, an internal refinement or a leaf from its parent_id and returns a tree summary carrying the branch_count, the refine_count, the leaf_count, the node_count, the depth_max and the theme_roots</description>
       </feature>
-      <feature index="3" shape="plugin" plugin="cost-model" depends_on="1,2">
-        <description>System returns the carry adjustment for a holding period from a recorded borrow rate series, time-weighting each observation's rate over the span it is the newest recorded rate and returning the cumulative carry cost of holding the position across the period, with the result a signed Decimal carrying the same units as the rate times the holding fraction</description>
+      <feature index="3" shape="plugin" plugin="discovery" depends_on="1,2">
+        <description>System terminates a campaign only when its tree holds no open node, refusing a campaign whose frontier is not empty with a named ordering error message because the policy has then selected no batch and every selected node has been expanded</description>
       </feature>
-      <feature index="4" shape="plugin" plugin="cost-model" depends_on="3">
-        <description>System refuses a holding period the recorded series does not cover, raising a named carry error with an error message when no observation is at or before the holding start or none is at or after the holding end, so borrow cost is never extrapolated beyond the recorded history</description>
+      <feature index="4" shape="plugin" plugin="discovery" depends_on="1,3">
+        <description>System persists a completed campaign's manifest into a campaign_manifest store that self-initializes its own table on first use, writing one row keyed on the campaign_id and carrying the calibration_status, the branch_count, the refine_count, the leaf_count, the node_count, the depth_max and the theme_roots</description>
       </feature>
-      <feature index="5" shape="plugin" plugin="cost-model" depends_on="3">
-        <description>System refuses a holding period with a gap in the recorded series, raising a named carry error with an error message when two consecutive observations spanning the period are separated by more than the series' own poll interval so a borrow cost is never computed across a hole in the recorded rates</description>
+      <feature index="5" shape="plugin" plugin="discovery" depends_on="4">
+        <description>System reads a stored campaign manifest back by its campaign_id and returns the calibration_status and the full tree summary so a replay-pool gate can refuse a campaign the calibration left voided</description>
       </feature>
-      <feature index="6" shape="plugin" plugin="cost-model" depends_on="3,4,5">
-        <description>System exposes the borrow-cost computation as a function on the shared cost library that takes the recorded borrow rate series and the holding period bounds and returns the carry adjustment, so research evaluation and live execution import one shared code path rather than two implementations of the same series</description>
+      <feature index="6" shape="plugin" plugin="discovery" depends_on="5">
+        <description>System exposes a module-level finish_campaign function that resolves the store from DATABASE_URL and terminates one campaign, refusing by name a call that carries no database with a named error message so the orchestrator's termination never silently skips its write</description>
       </feature>
     </category>
-    <category name="Borrow Cost Verification">
-      <feature index="7" shape="plugin" plugin="cost-model" depends_on="3,4,5,6">
-        <description>System passes an end-to-end test in which a recorded borrow rate series with a constant rate returns the rate times the holding fraction, a stepped series returns the time-weighted sum across the two rates, a series that does not cover the holding start or end is refused, a series with a gap inside the period is refused, and the shared library function returns the same carry adjustment as the direct computation</description>
+    <category name="Campaign Termination Verification">
+      <feature index="7" shape="plugin" plugin="discovery" depends_on="2,3,4,5,6">
+        <description>System passes an end-to-end test in which a completed campaign whose frontier is empty terminates, persisting a manifest that carries the branch_count, the refine_count, the leaf_count, the node_count, the depth_max and the theme_roots, a campaign whose frontier still holds an open node is refused with a named ordering error message, and a manifest read back by campaign_id carries the stored calibration_status</description>
       </feature>
     </category>
   </features_to_add>
   <integration_points>
-    New module packages/cost-model/src/cost_model/borrow.py owning the borrow
-    cost computation over a recorded borrow rate series (the recorded
-    funding/borrow stream of packages/ingest, consumed as data — the cost model
-    does not import nullius_ingest)
-    Reuses the cost model's existing error taxonomy
-    (packages/cost-model/src/cost_model/errors.py) for the carry refusal,
-    adding one CarryBorrowCostError subclass for the not-covered and gap cases
-    Exported from the package __init__ (packages/cost-model/src/cost_model/__init__.py)
-    alongside the existing symbols, so research and live paths import one spelling
-    Covered by packages/cost-model/tests/test_borrow.py
+    New module packages/discovery/src/discovery/manifest.py owning the
+    CampaignManifest value, the read-only tree census over the node table, the
+    finish() termination judgement and the self-initializing campaign_manifest
+    store (the store brings its own table into being on first use; it is the
+    writer of that table, as the ledger is of its own, so no migration is
+    touched)
+    Reuses the discovery member's existing error taxonomy
+    (packages/discovery/src/discovery/errors.py), translating the tree census's
+    read into the caller's CampaignOrderError at the seam rather than leaking a
+    sibling's error class
+    Restates the sqlite path translation and the sqlite_master probe locally
+    rather than importing campaign.py or persist.py, honoring the no-cross-member
+    contract
+    Exported from the package __init__ (packages/discovery/src/discovery/__init__.py)
+    alongside the existing symbols, so the orchestrator's termination loop imports
+    one spelling
+    Covered by packages/discovery/tests/test_manifest.py
   </integration_points>
   <constraints>
-    Must not modify the config, store, service or any shared file
-    (src/app/middleware.py, src/app/settings.py, migrations/**, alembic/**)
-    The cost model consumes the borrow series as data and never imports the
-    ingest member — the borrow rate rows are passed in, not read from the
-    FundingRateStore by the cost model, so the shared library stays a pure
-    dependency of both research and live paths
-    Rates are kept verbatim in the venue's own string spelling and decimalised
-    on the cost path; no float rounding is introduced between the recorded rate
-    and the carry adjustment
-    A holding period the series does not cover is refused, not extrapolated; a
-    gap inside the period is refused, not interpolated; a quiet or empty series
-    is refused, not silently priced at zero
-    The carry adjustment is deterministic and reproducible: the same series and
-    the same holding bounds always return the same adjustment, with no clock
-    read and no process state
-    Follow the existing docstring discipline: cite app_spec.xml feature 68 and
-    docs/nullius-tech-architecture.md §4.1 (the borrow stream), §6.2 (the cost
-    model) and §2 (the Z0 trust zone)
-    All existing cost-model tests must stay green
+    Must not modify any shared or order-sensitive file (src/app/middleware.py,
+    src/app/settings.py, migrations/**, alembic/**) — the manifest store brings
+    its own table into being at runtime rather than through a migration, which
+    is both the ledger's pattern and out of core-task territory
+    No new @register component is added: the campaign manifest is a value the
+    exploration loop persists and a reader consumes, not a policy decision the
+    app factory must discover, so the package __init__ gains no new builder
+    Termination is a judgement over the tree's state, not a new count: the
+    campaign is complete when the policy selects no batch and no selected node
+    remains to expand, matching the empty-stream contract feature 238's pool
+    and feature 244's retry already return
+    The manifest's counts are derived from the actual node rows by a read-only
+    census, never asserted by the caller, so the summary reflects the tree that
+    was walked rather than a claim about it
+    The manifest carries the campaign's calibration_status so feature 243 can
+    refuse a VOID campaign from the replay pool, but it carries that status
+    rather than spelling the VOID vocabulary — the verdict module remains the
+    one place that word is pronounced
+    The store consumes the node tree as data and is idempotent: finishing the
+    same completed campaign twice returns the same stored manifest rather than
+    writing a second row
+    Follow the existing docstring discipline: cite app_spec.xml feature 242 and
+    docs/nullius-tech-architecture.md §5 (one campaign = one discovery tree) and
+    §9.1 (the node table and the exploration loop)
+    All existing discovery tests must stay green; the new manifest tests green
   </constraints>
   <implementation_steps>
-    <phase name="Phase 1: Borrow Cost">
-      Add the frozen BorrowRateRow value type (symbol, timezone-aware
-      reading_time, verbatim borrow_rate string) with named refusals for a blank
-      or non-string rate and a naive or non-monotonic instant
-      Add the verbatim-rate decimaliser, refusing a value that is not a finite
-      non-negative decimal by name
-      Add the carry-adjustment computation that time-weights each observation's
-      rate over the span it is the newest recorded rate and returns the
-      cumulative carry cost across the holding period as a signed Decimal
-      Add the not-covered refusal (no observation at or before the start, or none
-      at or after the end) and the gap refusal (two consecutive observations
-      spanning the period separated by more than the poll interval)
-      Add the shared-library function that takes the recorded series and the
-      holding bounds and returns the carry adjustment, exported from the package
-      __init__
+    <phase name="Phase 1: Campaign Termination">
+      Add the frozen CampaignManifest value type (campaign_id, calibration_status,
+      branch_count, refine_count, leaf_count, node_count, depth_max, theme_roots)
+      with named refusals for a non-integer or negative count and a node_count
+      below one
+      Add the read-only tree census that classifies each node as a root, an
+      internal refinement or a leaf from its parent_id and returns the summary
+      counts
+      Add the finish() termination judgement that refuses a campaign whose
+      frontier still holds an open node, pronouncing completion only when the
+      policy has selected no batch and every selected node has been expanded
+      Add the self-initializing campaign_manifest store that brings its own table
+      into being on first use and writes one manifest row keyed on the campaign_id
+      Add the read-back that returns a stored manifest by campaign_id, carrying
+      the calibration_status for feature 243's replay-pool gate
+      Add the module-level finish_campaign function that resolves the store from
+      DATABASE_URL and refuses by name a call that carries no database
     </phase>
-    <phase name="Phase 2: Borrow Cost Verification">
-      Add end-to-end tests asserting a constant-rate series returns the rate
-      times the holding fraction, a stepped series returns the time-weighted sum,
-      a not-covered series is refused, a gapped series is refused, and the shared
-      library function returns the same carry adjustment as the direct
-      computation
+    <phase name="Phase 2: Campaign Termination Verification">
+      Add end-to-end tests asserting an empty-frontier campaign terminates and
+      persists a manifest carrying the branch, refine, leaf, node, depth and
+      theme-root counts, an open-frontier campaign is refused with a named
+      ordering error, and a manifest read back by campaign_id carries the stored
+      calibration_status
     </phase>
   </implementation_steps>
   <success_criteria>
-    Feature 68 implemented: borrow cost is sourced from the recorded exchange
-    borrow rate series and returns a carry adjustment per holding period
-    The carry computation is a pure, deterministic function on the shared cost
-    library, exported from the cost-model package __init__
-    A holding period the series does not cover is refused, not extrapolated; a
-    gap inside the period is refused, not interpolated
-    Rates are decimalised from their verbatim string spelling with no float
-    rounding
-    All existing cost-model tests still green; new borrow-cost tests green
+    Feature 242 implemented: the system terminates a campaign when the policy
+    selects no batch and persists a campaign manifest summarizing the completed
+    tree
+    The CampaignManifest is a frozen value carrying the branch_count,
+    refine_count, leaf_count, node_count, depth_max and theme_roots plus the
+    campaign's calibration_status, with named refusals for a bad count
+    The finish() judgement refuses a campaign whose frontier still holds an open
+    node, matching the empty-stream contract feature 238's pool and feature 244's
+    retry already return
+    The campaign_manifest store self-initializes its own table at runtime (no
+    migration touched) and is idempotent, returning the same manifest on a
+    repeated finish
+    The manifest's counts are derived from the actual node rows by a read-only
+    census, and the manifest is readable by campaign_id so feature 243 and
+    feature 235's plan_grid can consume it
+    All existing discovery tests still green; new manifest tests green
   </success_criteria>
 </project_specification>

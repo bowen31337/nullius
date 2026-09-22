@@ -112,6 +112,24 @@ into and the store it publishes through, and calling it once per
 attempt.  :func:`discovery.persist.record_attempts` is the same act
 without the intermediate object, for the caller that holds neither.
 
+**Feature 242 adds no component, and its reason has 240's face plus a
+sharper one of its own.**  :class:`discovery.manifest.CampaignManifests`
+*does* close over state a deployment holds — a database URL — and still
+composes nothing.  The first face is 240's: the manifest is a *value the
+loop persists and a reader consumes*, not a policy decision the factory
+must discover — there is no judgement here for ``create_app()`` to make,
+only a row to write and read, and a builder that registered one would be
+a function wearing a component's name, the reason feature 241 gives for
+the legal set and feature 238 for the pool.  The sharper second face is
+this feature's own and it is the one the log states: a component is built
+on **every** ``create_app()`` call, and a registered manifest store would
+have to answer *which campaign's manifest does this hold?* — a question
+with no answer, because the store holds every completed campaign's, and a
+builder that picked one would be a reader pointed at a single campaign's
+tree.  The member's registered surface stays feature 232's single store,
+and the campaign loop reaches termination the only way the spec allows:
+by calling :func:`finish_campaign`, with the campaign id it planned.
+
 **Why this member exists at all.**  The ``campaign`` table is feature
 104's (``migrations/versions/0111_campaign_table.py``) and eight stores
 already read it — the seven null-oracle stores plus the discovery
@@ -202,6 +220,26 @@ from .expansion import (
     expand_node,
     refined_node_id,
 )
+from .manifest import (
+    BRANCH_COUNT_COLUMN,
+    CALIBRATION_STATUS_COLUMN,
+    CAMPAIGN_ID_COLUMN,
+    CAMPAIGN_TABLE,
+    DATABASE_URL_ENV,
+    DEPTH_MAX_COLUMN,
+    LEAF_COUNT_COLUMN,
+    MANIFEST_TABLE,
+    NODE_COUNT_COLUMN,
+    NODE_TABLE,
+    PARENT_ID_COLUMN,
+    REFINE_COUNT_COLUMN,
+    THEME_ROOTS_COLUMN,
+    THEME_ROOT_COLUMN,
+    CampaignManifest,
+    CampaignManifests,
+    TreeSummary,
+    finish_campaign,
+)
 from .persist import (
     ARTIFACT_URI_COLUMN,
     ATTEMPT_DATABASE_URL_ENV,
@@ -243,7 +281,10 @@ from .workers import (
 __all__ = [
     "ARTIFACT_URI_COLUMN",
     "ATTEMPT_DATABASE_URL_ENV",
+    "BRANCH_COUNT_COLUMN",
+    "CALIBRATION_STATUS_COLUMN",
     "CALIBRATION_STATUS_DEFAULT",
+    "CAMPAIGN_ID_COLUMN",
     "CAMPAIGN_TABLE",
     "CAMPAIGN_TYPE_COLUMN",
     "COMPONENT_NAME",
@@ -251,20 +292,27 @@ __all__ = [
     "DATABASE_URL_ENV",
     "DEFAULT_LEGAL_THEMES",
     "DEFAULT_THEME_SET",
+    "DEPTH_MAX_COLUMN",
     "EXPANSION_NAMESPACE",
     "FAIL_CLASSES",
     "FAIL_CLASS_COLUMN",
     "ID_COLUMN",
     "ILLEGAL_THEME",
+    "LEAF_COUNT_COLUMN",
     "LEGAL_THEMES_ENV",
+    "MANIFEST_TABLE",
     "MEASURED_FILENAMES",
+    "NODE_COUNT_COLUMN",
     "NODE_TABLE",
     "NULL_FRACTION_COLUMN",
+    "PARENT_ID_COLUMN",
     "PHI_CEILING",
     "PHI_FLOOR",
+    "REFINE_COUNT_COLUMN",
     "REGIMES",
     "SLOT_THREAD_PREFIX",
     "SOURCE_FILENAME",
+    "THEME_ROOTS_COLUMN",
     "THEME_ROOT_COLUMN",
     "TRACE_FILENAME",
     "TYPE_D_CAMPAIGN_TYPE",
@@ -277,6 +325,8 @@ __all__ = [
     "AttemptProvenance",
     "AttemptRecord",
     "BatchDispatchError",
+    "CampaignManifest",
+    "CampaignManifests",
     "CampaignOrderError",
     "CampaignPlanningError",
     "CampaignRecord",
@@ -289,6 +339,7 @@ __all__ = [
     "RefinedSignal",
     "RetriedResult",
     "ThemeSet",
+    "TreeSummary",
     "WorkerInterrupted",
     "WorkerResult",
     "assign_theme",
@@ -297,6 +348,7 @@ __all__ = [
     "classify_failure",
     "create_campaign",
     "expand_node",
+    "finish_campaign",
     "is_interruption",
     "legal_themes_from_env",
     "null_fraction",
