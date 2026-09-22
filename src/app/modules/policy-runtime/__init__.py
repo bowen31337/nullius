@@ -51,6 +51,19 @@ it, because there is nothing here to compose: the scalar belongs to the episode
 the replay opens, not to the composed application, and a second spelling of it
 would be a second thing to keep in sync.
 
+Feature 223 lives in the same member and is likewise not reached through this
+seat: the prefix view (:func:`policy_runtime.prefix_view`) is a pure
+construction over a question — it copies the question's own ``observed()``
+readings out into a fresh frozen snapshot holding only the cells a policy has
+revealed (docs/nullius-tech-architecture.md §10.2, cq-16) — with no store, no
+deployment state and no component, so it is reached directly from the member —
+``from policy_runtime import prefix_view`` — exactly the way the admission
+gate, the beta scalar and feature 229's :func:`policy_runtime.plan_grid` are.
+This module does not wrap it, because there is nothing here to compose: the
+view belongs to the round a replay hands a policy, not to the composed
+application, and a second spelling of it would be a second thing to keep in
+sync — and, worse, a second place the prefix-only law would have to hold.
+
 Where the composed tree is ``None``, that is a statement about the deployment,
 not an error: the member was not scanned, or the workspace is empty, or the
 deployment's artifact store holds no committed campaign, so there is no tree to

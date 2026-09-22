@@ -70,6 +70,24 @@ which is the whole of "returns a mapping of revealed node ids to
 observations", and the property that makes the information barrier a fact
 about the accessor rather than a promise in a docstring.
 
+**The object a policy is *handed* is the prefix view — fresh, and holding
+only the prefix (feature 223, cq-16).**  The question is the *runtime's*
+object: it fronts the tree because the runtime's own reveals need the
+address seam, and a caller holding the question could walk
+``question._tree`` to every node the campaign holds.  The thing authored
+policy code is handed is different by law (docs/nullius-tech-architecture.md
+§10.1–§10.2): :func:`prefix_view` reads the question's own ``observed()`` —
+the one implementation of the reading — and copies the observations out
+into a fresh :class:`PrefixView`, a frozen snapshot with no tree behind it,
+no question, no reveal set and no address verb.  An unrevealed node is
+absent from it rather than filtered out: there is no attribute, no slot, no
+``__dict__`` (the class carries slots and none at all) and no object
+reachable from the view that names a cell the policy has not revealed, so
+the barrier is a fact about the object graph the policy holds.  Feature 217
+made one *return value* prefix-only; feature 223 makes the object the
+policy holds prefix-only, and lives in :mod:`.prefix` beside the question
+it projects.
+
 **The episode's beta is one number, read once and fixed.**  Feature 226
 (docs/nullius-tech-architecture.md §609: *"``beta`` is read once in ``__init__``,
 fixed for the episode"*) lives in :mod:`.beta` as :class:`EpisodeBeta` and
@@ -169,6 +187,10 @@ from .planning import (
     PlanGridRefusal,
     plan_grid,
 )
+from .prefix import (
+    PrefixView,
+    prefix_view,
+)
 from .schedule import (
     EXPLORE_EXPLOIT,
     OVERFIT_AVERSION,
@@ -205,11 +227,13 @@ __all__ = [
     "PolicyQuestion",
     "PolicyRuntimeError",
     "PolicyTreeError",
+    "PrefixView",
     "SCHEDULE_KEYS",
     "family_schedule",
     "find_learned_component",
     "plan_grid",
     "policy_question",
+    "prefix_view",
     "read_beta",
     "schedule",
     "screen_policy",
