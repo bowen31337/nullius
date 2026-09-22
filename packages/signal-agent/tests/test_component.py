@@ -1,4 +1,4 @@
-"""Features 205, 209, 210, 211, 212 and 213's plugin seam: composition, and the seats.
+"""Features 205, 206, 208, 209, 210, 211, 212 and 213's plugin seam: composition, and the seats.
 
 Three contracts, all held from the side this member owns:
 
@@ -6,6 +6,7 @@ Three contracts, all held from the side this member owns:
   this package, the ``@register`` builders fire, and the composed application
   carries a ``signal-agent`` component, a ``signal-agent-anti-convergence`` one,
   a ``signal-agent-dead-territory`` one, a ``signal-agent-diagnosis`` one, a
+  ``signal-agent-guidance`` one, a ``signal-agent-history`` one, a
   ``signal-agent-stated-mechanism`` one and a ``signal-agent-themes`` one under
   the member's own names.  No registry, router, entry-points table or app
   factory was edited to make that true, and this suite keeps it true under the
@@ -13,19 +14,20 @@ Three contracts, all held from the side this member owns:
   their own components: the synthetic-name copy (pin by name, module suffix and
   behaviour — never ``isinstance``), the second composition (a ``@register``
   outside ``__init__.py`` would fire once and silently drop out of every later
-  ``create_app()``; all seven builders live in ``__init__.py`` and the test
+  ``create_app()``; all eight builders live in ``__init__.py`` and the test
   asserts on the *second* application or it passes vacuously), and the
   **registry-replacement** hazard a second component introduces — the registry
   is keyed by name, so a builder that took ``signal-agent`` for itself would
   silently replace feature 205's law rather than sit beside it, which is why
-  the seven are asserted together and each law is checked *after* all seven
+  the eight are asserted together and each law is checked *after* all eight
   fired.
 
 * **the seats** — ``app.modules.signal-agent`` answers *what is the composed
   authoring law?*, and ``.anti_convergence``, ``.dead_territory``,
-  ``.diagnosis``, ``.mechanism`` and ``.themes`` answer it for the five laws
-  that follow, each importing the member only under ``TYPE_CHECKING`` and
-  answering ``None`` — not an exception — when nothing is registered.  A seat's
+  ``.diagnosis``, ``.guidance``, ``.history``, ``.mechanism`` and ``.themes``
+  answer it for the seven laws that follow, each importing the member only
+  under ``TYPE_CHECKING`` and answering ``None`` — not an exception — when
+  nothing is registered.  A seat's
   ``None`` is a statement about *composition*, never about a proposal: the
   verdicts are the laws' own returned values, and reading one ``None`` as "no
   signal was adopted", "the agent opened in an illegal theme" or "the mechanism
@@ -74,6 +76,7 @@ anti_convergence_seat = importlib.import_module(
 )
 diagnosis_seat = importlib.import_module("app.modules.signal-agent.diagnosis")
 history_seat = importlib.import_module("app.modules.signal-agent.history")
+guidance_seat = importlib.import_module("app.modules.signal-agent.guidance")
 
 _CONFORMING = (
     "def signal(ctx, seed):\n"
@@ -124,6 +127,22 @@ _COMPLAINT = "signal source does not compile: expected ':'"
 #: spelled once and compared across the loader's two copies.
 _PRIOR_PROPOSAL = "def signal(ctx, seed):\n    return ctx.close.rolling_mean(20)\n"
 _HISTORY_NODE = "1f3d2b4a-5c6e-4f70-8192-a3b4c5d6e7f8"
+
+#: An authoring prompt of declared parts, and the same prompt with one part
+#: that declares itself distilled from the history, for feature 208's
+#: composed-law check.  Not from any committed artifact — like the history law,
+#: this gate compiles nothing; what counts as injected guidance is a
+#: declaration the prompt's own parts carry — so these are the shapes an
+#: assembler produces, spelled once and compared across the loader's two
+#: copies.
+_UNGUIDED_PARTS = {
+    "contract": "entrypoint signal(ctx, seed); universe closes",
+    "history": _PRIOR_PROPOSAL,
+}
+_GUIDED_PARTS = dict(
+    _UNGUIDED_PARTS,
+    context={"text": "prefer continuation", "derived_from": "prior proposals"},
+)
 
 
 def _assert_is_the_authoring_law(component: object) -> None:
@@ -456,6 +475,46 @@ def _assert_is_the_history_law(component: object) -> None:
     )
 
 
+def _assert_is_the_guidance_law(component: object) -> None:
+    """The composed guidance gate is the law, across the loader's copies.
+
+    Name, then behaviour — never ``isinstance``, for the same reason the seven
+    checks above are not.  Feature 208's clause is one refusal and this helper
+    asserts it on both sides, because a component that answered only the
+    admission half would be a gate that certified prompts while refusing to
+    name the one thing §C3 forbids:
+
+    * *unguided* — the composed gate must admit the declared-parts prompt the
+      canonically-imported one admits, with the same sentence and the same
+      parts, compared by value across the loader's boundary;
+    * *injected guidance* — the composed gate must refuse the part that
+      declares itself distilled from the history with the same
+      ``injected_guidance`` sentence and the same named offenders.
+    """
+    assert type(component).__name__ == "PromptGuidanceGate"
+    assert type(component).__module__.endswith("signal_agent._guidance")
+
+    for verb in ("admit", "require", "unguided"):
+        assert callable(getattr(component, verb)), verb
+
+    direct = member.prompt_guidance_gate()
+    composed = component.admit(_UNGUIDED_PARTS)  # type: ignore[attr-defined]
+    expected = direct.admit(_UNGUIDED_PARTS)
+    assert composed.admitted == expected.admitted is True
+    assert composed.reason == expected.reason
+    assert composed.detail == expected.detail
+    assert [name for name, _ in composed.sections] == [
+        name for name, _ in expected.sections
+    ]
+
+    composed_refusal = component.admit(_GUIDED_PARTS)  # type: ignore[attr-defined]
+    expected_refusal = direct.admit(_GUIDED_PARTS)
+    assert composed_refusal.admitted == expected_refusal.admitted is False
+    assert composed_refusal.reason == expected_refusal.reason
+    assert composed_refusal.detail == expected_refusal.detail
+    assert tuple(composed_refusal.offenders) == tuple(expected_refusal.offenders)
+
+
 def test_the_member_registers_the_theme_gate_under_its_own_name() -> None:
     # The registry is keyed by name, so this prefix is not cosmetic: a builder
     # that registered "signal-agent" a second time would *replace* feature
@@ -466,16 +525,17 @@ def test_the_member_registers_the_theme_gate_under_its_own_name() -> None:
     assert member.THEMES_COMPONENT_NAME != member.COMPONENT_NAME
 
 
-def test_the_scanned_application_carries_all_seven_laws() -> None:
-    # The seven, in one composition: feature 205's law, feature 206's history,
-    # feature 209's diagnosis, feature 210's gate, feature 212's gate, feature
-    # 213's gate and feature 211's law, each under its own name, none having
-    # replaced another.
+def test_the_scanned_application_carries_all_eight_laws() -> None:
+    # The eight, in one composition: feature 205's law, feature 206's history,
+    # feature 208's gate, feature 209's diagnosis, feature 210's gate, feature
+    # 212's gate, feature 213's gate and feature 211's law, each under its own
+    # name, none having replaced another.
     app = create_app(MEMBER_SRC, registry=Registration())
     assert "signal-agent" in app
     assert member.ANTI_CONVERGENCE_COMPONENT_NAME in app
     assert member.DEAD_TERRITORY_COMPONENT_NAME in app
     assert member.DIAGNOSIS_COMPONENT_NAME in app
+    assert member.GUIDANCE_COMPONENT_NAME in app
     assert member.HISTORY_COMPONENT_NAME in app
     assert member.THEMES_COMPONENT_NAME in app
     assert member.STATED_MECHANISM_COMPONENT_NAME in app
@@ -483,21 +543,22 @@ def test_the_scanned_application_carries_all_seven_laws() -> None:
     _assert_is_the_anti_convergence_law(app.get(member.ANTI_CONVERGENCE_COMPONENT_NAME))
     _assert_is_the_dead_territory_law(app.get(member.DEAD_TERRITORY_COMPONENT_NAME))
     _assert_is_the_diagnosis_law(app.get(member.DIAGNOSIS_COMPONENT_NAME))
+    _assert_is_the_guidance_law(app.get(member.GUIDANCE_COMPONENT_NAME))
     _assert_is_the_history_law(app.get(member.HISTORY_COMPONENT_NAME))
     _assert_is_the_theme_law(app.get(member.THEMES_COMPONENT_NAME))
     _assert_is_the_mechanism_law(app.get(member.STATED_MECHANISM_COMPONENT_NAME))
 
 
-def test_the_seven_laws_stay_contiguous_in_the_name_sorted_order() -> None:
+def test_the_eight_laws_stay_contiguous_in_the_name_sorted_order() -> None:
     # ``app.order`` is name-sorted, so the prefixed names are what keep the
-    # member's seven components together in the category they belong to rather
-    # than scattered by whatever the prefixes happened to be.  The seven names
+    # member's eight components together in the category they belong to rather
+    # than scattered by whatever the prefixes happened to be.  The eight names
     # sort as ``signal-agent`` < ``signal-agent-anti-convergence`` <
     # ``signal-agent-dead-territory`` < ``signal-agent-diagnosis`` <
-    # ``signal-agent-history`` < ``signal-agent-stated-mechanism`` <
-    # ``signal-agent-themes``, so feature 210's gate lands immediately after
-    # feature 205's law — and the seven are contiguous, with no unrelated
-    # component wedged between them.
+    # ``signal-agent-guidance`` < ``signal-agent-history`` <
+    # ``signal-agent-stated-mechanism`` < ``signal-agent-themes``, so feature
+    # 210's gate lands immediately after feature 205's law — and the eight are
+    # contiguous, with no unrelated component wedged between them.
     app = create_app(MEMBER_SRC, registry=Registration())
     order = list(app.order)
     positions = sorted(order.index(name) for name in (
@@ -505,6 +566,7 @@ def test_the_seven_laws_stay_contiguous_in_the_name_sorted_order() -> None:
         member.ANTI_CONVERGENCE_COMPONENT_NAME,
         member.DEAD_TERRITORY_COMPONENT_NAME,
         member.DIAGNOSIS_COMPONENT_NAME,
+        member.GUIDANCE_COMPONENT_NAME,
         member.HISTORY_COMPONENT_NAME,
         member.STATED_MECHANISM_COMPONENT_NAME,
         member.THEMES_COMPONENT_NAME,
@@ -517,14 +579,16 @@ def test_the_seven_laws_stay_contiguous_in_the_name_sorted_order() -> None:
         positions[0] + 4,
         positions[0] + 5,
         positions[0] + 6,
+        positions[0] + 7,
     ]
     assert order[positions[0]] == member.COMPONENT_NAME
     assert order[positions[1]] == member.ANTI_CONVERGENCE_COMPONENT_NAME
     assert order[positions[2]] == member.DEAD_TERRITORY_COMPONENT_NAME
     assert order[positions[3]] == member.DIAGNOSIS_COMPONENT_NAME
-    assert order[positions[4]] == member.HISTORY_COMPONENT_NAME
-    assert order[positions[5]] == member.STATED_MECHANISM_COMPONENT_NAME
-    assert order[positions[6]] == member.THEMES_COMPONENT_NAME
+    assert order[positions[4]] == member.GUIDANCE_COMPONENT_NAME
+    assert order[positions[5]] == member.HISTORY_COMPONENT_NAME
+    assert order[positions[6]] == member.STATED_MECHANISM_COMPONENT_NAME
+    assert order[positions[7]] == member.THEMES_COMPONENT_NAME
 
 
 def test_the_theme_component_survives_a_second_composition() -> None:
@@ -893,6 +957,84 @@ def test_the_history_verdict_is_a_value_rather_than_a_raise() -> None:
                           "truncated": True}])
     assert refusal.complete is False
     with pytest.raises(member.TruncatedHistoryError):
+        refusal.require()
+
+
+# -- Feature 208's component ----------------------------------------------------
+
+
+def test_the_member_registers_the_guidance_gate_under_its_own_name() -> None:
+    # The registry is keyed by name, so this prefix is not cosmetic: a builder
+    # that registered "signal-agent" an eighth time would *replace* feature
+    # 205's law rather than sit beside it — and a builder that registered
+    # "signal-agent-diagnosis" or "signal-agent-history" would replace
+    # feature 209's law or feature 206's.  Asserted against the spec's plugin
+    # namespace (the feature belongs to ``signal-agent``) and against the
+    # sibling names it must not take.
+    assert member.GUIDANCE_COMPONENT_NAME == "signal-agent-guidance"
+    assert member.GUIDANCE_COMPONENT_NAME != member.COMPONENT_NAME
+    for other in (
+        member.ANTI_CONVERGENCE_COMPONENT_NAME,
+        member.DEAD_TERRITORY_COMPONENT_NAME,
+        member.DIAGNOSIS_COMPONENT_NAME,
+        member.HISTORY_COMPONENT_NAME,
+        member.STATED_MECHANISM_COMPONENT_NAME,
+        member.THEMES_COMPONENT_NAME,
+    ):
+        assert member.GUIDANCE_COMPONENT_NAME != other, other
+
+
+def test_the_guidance_component_survives_a_second_composition() -> None:
+    # The submodule-registration hazard, checked on the *second* application:
+    # a ``@register`` outside ``__init__.py`` fires once and drops out.
+    first = create_app(MEMBER_SRC, registry=Registration())
+    second = create_app(MEMBER_SRC, registry=Registration())
+    assert member.GUIDANCE_COMPONENT_NAME in first
+    assert member.GUIDANCE_COMPONENT_NAME in second
+    _assert_is_the_guidance_law(second.get(member.GUIDANCE_COMPONENT_NAME))
+
+
+def test_the_guidance_builder_takes_no_arguments() -> None:
+    # The factory's protocol: a zero-argument builder.  It reads no committed
+    # artifact and no environment at all, so it composes in any process — the
+    # member's fourth builder of feature 205's shape, beside three that compile
+    # a document and one that resolves a store.
+    from app.module_loader import scan_components
+
+    builders = {
+        component.name: component.builder
+        for component in scan_components(MEMBER_SRC, registry=Registration())
+    }
+    assert builders[member.GUIDANCE_COMPONENT_NAME].__name__ == (
+        "build_prompt_guidance"
+    )
+    assert list(
+        inspect.signature(builders[member.GUIDANCE_COMPONENT_NAME]).parameters
+    ) == []
+
+
+def test_the_guidance_builder_has_no_drifted_artifact_to_fall_back_from() -> None:
+    # No `except` branch, and that is the feature rather than an omission:
+    # features 212's, 213's and 210's builders each compile a committed
+    # document and therefore each need a failure-as-a-value answer, while
+    # feature 208's gate compiles nothing — what counts as injected guidance
+    # is a declaration the prompt's own parts carry.  There is no symbol in
+    # this package whose absence degrades the gate, because there is no
+    # artifact for it to read.  What this asserts is the positive half — the
+    # composed gate answers a prompt, immediately, before any agent is called.
+    gate = member.build_prompt_guidance()
+    assert gate.unguided(_UNGUIDED_PARTS) is True
+    assert gate.unguided(_GUIDED_PARTS) is False
+
+
+def test_the_guidance_verdict_is_a_value_rather_than_a_raise() -> None:
+    # The feature's shape, asserted on the composed gate: a caller measuring
+    # its assemblies cannot do that through an exception, so the refusal is
+    # the returned value and ``require`` is the one place it raises.
+    gate = member.build_prompt_guidance()
+    refusal = gate.admit(_GUIDED_PARTS)
+    assert refusal.admitted is False
+    with pytest.raises(member.InjectedGuidanceError):
         refusal.require()
 
 
@@ -1411,3 +1553,78 @@ def test_the_history_seat_is_reachable_by_its_hyphenated_path() -> None:
     assert history_seat.__name__ == "app.modules.signal-agent.history"
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("app.modules.signal_agent.history")
+
+
+# -- The guidance seat ----------------------------------------------------------
+
+
+def test_the_guidance_seat_names_line_up() -> None:
+    assert guidance_seat.COMPONENT_NAME == (
+        member.GUIDANCE_COMPONENT_NAME
+    ) == "signal-agent-guidance"
+
+
+def test_the_guidance_seat_answers_the_composed_law() -> None:
+    app = create_app(MEMBER_SRC, registry=Registration())
+    gate = guidance_seat.prompt_guidance_component(app)
+    _assert_is_the_guidance_law(gate)
+
+
+def test_the_guidance_seat_returns_none_when_nothing_is_registered() -> None:
+    # An absent component is a discoverable state, not an exception — and this
+    # seat's ``None`` must not be read as either of feature 208's two answers.
+    # Read as "the prompt is unguided" it ships a prompt nobody screened,
+    # which is PRD §C3's *"most implementations get it backwards"* arriving
+    # through the app package's own seam; read as "it carries guidance" it
+    # blocks a round on the strength of a component that is not there.  Both
+    # are the law's own returned value — ``guidance.admit(prompt)`` — rather
+    # than this ``None``, which is a statement about the scan.
+    empty = Application(components={}, order=())
+    assert guidance_seat.prompt_guidance_component(empty) is None
+
+
+def test_the_guidance_seat_does_not_import_the_member_at_module_scope() -> None:
+    # The same two-sided assertion the other seven seats get, for the same
+    # reason: the app package must not depend on any workspace member at
+    # import time, and the member's type must still be *present* under the
+    # guard or the typing the guard exists for was lost.
+    import ast
+
+    tree = ast.parse(inspect.getsource(guidance_seat))
+    live: list[str] = []
+    guarded: list[str] = []
+
+    def _collect(nodes, into: list[str]) -> None:
+        for node in nodes:
+            if isinstance(node, ast.If) and "TYPE_CHECKING" in ast.dump(node.test):
+                for nested in node.body:
+                    _collect([nested], guarded)
+                continue
+            if isinstance(node, ast.Import):
+                into.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                into.append(node.module or "")
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    _collect(child.body, into)
+
+    _collect(tree.body, live)
+
+    assert not any(name.startswith("signal_agent") for name in live), live
+    assert "signal_agent" in guarded, guarded
+
+
+def test_the_guidance_seat_exports_only_the_component_accessor() -> None:
+    # Asserted as an exact set: the failure this guards against is the seat
+    # growing a re-export of the member's verdict, reasons, codes or the
+    # parts an admitted prompt carries.
+    assert set(guidance_seat.__all__) == {
+        "COMPONENT_NAME",
+        "prompt_guidance_component",
+    }
+
+
+def test_the_guidance_seat_is_reachable_by_its_hyphenated_path() -> None:
+    assert guidance_seat.__name__ == "app.modules.signal-agent.guidance"
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("app.modules.signal_agent.guidance")

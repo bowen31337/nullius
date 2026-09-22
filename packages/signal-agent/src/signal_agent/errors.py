@@ -215,6 +215,36 @@ state for their own trees:
   untested assumption §14.1:773 says *"should be measured before it is relied
   on"*.
 
+* :class:`InjectedGuidanceError` — feature 208's *prompt* contract.  A round's
+  authoring prompt carries a part that declares itself summarized directional
+  guidance — a section whose declared role is guidance ("summary",
+  "lessons", "insights", ...), or whose content declares itself distilled from
+  the history — or the prompt was handed to the gate as a flat text with no
+  parts to screen at all.  PRD §C3 states the requirement this refusal is
+  about — *"Do not inject high-level directional guidance from history into
+  the prompt"* — because the paper's Figure 5 found it *underperformed* the
+  unguided version, and §14.1:773 agrees (*"Do not solve this by summarizing
+  history into guidance"*) while splitting the neighbouring failure off to
+  feature 206: truncating a proposal is a different operation from compressing
+  it into prose.  Raised by :meth:`~signal_agent.GuidanceVerdict.require` and
+  by :meth:`~signal_agent.PromptGuidanceGate.require`, and only there, on the
+  last line before the prompt is flattened and shipped.
+
+  **It is a sibling of :class:`AgentSourceError`, :class:`FlawedMechanismError`
+  and :class:`TruncatedHistoryError`, and the asymmetry is the one those
+  three state.**  The refusals under :class:`AgentSourceError` are facts about
+  *what the agent wrote*, and a caller's pre-existing
+  ``except AgentSourceError:`` handler repairs them by re-prompting — which
+  is exactly wrong here, because the agent has not been called yet and would
+  be re-prompted *with the same injected guidance*: the repair is to delete
+  the section from the prompt and re-ship, which is the assembler's job.  It
+  is a sibling of :class:`TruncatedHistoryError` rather than folded into it
+  because the two are the halves of one §C3 sentence — *"Keep history as an
+  interactive replay object, not as prose advice"* — and opposites a caller
+  must tell apart: 206's says the prompt is *missing* the history's wholeness,
+  this one says it *carries* prose about it.  An operator grepping a campaign
+  log for one must not find the other.
+
 * :class:`MechanismNodeNotRecordedError`,
   :class:`MechanismColumnError` and
   :class:`MechanismStoreUnavailableError` — the three *deployment* facts the
@@ -264,6 +294,7 @@ __all__ = [
     "DeadTerritorySetError",
     "FlawedMechanismError",
     "IllegalThemeError",
+    "InjectedGuidanceError",
     "MechanismColumnError",
     "MechanismConflictError",
     "MechanismNodeNotRecordedError",
@@ -735,4 +766,65 @@ class TruncatedHistoryError(SignalAgentError):
     wrote; the offending entries are **named** in the sentence and never
     quoted, because the text of a proposal belongs in §9.2's artifact
     directory rather than in a log line.
+    """
+
+
+class InjectedGuidanceError(SignalAgentError):
+    """An authoring prompt carries injected summarized directional guidance.
+
+    Raised by :meth:`~signal_agent.GuidanceVerdict.require` and
+    :meth:`~signal_agent.PromptGuidanceGate.require` — feature 208's bridge
+    between the gate's returned verdict and the exception a caller wants on
+    its last line before the prompt is flattened and shipped.  The message is
+    the gate's own sentence, opening with the code of the reason that
+    produced it — ``injected_guidance`` for a part declared as guidance by
+    its role or its provenance, ``not_prompt_parts`` for a value that carried
+    no screenable structure — so a campaign log and an operator's grep say
+    the same thing.
+
+    **What it prevents is the counterintuitive mistake.**  PRD §C3's whole
+    warning — *"This is counterintuitive and most implementations get it
+    backwards"* — is that summarizing the campaign's history into guidance
+    for the agent *feels* like an improvement and measurably is not one: the
+    paper's Figure 5 found the guided version underperformed the unguided one
+    across both paradigms, because strong semantic priors about future search
+    directions over-constrain the space and impede diverse exploration.  The
+    section this refusal names was added by an implementation that believed
+    it was helping, so the refusal carries the finding rather than a bare
+    "not allowed" — a caller reading it learns *why* the section it was proud
+    of is not in the prompt.
+
+    **It is a sibling of :class:`AgentSourceError`, not a subclass, and the
+    asymmetry is the one :class:`TruncatedHistoryError` states.**  The
+    refusals under that base are facts about *what the agent wrote*, and a
+    caller's pre-existing ``except AgentSourceError:`` handler repairs them
+    by re-prompting.  This refusal has nothing to do with what the agent
+    wrote: the agent has not been called, because the prompt it would be
+    called *with* is the defect.  Letting that handler catch it would
+    re-prompt an agent with the same injected guidance still in the prompt —
+    buying another over-constrained search from the same over-constrained
+    prompt — which is the waste this feature exists to prevent.  The repair
+    is to fix the assembler: delete the section, keep the history as the
+    interactive replay object §C3 asks for, and re-ship.
+
+    **It is a sibling of :class:`TruncatedHistoryError` and of
+    :class:`AntiConvergenceClauseError` rather than folded into either**,
+    though all three are prompt-side refusals no re-prompt repairs.  From
+    :class:`TruncatedHistoryError` it differs because §14.1:773 draws the
+    line itself: *truncating* a complete proposal and *compressing* it into
+    prose are different operations with different repairs — finish the read
+    versus delete the section — and a caller that could not tell "the history
+    arrived cut" from "somebody summarized it into advice" would not know
+    which half of the assembler to fix.  From
+    :class:`AntiConvergenceClauseError` it differs because the two are
+    opposites about the *same* prompt: that one says the prompt is *missing*
+    the one prose §C3 requires (the committed clause), and this one says it
+    *carries* the class of prose §C3 forbids.  An operator grepping a
+    campaign log for either must not find the other.
+
+    The distinct class buys the *query*: "how often did a round's prompt
+    carry injected guidance?" is the §14.1:773 instinct — measure the
+    assumption before relying on it — applied to the other side of the
+    truncation trade, and a caller that had to match message text to count it
+    would not measure it.
     """

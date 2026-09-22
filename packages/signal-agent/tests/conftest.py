@@ -29,8 +29,9 @@ provides every member) and under a bare ``pytest``.
 **What the fixtures are.**  The vocabulary the tests share: the laws this
 member owns — feature 205's authoring contract, feature 212's legal theme gate,
 feature 213's dead-territory gate, feature 211's stated-mechanism law, feature
-210's anti-convergence gate, feature 209's mechanism diagnosis and feature
-206's proposal history — and the sandbox's own admission screen.
+210's anti-convergence gate, feature 209's mechanism diagnosis, feature 206's
+proposal history and feature 208's prompt-guidance gate — and the sandbox's own
+admission screen.
 The proposals every claim in
 ``test_authoring.py`` is made about live in that file beside the claims rather
 than here — they are *text*, and several assertions are about the text itself
@@ -92,12 +93,14 @@ from signal_agent import (
     AntiConvergenceGate,
     DeadTerritoryGate,
     MechanismStore,
+    PromptGuidanceGate,
     ProposalHistory,
     SignalContract,
     SignalThemeGate,
     StatedMechanism,
     anti_convergence_gate,
     dead_territory_gate,
+    prompt_guidance_gate,
     proposal_history,
     signal_contract,
     signal_theme_gate,
@@ -195,6 +198,24 @@ def history_law() -> ProposalHistory:
     wants to use.
     """
     return proposal_history()
+
+
+@pytest.fixture
+def guidance_gate() -> PromptGuidanceGate:
+    """Feature 208's law, built directly — the same discipline as ``history_law``.
+
+    Like the history law it compiles nothing, so there is no committed document
+    to read and nothing to configure: what counts as injected guidance is a
+    declaration the prompt's own parts carry, handed in per call.  A fixture
+    rather than a bare construction inside each test so the law's shape
+    (stateless, one object serving every round) is asserted once, here, and the
+    component tests reach the composed gate separately.
+
+    ``guidance_gate`` rather than ``guidance`` for the same reason
+    ``history_law`` is not ``history``: guidance is what the law refuses, not
+    what it is.
+    """
+    return prompt_guidance_gate()
 
 
 @pytest.fixture

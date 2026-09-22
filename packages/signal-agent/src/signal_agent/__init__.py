@@ -111,6 +111,34 @@ is the *refusal* (:class:`TruncatedHistoryError`, a **sibling** of
 agent action repairs it — the agent has not been called, and the defect is in
 the run's own assembly).
 
+**Feature 208 rides an eighth seat, and it is the member's second law about
+the *input* to authoring.**  *System rejects injecting summarized directional
+guidance into the prompt, because prose priors over-constrain the search
+space* lives in :mod:`signal_agent._guidance`: no document (the prompt's own
+*declared parts* are the subject — a fact about the assembly, not a deployment
+decision), no committed artifact, and :class:`PromptGuidanceGate` — the law,
+whose ``admit`` answers as a value and whose ``require`` is the one place it
+raises.  It composes as an eighth component under
+:data:`GUIDANCE_COMPONENT_NAME`, sorting between ``signal-agent-diagnosis``
+and ``signal-agent-history`` so the eight stay contiguous.
+
+Its *shape* is §C3's one sentence — *"Keep history as an interactive replay
+object, not as prose advice"* — split with feature 206 the way §14.1:773
+splits it: 206 is the replay half (the history arrives whole) and 208 is the
+not-prose half (no part of the prompt declares itself distilled from it).
+The law reads the prompt's **declared parts** — a section whose role name is
+guidance, or whose content declares a provenance in the history — and refuses
+them as :data:`INJECTED_GUIDANCE_CODE`; a flat prompt string is refused as
+:data:`NOT_PROMPT_PARTS_CODE` rather than scanned, because a prose scan would
+refuse the very content §C3 requires — every prior ``proposal.md`` in full,
+feature 206's whole subject — the first time a proposal carried a "Summary"
+heading of its own.  That is why this member's vocabulary gained exactly one
+class for feature 208 and it is the *refusal*
+(:class:`InjectedGuidanceError`, a **sibling** of
+:class:`AgentSourceError` **and** of :class:`TruncatedHistoryError`, because
+no agent action repairs it — the agent has not been called, and the repair is
+deleting the section from the prompt).
+
 **What this member is, and what it deliberately is not.**  §14.1 gives the
 signal agent its seat — *"Signal agent, roots (depth 0-1) ... Signal agent,
 depth >= 2"* — and PRD §C3 describes it as *"a coding agent writing signal
@@ -163,7 +191,7 @@ from __future__ import annotations
 
 from app.module_loader import register
 
-from . import _dead_territory, _diagnosis, _history, _mechanism, _themes
+from . import _dead_territory, _diagnosis, _guidance, _history, _mechanism, _themes
 from ._anti_convergence import (
     ANTI_CONVERGENCE_COMPONENT_NAME,
     ANTI_CONVERGENCE_POLICY_KIND,
@@ -222,6 +250,16 @@ from ._diagnosis import (
     locate_defect,
     mechanism_diagnosis,
 )
+from ._guidance import (
+    INJECTED_GUIDANCE_CODE,
+    MAX_LISTED_INJECTIONS,
+    NOT_PROMPT_PARTS_CODE,
+    UNGUIDED_CODE,
+    GuidanceReason,
+    GuidanceVerdict,
+    PromptGuidanceGate,
+    prompt_guidance_gate,
+)
 from ._history import (
     COMPLETE_HISTORY_CODE,
     MAX_LISTED_OFFENDERS,
@@ -275,6 +313,7 @@ from .errors import (
     DeadTerritorySetError,
     FlawedMechanismError,
     IllegalThemeError,
+    InjectedGuidanceError,
     MechanismColumnError,
     MechanismConflictError,
     MechanismNodeNotRecordedError,
@@ -303,13 +342,16 @@ __all__ = [
     "DEAD_TERRITORY_POLICY_KIND",
     "DIAGNOSIS_COMPONENT_NAME",
     "FLAWED_MECHANISM_CODE",
+    "GUIDANCE_COMPONENT_NAME",
     "HISTORY_COMPONENT_NAME",
     "ILLEGAL_THEME_CODE",
+    "INJECTED_GUIDANCE_CODE",
     "LEGAL_THEMES_POLICY_KIND",
     "LEGAL_THEME_CODE",
     "LIVE_TERRITORY_CODE",
     "LOCATED_BUG_CODE",
     "MAX_LISTED_COMPLAINTS",
+    "MAX_LISTED_INJECTIONS",
     "MAX_LISTED_OFFENDERS",
     "MECHANISM_COLUMN",
     "MECHANISM_CONFLICT_CODE",
@@ -323,6 +365,7 @@ __all__ = [
     "NOT_A_ROOT_CODE",
     "NOT_A_STATEMENT_CODE",
     "NOT_A_THEME_CODE",
+    "NOT_PROMPT_PARTS_CODE",
     "NOVEL_CODE",
     "PARAMETER_TWEAK_CODE",
     "SAMPLED_HISTORY_CODE",
@@ -331,6 +374,7 @@ __all__ = [
     "STATED_MECHANISM_COMPONENT_NAME",
     "THEMES_COMPONENT_NAME",
     "TRUNCATED_HISTORY_CODE",
+    "UNGUIDED_CODE",
     "AdoptionReason",
     "AgentSourceError",
     "AntiConvergenceClause",
@@ -348,9 +392,12 @@ __all__ = [
     "DiagnosisReason",
     "DiagnosisVerdict",
     "FlawedMechanismError",
+    "GuidanceReason",
+    "GuidanceVerdict",
     "HistoryReason",
     "HistoryVerdict",
     "IllegalThemeError",
+    "InjectedGuidanceError",
     "LegalThemes",
     "LocatedDefect",
     "MechanismColumnError",
@@ -365,6 +412,7 @@ __all__ = [
     "MechanismStore",
     "MechanismStoreUnavailableError",
     "PriorProposal",
+    "PromptGuidanceGate",
     "ProposalHistory",
     "SignalAgentError",
     "SignalContract",
@@ -398,6 +446,7 @@ __all__ = [
     "locate_defect",
     "mechanism_diagnosis",
     "mechanism_digest",
+    "prompt_guidance_gate",
     "proposal_history",
     "proposal_skeleton",
     "require_contract",
@@ -501,10 +550,27 @@ DIAGNOSIS_COMPONENT_NAME = _diagnosis.DIAGNOSIS_COMPONENT_NAME
 #: :data:`DEAD_TERRITORY_COMPONENT_NAME`, :data:`STATED_MECHANISM_COMPONENT_NAME`
 #: and :data:`DIAGNOSIS_COMPONENT_NAME` are — an unprefixed ``signal-agent`` a
 #: seventh time would replace feature 205's law — and
-#: ``signal-agent-history`` sorts between ``signal-agent-diagnosis`` and
+#: ``signal-agent-history`` sorts between ``signal-agent-guidance`` and
 #: ``signal-agent-stated-mechanism`` in the name-sorted ``app.order``, so the
-#: member's seven components stay contiguous in the category they belong to.
+#: member's eight components stay contiguous in the category they belong to.
 HISTORY_COMPONENT_NAME = _history.HISTORY_COMPONENT_NAME
+
+#: The component name feature 208's gate registers under.  Imported from
+#: :mod:`signal_agent._guidance` rather than re-spelled — the ``__all__`` entry
+#: above re-exports it, so this is a name, not a second literal.  Unlike
+#: :data:`COMPONENT_NAME`, which the spec's plugin declaration owns and which
+#: this module is the single spelling of, this one is *also* the live name the
+#: submodule's own doc references and its tests assert on, and two literals for
+#: it would be the drift the single spelling exists to prevent.
+#:
+#: Prefixed, for the same reason :data:`THEMES_COMPONENT_NAME`,
+#: :data:`DEAD_TERRITORY_COMPONENT_NAME`, :data:`STATED_MECHANISM_COMPONENT_NAME`,
+#: :data:`DIAGNOSIS_COMPONENT_NAME` and :data:`HISTORY_COMPONENT_NAME` are — an
+#: unprefixed ``signal-agent`` an eighth time would replace feature 205's law —
+#: and ``signal-agent-guidance`` sorts between ``signal-agent-diagnosis`` and
+#: ``signal-agent-history`` in the name-sorted ``app.order``, so the member's
+#: eight components stay contiguous in the category they belong to.
+GUIDANCE_COMPONENT_NAME = _guidance.GUIDANCE_COMPONENT_NAME
 
 
 @register(COMPONENT_NAME)
@@ -845,3 +911,41 @@ def build_proposal_history() -> ProposalHistory:
     the refusal is still cheap.
     """
     return proposal_history()
+
+
+@register(GUIDANCE_COMPONENT_NAME)
+def build_prompt_guidance() -> PromptGuidanceGate:
+    """Contribute feature 208's law to the composed application.
+
+    The eighth component this member contributes, beside feature 205's law and
+    features 206's, 209's, 210's, 211's, 212's and 213's history, diagnosis,
+    gates and laws, each under its own name — the registry is keyed by name and
+    a later registration of any of them would *replace* that law, so a member
+    carrying eight controls carries eight components, each answering its own
+    feature's question.  Like the seven builders above it takes no arguments
+    (the factory's registration protocol) and returns a law rather than a
+    service, a session or an LLM client.
+
+    **This builder has no fallback branch, and that is the feature rather than
+    an omission.**  Features 212's, 213's and 210's builders each compile a
+    committed artifact and therefore each need a documented answer for a
+    drifted one.  Feature 208's gate compiles *nothing*: what counts as
+    injected guidance is *a declaration the prompt's own parts carry*, which
+    is a fact about the assembly handed in at call time rather than a
+    deployment decision recorded in a file.  So there is no artifact to
+    drift, no ``except`` to write, and nothing this builder can fail at.
+
+    **It is the member's fourth builder of feature 205's shape** — a law whose
+    construction computes nothing and resolves nothing, beside the two
+    artifact-compiling shapes and the store-resolving one — and for the same
+    reason: presence in the composed application must not depend on scan
+    order.  This builder imports nothing outside this package and reaches no
+    member, so the scan that puts one member's ``src/`` on ``sys.path`` at a
+    time cannot make this component absent.
+
+    Holding the handle therefore computes nothing and can fail at nothing,
+    and the first :meth:`~signal_agent.PromptGuidanceGate.admit` is where a
+    round's prompt is judged — *before* the agent is called with it, which is
+    the one place the refusal costs nothing at all.
+    """
+    return prompt_guidance_gate()
