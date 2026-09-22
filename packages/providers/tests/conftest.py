@@ -832,3 +832,130 @@ def depth_candidates():
             surcharge_threshold=flat_pricing(),
         ),
     )
+
+
+# ── Feature 196's fixtures ─────────────────────────────────────────────────────
+#
+# The root-provenance store probes feature 97's ``node`` table read-only and
+# owns its own root_serving_provider table, so what this section adds is a tree
+# to record against and the declared rotation to check the record against.
+# The database fixtures below bring ``node`` up the way a deployment does —
+# through 0118's own apply — and then plant the root the call authored, using
+# feature 203's ``plant_node`` unchanged because it assembles its statement
+# from the table's own columns.
+
+
+@pytest.fixture
+def tree_database(database_url: str) -> str:
+    """A tree holding feature 97's ``node`` table, with no nodes in it.
+
+    Revision ``0118`` has run and nothing has been expanded into it — the
+    state a recorder meets on a deployment whose discovery loop has not yet
+    placed a root, and the one whose repair
+    (:class:`providers.RootNotRecordedError`) names the expansion rather
+    than the migrations.
+
+    Deliberately 0118 **alone**: feature 196 records a root call's serving
+    provider, and nothing about that record needs 0115's authoring trio — a
+    store that demanded one would be demanding feature 203's premise for
+    feature 196's fact.  So the tree here is the one the migration that owns
+    ``node`` builds, and the root planted into it is planted by a fixture
+    that supplies the trio only where the columns exist.
+    """
+    create_schema(database_url, NODE_MIGRATION)
+    return database_url
+
+
+@pytest.fixture
+def root_call():
+    """Return a callable building one root call, and the node it is about.
+
+    The callable plants a node row at ``depth`` in a campaign of its own
+    choosing and returns the :class:`providers.RootCall` describing it — the
+    two facts the recorder will verify against the tree are *the same facts
+    the tree was given*, which is the only way a test can mean "a root call
+    that happened" rather than "a description a store might accept".
+
+    Returns ``(call, node_id)``: the call for the store, and the bare id for
+    the ``get``-side assertions and for the store's own refusals, which name
+    it.  ``depth`` defaults to ``0`` — §14.1's shallowest root — and a test
+    wanting the boundary's other end passes ``1``; a test wanting the
+    refusal passes ``2`` and plants it, because a depth call the tree
+    *agrees* about is the case the boundary is really about.
+
+    This fixture plants its own row rather than delegating to
+    :func:`plant_node`, and the reason is the store's own gate: feature 196
+    verifies a call's campaign against the tree's, so a fixture that minted
+    the campaign inside the plant and handed back only the id would leave the
+    test unable to build a call that agrees with its own tree.  The
+    statement is assembled from ``PRAGMA table_info(node)`` exactly as
+    ``plant_node``'s is, so it plants on a tree with or without 0115's trio
+    and the two fixtures cannot drift on which columns they supply.
+    """
+
+    def _plant(
+        database: str,
+        *,
+        depth: int = 0,
+        campaign_id: str | None = None,
+        identifier: str | None = None,
+    ):
+        from providers import RootCall
+
+        node = identifier or str(uuid.uuid4())
+        campaign = campaign_id or str(uuid.uuid4())
+        with closing(
+            sqlite3.connect(sqlite_path_of(database))
+        ) as connection, connection:
+            columns = ["id", "parent_id", "campaign_id", "theme_root", "depth"]
+            values: list[object] = [node, None, campaign, "macro", depth]
+            present = {
+                row[1] for row in connection.execute("PRAGMA table_info(node)")
+            }
+            for column, value in (
+                ("agent_model_id", DEFAULT_AUTHOR),
+                ("agent_sampling", DEFAULT_SAMPLING),
+            ):
+                if column in present:
+                    columns.append(column)
+                    values.append(value)
+            connection.execute(
+                f"INSERT INTO node ({', '.join(columns)}) "
+                f"VALUES ({', '.join('?' for _ in columns)})",
+                values,
+            )
+        return RootCall(node_id=node, campaign_id=campaign, depth=depth), node
+
+    return _plant
+
+
+@pytest.fixture
+def frontier_tier():
+    """§14.1's own roots row, as the declared rotation.
+
+    The two-to-three frontier families the architecture's rate card names for
+    the roots row — *"Rotate all three.  Different families, different priors,
+    different mechanisms proposed"* — spelled as :class:`providers.FrontierTier`.
+    It is test data, not a default the module carries: §14.2's own preamble
+    (*"rates move monthly … the selection logic is stable, the numbers are
+    not"*) is the reason the module declares the boundary and the membership
+    rule and never a model name, the same reason feature 198's record carries
+    no price and feature 202's carries no window.
+    """
+    from providers import FrontierProvider, FrontierTier
+
+    return FrontierTier(
+        providers=(
+            FrontierProvider(provider="anthropic", model="claude-opus-5"),
+            FrontierProvider(provider="openai", model="gpt-5.6-sol"),
+            FrontierProvider(provider="google", model="gemini-3.1-pro"),
+        )
+    )
+
+
+@pytest.fixture
+def root_serving_providers(tree_database: str):
+    """Feature 196's store, bound to the tree this test can see."""
+    from providers import RootProviderRotation
+
+    return RootProviderRotation(tree_database)

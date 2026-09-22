@@ -749,23 +749,26 @@ def test_the_member_registers_no_component_for_this_feature():
     from app.module_loader import registered_components
 
     names = [c.name for c in registered_components()]
-    # The member's four registrations, unchanged by this feature.
+    # The member's five registrations, none of them this feature's.
     assert "providers" in names
     assert "agent-model-pins" in names
     assert "depth-run-windows" in names
     assert "depth-cache-rates" in names
+    assert "root-serving-provider" in names
     assert not any("served" in name for name in names)
     # And the store this feature does not have is not half-spelled anywhere.
     assert not hasattr(providers, "SERVED_CONTEXT_TABLE")
     assert not hasattr(providers, "build_served_context")
 
 
-def test_the_seat_answers_only_its_three_services_still(app_on_the_path):
-    # The seat (app.modules.providers) exposes the three composed stores and
+def test_the_seat_answers_only_its_service_components_still(app_on_the_path):
+    # The seat (app.modules.providers) exposes the composed stores and
     # deliberately not this feature's records: a seat that re-exported a
     # criterion would be a second spelling of the member's surface, and it
     # would invite a caller to reach a contract by way of the application.
-    # Feature 199 is absent from it, and the seat's surface is unchanged.
+    # Feature 199 is absent from it — the criterion is imported directly from
+    # the member — and the seat's surface, widened since by feature 196's own
+    # store, is otherwise unchanged by this feature.
     #
     # The seat is reached through the same fixture the sibling component suites
     # use, which splices the repository root onto sys.path for the duration of
@@ -776,8 +779,11 @@ def test_the_seat_answers_only_its_three_services_still(app_on_the_path):
         "COMPONENT_NAME",
         "DEPTH_CACHE_RATES_NAME",
         "DEPTH_RUN_WINDOWS_NAME",
+        "ROOT_SERVING_PROVIDER_NAME",
         "agent_model_pins_component",
         "depth_cache_rates_component",
         "depth_run_windows_component",
+        "root_serving_providers_component",
     }
     assert not hasattr(app_on_the_path, "served_context_component")
+    assert not hasattr(app_on_the_path, "RootCallProvider")

@@ -464,6 +464,31 @@ from ._pinning import (
 from ._provider import Provider
 from ._recorder import Exchange, RecordingProvider
 from ._request import Message, Request
+from ._root import (
+    DATABASE_URL_ENV,
+    DEPTH_COLUMN,
+    MODEL_COLUMN,
+    NODE_TABLE,
+    NODE_TABLE_ID_COLUMN,
+    NODE_TABLE_REVISION,
+    RECORDED_AT_COLUMN,
+    ROOT_SERVING_PROVIDER_TABLE,
+    ROOT_TIER_MAX_DEPTH,
+    SERVING_PROVIDER_COLUMN,
+    FrontierProvider,
+    FrontierTier,
+    RootCall,
+    RootCallProvider,
+    RootProviderRotation,
+    record_root_provider,
+)
+from ._root_errors import (
+    RootNotRecordedError,
+    RootProviderConflictError,
+    RootProviderError,
+    UnknownRootProviderError,
+    UnrotatedCampaignError,
+)
 from ._sampling import (
     AGENT_SAMPLING_COLUMN,
     DEFAULT_SAMPLING,
@@ -517,8 +542,10 @@ __all__ = [
     "CAMPAIGN_TABLE",
     "CAMPAIGN_TABLE_ID_COLUMN",
     "CKPT_HASH_LENGTH",
+    "DATABASE_URL_ENV",
     "DEFAULT_SAMPLING",
     "DEPTH_CACHE_RATE_TABLE",
+    "DEPTH_COLUMN",
     "DEPTH_RUN_WINDOW_TABLE",
     "ENDPOINT_COLUMN",
     "END_AT_COLUMN",
@@ -530,15 +557,23 @@ __all__ = [
     "MEASURED_AT_COLUMN",
     "MINUTES_PER_DAY",
     "MIN_DEPTH_CONTEXT_TOKENS",
+    "MODEL_COLUMN",
     "MODEL_PIN_PARTS",
     "MODEL_PIN_REVISION",
+    "NODE_TABLE",
+    "NODE_TABLE_ID_COLUMN",
+    "NODE_TABLE_REVISION",
     "PEAK_WINDOWS_COLUMN",
     "PROVIDER_COLUMN",
     "RATE_MULTIPLE_COLUMN",
+    "RECORDED_AT_COLUMN",
+    "ROOT_SERVING_PROVIDER_TABLE",
+    "ROOT_TIER_MAX_DEPTH",
     "SAMPLING_KEYS",
     "SCHEDULED_AT_COLUMN",
     "SEED_MAX",
     "SEPARATOR",
+    "SERVING_PROVIDER_COLUMN",
     "START_AT_COLUMN",
     "SYNCHRONOUS_ENDPOINT",
     "SYNCHRONOUS_RATE_MULTIPLE",
@@ -564,6 +599,8 @@ __all__ = [
     "DepthRunWindows",
     "DepthScheduleError",
     "Exchange",
+    "FrontierProvider",
+    "FrontierTier",
     "InsufficientContextError",
     "LongContextSurchargeError",
     "MeasuredCacheRate",
@@ -585,6 +622,12 @@ __all__ = [
     "RecordingProvider",
     "Request",
     "RollingAliasError",
+    "RootCall",
+    "RootCallProvider",
+    "RootNotRecordedError",
+    "RootProviderConflictError",
+    "RootProviderError",
+    "RootProviderRotation",
     "RoutedCall",
     "RunWindow",
     "RunWindowConflictError",
@@ -597,17 +640,21 @@ __all__ = [
     "UnknownCampaignError",
     "UnknownModelError",
     "UnknownProviderError",
+    "UnknownRootProviderError",
     "UnplannedCampaignError",
     "UnpricedModelError",
+    "UnrotatedCampaignError",
     "Usage",
     "VerifiedServedContext",
     "build_agent_model_pins",
     "build_depth_cache_rates",
+    "build_root_provider_rotation",
     "choose_run_window",
     "flat_pricing",
     "hosted_api_weights",
     "measure_cache_rate",
     "published_figure",
+    "record_root_provider",
     "require_agent_ckpt_hash",
     "require_agent_model_id",
     "require_agent_sampling",
@@ -654,6 +701,23 @@ DEPTH_RUN_WINDOW_COMPONENT = "depth-run-windows"
 #: under it; the name exists so ``create_app()``'s composition order carries
 #: the interface's registration beside the store's.
 PROVIDERS_COMPONENT = "providers"
+
+#: The component name feature 196's root-serving-provider store registers
+#: under.  The plugin name plus what it contributes, on the
+#: ``agent-model-pins`` / ``depth-run-windows`` / ``depth-cache-rates``
+#: precedent for a member's later components: the interface took the bare
+#: plugin name first and every store since has spelled its own contribution.
+#: The name is *root-serving-provider* rather than *root-providers* or
+#: *root-calls* because that is the fact: the provider that **served** a root
+#: call, not the set of providers a campaign may rotate across (feature 197's
+#: ``root-rotation``, a different component under the same category) and not
+#: the calls themselves (which are feature 97's nodes).  A reader scanning the
+#: composed application's keys should be able to tell which of the three it is
+#: looking at without opening a docstring.  Spelled here so the seat
+#: (``src/app/modules/providers``) and the composed application agree on the
+#: key, with the behaviour — a test, not a shared constant — as the thing
+#: that keeps them from drifting silently.
+ROOT_SERVING_PROVIDER_COMPONENT = "root-serving-provider"
 
 
 @register(PROVIDERS_COMPONENT)
@@ -772,3 +836,39 @@ def build_depth_cache_rates() -> DepthCacheRates | None:
     until a caller measures a campaign.
     """
     return DepthCacheRates.resolve()
+
+
+@register(ROOT_SERVING_PROVIDER_COMPONENT)
+def build_root_provider_rotation() -> RootProviderRotation | None:
+    """Component builder: the store that records which provider served each root call.
+
+    Feature 196's contribution to the composed application: the
+    :class:`~providers.RootProviderRotation` store this deployment records
+    root-call provenance into and reads it back from.  Takes no arguments —
+    that is the factory's registration protocol — and resolves
+    ``DATABASE_URL`` at build time, on exactly the
+    :func:`build_depth_cache_rates` / :func:`build_depth_run_windows`
+    pattern: which provider served a root call is a deployment-bound fact
+    (the frontier tier is the deployment's own — §14.2's preamble is
+    explicit that the models move and the logic does not), so the composed
+    application carries the store for the deployment the process is
+    actually running in.
+
+    Returns ``None`` when nothing names a relational store, and that
+    ``None`` is the same refusal-to-proceed the other two stores' is
+    rather than an empty store: an empty store would answer *no provider
+    served this root* about every root, while this ``None`` says there is
+    no database to have recorded one in — and architecture §14.1 records
+    the serving provider precisely so the tree's roots can be stratified
+    by family *afterwards*, which is a reading a caller can only make of
+    rows that landed.
+
+    Never raises for the URL itself: a URL whose scheme this member cannot
+    speak is refused by name the first time an operation needs the path,
+    not here.  Construction performs no I/O — the path is resolved on first
+    use, and the member-owned ``root_serving_provider`` table is created by
+    the store's first ``record``, never by a ``get`` — so composing the
+    application never opens a database, and nothing is written until a
+    caller records a root call's provider.
+    """
+    return RootProviderRotation.resolve()
