@@ -5,7 +5,7 @@ Implements app_spec.xml, "Discovery Orchestrator & Campaigns", feature
 and null fraction before any node is expanded"* — against §5's discovery
 tree and §4.1.1's planted-null fraction.
 
-The member's surface is four modules.  :mod:`discovery.campaign` is the clip
+The member's surface is five modules.  :mod:`discovery.campaign` is the clip
 that derives φ from ``W``, §7.3's two regimes as a closed set, the frozen
 :class:`~discovery.campaign.CampaignRecord` and the store that creates one
 row in the ``campaign`` table the migration already declares.
@@ -21,9 +21,16 @@ feature 244 — *"System retries an interrupted evaluation worker
 idempotently, so spot-instance reclamation returns no duplicate ledger
 debit"* — the caller-side seam that re-runs the jobs §14's reclamation
 took away, on the same asks their interrupted attempts carried, under a
-budget the caller states.  This module re-exports all four and registers
-the one component; it carries no logic of its own, which is the same
-shape every member in this workspace takes.
+budget the caller states.  :mod:`discovery.expansion` is feature 239 —
+*"System expands a selected node by resuming its workspace, which
+creates exactly one refined signal for evaluation"* — the worker of
+record those two modules name: the callable a slot runs once per
+selected node, resuming the tree's record of it and answering one
+refined signal whose node id is derived from the parent, so a
+reclamation's re-run is the same attempt in identity.  This module
+re-exports all five and registers the one component; it carries no
+logic of its own, which is the same shape every member in this
+workspace takes.
 
 **Feature 241 adds no component, and that is a decision rather than an
 omission.**  The factory's registration protocol is for *state a deployment
@@ -65,6 +72,20 @@ would freeze a policy no campaign stated.  The member's registered
 surface stays feature 232's single store, and the campaign loop
 reaches the retry the only way the spec allows: by calling it, with
 the campaign's own width and its own tolerance for reclamation.
+
+**Feature 239 adds no component either, and its reason is its own face
+of the inherited one.**  :class:`discovery.expansion.NodeExpansion`
+*does* close over state a deployment holds — the database URL its tree
+lives in — and still composes nothing, because the other thing it
+closes over is the agent seam, and the agent is the one collaborator
+the factory cannot supply: a builder runs with no arguments, and the
+deployment's evaluator driver (the very thing 238's docstring says
+*"closes over stores and workspace handles no pickle can carry"*) is
+wired by the caller that dispatches the batch, not by composition.  A
+builder that registered an expansion with no agent would be
+registering a refusal.  The caller reaches the worker the only way the
+spec allows: by constructing it with the agent it planned to run, and
+handing it to the pool as the worker of record.
 
 **Why this member exists at all.**  The ``campaign`` table is feature
 104's (``migrations/versions/0111_campaign_table.py``) and eight stores
@@ -143,8 +164,17 @@ from .errors import (
     CampaignOrderError,
     CampaignPlanningError,
     DiscoveryError,
+    ExpansionError,
     IllegalThemeError,
     WorkerInterrupted,
+)
+from .expansion import (
+    EXPANSION_NAMESPACE,
+    NodeExpansion,
+    NodeWorkspace,
+    RefinedSignal,
+    expand_node,
+    refined_node_id,
 )
 from .retry import (
     RetriedResult,
@@ -176,6 +206,7 @@ __all__ = [
     "DATABASE_URL_ENV",
     "DEFAULT_LEGAL_THEMES",
     "DEFAULT_THEME_SET",
+    "EXPANSION_NAMESPACE",
     "ID_COLUMN",
     "ILLEGAL_THEME",
     "LEGAL_THEMES_ENV",
@@ -195,7 +226,11 @@ __all__ = [
     "CampaignRecord",
     "CampaignRecords",
     "DiscoveryError",
+    "ExpansionError",
     "IllegalThemeError",
+    "NodeExpansion",
+    "NodeWorkspace",
+    "RefinedSignal",
     "RetriedResult",
     "ThemeSet",
     "WorkerInterrupted",
@@ -203,9 +238,11 @@ __all__ = [
     "assign_theme",
     "build_campaign_records",
     "create_campaign",
+    "expand_node",
     "is_interruption",
     "legal_themes_from_env",
     "null_fraction",
+    "refined_node_id",
     "retry_interrupted",
     "run_batch",
 ]

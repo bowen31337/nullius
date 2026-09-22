@@ -109,6 +109,28 @@ class, so nothing else — not an evaluation failure (§6.1 step 11: a
 failed evaluation still consumed a hypothesis, and is a completed,
 debited, logged attempt) and not an operator's raw ``KeyboardInterrupt``
 — is ever retried as though the cloud had taken the machine.
+
+Feature 239 adds the sixth class, and it is raised by the worker of
+record the other five stand around.  :class:`ExpansionError` is the
+expansion's own refusal — *System expands a selected node by resuming
+its workspace, which creates exactly one refined signal for evaluation*
+— and it carries **both faces of that one act**, the way
+:class:`IllegalThemeError` carries both faces of its predicate: the
+*tree's* face (the ask does not name a node the tree holds — no node id
+at all, no ``node`` table, an unknown id, or a row too corrupt to be a
+workspace) and the *seam's* face (the agent did not answer exactly one
+refined signal — none, several, or a value that carries no ``code``).
+One class rather than two because the caller's repair is the same for
+both, and it is not a repair at all: the attempt fails **as a value** on
+its :class:`~discovery.workers.WorkerResult` — feature 238's *a failed
+run is a value*, feature 240's *"including failures"* — and the caller
+that reads the failure names the node every message of this class
+carries.  What this class deliberately **never** carries is the agent's
+own exception: an agent that raises passes through untouched, because
+:class:`WorkerInterrupted` must arrive as itself for
+:func:`discovery.retry.is_interruption` to classify it, and an
+evaluation failure must arrive as itself for §6.1's step 11 to have
+charged a real attempt.  The expansion wraps nothing it did not refuse.
 """
 
 from __future__ import annotations
@@ -118,6 +140,7 @@ __all__ = [
     "CampaignOrderError",
     "CampaignPlanningError",
     "DiscoveryError",
+    "ExpansionError",
     "IllegalThemeError",
     "WorkerInterrupted",
 ]
@@ -253,4 +276,41 @@ class WorkerInterrupted(DiscoveryError):
     The message is the worker's own account of the interruption; the
     retry's refusals never carry this class, and a caller that sees it
     raised knows a worker, not a seam, is speaking.
+    """
+
+
+class ExpansionError(DiscoveryError):
+    """The expansion could not create its one refined signal.
+
+    app_spec.xml feature 239: *"System expands a selected node by
+    resuming its workspace, which creates exactly one refined signal for
+    evaluation."*  This is the refusal when either half of that sentence
+    cannot be met — the *selected node's workspace* could not be resumed
+    (the ask is not a node id, the tree holds no ``node`` table, the id
+    names no row, or the row is too corrupt to be a workspace), or the
+    agent seam did not answer *exactly one* refined signal (no signal,
+    several candidates, or a value that carries no ``code``).  Every
+    message names the node the expansion was asked to expand.
+
+    Not a :class:`CampaignPlanningError` and not a
+    :class:`BatchDispatchError`, though it neighbours both: a malformed
+    *plan* is repaired by re-sending it and a malformed *dispatch* by
+    re-considering the batch, while a failed expansion is a fact about
+    one attempt — PRD §5's *"every attempt is logged to the tree with
+    its full artifact"* is where it goes (feature 240's *"including
+    failures"*), and the repair is the caller's per-node policy, not a
+    corrected re-ask.  Raised inside the worker of record, it reaches
+    the caller on :attr:`~discovery.workers.WorkerResult.error` rather
+    than through the pool: a failed run is a value, and this class is
+    one of the values a run can fail into.
+
+    Deliberately **never** wraps what the agent raised.  An agent's
+    :class:`WorkerInterrupted` must arrive as itself —
+    :func:`~discovery.retry.is_interruption` is true of exactly that
+    class, and a re-wrapped interruption would quietly stop retrying
+    (§14's reclamation would then cost a hypothesis for nothing).  An
+    agent's evaluation failure must arrive as itself for the same
+    reason from the other side: §6.1's step 11 charges it, and the tree
+    logs what actually happened.  This class speaks only for the
+    expansion's own two faces.
     """
