@@ -5,7 +5,7 @@ Implements app_spec.xml, "Discovery Orchestrator & Campaigns", feature
 and null fraction before any node is expanded"* — against §5's discovery
 tree and §4.1.1's planted-null fraction.
 
-The member's surface is six modules.  :mod:`discovery.campaign` is the clip
+The member's surface is eight modules.  :mod:`discovery.campaign` is the clip
 that derives φ from ``W``, §7.3's two regimes as a closed set, the frozen
 :class:`~discovery.campaign.CampaignRecord` and the store that creates one
 row in the ``campaign`` table the migration already declares.
@@ -33,9 +33,16 @@ attempt into the node table together with its full artifact, including
 failures"* — the act the other five exist to feed: one `node` row and
 one §9.2 artifact directory per attempt, a failure written by the same
 call as a success, and a retry refreshing the row its derived identity
-already names rather than adding a second.  This module re-exports all
-six and registers the one component; it carries no logic of its own,
-which is the same shape every member in this workspace takes.
+already names rather than adding a second.  :mod:`discovery.manifest` is
+features 242 and 243 — the termination judgment and the campaign manifest
+the reader consumes.  :mod:`discovery.planner` is feature 233 — *"System
+rejects a plan_grid implementation that inspects the current episode,
+because planning may read only prior campaign manifests"* — the boundary
+feature 229's law names and declines to check: the orchestrator runs the
+hook against the history it read and refuses one that reaches past it.
+This module re-exports all of them and registers the one component; it
+carries no logic of its own, which is the same shape every member in this
+workspace takes.
 
 **Feature 241 adds no component, and that is a decision rather than an
 omission.**  The factory's registration protocol is for *state a deployment
@@ -159,6 +166,20 @@ because §5's orchestrator is a different concern from §7's null oracle
 (the planner decides *what* to plant; the oracle plants it and keeps the
 answer secret).
 
+**Feature 233 adds no component either, and it is the limit case of the
+argument the other seven make.**  :func:`discovery.planner.plan_grid` is a
+pure function of a planning hook and the prior manifests the caller already
+holds: it closes over no database URL, opens no table, writes no row, and
+reads no clock — so the "which campaign does this hold?" question that
+disqualifies a registered manifest store cannot even be asked of it.  It is
+feature 241's *"a function wearing a component's name"* in its purest form,
+and the member's registered surface stays feature 232's single store.  The
+planning hook reaches its history the only way the spec allows: the caller
+reads the prior manifests through
+:meth:`~discovery.manifest.CampaignManifests.completed` — feature 242's one
+authority on which campaigns are complete — and hands them to
+:func:`~discovery.planner.plan_grid` before it creates the campaign's record.
+
 **Registration is the entire wiring story.**  The module loader
 (``app.module_loader``) scans the members the root ``pyproject.toml``
 declares, imports each package, and composes whatever each package's
@@ -224,6 +245,7 @@ from .errors import (
     DiscoveryError,
     ExpansionError,
     IllegalThemeError,
+    PlanInspectionError,
     VoidCampaignError,
     WorkerInterrupted,
 )
@@ -276,6 +298,13 @@ from .persist import (
     classify_failure,
     record_attempts,
 )
+from .planner import (
+    DEMANDS_EPISODE,
+    EPISODE_SURFACE,
+    INSPECTS_EPISODE,
+    PlanContext,
+    plan_grid,
+)
 from .retry import (
     RetriedResult,
     is_interruption,
@@ -313,12 +342,15 @@ __all__ = [
     "DATABASE_URL_ENV",
     "DEFAULT_LEGAL_THEMES",
     "DEFAULT_THEME_SET",
+    "DEMANDS_EPISODE",
     "DEPTH_MAX_COLUMN",
+    "EPISODE_SURFACE",
     "EXPANSION_NAMESPACE",
     "FAIL_CLASSES",
     "FAIL_CLASS_COLUMN",
     "ID_COLUMN",
     "ILLEGAL_THEME",
+    "INSPECTS_EPISODE",
     "LEAF_COUNT_COLUMN",
     "LEGAL_THEMES_ENV",
     "MANIFEST_TABLE",
@@ -358,6 +390,8 @@ __all__ = [
     "IllegalThemeError",
     "NodeExpansion",
     "NodeWorkspace",
+    "PlanContext",
+    "PlanInspectionError",
     "RefinedSignal",
     "RetriedResult",
     "ThemeSet",
@@ -376,6 +410,7 @@ __all__ = [
     "is_interruption",
     "legal_themes_from_env",
     "null_fraction",
+    "plan_grid",
     "record_attempts",
     "refined_node_id",
     "retry_interrupted",

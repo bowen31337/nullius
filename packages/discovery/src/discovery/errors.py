@@ -193,6 +193,28 @@ the rejection is greppable by the one word that names it, and it names the
 ``calibration_status`` column the value came from, the voided campaign ids,
 and §7.4's stake — the convention this vocabulary states for
 ``illegal_theme`` and ``heterogeneous_world`` alike.
+
+**One class here is deliberately shaped differently from the rest.**
+:class:`PlanInspectionError` inherits from :class:`AttributeError` as well as
+:class:`DiscoveryError`, because it is raised from an attribute access and must
+*be* one.  Feature 233's boundary is drawn on the planning context's attribute
+protocol — :meth:`discovery.planner.PlanContext.__getattr__` refuses a reach and
+records it — and a refusal that were merely *like* an ``AttributeError`` would
+break the protocol for every caller that legitimately probes an object:
+``hasattr(ctx, "prior_campaigns")``, ``getattr(ctx, name, default)`` and
+``vars``-style inspection all dispatch on the type, and a hook that swallowed
+the reach is refused by the record regardless of which class it caught.  So the
+caller written against either vocabulary catches it: ``except AttributeError``
+(what reading a missing attribute already raises, which is what makes the
+refusal meet a hook at the spelling it used) and ``except DiscoveryError`` (what
+every other failure of this member raises) both work, and
+``isinstance(..., AttributeError)`` stays true, so code dispatching on attribute
+errors does not special-case the boundary.  This is the shape
+:class:`snapshot.SnapshotReadOnlyError` takes for its own contract — dual
+inheritance stated at module level, with the reason, rather than left for a
+reader to infer from the bases — and the reason it is worth the exception is
+that here the second base is not a convenience but the protocol the feature is
+implemented in.
 """
 
 from __future__ import annotations
@@ -205,6 +227,7 @@ __all__ = [
     "DiscoveryError",
     "ExpansionError",
     "IllegalThemeError",
+    "PlanInspectionError",
     "VoidCampaignError",
     "WorkerInterrupted",
 ]
@@ -414,6 +437,66 @@ class VoidCampaignError(DiscoveryError):
     sees the whole of what the pool would have taken rather than meeting the
     next offender on a re-run.
     """
+
+
+class PlanInspectionError(DiscoveryError, AttributeError):
+    """A planning hook reached for the current episode — or demanded it.
+
+    app_spec.xml feature 233: *"System rejects a plan_grid implementation that
+    inspects the current episode, because planning may read only prior campaign
+    manifests."*  docs/nullius-tech-architecture.md §605–§606 draws the
+    boundary — ``plan_grid`` *"runs BEFORE a campaign. May read only prior
+    campaign manifests."* — and PRD §426 states the far side of it: *"Never
+    inspects the current episode."*  Every message this class carries begins
+    with one of :mod:`discovery.planner`'s two codes, so an operator greps a log
+    for the rejection by the feature's own word, the convention §7.3's
+    ``heterogeneous_world`` and §7.4's ``void_campaign`` already follow here.
+
+    The class carries **both** faces of that one predicate — *did this
+    implementation reach for the current episode?* — split by *how*, the shape
+    :class:`IllegalThemeError` documents for its own two:
+
+    * :data:`discovery.planner.INSPECTS_EPISODE` — the hook **read** an
+      episode-shaped name off the planning context.  The plan it returned would
+      be a description of the campaign rather than a decision taken before it,
+      and §4.1.1's fraction is *fixed at planning time, not learned from the
+      run*.
+    * :data:`discovery.planner.DEMANDS_EPISODE` — the hook's **call shape**
+      requires a parameter planning does not have, so the implementation expects
+      the episode at its signature.  The same sentence read one step earlier,
+      which is why it has its own code: its repair is *take the context alone*,
+      not *stop reading the episode*.
+
+    They are one class because they are one boundary and one repair decision
+    read from either side — planning against history and nothing else — and
+    because the two refusals a caller acts on are "rewrite the hook to plan from
+    the prior manifests" and "the implementation is not admissible as a planner
+    at all", which is one judgement.
+
+    Deliberately **not** a subclass of :class:`CampaignPlanningError`, and the
+    reason is the repair rather than the shape, exactly as it is for
+    :class:`IllegalThemeError`: a malformed ask is fixed by re-sending a
+    corrected one, while an implementation that inspected the episode is fixed
+    by *rewriting the implementation* — nothing about the request was wrong and
+    nothing in the store is out of order.  So this sits beside both, and a
+    caller that must know which happened catches it rather than the base class.
+
+    The first face raises from :meth:`discovery.planner.PlanContext.__getattr__`
+    (during the reach, before returning anything to the hook) and from
+    :func:`discovery.planner.plan_grid` after the call, over the context's
+    record.  It is an :class:`AttributeError` **subclass** so the attribute
+    protocol keeps working over a context — ``hasattr`` and ``getattr`` with a
+    default behave as they always do, and a hook that swallows either is still
+    refused by the record, which is the point of keeping the record beside the
+    raise rather than instead of it.
+    """
+
+    def __init__(self, *args: object) -> None:
+        # Both bases are ``Exception`` subclasses with compatible layouts, so the
+        # default initialisation is correct; the override exists to *prove* it,
+        # because a dual-inherited error whose ``args`` were dropped would break
+        # ``str()`` for the one class this member's callers read by message.
+        super().__init__(*args)
 
 
 class AttemptLogError(DiscoveryError):

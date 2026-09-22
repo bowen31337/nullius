@@ -1,0 +1,236 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 233 (System rejects a plan_grid implementation that inspects the current episode, because planning may read only prior campaign manifests)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 233 in the existing discovery plugin
+    (packages/discovery, import name discovery): the check policy-runtime's
+    feature 229 names and declines to run. docs §605–§606 draws the planning
+    boundary verbatim — `plan_grid` "Runs BEFORE a campaign. May read only prior
+    campaign manifests." — and PRD §426 states the far side of it: "Never
+    inspects the current episode." A plan is what a campaign is *opened with*
+    (§5: one campaign = one discovery tree), so a planner that could read the
+    episode it is about to describe would be choosing the width, the depth and
+    the themes of a campaign while looking at the tree that campaign is supposed
+    to discover; §4.1.1's fraction is *fixed at planning time, not learned from
+    the run*, and the loop's anti-convergence clause assumes the plan was a
+    decision. Planning is the one call in the cycle that must run against
+    history alone.
+
+    The seam is `discovery.planner.plan_grid(hook, prior_campaigns=...,
+    max_branches=..., max_refinements=...)`. It runs four ordered steps: the ask
+    is checked for well-formedness (`CampaignPlanningError`); the hook is judged
+    on **what it requires** (`PlanInspectionError` with the `demands_episode`
+    code, for a `def plan_grid(ctx, question)` signature whose parameter list is
+    itself a request for the episode); the hook runs under a fresh `PlanContext`;
+    and the context's record is judged, refusing with the `inspects_episode`
+    code if it holds any reach. The refusal names **every** name reached, in
+    reach order, so a hook that tried several reads is told all of them rather
+    than resubmitting to learn the rest.
+
+    The central decision is **the aperture, not a filter**. The `PlanContext` a
+    hook is handed holds prior manifests and the two ceilings and *nothing
+    else*: no question, no tree, no reveal set, no frontier, no statistical
+    budget, no node ids, not even the id of the campaign being planned. There is
+    nowhere in the object the current episode *could* be — the boundary is a
+    fact about what the object is made of, rather than a predicate some later
+    path must get right. This is docs §10.2's "absent rather than filtered" law
+    — the one feature 223's `PrefixView` established — restated for a different
+    object.
+
+    The load-bearing half is the **record**, because a raise alone is walkable.
+    A hook that writes `getattr(ctx, "question", None)` swallows the
+    `AttributeError` a bare refusal would raise and quietly gets on with
+    inspecting whatever it found; a seam that only raised would therefore be a
+    seam any hook could walk through by spelling its reach defensively. So every
+    episode-shaped name is refused *and appended to a record before raising*,
+    and the seam judges the record **after the call** — which is why a
+    swallowing hook is still refused. The same judgement runs on the exception
+    path, so a hook that reached and then failed is refused as an inspection
+    (with the hook's own error as `__cause__`) while a hook that failed without
+    reaching propagates its own error untouched.
+
+    A member never imports another, so 229's `GridPlanningContext` is
+    *restated* rather than imported: `PlanContext` carries the same three reads
+    under the same field names and meanings, so a hook written against 229's
+    spelling runs against this one unmodified. The error is dual-inherited —
+    `PlanInspectionError(DiscoveryError, AttributeError)` — so the attribute
+    protocol keeps working over a context while the refusal is still catchable
+    by the member's one base class; `packages/snapshot`'s
+    `SnapshotReadOnlyError(SnapshotError, PermissionError)` is the precedent.
+
+    It adds no new `@register` component (the member's four components are
+    untouched — the seam closes over no deployment state), is import-cheap
+    (stdlib only), and does not import another workspace member. No central
+    registry, router, app factory, middleware, settings, or migration is edited;
+    the member joins by workspace-scan convention.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/* members, import names are
+      underscored slugs) / pytest (ruff + mypy conventions). The module loader
+      (src/app/module_loader.py) discovers members from the root pyproject.toml
+      `[tool.uv.workspace] members = ["packages/*"]`, imports each package so its
+      module-level `@register` fires, and composes what each `@register` builder
+      contributes under a component name. `app` (src/app) is a namespace package
+      with no `__init__.py`; the seats in src/app/modules/&lt;member&gt;/ are
+      reached by namespace import (e.g. app.modules.discovery). A member never
+      imports another member — it reaches shared shapes through `app.*`, never
+      through a sibling package's import name. Feature 232 (the campaign record)
+      is already in place and is the writer the member's stores defer to. Feature
+      229, in the *other* member, is the planning law that names feature 233 by
+      number as the owner of this boundary: it hands a hook a *synthetic empty*
+      context and asks only "did it return a non-null plan?", testing the hook
+      against a context it built itself, and cannot answer 233's question even in
+      principle. Feature 223's `PrefixView` in the snapshot member is the
+      "absent rather than filtered" precedent this feature restates.</stack>
+    <test_baseline>The repository-level suite under tests/ is collected by
+      pytest with testpaths=tests and is the graded acceptance gate; each
+      workspace member's own suite lives under packages/&lt;member&gt;/tests/ and
+      is collected under its own conftest (same-basename files collide under one
+      pytest run), and is NOT graded by the bare `uv run pytest` — a member suite
+      must be run explicitly. Measure the real numbers by running the suite
+      before relying on them: the discovery member suite is 513 passed / 1
+      skipped before this feature and 568 passed / 1 skipped after (a 569th test
+      is collected on a clean tree — the new file `test_planner.py` contributes
+      55); the repository-level `tests/` tree is 1060 passed and unmoved. The
+      repo lint is red on main (mypy absent, 163 pre-existing ruff errors), so
+      lint only the changed files and compare to a sibling: the new `planner.py`
+      and `test_planner.py` are clean, and the one I001 remaining in the touched
+      `discovery/__init__.py` block (a `THEME_ROOT_COLUMN`/`THEME_ROOTS_COLUMN`
+      swap) is pre-existing at HEAD. Note that a bare `uv run pytest tests`
+      collection needs the workspace synced (`uv sync --all-packages`); without
+      polars/pyarrow the contract modules fail to import, which is an
+      environment gap, not a regression.</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, docstrings that cite
+      app_spec.xml feature numbers and docs/nullius-tech-architecture.md sections,
+      stdlib-only computation, `@register` only in the package `__init__` (never a
+      submodule — a submodule's registration fires only on the first
+      `create_app()` of a process), degrade-don't-break composition. A member
+      never imports another workspace member. The discovery member's planning
+      path *raises* named refusals (`assign_theme`, `admit_completed_campaigns`,
+      `finish_campaign`), unlike the policy-runtime family's verdict objects —
+      this feature follows its own member. One `DiscoveryError` base so a
+      caller's single `except` catches everything, subclasses split by *the
+      repair the caller must make* rather than by which line raised, and every
+      message opens with a greppable lowercase code token. Tests assert on
+      observed behaviour with long narrative docstrings explaining the "why", and
+      a test that would iterate the module's own constant to check it agrees with
+      itself instead transcribes the vocabulary independently from the spec.
+    </conventions>
+    <constraints_vocabulary>
+      A deployment's ceiling is a committed document; this boundary is not, and
+      must not become one — a JSON file would make "may planning read the
+      episode?" a configuration edit, when §605–§606 makes it a law.
+    </constraints_vocabulary>
+  </existing_context>
+  <!-- Layout mirrors the clean main app_spec.xml: uv-workspace is what makes
+       plugin="discovery" resolve to the real packages/discovery/ and
+       src/app/modules/discovery/ trees rather than the single-package
+       src/plugins/discovery/ default. Parsed before features. -->
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Discovery Orchestrator &amp; Campaigns">
+      <feature index="233" shape="plugin" plugin="discovery" covers="cq-16" depends_on="232">
+        <description>System rejects a plan_grid implementation that inspects the current episode, because planning may read only prior campaign manifests. docs §605–§606 draws the boundary and PRD §426 states its far side ("Never inspects the current episode"); the reason is that a plan is what the campaign is *opened with* (§5: one campaign = one discovery tree), so a planner that could read the episode would be choosing the width, the depth and the themes of a campaign while looking at the tree that campaign is supposed to discover, and §4.1.1's fraction is fixed at planning time rather than learned from the run. The seam is `plan_grid(hook, *, prior_campaigns=(), max_branches=0, max_refinements=0)` in a new module `planner.py`, running four ordered steps: (1) the ask is checked for well-formedness (`CampaignPlanningError`); (2) the hook is judged on what it *requires* — a signature that takes more than the context alone is itself a demand for the episode (the `demands_episode` code); (3) the hook runs under a fresh `PlanContext`; (4) the context's record is judged and the reach refused (the `inspects_episode` code), naming every name reached in reach order. The boundary is enforced by **construction, not filtering**: the context holds prior manifests and the two ceilings and nothing else — this is docs §10.2's "absent rather than filtered" law that feature 223's `PrefixView` established, restated for a different object. It adds no new `@register` component (the seam closes over no deployment state), no store and no I/O, and it is import-cheap (stdlib only).</description>
+      </feature>
+      <feature index="233a" shape="plugin" plugin="discovery" depends_on="233">
+        <description>System hands the planning hook a context with **nowhere for the episode to be**. `PlanContext` is a `__slots__` class — deliberately not a frozen dataclass, because a frozen+slots dataclass has a non-field-write `super()` bug, the same reason feature 223's `PrefixView` writes its slots by hand — holding exactly three reads under the field names and meanings feature 229's `GridPlanningContext` fixes a hook's author against, so a hook written against 229's spelling runs against this one unmodified: `prior_campaigns` (a tuple of prior `CampaignManifest`s, sorted by campaign id, which is history and may be read), `max_branches` and `max_refinements` (the ceilings). What it deliberately does not carry is the fourth thing a hook might want: anything at all about the episode it is planning — no question, no observed set, no legal actions or roots, no metadata, no probe batch, no budget remaining, no commit, no reveal set, no tree, no nodes, no frontier, no campaign and not even the id of the campaign being planned. The context has no `__dict__` and refuses `__setattr__`/`__delattr__` outright, so it cannot be extended into one after the fact. `__eq__`/`__hash__` compare the three permitted reads, deliberately excluding the record: the record is how the context was *used*, not what it *is*.</description>
+      </feature>
+      <feature index="233b" shape="plugin" plugin="discovery" depends_on="233">
+        <description>System refuses **and records** every episode-shaped reach at the reach itself, because a refusal that only raised would be walkable. Every name outside the three permitted reads lands in `PlanContext.__getattr__`, which appends the name to the context's inspection record **before** raising `PlanInspectionError`. The order is the whole point: a hook that writes `getattr(ctx, "question", None)` swallows the `AttributeError` a bare refusal would raise and quietly gets on with inspecting whatever it found, so a seam that only raised would be a seam any hook could walk through by spelling its reach defensively. Because the record is written before the raise, the seam can judge it **after the call** and refuse the hook whatever it did with the failure — so the swallowing hook is refused just the same. The record is exposed as `context.inspections`, a tuple in reach order, and the refusal's detail names every entry: a hook that tried several reads is told all of them at once rather than one per resubmission. The same judgement runs on the exception path, which is what makes the two failure modes distinguishable. A hook that reached and subsequently failed is refused as an inspection, carrying the hook's own error as `__cause__`. A hook that failed without reaching propagates its own error untouched and unwrapped.</description>
+      </feature>
+      <feature index="233c" shape="plugin" plugin="discovery" depends_on="233">
+        <description>System distinguishes the two ways a hook asks for the episode it may not have: **reaching** for it (`INSPECTS_EPISODE`) and **demanding** it (`DEMANDS_EPISODE`). A `def plan_grid(ctx, question)` — or `def plan_grid(question, ctx)` — signature is refused before it is ever called, because a parameter list is a request: the hook has declared it cannot plan without something the boundary does not permit it to have, and running it to find out is pointless. The check is made on what the hook *requires*, not on what it is named, so a bound method is judged on the signature it actually presents; a hook whose signature cannot be read at all (some C callables) returns "unknown" and is **skipped rather than failed**, because an unreadable signature is not evidence of a demand. Both codes are module-level constants and lead every message, so an operator greps a log for the rejection by the feature's own word — the convention §7.3's `heterogeneous_world` and §7.4's `void_campaign` already follow in this member.</description>
+      </feature>
+      <feature index="233d" shape="plugin" plugin="discovery" depends_on="233">
+        <description>System refuses the **ask itself** when it is malformed, before any of the above, and refuses it as a planning failure rather than an inspection — because the two want different repairs. A bare `CampaignManifest` passed where the history belongs is accepted and wrapped as a one-element history (a caller with one campaign should not have to remember to wrap it); a `str`, `bytes`, or non-iterable is refused rather than iterated, because iterating a string yields its characters and a history of characters is a mistake the seam should name rather than feed to a hook. The two ceilings refuse `bool` and negatives for the same reason: a `True` ceiling is a `1` in disguise and a negative ceiling is not a ceiling. These raise `CampaignPlanningError` — the member's existing planning-failure class — so a caller's `except DiscoveryError` still catches everything and a caller's narrower `except PlanInspectionError` catches only the boundary, which is the member's split-by-repair discipline rather than splitting by line.</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Lives in the existing discovery member (packages/discovery) as a new module
+    `planner.py`, exporting `plan_grid`, `PlanContext`, `EPISODE_SURFACE`,
+    `INSPECTS_EPISODE` and `DEMANDS_EPISODE`, all re-exported from the package
+    `__init__` beside the manifest, theme, campaign, expansion, persist and retry
+    surfaces. `EPISODE_SURFACE` is the named vocabulary of the boundary — the
+    episode-shaped names §11's `question.*` API, §10.2's blocked pair and PRD
+    §426 put on the far side — kept as a module constant so the vocabulary is
+    reviewable in one place, while the *refusal* remains a fact about the context
+    (which carries none of those names) rather than a predicate over the
+    constant; the member's own suite transcribes the vocabulary independently
+    from the spec rather than iterating the constant, so the test cannot agree
+    with the constant whatever it says. Extends `errors.py` with
+    `PlanInspectionError(DiscoveryError, AttributeError)` — dual-inherited so the
+    attribute protocol keeps working over a context (`hasattr`,
+    `getattr(..., default)`) while the refusal stays catchable by the member's
+    one base class; the snapshot member's `SnapshotReadOnlyError(SnapshotError,
+    PermissionError)` is the precedent, and the module docstring states the
+    decision. Reuses the member's existing `CampaignPlanningError` unchanged.
+    Adds no new `@register` component: the existing discovery components are
+    untouched, because this seam closes over no deployment state. The
+    app-namespace seat (src/app/modules/discovery) is extended in its docstring
+    only, to note that feature 233's `plan_grid` is reached directly from the
+    member the way 229's `plan_grid` and 230/231's `screen_policy` are reached
+    from policy-runtime. The member does not import another workspace member:
+    feature 229's `GridPlanningContext` is restated locally rather than imported,
+    and the member's `tests/test_cross_member.py` keeps the restatement honest.
+  </integration_points>
+  <constraints>
+    The boundary must be enforced by **construction, not filtering**: the context
+    a hook is handed must have nowhere the current episode could be, which is the
+    property; a later path's predicate would not be. docs §10.2's "unrevealed
+    nodes are not present in the returned structure at all" is the law, with the
+    episode in place of the unrevealed nodes.
+    The record is not optional and is not belt-and-braces: every reach must be
+    recorded **before** it raises, and the seam must judge the record after the
+    call, so that a hook which swallows the refusal (`getattr(ctx, "question",
+    None)`) is still refused. A seam that only raised is a seam any hook can walk
+    through.
+    The refusal must name **every** name reached, in reach order, so a hook that
+    tried several reads is told all of them rather than one per resubmission.
+    Reaching and demanding must stay distinguished: a hook that failed without
+    reaching propagates its own error; a hook that reached and then failed is
+    refused as an inspection, carrying the hook's error as `__cause__`.
+    The seam must be a drop-in for a hook written against feature 229's
+    `GridPlanningContext`: same three field names, same meanings, and an
+    unreadable signature (some C callables) is skipped rather than failed.
+    `PlanInspectionError` must remain catchable by `except DiscoveryError` **and**
+    satisfy the attribute protocol — the dual base is deliberate, on the
+    precedent of the snapshot member's `SnapshotReadOnlyError`.
+    No new `@register` component is added; `@register` must live only in the
+    package `__init__`, never a submodule.
+    The member must not import another workspace member (e.g. policy-runtime,
+    snapshot); it restates 229's context locally and owns the error in its own
+    vocabulary.
+    No central registry, router, app factory, middleware, settings, or migration
+    is edited, and no migration is added; the member joins by workspace-scan
+    convention.
+    The seam must read no store and open no file — planning runs against history
+    the caller already read — and must stay import-cheap (stdlib only, nothing at
+    module scope the factory's scan pays for).
+    All existing tests across the repository-level `tests/` tree and every sibling
+    member suite must stay green — in particular feature 232's own tests and the
+    discovery member's 513 existing tests, which must not need editing for this
+    feature to land.
+  </constraints>
+  <implementation_steps>
+    <phase name="Discovery Orchestrator &amp; Campaigns">
+      Add packages/discovery/src/discovery/planner.py with `INSPECTS_EPISODE`, `DEMANDS_EPISODE`, `EPISODE_SURFACE`, `PlanContext` (hand-written `__slots__`, the three permitted reads, the recording `__getattr__`, refusing `__setattr__`/`__delattr__`) and `plan_grid` (the four ordered steps, with the exception-path judgement), plus the private helpers `_takes_the_context_alone`, `_inspection_message`, `_validated_history` and `_validated_ceiling`.
+      Add `PlanInspectionError(DiscoveryError, AttributeError)` to packages/discovery/src/discovery/errors.py, with an `__init__` override proving `args` survive, and state the dual-base decision in the module docstring beside the snapshot precedent.
+      Export the new surface from packages/discovery/src/discovery/__init__.py (no new `@register`), and update the module narrative's count and the "feature 233 adds no component" paragraph.
+      Extend the app-namespace seat src/app/modules/discovery/__init__.py docstring only.
+      Write the member's own suite packages/discovery/tests/test_planner.py — a filename distinct from every sibling member's basenames (policy-runtime owns `test_planning.py`) — pinned against the five claims: the episode is absent rather than filtered; the vocabulary is refused and recorded; a swallowing hook is still refused; reaching and demanding are distinguished; the ask itself is validated. Transcribe the episode vocabulary from §11's `question.*` API, §10.2's blocked pair and PRD §426 rather than iterating `EPISODE_SURFACE`, and check the no-I/O claim with an AST pass rather than a text search (the module's own docstring names the episode's vocabulary in prose).
+      Confirm the member's 513 existing tests still pass unedited, the repository-level `tests/` tree is unmoved, and lint only the changed files against a sibling.
+    </phase>
+  </implementation_steps>
+  <success_criteria>
+    A hook that reads the current episode — `ctx.question`, `ctx.observed`, `ctx.legal_actions`, `ctx.campaign_id`, `ctx.tree`, `ctx.frontier`, … — is refused with `inspects_episode`, naming every name it reached.
+    A hook that swallows the refusal (`getattr(ctx, "question", None)`) and returns a perfectly well-formed plan is refused anyway, and the refusal names `question`: the record, not the raise, is what makes the boundary hold.
+    A hook that declares `def plan_grid(ctx, question)` is refused with `demands_episode` **before it is called**, and a hook with an unreadable signature is skipped rather than failed.
+    A hook that reaches and then raises is refused as an inspection with the hook's own error as `__cause__`; a hook that raises without reaching propagates its own error unwrapped.
+    The context a hook is handed exposes the prior manifests and the two ceilings and nothing else; it has no `__dict__`, cannot be extended by assignment, and `context.inspections` records the reaches it refused.
+    A hook that reads only `prior_campaigns`, `max_branches` and `max_refinements` plans normally, including on empty history, and `PlanContext` compares equal to another context built from the same three reads regardless of how each was used.
+    A malformed ask (a `str`/`bytes` history, a non-iterable, a `bool` or negative ceiling) is refused with `CampaignPlanningError`, while a single bare `CampaignManifest` is accepted and wrapped; `except DiscoveryError` catches both families.
+    The seam reads no store and opens no file, and needs no migration and no new component; the discovery member joins by workspace-scan convention with no edit to a central registry, router, app factory, middleware, settings, or migration, and does not import another workspace member.
+    Feature 232's existing tests and the discovery member's 513 existing tests pass unedited, and the member's own suite is green.
+  </success_criteria>
+</project_specification>

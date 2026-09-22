@@ -12,6 +12,17 @@ the composed replay pool?*; feature 122's gate seat
 gate?*; this one answers the same shape of question for the discovery
 member's first and only component: *what is the composed campaign store?*
 
+**The seat is not the whole of the member, and this one is deliberately
+narrow.**  The member also exposes the planning seam — feature 233's
+:func:`discovery.planner.plan_grid`, which runs a policy's planning hook
+against the prior campaign manifests and refuses one that reaches for the
+current episode — reached directly from :mod:`discovery` exactly as the
+policy-runtime member's ``plan_grid`` (229) and ``screen_policy`` (230/231)
+are reached from theirs.  It adds no component and so has no seat: a seat
+exists to answer *what did composition build for this deployment?*, and this
+seam closes over no deployment state at all.  A reader looking for it will
+not find it here, which is why this paragraph is here rather than nothing.
+
 **The seat's ``None`` is about the deployment, not about the member.**
 ``None`` means *nothing named a database* — ``DATABASE_URL`` is unset, so
 there is no table for a campaign row to land in.  It does **not** mean the
