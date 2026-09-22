@@ -83,7 +83,23 @@ before the policy runs, and the policy sees only the thresholds that follow from
 it.  The immutability shape is feature 10's :class:`contract.MarketWindow`
 restated for a scalar rather than a window.
 
-Stdlib only, and import-cheap: ``json``, ``math`` and a dataclass; no
+**Every threshold is derived from that scalar, together.**  Feature 227
+(docs/nullius-tech-architecture.md §609: *"routed through a single
+``_schedule(beta) -> dict`` so every threshold moves together"*) lives in
+:mod:`.schedule` as :func:`schedule` — the one derivation point that returns
+*all* the thresholds as a single frozen mapping, keyed by :data:`SCHEDULE_KEYS`
+(the four the paper names — explore/exploit, patience, pruning aggressiveness,
+overfit aversion — always present, never a subset).  It is the counterpart of
+226's scalar, and the two share one derivation point: there is no
+``explore_threshold(beta)`` and no ``patience(beta)`` — a caller that needs a
+threshold reads it from the mapping :func:`schedule` returns, so a threshold
+reached anywhere else would be a second beta, the drift the single-scalar
+discipline exists to prevent.  A pure function of beta and nothing else — no
+store, no clock, no configuration — so two cycles opened at one scalar explore
+under identical thresholds, which is the cross-cycle legibility §609 names.  It
+is a value type in the same sense the scalar is: the mapping is read-only, so a
+threshold once derived cannot be moved, and it is not part of the ``question.*``
+surface a policy is handed.
 third-party import at module scope, so the factory's scan — which imports this
 package to fire its ``@register`` — pays nothing for the seam.
 """
@@ -124,6 +140,14 @@ from .planning import (
     PlanGridRefusal,
     plan_grid,
 )
+from .schedule import (
+    EXPLORE_EXPLOIT,
+    OVERFIT_AVERSION,
+    PATIENCE,
+    PRUNE_AGGRESSIVENESS,
+    SCHEDULE_KEYS,
+    schedule,
+)
 
 __all__ = [
     "CAMPAIGN_TREE_COMPONENT",
@@ -132,8 +156,12 @@ __all__ = [
     "CampaignNode",
     "CampaignTree",
     "EpisodeBeta",
+    "EXPLORE_EXPLOIT",
     "GridPlan",
     "GridPlanningContext",
+    "OVERFIT_AVERSION",
+    "PATIENCE",
+    "PRUNE_AGGRESSIVENESS",
     "PlanGridDecision",
     "PlanGridReason",
     "PlanGridRefusal",
@@ -144,10 +172,12 @@ __all__ = [
     "PolicyQuestion",
     "PolicyRuntimeError",
     "PolicyTreeError",
+    "SCHEDULE_KEYS",
     "find_learned_component",
     "plan_grid",
     "policy_question",
     "read_beta",
+    "schedule",
     "screen_policy",
 ]
 
