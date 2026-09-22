@@ -1,4 +1,4 @@
-"""The campaign manifest, persisted when the policy selects no batch — feature 242.
+"""The campaign manifest, persisted when the policy selects no batch — features 242 and 243.
 
 app_spec.xml, "Discovery Orchestrator &amp; Campaigns", feature 242: *System
 terminates a campaign when the policy selects no batch, persisting a campaign
@@ -53,6 +53,56 @@ authority on it — and stores it verbatim, the same read-back discipline
 feature 232 applies to its own row.  A campaign with no planning row has no
 status to carry, and is refused, because a manifest of a campaign nobody
 planned is a summary of nothing.
+
+**Feature 243 is the reader of that field, and it lives here for the reason
+feature 242's carrier does.**  The sentence is one clause — *rejects a campaign
+whose* ``calibration_status`` *is* ``VOID`` *when adding completed campaigns to
+the replay pool* — and this module is the member's whole vocabulary for
+*completed campaigns*: :class:`CampaignManifests` holds their rows and
+:func:`finish_campaign` writes them, so a second module that read the same
+table to answer the same question would be a second authority on which
+campaigns are complete, which is the drift feature 242's read-back discipline
+exists to prevent.  :func:`admit_completed_campaigns` is that clause as one
+call: the completed campaigns in, the ones the pool may take out, and a
+:class:`~discovery.errors.CampaignPlanningError` naming every campaign §7.4
+voided and refusing the batch whole.
+
+**The refusal is the batch's, not the row's, and that is what "rejects a
+campaign when adding completed campaigns" means.**  The comparison is
+:class:`CampaignManifest`'s own ``calibration_status`` against
+:data:`CALIBRATION_STATUS_VOID` — the value feature 124's guard wrote onto the
+campaign row and feature 242 carried verbatim — and a voided campaign among
+them refuses the add rather than being quietly dropped from it.  Dropping it
+would make the pool's membership the *gate's* decision about a campaign
+calibration had already indicted; refusing makes it the caller's, and the
+caller that adds campaigns to the pool is the one that must decide what to do
+about a void one (re-plan it, investigate the block length, or record that the
+pool is thin).  docs/nullius-tech-architecture.md §7.4 is the stake: *"A VOID
+campaign is excluded from the replay pool for FDR purposes.  This check is
+cheap, and skipping it means every headline number the system reports could be
+fiction."*  A gate that admitted a void campaign, or silently skipped it,
+would be that skip performed by the system rather than by a human.
+
+**What this gate does *not* do is write to the pool, and that is deliberate.**
+The ``replay_score`` table is feature 1's migration and the replay member's to
+write; nothing here inserts, updates or deletes a pool row, exactly as
+:mod:`tripwires.excise` refuses to delete from it.  The gate decides
+*membership* — which completed campaigns may be added — and the act of adding
+stays with the caller that owns the pool, so a refusal moves nothing and can be
+re-run as many times as the caller likes.  That is also why the gate reads the
+*manifest* rather than the ``campaign`` row: feature 242's row is the record of
+a termination, and a campaign that was voided *after* it finished would be a
+different fact — the pool's question is about the campaign as it was completed,
+which is what the manifest carries.
+
+**Feature 243 adds no component, and it inherits feature 242's reason exactly.**
+:func:`admit_completed_campaigns` is a judgement over values a caller already
+holds, and a gate over a set of manifests closes over no deployment state at
+all: no database URL, no store, no table of its own.  A component whose
+builder returned a function would be the "function wearing a component's name"
+:mod:`discovery.themes` names, so the member's registered surface stays feature
+232's single store and the pool's caller reaches the gate the only way the spec
+allows — by calling it, with the manifests its store read.
 
 **Termination is refused when there is no completed tree to summarize.**  The
 one ordering law this feature enforces is the mirror of feature 232's: where
@@ -124,18 +174,20 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from .errors import CampaignOrderError, CampaignPlanningError
+from .errors import CampaignOrderError, CampaignPlanningError, VoidCampaignError
 
 __all__ = [
     "BRANCH_COUNT_COLUMN",
     "CALIBRATION_STATUS_COLUMN",
+    "CALIBRATION_STATUS_OK",
+    "CALIBRATION_STATUS_VOID",
     "CAMPAIGN_ID_COLUMN",
     "CAMPAIGN_TABLE",
     "DATABASE_URL_ENV",
@@ -148,9 +200,11 @@ __all__ = [
     "REFINE_COUNT_COLUMN",
     "THEME_ROOTS_COLUMN",
     "THEME_ROOT_COLUMN",
+    "VOID_CAMPAIGN_CODE",
     "CampaignManifest",
     "CampaignManifests",
     "TreeSummary",
+    "admit_completed_campaigns",
     "finish_campaign",
 ]
 
@@ -196,6 +250,37 @@ CAMPAIGN_PK_COLUMN = "id"
 #: table, feature 124's word, stored verbatim so feature 243's replay-pool gate
 #: can compare it.
 CALIBRATION_STATUS_COLUMN = "calibration_status"
+
+#: §7.4's verdict, as the manifest carries it: a campaign whose planted nulls
+#: the KS guard found detectable.  Restated here rather than imported, for the
+#: reason this member restates every foreign spelling — no member imports
+#: another — and because the value is what feature 243's gate compares against,
+#: so the gate and the row it reads must name the same four letters.
+#: ``nulloracle.verdict.CALIBRATION_STATUS_VOID`` is where the verdict is
+#: *pronounced* (feature 124), and ``canary._void.VOID_STATUS`` spells the same
+#: word for scores; ``test_cross_member.py`` pins that agreement, since no
+#: import may reach it.
+CALIBRATION_STATUS_VOID = "VOID"
+
+#: The status a campaign carries until §7.4's guard indicts it — the
+#: ``0111`` column's own default, restated so this module names the state it
+#: *leaves* a clean campaign in rather than only the word it refuses.  Nothing
+#: here writes either status: the manifest reads the campaign row's, and this
+#: pair exists so the gate can name both sides of its comparison — the refusal
+#: that quotes the offending value, and the admission that says what a live
+#: campaign carries.
+CALIBRATION_STATUS_OK = "ok"
+
+#: The code feature 243's refusal opens with.  The spec gives this feature no
+#: ``… error message`` phrase of its own — unlike ``illegal_theme`` (212),
+#: ``forbidden_dependency`` (247) and ``pool_too_thin`` (261), whose sentences
+#: name their codes and whose refusals therefore begin with them — so the token
+#: is this member's, chosen to say the one thing an operator must read out of
+#: the line: *this campaign is void, and that is why the pool will not take
+#: it*.  It is greppable in the same spirit §7.3's ``heterogeneous_world`` and
+#: §7.4's own word are, and ``calibration_status`` — the column the value came
+#: from — is named in the message beside it.
+VOID_CAMPAIGN_CODE = "void_campaign"
 
 #: The manifest row's branch count — the number of roots (``parent_id`` is
 #: ``NULL``), each root the top of one branch the loop planted.
@@ -570,6 +655,37 @@ class CampaignManifests:
                 ),
             )
 
+    def completed(self) -> tuple[CampaignManifest, ...]:
+        """Every completed campaign's manifest this store holds, ordered by id.
+
+        The read side of the whole table, offered because feature 243's
+        replay-pool gate and feature 235's ``plan_grid`` both reason over the
+        *set* of prior manifests rather than over one campaign's: the gate
+        refuses the campaigns calibration voided when completed campaigns are
+        added to the pool (§7.4), and the planner derives the next campaign's
+        branch and refine counts from the campaigns that came before it.  Both
+        want *what has been finished here?*, which is a question this store —
+        the writer of the table those rows live in — is the authority on.
+
+        Ordered by ``campaign_id``, deliberately: a reader that walks the set
+        twice sees the same order twice, so a refusal that names offenders and
+        a plan derived from the counts are stable across runs rather than
+        dependent on SQLite's row order.  An empty tuple is the honest answer
+        for a store holding no completed campaign — the shape
+        :meth:`get`'s ``None`` takes for a single id, and not an error: a
+        deployment that has finished nothing has no completed campaigns to
+        add.  Reading creates nothing, because the store creates only its own
+        table (see :meth:`_connect`).
+        """
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                f"SELECT {CAMPAIGN_ID_COLUMN}, {CALIBRATION_STATUS_COLUMN}, "
+                f"{BRANCH_COUNT_COLUMN}, {REFINE_COUNT_COLUMN}, {LEAF_COUNT_COLUMN}, "
+                f"{NODE_COUNT_COLUMN}, {DEPTH_MAX_COLUMN}, {THEME_ROOTS_COLUMN} "
+                f"FROM {MANIFEST_TABLE} ORDER BY {CAMPAIGN_ID_COLUMN}"
+            ).fetchall()
+        return tuple(_manifest_from_row(row) for row in rows)
+
     def get(self, campaign_id: Any) -> CampaignManifest | None:
         """One campaign's stored manifest, or ``None`` when it is not held.
 
@@ -716,6 +832,137 @@ def finish_campaign(
             "termination this store cannot vouch for"
         )
     return stored
+
+
+# -- Feature 243: the replay pool's admission ------------------------------------
+
+
+def admit_completed_campaigns(
+    manifests: Iterable[Any],
+) -> tuple[CampaignManifest, ...]:
+    """The completed campaigns the replay pool may take — feature 243 as one call.
+
+    app_spec.xml feature 243: *"System rejects a campaign whose
+    ``calibration_status`` is ``VOID`` when adding completed campaigns to the
+    replay pool."*  The manifests of the campaigns a caller is about to add go
+    in; the same manifests come out, in the order given, when none of them was
+    voided; and a batch that names even one voided campaign raises
+    :class:`~discovery.errors.VoidCampaignError` — carrying the code
+    :data:`VOID_CAMPAIGN_CODE` and **every** offending campaign id — without
+    admitting any of them.
+
+    The steps, and why each is where it is:
+
+    1. **Read the batch.**  ``manifests`` is any iterable of
+       :class:`CampaignManifest` — usually what
+       :meth:`CampaignManifests.completed` returned, but a caller assembling a
+       batch by hand is equally legitimate, so a tuple and a list and a
+       generator all work and the whole batch is materialised once before any
+       judgement is made.  A value that is not a completed-campaign manifest
+       at all — a bare string, ``None``, a dict — is refused by name and by
+       position, because a gate that judged a *spelling* of a batch would be
+       comparing a status it had to guess at.
+    2. **Judge the status.**  A manifest whose ``calibration_status`` is
+       :data:`CALIBRATION_STATUS_VOID` was voided by §7.4's KS guard, and
+       docs/nullius-tech-architecture.md states what that costs: *"A VOID
+       campaign is excluded from the replay pool for FDR purposes.  This check
+       is cheap, and skipping it means every headline number the system reports
+       could be fiction."*  A campaign whose status is something else — ``'ok'``
+       for every campaign the guard has not indicted — is admitted, and
+       admission returns it **unmodified**: this gate is a judgement about a
+       campaign, never an edit of its record, the stance
+       :meth:`discovery.themes.ThemeSet.assign` takes for a theme root.
+
+    **Every offender is named at once**, in the order the batch held them, so
+    an operator learns the whole of what a batch would have poisoned rather
+    than fixing one campaign and meeting the next on a re-run — the discipline
+    :class:`~discovery.themes.ThemeSet` states for a legal set's bad terms.
+    The comparison is **exact**: ``'VOID'`` is the value feature 124 writes and
+    feature 242 carries, so ``'void'`` and ``'Void'`` are *not* treated as it.
+    Normalizing here would be this module pronouncing a verdict it only reads,
+    and the one place the spelling is fixed is the verdict module.
+
+    The class the refusal raises is :class:`~discovery.errors.VoidCampaignError`
+    and not :class:`~discovery.errors.CampaignPlanningError`, because the batch
+    is well formed and every campaign in it was planned, expanded and finished
+    correctly: nothing about the *ask* is wrong, and the repair is a judgement
+    about unusable evidence rather than a corrected re-request.  The
+    *structural* refusals below — a batch that is not a batch, an entry that is
+    not a manifest — are the other way round, and stay
+    :class:`~discovery.errors.CampaignPlanningError`: those are malformed asks,
+    refused before anything is read.
+
+    Raises nothing for an **empty batch**: a caller with no completed campaigns
+    to add has nothing to refuse, which is the same honest empty answer
+    :meth:`CampaignManifests.completed` gives for a store that holds none.
+    """
+    batch = _validated_batch(manifests)
+    refused = [
+        manifest
+        for manifest in batch
+        if manifest.calibration_status == CALIBRATION_STATUS_VOID
+    ]
+    if refused:
+        offenders = ", ".join(repr(manifest.campaign_id) for manifest in refused)
+        raise VoidCampaignError(
+            f"{VOID_CAMPAIGN_CODE}: {len(refused)} of {len(batch)} completed "
+            f"campaign(s) carry {CALIBRATION_STATUS_COLUMN}="
+            f"{CALIBRATION_STATUS_VOID!r} and must not be added to the replay "
+            f"pool — {offenders}. docs/nullius-tech-architecture.md §7.4 voids "
+            "a campaign whose planted nulls the KS guard found detectable, and "
+            "excludes it from the pool for FDR purposes: a void campaign "
+            "carries no usable calibration, and admitting one would let every "
+            "headline number derived from the pool be fiction. The pool's "
+            "membership is the caller's decision, so this batch is refused "
+            "whole rather than silently filtered — re-plan the voided "
+            "campaign(s), investigate the block length, or add the remaining "
+            "campaigns without them"
+        )
+    return batch
+
+
+def _validated_batch(manifests: Any) -> tuple[CampaignManifest, ...]:
+    """Materialise a batch of manifests, refusing anything that is not one.
+
+    The gate's one adapter, so :func:`admit_completed_campaigns` judges values
+    rather than spellings.  A bare :class:`CampaignManifest` — the single
+    campaign a caller happens to hold — is accepted and wrapped, because the
+    feature's subject is *a campaign* and refusing to judge one campaign for
+    not being a batch would be a seam making the caller's problem worse.  A
+    string is **not** iterated into characters: the same refusal
+    :class:`~discovery.themes.ThemeSet` states for a single string standing in
+    for a set of themes.
+
+    Deliberately permissive about where the batch came from — a tuple, a list,
+    a generator, a set — and strict about what is in it, because the batch's
+    *shape* is the caller's business and the batch's *contents* are this
+    feature's.
+    """
+    if isinstance(manifests, CampaignManifest):
+        return (manifests,)
+    if isinstance(manifests, (str, bytes)) or not isinstance(manifests, Iterable):
+        raise CampaignPlanningError(
+            f"{VOID_CAMPAIGN_CODE}: adding completed campaigns to the replay "
+            "pool takes a batch of campaign manifests, got "
+            f"{type(manifests).__name__}; feature 243 judges a campaign's "
+            f"{CALIBRATION_STATUS_COLUMN} before the pool takes it, and a "
+            "batch that is not a sequence of manifests is one no status could "
+            "be read from"
+        )
+    batch = tuple(manifests)
+    for position, manifest in enumerate(batch):
+        if not isinstance(manifest, CampaignManifest):
+            raise CampaignPlanningError(
+                f"{VOID_CAMPAIGN_CODE}: the batch's entry at position "
+                f"{position} is {type(manifest).__name__}, not a "
+                "CampaignManifest; feature 243 rejects a campaign whose "
+                f"{CALIBRATION_STATUS_COLUMN} is "
+                f"{CALIBRATION_STATUS_VOID!r}, and a value that is not a "
+                "completed campaign's manifest carries no status to judge — "
+                "read the campaigns with CampaignManifests.completed(), or "
+                "build their manifests with finish_campaign()"
+            )
+    return batch
 
 
 # -- The words -------------------------------------------------------------------

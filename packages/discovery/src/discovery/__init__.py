@@ -130,6 +130,20 @@ tree.  The member's registered surface stays feature 232's single store,
 and the campaign loop reaches termination the only way the spec allows:
 by calling :func:`finish_campaign`, with the campaign id it planned.
 
+**Feature 243 adds no component either, and its reason is 242's without even
+the store.**  :func:`discovery.manifest.admit_completed_campaigns` is a
+judgement over values the caller already holds — a batch of
+:class:`~discovery.manifest.CampaignManifest` — and closes over no deployment
+state at all: no database URL, no table, nothing that persists between calls.
+If a manifest *store* is already a function-wearing-a-component's-name by
+feature 242's argument, a gate over a tuple of manifests is that argument's
+limit case: there is no builder to write, because there is nothing for the
+factory to discover.  The member's registered surface stays feature 232's
+single store, and the caller that adds completed campaigns to the replay pool
+reaches the gate the only way the spec allows: by calling it, with the
+manifests its own store read through
+:meth:`~discovery.manifest.CampaignManifests.completed`.
+
 **Why this member exists at all.**  The ``campaign`` table is feature
 104's (``migrations/versions/0111_campaign_table.py``) and eight stores
 already read it — the seven null-oracle stores plus the discovery
@@ -210,6 +224,7 @@ from .errors import (
     DiscoveryError,
     ExpansionError,
     IllegalThemeError,
+    VoidCampaignError,
     WorkerInterrupted,
 )
 from .expansion import (
@@ -223,6 +238,8 @@ from .expansion import (
 from .manifest import (
     BRANCH_COUNT_COLUMN,
     CALIBRATION_STATUS_COLUMN,
+    CALIBRATION_STATUS_OK,
+    CALIBRATION_STATUS_VOID,
     CAMPAIGN_ID_COLUMN,
     CAMPAIGN_TABLE,
     DATABASE_URL_ENV,
@@ -235,9 +252,11 @@ from .manifest import (
     REFINE_COUNT_COLUMN,
     THEME_ROOTS_COLUMN,
     THEME_ROOT_COLUMN,
+    VOID_CAMPAIGN_CODE,
     CampaignManifest,
     CampaignManifests,
     TreeSummary,
+    admit_completed_campaigns,
     finish_campaign,
 )
 from .persist import (
@@ -284,6 +303,8 @@ __all__ = [
     "BRANCH_COUNT_COLUMN",
     "CALIBRATION_STATUS_COLUMN",
     "CALIBRATION_STATUS_DEFAULT",
+    "CALIBRATION_STATUS_OK",
+    "CALIBRATION_STATUS_VOID",
     "CAMPAIGN_ID_COLUMN",
     "CAMPAIGN_TABLE",
     "CAMPAIGN_TYPE_COLUMN",
@@ -317,6 +338,7 @@ __all__ = [
     "TRACE_FILENAME",
     "TYPE_D_CAMPAIGN_TYPE",
     "TYPE_R_CAMPAIGN_TYPE",
+    "VOID_CAMPAIGN_CODE",
     "WORKSPACE_COUNT_COLUMN",
     "ArtifactDirectory",
     "Attempt",
@@ -340,8 +362,10 @@ __all__ = [
     "RetriedResult",
     "ThemeSet",
     "TreeSummary",
+    "VoidCampaignError",
     "WorkerInterrupted",
     "WorkerResult",
+    "admit_completed_campaigns",
     "assign_theme",
     "attempt_node_id",
     "build_campaign_records",

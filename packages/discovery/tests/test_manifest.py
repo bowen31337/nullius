@@ -1,7 +1,8 @@
-"""Feature 242: the campaign manifest, persisted when the policy selects no batch.
+"""Features 242 and 243: the campaign manifest, and the replay pool's admission.
 
 The one place in this member that looks at an empty selection and says *the
-campaign is complete*.  The tests pin the four things the feature is about:
+campaign is complete*, and the place that reads that record back when the pool
+would take it.  The tests pin the five things the two features are about:
 
 1. **Termination is a judgement over the tree's state, not a new count.**  A
    campaign whose loop walked its tree and then selected no batch terminates
@@ -18,6 +19,11 @@ campaign is complete*.  The tests pin the four things the feature is about:
    raises :class:`CampaignOrderError` naming the campaign and the table.
 4. **The manifest is idempotent by campaign identity.**  Finishing the same
    completed campaign twice upserts one row rather than adding a second.
+5. **A campaign §7.4 voided is refused when the pool would take it.**  Feature
+   243's gate reads the *set* of completed manifests and refuses the batch
+   whole, naming every voided campaign, rather than silently filtering one out
+   — because a pool holding a void campaign makes every headline number
+   derived from it fiction, and because membership is the caller's decision.
 
 The database is brought to schema the way a deployment does — through the
 migration files, by path — because the manifest reads the ``campaign`` and
@@ -37,9 +43,11 @@ from discovery import (
     CALIBRATION_STATUS_COLUMN,
     CAMPAIGN_ID_COLUMN,
     CAMPAIGN_TABLE,
+    VOID_CAMPAIGN_CODE,
     CampaignManifest,
     CampaignManifests,
     TreeSummary,
+    admit_completed_campaigns,
     errors,
     finish_campaign,
 )
@@ -104,6 +112,28 @@ def _plant_node(database_url: str, campaign: str, *, theme_root: str, parent_id:
             (identifier, parent_id, campaign, theme_root, depth),
         )
     return identifier
+
+
+def _manifest(campaign: str, *, calibration_status: str) -> CampaignManifest:
+    """One manifest built in memory, for the gate's pure-value tests.
+
+    Feature 243's gate judges manifests, not databases, so the tests that are
+    about the *comparison* — the exact spelling, a lone manifest, a batch that
+    is not a batch — build the value directly rather than round-tripping a tree
+    through the store.  The counts are a trivial valid census: only the status
+    is load-bearing here, and a test that had to plant a tree to ask about one
+    string would be pinning the census a second time over.
+    """
+    return CampaignManifest(
+        campaign_id=campaign,
+        calibration_status=calibration_status,
+        branch_count=1,
+        refine_count=0,
+        leaf_count=1,
+        node_count=1,
+        depth_max=0,
+        theme_roots=1,
+    )
 
 
 # -- The value -------------------------------------------------------------------
@@ -545,3 +575,228 @@ def test_store_refuses_a_non_sqlite_scheme() -> None:
     """A store speaks only sqlite:///, the spec's single-machine allowance."""
     with pytest.raises(errors.CampaignPlanningError):
         CampaignManifests("postgres://localhost/db").path
+
+
+# -- Feature 243: the replay pool's admission ----------------------------------------
+
+
+def test_completed_campaigns_are_readable_as_a_set(
+    migrated_with_tree: str, campaign_id: str, plant_root
+) -> None:
+    """Every completed campaign's manifest is readable — the pool's own read.
+
+    Feature 243 judges the campaigns a caller is about to add to the replay
+    pool, and feature 235's ``plan_grid`` derives the next plan from the
+    campaigns that came before.  Both reason over the *set* of completed
+    manifests, so the store offers it, ordered by id so two reads agree.
+    """
+    other = str(uuid.uuid4())
+    for campaign, status in ((campaign_id, "ok"), (other, "VOID")):
+        _insert_campaign(migrated_with_tree, campaign, calibration_status=status)
+        root = plant_root(campaign, depth=0, theme_root="macro")
+        plant_root(campaign, parent_id=root, depth=1, theme_root="momentum")
+        finish_campaign(campaign, database_url=migrated_with_tree)
+
+    store = CampaignManifests(migrated_with_tree)
+    completed = store.completed()
+
+    assert [manifest.campaign_id for manifest in completed] == sorted(
+        [campaign_id, other]
+    )
+    assert {manifest.calibration_status for manifest in completed} == {"ok", "VOID"}
+
+
+def test_completed_is_empty_before_anything_is_finished(
+    migrated_with_tree: str,
+) -> None:
+    """A store holding no completed campaign answers an empty tuple, not an error.
+
+    The set-shaped twin of :meth:`CampaignManifests.get`'s ``None``: a
+    deployment that has finished nothing has no completed campaigns to add to
+    the pool, which is a discoverable state rather than a failure.
+    """
+    assert CampaignManifests(migrated_with_tree).completed() == ()
+
+
+def test_gate_admits_completed_campaigns_that_are_not_void(
+    migrated_with_tree: str, campaign_id: str, plant_root
+) -> None:
+    """The pool takes the campaigns calibration did not void — feature 243's happy path.
+
+    A completed campaign whose status is ``'ok'`` is admitted, and it is
+    returned **unmodified**: this gate is a judgement about a campaign, never
+    an edit of its record.
+    """
+    _insert_campaign(migrated_with_tree, campaign_id, calibration_status="ok")
+    root = plant_root(campaign_id, depth=0, theme_root="macro")
+    plant_root(campaign_id, parent_id=root, depth=1, theme_root="momentum")
+    finished = finish_campaign(campaign_id, database_url=migrated_with_tree)
+
+    admitted = admit_completed_campaigns([finished])
+
+    assert admitted == (finished,)
+    assert admitted[0].calibration_status == "ok"
+    assert admitted[0].node_count == finished.node_count
+
+
+def test_gate_refuses_a_voided_campaign(
+    migrated_with_tree: str, campaign_id: str, plant_root
+) -> None:
+    """A campaign §7.4 voided is refused when the pool would take it — feature 243.
+
+    The refusal names the campaign, carries the code the feature's sentence is
+    greppable by, and names the column the offending value came from, so an
+    operator reads *which campaign, and what about it* rather than a bare
+    status comparison.
+    """
+    _insert_campaign(migrated_with_tree, campaign_id, calibration_status="VOID")
+    root = plant_root(campaign_id, depth=0, theme_root="macro")
+    plant_root(campaign_id, parent_id=root, depth=1, theme_root="momentum")
+    voided = finish_campaign(campaign_id, database_url=migrated_with_tree)
+    assert voided.calibration_status == "VOID"  # the verdict feature 242 carried
+
+    with pytest.raises(errors.VoidCampaignError) as caught:
+        admit_completed_campaigns([voided])
+
+    message = str(caught.value)
+    assert VOID_CAMPAIGN_CODE in message
+    assert campaign_id in message
+    assert CALIBRATION_STATUS_COLUMN in message
+
+
+def test_gate_refuses_the_whole_batch_and_names_every_offender(
+    migrated_with_tree: str, plant_root
+) -> None:
+    """One voided campaign refuses the batch entire, and every offender is named.
+
+    Adding the good campaigns *around* a voided one would make the pool's
+    membership this gate's quiet decision; refusing names the whole of what the
+    batch would have poisoned, so an operator fixes all of it at once rather
+    than meeting the next offender on a re-run.
+    """
+    good, bad_one, bad_two = (str(uuid.uuid4()) for _ in range(3))
+    for campaign, status in (
+        (good, "ok"),
+        (bad_one, "VOID"),
+        (bad_two, "VOID"),
+    ):
+        _insert_campaign(migrated_with_tree, campaign, calibration_status=status)
+        root = plant_root(campaign, depth=0, theme_root="macro")
+        plant_root(campaign, parent_id=root, depth=1, theme_root="momentum")
+        finish_campaign(campaign, database_url=migrated_with_tree)
+
+    store = CampaignManifests(migrated_with_tree)
+    batch = store.completed()
+
+    with pytest.raises(errors.VoidCampaignError) as caught:
+        admit_completed_campaigns(batch)
+
+    message = str(caught.value)
+    assert bad_one in message
+    assert bad_two in message
+    assert good not in message
+    assert VOID_CAMPAIGN_CODE in message
+
+
+def test_gate_compares_the_status_exactly(campaign_id: str) -> None:
+    """``'VOID'`` is the verdict's own spelling; near-misses are not it.
+
+    Feature 124 writes ``VOID`` onto the campaign row and feature 242 carries it
+    verbatim.  This gate *reads* that verdict — it does not pronounce it — so it
+    compares the exact word and lets a differently-cased status through rather
+    than normalising a verdict it does not own.  ``'ok'`` is the migration's
+    default and the only other value the column carries.
+    """
+    for status in ("ok", "void", "Void", "VOID ", "voided"):
+        manifest = _manifest(campaign_id, calibration_status=status)
+        admitted = admit_completed_campaigns([manifest])
+        assert admitted == (manifest,), status
+
+    with pytest.raises(errors.VoidCampaignError):
+        admit_completed_campaigns([_manifest(campaign_id, calibration_status="VOID")])
+
+
+def test_gate_admits_a_single_manifest_and_an_empty_batch(campaign_id: str) -> None:
+    """A lone campaign and an empty batch are both legitimate asks.
+
+    The feature's subject is *a campaign*, so refusing to judge one for not
+    being a batch would be a seam making the caller's problem worse; and a
+    caller with no completed campaigns to add has nothing to refuse.
+    """
+    manifest = _manifest(campaign_id, calibration_status="ok")
+    assert admit_completed_campaigns(manifest) == (manifest,)
+    assert admit_completed_campaigns([]) == ()
+    assert admit_completed_campaigns(iter(())) == ()
+
+
+def test_gate_refuses_a_batch_that_is_not_a_batch(campaign_id: str) -> None:
+    """A batch that is not a sequence of manifests names no status to judge.
+
+    A bare string is refused rather than iterated character by character — the
+    same stance :class:`~discovery.themes.ThemeSet` takes for a single string
+    standing in for a set of themes — and an entry that is not a manifest is
+    refused **by position**, so the caller learns which entry to fix.
+    """
+    with pytest.raises(errors.CampaignPlanningError) as caught:
+        admit_completed_campaigns("not-a-batch")
+    assert VOID_CAMPAIGN_CODE in str(caught.value)
+
+    with pytest.raises(errors.CampaignPlanningError):
+        admit_completed_campaigns(None)
+
+    with pytest.raises(errors.CampaignPlanningError) as caught:
+        admit_completed_campaigns([_manifest(campaign_id, calibration_status="ok"), "nope"])
+    assert "position 1" in str(caught.value)
+
+
+def test_the_void_refusal_is_its_own_class_beside_the_planning_one() -> None:
+    """A void campaign's refusal is not a malformed-ask refusal — the split is the point.
+
+    ``CampaignPlanningError`` is the member's malformed-request class, refused
+    before anything is read.  Feature 243's refusal happens *after* the
+    campaign rows are read and refuses a batch that is perfectly well formed,
+    so folding it in would put two different repairs behind one ``except`` —
+    and would make an operator grepping for a mis-sequenced campaign find the
+    voided ones.  ``IllegalThemeError`` states the same rule for feature 241,
+    and this pins feature 243's instance of it.
+
+    Both are still ``DiscoveryError``, so the member's one-``except`` property
+    holds for the whole orchestrator path.
+    """
+    assert issubclass(errors.VoidCampaignError, errors.DiscoveryError)
+    assert not issubclass(errors.VoidCampaignError, errors.CampaignPlanningError)
+    assert not issubclass(errors.VoidCampaignError, errors.CampaignOrderError)
+    assert not issubclass(errors.CampaignPlanningError, errors.VoidCampaignError)
+
+    # The structural refusals — a batch that is not a batch, an entry that is
+    # not a manifest — are the other way round: malformed asks, refused before
+    # anything is read, and they stay the planning class.
+    with pytest.raises(errors.CampaignPlanningError) as caught:
+        admit_completed_campaigns("not-a-batch")
+    assert not isinstance(caught.value, errors.VoidCampaignError)
+
+    with pytest.raises(errors.CampaignPlanningError) as caught:
+        admit_completed_campaigns([_manifest(str(uuid.uuid4()), calibration_status="ok"), "nope"])
+    assert not isinstance(caught.value, errors.VoidCampaignError)
+
+
+def test_the_member_exports_feature_243s_whole_vocabulary() -> None:
+    """The feature's verb, its verdict word and its code are reachable by name.
+
+    A caller adding completed campaigns to the pool needs the gate, the value
+    it refuses on and the word its refusal opens with, and all three must be
+    reachable from the member rather than by reaching into a submodule — the
+    discipline ``test_themes.py`` states for feature 241's surface.
+    """
+    import discovery as member
+
+    for name in (
+        "CALIBRATION_STATUS_OK",
+        "CALIBRATION_STATUS_VOID",
+        "VOID_CAMPAIGN_CODE",
+        "VoidCampaignError",
+        "admit_completed_campaigns",
+    ):
+        assert name in member.__all__, name
+        assert hasattr(member, name), name
+

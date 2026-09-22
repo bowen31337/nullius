@@ -160,6 +160,39 @@ operator's problem (the migration has not run, the parent was never
 planted, the URL points at the wrong file) and not the campaign loop's.
 Folding them would make the loop's per-node policy catch a store fault it
 cannot act on, and would put two different repairs behind one ``except``.
+
+Feature 243 adds the eighth class, and it is the one whose repair is about
+*evidence* rather than about a call.  :class:`VoidCampaignError` is raised
+when *"System rejects a campaign whose ``calibration_status`` is ``VOID``
+when adding completed campaigns to the replay pool"* — §7.4's verdict, read
+off the manifest feature 242 carried, refusing a batch the pool was about to
+take.  It is **not** a :class:`CampaignPlanningError`, and the reason is
+exactly the one :class:`IllegalThemeError` states above: the batch may be
+perfectly well formed and every campaign in it was planned, expanded and
+finished correctly — nothing about the *ask* is malformed, and this class is
+raised *after* the campaign rows have been read.  Re-sending a corrected ask
+is not the repair, because there is no correction to make to the request: the
+campaign is void, and what the caller must decide is what to do about that
+(re-plan it under a fresh id, investigate the block length the KS guard
+indicted, or record that the pool is thinner without it).
+
+It is not a :class:`CampaignOrderError` either, though both are "the world is
+the problem" refusals.  Ordering is a law about *when* something happened —
+feature 232's record before the first node, feature 242's manifest after the
+tree — and its repair is to repair the sequence.  This refusal is a law about
+*what the evidence is worth*, and its repair is a judgement no ordering fix
+can make: §7.4 excludes a void campaign "for FDR purposes", so the campaign
+is not out of order, it is unusable.  Folding them would put two different
+repairs behind one ``except`` and would make an operator grepping for a
+mis-sequenced campaign find the voided ones, which is the failure the open
+consumer, :meth:`~discovery.themes.ThemeSet.assign`'s sibling
+:class:`IllegalThemeError`, avoids by staying its own class.
+
+Every message begins with :data:`discovery.manifest.VOID_CAMPAIGN_CODE`, so
+the rejection is greppable by the one word that names it, and it names the
+``calibration_status`` column the value came from, the voided campaign ids,
+and §7.4's stake — the convention this vocabulary states for
+``illegal_theme`` and ``heterogeneous_world`` alike.
 """
 
 from __future__ import annotations
@@ -172,6 +205,7 @@ __all__ = [
     "DiscoveryError",
     "ExpansionError",
     "IllegalThemeError",
+    "VoidCampaignError",
     "WorkerInterrupted",
 ]
 
@@ -343,6 +377,42 @@ class ExpansionError(DiscoveryError):
     reason from the other side: §6.1's step 11 charges it, and the tree
     logs what actually happened.  This class speaks only for the
     expansion's own two faces.
+    """
+
+
+class VoidCampaignError(DiscoveryError):
+    """A campaign §7.4 voided was offered to the replay pool.
+
+    app_spec.xml feature 243: *"System rejects a campaign whose
+    ``calibration_status`` is ``VOID`` when adding completed campaigns to the
+    replay pool."*  Raised by
+    :func:`discovery.manifest.admit_completed_campaigns` when a batch of
+    completed campaigns names one or more whose status is
+    :data:`discovery.manifest.CALIBRATION_STATUS_VOID` — the verdict §7.4's
+    KS guard (feature 124) wrote onto the campaign row and feature 242's
+    manifest carried.
+
+    **The ask is well formed and the campaign is unusable — that is the whole
+    of why this is its own class.**  Deliberately not a
+    :class:`CampaignPlanningError`: that class is for a malformed request,
+    refused before anything is read or written, and this refusal happens
+    *after* the campaign rows and their manifests have been read.  A
+    :class:`CampaignOrderError` would be wrong for the sibling reason — the
+    campaign is not out of sequence, it is unusable, and its repair is a
+    judgement about evidence rather than a repair of the order.  So this sits
+    beside both, on the rule :class:`IllegalThemeError` states for itself: the
+    classes split by *the repair the caller must make*, and no rewrite of the
+    request is what fixes a void campaign.
+
+    What the caller does next is its own decision, which is why this is raised
+    for the **batch** rather than quietly dropping the offending campaign:
+    re-plan the voided campaign under a fresh id, investigate the block length
+    the guard indicted, or record that the pool is thinner without it.  Every
+    message opens with :data:`discovery.manifest.VOID_CAMPAIGN_CODE`
+    (``void_campaign``), names the ``calibration_status`` column the value came
+    from, and names **every** voided campaign in the batch, so an operator
+    sees the whole of what the pool would have taken rather than meeting the
+    next offender on a re-run.
     """
 
 

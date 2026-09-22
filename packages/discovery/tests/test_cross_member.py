@@ -223,15 +223,28 @@ class TestTheRegimesAreOneClosedSet:
         assert discovery.WORKSPACE_COUNT_COLUMN == oracle.WORKSPACE_COUNT_COLUMN
         assert discovery.NULL_FRACTION_COLUMN == oracle.NULL_FRACTION_COLUMN
 
-    def test_the_fresh_status_the_planner_reports_is_the_oracles(self) -> None:
-        # 'ok' is the value this record reports for a campaign the KS guard has
-        # not read.  It is the migration's literal default and the oracle's
-        # ``CALIBRATION_STATUS_OK``; the *other* half of §7.4's vocabulary
-        # ('VOID') is feature 124's and is deliberately not spelled here.
+    def test_both_halves_of_the_status_vocabulary_agree(self) -> None:
+        # §7.4's two words, as the two members spell them.  'ok' is the
+        # migration's literal default and the oracle's
+        # ``CALIBRATION_STATUS_OK``; 'VOID' is feature 124's verdict, written by
+        # the KS guard onto the campaign row.
+        #
+        # Feature 242 deliberately spelled *neither* — it read the campaign
+        # row's status and carried it verbatim, and this class pinned the absence
+        # so that a later feature could not drift into re-pronouncing a verdict
+        # it only relays.  Feature 243 is that later feature, and it *reads* the
+        # word rather than pronouncing it: its sentence turns on the value being
+        # 'VOID' exactly, so the gate has to name the spelling it compares
+        # against.  The pin flips from "not spelled here" to "spelled here, and
+        # the same four letters" — which is the stronger assertion, because two
+        # members that disagreed about the spelling would have a gate that
+        # admits exactly the campaigns §7.4 voided.
         oracle = _nulloracle()
         assert discovery.CALIBRATION_STATUS_DEFAULT == oracle.CALIBRATION_STATUS_OK
         assert discovery.CALIBRATION_STATUS_DEFAULT == "ok"
-        assert not hasattr(discovery, "CALIBRATION_STATUS_VOID")
+        assert discovery.CALIBRATION_STATUS_OK == oracle.CALIBRATION_STATUS_OK
+        assert discovery.CALIBRATION_STATUS_VOID == oracle.CALIBRATION_STATUS_VOID
+        assert discovery.CALIBRATION_STATUS_VOID == "VOID"
 
     def test_the_store_the_oracle_declines_to_write_is_the_one_this_member_writes(
         self,
