@@ -1513,6 +1513,37 @@ class RootProviderRotation:
             "record names one call."
         )
 
+    def require_root_node(
+        self, connection: sqlite3.Connection, call: object
+    ) -> tuple[str, int]:
+        """Prove the tree holds the node a root call names, and answer its facts.
+
+        The **public** spelling of this store's tree probe, for the caller that
+        owns a connection of its own and needs the tree's own facts rather than
+        a row: feature 197's rotation assigns a root before any provenance row
+        exists, so it must ask *is this node a root of this campaign?* itself —
+        and it asks *this* method rather than reading feature 97's ``node`` table
+        a second time, because one store checks the tree for both features and a
+        second spelling of the probe is how two features come to disagree about
+        what the tree says.
+
+        ``record`` calls it, and so does feature 197's
+        :meth:`providers.RootRotation.assign` — both inside a transaction they
+        opened, which is why the connection is a parameter rather than a
+        connection this method opens: the probe, the row read and the insert are
+        one unit of work in both callers.
+
+        The call is recognised **by its parts** and re-made from this module's
+        class, so a caller holding the workspace's other copy of
+        :class:`RootCall` — or the node row itself — is admitted (see
+        :func:`_call_from_parts`).  Refuses exactly as :meth:`_require_node`
+        documents: :class:`~providers.RootNotRecordedError` for a node the tree
+        does not hold, :class:`~providers.UnrotatedCampaignError` for one the
+        tree places below the root tier, and the base for a campaign or depth
+        the tree contradicts — each naming both values.
+        """
+        return self._require_node(connection, _call_from_parts(call))
+
     def _require_node(
         self, connection: sqlite3.Connection, call: RootCall
     ) -> tuple[str, int]:

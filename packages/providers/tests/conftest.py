@@ -959,3 +959,24 @@ def root_serving_providers(tree_database: str):
     from providers import RootProviderRotation
 
     return RootProviderRotation(tree_database)
+
+
+@pytest.fixture
+def root_rotation(tree_database: str):
+    """Feature 197's store, bound to the tree this test can see.
+
+    The same database :func:`root_serving_providers` is handed, because the
+    two features are two halves of one act: feature 197 *decides* which
+    declared family serves a root and persists that decision, and feature
+    196 *records* the provider that answered — the second call goes through
+    the first, so a rotation store pointed anywhere else would be pointed at
+    a campaign whose roots the paired recorder cannot see.
+
+    Nothing is created here: :func:`tree_database` has run revision 0118 and
+    this feature's own table arrives on its first write, which is what lets
+    a test observe the "no ``root_provider_rotation`` table yet" case as the
+    first thing that happens to a fresh database.
+    """
+    from providers import RootRotation
+
+    return RootRotation(tree_database)

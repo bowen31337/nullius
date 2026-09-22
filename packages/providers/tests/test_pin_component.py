@@ -298,11 +298,15 @@ def test_the_seat_exports_its_names_and_its_callers_and_nothing_else(app_on_the_
     # the error vocabulary: those are reached from the member, which is where
     # their one spelling lives.  A seat that grew a second spelling of
     # ``ModelPin`` would invite a caller to import the value type from the app
-    # package, and the two would drift.  Eight exports, two per seated service:
+    # package, and the two would drift.  Ten exports, two per seated service:
     # feature 202's run-window store joined 203's pin store under this seat,
-    # feature 200's cache-rate store joined them, and feature 196's
-    # root-serving-provider store joined those — each contributing its
-    # component name and its accessor, and nothing else.
+    # feature 200's cache-rate store joined them, feature 196's
+    # root-serving-provider store joined those, and feature 197's
+    # root-rotation store joined *that* — each contributing its component name
+    # and its accessor, and nothing else.  The two root stores are two seats
+    # rather than one because they are two features' sentences: which provider
+    # served a root is 196's fact, which family the campaign's rotation
+    # assigned it is 197's, and a caller reading one must be able to say so.
     assert set(app_on_the_path.__all__) == {
         "COMPONENT_NAME",
         "agent_model_pins_component",
@@ -312,6 +316,8 @@ def test_the_seat_exports_its_names_and_its_callers_and_nothing_else(app_on_the_
         "depth_cache_rates_component",
         "ROOT_SERVING_PROVIDER_NAME",
         "root_serving_providers_component",
+        "ROOT_ROTATION_NAME",
+        "root_rotation_component",
     }
 
 

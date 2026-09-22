@@ -489,6 +489,22 @@ from ._root_errors import (
     UnknownRootProviderError,
     UnrotatedCampaignError,
 )
+from ._rotation import (
+    ASSIGNED_AT_COLUMN,
+    DECLARED_PROVIDERS_COLUMN,
+    ROOT_PROVIDER_ROTATION_TABLE,
+    ROTATION_DIGEST_COLUMN,
+    RootAssignment,
+    RootRotation,
+    assign_root_provider,
+    rotation_digest,
+    rotation_index,
+)
+from ._rotation_errors import (
+    RootRotationError,
+    RotationConflictError,
+    UnassignedRootProviderError,
+)
 from ._sampling import (
     AGENT_SAMPLING_COLUMN,
     DEFAULT_SAMPLING,
@@ -534,6 +550,7 @@ __all__ = [
     "AGENT_CKPT_HASH_COLUMN",
     "AGENT_MODEL_ID_COLUMN",
     "AGENT_SAMPLING_COLUMN",
+    "ASSIGNED_AT_COLUMN",
     "BATCHED_COLUMN",
     "BATCH_ENDPOINT",
     "BATCH_RATE_MULTIPLE",
@@ -543,6 +560,7 @@ __all__ = [
     "CAMPAIGN_TABLE_ID_COLUMN",
     "CKPT_HASH_LENGTH",
     "DATABASE_URL_ENV",
+    "DECLARED_PROVIDERS_COLUMN",
     "DEFAULT_SAMPLING",
     "DEPTH_CACHE_RATE_TABLE",
     "DEPTH_COLUMN",
@@ -567,8 +585,10 @@ __all__ = [
     "PROVIDER_COLUMN",
     "RATE_MULTIPLE_COLUMN",
     "RECORDED_AT_COLUMN",
+    "ROOT_PROVIDER_ROTATION_TABLE",
     "ROOT_SERVING_PROVIDER_TABLE",
     "ROOT_TIER_MAX_DEPTH",
+    "ROTATION_DIGEST_COLUMN",
     "SAMPLING_KEYS",
     "SCHEDULED_AT_COLUMN",
     "SEED_MAX",
@@ -622,12 +642,16 @@ __all__ = [
     "RecordingProvider",
     "Request",
     "RollingAliasError",
+    "RootAssignment",
     "RootCall",
     "RootCallProvider",
     "RootNotRecordedError",
     "RootProviderConflictError",
     "RootProviderError",
     "RootProviderRotation",
+    "RootRotation",
+    "RootRotationError",
+    "RotationConflictError",
     "RoutedCall",
     "RunWindow",
     "RunWindowConflictError",
@@ -637,6 +661,7 @@ __all__ = [
     "ServedContextBelowHistoryError",
     "ServedContextLimit",
     "ServedContextUnverifiedError",
+    "UnassignedRootProviderError",
     "UnknownCampaignError",
     "UnknownModelError",
     "UnknownProviderError",
@@ -646,9 +671,11 @@ __all__ = [
     "UnrotatedCampaignError",
     "Usage",
     "VerifiedServedContext",
+    "assign_root_provider",
     "build_agent_model_pins",
     "build_depth_cache_rates",
     "build_root_provider_rotation",
+    "build_root_rotation",
     "choose_run_window",
     "flat_pricing",
     "hosted_api_weights",
@@ -660,6 +687,8 @@ __all__ = [
     "require_agent_sampling",
     "require_depth_model",
     "require_served_context",
+    "rotation_digest",
+    "rotation_index",
     "route_depth_call",
     "schedule_depth_run",
     "select_depth_model",
@@ -718,6 +747,25 @@ PROVIDERS_COMPONENT = "providers"
 #: key, with the behaviour — a test, not a shared constant — as the thing
 #: that keeps them from drifting silently.
 ROOT_SERVING_PROVIDER_COMPONENT = "root-serving-provider"
+
+#: The component name feature 197's root-rotation store registers under.  The
+#: plugin name plus what it contributes, on the ``agent-model-pins`` /
+#: ``depth-run-windows`` / ``depth-cache-rates`` / ``root-serving-provider``
+#: precedent for a member's later components.
+#:
+#: *root-rotation* is the name feature 196's own constant predicted for it in as
+#: many words: *"The name is* root-serving-provider *rather than* root-rotation
+#: *or* root-calls because that is the fact: the provider that **served** a root
+#: call, not the set of providers a campaign may rotate across (feature 197's
+#: ``root-rotation``, a different component under the same category) and not the
+#: calls themselves (which are feature 97's nodes).  A reader scanning the
+#: composed application's keys should be able to tell which of the three it is
+#: looking at without opening a docstring."*  This is that third name, spelled
+#: as predicted rather than invented here.  Spelled so the seat
+#: (``src/app/modules/providers``) and the composed application agree on the
+#: key, with the behaviour — a test, not a shared constant — as the thing that
+#: keeps them from drifting silently.
+ROOT_ROTATION_COMPONENT = "root-rotation"
 
 
 @register(PROVIDERS_COMPONENT)
@@ -872,3 +920,45 @@ def build_root_provider_rotation() -> RootProviderRotation | None:
     caller records a root call's provider.
     """
     return RootProviderRotation.resolve()
+
+
+@register(ROOT_ROTATION_COMPONENT)
+def build_root_rotation() -> RootRotation | None:
+    """Component builder: the store that decides and records a campaign's root rotation.
+
+    Feature 197's contribution to the composed application: the
+    :class:`~providers.RootRotation` store this deployment assigns a campaign's
+    roots into and reads the rotation back from.  Takes no arguments — that is
+    the factory's registration protocol — and resolves ``DATABASE_URL`` at
+    build time, on exactly the :func:`build_root_provider_rotation` /
+    :func:`build_depth_cache_rates` pattern: which families a campaign rotates
+    its roots across is a deployment-bound fact (the frontier tier is the
+    deployment's own — §14.2's preamble is explicit that *"the models move and
+    the logic does not"*), so the composed application carries the store for the
+    deployment the process is actually running in.
+
+    Returns ``None`` when nothing names a relational store, and that ``None`` is
+    the same refusal-to-proceed the other stores' is rather than an empty store:
+    an empty store would answer *this campaign's roots were never assigned*
+    about every campaign, while this ``None`` says there is no database to have
+    assigned one in — and §14.1 rotates providers at roots precisely so that
+    *"different model families carry different priors and propose structurally
+    different mechanisms"*, which is a reading a caller can only make of a
+    rotation that landed.
+
+    **It is a distinct component from**
+    :data:`ROOT_SERVING_PROVIDER_COMPONENT`, and the distinction is the pair's:
+    this store holds *what was assigned* per campaign, feature 196's holds *what
+    served* per call.  A deployment that composes one and not the other is a
+    real state — the pair's
+    :meth:`~providers.RootRotation.record_root_provider` needs both, and a
+    caller that only wants to re-derive a campaign's assignment needs this one.
+
+    Never raises for the URL itself: a URL whose scheme this member cannot speak
+    is refused by name the first time an operation needs the path, not here.
+    Construction performs no I/O — the path is resolved on first use, and the
+    member-owned ``root_provider_rotation`` table is created by the store's
+    first ``assign``, never by a ``get`` — so composing the application never
+    opens a database, and nothing is written until a caller assigns a root.
+    """
+    return RootRotation.resolve()
