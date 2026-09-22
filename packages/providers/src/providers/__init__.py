@@ -214,6 +214,58 @@ a single call, not a deployment-bound fact that must land in a table (see
   question none of the other four answers: *which endpoint does this call
   go to?*  See :mod:`providers._batch_errors`.
 
+Feature 200 — *"System persists the measured cache hit rate per campaign,
+because the depth model is selected on cache-hit input price rather than
+list price"* — is §14.1's own headline lever, the one the corrected cost
+model in §14.2 ends on (*"Tiering saves ~6.5×, and the saving comes
+almost entirely from the depth role's cache-hit rate"*).  The depth role's
+cost is almost entirely re-reading a large, append-only, stable prefix,
+so *"prompt caching is worth 4–5× here.  Providers differ enormously on
+cache-hit input pricing — an order of magnitude or more …  Select the
+depth model on cache-hit price, not list price."*  Its records join the
+category's as direct imports alongside one registered component — the
+store, because a measurement that must be persisted is a fact that has to
+land in a table (see :mod:`providers._cache` for the surface's shape and
+its reasons):
+
+* :class:`CachePrice` and :class:`CachePricing` — **the configuration**:
+  one model's cache pricing (list and cache-hit input price, per million
+  tokens) and the card collecting them, stated rather than baked (§14.2's
+  own preamble: *"rates move monthly … the selection logic is stable, the
+  numbers are not"*).  Both prices are always stated — a card entry that
+  omitted the hit price would leave the selection to fall back on the
+  list, the exact failure the feature's *because* exists to refuse.
+
+* :func:`select_depth_model` and :class:`SelectedDepthModel` — **the
+  choice**: the candidate whose card entry carries the lowest cache-hit
+  input price, answered with **both** its prices so a caller sees the
+  axis the choice turned on — which is the point, because the two
+  orderings genuinely disagree (§14.2's depth row: the model with the
+  *higher* list price is 4× cheaper on the hit).  A candidate the card
+  does not price is refused as
+  :class:`~providers.UnpricedModelError`, never silently skipped and
+  never ranked on its list price.
+
+* :class:`DepthCacheRates`, :class:`MeasuredCacheRate` and
+  :func:`measure_cache_rate` — **the persistence**: the store that owns
+  the ``depth_cache_rate`` table (the bootstrap pool's member-owned-table
+  precedent, no edit to the shared migration chain), measures one
+  campaign's rate from its calls' token accounting —
+  ``cache_read_tokens ÷ input_tokens``, totalled over the usages rather
+  than accepted as a caller's ratio, because *measured* is the sentence's
+  own word — and answers the two counts and the instant the row holds
+  (the rate itself derived, never stored: two counts can be re-verified,
+  a rounded ratio agrees with nothing).
+
+* :class:`~providers.DepthCacheError` and its three subclasses
+  (:class:`~providers.UnpricedModelError`,
+  :class:`~providers.UnplannedCampaignError`,
+  :class:`~providers.CacheRateConflictError`) — a **sixth** base, for
+  the question none of the other five answers: *what does the depth
+  role's input cost on the axis it is actually spent on, and what rate
+  did this campaign's calls measure there?*  See
+  :mod:`providers._cache_errors`.
+
 The error taxonomy (:mod:`providers._errors`) is the failure modes of *this*
 seam and no other — a malformed completion, a missing provider, an unknown
 model — raised at the interface's own guardrails, never by a provider's
@@ -229,14 +281,20 @@ before the campaign spent anything on it.  Feature 202's
 reason: a scheduling that found no window, named a campaign nobody
 planned, or met a decision already made, has not called, pinned, or
 selected anything — it is the campaign's *time* that could not be
-decided.
+decided.  Feature 201's (:mod:`providers._batch_errors`) is a fifth for
+its own question, and feature 200's (:mod:`providers._cache_errors`) is
+a sixth: a selection with no price on the axis it ranks by, a
+measurement for a campaign nobody planned, or a re-measurement that
+contradicts the row it would overwrite, has not called, pinned, gated,
+timed or routed anything — it is the campaign's *money* that could not
+be decided or accounted.
 
 This package is a workspace member discovered by convention. The module loader
 (``app.module_loader``) scans the members the root ``pyproject.toml`` declares
 (``packages/*``), imports each package, and composes whatever the package's
 ``@register`` builder contributes — so the registration below is the entire
 wiring story. Nothing edits a registry, router or factory to make the provider
-plugin exist; importing this module *is* joining the application.  **Three**
+plugin exist; importing this module *is* joining the application.  **Four**
 components are registered from this one package, and the split is the split
 between the category's contract and its services.  Feature 192's
 interface (``providers``) contributes no long-lived component to the composed
@@ -254,8 +312,14 @@ store is named).  Feature 202's run-window store
 reason — a scheduling decision that must actually land in a table is a
 deployment-bound fact, not a contract a caller holds — so its builder
 resolves ``DATABASE_URL`` the same way and composes a
-:class:`DepthRunWindows` (or nothing, when no store is named).  All three
-registrations live in this ``__init__`` and none in a submodule, because a
+:class:`DepthRunWindows` (or nothing, when no store is named).  Feature
+200's cache-rate store (``depth-cache-rates``) is the same kind of service
+for the same kind of reason — a measurement that must be persisted is a
+deployment-bound fact, and the depth model's selection is justified by the
+rate the campaign's calls actually measured — so its builder resolves
+``DATABASE_URL`` the same way and composes a :class:`DepthCacheRates`
+(or nothing, when no store is named).  All four registrations live in this
+``__init__`` and none in a submodule, because a
 submodule's ``@register`` fires only on the first
 ``create_app()`` of a process and would silently drop out of every later one.
 
@@ -286,6 +350,25 @@ from ._batch import (
 from ._batch_errors import (
     BatchRoutingError,
     UnknownProviderError,
+)
+from ._cache import (
+    CACHE_READ_TOKENS_COLUMN,
+    DEPTH_CACHE_RATE_TABLE,
+    INPUT_TOKENS_COLUMN,
+    MEASURED_AT_COLUMN,
+    CachePrice,
+    CachePricing,
+    DepthCacheRates,
+    MeasuredCacheRate,
+    SelectedDepthModel,
+    measure_cache_rate,
+    select_depth_model,
+)
+from ._cache_errors import (
+    CacheRateConflictError,
+    DepthCacheError,
+    UnplannedCampaignError,
+    UnpricedModelError,
 )
 from ._ckpt import (
     AGENT_CKPT_HASH_COLUMN,
@@ -379,18 +462,22 @@ __all__ = [
     "BATCHED_COLUMN",
     "BATCH_ENDPOINT",
     "BATCH_RATE_MULTIPLE",
+    "CACHE_READ_TOKENS_COLUMN",
     "CAMPAIGN_ID_COLUMN",
     "CAMPAIGN_TABLE",
     "CAMPAIGN_TABLE_ID_COLUMN",
     "CKPT_HASH_LENGTH",
     "DEFAULT_SAMPLING",
+    "DEPTH_CACHE_RATE_TABLE",
     "DEPTH_RUN_WINDOW_TABLE",
     "ENDPOINT_COLUMN",
     "END_AT_COLUMN",
     "FLAT_AT_ANY_CONTEXT",
     "HOSTED_API_CKPT_HASH",
+    "INPUT_TOKENS_COLUMN",
     "LARGE_HISTORY_FROM_DEPTH",
     "MAX_TEMPERATURE",
+    "MEASURED_AT_COLUMN",
     "MINUTES_PER_DAY",
     "MIN_DEPTH_CONTEXT_TOKENS",
     "MODEL_PIN_PARTS",
@@ -412,10 +499,15 @@ __all__ = [
     "BatchEndpoint",
     "BatchPricing",
     "BatchRoutingError",
+    "CachePrice",
+    "CachePricing",
+    "CacheRateConflictError",
     "CkptHashConflictError",
     "CkptHashMalformedError",
     "Completion",
     "CompletionMalformedError",
+    "DepthCacheError",
+    "DepthCacheRates",
     "DepthModel",
     "DepthModelError",
     "DepthRunWindows",
@@ -423,6 +515,7 @@ __all__ = [
     "Exchange",
     "InsufficientContextError",
     "LongContextSurchargeError",
+    "MeasuredCacheRate",
     "Message",
     "ModelPin",
     "ModelPinConflictError",
@@ -446,20 +539,26 @@ __all__ = [
     "RunWindowConflictError",
     "SamplingConflictError",
     "ScheduledRun",
+    "SelectedDepthModel",
     "UnknownCampaignError",
     "UnknownModelError",
     "UnknownProviderError",
+    "UnplannedCampaignError",
+    "UnpricedModelError",
     "Usage",
     "build_agent_model_pins",
+    "build_depth_cache_rates",
     "choose_run_window",
     "flat_pricing",
     "hosted_api_weights",
+    "measure_cache_rate",
     "require_agent_ckpt_hash",
     "require_agent_model_id",
     "require_agent_sampling",
     "require_depth_model",
     "route_depth_call",
     "schedule_depth_run",
+    "select_depth_model",
 ]
 
 #: The component name this package registers its pin store under.  The plugin
@@ -471,6 +570,17 @@ __all__ = [
 #: key, with the behaviour — a test, not a shared constant — as the thing
 #: that keeps them from drifting silently.
 AGENT_MODEL_PIN_COMPONENT = "agent-model-pins"
+
+#: The component name feature 200's cache-rate store registers under.  The
+#: plugin name plus what it contributes, on the ``agent-model-pins`` /
+#: ``depth-run-windows`` precedent for a member's later components: the
+#: interface took the bare plugin name first, the pin store and the
+#: run-window store spelled their own contributions, and this one spells
+#: its the same way.  Spelled here so the seat
+#: (``src/app/modules/providers``) and the composed application agree on the
+#: key, with the behaviour — a test, not a shared constant — as the thing
+#: that keeps them from drifting silently.
+DEPTH_CACHE_RATE_COMPONENT = "depth-cache-rates"
 
 #: The component name feature 202's run-window store registers under.  The
 #: plugin name plus what it contributes, on the ``agent-model-pins``
@@ -569,3 +679,39 @@ def build_depth_run_windows() -> DepthRunWindows | None:
     database, and nothing is written until a caller schedules a run.
     """
     return DepthRunWindows.resolve()
+
+
+@register(DEPTH_CACHE_RATE_COMPONENT)
+def build_depth_cache_rates() -> DepthCacheRates | None:
+    """Component builder: the store that measures campaigns' cache hit rates.
+
+    Feature 200's contribution to the composed application: the
+    :class:`~providers.DepthCacheRates` store this deployment measures
+    campaigns into and reads their rates back from.  Takes no arguments —
+    that is the factory's registration protocol — and resolves
+    ``DATABASE_URL`` at build time, on exactly the
+    :func:`build_depth_run_windows` pattern: a measurement that must be
+    persisted is a deployment-bound fact, and the depth model's selection
+    is justified by the rate the campaign's calls actually measured, so
+    the composed application carries the store for the deployment the
+    process is actually running in.
+
+    Returns ``None`` when nothing names a relational store, and that
+    ``None`` is the same refusal-to-proceed the run-window store's is
+    rather than an empty store: an empty store would answer *no campaign
+    is measured here* about every campaign, while this ``None`` says
+    there is no database to have measured one in — and a caller that
+    must persist a campaign's rate has to treat it as a refusal rather
+    than as a measurement that happened to find nothing, because the
+    alternative is a selection justified by a number that exists
+    nowhere.
+
+    Never raises for the URL itself: a URL whose scheme this member
+    cannot speak is refused by name the first time an operation needs
+    the path, not here.  Construction performs no I/O — the path is
+    resolved on first use, and the member-owned ``depth_cache_rate``
+    table is created by the store's first ``measure`` — so composing
+    the application never opens a database, and nothing is written
+    until a caller measures a campaign.
+    """
+    return DepthCacheRates.resolve()

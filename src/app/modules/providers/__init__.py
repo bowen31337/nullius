@@ -3,12 +3,14 @@
 The implementation lives in the ``providers`` workspace member
 (``packages/providers``, import name ``providers``), which self-registers with
 the application factory under the component names
-:data:`COMPONENT_NAME` and :data:`DEPTH_RUN_WINDOWS_NAME` — scanning the
-workspace imports it, its ``@register`` decorators fire, and ``create_app()``
-composes feature 203's :class:`~providers.AgentModelPins` store (bound to the
-``DATABASE_URL`` the tree store lives at) and feature 202's
-:class:`~providers.DepthRunWindows` store (bound to the same URL the campaign
-table lives at).
+:data:`COMPONENT_NAME`, :data:`DEPTH_RUN_WINDOWS_NAME` and
+:data:`DEPTH_CACHE_RATES_NAME` — scanning the workspace imports it, its
+``@register`` decorators fire, and ``create_app()`` composes feature 203's
+:class:`~providers.AgentModelPins` store (bound to the
+``DATABASE_URL`` the tree store lives at), feature 202's
+:class:`~providers.DepthRunWindows` store and feature 200's
+:class:`~providers.DepthCacheRates` store (each bound to the same URL the
+campaign table lives at).
 
 This module is the member's seat inside the ``app`` package namespace
 (``src/app/modules/providers/``): it exposes the composed components without
@@ -18,12 +20,13 @@ components, and a module that cannot reach one (member not scanned, workspace
 empty) returns ``None`` rather than failing import, mirroring the factory's own
 "degrade, don't break" stance toward absent components.
 
-The seat answers exactly two questions — *what is the composed authoring-model
-pin store?* and *what is the composed depth-run scheduler?* — one per
+The seat answers exactly three questions — *what is the composed authoring-model
+pin store?*, *what is the composed depth-run scheduler?* and *what is the
+composed cache-rate store?* — one per
 registered component that is a service, and deliberately re-exports neither
 feature's records nor their error vocabularies.  The distinction is worth
-stating plainly here, because this member registers **three** components and
-the seat exposes the two that are services: feature 192's provider interface
+stating plainly here, because this member registers **four** components and
+the seat exposes the three that are services: feature 192's provider interface
 (``providers``) is a contract and a set of records whose builder contributes
 ``None``, so there is nothing composed to hand back and a caller holding the
 interface imports it from the member directly.  A seat that re-exported
@@ -49,12 +52,14 @@ from typing import TYPE_CHECKING, Any
 from app.module_loader import Application, create_app
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a dependency
-    from providers import AgentModelPins, DepthRunWindows
+    from providers import AgentModelPins, DepthCacheRates, DepthRunWindows
 
 __all__ = [
     "COMPONENT_NAME",
+    "DEPTH_CACHE_RATES_NAME",
     "DEPTH_RUN_WINDOWS_NAME",
     "agent_model_pins_component",
+    "depth_cache_rates_component",
     "depth_run_windows_component",
 ]
 
@@ -71,6 +76,12 @@ COMPONENT_NAME = "agent-model-pins"
 #: spelling shared with the member, pinned against it by the member's own
 #: suite rather than by an import that would defeat the seat.
 DEPTH_RUN_WINDOWS_NAME = "depth-run-windows"
+
+#: The component name the providers member registers feature 200's cache-rate
+#: store under, kept here for the same reason as :data:`COMPONENT_NAME`: one
+#: spelling shared with the member, pinned against it by the member's own
+#: suite rather than by an import that would defeat the seat.
+DEPTH_CACHE_RATES_NAME = "depth-cache-rates"
 
 
 def agent_model_pins_component(app: Application | None = None) -> AgentModelPins | Any:
@@ -131,3 +142,35 @@ def depth_run_windows_component(
     """
     application = app if app is not None else create_app()
     return application.get(DEPTH_RUN_WINDOWS_NAME)
+
+
+def depth_cache_rates_component(
+    app: Application | None = None,
+) -> DepthCacheRates | Any:
+    """Return the composed cache-rate store (feature 200's store).
+
+    With ``app`` given, the component is read from that application; without
+    it, the application is composed first via
+    :func:`app.module_loader.create_app` (scanning the declared workspace).
+    Returns ``None`` when no ``depth-cache-rates`` component is registered —
+    the same discoverable-absent state :func:`agent_model_pins_component`
+    describes for its own name.
+
+    The two ``None``s this function's callers meet are the two the pin
+    seat documents, transposed onto this store: the component's ``None``
+    says *a store was built and there was no ``DATABASE_URL`` to point it
+    at*, this function's says *no ``depth-cache-rates`` component was
+    registered at all* — both refusals to measure, naming different
+    repairs (configure the store, or scan the member).  What this function
+    must never be read as is *"this campaign's rate was never measured"*:
+    that is a question about a campaign, and the store answers it — with
+    ``None`` from its ``get``, or a record carrying the two counts the
+    rate is the quotient of.
+
+    Construction touches no file and no database: asking for the component
+    is always safe, the path is resolved on first use, and the member-owned
+    ``depth_cache_rate`` table is created by the store's first
+    ``measure`` — never by composing the application.
+    """
+    application = app if app is not None else create_app()
+    return application.get(DEPTH_CACHE_RATES_NAME)

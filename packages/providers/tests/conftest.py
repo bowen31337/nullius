@@ -748,3 +748,87 @@ def deepseek_peaks():
             PeakWindow(start=time(6, 0), end=time(10, 0)),
         )
     )
+
+
+# ── Feature 200's fixtures ─────────────────────────────────────────────────────
+#
+# The measurement probes the campaign table read-only and owns its own
+# depth_cache_rate table, so it reuses feature 202's campaign fixtures
+# (campaign_database, plant_campaign) unchanged.  What this section adds is
+# the economics: the card a selection ranks by, and the depth-model
+# candidates it ranks.
+
+
+@pytest.fixture
+def depth_cache_card():
+    """§14.2's own depth row, as the cache-pricing configuration's test data.
+
+    The card the lever is stated on — *"Select the depth model on cache-hit
+    price, not list price"*, over a row whose comment reads *"Cache-hit
+    price dominates.  DeepSeek's $0.006 is ~80× below Claude's cached
+    input and ~4× below Gemini's"* — spelled as
+    :class:`providers.CachePricing` so a selection test reads like the
+    deployment it stands in for.  The list prices are §14.2's own
+    off-peak figures (``$0.30`` DeepSeek, ``$0.25`` Gemini, ``$1``
+    Claude); DeepSeek's hit price is the row's own ``$0.006/M cache
+    hits``, and the other two hit prices are read off the row's own
+    ratios ($0.006 × ~4 ≈ $0.024, × ~80 ≈ $0.48) because the table
+    states them that way rather than as absolutes.
+
+    The load-bearing property is the disagreement: Gemini has the
+    **cheaper list** price and the **dearer hit** price, so a selection
+    over this card is the sentence's *rather than* as one comparison —
+    picking deepseek-flash is what ranking on the hit looks like, and
+    picking gemini-3.1-flash-lite is what ranking on the list would have
+    looked like, and the fixture exists so a test can tell them apart.
+    """
+    from providers import CachePrice, CachePricing
+
+    return CachePricing(
+        prices=(
+            CachePrice(
+                model="deepseek-flash", input_price=0.30, cache_hit_price=0.006
+            ),
+            CachePrice(
+                model="gemini-3.1-flash-lite",
+                input_price=0.25,
+                cache_hit_price=0.024,
+            ),
+            CachePrice(
+                model="claude-haiku-4-5", input_price=1.00, cache_hit_price=0.48
+            ),
+        )
+    )
+
+
+@pytest.fixture
+def depth_candidates():
+    """The three models of §14.2's depth row, as feature 198's records.
+
+    Each one clears feature 198's bar (a 1M-token window at flat pricing —
+    the row's own ``1M flat`` for DeepSeek, ``flat`` for Gemini and
+    ``no long-ctx premium`` for Claude), because feature 200's selection
+    composes *behind* that gate: the candidates a cache-pricing card ranks
+    are the survivors of the physics check, and a fixture that offered a
+    sub-bar candidate would be testing the wrong seam.  The order is the
+    card's own, so the two fixtures read as one table.
+    """
+    from providers import DepthModel, flat_pricing
+
+    return (
+        DepthModel(
+            model="deepseek-flash",
+            context_tokens=1_000_000,
+            surcharge_threshold=flat_pricing(),
+        ),
+        DepthModel(
+            model="gemini-3.1-flash-lite",
+            context_tokens=1_000_000,
+            surcharge_threshold=flat_pricing(),
+        ),
+        DepthModel(
+            model="claude-haiku-4-5",
+            context_tokens=1_000_000,
+            surcharge_threshold=flat_pricing(),
+        ),
+    )
