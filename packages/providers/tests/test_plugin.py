@@ -31,11 +31,15 @@ def test_interface_records_are_importable_directly():
         "Message",
         "Usage",
         "RecordingProvider",
+        "RecordedProvider",
+        "RecordedResponse",
+        "prompt_hash",
         "Exchange",
         "ProviderError",
         "CompletionMalformedError",
         "ProviderNotConfiguredError",
         "UnknownModelError",
+        "FixtureNotFoundError",
     ):
         assert hasattr(providers, name)
 

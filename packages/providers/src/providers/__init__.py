@@ -42,6 +42,68 @@ interface's entire surface:
   record (that is feature 193's separate provider) or write a fixture file
   (that is feature 194's).
 
+Feature 193 — *"System implements a recorded-fixture provider backend, which
+returns stored responses so the full loop runs with no network access"* — is
+the offline half of the recording story, and the reason this package carries a
+second provider beyond the recorder.  Where :class:`RecordingProvider` is a tap
+— it forwards to a live provider and keeps every exchange — :class:`RecordedProvider`
+is the source the tap feeds: it answers a call from a response captured earlier,
+so the loop runs the full depth without a single network round trip.  A
+deployment records once (feature 194) and replays the record many times, and
+every call is answered from what was captured rather than from a live transport.
+
+* :class:`RecordedProvider` — the backend itself.  A :class:`Provider`, so it
+  is drop-in for whatever served the calls originally: a caller holding the
+  interface cannot tell a replay from a live run.  It holds a mapping of prompt
+  to recorded completion, and answers a request by looking up the prompt it
+  asked.  A prompt with no recorded response is refused as
+  :class:`FixtureNotFoundError`, **never** forwarded to a live transport — the
+  load-bearing half of the sentence.  The backend has no transport to fall back
+  to, so a missing fixture is a hard stop the caller fixes by recording the
+  prompt, not a gap to paper over with an inference request; a backend that
+  silently reached for the network would be the access this feature exists to
+  remove.  It records nothing: keeping exchanges is the recorder's job, and a
+  source is not a tap.
+
+* :func:`prompt_hash` — the key the record is addressed by.  The recorded
+  layer keys a fixture by "the prompt that was asked", and the response
+  captured for a request is the response replayed for any later request that
+  asks the same prompt.  Two requests ask the same prompt when they are
+  value-equal — the same ordered messages, the same model, the same sampling
+  knobs — which :class:`Request` already guarantees; this function distils that
+  value-equal form to a single canonical sha256 hex digest, so it can be a
+  mapping key and a fixture-file name (feature 194), and a request recorded in
+  one process is found by an equal request in another.  The form is the
+  request's own data, not a ``repr`` — a repr carries object addresses and a
+  type name that would scatter one prompt across many keys, defeating the
+  value-equality the interface exists to give.
+
+* :class:`RecordedResponse` — the stored answer as the recorder yields it: the
+  :class:`Request` that was asked and the :class:`Completion` it got back, kept
+  together because a fixture that split the answer from the ask would be unable
+  to say which response matched which prompt.  The backend accepts either these
+  pairs or a bare mapping of prompt hash to completion, and canonicalizes both
+  to the same record on the way in.
+
+* :class:`FixtureNotFoundError` — the backend's one refusal, and deliberately a
+  :class:`ProviderError` rather than a second base.  The split in
+  :mod:`providers._errors` is by *which contract* was violated, and a recorded
+  backend that cannot answer is a violation of the provider contract — a caller
+  that catches :class:`ProviderError` is catching "the provider could not
+  complete this call", which is exactly the state a missing fixture is.  So a
+  single ``except ProviderError`` covers a malformed completion, a missing
+  provider and a missing recording, and a CI check that the loop never fell
+  back to a live network has one handle for every way the offline path can
+  stop.  Its user-facing *fixture_missing* wording is feature 195's; this
+  module owns the error and its no-fallback behaviour, which is feature 193's.
+
+Feature 194 — *"System records a live provider exchange into a fixture file
+keyed by a prompt hash, persisting request and response together"* — is the
+persistence half of the same story, and feature 195's *fixture_missing*
+message is the third: together they make the record the backend replays.  Those
+are separate features; this package contributes the backend, the key and the
+error this one names.
+
 Feature 198 — *"System rejects a depth model without a 1 million token
 context at flat pricing, because calls at depth 2 or greater carry a large
 history"* — is the depth role's selection criterion, and the reason the
@@ -463,6 +525,8 @@ from ._pinning import (
 )
 from ._provider import Provider
 from ._recorder import Exchange, RecordingProvider
+from ._recorded import RecordedProvider, RecordedResponse, prompt_hash
+from ._recorded_errors import FixtureNotFoundError
 from ._request import Message, Request
 from ._root import (
     DATABASE_URL_ENV,
@@ -619,6 +683,7 @@ __all__ = [
     "DepthRunWindows",
     "DepthScheduleError",
     "Exchange",
+    "FixtureNotFoundError",
     "FrontierProvider",
     "FrontierTier",
     "InsufficientContextError",
@@ -639,6 +704,8 @@ __all__ = [
     "Provider",
     "ProviderError",
     "ProviderNotConfiguredError",
+    "RecordedProvider",
+    "RecordedResponse",
     "RecordingProvider",
     "Request",
     "RollingAliasError",
@@ -680,6 +747,7 @@ __all__ = [
     "flat_pricing",
     "hosted_api_weights",
     "measure_cache_rate",
+    "prompt_hash",
     "published_figure",
     "record_root_provider",
     "require_agent_ckpt_hash",
