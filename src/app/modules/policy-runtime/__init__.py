@@ -153,6 +153,29 @@ the once-per-new-cell callback would each have to hold.  This is also where the
 seat's earlier sentence earns its keep — feature 220 needs the read-side
 interface, and what it asks this module for is the *tree*, not a probe.
 
+Feature 219 lives in the same member and is likewise not reached through this
+seat: the structural meta accessor
+(:meth:`policy_runtime.PolicyQuestion.meta`, over the
+:class:`policy_runtime.CellMeta` value and the
+:func:`policy_runtime.cell_meta` derivation behind it) is a *method on the
+read-side question* rather than a construction of its own — it answers the four
+structural fields docs/nullius-tech-architecture.md §595 names (``branch``,
+``depth``, ``parent``, ``theme_root``) for any node the tree holds, derived from
+the tree's own edges and the node's own record rather than stored beside either
+— with no store, no deployment state and no component, so it is reached the way
+every other read of the question is: a caller who holds the tree takes
+``policy_runtime.policy_question(tree)`` and calls the verb on it, exactly as it
+calls :meth:`~policy_runtime.PolicyQuestion.observed` or
+:meth:`~policy_runtime.PolicyQuestion.probe_batch`.  This module does not wrap
+it, because there is nothing here to compose: the structure belongs to the tree
+the composed application holds — and the accessor already *reads* that tree, so
+a wrapper here would be a second spelling of one derivation, and, worse, a
+second place §634's ``theme_root`` used only via ``meta()`` would have to hold.
+This is the seat's opening sentence read one feature on: the reason this module
+exposes the tree and nothing else is that 218's frontier, 219's meta, 220's
+probe and 222's commit all need the same one thing, and each is spelled where it
+belongs.
+
 Where the composed tree is ``None``, that is a statement about the deployment,
 not an error: the member was not scanned, or the workspace is empty, or the
 deployment's artifact store holds no committed campaign, so there is no tree to

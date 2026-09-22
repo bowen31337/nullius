@@ -217,6 +217,34 @@ not fitted: the conditional is plain floats the policy-development agent wrote
 — the positive half of feature 231's refusal — and the composition is
 arithmetic, with no model class, no checkpoint and no inference anywhere in it.
 
+**The structure a cell carries, read beside its reading (feature 219).**  §11's
+fourth line is ``question.meta(node_id) -> CellMeta`` (docs §595), commented
+with the four fields it carries — *"structural: branch, depth, parent,
+theme_root"* — and it lives in :mod:`.meta` as :class:`CellMeta` and
+:func:`cell_meta`, with :meth:`PolicyQuestion.meta` the accessor a policy is
+handed.  It is the *structural* read beside ``observed()``'s scored one, and the
+one road to a cell's ``theme_root``: docs §634's static check — *"``theme_root``
+used only via ``meta()``"* — is what feature 230's admission gate screens for,
+and it is the slug feature 228's family-conditional thresholds are keyed on, so
+the accessor is the seam the conditioning is allowed to read rather than a
+convenience beside it.  All four fields are *derived from the tree or read from
+the node's own record* rather than stored: ``parent`` is the tree's validated
+edge, ``depth`` is the number of parent steps to the branch's origin and
+``branch`` is that origin's id (grouping the cells feature 236's per-branch
+difficulty census is taken over), and ``theme_root`` is §9.1's ``theme_root``
+column as the node froze it — absent when the record states none, refused when
+the record states something that is not a name.  Structure is the tree's
+*shape* — not the scores §10.2's barrier withholds and not the ``is_null`` cq-8
+confines to the replay scorer — so the accessor answers for any node the tree
+holds, revealed or not, which is the stance the sibling pool takes and what
+lets family-conditional thresholds be authored before the cells they condition
+are seen; it refuses only a node the tree does not hold, through the same
+address seam ``reveal`` and ``probe_batch`` route through.  No new error class
+and no component: every refusal is one the member already owns
+(:class:`PolicyAddressError` for the address, :class:`PolicyTreeError` for a
+corrupt structural record), and the accessor closes over no deployment state at
+all.
+
 **The terminal commit: one call, one node, and −∞ for the policy that never
 makes it.**  Feature 222 (docs §598: ``question.commit(node_id)  # REQUIRED;
 omitting scores −inf``; prd §438: *"``commit()`` is mandatory. A policy that
@@ -308,6 +336,11 @@ from .guard import (
 from .learned import (
     find_learned_component,
 )
+from .meta import (
+    THEME_ROOT_KEY,
+    CellMeta,
+    cell_meta,
+)
 from .planning import (
     GridPlan,
     GridPlanningContext,
@@ -343,6 +376,7 @@ __all__ = [
     "COMPUTE_UNITS",
     "CampaignNode",
     "CampaignTree",
+    "CellMeta",
     "CommittedPick",
     "EpisodeBeta",
     "EpisodeCommit",
@@ -383,9 +417,11 @@ __all__ = [
     "SCHEDULE_KEYS",
     "STATISTICAL_UNIT",
     "StatisticalBudget",
+    "THEME_ROOT_KEY",
     "Termination",
     "UNBOUNDED_BUDGET",
     "budget_account",
+    "cell_meta",
     "episode_commit",
     "family_schedule",
     "find_learned_component",
@@ -862,6 +898,58 @@ class PolicyQuestion:
         and the node it was earned on are one act.
         """
         return PolicyObservation.from_node(self._tree.node(node_id))
+
+    def meta(self, node_id: str) -> CellMeta:
+        """The structural metadata of a cell — ``question.meta(node_id)``, feature 219.
+
+        The fourth line of §11's identical ``question.*`` interface
+        (docs/nullius-tech-architecture.md §595)::
+
+            question.meta(node_id)     -> CellMeta          # structural: branch, depth, parent, theme_root
+
+        — the *structural* read beside :meth:`observed`'s scored one, and the
+        one road to a cell's ``theme_root`` (docs §634's static check: *"used
+        only via ``meta()``"*).  It answers the four fields the architecture
+        names — the branch the cell sits in, its depth below that branch's
+        origin, its parent, and the research theme the branch was planted in —
+        and it answers them for **any** node the tree holds, revealed or not:
+        structure is the tree's shape, not the reading §10.2's barrier
+        withholds (feature 184's own accessor refuses only a node *"outside the
+        lattice"*, and the identical-interface claim needs the barrier's edge in
+        the same place on both sides).  That openness is the point rather than a
+        concession: §11.1 exposes ``theme_root`` here precisely so
+        family-conditional thresholds can be authored *before* the cells they
+        condition are revealed.
+
+        A **delegation** to :func:`cell_meta`, not a second derivation — the
+        same discipline :meth:`_observe` keeps for the reading beside it, so
+        the campaign question and any later caller in this category read one
+        spelling of "a cell's structure" over one tree.
+
+        Refuses with :class:`PolicyAddressError` a node the tree does not hold
+        — the address seam :meth:`reveal` and :meth:`probe_batch` route through,
+        so a node id a policy hands to ``meta`` is one it was shown, and
+        structure computed for a cell outside the tree would let a policy reason
+        about a campaign it never saw.  The reveal set is not consulted, not
+        read and not grown: a meta is a structure and a reveal is an act, and
+        this verb is the former.
+
+        A node id that is not a string at all is refused in the same vocabulary
+        rather than by a bare :class:`TypeError` from the tree's comparison — an
+        unhashable or exotic id reaching the store's address verb is a caller
+        mistake this member states rather than lets escape, so a caller's own
+        ``except PolicyRuntimeError`` catches every way a structural read can
+        fail.
+        """
+        if not isinstance(node_id, str) or not node_id.strip():
+            raise PolicyAddressError(
+                f"a cell's meta is read for a node id — got {node_id!r} "
+                f"({type(node_id).__name__}), which names no cell: the four "
+                "structural fields of docs §595 — branch, depth, parent, "
+                "theme_root — are facts about a node the tree holds, and a value "
+                "that is not an id names none of them (feature 219)"
+            )
+        return cell_meta(self._tree, node_id)
 
     def reveal(self, node_id: str) -> PolicyObservation:
         """Reveal one cell, returning its observation — the write side of the set.
