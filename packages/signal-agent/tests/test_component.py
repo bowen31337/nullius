@@ -1,39 +1,43 @@
-"""Features 205, 210, 211, 212 and 213's plugin seam: composition, and the app seats.
+"""Features 205, 209, 210, 211, 212 and 213's plugin seam: composition, and the seats.
 
 Three contracts, all held from the side this member owns:
 
 * **composition by convention** — the factory scans the workspace, imports
   this package, the ``@register`` builders fire, and the composed application
   carries a ``signal-agent`` component, a ``signal-agent-anti-convergence`` one,
-  a ``signal-agent-dead-territory`` one and a ``signal-agent-themes`` one under
+  a ``signal-agent-dead-territory`` one, a ``signal-agent-diagnosis`` one, a
+  ``signal-agent-stated-mechanism`` one and a ``signal-agent-themes`` one under
   the member's own names.  No registry, router, entry-points table or app
   factory was edited to make that true, and this suite keeps it true under the
   three loader hazards the bootstrap, sandbox and cost-model suites state for
   their own components: the synthetic-name copy (pin by name, module suffix and
   behaviour — never ``isinstance``), the second composition (a ``@register``
   outside ``__init__.py`` would fire once and silently drop out of every later
-  ``create_app()``; all five builders live in ``__init__.py`` and the test
+  ``create_app()``; all six builders live in ``__init__.py`` and the test
   asserts on the *second* application or it passes vacuously), and the
   **registry-replacement** hazard a second component introduces — the registry
   is keyed by name, so a builder that took ``signal-agent`` for itself would
   silently replace feature 205's law rather than sit beside it, which is why
-  the five are asserted together and each law is checked *after* all five
+  the six are asserted together and each law is checked *after* all six
   fired.
 
 * **the seats** — ``app.modules.signal-agent`` answers *what is the composed
-  authoring law?*, and ``.themes``, ``.dead_territory``, ``.mechanism`` and
-  ``.anti_convergence`` answer it for the four laws that follow, each importing
-  the member only under ``TYPE_CHECKING`` and answering ``None`` — not an
-  exception — when nothing is registered.  A seat's ``None`` is a statement
-  about *composition*, never about a proposal: the verdicts are the laws' own
-  returned values, and reading one ``None`` as "no signal was adopted", "the
-  agent opened in an illegal theme" or "the mechanism is live" would collapse a
-  deployment problem into a research result.  Two of the seats' ``None`` values
-  matter twice over, because a composed gate that answers *the opposite way* is
-  the opposite complaint — feature 212's admits nothing on a drifted artifact, so
-  it refuses every proposal, while feature 210's applied half admits everything
-  on an empty campaign — and an operator who could not tell them apart would not
-  know whether to widen the document, fix the clause or re-prompt the agent.
+  authoring law?*, and ``.anti_convergence``, ``.dead_territory``,
+  ``.diagnosis``, ``.mechanism`` and ``.themes`` answer it for the five laws
+  that follow, each importing the member only under ``TYPE_CHECKING`` and
+  answering ``None`` — not an exception — when nothing is registered.  A seat's
+  ``None`` is a statement about *composition*, never about a proposal: the
+  verdicts are the laws' own returned values, and reading one ``None`` as "no
+  signal was adopted", "the agent opened in an illegal theme" or "the mechanism
+  is live" would collapse a deployment problem into a research result.  Three
+  of the seats' ``None`` values matter twice over, because a composed law that
+  answers *the opposite way* is the opposite complaint — feature 212's admits
+  nothing on a drifted artifact, so it refuses every proposal; feature 210's
+  applied half admits everything on an empty campaign; and feature 209's
+  answers *do not retry* every branch it is asked about, which the seat's
+  ``None`` must not be read as — and an operator who could not tell them apart
+  would not know whether to widen the document, fix the clause or re-prompt the
+  agent.
 
 Each seat's directory name carries a hyphen and so is not a valid dotted import
 path; they are reached the way the factory reaches such a package —
@@ -68,6 +72,7 @@ mechanism_seat = importlib.import_module("app.modules.signal-agent.mechanism")
 anti_convergence_seat = importlib.import_module(
     "app.modules.signal-agent.anti_convergence"
 )
+diagnosis_seat = importlib.import_module("app.modules.signal-agent.diagnosis")
 
 _CONFORMING = (
     "def signal(ctx, seed):\n"
@@ -101,6 +106,15 @@ _STATED_MECHANISM = (
 #: claim about §14.1's collapse rather than about an abstraction.
 _HELD = "def signal(ctx, seed):\n    return ctx.close.rolling_mean(20)\n"
 _TWEAK = "def signal(ctx, seed):\n    return ctx.close.rolling_mean(60)\n"
+
+#: A proposal the parser hands back a position for, and the failure sentence a
+#: deployment would have seen first.  Feature 209's headline case spelled in the
+#: smallest pair that shows it — a missing colon, and the sentence the contract
+#: validator reports for the source that follows — so a claim about the
+#: *composed* diagnosis is a claim about §C3's distinction rather than about an
+#: abstraction.
+_BROKEN = "def signal(ctx, seed)\n    return ctx.close.rolling_mean(20)\n"
+_COMPLAINT = "signal source does not compile: expected ':'"
 
 
 def _assert_is_the_authoring_law(component: object) -> None:
@@ -321,6 +335,57 @@ def _assert_is_the_anti_convergence_law(component: object) -> None:
     assert composed.digest == expected.digest
 
 
+def _assert_is_the_diagnosis_law(component: object) -> None:
+    """The composed diagnosis is the law, across the loader's copies.
+
+    Name, then behaviour — never ``isinstance``, for the same reason the five
+    checks above are not.  Feature 209 has three clauses and this helper asserts
+    all three, because a component that answered two of them would be one that
+    decided the feature's question by halves:
+
+    * *the distinction* — the composed law must resolve a defect in a proposal's
+      own code to the same position the canonically-imported one resolves it to,
+      compared by value across the loader's boundary;
+    * *the retry for only the second case* — the composed law must refuse a
+      branch whose source is what its author meant to write, with the same
+      ``flawed_mechanism`` sentence, and must admit the one whose source does
+      not parse;
+    * *located in code rather than guessed from the write-up* — the same
+      complaints handed to both copies must not move either one's ``retry``
+      across the boundary.
+    """
+    assert type(component).__name__ == "MechanismDiagnosis"
+    assert type(component).__module__.endswith("signal_agent._diagnosis")
+
+    for verb in ("diagnose", "require", "retry", "locate"):
+        assert callable(getattr(component, verb)), verb
+
+    direct = member.mechanism_diagnosis()
+    composed_located = component.locate(_HELD, 1)  # type: ignore[attr-defined]
+    expected_located = direct.locate(_HELD, 1)
+    assert composed_located is not None and expected_located is not None
+    assert (composed_located.line, composed_located.column) == (
+        expected_located.line,
+        expected_located.column,
+    )
+    assert composed_located.symbol == expected_located.symbol
+    assert composed_located.source_line == expected_located.source_line
+
+    composed = component.diagnose(_BROKEN, [_COMPLAINT])  # type: ignore[attr-defined]
+    expected = direct.diagnose(_BROKEN, [_COMPLAINT])
+    assert composed.retry == expected.retry is True
+    assert composed.reason == expected.reason
+    assert composed.detail == expected.detail
+    assert composed.defect is not None and expected.defect is not None
+    assert composed.defect.source_line == expected.defect.source_line
+
+    composed_flawed = component.diagnose(_HELD, [_COMPLAINT])  # type: ignore[attr-defined]
+    expected_flawed = direct.diagnose(_HELD, [_COMPLAINT])
+    assert composed_flawed.retry == expected_flawed.retry is False
+    assert composed_flawed.reason == expected_flawed.reason
+    assert composed_flawed.detail == expected_flawed.detail
+
+
 def test_the_member_registers_the_theme_gate_under_its_own_name() -> None:
     # The registry is keyed by name, so this prefix is not cosmetic: a builder
     # that registered "signal-agent" a second time would *replace* feature
@@ -331,38 +396,41 @@ def test_the_member_registers_the_theme_gate_under_its_own_name() -> None:
     assert member.THEMES_COMPONENT_NAME != member.COMPONENT_NAME
 
 
-def test_the_scanned_application_carries_all_five_laws() -> None:
-    # The five, in one composition: feature 205's law, feature 210's gate,
-    # feature 212's gate, feature 213's gate and feature 211's law, each under
-    # its own name, none having replaced another.
+def test_the_scanned_application_carries_all_six_laws() -> None:
+    # The six, in one composition: feature 205's law, feature 209's diagnosis,
+    # feature 210's gate, feature 212's gate, feature 213's gate and feature
+    # 211's law, each under its own name, none having replaced another.
     app = create_app(MEMBER_SRC, registry=Registration())
     assert "signal-agent" in app
     assert member.ANTI_CONVERGENCE_COMPONENT_NAME in app
     assert member.DEAD_TERRITORY_COMPONENT_NAME in app
+    assert member.DIAGNOSIS_COMPONENT_NAME in app
     assert member.THEMES_COMPONENT_NAME in app
     assert member.STATED_MECHANISM_COMPONENT_NAME in app
     _assert_is_the_authoring_law(app.get("signal-agent"))
     _assert_is_the_anti_convergence_law(app.get(member.ANTI_CONVERGENCE_COMPONENT_NAME))
     _assert_is_the_dead_territory_law(app.get(member.DEAD_TERRITORY_COMPONENT_NAME))
+    _assert_is_the_diagnosis_law(app.get(member.DIAGNOSIS_COMPONENT_NAME))
     _assert_is_the_theme_law(app.get(member.THEMES_COMPONENT_NAME))
     _assert_is_the_mechanism_law(app.get(member.STATED_MECHANISM_COMPONENT_NAME))
 
 
-def test_the_five_laws_stay_contiguous_in_the_name_sorted_order() -> None:
+def test_the_six_laws_stay_contiguous_in_the_name_sorted_order() -> None:
     # ``app.order`` is name-sorted, so the prefixed names are what keep the
-    # member's five components together in the category they belong to rather
-    # than scattered by whatever the prefixes happened to be.  The five names
+    # member's six components together in the category they belong to rather
+    # than scattered by whatever the prefixes happened to be.  The six names
     # sort as ``signal-agent`` < ``signal-agent-anti-convergence`` <
-    # ``signal-agent-dead-territory`` < ``signal-agent-stated-mechanism`` <
-    # ``signal-agent-themes``, so feature 210's gate lands immediately after
-    # feature 205's law — and the five are contiguous, with no unrelated
-    # component wedged between them.
+    # ``signal-agent-dead-territory`` < ``signal-agent-diagnosis`` <
+    # ``signal-agent-stated-mechanism`` < ``signal-agent-themes``, so feature
+    # 210's gate lands immediately after feature 205's law — and the six are
+    # contiguous, with no unrelated component wedged between them.
     app = create_app(MEMBER_SRC, registry=Registration())
     order = list(app.order)
     positions = sorted(order.index(name) for name in (
         member.COMPONENT_NAME,
         member.ANTI_CONVERGENCE_COMPONENT_NAME,
         member.DEAD_TERRITORY_COMPONENT_NAME,
+        member.DIAGNOSIS_COMPONENT_NAME,
         member.STATED_MECHANISM_COMPONENT_NAME,
         member.THEMES_COMPONENT_NAME,
     ))
@@ -372,12 +440,14 @@ def test_the_five_laws_stay_contiguous_in_the_name_sorted_order() -> None:
         positions[0] + 2,
         positions[0] + 3,
         positions[0] + 4,
+        positions[0] + 5,
     ]
     assert order[positions[0]] == member.COMPONENT_NAME
     assert order[positions[1]] == member.ANTI_CONVERGENCE_COMPONENT_NAME
     assert order[positions[2]] == member.DEAD_TERRITORY_COMPONENT_NAME
-    assert order[positions[3]] == member.STATED_MECHANISM_COMPONENT_NAME
-    assert order[positions[4]] == member.THEMES_COMPONENT_NAME
+    assert order[positions[3]] == member.DIAGNOSIS_COMPONENT_NAME
+    assert order[positions[4]] == member.STATED_MECHANISM_COMPONENT_NAME
+    assert order[positions[5]] == member.THEMES_COMPONENT_NAME
 
 
 def test_the_theme_component_survives_a_second_composition() -> None:
@@ -618,6 +688,70 @@ def test_the_mechanism_builder_does_not_open_the_store_at_composition() -> None:
     assert law.store is not None
     with pytest.raises(member.MechanismStoreUnavailableError):
         law.stated()
+
+
+# -- Feature 209's component ---------------------------------------------------
+
+
+def test_the_member_registers_the_diagnosis_under_its_own_name() -> None:
+    # The registry is keyed by name, so this prefix is not cosmetic: a builder
+    # that registered "signal-agent" a sixth time would *replace* feature 205's
+    # law rather than sit beside it.  Asserted against the unprefixed name and
+    # against each of the other four prefixed ones, any of which it must not
+    # collide with — the assertion that would catch a copy-pasted constant.
+    assert member.DIAGNOSIS_COMPONENT_NAME == "signal-agent-diagnosis"
+    assert member.DIAGNOSIS_COMPONENT_NAME != member.COMPONENT_NAME
+    for other in (
+        member.ANTI_CONVERGENCE_COMPONENT_NAME,
+        member.DEAD_TERRITORY_COMPONENT_NAME,
+        member.STATED_MECHANISM_COMPONENT_NAME,
+        member.THEMES_COMPONENT_NAME,
+    ):
+        assert member.DIAGNOSIS_COMPONENT_NAME != other, other
+
+
+def test_the_diagnosis_component_survives_a_second_composition() -> None:
+    # The submodule-registration hazard, checked on the *second* application:
+    # a ``@register`` outside ``__init__.py`` fires once and drops out.
+    first = create_app(MEMBER_SRC, registry=Registration())
+    second = create_app(MEMBER_SRC, registry=Registration())
+    assert member.DIAGNOSIS_COMPONENT_NAME in first
+    assert member.DIAGNOSIS_COMPONENT_NAME in second
+    _assert_is_the_diagnosis_law(second.get(member.DIAGNOSIS_COMPONENT_NAME))
+
+
+def test_the_diagnosis_builder_takes_no_arguments() -> None:
+    # The factory's protocol: a zero-argument builder.  It reads no committed
+    # artifact and no environment at all, so it composes in any process — the
+    # member's second builder of feature 205's shape, beside three that compile
+    # a document and one that resolves a store.
+    from app.module_loader import scan_components
+
+    builders = {
+        component.name: component.builder
+        for component in scan_components(MEMBER_SRC, registry=Registration())
+    }
+    assert builders[member.DIAGNOSIS_COMPONENT_NAME].__name__ == (
+        "build_mechanism_diagnosis"
+    )
+    assert list(
+        inspect.signature(builders[member.DIAGNOSIS_COMPONENT_NAME]).parameters
+    ) == []
+
+
+def test_the_diagnosis_builder_has_no_drifted_artifact_to_fall_back_from() -> None:
+    # The one builder in this member with no `except` branch, and that is the
+    # feature rather than an omission: features 212's, 213's and 210's builders
+    # each compile a committed document and therefore each document a
+    # failure-as-a-value answer, while feature 209 compiles nothing — what
+    # counts as a located bug is a fact about the proposal handed in.  Held to
+    # behaviour by building the component over a *monkeypatched-away* world:
+    # there is no symbol in this package whose absence degrades the gate,
+    # because there is no artifact for it to read.  What this asserts is the
+    # positive half — the composed law answers a proposal, immediately.
+    law = member.build_mechanism_diagnosis()
+    assert law.retry(_BROKEN) is True
+    assert law.retry(_HELD, [_COMPLAINT]) is False
 
 
 # -- The seats -----------------------------------------------------------------
@@ -984,3 +1118,77 @@ def test_the_anti_convergence_seat_is_reachable_by_its_hyphenated_path() -> None
     )
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("app.modules.signal_agent.anti_convergence")
+
+
+# -- The diagnosis seat --------------------------------------------------------
+
+
+def test_the_diagnosis_seat_names_line_up() -> None:
+    assert diagnosis_seat.COMPONENT_NAME == (
+        member.DIAGNOSIS_COMPONENT_NAME
+    ) == "signal-agent-diagnosis"
+
+
+def test_the_diagnosis_seat_answers_the_composed_law() -> None:
+    app = create_app(MEMBER_SRC, registry=Registration())
+    law = diagnosis_seat.mechanism_diagnosis_component(app)
+    _assert_is_the_diagnosis_law(law)
+
+
+def test_the_diagnosis_seat_returns_none_when_nothing_is_registered() -> None:
+    # An absent component is a discoverable state, not an exception — and this
+    # seat's ``None`` must not be read as either of feature 209's two answers.
+    # Read as "do not retry" it closes a branch nobody diagnosed; read as
+    # "retry" it spends a trial charge on the strength of a component that is
+    # not there.  Both are the law's own returned values rather than this
+    # ``None``, which is a statement about the scan.
+    empty = Application(components={}, order=())
+    assert diagnosis_seat.mechanism_diagnosis_component(empty) is None
+
+
+def test_the_diagnosis_seat_does_not_import_the_member_at_module_scope() -> None:
+    # The same two-sided assertion the other five seats get, for the same
+    # reason: the app package must not depend on any workspace member at import
+    # time, and the member's type must still be *present* under the guard or
+    # the typing the guard exists for was lost.
+    import ast
+
+    tree = ast.parse(inspect.getsource(diagnosis_seat))
+    live: list[str] = []
+    guarded: list[str] = []
+
+    def _collect(nodes, into: list[str]) -> None:
+        for node in nodes:
+            if isinstance(node, ast.If) and "TYPE_CHECKING" in ast.dump(node.test):
+                for nested in node.body:
+                    _collect([nested], guarded)
+                continue
+            if isinstance(node, ast.Import):
+                into.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                into.append(node.module or "")
+            for child in ast.iter_child_nodes(node):
+                if isinstance(
+                    child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                ):
+                    _collect(child.body, into)
+
+    _collect(tree.body, live)
+
+    assert not any(name.startswith("signal_agent") for name in live), live
+    assert "signal_agent" in guarded, guarded
+
+
+def test_the_diagnosis_seat_exports_only_the_component_accessor() -> None:
+    # Asserted as an exact set: the failure this guards against is the seat
+    # growing a re-export of the member's verdict, located defect or reasons.
+    assert set(diagnosis_seat.__all__) == {
+        "COMPONENT_NAME",
+        "mechanism_diagnosis_component",
+    }
+
+
+def test_the_diagnosis_seat_is_reachable_by_its_hyphenated_path() -> None:
+    assert diagnosis_seat.__name__ == "app.modules.signal-agent.diagnosis"
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("app.modules.signal_agent.diagnosis")

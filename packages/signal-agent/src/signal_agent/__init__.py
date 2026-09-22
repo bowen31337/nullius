@@ -57,6 +57,33 @@ feature 211's law, which compares what the agent *claims*: a weak model asked
 for the 400th variant of one indicator states it in fresh prose, so the claim
 differs while the structure repeats.
 
+**Feature 209 rides a sixth seat, and it is the member's second law with no
+committed artifact.**  *Agent distinguishes a flawed core mechanism from a
+sound idea undermined by a located bug, which returns a retry decision for only
+the second case* — PRD §C3's *"the former is not worth retrying, the latter is,
+but only with the bug actually located in code rather than guessed from the
+write-up"* — lives in :mod:`signal_agent._diagnosis`: no document (what counts
+as a located bug is *a position the proposal's own parse tree occupies*,
+a fact about the source rather than a deployment decision), one resolution rule
+(:func:`locate_defect`), one derived reading of the parser's own position
+(:func:`first_defect`), and :class:`MechanismDiagnosis` — the law, which
+answers as a value and raises only at ``require``.  It composes as a sixth
+component under :data:`DIAGNOSIS_COMPONENT_NAME`, sorting between
+``signal-agent-dead-territory`` and ``signal-agent-stated-mechanism`` so the
+six stay contiguous.
+
+Its *shape* is the feature: the retry decision is a returned value with
+``retry`` **computed** from the reason, and the write-up cannot move it — a
+caller's complaint sentences can separate the two refusals from each other but
+can never buy a retry, because only a resolved code location can.  That is why
+this member's vocabulary gained exactly one class for feature 209 and it is the
+*refusal* (:class:`FlawedMechanismError`, a **sibling** of
+:class:`AgentSourceError` rather than a subclass, because it asserts the
+opposite repair to the three refusals that do subclass — a driver must not
+re-prompt a branch the diagnosis just closed).  It is the one law here whose
+verdict is about the *idea* rather than about the source, which is feature 211's
+subject too and the reason that one's refusals are siblings as well.
+
 **What this member is, and what it deliberately is not.**  §14.1 gives the
 signal agent its seat — *"Signal agent, roots (depth 0-1) ... Signal agent,
 depth >= 2"* — and PRD §C3 describes it as *"a coding agent writing signal
@@ -109,7 +136,7 @@ from __future__ import annotations
 
 from app.module_loader import register
 
-from . import _dead_territory, _mechanism, _themes
+from . import _dead_territory, _diagnosis, _mechanism, _themes
 from ._anti_convergence import (
     ANTI_CONVERGENCE_COMPONENT_NAME,
     ANTI_CONVERGENCE_POLICY_KIND,
@@ -153,6 +180,21 @@ from ._dead_territory import (
     dead_territory_gate,
     load_dead_territory,
 )
+from ._diagnosis import (
+    FLAWED_MECHANISM_CODE,
+    LOCATED_BUG_CODE,
+    MAX_LISTED_COMPLAINTS,
+    MODULE_SYMBOL,
+    NOT_A_DIAGNOSIS_CODE,
+    SIGNAL_SOURCE_FILENAME,
+    DiagnosisReason,
+    DiagnosisVerdict,
+    LocatedDefect,
+    MechanismDiagnosis,
+    first_defect,
+    locate_defect,
+    mechanism_diagnosis,
+)
 from ._mechanism import (
     CANONICAL_MECHANISM_MAX_WORDS,
     MECHANISM_COLUMN,
@@ -191,6 +233,7 @@ from .errors import (
     AntiConvergenceError,
     DeadTerritoryError,
     DeadTerritorySetError,
+    FlawedMechanismError,
     IllegalThemeError,
     MechanismColumnError,
     MechanismConflictError,
@@ -216,20 +259,27 @@ __all__ = [
     "DEAD_TERRITORY_CODE",
     "DEAD_TERRITORY_COMPONENT_NAME",
     "DEAD_TERRITORY_POLICY_KIND",
+    "DIAGNOSIS_COMPONENT_NAME",
+    "FLAWED_MECHANISM_CODE",
     "ILLEGAL_THEME_CODE",
     "LEGAL_THEMES_POLICY_KIND",
     "LEGAL_THEME_CODE",
     "LIVE_TERRITORY_CODE",
+    "LOCATED_BUG_CODE",
+    "MAX_LISTED_COMPLAINTS",
     "MECHANISM_COLUMN",
     "MECHANISM_CONFLICT_CODE",
     "MECHANISM_POLICY_REVISION",
+    "MODULE_SYMBOL",
     "NEVER_SCORED_CODE",
+    "NOT_A_DIAGNOSIS_CODE",
     "NOT_A_PROPOSAL_CODE",
     "NOT_A_ROOT_CODE",
     "NOT_A_STATEMENT_CODE",
     "NOT_A_THEME_CODE",
     "NOVEL_CODE",
     "PARAMETER_TWEAK_CODE",
+    "SIGNAL_SOURCE_FILENAME",
     "STATED_MECHANISM_CODE",
     "STATED_MECHANISM_COMPONENT_NAME",
     "THEMES_COMPONENT_NAME",
@@ -247,10 +297,15 @@ __all__ = [
     "DeadTerritoryReason",
     "DeadTerritorySetError",
     "DeadTerritoryVerdict",
+    "DiagnosisReason",
+    "DiagnosisVerdict",
+    "FlawedMechanismError",
     "IllegalThemeError",
     "LegalThemes",
+    "LocatedDefect",
     "MechanismColumnError",
     "MechanismConflictError",
+    "MechanismDiagnosis",
     "MechanismNodeNotRecordedError",
     "MechanismNotScoredError",
     "MechanismReason",
@@ -270,6 +325,7 @@ __all__ = [
     "anti_convergence_gate",
     "build_anti_convergence",
     "build_dead_territory_gate",
+    "build_mechanism_diagnosis",
     "build_signal_contract",
     "build_signal_theme_gate",
     "build_stated_mechanism",
@@ -281,9 +337,12 @@ __all__ = [
     "compile_dead_territory",
     "compile_legal_themes",
     "dead_territory_gate",
+    "first_defect",
     "load_anti_convergence",
     "load_dead_territory",
     "load_legal_themes",
+    "locate_defect",
+    "mechanism_diagnosis",
     "mechanism_digest",
     "proposal_skeleton",
     "require_contract",
@@ -357,6 +416,23 @@ DEAD_TERRITORY_COMPONENT_NAME = _dead_territory.DEAD_TERRITORY_COMPONENT_NAME
 #: name-sorted ``app.order``, so the member's four components stay contiguous in
 #: the category they belong to.
 STATED_MECHANISM_COMPONENT_NAME = _mechanism.STATED_MECHANISM_COMPONENT_NAME
+
+#: The component name feature 209's law registers under.  Imported from
+#: :mod:`signal_agent._diagnosis` rather than re-spelled — the ``__all__`` entry
+#: above re-exports it, so this is a name, not a second literal.  Unlike
+#: :data:`COMPONENT_NAME`, which the spec's plugin declaration owns and which
+#: this module is the single spelling of, this one is *also* the live name the
+#: submodule's own doc references and its tests assert on, and two literals for
+#: it would be the drift the single spelling exists to prevent.
+#:
+#: Prefixed, for the same reason :data:`THEMES_COMPONENT_NAME`,
+#: :data:`DEAD_TERRITORY_COMPONENT_NAME` and
+#: :data:`STATED_MECHANISM_COMPONENT_NAME` are — an unprefixed ``signal-agent``
+#: a sixth time would replace feature 205's law — and
+#: ``signal-agent-diagnosis`` sorts between ``signal-agent-dead-territory`` and
+#: ``signal-agent-stated-mechanism`` in the name-sorted ``app.order``, so the
+#: member's six components stay contiguous in the category they belong to.
+DIAGNOSIS_COMPONENT_NAME = _diagnosis.DIAGNOSIS_COMPONENT_NAME
 
 
 @register(COMPONENT_NAME)
@@ -621,3 +697,42 @@ def build_anti_convergence() -> AntiConvergenceGate:
                 text="",
             )
         )
+
+
+@register(DIAGNOSIS_COMPONENT_NAME)
+def build_mechanism_diagnosis() -> MechanismDiagnosis:
+    """Contribute feature 209's law to the composed application.
+
+    The sixth component this member contributes, beside feature 205's law and
+    features 210's, 211's, 212's and 213's gates, each under its own name — the
+    registry is keyed by name and a later registration of any of them would
+    *replace* that law, so a member carrying six controls carries six
+    components, each answering its own feature's question.  Like the five
+    builders above it takes no arguments (the factory's registration protocol)
+    and returns a law rather than a service, a session or an LLM client.
+
+    **This builder has no fallback branch, and that is the feature rather than
+    an omission.**  Features 212's, 213's and 210's builders each compile a
+    committed artifact and therefore each need a documented answer for a drifted
+    one — a degraded gate built by construction, failing closed or open
+    according to which half of the feature is at stake.  Feature 209's law
+    compiles *nothing*: what counts as a located bug is *a position the
+    proposal's own parse tree occupies*, which is a fact about the source handed
+    in at call time rather than a deployment decision recorded in a file.  So
+    there is no artifact to drift, no `except` to write, and nothing this
+    builder can fail at.
+
+    **It is the member's second builder of feature 205's shape** — a law whose
+    construction computes nothing and resolves nothing.  The declared signal ABI
+    is read out of the contract member on the first question asked of feature
+    205's law; a proposal and its failures are handed *in* on every question
+    asked of this one.  Both are what keeps presence in the composed application
+    independent of scan order: this builder imports nothing outside this package
+    and reaches no member, so the scan that puts one member's ``src/`` on
+    ``sys.path`` at a time cannot make this component absent.
+
+    Holding the handle therefore computes nothing and can fail at nothing, and
+    the first :meth:`~signal_agent.MechanismDiagnosis.diagnose` is where a
+    branch is judged.
+    """
+    return mechanism_diagnosis()

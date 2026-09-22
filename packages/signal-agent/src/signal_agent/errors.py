@@ -139,6 +139,34 @@ state for their own trees:
   statement contract must not lose this refusal through a clause that no
   longer matches.
 
+* :class:`FlawedMechanismError` — feature 209's *diagnosis* contract.  A
+  branch failed, something was reported against it, and nothing in the
+  proposal's own source explains the failure — so the mechanism is what is
+  implicated, and PRD §C3 says it "is not worth retrying".  Raised by
+  :meth:`~signal_agent.MechanismDiagnosis.require` and only by it, on its own
+  path, and it is the answer the *driver* must hear on the last line before it
+  writes a retry prompt.
+
+  **It is a sibling of :class:`AgentSourceError`, and that is this tree's
+  sharpest inheritance decision.**  The three refusals under
+  :class:`AgentSourceError` — illegal theme, dead territory, convergence — are
+  each a fact about *what the agent wrote*, and each asserts the same repair:
+  re-prompt it.  That is why they subclass.  This refusal asserts the
+  *opposite* repair.  A caller's ``except AgentSourceError:`` handler exists to
+  re-prompt, and letting it catch "the mechanism is flawed" would make that
+  handler spend trial budget on the branch the diagnosis just said to close —
+  which is the one thing feature 209 exists to prevent, and §14.1 prices it
+  ("a bad proposal is caught by the evaluator at a cost of one trial charge").
+  The subject is also different in kind: the source is exactly what this
+  sentence holds blameless, and what failed is the *mechanism* — the same
+  subject feature 211's rationale is about, and the same reason that one is a
+  sibling too.
+
+  The distinct class buys the *query* as well: "how often did the diagnosis
+  close a branch rather than retry it?" is a question about research yield, and
+  a caller that could not separate it from a signature bug would have to match
+  on message text to ask it.
+
 * :class:`MechanismNotScoredError` — the *barrier* clause of feature 211's
   own sentence, *"never as a scored input"*.  Raised by
   :meth:`~signal_agent.StatedMechanism.require_scored_input`, and only by
@@ -179,12 +207,18 @@ law's returned value* never sees any of these classes — the returned
 only at their ``require`` methods, so a caller that wants to branch on a
 refusal branches on ``adopted`` rather than on an exception.
 
-The vocabulary deliberately has no *retry* class.  "A flawed core
-mechanism" and "a sound idea undermined by a located bug" are two answers
-feature 209 attributes to a *diagnosis*, and this member neither performs
-that diagnosis nor records its outcome: a retry-decision error living
-here would be an error type with no raiser, which is a shape the caller
-would have to reason about for nothing.
+The vocabulary deliberately has no *retry* class, and feature 209's
+arrival did not change that.  "A flawed core mechanism" and "a sound idea
+undermined by a located bug" are two answers that feature attributes to a
+*diagnosis*, and the retrying half of the decision is a value —
+:class:`~signal_agent.MechanismDiagnosis` returns it, because a driver
+deciding *whether* to spend a trial charge must be able to branch without
+an exception in the way.  A retry-decision error would be an error type
+whose only raiser is the caller that had already been told to retry, which
+is a shape there is nothing to reason about.  What is *here* is the other
+half: :class:`FlawedMechanismError`, the refusal, raised on the last line
+before a retry prompt where a caller that established no location must not
+be allowed to write one.
 """
 
 from __future__ import annotations
@@ -195,6 +229,7 @@ __all__ = [
     "AntiConvergenceError",
     "DeadTerritoryError",
     "DeadTerritorySetError",
+    "FlawedMechanismError",
     "IllegalThemeError",
     "MechanismColumnError",
     "MechanismConflictError",
@@ -436,6 +471,47 @@ class DeadTerritorySetError(SignalAgentError):
     and which to widen.  Folding the two set errors together would make
     "the denylist is broken" indistinguishable from "the legal set is
     broken", and the two are fixed in two different documents.
+    """
+
+
+class FlawedMechanismError(SignalAgentError):
+    """A failed branch is not worth retrying — the mechanism is what failed.
+
+    Raised by :meth:`~signal_agent.MechanismDiagnosis.require` — feature 209's
+    bridge between the diagnosis's returned decision and the exception a caller
+    wants on its last line before it writes a retry prompt.  The message is the
+    law's own sentence, opening with the code of the verdict that produced it —
+    ``flawed_mechanism`` for PRD §C3's *"the former is not worth retrying"*,
+    and ``not_a_diagnosis`` when there was no failure to diagnose, or nothing
+    that was source to locate a failure in — so a campaign log and a retry
+    prompt say the same thing.
+
+    **It is a sibling of :class:`AgentSourceError`, not a subclass, and the
+    asymmetry is load-bearing at every call site written before feature 209
+    existed.**  :class:`IllegalThemeError`, :class:`DeadTerritoryError` and
+    :class:`AntiConvergenceError` subclass that base precisely so a caller's
+    existing ``except AgentSourceError:`` handler keeps catching them — and
+    that handler's repair is *re-prompt the agent*.  This refusal asserts the
+    opposite repair: stop, close the branch, open another mechanism.  A caller
+    that caught this through the same clause would re-prompt the branch the
+    diagnosis just closed, spending a trial charge to learn nothing, which is
+    the exact waste §14.1 names — *"A bad proposal is caught by the evaluator
+    at a cost of one trial charge."*  The subject differs too: the three
+    subclasses are facts about *what the agent wrote*, and this is a fact about
+    the *idea* the code implements, with the source held blameless.
+
+    What the distinct class buys is the *query*: "how often did the diagnosis
+    close a branch rather than retry it?" is a question about research yield,
+    and a caller that could not separate it from a signature bug would have to
+    match on message text to ask it.  The separation is the one
+    :class:`MechanismNotScoredError` draws for a refusal about this system's own
+    wiring, applied to a refusal about a hypothesis.
+
+    It is not raised for a *retryable* branch — there is no exception on that
+    path at all, and that is feature 209's second clause: the decision is the
+    law's returned value, and a caller that wants it branches on
+    :attr:`~signal_agent.DiagnosisVerdict.retry` or takes the
+    :class:`~signal_agent.LocatedDefect` from ``require``.
     """
 
 
