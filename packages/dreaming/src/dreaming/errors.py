@@ -127,6 +127,43 @@ over that theme's worlds.  No code word: feature 282's verb is *computes*, so
 every refusal opens with its subject — the shape features 276's and 278's
 classes state for their own code-word-free sentences.
 
+**Feature 280 bars a winner, and its three classes split by the one thing
+the caller must do about it.**  app_spec.xml, feature 280: *System rejects a
+winning revision whose advantage falls below the square root of twice the
+log of M scaled by score deviation.*  The ask/store pair the cap, the split
+and the transfer state covers this feature's two *developer* facts —
+:class:`BarRequestError` for a malformed ask (an advantage that is not a
+finite real, an ``M`` that is not a whole number of one or more, a deviation
+that is not strictly positive, a world count of none, a blank iteration id,
+a comparison that is not a :class:`~dreaming.paired.PairedDifference`, or no
+database named) and :class:`BarRecordError` for a store that holds no ``M``
+to read (a database without the pool, translated at the seam from the cap's
+own record class, or a cycle with no recorded cap — the *"a bar computed
+over an ``M`` nobody recorded is a bar over a number nobody ran"* refusal).
+But the verdict itself is a **third repair neither half can state**:
+:class:`SelectionBarError` is raised when the figures were honest, the
+record was there, and the answer is *no* — the winner does not survive the
+selection noise of its own tournament — and the repair is *keep the
+incumbent*, which the paper's ``V^{m★} ≥ V^0`` holds by construction (with
+the incumbent in the candidate set, feature 273, the incumbent *is* the
+argmax when nothing clears).  A caller that caught the verdict as the ask's
+class would re-send the same honest figures forever; one that caught it as
+the store's would re-point at a database that was fine.  The verdict carries
+the module's one code (:data:`dreaming.bar.SELECTION_BAR_CODE`,
+``advantage_below_bar``), minted on the ``pool_frozen`` / ``pool_too_thin``
+/ ``proportion_comparison`` convention because it is the one refusal an
+operator greps a deployment log for — *why did this cycle keep the
+incumbent?* — while the ask and store faces open with their subjects, the
+stance :class:`CapRequestError` states.  It is deliberately none of the
+member's other verdicts: not :class:`PairedComparisonError` (the comparison
+grounded fine; the subject is the noise of winning, not the pairing of
+worlds), not :class:`RevisionCeilingError` (the sweep was legal — the
+ceiling refuses it *before* it runs, the bar refuses the winner *after*),
+and not :class:`CapRequestError` or :class:`CapRecordError`, which are
+translated at the bar's seam for the reason every translation in this member
+gives: the caller asked for a bar, and must not be told the cap could not be
+recorded.
+
 **Why :class:`PoolFrozenError` is its own class and not a borrowed one.**
 Three members already read this pool and each has its own vocabulary for its
 own act — :class:`~tripwires.errors.TripwireExcisionError`,
@@ -152,6 +189,8 @@ that is already going and must not have its pool moved underneath it.
 from __future__ import annotations
 
 __all__ = [
+    "BarRecordError",
+    "BarRequestError",
     "CapRecordError",
     "CapRequestError",
     "DreamingError",
@@ -161,6 +200,7 @@ __all__ = [
     "PoolTooThinError",
     "ProportionComparisonError",
     "RevisionCeilingError",
+    "SelectionBarError",
     "SplitRequestError",
     "SplitStoreError",
     "TransferRequestError",
@@ -620,4 +660,118 @@ class TransferStoreError(DreamingError):
     *there is no pool here to split* (feature 278) and *there is no pool
     here — or no honest census of one — to hold a family out of* (feature
     282).
+    """
+
+
+class BarRequestError(DreamingError):
+    """The selection bar could not be asked for as the caller asked for it.
+
+    app_spec.xml, "Dreaming Loop & Meta-Selection", feature 280: *System
+    rejects a winning revision whose advantage falls below the square root
+    of twice the log of M scaled by score deviation.*  This is the *ask*
+    face of that sentence: an advantage that is not a finite real (a ``nan``
+    compared against the bar answers neither below nor above it), an ``M``
+    that is not a whole number of one or more (the maximum of no scores is
+    a figure no tournament produced), a score deviation that is not
+    strictly positive (the degenerate pool the paired statistic refuses in
+    its own word), a world count of none (a standard error over no worlds
+    is a division by exactly nothing), a blank iteration id, a comparison
+    that is not a :class:`~dreaming.paired.PairedDifference` (the
+    advantage, the deviation and the world count are three figures one
+    comparison already carries, and three loose numbers could come from
+    three different measurements), or no database named for the record to
+    be read from.  Every one is a fact about the **request**, refused
+    before anything is read or computed, and the repair is to re-consider
+    what was asked for — the stance :class:`FreezeRequestError` takes for
+    feature 270's asks and the cap, split and transfer pairs take for
+    their own.
+
+    Deliberately **not** a :class:`CapRequestError`, though the store seam
+    refuses a missing URL by translating the cap's own request class: the
+    caller asked for a bar, and must not be told the cap could not be
+    *recorded* about an act that recorded nothing — the seam discipline the
+    whole workspace states for error vocabularies, applied inside the
+    member exactly as ``dreaming.cap`` and ``dreaming.split`` apply it.
+
+    No code word, for the reason :class:`CapRequestError` gives: the ask's
+    refusals are developer facts, and every message opens with its subject
+    so a reader is told *what to fix* rather than handed a token to grep
+    for.
+    """
+
+
+class BarRecordError(DreamingError):
+    """The store could not ground a selection bar's ``M``.
+
+    The store-side face of feature 280's sentence, and it is where the
+    feature's own claim is checked: Appendix B's bar reads ``M`` back from
+    feature 277's record, so the record has to be there.  Two ways the
+    store refuses to ground it, both facts about the **store** rather than
+    the ask (the URL was well formed, the iteration named a cycle, the
+    comparison was taken):
+
+    * **the database holds no pool tables** — translated at the seam from
+      the cap's own record class, because a store without the pool holds
+      no dreaming cycles and so no caps to read, and the caller that asked
+      for a bar must not be told a cap could not be recorded.
+    * **no recorded cap names the iteration** — the refusal the cap's own
+      module states the reason for in advance: *"a bar computed over an
+      ``M`` nobody recorded is a bar over a number nobody ran."*  A bar
+      guessed at an unrecorded ``M`` would mis-state the multiple-testing
+      width by exactly the factor the bar exists to control.
+
+    The repair is to point ``DATABASE_URL`` at the database the replay
+    pool lives in (or migrate it), and to record the cycle's cap
+    (:func:`dreaming.cap.record_cycle_cap`) before judging its winner —
+    never to re-send the same ask against a store that still holds nothing
+    to read.  A sibling of :class:`CapRecordError` and
+    :class:`SplitStoreError` rather than a face of either, because the
+    three name different worlds: *there is no pool here to cap* (feature
+    277), *there is no pool here to split* (feature 278) and *there is no
+    recorded ``M`` here to bar a winner at* (feature 280) — a caller that
+    caught one and read it as another would migrate a database that held
+    the pool, or record caps for a cycle whose winner had already been
+    judged at a guessed figure.
+    """
+
+
+class SelectionBarError(DreamingError):
+    """A winning revision's advantage did not survive its selection noise.
+
+    app_spec.xml, "Dreaming Loop & Meta-Selection", feature 280: *System
+    rejects a winning revision whose advantage falls below the square root
+    of twice the log of M scaled by score deviation.*  docs/alpha-engine-prd.md
+    §12.1 states the rule, and states it as the answer to the question the
+    loop's own last clause raises — the argmax is a **max**, and a max is
+    biased:
+
+        the selected policy's true advantage survives selection noise only
+        when  true_advantage > √(2 ln M) · σ_V / √n_worlds
+
+    The expected maximum of ``M`` scores that carry no advantage at all is
+    √(2 ln M) standard errors (§7.3's null max-Sharpe bar, *"the same
+    multiple-testing problem one level up"*), so a winner at or below the
+    bar is indistinguishable from the best of ``M`` nulls, and persisting
+    it would enshrine selection noise as improvement while every figure in
+    the record looked like a measurement.
+
+    **Its repair is its own, which is why it is its own class.**  *Keep the
+    incumbent* — the paper's ``V^{m★} ≥ V^0`` holds by construction once
+    the incumbent is in the candidate set (feature 273): when nothing
+    clears, the incumbent *is* the argmax.  The classes a caller could
+    otherwise catch this as all name repairs that are wrong here:
+    :class:`BarRequestError` means *re-send the figures* (they were
+    honest), :class:`BarRecordError` means *point at the store* (it held
+    the record), :class:`PairedComparisonError` means *the worlds will not
+    pair* (they paired), and :class:`RevisionCeilingError` means *lower
+    ``M`` before running* (the sweep already ran, legally — the ceiling
+    refuses the sweep, this refuses the winner).  A caller that must react
+    differently to *your figures were malformed* and *the tournament's best
+    was noise* cannot catch one class and tell them apart.
+
+    Every message opens with :data:`dreaming.bar.SELECTION_BAR_CODE`
+    (``advantage_below_bar``), states the advantage, the bar and the three
+    figures behind it, and names the repair — so an operator reading a
+    deployment log sees both ends of the judgement: *what the winner
+    earned* and *what surviving selection noise costs*.
     """

@@ -212,14 +212,53 @@ Its refusals are its own pair of classes
 :class:`~dreaming.errors.TransferStoreError` for a store that holds no pool
 or no honest census of one) under the one base.
 
+**It carries the tournament's own verdict as an eighth sentence.**  §C5's
+loop ends *"select the argmax under §7"*, and §12.1 names what is wrong with
+stopping there: the winner is a **max**, and a max is biased — *"the
+dreaming loop overfits its own replay pool … selecting the max over ``M``
+revisions … is the same multiple-testing problem one level up"*.  Appendix
+B's bar is the width of that problem, ``advantage > √(2 ln M) · σ_V /
+√n_worlds`` — the expected maximum of ``M`` scores that carry no advantage
+at all, §7.3's null max-Sharpe figure stated one level up — and feature
+280's sentence (*"System rejects a winning revision whose advantage falls
+below the square root of twice the log of M scaled by score deviation"*)
+is that bar applied to the winner: :func:`dreaming.bar.selection_bar`
+answers the figure, :func:`dreaming.bar.rejects_unbarred_winner` is the
+verdict over figures the caller already holds (the shape the floor, the
+ceiling, the schedule and the comparison's own *rejects* all take), and
+:func:`dreaming.bar.cycle_bar` is the seam that reads ``M`` back from
+feature 277's record — the **newest** ``cycle_cap`` row naming the
+iteration, because a retried cycle is re-decided and the decision in force
+is the last one — and judges feature 281's
+:class:`~dreaming.paired.PairedDifference` at it: the advantage, the
+deviation and the world count one comparison already carries, since §12.1's
+``σ_V ≈ 0.8`` and §11.0's ``σ_diff ≈ 0.8`` are one figure and the
+sections' ``n > 53`` and ``~56`` are two derivations of the same pool.  The
+edge is strict — a winner exactly at the bar has not survived it, the edge
+:meth:`~dreaming.paired.PairedDifference.clears` states for the gate's own
+criterion — and the repair is neither a re-ask nor a re-point: it is *keep
+the incumbent*, which is the paper's ``V^{m★} ≥ V^0`` holding by
+construction (feature 273 keeps the incumbent in the candidate set, so
+when nothing clears, the incumbent *is* the argmax).  Its refusals are its
+own three classes (:class:`~dreaming.errors.BarRequestError` for the ask's
+own facts, :class:`~dreaming.errors.BarRecordError` for a store that holds
+no recorded ``M`` — the *"a bar computed over an ``M`` nobody recorded is a
+bar over a number nobody ran"* refusal — and
+:class:`~dreaming.errors.SelectionBarError` for the verdict itself,
+opening with ``advantage_below_bar``), with the cap's request and record
+refusals translated at the seam, never borrowed.
+
 **It is not the evaluator, the selector, or the rotator.**  Running ``M``
-revisions (features 271-274), rotating the split per cycle and persisting
-which worlds were held out per iteration (feature 279), the paired statistic
-and its bar (features 280-281) and the argmax persisted to
-``policy_revision`` are all their own features depending on this one.  This
-member holds the pool, splits it, and hands back the commitment, the count,
-the halves and the refusal; it never runs a policy, never scores a world and
-never picks a winner.
+revisions and evaluating every candidate against every stored world
+(features 271-272), including the incumbent in the candidate set and
+persisting the argmax to ``policy_revision`` (features 273-274), and
+rotating the split per cycle and persisting which worlds were held out per
+iteration (feature 279) are all their own features depending on this one.
+This member holds the pool, splits it, compares arms over it and bars a
+winner that does not survive the noise its own tournament earned; it never
+runs a policy, never scores a world and never picks a winner — the bar
+*refuses* one, and the act of refusing a winner is not the act of crowning
+it.
 
 **It never writes the pool's tables.**  Feature 270's whole subject is not
 writing them.  ``pool_freeze`` is this member's own table and the only table it
@@ -276,6 +315,12 @@ from __future__ import annotations
 
 from app.module_loader import register
 
+from .bar import (
+    SELECTION_BAR_CODE,
+    cycle_bar,
+    rejects_unbarred_winner,
+    selection_bar,
+)
 from .cap import (
     CAPPED_SWEEP_CAP,
     CYCLE_CAP_TABLE,
@@ -307,6 +352,8 @@ from .cycle import (
     sqlite_path,
 )
 from .errors import (
+    BarRecordError,
+    BarRequestError,
     CapRecordError,
     CapRequestError,
     DreamingError,
@@ -316,6 +363,7 @@ from .errors import (
     PoolTooThinError,
     ProportionComparisonError,
     RevisionCeilingError,
+    SelectionBarError,
     SplitRequestError,
     SplitStoreError,
     TransferRequestError,
@@ -381,10 +429,13 @@ __all__ = [
     "PROPORTION_DESIGN_EFFECT",
     "REPLAY_SCORE_COLUMNS",
     "REPLAY_SCORE_TABLE",
+    "SELECTION_BAR_CODE",
     "TRAIN_FRACTION",
     "UNGUARDED_CODE",
     "WORLD_COLUMNS",
     "WORLD_TABLE",
+    "BarRecordError",
+    "BarRequestError",
     "CapRecord",
     "CapRecordError",
     "CapRequestError",
@@ -401,11 +452,13 @@ __all__ = [
     "PoolTooThinError",
     "ProportionComparisonError",
     "RevisionCeilingError",
+    "SelectionBarError",
     "SplitRequestError",
     "SplitStoreError",
     "TransferRequestError",
     "TransferStoreError",
     "build_cycle_freeze",
+    "cycle_bar",
     "cycle_cap_schema",
     "cycle_caps",
     "cycle_freeze_schema",
@@ -426,8 +479,10 @@ __all__ = [
     "record_cycle_cap",
     "rejects_proportion_comparison",
     "rejects_thin_pool",
+    "rejects_unbarred_winner",
     "rejects_uncapped_sweep",
     "revision_cap",
+    "selection_bar",
     "split_pool",
     "split_replay_pool",
     "sqlite_path",

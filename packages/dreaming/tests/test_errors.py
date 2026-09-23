@@ -321,6 +321,63 @@ class TestTheVocabulary:
         assert POOL_TOO_THIN_CODE not in message
         assert FREEZE_CODE not in message
 
+    def test_the_member_carries_the_selection_bar_as_its_own_three(self):
+        """Feature 280's three classes split by repair, and the third is the verdict.
+
+        §12.1's bar refuses a *winner*, so the feature has one more face than
+        the ask/store pairs the cap, the split, the comparison and the
+        transfer state: :class:`BarRequestError` (re-send the figures),
+        :class:`BarRecordError` (record the cycle's cap, or point at the
+        store that holds it) and :class:`SelectionBarError` — the figures
+        were honest, the record was there, and the answer is *no*: *keep the
+        incumbent*, which the paper's ``V^{m★} ≥ V^0`` holds by
+        construction.  A caller that caught the verdict as either
+        developer face would re-send the same honest figures forever, or
+        re-point at a database that was fine.  The one code is on the
+        verdict alone — ``advantage_below_bar``, the word an operator
+        greps a deployment log for — while the ask and store faces open
+        with their subjects, the stance :class:`CapRequestError` states.
+        """
+        import dreaming
+
+        for bar_class in (
+            dreaming.BarRequestError,
+            dreaming.BarRecordError,
+            dreaming.SelectionBarError,
+        ):
+            assert issubclass(bar_class, dreaming.DreamingError)
+            for sibling in (
+                FreezeRequestError,
+                PoolFrozenError,
+                PoolTooThinError,
+                dreaming.CapRequestError,
+                dreaming.CapRecordError,
+                dreaming.RevisionCeilingError,
+                dreaming.SplitRequestError,
+                dreaming.SplitStoreError,
+                dreaming.ProportionComparisonError,
+                dreaming.PairedComparisonError,
+                dreaming.TransferRequestError,
+                dreaming.TransferStoreError,
+            ):
+                assert not issubclass(bar_class, sibling)
+                assert not issubclass(sibling, bar_class)
+
+        # The code is on the verdict alone, and the cap's refusals are
+        # translated at the seam — the caller that asked for a bar never
+        # meets the cap's word for an act that recorded nothing.
+        assert dreaming.SELECTION_BAR_CODE == "advantage_below_bar"
+        with pytest.raises(dreaming.SelectionBarError) as verdict:
+            dreaming.rejects_unbarred_winner(0.25, m=40, spread=0.8, worlds=53)
+        with pytest.raises(dreaming.BarRequestError) as ask:
+            dreaming.rejects_unbarred_winner(0.3, m=0, spread=0.8, worlds=53)
+
+        assert str(verdict.value).startswith(dreaming.SELECTION_BAR_CODE)
+        assert not str(ask.value).startswith(dreaming.SELECTION_BAR_CODE)
+        for message in (str(verdict.value), str(ask.value)):
+            assert POOL_TOO_THIN_CODE not in message
+            assert FREEZE_CODE not in message
+
 
 class TestTheMessages:
     """What a refusal says, since the message *is* the repair instruction."""
