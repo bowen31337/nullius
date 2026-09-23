@@ -14,11 +14,14 @@ one base class per member and a greppable code prefix per failure.  Feature
   found changed when the freeze was checked.  The repair is the same for all
   three: *stop writing, or close the iteration.*
 
-And it pins the one code this member deliberately does **not** carry:
-``pool_too_thin``, which is docs/alpha-engine-prd.md §12.1's ladder floor —
-a precondition on a run that has not started, which is feature 275's own
-sentence and its own code.  A member that carried it here would be answering
-for a feature whose subject is not a cycle that is running.
+And it pins the one code this member carries as a **second sentence**, not a
+third face of feature 270: ``pool_too_thin``, which is docs/alpha-engine-prd.md
+§12.1's ladder floor — a precondition on a run that has not started, which is
+feature 275's own sentence and its own class, :class:`PoolTooThinError`, a
+sibling of feature 270's two classes under the one ``DreamingError`` base.  A
+member that folded it into feature 270's ``PoolFrozenError`` would make a caller
+that must react differently to *the pool is held* and *the pool is too thin to
+dream on* catch one class and re-inspect something it cannot tell apart.
 """
 
 from __future__ import annotations
@@ -28,9 +31,11 @@ import datetime as dt
 import pytest
 from dreaming import (
     FREEZE_CODE,
+    POOL_TOO_THIN_CODE,
     DreamingError,
     FreezeRequestError,
     PoolFrozenError,
+    PoolTooThinError,
 )
 from dreaming.cycle import validated_iteration_id
 
@@ -68,21 +73,31 @@ class TestTheVocabulary:
         assert FREEZE_CODE == "pool_frozen"
         assert "too_thin" not in FREEZE_CODE
 
-    def test_the_member_does_not_carry_the_ladder_floor(self):
-        """Feature 275's ``pool_too_thin`` is deliberately absent.
+    def test_the_member_carries_the_ladder_floor_as_a_sibling(self):
+        """Feature 275's ``pool_too_thin`` is its own class beside feature 270's.
 
         §12.1's floor — *"below 20 worlds: do not run dreaming"* — is a
-        precondition on a run that has not started.  This member's subject is a
-        cycle that *is* going and must not have its pool moved underneath it,
-        and the two sentences have different repairs.  Pinned because the
-        tempting edit is to add it here, where a pool's size is already being
-        read.
+        precondition on a run that has not started, which is feature 275's own
+        sentence.  It lives in this member as its own code (``pool_too_thin``)
+        and its own class (:class:`PoolTooThinError`), a sibling of feature
+        270's two classes under the one ``DreamingError`` base — not a third
+        face of :class:`PoolFrozenError`.  Pinned because the tempting edit is
+        to fold it into feature 270's refusal, where a pool's size is already
+        being read: the two sentences have different repairs, so they must be
+        two classes a caller can tell apart.
         """
         import dreaming
 
-        assert not hasattr(dreaming, "POOL_TOO_THIN_CODE")
-        assert "pool_too_thin" not in dir(dreaming)
-        assert not hasattr(dreaming.errors, "PoolTooThinError")
+        assert dreaming.POOL_TOO_THIN_CODE == "pool_too_thin"
+        assert "POOL_TOO_THIN_CODE" in dir(dreaming)
+        assert issubclass(PoolTooThinError, dreaming.errors.PoolTooThinError)
+        assert issubclass(PoolTooThinError, DreamingError)
+        # A sibling, not a face of feature 270's refusal — the two have
+        # different repairs, so a caller must be able to catch one without
+        # catching the other.
+        assert not issubclass(PoolTooThinError, PoolFrozenError)
+        assert not issubclass(PoolFrozenError, PoolTooThinError)
+        assert POOL_TOO_THIN_CODE != FREEZE_CODE
 
 
 class TestTheMessages:

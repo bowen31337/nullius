@@ -24,6 +24,11 @@ sides, which is what the two classes are:
   **world**: the ask was well formed, and the contradiction is between the
   statement being run (or the pool as found) and the freeze that is open.
   The repair is never to re-send a corrected ask.
+* :class:`PoolTooThinError` — the pool holds fewer worlds than the ladder
+  floor, so a dreaming run is refused *before it starts*.  This is a fact
+  about the **pool's size**, not about a malformed ask or a moving pool; the
+  repair is to grow the pool (or run fixed exploration), never to re-send the
+  same run.
 
 Folding the two together would make a caller that must react differently to
 *my iteration id was a typo* and *the cycle's pool is being written into* catch
@@ -61,6 +66,7 @@ __all__ = [
     "DreamingError",
     "FreezeRequestError",
     "PoolFrozenError",
+    "PoolTooThinError",
 ]
 
 
@@ -134,4 +140,50 @@ class PoolFrozenError(DreamingError):
     first face — the table and the operation that was refused, so an operator
     reading a refusal can identify both ends of the collision: *which* cycle
     was walking the pool and *what* was reaching into it.
+    """
+
+
+class PoolTooThinError(DreamingError):
+    """The pool holds fewer worlds than the ladder floor, so a dreaming run is refused.
+
+    app_spec.xml, "Dreaming Loop & Meta-Selection", feature 275: *System
+    rejects a dreaming run when the pool holds fewer than 20 worlds, which
+    returns a ``pool_too_thin`` error message.*  docs/alpha-engine-prd.md
+    §12.1 states the rule this class enforces, and states it as a precondition
+    *on a run that has not started* rather than as a caveat on one that is
+    going:
+
+        Below 20 worlds: **do not run dreaming.** Fixed exploration; accumulate
+        history.
+
+    This is the ladder's floor, and it is a **different sentence from feature
+    270's**, with a different repair — which is why it is its own class beside
+    :class:`PoolFrozenError` rather than a face of it.  :class:`PoolFrozenError`
+    is about a cycle that is *already running* and whose pool must not move
+    underneath it (its repair is *stop writing, or close the iteration*);
+    :class:`PoolTooThinError` is about a run that *has not begun* and should not
+    begin, because a tournament held over so few worlds has no statistical
+    power — §10.3.1's paired comparison cannot clear its bar on a handful of
+    worlds, and selecting the max over ``M`` revisions scored on them is the
+    multiple-testing problem one level up with nothing to average it out.  The
+    repair is never to re-send the same run: it is to grow the pool, or to run
+    fixed exploration and accumulate history until the pool clears the floor.
+
+    **Why this class is a sibling and not borrowed.**  The workspace contract is
+    that no member imports another, so this class cannot be a subclass of the
+    pool's own :class:`~bootstrap.BootstrapPoolError` even where the meaning is
+    close, and it must not be feature 270's :class:`PoolFrozenError`, whose word
+    (``pool_frozen``) names a *moving* pool rather than a *thin* one — a caller
+    that caught the thin-pool refusal as *the pool is held* would wait for a
+    cycle that does not exist.  A caller that wants every failure of this
+    member's path catches :class:`DreamingError`; a caller that wants to know
+    *specifically* that the run was refused for lack of worlds catches
+    :class:`PoolTooThinError` and reads the figure and the floor out of the
+    message.
+
+    Every message opens with :data:`dreaming.ladder.POOL_TOO_THIN_CODE`
+    (``pool_too_thin``), states the pool's figure and the floor it fell short
+    of, and names §12.1, so an operator reading a refusal can see both ends of
+    the judgement: *how many worlds the pool held* and *which floor it was
+    measured against*.
     """

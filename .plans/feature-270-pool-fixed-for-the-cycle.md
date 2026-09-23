@@ -177,7 +177,7 @@ cannot itself happen under it.
 
 | not this member's | whose |
 |---|---|
-| the §12.1 ladder floor (`pool_too_thin`, "below 20 worlds do not run dreaming") | **feature 275** — a precondition on a run that has not started; this member's subject is a cycle that *is* going. Its own code, deliberately not carried here. |
+| the §12.1 ladder floor (`pool_too_thin`, "below 20 worlds do not run dreaming") | **feature 275** — a precondition on a run that has not started; this member's subject is a cycle that *is* going. Carried here as a sibling: `dreaming.ladder.rejects_thin_pool(world_count, *, gate=20)` raises `PoolTooThinError` (`pool_too_thin`) when the figure is below the floor, a sibling of feature 270's classes under `DreamingError`, not a third face of `PoolFrozenError`. See `.plans/feature-275-ladder-floor.md`. |
 | running the `M` revisions | features 271-274 |
 | the holdout split rotation | feature 279 |
 | the paired statistic and its bar | feature 280 |

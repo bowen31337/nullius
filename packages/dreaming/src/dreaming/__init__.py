@@ -56,15 +56,31 @@ account of which cycle is holding what.
 What it is not
 --------------
 
-**It is not the ladder.**  §12.1's floor — *"below 20 worlds: do not run
-dreaming; fixed exploration; accumulate history"* — is a precondition on a run
-that has not started, and it is feature 275's sentence with feature 275's own
-code (``pool_too_thin``).  This member's subject is a cycle that is *already
-going* and must not have its pool moved underneath it, so it carries
-``pool_frozen`` and deliberately not the ladder's word.  What this member does
-give feature 275 is an honest pool size: the hold records ``world_count`` at
-the moment it opened, and a pool that is not there is refused rather than
-counted as zero.
+**It is not the evaluator, the selector, or the splitter.**  Running ``M``
+revisions (features 271-274), rotating the holdout split per cycle (feature
+279), the paired statistic and its bar (feature 280) and the argmax persisted
+to ``policy_revision`` (features 276-277) are all their own features depending
+on this one.  This member holds the pool and hands back the commitment, the
+count and the refusal; it never runs a policy and never picks a winner.
+
+**It carries the ladder's floor as a second sentence, not a third face of
+feature 270.**  §12.1's floor — *"below 20 worlds: do not run dreaming; fixed
+exploration; accumulate history"* — is a precondition on a run that has *not*
+started, which is feature 275's sentence.  It lives in this member as its own
+code (``pool_too_thin``, :data:`POOL_TOO_THIN_CODE`) and its own class
+(:class:`~dreaming.errors.PoolTooThinError`), a sibling of feature 270's
+``pool_frozen`` rather than a face of it: feature 270's subject is a cycle that
+is *already going* and must not have its pool moved underneath it, and its
+repair is *stop writing, or close the iteration*, while the floor's subject is
+a run that has not begun and should not begin, and its repair is *grow the
+pool, or run fixed exploration*.  The two sentences have different repairs, so
+they are two classes under the one :class:`~dreaming.errors.DreamingError`
+base, and the floor is a judgment over a count the caller already has —
+:func:`dreaming.ladder.rejects_thin_pool` takes the figure, it never counts the
+pool — which is the honest division between a verdict and a count.  What this
+member gives the floor is the same honest pool size it gives feature 270: the
+hold records ``world_count`` at the moment it opened, and a pool that is not
+there is refused rather than counted as zero.
 
 **It is not the evaluator, the selector, or the splitter.**  Running ``M``
 revisions (features 271-274), rotating the holdout split per cycle (feature
@@ -146,7 +162,18 @@ from .cycle import (
     pool_commitment,
     sqlite_path,
 )
-from .errors import DreamingError, FreezeRequestError, PoolFrozenError
+from .errors import (
+    DreamingError,
+    FreezeRequestError,
+    PoolFrozenError,
+    PoolTooThinError,
+)
+from .ladder import (
+    LADDER_FLOOR_WORLDS,
+    POOL_TOO_THIN_CODE,
+    rejects_thin_pool,
+    validated_floor,
+)
 from .layout import (
     POOL_SCHEMA_BY_TABLE,
     REPLAY_SCORE_COLUMNS,
@@ -160,8 +187,10 @@ __all__ = [
     "DATABASE_URL_ENV",
     "FREEZE_CODE",
     "FREEZE_TABLE",
+    "LADDER_FLOOR_WORLDS",
     "POOL_SCHEMA_BY_TABLE",
     "POOL_TABLES",
+    "POOL_TOO_THIN_CODE",
     "REPLAY_SCORE_COLUMNS",
     "REPLAY_SCORE_TABLE",
     "UNGUARDED_CODE",
@@ -172,15 +201,19 @@ __all__ = [
     "FreezeRecord",
     "FreezeRequestError",
     "PoolFrozenError",
+    "PoolTooThinError",
     "build_cycle_freeze",
     "cycle_freeze_schema",
     "expected_triggers",
+    "ladder_floor",
     "missing_guards",
     "open_cycle_freeze",
     "pool_bootstrap_schema",
     "pool_commitment",
     "pool_tables_present",
+    "rejects_thin_pool",
     "sqlite_path",
+    "validated_floor",
 ]
 
 #: The name this member registers under.  Re-exported from
@@ -189,6 +222,14 @@ __all__ = [
 #: (``src/app/modules/dreaming``) can import it under the one name every seat
 #: in this workspace exports — the shape the loader's discovery expects.
 COMPONENT_NAME = POOL_FREEZE_COMPONENT_NAME
+
+#: The ladder floor's world count — §12.1's 20, the floor a dreaming run must
+#: meet.  Re-exported from :mod:`dreaming.ladder` under the friendlier name the
+#: seat and a caller reach for, the way :data:`POOL_FREEZE_COMPONENT_NAME` is
+#: re-exported as :data:`COMPONENT_NAME`; a caller that asks *what is the
+#: floor?* gets one spelling, and a second spelling here would be a second
+#: thing to keep in sync.
+ladder_floor = LADDER_FLOOR_WORLDS
 
 
 @register(COMPONENT_NAME)

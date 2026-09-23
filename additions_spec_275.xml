@@ -1,0 +1,179 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 275 (System rejects a dreaming run when the pool holds fewer than 20 worlds, which returns a pool_too_thin error message)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 275 in the existing dreaming member
+    (packages/dreaming, import name dreaming; seat src/app/modules/dreaming):
+    a *ladder-floor* precondition, `rejects_thin_pool(world_count, gate=20)`
+    (and a `PoolTooThinError`), that refuses to start a dreaming run when the
+    pool holds fewer than 20 worlds. This is the precondition that feature 270
+    (the pool held fixed for the cycle, already implemented) deliberately does
+    NOT carry: feature 270's subject is a cycle that is *running* and must not
+    have its pool moved underneath it (it carries `pool_frozen`), while feature
+    275 is a precondition on a run that has *not started* — docs/alpha-engine-
+    prd.md §12.1's ladder floor ("below 20 worlds: do not run dreaming; fixed
+    exploration; accumulate history"). The two sentences have different repairs
+    and different greppable codes, and the workspace's error-vocabulary
+    discipline (no member imports another; a shared helper that raises another
+    feature's error type defeats the caller's `except`) forbids feature 275 from
+    borrowing feature 270's `pool_frozen`. So feature 275 adds its own code,
+    `pool_too_thin`, and its own error class, in the same member, as a sibling
+    of feature 270's classes under the same `DreamingError` base — not a new
+    member, not a new component, not a new table. The refusal is a *judgment
+    over a count the caller already has*, not a count the feature performs: the
+    dreaming member already reads the pool's size (feature 270's hold records
+    `world_count`, and `pool_commitment` returns it), so feature 275 takes the
+    figure as an argument — the same verdict-gate shape feature 187's headline
+    refusal and feature 230's admission gate take — and refuses when the figure
+    is below the gate. The gate is a parameter, defaulting to 20 (the §12.1
+    floor), validated to be a non-negative whole number so a gate that is not a
+    world count cannot silently admit or block a run. The refusal message opens
+    with the code `pool_too_thin`, states the figure and the gate, states the
+    repair (do not run dreaming; accumulate history / grow the pool), and names
+    the governing document (§12.1). No central registry, router, app factory,
+    middleware, settings, or migration is edited; no new `@register` component
+    is added (feature 270's single `"dreaming"` component is untouched); the
+    member joins by workspace-scan convention and does not import another
+    workspace member.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/* members, import names are
+      underscored slugs) / pytest (ruff + mypy conventions). The module loader
+      (src/app/module_loader.py) discovers members from the root pyproject.toml
+      `[tool.uv.workspace] members = ["packages/*"]`, imports each package so
+      its module-level `@register` fires, and composes what each `@register`
+      builder contributes under a component name. `app` (src/app) is a namespace
+      package with no `__init__.py`; the seats in src/app/modules/&lt;member&gt;/
+      are reached by namespace import (e.g. app.modules.bootstrap,
+      app.modules.artifacts, app.modules.dreaming). A member never imports
+      another member — it reaches shared shapes through `app.*`, never through a
+      sibling package's import name.</stack>
+    <test_baseline>The repository-level suite under tests/ is collected by
+      pytest with testpaths=tests; each workspace member's own suite lives under
+      packages/&lt;member&gt;/tests/ and is collected under its own conftest
+      (same-basename files collide under one pytest run), and is NOT graded by
+      the bare `uv run pytest` acceptance gate — a member suite must be run
+      explicitly (run both `uv run pytest tests/` and the member's own
+      `packages/dreaming/tests/`). Stdlib-only computation is the norm for a
+      member that fronts already-computed values, so feature 275's floor adds no
+      third-party dependency: it is a comparison over an integer. Measure the
+      real numbers by running the suite before relying on them. The repo lint is
+      red on main (mypy absent, pre-existing ruff errors), so lint only the
+      changed files and compare to a sibling.</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, docstrings that
+      cite app_spec.xml feature numbers and docs/alpha-engine-prd.md /
+      docs/nullius-tech-architecture.md sections, stdlib-only computation,
+      `@register` only in the package `__init__` (never a submodule — a
+      submodule's registration fires only on the first `create_app()` of a
+      process), degrade-don't-break composition (a builder that raises would
+      take composition down for every unrelated feature, so a builder returns
+      `None` for a deployment that names no store), member-owned tables created
+      lazily beside the only module that writes them (never in the shared
+      migration chain, which is order-sensitive and excluded from this feature's
+      file claim), and the error-vocabulary discipline that no member imports
+      another and a shared helper that raises another feature's error type
+      defeats the caller's `except` (translate at the seam). Feature 270 already
+      lives in this member (packages/dreaming: layout.py restates the pool
+      spelling, cycle.py is the CycleFreeze store, errors.py holds DreamingError
+      / FreezeRequestError / PoolFrozenError, __init__.py re-exports and fires
+      `@register("dreaming")`, seat src/app/modules/dreaming). Feature 275 is a
+      sibling within that member, not a new member.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Dreaming Loop &amp; Meta-Selection">
+      <feature index="275" shape="plugin" plugin="dreaming" depends_on="270" covers="cq-3">
+        System rejects a dreaming run when the pool holds fewer than 20 worlds,
+        which returns a pool_too_thin error message.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    The refusal is a pure judgment over a world count the caller already has,
+    added to the dreaming member (packages/dreaming) as a sibling of feature
+    270. It is reached directly from the member (`from dreaming import
+    reject_thin_pool, PoolTooThinError, POOL_TOO_THIN_CODE`), the way feature
+    270's `open_cycle_freeze` and its errors are, and — for a composed
+    application — through the existing seat (`app.modules.dreaming`), which
+    already hands back feature 270's single CycleFreeze component; feature 275
+    adds no second component and edits no seat. The count the judgment reads is
+    the pool's size, which the member already computes (feature 270's
+    `pool_commitment` returns `(digest, world_count)` and the hold records
+    `world_count`), so the caller obtains the figure from the same member it
+    asks to judge, and the judgment never counts the pool itself. The gate
+    (default 20) is a keyword of the refusal so a deployment may set the floor
+    differently; it is validated to be a non-negative whole number.
+  </integration_points>
+  <constraints>
+    - Feature 275 is a precondition on a run that has NOT started, and is
+      deliberately NOT feature 270's `pool_frozen`: it must use its own code,
+      `pool_too_thin`, and its own error class, `PoolTooThinError`, a sibling of
+      feature 270's classes under the shared `DreamingError` base. It must NOT
+      reuse `pool_frozen`, `PoolFrozenError`, or `FreezeRequestError` for the
+      thin-pool refusal, and feature 270's existing behaviour, messages, codes
+      and tests must be untouched.
+    - No member imports another. The count the judgment reads is obtained from
+      the dreaming member's own existing surface (the pool size the member
+      already computes), never from a sibling member's import.
+    - No central registry, router, app factory, middleware, settings, or
+      migration is edited. No new `@register` component is added — feature 270's
+      single `"dreaming"` component is untouched, and feature 275 adds no
+      component, no table, and no seat export.
+    - The refusal is a judgment over a count, not a count the feature performs:
+      `reject_thin_pool(world_count, *, gate=20)` takes the figure as an
+      argument and does not open a database or read the pool itself.
+    - The gate defaults to 20 (docs/alpha-engine-prd.md §12.1's ladder floor)
+      and is validated to be a non-negative whole number.
+    - The refusal message opens with the code `pool_too_thin`, states the
+      figure and the gate, states the repair (do not run dreaming; fixed
+      exploration; accumulate history / grow the pool), and names the governing
+      document (§12.1).
+    - All existing tests in the dreaming member (packages/dreaming/tests) and in
+      tests/ must stay green. The member's own suite must be run explicitly
+      (it is not graded by the bare `uv run pytest` gate).
+    - Do not edit the order-sensitive shared files: src/app/middleware.py,
+      src/app/settings.py, migrations/versions/**, alembic/versions/**.
+  </constraints>
+  <implementation_steps>
+    <step>
+      Phase 1 — the code and the class. Add `POOL_TOO_THIN_CODE =
+      "pool_too_thin"` and a `PoolTooThinError(DreamingError)` to the dreaming
+      member's error vocabulary as a sibling of feature 270's two classes,
+      following the same repair-split discipline (the repair for a thin pool is
+      not to re-send a corrected ask but to grow the pool / not run dreaming).
+      Add `reject_thin_pool(world_count, *, gate=20)` — a pure function that
+      validates `world_count` is a non-negative whole number and `gate` is a
+      non-negative whole number, and raises `PoolTooThinError` (message opening
+      with `pool_too_thin`, stating the figure, the gate, the repair, and §12.1)
+      when `world_count &lt; gate`. Re-export both from the member `__init__.py`
+      alongside feature 270's existing names. No new component, table, or seat
+      export.
+    </step>
+    <step>
+      Phase 2 — the tests. Add a suite in packages/dreaming/tests asserting: the
+      floor refuses below 20 (e.g. 0, 5, 19) with `pool_too_thin` and admits at
+      and above the gate (20, 45); the gate is a parameter (a custom gate
+      changes the verdict) and is validated (a negative or non-integer gate, and
+      a negative or non-integer count, are refused in the ask's own vocabulary);
+      `PoolTooThinError` is a `DreamingError` and a sibling of feature 270's
+      classes (not a subclass of `PoolFrozenError` or `FreezeRequestError`); the
+      message opens with `pool_too_thin`, names the figure and gate, states the
+      repair, and cites §12.1; and feature 270's vocabulary is unchanged (the
+      existing `test_the_member_does_not_carry_the_ladder_floor` assertion in
+      test_errors.py is updated to reflect that `pool_too_thin` now exists as
+      the code constant, while `PoolTooThinError` remains a feature-275 sibling
+      — or, if that test's intent was to pin the *absence* of the floor in
+      feature 270's own path, it is preserved and a separate feature-275 test
+      pins the presence).
+    </step>
+    <step>
+      Phase 3 — verify. Run the dreaming member's own suite
+      (`uv run pytest packages/dreaming/tests`) and the repository-level suite
+      (`uv run pytest tests/`) — both, since the member suite is not graded by
+      the bare gate — and confirm all pass. Lint only the changed files against
+      a sibling (the repo lint is red on main). Confirm feature 270's behaviour
+      and tests are untouched.
+    </step>
+  </implementation_steps>
+</project_specification>
