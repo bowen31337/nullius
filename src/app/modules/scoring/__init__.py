@@ -77,6 +77,12 @@ namespace), with no component and no second seat either.  Feature 260's
 pick's forward and backtest information coefficient, derived off the pair
 the caller hands over rather than read from any store
 (:func:`scoring.divergence_penalty`, reached from the member's own
+namespace), with no component and no second seat either.  Feature
+259's β₃ deflation penalty has taken it too: the multiple-testing
+haircut prd §7.3's growth law states, computed from the ledger
+member's ``K_effective`` derivation handed over as a view rather than
+a count — the one β-term whose feature sentence is itself a rejection
+(:func:`scoring.deflation_penalty`, reached from the member's own
 namespace), with no component and no second seat either.  Feature 263's aggregation has since taken exactly
 that path: the blend of the stratum mean and the stratum minimum is pure
 arithmetic like the objective, so it lives as the member's second law

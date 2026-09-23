@@ -26,8 +26,10 @@ the refusal of a bonus ask that cannot be measured; feature 261 adds the
 penalties' first, :class:`SwitchPenaltyError`, the refusal of a switch
 charge that cannot be counted; feature 260 adds
 :class:`DivergencePenaltyError`, the refusal of a sim-reality divergence
-that cannot be read — the three β-terms this member has so far, and the
-place the rest (257 through 259) will each add their own when they land.
+that cannot be read; feature 259 adds :class:`DeflationPenaltyError`,
+the refusal of a multiple-testing haircut that cannot be trusted — the
+four β-terms this member has so far, and the place the rest (257 and
+258) will each add their own when they land.
 263 refuses an ask it cannot *blend*: a λ outside the band, a
 stratum handed over with no worlds, a carrier it cannot read.  264 refuses
 an ask it cannot *partition*: scores with no labels, a scored world the
@@ -61,7 +63,15 @@ one outside the ``[−1, 1]`` an information coefficient is bounded by),
 and its repair lands on the forward-test record — a member none of the
 other three refusals names — so folding it would send the operator
 hunting for a sequencing or labelling fault in a data path this term
-never reads.  Every refusal the six classes
+never reads.  And 259's refusal sits beside all four for the member's
+own version of that reason: the deflation penalty refuses an ask whose
+*count* cannot be trusted (a coefficient that flips the term's sign, a
+deflation input handed over as a bare number rather than the
+``K_effective`` derivation, a total that is not a count of trials), and
+its repair lands on the trial ledger — a member none of the other four
+refusals names — so folding it would send the operator hunting for a
+sequestration, resident-array, labelling or forward-record fault in a
+data path this term never reads.  Every refusal the seven classes
 carry is a fact about the *ask* — a world that is not a name, a pick that
 names no node, a sequestered panel that cannot define a ratio, a stratum
 that holds no worlds, a λ outside the band prd §7.2 states, a pool whose
@@ -92,6 +102,7 @@ from __future__ import annotations
 
 __all__ = [
     "AggregationError",
+    "DeflationPenaltyError",
     "DivergencePenaltyError",
     "OrthogonalityError",
     "RegimeIndexError",
@@ -254,6 +265,54 @@ class DivergencePenaltyError(ScoringError):
     *divergence* cannot be read — the four repairs sending the operator to
     different members (sequestration, the resident array, the regime
     labeler, the forward-test record).
+
+    No partial value escapes a refusal: the penalty either answers the
+    moved :class:`~scoring.WorldScore` or raises, so a caller can never
+    hold a half-charged score it must remember to discard — the guarantee
+    :class:`WorldObjectiveError` makes one feature earlier and every
+    β-term landing through the same frozen seam inherits.
+    """
+
+
+class DeflationPenaltyError(ScoringError):
+    """A beta-three deflation charge that cannot be trusted (feature 259).
+
+    The ask was malformed in this term's own inputs — a coefficient that
+    is not a finite non-negative real (the spec's verb is *subtracts*,
+    and a negative one would counterfeit a bonus through the penalty
+    seam, teaching the loop that searching profligately pays), a score
+    carrier exposing no ``adjusted`` seam to ride, a ``k_effective``
+    handed over as a bare number rather than the derivation (the shape a
+    raw trial count takes — the ledger's row count, null nodes included —
+    refused whatever its value, because no arithmetic on a number can say
+    whether it was counted honestly), or a carrier whose ``total`` is not
+    a non-negative count of trials — and the refusal names which, because
+    the repairs differ: a mis-set knob against a caller that reached for
+    the plain row count against a view the ledger's derivation never
+    wrote.
+
+    The *substitution* of a raw count is the class's sharpest edge and
+    the feature's own sentence: *System rejects a deflation input taken
+    from raw trial counts, computing the beta-three term from
+    K_effective instead*.  prd §4 (line 123) is why — a null node
+    *"consumed agent calls and CPU but* **no statistical degrees of
+    freedom**. *It must not count toward ``K`` in the deflation term"*,
+    so a count that includes them prices the calibration §4 tells the
+    system to buy in research power it never spent — and a count that
+    quietly drops a charged row understates the haircut, the one
+    direction that lets a false discovery through.  Both failures wear
+    the same shape at the seam (an honest-looking integer), which is why
+    the seam refuses the shape rather than guessing at the value.
+
+    Beside :class:`WorldObjectiveError`, :class:`OrthogonalityError`,
+    :class:`SwitchPenaltyError` and :class:`DivergencePenaltyError`,
+    never under any of them: 256 refuses an ask that cannot be *scored*,
+    262 one whose *bonus* cannot be measured, 261 one whose *charge*
+    cannot be counted, 260 one whose *divergence* cannot be read, and
+    this class one whose *haircut* cannot be trusted — the five repairs
+    sending the operator to different members (sequestration, the
+    resident array, the regime labeler, the forward-test record, the
+    trial ledger).
 
     No partial value escapes a refusal: the penalty either answers the
     moved :class:`~scoring.WorldScore` or raises, so a caller can never

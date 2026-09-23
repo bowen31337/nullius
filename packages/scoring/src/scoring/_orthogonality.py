@@ -22,9 +22,9 @@ objective's own docstring promised the six β-terms would ride, "visible,
 signed, and arguable" — and answers the moved :class:`~scoring.WorldScore`:
 the *final world score* of the feature's second clause, final because it
 is the formula's last term, not because the arithmetic here is last to
-compose (features 257 through 261 land their penalties through the same
-seam as they arrive, and the order the caller applies terms in is the
-caller's).
+compose (features 257 and 258 will land their penalties through the
+same seam as they arrive, and the order the caller applies terms in is
+the caller's).
 
 **Orthogonality is ``1 − |ρ|``, and ρ is the population correlation of
 the pick's and the book's sequestered panels.**  The measurement is the

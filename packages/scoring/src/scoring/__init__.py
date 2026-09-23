@@ -140,7 +140,7 @@ the index it is pure arithmetic — no store, no clock, no environment —
 so it adds no component and no seat: the bonus rides
 :meth:`~scoring.WorldScore.adjusted` exactly as :mod:`scoring._objective`
 promised the six β-terms would, visible, signed and arguable, and the
-penalties (features 257 through 261) will find the seam already shaped
+penalties (features 257 and 258) will find the seam already shaped
 when they land their own terms through it.
 
 **The β₅ switch penalty is the member's fifth law (feature 261).**
@@ -165,7 +165,7 @@ environment — so it adds no component and no seat: the composed
 reached through this namespace, landing its visible, signed, arguable
 delta through :meth:`~scoring.WorldScore.adjusted` exactly as the
 objective's own docstring promised the six β-terms would — and the
-remaining penalties (features 257 through 259) will find the seam
+remaining penalties (features 257 and 258) will find the seam
 already shaped when they land their own terms through it.
 
 **The β₄ divergence penalty is the member's sixth law (feature 260).**
@@ -200,6 +200,34 @@ same pair, and dividing a backtest IC by it to manufacture a forward one
 would be this member inventing a reading the forward-test record did not
 hold.
 
+**The β₃ deflation penalty is the member's seventh law (feature 259).**
+*"System rejects a deflation input taken from raw trial counts,
+computing the beta-three term from K_effective instead"* — prd §7.1's
+third line, ``− β₃ · deflation(K_eff)`` (docs §10.3 agrees, line 496),
+and the one β-term whose feature sentence is a *rejection*.  The
+haircut is §7.3's growth law — the expected maximum null Sharpe across
+``K`` trials, ``√(2·ln K)`` — and ``K`` is the *honest* count: the seam
+takes the ledger member's ``K_effective`` derivation (feature 93's view
+or feature 94's response, duck-read by its pooled ``total``) and
+refuses a bare number — the shape a raw trial count takes, the ledger's
+row count with null nodes included — because a number cannot say
+whether it was counted honestly, and prd §4 (line 123) is why it must:
+a null node consumed no degrees of freedom, so counting it would price
+the calibration §4 tells the system to buy in research power it never
+spent.  It lives in :mod:`scoring._deflation` as
+:func:`~scoring.deflation_penalty` (the verb) and
+:data:`~scoring.BETA_THREE_DEFAULT` (the coefficient's stated default —
+neither document sizes it), with its own refusal
+:class:`~scoring.DeflationPenaltyError`.  Like every other term of the
+formula it is pure arithmetic — no store, no clock, no environment —
+so it adds no component and no seat: the composed ``scoring`` component
+stays the per-world objective, and the term is reached through this
+namespace, landing its visible, signed, arguable delta through
+:meth:`~scoring.WorldScore.adjusted` exactly as the objective's own
+docstring promised the six β-terms would — and the remaining penalties
+(features 257 and 258) will find the seam already shaped when they land
+their own terms through it.
+
 **No persistence here, by the same law that keeps the arithmetic pure.**
 The ``replay_score`` row is the replay plugin's (feature 255); this
 member answers the value it is written from, exactly as migration 0109
@@ -224,6 +252,7 @@ from ._aggregate import (
     AggregatedObjective,
     aggregate_objective,
 )
+from ._deflation import BETA_THREE_DEFAULT, deflation_penalty
 from ._divergence import BETA_FOUR_DEFAULT, IC_BOUND, divergence_penalty
 from ._objective import IR_DATES_MINIMUM, WorldScore, world_objective
 from ._orthogonality import BETA_SIX_DEFAULT, orthogonality_bonus
@@ -231,6 +260,7 @@ from ._regime_index import PLAIN_MEAN_CODE, regime_aggregate, regime_strata
 from ._switches import BETA_FIVE_DEFAULT, switch_penalty
 from .errors import (
     AggregationError,
+    DeflationPenaltyError,
     DivergencePenaltyError,
     OrthogonalityError,
     RegimeIndexError,
@@ -246,6 +276,7 @@ __all__ = [
     "BETA_FIVE_DEFAULT",
     "BETA_FOUR_DEFAULT",
     "BETA_SIX_DEFAULT",
+    "BETA_THREE_DEFAULT",
     "COMPONENT_NAME",
     "IC_BOUND",
     "IR_DATES_MINIMUM",
@@ -255,6 +286,7 @@ __all__ = [
     "PLAIN_MEAN_CODE",
     "AggregatedObjective",
     "AggregationError",
+    "DeflationPenaltyError",
     "DivergencePenaltyError",
     "OrthogonalityError",
     "RegimeIndexError",
@@ -263,6 +295,7 @@ __all__ = [
     "WorldObjectiveError",
     "WorldScore",
     "aggregate_objective",
+    "deflation_penalty",
     "divergence_penalty",
     "orthogonality_bonus",
     "regime_aggregate",
