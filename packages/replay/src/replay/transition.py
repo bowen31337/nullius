@@ -130,10 +130,15 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .errors import ChildGenerationRefused, ReplayTreeError
 from .returns import ReplayReturns, resident_returns
+
+if TYPE_CHECKING:  # pragma: no cover - typing only; the facade imports the
+    # verb itself inside the method body, the same seam `run` takes, so this
+    # module stays import-cheap and free of a hard dependency at composition.
+    from .pick import TerminalPick
 
 __all__ = [
     "ReplayEngine",
@@ -622,6 +627,43 @@ class ReplayEngine:
         from .rounds import run_replay
 
         return run_replay(select, question, self.tree(), round_cap=round_cap)
+
+    def pick(self, record: Any, scorer: Any) -> TerminalPick:
+        """Require the committed pick at termination — feature 249.
+
+        The composed spelling of :func:`replay.committed_pick`: §10.1's last
+        two lines after :meth:`run` has returned its revealed set —
+        ``pick = policy.commit()  # MANDATORY``, then the miss-arm of
+        ``score(pick, book, epoch, revealed, rounds)``.  The record and the
+        scorer arrive duck-typed, exactly as the free function takes them:
+        ``record`` is feature 222's episode commit record (the door the
+        policy's ``question.commit(node_id)`` went through, read through its
+        one ``terminate()`` verb), and ``scorer`` is the replay's own
+        arithmetic curried to the pick — the book, the epoch, the rounds and
+        the revealed set :meth:`run` returns.
+
+        A policy that emitted no pick is **scored**
+        :data:`~replay.NON_COMMITTING_SCORE` here, never refused, with the
+        scorer never called on the miss; the refusals are the ask (a
+        non-callable scorer, a carrier that is not an episode's commit
+        record, a termination read that cannot say), as
+        :class:`~replay.ReplayPickError`, and the two argument checks fire
+        before the record is touched so a refused ask terminates nothing.
+
+        Returns the frozen :class:`~replay.TerminalPick` — the pick
+        (absent-able) and the score (always present), the pair the
+        ``replay_score`` row is shaped around — and resolves nothing: the
+        requirement is pure over what it is handed, so unlike :meth:`run`
+        there is no tree to resolve and no call-time resolution argument to
+        make.
+        """
+        # Imported inside the function rather than at module top, the same
+        # seam `run` takes: the facade's module stays import-cheap at
+        # composition, and the verb is reached only by a caller taking the
+        # terminal act.
+        from .pick import committed_pick
+
+        return committed_pick(record, scorer)
 
     def returns(
         self,

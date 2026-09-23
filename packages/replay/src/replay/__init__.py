@@ -79,6 +79,37 @@ the ``artifacts-code-hash-dedup`` precedent — rather than a second ``replay``,
 which would put two components of one name in the registry and let the later
 import silently win.
 
+**Feature 249 — the committed pick at termination — completes the loop feature
+248 stopped short of, and registers nothing.**  app_spec.xml, "Replay
+Engine", feature 249: *System requires the committed pick from the policy at
+termination, which returns negative infinity when none is emitted.*  It is
+docs §10.1's last two lines — ``pick = policy.commit()  # MANDATORY`` and the
+miss-arm of ``return score(pick, book, epoch, revealed, rounds)`` — and it
+lives in :mod:`replay.pick`: the round loop (248) returns the revealed set
+and stops, and this is the terminal read over that return.  The pick is
+required from the episode's commit record (feature 222's
+:class:`~policy_runtime.EpisodeCommit`, the door the policy's
+``question.commit(node_id)`` went through — reached duck-typed, because a
+member never imports another member) by performing the termination read
+itself (``terminate()``, the one verb the module reads off the record), and
+the answer is the pair migration 0109 shapes the ``replay_score`` row
+around: the pick absent-able, the score always present.  A policy that
+emitted no pick is *scored* :data:`~replay.NON_COMMITTING_SCORE` — the total
+order's floor, the same value feature 222 spells in the policy-runtime
+member, spelled again here because a member never imports another member and
+pinned equal by the wiring suite — and the scorer the caller hands in (the
+replay's own arithmetic, curried over the book, the epoch, the rounds and
+the revealed set 248's loop returns) is **never called** on the miss: taking
+the callable rather than a number is the design point, the same seam feature
+222 drew on its side.  The refusals (:class:`~replay.ReplayPickError`, the
+eighth sibling) are the *ask* — a non-callable scorer, a carrier with no
+termination read, a read that cannot say whether a pick was emitted
+(refused, never scored as a miss) — and the two argument checks fire before
+the record is touched, so a refused ask terminates nothing.  No component,
+no store, no clock: the composed facade gains the verb
+(:meth:`~replay.ReplayEngine.pick`) rather than a ``replay-``prefixed
+component the spec does not ask for.
+
 **Feature 251 — the campaign-returns read — takes the same stance and registers
 nothing.**  app_spec.xml, "Replay Engine", feature 251: *System reads campaign
 returns from the pinned resident array rather than from Parquet on each
@@ -221,6 +252,7 @@ from .errors import (
     RecomputationSuspectedError,
     ReplayError,
     ReplayMetricsError,
+    ReplayPickError,
     ReplayReturnsError,
     ReplayRoundError,
     ReplayTreeError,
@@ -235,6 +267,7 @@ from .metrics import (
     persist_replay_latency,
     replay_latency,
 )
+from .pick import NON_COMMITTING_SCORE, TerminalPick, committed_pick
 from .returns import RESIDENT_READ_POLICY, ReplayReturns, resident_returns
 from .rounds import run_replay
 from .transition import (
@@ -249,6 +282,7 @@ from .transition import (
 
 __all__ = [
     "COMPONENT_NAME",
+    "NON_COMMITTING_SCORE",
     "RECOMPUTATION_SUSPECTED",
     "REPLAY_DURATION_ALERT_THRESHOLD",
     "REPLAY_DURATION_TARGET",
@@ -265,13 +299,16 @@ __all__ = [
     "ReplayError",
     "ReplayLatency",
     "ReplayMetricsError",
+    "ReplayPickError",
     "ReplayReturns",
     "ReplayReturnsError",
     "ReplayRoundError",
     "ReplayTransition",
     "ReplayTreeError",
+    "TerminalPick",
     "build_replay_engine",
     "child_map",
+    "committed_pick",
     "emit_recomputation_suspected",
     "load_latest_replay_latency",
     "load_replay_latency",

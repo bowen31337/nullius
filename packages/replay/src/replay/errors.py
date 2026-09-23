@@ -1,11 +1,11 @@
 """The replay member's error vocabulary — one base class, split by repair.
 
-The base class for every failure of the replay path, and the six subclasses
-the transition, the resident read, the observability write and the
-``recomputation_suspected`` alert raise.  One base class so a caller — the
-dreaming loop, a nightly runner, an operator script, a later feature in this
-category (246–255 all depend on feature 245) — can catch every failure of the
-replay path with a single ``except``, the discipline
+The base class for every failure of the replay path, and the eight subclasses
+the transition, the round loop, the terminal pick, the resident read, the
+observability write and the ``recomputation_suspected`` alert raise.  One base
+class so a caller — the dreaming loop, a nightly runner, an operator script, a
+later feature in this category (246–255 all depend on feature 245) — can catch
+every failure of the replay path with a single ``except``, the discipline
 :mod:`bootstrap.errors`, :mod:`artifacts._errors`, :mod:`discovery.errors` and
 :mod:`policy_runtime.errors` each state for their own member.
 
@@ -27,6 +27,13 @@ split that matters on this path rather than which line of code failed:
   generative transition.  The repair is on the caller's side of the seam: run
   the act online (feature 239's ``CONTINUE(v)``, in the discovery member's
   loop) and replay the tree it wrote;
+* :class:`ReplayPickError` — the *terminal requirement's* ask was malformed:
+  a scorer that is not callable, a carrier that is not an episode's commit
+  record (no termination read to perform), a termination read that cannot say
+  whether a pick was emitted, a record whose ``terminate()`` raised.  The
+  repair is the argument handed to the requirement — and, deliberately, the
+  **miss is not here at all**: a policy that emitted no pick is *scored*
+  ``-inf``, never refused, which is feature 249's whole point;
 * :class:`ReplayReturnsError` — the *resident material's* contract was broken:
   a carrier that cannot pin an axis, an arena whose pin refuses, a hold that
   answers no dense array, a resident array of some other campaign, a released
@@ -66,10 +73,11 @@ split that matters on this path rather than which line of code failed:
   duration), which is a broken *ask* — reported as one, never as a cost model
   that broke.
 
-The six are deliberately *not* two classes, because they have one repair
+The eight are deliberately *not* two classes, because they have one repair
 each and the repairs are in different places: a broken tree is repaired at
 the store, a broken residence at the arena or the store, a handed-in
-generator or loader at the caller, a broken report at the population or the
+generator or loader at the caller, a broken loop ask or terminal ask at the
+caller, a broken report at the population or the
 metrics store, and a suspected recomputation at the deployment's replay path.
 A caller that re-derived one from the other would be unable to tell an
 operator *which* knob to turn, which is the same argument
@@ -78,7 +86,8 @@ operator *which* knob to turn, which is the same argument
 :class:`~policy_runtime.PolicyImportError` apart.
 
 All are :class:`ReplayError`, so the one base class catches every way a
-replay's transition, returns read, latency report and cost-model alert can
+replay's transition, round loop, terminal pick, returns read, latency report
+and cost-model alert can
 fail — the property a dreaming loop that replays a policy across two hundred
 stored worlds depends on, where one malformed tree or one unreadable campaign
 must be a catchable value rather than an escape that ends the cycle.  The
@@ -135,6 +144,7 @@ __all__ = [
     "RecomputationSuspectedError",
     "ReplayError",
     "ReplayMetricsError",
+    "ReplayPickError",
     "ReplayReturnsError",
     "ReplayRoundError",
     "ReplayTreeError",
@@ -278,6 +288,67 @@ class ReplayRoundError(ReplayError):
     The repair is the argument handed to the loop — a callable ``select``, a
     positive ``round_cap``, a question that fronts the campaign — never a
     re-run over the same malformed ask, which would refuse the same way.
+    """
+
+
+class ReplayPickError(ReplayError):
+    """The terminal requirement's ask is malformed — the miss is not one.
+
+    app_spec.xml, "Replay Engine", feature 249: *System requires the committed
+    pick from the policy at termination, which returns negative infinity when
+    none is emitted.*  docs/nullius-tech-architecture.md §10.1 places the act
+    — ``pick = policy.commit()  # MANDATORY`` — as the replay's last line
+    after feature 248's loop has returned, and the sentence's second clause is
+    what this class is *not* about: a policy that emitted no pick is **scored**
+    ``-inf`` (:data:`replay.NON_COMMITTING_SCORE`), never refused, because the
+    miss is a score the comparison keeps (below every committing policy,
+    equal to every other miss — prd §438, docs §598, and feature 222's
+    policy-runtime half of the same stance).  What is refused here is the
+    *ask*, and the repair is on the caller's side of the call:
+
+    * the **non-callable scorer** — the answer's wiring.  The score of a made
+      pick is the replay's own arithmetic (§10.3's ``score(pick, book, epoch,
+      revealed, rounds)``), curried by the caller and handed to the
+      requirement; a value that cannot be called names no arithmetic, and is
+      refused here rather than escaping as a bare :class:`TypeError` from
+      inside the call;
+    * a **carrier that is not an episode's commit record** — the requirement
+      performs the termination read itself (that is what *at termination*
+      means: the act, not a value someone else froze), through exactly one
+      verb, feature 222's idempotent ``terminate()``.  A carrier with no such
+      verb — a frozen termination read included — names no act to take;
+    * a **termination read that cannot say** — a read carrying no ``pick`` at
+      all is a different fact from ``pick is None`` (the miss), and the two
+      have different repairs.  Scoring the first as the second would hand
+      broken wiring ``-inf``, and a caller skipping "the non-committing
+      policy" would silently skip every record it failed to read — the same
+      argument the member's other non-nestings make;
+    * a **``terminate()`` that raised** — translated into this vocabulary and
+      chained to the record's own refusal, so a caller catching the replay's
+      base class still catches an episode whose termination could not be read.
+
+    The two argument checks fire **before the record is touched**, and the
+    order is load-bearing: the requirement's one act spends a one-way door
+    (feature 222's termination close), and a refusal that had terminated
+    first would freeze the episode with no score and no retry — the caller
+    could not fix the scorer and ask again, because the door only closes.
+    **A refused ask terminates nothing.**
+
+    **Not a subclass of** :class:`ReplayRoundError`, and the non-nesting is
+    the load-bearing half of the split, the same argument this module makes
+    for :class:`ChildGenerationRefused` and :class:`ParquetReadRefused`: the
+    loop's malformed ask and the terminal requirement's malformed ask are
+    different repairs (fix the ``select``/``round_cap``/``question``, versus
+    fix the ``scorer``/the record), and a caller catching the loop's failures
+    must not silently skip the refusal that says the terminal seam was handed
+    no scorer — that one is not a fact about the loop and the skip would hide
+    a broken caller from every replay the loop completes.
+
+    The repair is the argument handed to :func:`replay.committed_pick` — a
+    callable scorer and the episode's commit record — never a re-run over a
+    *miss*, which is not a failure at all: re-requiring a terminated episode
+    is idempotent, and re-deciding one is the one-way door's business
+    (feature 222's), not this member's.
     """
 
 

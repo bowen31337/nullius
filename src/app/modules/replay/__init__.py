@@ -26,7 +26,8 @@ the member's free functions (``replay_transition``, ``replay_roots``,
 those APIs here would be a second thing to keep in sync.  This module answers
 exactly one question — *what is the composed replay component?* — so the
 features in this category that need the replay path (246's and 247's dependency
-refusals, 248's round loop, 251's resident-array reads, 252–255's latency and
+refusals, 248's round loop, 249's terminal pick, 251's resident-array reads,
+252–255's latency and
 score persistence) can ask it without importing the member directly.
 
 **The seat is the app-namespace spelling of a name that carries a hyphen.**
