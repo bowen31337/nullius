@@ -40,6 +40,14 @@ def test_interface_records_are_importable_directly():
         "ProviderNotConfiguredError",
         "UnknownModelError",
         "FixtureNotFoundError",
+        "FIXTURE_DIR_ENV",
+        "FIXTURE_SUFFIX",
+        "FixtureFile",
+        "FixtureStore",
+        "FixtureStoreError",
+        "FixtureConflictError",
+        "FixtureCorruptError",
+        "build_fixture_store",
     ):
         assert hasattr(providers, name)
 

@@ -760,9 +760,12 @@ class TestNoComponentIsRegistered:
         # A routing decision is a property of a single call, not a
         # deployment-bound fact that must land in a table: this module
         # persists nothing, owns no table, and adds no builder.  The
-        # package's three registrations are the interface (feature 192, which
-        # contributes None), the pin store (203) and the run-window store
-        # (202) — feature 201 is deliberately absent from the list.
+        # package's registrations are the interface (feature 192, which
+        # contributes None), the pin store (203), the run-window store
+        # (202), the cache-rate store (200), the root-serving store (196),
+        # the root-rotation store (197) and the fixture store (194) —
+        # feature 201 is deliberately absent from the list, and so is
+        # feature 199.
         import providers
 
         from app.module_loader import registered_components
@@ -771,6 +774,10 @@ class TestNoComponentIsRegistered:
         assert "providers" in names
         assert "agent-model-pins" in names
         assert "depth-run-windows" in names
+        assert "depth-cache-rates" in names
+        assert "root-serving-provider" in names
+        assert "root-rotation" in names
+        assert "fixture-store" in names
         # Nothing on the module is a component builder for a batch route, and
         # the module carries no table constant for one either — the store
         # this feature does not have is not half-spelled anywhere.

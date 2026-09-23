@@ -103,9 +103,42 @@ Feature 194 — *"System records a live provider exchange into a fixture file
 keyed by a prompt hash, persisting request and response together"* — is the
 persistence half of the same story, and feature 195's *fixture_missing*
 message — the :data:`FIXTURE_MISSING_CODE` the refusal carries — is the third:
-together they make the record the backend replays.  Those are separate
-features; this package contributes the backend, the key, the error and the code
-this one names.
+together they make the record the backend replays.  Where
+:class:`RecordingProvider` keeps an exchange in memory and
+:class:`RecordedProvider` answers from one it was handed, feature 194 is what
+puts the exchange **on disk** — which is what makes a record outlive the process
+that captured it and what the end-to-end sentence needs when it says a campaign
+*"runs under fixed exploration against fixture-backed agents"*.  Its surface is
+the file and the store that writes it:
+
+* :class:`FixtureStore` — the directory :data:`FIXTURE_DIR_ENV` names.  A
+  store, not a provider: it writes files and reads them back, and answers no
+  prompts.  It does **not** hash anything itself — the key is
+  :func:`prompt_hash`, feature 193's, and this store is where that digest
+  becomes a filename.
+
+* :class:`FixtureFile` — one fixture as the store holds it: its key, its path,
+  and the request and completion the bytes carry, re-made from this package's
+  classes so a caller holds one value type whatever copy wrote the file.
+
+* :data:`FIXTURE_DIR_ENV`, :data:`FIXTURE_SUFFIX` — the two spellings of the
+  store's address: ``PROVIDER_FIXTURE_DIR``, which ``app_spec.xml``'s
+  prerequisites list beside ``DATABASE_URL`` and ``LAKE_ROOT``, and the ``.json``
+  every fixture file carries.
+
+* :class:`~providers.FixtureStoreError` and its two subclasses
+  (:class:`~providers.FixtureConflictError`, :class:`~providers.FixtureCorruptError`)
+  — a **ninth** base, for the question none of the other eight answers: *can
+  this exchange be filed as a fixture under its prompt hash, and read back as
+  one?*  Deliberately unrelated to feature 193's
+  :class:`~providers.FixtureNotFoundError`, which *is* a
+  :class:`~providers.ProviderError` — correctly, because that backend **is** a
+  provider — while this store is a directory, whose failures are about files
+  and whose repair is fixing a file rather than recording a prompt.  See
+  :mod:`providers._fixture_errors`.
+
+Those are separate features; this package contributes the backend, the key, the
+error, the code this one names, and the file store that ties them together.
 
 Feature 198 — *"System rejects a depth model without a 1 million token
 context at flat pricing, because calls at depth 2 or greater carry a large
@@ -400,7 +433,7 @@ This package is a workspace member discovered by convention. The module loader
 (``packages/*``), imports each package, and composes whatever the package's
 ``@register`` builder contributes — so the registration below is the entire
 wiring story. Nothing edits a registry, router or factory to make the provider
-plugin exist; importing this module *is* joining the application.  **Four**
+plugin exist; importing this module *is* joining the application.  **Seven**
 components are registered from this one package, and the split is the split
 between the category's contract and its services.  Feature 192's
 interface (``providers``) contributes no long-lived component to the composed
@@ -424,8 +457,17 @@ for the same kind of reason — a measurement that must be persisted is a
 deployment-bound fact, and the depth model's selection is justified by the
 rate the campaign's calls actually measured — so its builder resolves
 ``DATABASE_URL`` the same way and composes a :class:`DepthCacheRates`
-(or nothing, when no store is named).  All four registrations live in this
-``__init__`` and none in a submodule, because a
+(or nothing, when no store is named).  Features 196 and 197's paired stores
+(``root-serving-provider`` and ``root-rotation``) are the same kind of service
+again — which family served a root call, and which families the campaign's
+rotation assigned — and resolve the same variable.  Feature 194's fixture store
+(``fixture-store``) is a service too, but of a different **kind** of resource:
+it is a **directory**, not a table, so its builder resolves
+:data:`FIXTURE_DIR_ENV` rather than ``DATABASE_URL`` and composes a
+:class:`FixtureStore` (or nothing, when no fixture root is named — a
+deployment that captures no fixtures is a real state, and one that names no
+directory must not have its composition taken down for it).  All seven
+registrations live in this ``__init__`` and none in a submodule, because a
 submodule's ``@register`` fires only on the first
 ``create_app()`` of a process and would silently drop out of every later one.
 
@@ -504,6 +546,17 @@ from ._errors import (
     ProviderError,
     ProviderNotConfiguredError,
     UnknownModelError,
+)
+from ._fixture import (
+    FIXTURE_DIR_ENV,
+    FIXTURE_SUFFIX,
+    FixtureFile,
+    FixtureStore,
+)
+from ._fixture_errors import (
+    FixtureConflictError,
+    FixtureCorruptError,
+    FixtureStoreError,
 )
 from ._pin_errors import (
     AgentSamplingMalformedError,
@@ -634,7 +687,9 @@ __all__ = [
     "DEPTH_RUN_WINDOW_TABLE",
     "ENDPOINT_COLUMN",
     "END_AT_COLUMN",
+    "FIXTURE_DIR_ENV",
     "FIXTURE_MISSING_CODE",
+    "FIXTURE_SUFFIX",
     "FLAT_AT_ANY_CONTEXT",
     "HOSTED_API_CKPT_HASH",
     "INPUT_TOKENS_COLUMN",
@@ -687,7 +742,12 @@ __all__ = [
     "DepthRunWindows",
     "DepthScheduleError",
     "Exchange",
+    "FixtureConflictError",
+    "FixtureCorruptError",
+    "FixtureFile",
     "FixtureNotFoundError",
+    "FixtureStore",
+    "FixtureStoreError",
     "FrontierProvider",
     "FrontierTier",
     "InsufficientContextError",
@@ -745,6 +805,7 @@ __all__ = [
     "assign_root_provider",
     "build_agent_model_pins",
     "build_depth_cache_rates",
+    "build_fixture_store",
     "build_root_provider_rotation",
     "build_root_rotation",
     "choose_run_window",
@@ -838,6 +899,23 @@ ROOT_SERVING_PROVIDER_COMPONENT = "root-serving-provider"
 #: key, with the behaviour — a test, not a shared constant — as the thing that
 #: keeps them from drifting silently.
 ROOT_ROTATION_COMPONENT = "root-rotation"
+
+#: The component name feature 194's fixture store registers under.  The plugin
+#: name plus what it contributes, on the ``agent-model-pins`` /
+#: ``depth-run-windows`` / ``depth-cache-rates`` / ``root-serving-provider`` /
+#: ``root-rotation`` precedent for a member's later components.
+#:
+#: *fixture-store* rather than *fixtures* or *recording* because that is the
+#: fact: the object is a **store** — a directory of files it writes and reads —
+#: and not the act of recording (the caller's, through
+#: :meth:`providers.RecordingProvider`) nor the record's notation (feature 193's
+#: backend).  A reader scanning the composed application's keys should be able
+#: to tell which of the three it is looking at without opening a docstring, the
+#: discipline :data:`ROOT_SERVING_PROVIDER_COMPONENT` states for its own name.
+#: Spelled here so the seat (``src/app/modules/providers``) and the composed
+#: application agree on the key, with the behaviour — a test, not a shared
+#: constant — as the thing that keeps them from drifting silently.
+FIXTURE_STORE_COMPONENT = "fixture-store"
 
 
 @register(PROVIDERS_COMPONENT)
@@ -1034,3 +1112,44 @@ def build_root_rotation() -> RootRotation | None:
     opens a database, and nothing is written until a caller assigns a root.
     """
     return RootRotation.resolve()
+
+
+@register(FIXTURE_STORE_COMPONENT)
+def build_fixture_store() -> FixtureStore | None:
+    """Component builder: the directory recorded exchanges are filed in.
+
+    Feature 194's contribution to the composed application: the
+    :class:`~providers.FixtureStore` this deployment captures fixtures into and
+    replays them from.  Takes no arguments — that is the factory's registration
+    protocol — and resolves ``PROVIDER_FIXTURE_DIR`` at build time, so a
+    composed application carries the store pointed at the directory the
+    deployment actually keeps its recorded exchanges in.
+
+    Returns ``None`` when nothing names a fixture root.  That is deliberately
+    **not** an empty store: an empty store answers *no prompt is recorded here*
+    about every prompt, while this ``None`` says there is no directory to have
+    recorded one in — a distinction that matters more here than anywhere else
+    in this member, because a caller that must capture an exchange has to treat
+    it as a refusal to proceed rather than as a store that happened to find
+    nothing.  Recording into an empty store is a capture nobody will ever
+    replay.
+
+    Never raises for the root itself, and that is the shape every builder in
+    this package takes: the factory calls *every* registered builder on *every*
+    ``create_app()``, so a builder that raised on an unset variable would take
+    composition down for every unrelated feature in the workspace.
+    :meth:`~providers.FixtureStore.resolve` is the ``None``-answering door for
+    exactly this reason, and :meth:`~providers.FixtureStore.from_env` — which
+    does raise — is the door for a caller that has decided it needs a fixture
+    store.  A malformed root (a blank path) is refused by name at construction,
+    because a store pointed at the wrong directory is worse than no store at
+    all: its fixtures would be found or not depending on where the process
+    started.
+
+    Construction performs no I/O — the root is held, not made — so composing
+    the application never touches the filesystem, and the directory appears only
+    when a capture needs it.  Nothing brings it into being: not composition, and
+    not a read, which answers ``None``/``()`` for a store that has never
+    recorded.
+    """
+    return FixtureStore.resolve()

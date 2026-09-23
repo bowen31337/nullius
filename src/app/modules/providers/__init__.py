@@ -4,16 +4,17 @@ The implementation lives in the ``providers`` workspace member
 (``packages/providers``, import name ``providers``), which self-registers with
 the application factory under the component names
 :data:`COMPONENT_NAME`, :data:`DEPTH_RUN_WINDOWS_NAME`,
-:data:`DEPTH_CACHE_RATES_NAME`, :data:`ROOT_SERVING_PROVIDER_NAME` and
-:data:`ROOT_ROTATION_NAME` — scanning the workspace imports it, its
-``@register`` decorators fire, and ``create_app()`` composes feature 203's
-:class:`~providers.AgentModelPins` store (bound to the
+:data:`DEPTH_CACHE_RATES_NAME`, :data:`ROOT_SERVING_PROVIDER_NAME`,
+:data:`ROOT_ROTATION_NAME` and :data:`FIXTURE_STORE_NAME` — scanning the
+workspace imports it, its ``@register`` decorators fire, and ``create_app()``
+composes feature 203's :class:`~providers.AgentModelPins` store (bound to the
 ``DATABASE_URL`` the tree store lives at), feature 202's
 :class:`~providers.DepthRunWindows` store, feature 200's
 :class:`~providers.DepthCacheRates` store, feature 196's
-:class:`~providers.RootProviderRotation` store and feature 197's
-:class:`~providers.RootRotation` store (each bound to the same URL
-the campaign and node tables live at).
+:class:`~providers.RootProviderRotation` store, feature 197's
+:class:`~providers.RootRotation` store and feature 194's
+:class:`~providers.FixtureStore` — the first five bound to that same URL, and
+the last to the directory ``PROVIDER_FIXTURE_DIR`` names.
 
 This module is the member's seat inside the ``app`` package namespace
 (``src/app/modules/providers/``): it exposes the composed components without
@@ -23,25 +24,33 @@ components, and a module that cannot reach one (member not scanned, workspace
 empty) returns ``None`` rather than failing import, mirroring the factory's own
 "degrade, don't break" stance toward absent components.
 
-The seat answers exactly five questions — *what is the composed
+The seat answers exactly six questions — *what is the composed
 authoring-model pin store?*, *what is the composed depth-run scheduler?*,
 *what is the composed cache-rate store?*, *what is the composed
-root-serving-provider store?* and *what is the composed root-rotation store?*
-— one per
+root-serving-provider store?*, *what is the composed root-rotation store?* and
+*what is the composed fixture store?* — one per
 registered component that is a service, and deliberately re-exports none of
 those features' records or their error vocabularies.  The distinction is worth
-stating plainly here, because this member registers **six** components and
-the seat exposes the five that are services: feature 192's provider interface
+stating plainly here, because this member registers **seven** components and
+the seat exposes the six that are services: feature 192's provider interface
 (``providers``) is a contract and a set of records whose builder contributes
 ``None``, so there is nothing composed to hand back and a caller holding the
 interface imports it from the member directly.  A seat that re-exported
 :class:`~providers.ModelPin`, :class:`~providers.PeakPricing`,
-:class:`~providers.Provider`, :class:`~providers.RootCallProvider` or
-:class:`~providers.RootAssignment` would be
+:class:`~providers.Provider`, :class:`~providers.RootCallProvider`,
+:class:`~providers.RootAssignment` or :class:`~providers.FixtureFile` would be
 a second spelling of the member's
 surface that has to be kept in sync with the first, and it would invite a
 caller to reach the *interface* by way of the application, where the only
 things the application actually holds are the stores.
+
+The fixture store is the one seated service that is not a table, and it is the
+reason the seat's list of questions is not simply "the five stores": features
+203, 202, 200, 196 and 197 all resolve ``DATABASE_URL`` and answer about
+**rows**, while feature 194 answers about a **directory of files** — and a
+deployment may legitimately compose one kind without the other.  A caller
+asking for the fixture store is asking where its captured exchanges will be
+written, which is a question no database can answer.
 
 The last two questions are the pair's, and the seat keeps them apart on
 purpose: *what served this root call* (feature 196's store, the row of
@@ -70,6 +79,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a depende
         AgentModelPins,
         DepthCacheRates,
         DepthRunWindows,
+        FixtureStore,
         RootProviderRotation,
         RootRotation,
     )
@@ -78,11 +88,13 @@ __all__ = [
     "COMPONENT_NAME",
     "DEPTH_CACHE_RATES_NAME",
     "DEPTH_RUN_WINDOWS_NAME",
+    "FIXTURE_STORE_NAME",
     "ROOT_ROTATION_NAME",
     "ROOT_SERVING_PROVIDER_NAME",
     "agent_model_pins_component",
     "depth_cache_rates_component",
     "depth_run_windows_component",
+    "fixture_store_component",
     "root_rotation_component",
     "root_serving_providers_component",
 ]
@@ -285,3 +297,46 @@ def root_rotation_component(app: Application | None = None) -> RootRotation | An
     """
     application = app if app is not None else create_app()
     return application.get(ROOT_ROTATION_NAME)
+
+
+#: The component name the providers member registers feature 194's fixture
+#: store under, kept here for the same reason as :data:`COMPONENT_NAME`: one
+#: spelling shared with the member, pinned against it by the member's own suite
+#: rather than by an import that would defeat the seat.  *fixture-store* and
+#: not *fixtures* or *recording*: this is the **store** — a directory of files
+#: it writes and reads — not the act of recording (the caller's, through the
+#: member's ``RecordingProvider``) nor the record's notation (feature 193's
+#: backend).  It is also the one name in this seat's list whose resource is not
+#: a database, which is why its accessor resolves ``PROVIDER_FIXTURE_DIR``
+#: rather than ``DATABASE_URL``.
+FIXTURE_STORE_NAME = "fixture-store"
+
+
+def fixture_store_component(app: Application | None = None) -> FixtureStore | Any:
+    """Return the composed fixture store (feature 194's directory of fixtures).
+
+    With ``app`` given, the component is read from that application; without
+    it, the application is composed first via
+    :func:`app.module_loader.create_app` (scanning the declared workspace).
+    Returns ``None`` when no ``fixture-store`` component is registered — the
+    same discoverable-absent state :func:`agent_model_pins_component` describes
+    for its own name.
+
+    The two ``None``s this function's callers meet are the two the pin seat
+    documents, transposed onto this store: the component's ``None`` says *a
+    store was built and there was no ``PROVIDER_FIXTURE_DIR`` to point it at*,
+    this function's says *no ``fixture-store`` component was registered at
+    all* — both refusals to capture, naming different repairs (name the
+    directory, or scan the member).  What this function must never be read as
+    is *"this prompt has no recorded response"*: that is a question about a
+    prompt, and the store answers it — with ``None`` from its ``get`` or
+    ``False`` from its ``has`` — while feature 193's backend answers the
+    replay-side version as ``FixtureNotFoundError``.
+
+    Construction touches no file and no database: the root is held, not made,
+    so asking for the component is always safe, and the directory appears only
+    when a capture needs it — never by composing the application, and never by
+    a read, which answers ``None``/``()`` for a store that has never recorded.
+    """
+    application = app if app is not None else create_app()
+    return application.get(FIXTURE_STORE_NAME)

@@ -980,3 +980,69 @@ def root_rotation(tree_database: str):
     from providers import RootRotation
 
     return RootRotation(tree_database)
+
+
+# ── Feature 194's fixtures ─────────────────────────────────────────────────────
+#
+# The one feature in this suite whose subject is a **directory** rather than a
+# database, and the fixtures say so: no migration is loaded, no schema is
+# created, and nothing here touches ``DATABASE_URL``.  Feature 194 files an
+# exchange into a file under ``PROVIDER_FIXTURE_DIR``; every fixture below hands
+# a test a root it may write into and that no other test shares, and the env var
+# is *not* set globally — a test that wants the composition path sets it itself,
+# so the "no fixture root named" state stays observable rather than being
+# masked by an autouse fixture.  tmp_path is per-test, so a fixture directory
+# built by one test cannot be read by the next.
+
+
+@pytest.fixture
+def fixture_root(tmp_path: Path) -> Path:
+    """A directory no test shares, for feature 194 to file fixtures into.
+
+    Deliberately **not created**: the store must not bring its root into being
+    at construction, and a test asserting that would be unable to tell the
+    store's ``mkdir`` from pytest's.  A test that wants the "root already
+    exists" state makes it; a test that wants the "no directory yet" state
+    asks :func:`fixture_root` and does nothing.
+    """
+    return tmp_path / "fixtures"
+
+
+@pytest.fixture
+def fixture_store(fixture_root: Path):
+    """Feature 194's store, bound to a root this test owns alone."""
+    from providers import FixtureStore
+
+    return FixtureStore(fixture_root)
+
+
+@pytest.fixture
+def capture(scripted_provider, make_request, make_completion):
+    """Return a callable that drives a live exchange through the recorder, and the pieces.
+
+    Feature 194's input is feature 192's :class:`providers.Exchange` — a
+    request and the completion it got back, kept by the recorder as a side
+    effect of a normal call.  This fixture builds that shape the honest way:
+    it wraps a :class:`ScriptedProvider` in a
+    :class:`providers.RecordingProvider` and completes one request through it,
+    so what a test files is genuinely *a live exchange* rather than a pair
+    assembled by hand — which matters, because the sentence's claim is that
+    the stored request and the stored response are the ones that actually
+    crossed the seam.
+
+    Returns a callable ``(responder, **request_kwargs)`` answering the
+    recorder's single :class:`providers.Exchange`; the request it made is
+    ``exchange.request`` and the completion it got is ``exchange.completion``,
+    so a test never has to reconstruct either to assert on what was filed.
+    """
+    from providers import RecordingProvider
+
+    def _capture(responder, *, bodies=(("user", "q"),), **kwargs):
+        recorder = RecordingProvider(
+            scripted_provider(lambda request: responder(request))
+        )
+        request = make_request(bodies=bodies, **kwargs)
+        recorder.complete(request)
+        return recorder.exchanges()[0]
+
+    return _capture
