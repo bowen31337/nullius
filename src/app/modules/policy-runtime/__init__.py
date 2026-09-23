@@ -100,6 +100,29 @@ would be a second spelling of *which* ceiling a policy is judged by — the one
 thing §10.2 says is singular — so this module leaves the resolution where it
 belongs and exposes only the tree.
 
+Feature 218 lives in the same member and is likewise not reached through this
+seat: the legal moves (:meth:`policy_runtime.PolicyQuestion.legal_roots` and
+:meth:`policy_runtime.PolicyQuestion.legal_actions`, over the free functions
+:func:`policy_runtime.legal_roots` and :func:`policy_runtime.legal_actions`
+behind them) are *methods on the read-side question* rather than a construction
+of its own — they answer where a walk may **begin** (the tree's parentless
+nodes, each a research theme's opening node) and where it may **go next** (a
+position's open frontier, one recorded edge on, ascending) — with no store, no
+deployment state and no component, so they are reached the way every other read
+of the question is: a caller who holds the tree takes
+``policy_runtime.policy_question(tree)`` and calls the verbs on it, exactly as it
+calls :meth:`~policy_runtime.PolicyQuestion.observed` or
+:meth:`~policy_runtime.PolicyQuestion.meta`.  This module does not wrap them,
+because there is nothing here to compose: the frontier belongs to the tree the
+composed application holds — and the verbs already *read* that tree, so a
+wrapper here would be a second spelling of one derivation, and, worse, a second
+place the pure-function-of-the-tree law would have to hold.  That law is the
+reason this pair is *not* the seat's to shape: the sibling pool's
+``legal_actions`` reads its lattice and never its reveal set, so an answer that
+moved as cells were probed would break "one policy, both pools" in the walk
+itself, and this module exposes only the tree for the reasons its opening
+paragraph gives.
+
 Feature 222 lives in the same member and is likewise not reached through this
 seat: the terminal commit (:func:`policy_runtime.episode_commit`) is an
 episode's own protocol object — one commit naming one node, read once at

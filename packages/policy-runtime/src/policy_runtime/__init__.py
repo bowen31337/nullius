@@ -89,6 +89,31 @@ made one *return value* prefix-only; feature 223 makes the object the
 policy holds prefix-only, and lives in :mod:`.prefix` beside the question
 it projects.
 
+**Where a walk may move is the other read, and it is not the same read
+(feature 218).**  :meth:`PolicyQuestion.observed` answers *what has this policy
+seen?*; the pair in :mod:`.frontier` — :meth:`PolicyQuestion.legal_roots` and
+:meth:`PolicyQuestion.legal_actions` — answers *where may it go?*, which is the
+question a policy must be able to ask before it can take a step at all: at
+round 0 the reveal set is empty, ``observed()`` names no cell, and the roots are
+the only thing that can start a walk.  The two are one interface but not one
+semantic, and the difference is exactly the state each reads.  The reading is
+**stateful** — it is a function of the reveal set, and it is the one thing on
+this surface that is — while the moves are a **pure function of the tree**:
+neither verb consults the reveal set, so a frontier is stable across a probe.
+That is the identical-interface law rather than a local choice, because the
+sibling pool's ``legal_actions`` reads its lattice and never its reveal set; a
+campaign answer that moved as cells were probed would break portability in the
+*walk* rather than in the reading — a policy that re-read its frontier would see
+it collapse and terminate early.  A leaf answering ``[]`` is the same fact from
+the other side: prd §436's *"must terminate when no batch is selected"* is a
+test *of* that empty list, so the honest answer at a position with no move is no
+moves rather than a refusal.  Feature 218 is the pair §11 lists directly under
+``observed()``, and its second half's sentence — *"legal_roots which returns
+available research themes"* — is the same answer seen from the theme's side: a
+root **is** a fresh research theme (prd §215), so the roots a walk may open are
+the themes available to it, and the node id is the spelling a policy hands to
+``probe_batch``.
+
 **The object an episode *hands* a policy answers a configured set and nothing
 else (feature 224).**  The prefix view closes the object; the surface closes
 the world around it.  docs §10.2's next sentence — *"The policy runtime
@@ -326,6 +351,10 @@ from .families import (
     FamilySchedule,
     family_schedule,
 )
+from .frontier import (
+    legal_actions,
+    legal_roots,
+)
 from .guard import (
     GUARD_ACTIVE,
     POLICY_MODULE_NAME,
@@ -426,6 +455,8 @@ __all__ = [
     "family_schedule",
     "find_learned_component",
     "guard_policy",
+    "legal_actions",
+    "legal_roots",
     "plan_grid",
     "policy_question",
     "policy_surface",
@@ -766,6 +797,16 @@ class PolicyQuestion:
     can hand a policy an interface that would answer differently from the tree
     it claims to front.
 
+    :meth:`observed` cannot be *acted* on alone, so the question also answers
+    **where a walk may move** — feature 218's pair, :meth:`legal_roots` (the
+    nodes a walk may begin from, one per research theme planted) and
+    :meth:`legal_actions` (the nodes one legal step on from a position, the
+    *open frontier* a policy selects its next batch from).  Both are pure
+    functions of the tree and neither consults the reveal set: an unrevealed
+    node the tree holds is a legal move, which is what lets a policy find the
+    batch it is about to reveal, and a leaf answering ``[]`` is the fact prd
+    §436's termination test is a test *of*.
+
     The question also answers **the other half of §11's read side** —
     :meth:`budget_remaining`, feature 221's statistical budget — and it is
     configured at construction, out of the same one-factory discipline: a
@@ -898,6 +939,90 @@ class PolicyQuestion:
         and the node it was earned on are one act.
         """
         return PolicyObservation.from_node(self._tree.node(node_id))
+
+    def legal_roots(self) -> list[str]:
+        """The nodes a walk may begin from — §594's ``question.legal_roots()``, feature 218.
+
+        docs/nullius-tech-architecture.md §594's line in the identical
+        ``question.*`` interface::
+
+            question.legal_roots()     -> list[node_id]
+
+        — which prd §420 repeats verbatim, and whose feature sentence names the
+        meaning beside the spelling: *"legal_roots which returns available
+        research themes"*.  In a themed campaign a root **is** a fresh research
+        theme (prd §215: *"Root = a fresh research theme (§9)"*), so the roots a
+        walk may open are the available themes; the node id is how a node is
+        addressed, which is why this verb answers ids — the sibling pool's
+        ``legal_roots()`` returns the canonical root's id, and the *only* thing
+        a caller does with this answer is hand it to :meth:`probe_batch`, which
+        takes node ids.  :meth:`meta` is the accessor that then names *which*
+        theme a given root opens.
+
+        The tree's parentless nodes, ascending by node id — the same test
+        :mod:`discovery.manifest` uses for a branch (*"A branch is a root
+        (``parent_id IS NULL``)"*), and §12's ordering rule so two replays of one
+        tree begin from the same place in the same sequence.
+
+        A **delegation** to :func:`legal_roots`, not a second derivation — the
+        discipline :meth:`meta` keeps for ``cell_meta`` and :meth:`_observe` for
+        the honest reading beside it, so the question and any later caller in
+        this category read one spelling of "where a walk may begin" over one
+        tree.
+
+        A **pure function of the tree**: the reveal set is not consulted, not
+        read and not grown.  An unrevealed root is a root a policy may still
+        open, which is the sibling pool's law (a node *"outside the lattice"* is
+        refused; an unrevealed one is not) and the reason a policy can start at
+        all — at round 0 :meth:`observed` is empty and this verb is the only
+        answer naming a cell.  Making it depend on the reveal set would break
+        the identical interface in the walk rather than in the reading: a policy
+        that re-read its starting set, stable on a bootstrap world, would see it
+        move on a campaign tree.
+        """
+        return legal_roots(self._tree)
+
+    def legal_actions(self, node_id: str | None = None) -> list[str]:
+        """The nodes one legal step on from ``node_id`` — §593's ``legal_actions()``.
+
+        docs/nullius-tech-architecture.md §593's line in the identical
+        ``question.*`` interface::
+
+            question.legal_actions()   -> list[node_id]
+
+        — which prd §419 repeats with the comment that fixes its reading:
+        ``# roots + open frontiers``.  Two answers, one verb, discriminated by
+        whether a position was named:
+
+        * **``node_id`` given** — the node's **open frontier**: the nodes that
+          name it as their parent, one recorded edge each — the batch a policy
+          standing at ``node_id`` may select next;
+        * **``node_id`` is ``None``** — the **roots**, *where a walk may begin*,
+          which is prd §419's ``roots +`` half and is answered by
+          :func:`legal_roots` over the same tree, so the two verbs cannot drift
+          on where a walk starts.
+
+        **A position with no recorded child answers ``[]``**, and that is the
+        load-bearing answer rather than a gap: prd §436's *"must terminate when
+        no batch is selected"* and feature 3/242's *"the policy has selected no
+        batch"* are exactly this empty list.  A leaf is a position with no move,
+        and a verb that refused there would leave a policy unable to tell
+        *nowhere left to go* from *you asked wrongly* — so the empty list is
+        what a policy's termination test reads.  Ascending by node id, §12's
+        ordering rule.
+
+        A **delegation** to :func:`legal_actions`, for the reason
+        :meth:`legal_roots` is one — one derivation, one spelling.
+
+        Refuses with :class:`PolicyAddressError` a value that is not a node id,
+        or a node the tree does not hold — the address seam :meth:`meta` and
+        :meth:`reveal` route through, so a position a policy asks its moves from
+        is a position it was shown.  The reveal set is again not consulted: an
+        unrevealed node the tree holds is a legal move, because ``legal_actions``
+        is how a policy *finds* the batch it is about to reveal, and a verb that
+        only named already-revealed cells could never name the next one.
+        """
+        return legal_actions(self._tree, node_id)
 
     def meta(self, node_id: str) -> CellMeta:
         """The structural metadata of a cell — ``question.meta(node_id)``, feature 219.
