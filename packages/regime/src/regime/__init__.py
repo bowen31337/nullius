@@ -6,7 +6,7 @@ low-volatility chop and crash"* — against docs/alpha-engine-prd.md §C7's
 coverage ledger and the three-column table feature 107's migration
 (``migrations/versions/0107_regime_coverage.py``) already declares.
 
-The member's surface is six modules.  :mod:`regime.coverage` is the
+The member's surface is seven modules.  :mod:`regime.coverage` is the
 ledger's act itself: :class:`~regime.coverage.RegimeCoverage`, the store
 that persists one stratum's stored-world count into ``regime_coverage``,
 names a stratum without asserting a count, and reads one stratum's row
@@ -24,7 +24,19 @@ distinct, and :func:`~regime.ledger.read_ledger` is the module-level
 spelling for a caller that holds a URL rather than a store.  The read is
 also the store's own verb
 (:meth:`~regime.coverage.RegimeCoverage.ledger`), which is the form every
-composed reader uses.  :mod:`regime.diversity` is feature 289's act, the
+composed reader uses.  :mod:`regime.promotion` is feature 285's act, the
+category's *block*: :func:`~regime.promotion.rejects_undercovered_promotion`
+refuses a promotion when the target deployment regime's stored-world count
+falls below the deployment's own configured threshold — a free function
+over the ledger the read answers with, raising
+:class:`~regime.errors.PromotionCoverageError` (opening
+``coverage_below_threshold``) rather than counting, persisting or
+re-reading anything, so the deployment is stopped before the promotion is
+published.  Its figure is one named stratum's count, deliberately *not*
+:mod:`regime.diversity`'s: a pool covered across the whole default
+vocabulary with the target regime holding none passes that sibling's claim
+and is exactly the deployment §C7 says to block.
+:mod:`regime.diversity` is feature 289's act, the
 reading's *verdict*: :func:`~regime.diversity.rejects_regime_diverse_claim`
 refuses a regime-diverse claim while fewer than three strata hold stored
 worlds — a free function over the ledger the read answers with, raising
@@ -64,7 +76,11 @@ ask, the row, the address), :class:`~regime.errors.StratumAssignmentError`
 (feature 290's fit refusal),
 :class:`~regime.errors.BackfillProvenanceError` (feature 288's
 ``no_origin`` refusal), :class:`~regime.errors.DiversityClaimError`
-(feature 289's ``not_regime_diverse`` verdict) and
+(feature 289's ``not_regime_diverse`` verdict),
+:class:`~regime.errors.PromotionCoverageError` (feature 285's
+``coverage_below_threshold`` block — the category's first judgement, its
+faces gathered in one class because its caller is a gate, whose one
+failure mode is silence) and
 :class:`~regime.errors.EmptyStratumWarningError` (feature 286's refusal
 of an ``empty_stratum`` warning that could not be read off a reading —
 the finding itself is *warned*, never raised, which is why its class
@@ -87,7 +103,9 @@ judgement *over* these rows rather than a second thing that persists:
 feature 284's ``GET /metrics/regime-coverage`` is a read the composed
 store serves; feature 285's promotion block and feature 289's diversity
 refusal are thresholds applied to counts the caller read through this
-store; feature 286's ``empty_stratum`` warning is a fact about a row this
+store — and both have now landed as exactly that, free functions over the
+reading rather than a second thing to compose; feature 286's
+``empty_stratum`` warning is a fact about a row this
 store already holds (``world_count == 0`` is what
 :meth:`~regime.coverage.CoverageCount.empty` answers); feature 290's
 causal labeler *writes* through this store rather than beside it; and
@@ -172,6 +190,7 @@ from .errors import (
     CoverageError,
     DiversityClaimError,
     EmptyStratumWarningError,
+    PromotionCoverageError,
     RegimeError,
     StratumAssignmentError,
 )
@@ -190,6 +209,10 @@ from .origins import (
     record_backfilled_world,
     split_world_id,
 )
+from .promotion import (
+    COVERAGE_BELOW_THRESHOLD_CODE,
+    rejects_undercovered_promotion,
+)
 from .warning import (
     EMPTY_STRATUM_CODE,
     EmptyStratumWarning,
@@ -201,6 +224,7 @@ __all__ = [
     "BACKFILLED_WORLD_TABLE",
     "CAMPAIGN_ID_COLUMN",
     "COMPONENT_NAME",
+    "COVERAGE_BELOW_THRESHOLD_CODE",
     "COVERAGE_TABLE",
     "DATABASE_URL_ENV",
     "DEFAULT_STRATA",
@@ -226,6 +250,7 @@ __all__ = [
     "DiversityClaimError",
     "EmptyStratumWarning",
     "EmptyStratumWarningError",
+    "PromotionCoverageError",
     "RegimeCoverage",
     "RegimeError",
     "StratumAssignment",
@@ -240,6 +265,7 @@ __all__ = [
     "read_ledger",
     "record_backfilled_world",
     "rejects_regime_diverse_claim",
+    "rejects_undercovered_promotion",
     "split_world_id",
 ]
 

@@ -6,7 +6,13 @@ can catch every failure of this member's path with a single ``except``.
 The subclasses split by *what the caller must do about it*, not by which
 line of code raised, the discipline :mod:`discovery.errors`,
 :mod:`bootstrap.errors` and :mod:`nulloracle.errors` state for their own
-trees.
+trees.  That rule cuts both ways, and feature 285's
+:class:`PromotionCoverageError` is where it cuts the other one: because
+its caller is a *gate*, whose one failure mode is silence, its faces stay
+gathered in one class so a single ``except`` cannot be routed around —
+while :class:`DiversityClaimError`, whose caller is publishing a report,
+splits its two.  Same category, same reading, same discipline; opposite
+gathering, because the caller's position differs.
 
 :class:`CoverageError` is the category's first class, and it carries the
 three faces of feature 283's one act — *System persists a
@@ -38,10 +44,10 @@ the same repair :class:`~discovery.errors.AttemptLogError` gathers under
 one class for its own act, and the contrast with this member's judgement
 classes is the reason the split rule is worth stating here: feature 289's
 :class:`DiversityClaimError` — a diversity claim refused on stratum
-count — and feature 285's promotion block beside it are *judgement*
-refusals whose repair is a decision about evidence rather than a
-corrected re-ask, and they sit **beside** this class as siblings, not
-under it — the shape
+count — and feature 285's :class:`PromotionCoverageError` beside it are
+*judgement* refusals whose repair is a decision about evidence rather
+than a corrected re-ask, and they sit **beside** this class as siblings,
+not under it — the shape
 :class:`~discovery.errors.IllegalThemeError` takes beside
 :class:`~discovery.errors.CampaignPlanningError`, and for the same reason:
 a well-formed ask that runs into a configured space or a judged threshold
@@ -140,6 +146,7 @@ __all__ = [
     "CoverageError",
     "DiversityClaimError",
     "EmptyStratumWarningError",
+    "PromotionCoverageError",
     "RegimeError",
     "StratumAssignmentError",
 ]
@@ -254,6 +261,73 @@ class DiversityClaimError(RegimeError):
     returns ``None`` and the caller proceeds — so the verdict face has no
     ``admitted`` spelling to catch by accident: every message this class
     raises is either about the ask or is a refusal.
+    """
+
+
+class PromotionCoverageError(RegimeError):
+    """A promotion was refused on the coverage of the regime it targets.
+
+    Feature 285's refusal — *"System rejects a promotion when the target
+    deployment regime has coverage below the configured threshold"* — and
+    the seat this module reserved for it when it argued that *"a
+    well-formed ask that runs into … a judged threshold is not a malformed
+    one"*.  It carries every face of that one act, gathered in one class
+    for a reason that is particular to this feature: the caller is a
+    **gate**, and the one failure mode a gate must not have is silence.
+
+    * **the reading** — nothing handed in, a string, an object that cannot
+      be asked for one stratum's row.  A store handed in where the reading
+      belongs is refused with its repair named (call ``ledger()`` on it
+      first — feature 284's verb).  The repair is to take a reading and
+      hand the judgment that; nothing about the pool was judged.
+    * **the regime** — a target deployment regime that is not non-empty
+      text, so it is not a name the ledger could have been written under.
+      The repair is to name the stratum the promotion is deploying into,
+      in the labeler's own configuration vocabulary.
+    * **the threshold** — a coverage threshold that is not a positive whole
+      count of stored worlds.  A threshold below one admits every
+      promotion — including one into a regime holding no worlds at all —
+      so it is refused as an ask rather than honoured; the repair is the
+      deployment's own coverage figure, which §C7 says is configured and
+      which this member deliberately does not default.
+    * **the absence** — the target regime is not named by the ledger at
+      all, so nobody has counted it and its coverage is **unknown** rather
+      than zero.  ``0107`` detail 1 keeps the named-empty row (§C7's
+      ``crash: 0``, a count of zero and a coverage finding) apart from the
+      never-named stratum (no row), and reporting an uncounted regime as a
+      zero would invent a figure the pool never produced.  The repair is
+      to *name and count* the regime — the census's act — not to lower the
+      threshold.
+    * **the verdict** — the target regime's stored-world count falls below
+      the configured threshold.  Every message of this face opens with
+      ``coverage_below_threshold`` so the refusal is greppable by the one
+      word that names the finding, and states the figure, the regime, the
+      threshold and the repair: grow the coverage in the regime being
+      deployed into (the census, feature 290; the backfill, feature 287),
+      or deploy into a regime the pool does cover.  The repair is a
+      decision about evidence, never a corrected re-ask.
+
+    One class rather than the two faces feature 289's
+    :class:`DiversityClaimError` splits, and deliberately: a caller
+    guarding its promotion path with a single ``except
+    PromotionCoverageError`` must not have a malformed threshold slip past
+    it, because the promotion would then proceed through the hole.  That
+    is :class:`CoverageError`'s gathering — *"the caller's position is the
+    same in all three cases: the count it asked to persist was not
+    persisted"* — restated for a gate, where the shared position is *the
+    promotion was not admitted*.
+
+    Deliberately **not** a :class:`CoverageError`: nothing failed to
+    persist here, and a caller catching the two together would read *the
+    coverage count could not be written* where the truth is *the regime
+    being deployed into is not covered*.  Deliberately **not** a
+    :class:`DiversityClaimError` either, though the two are the category's
+    sibling judgements over one reading: 289's figure is *how many strata
+    hold worlds* and this class's is *how many worlds the target holds*,
+    so a pool spread across the whole vocabulary with the target regime
+    holding none passes that claim and is exactly this refusal — one
+    ``except`` for both would put two different findings, and two
+    different repairs, behind one clause.
     """
 
 
