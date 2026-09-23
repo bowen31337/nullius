@@ -665,6 +665,53 @@ class ReplayEngine:
 
         return committed_pick(record, scorer)
 
+    def persist_replay_score(
+        self,
+        pick: Any,
+        policy_version: Any,
+        world_id: Any,
+        beta: Any,
+        *,
+        is_holdout: bool = False,
+        database_url: str | None = None,
+    ) -> Any:
+        """Persist one replay_score row per run — feature 255.
+
+        The composed spelling of :func:`replay.persist_replay_score`: one row
+        per ``(policy, world)`` replay, carrying the policy version under
+        test, the world it was replayed against, the beta it was scored at,
+        the resulting score, and the committed pick — written into the
+        relational store ``DATABASE_URL`` names.  The ``pick`` is feature
+        249's :class:`~replay.TerminalPick` (the pick absent-able, the score
+        always present), read duck-typed exactly as the free function takes
+        it, so a caller holding the composed component needs no import of this
+        member.
+
+        The ask is validated before the store is touched — the pick is a
+        readable carrier, the score a real number or ``-inf`` (a NaN is
+        refused), the policy version and world id non-empty strings, the beta
+        a finite number — and a low or ``-inf`` score is persisted, never
+        refused: the row is the record of a completed scoring.  A store that
+        cannot take the write (unconfigured, an unsupported scheme, a locked
+        or unwritable database) refuses as
+        :class:`~replay.ReplayScoreError`, chained to the store's own
+        refusal.
+        """
+        # Imported inside the function rather than at module top, the same
+        # seam `run` and `pick` take: the facade's module stays import-cheap
+        # at composition, and the verb is reached only by a caller taking the
+        # persistence act.
+        from .score import persist_replay_score
+
+        return persist_replay_score(
+            pick,
+            policy_version,
+            world_id,
+            beta,
+            is_holdout=is_holdout,
+            database_url=database_url,
+        )
+
     def returns(
         self,
         pins: Any,

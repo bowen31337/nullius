@@ -255,6 +255,7 @@ from .errors import (
     ReplayPickError,
     ReplayReturnsError,
     ReplayRoundError,
+    ReplayScoreError,
     ReplayTreeError,
 )
 from .metrics import (
@@ -270,6 +271,7 @@ from .metrics import (
 from .pick import NON_COMMITTING_SCORE, TerminalPick, committed_pick
 from .returns import RESIDENT_READ_POLICY, ReplayReturns, resident_returns
 from .rounds import run_replay
+from .score import REPLAY_SCORE_TABLE, persist_replay_score
 from .transition import (
     ReplayEngine,
     ReplayTransition,
@@ -289,6 +291,7 @@ __all__ = [
     "REPLAY_LATENCY_METHOD",
     "REPLAY_LATENCY_QUANTILES",
     "REPLAY_LATENCY_TABLE",
+    "REPLAY_SCORE_TABLE",
     "RESIDENT_READ_POLICY",
     "ChildGenerationRefused",
     "ParquetReadRefused",
@@ -303,6 +306,7 @@ __all__ = [
     "ReplayReturns",
     "ReplayReturnsError",
     "ReplayRoundError",
+    "ReplayScoreError",
     "ReplayTransition",
     "ReplayTreeError",
     "TerminalPick",
@@ -314,6 +318,7 @@ __all__ = [
     "load_replay_latency",
     "measure_replay",
     "persist_replay_latency",
+    "persist_replay_score",
     "recomputation_suspected_error",
     "recorded_child",
     "replay_component",

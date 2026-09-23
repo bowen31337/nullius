@@ -1,13 +1,14 @@
 """The replay member's error vocabulary — one base class, split by repair.
 
-The base class for every failure of the replay path, and the eight subclasses
+The base class for every failure of the replay path, and the nine subclasses
 the transition, the round loop, the terminal pick, the resident read, the
-observability write and the ``recomputation_suspected`` alert raise.  One base
-class so a caller — the dreaming loop, a nightly runner, an operator script, a
-later feature in this category (246–255 all depend on feature 245) — can catch
-every failure of the replay path with a single ``except``, the discipline
-:mod:`bootstrap.errors`, :mod:`artifacts._errors`, :mod:`discovery.errors` and
-:mod:`policy_runtime.errors` each state for their own member.
+observability write, the persistence write and the ``recomputation_suspected``
+alert raise.  One base class so a caller — the dreaming loop, a nightly runner,
+an operator script, a later feature in this category (246–255 all depend on
+feature 245) — can catch every failure of the replay path with a single
+``except``, the discipline :mod:`bootstrap.errors`, :mod:`artifacts._errors`,
+:mod:`discovery.errors` and :mod:`policy_runtime.errors` each state for their
+own member.
 
 The subclasses split by **what the caller must do about it**, which is the
 split that matters on this path rather than which line of code failed:
@@ -73,12 +74,13 @@ split that matters on this path rather than which line of code failed:
   duration), which is a broken *ask* — reported as one, never as a cost model
   that broke.
 
-The eight are deliberately *not* two classes, because they have one repair
+The nine are deliberately *not* fewer classes, because they have one repair
 each and the repairs are in different places: a broken tree is repaired at
 the store, a broken residence at the arena or the store, a handed-in
 generator or loader at the caller, a broken loop ask or terminal ask at the
 caller, a broken report at the population or the
-metrics store, and a suspected recomputation at the deployment's replay path.
+metrics store, a broken persistence ask or store at the caller or the store,
+and a suspected recomputation at the deployment's replay path.
 A caller that re-derived one from the other would be unable to tell an
 operator *which* knob to turn, which is the same argument
 :mod:`policy_runtime.errors` states for keeping
@@ -147,6 +149,7 @@ __all__ = [
     "ReplayPickError",
     "ReplayReturnsError",
     "ReplayRoundError",
+    "ReplayScoreError",
     "ReplayTreeError",
 ]
 
@@ -423,6 +426,54 @@ class ReplayMetricsError(ReplayError):
     a population that already measured: re-measuring to fix a broken
     *report* would spend the replays again for a figure the caller already
     holds, the same naive re-run feature 251's read refuses on its side.
+    """
+
+
+class ReplayScoreError(ReplayError):
+    """The persisted score's ask or store is not one — the persistence write's vocabulary.
+
+    app_spec.xml, "Replay Engine", feature 255: *"System persists one
+    replay_score row per run carrying policy version, world id, beta, score
+    and committed pick"* — read from the persistence side: feature 249's
+    :class:`~replay.TerminalPick` (the pick absent-able, the score always
+    present) is written as exactly one row into the relational store
+    ``DATABASE_URL`` names, carrying the policy version under test, the world
+    it was replayed against, the beta it was scored at, the resulting score,
+    and the committed pick.  Every failure of that side is refused here: an ask
+    whose carrier is neither a ``TerminalPick`` nor has the ``pick`` and
+    ``score`` attributes one (a value named by what arrived — a member never
+    imports another member, so an ``isinstance`` would refuse the very value
+    composition produces); a score that is a NaN (it compares false against
+    everything and would drop out of every argmax, reading as "no scoring" —
+    refused before the store is touched); a policy version or world id that is
+    not a non-empty string; a beta that is not a finite number; and a store
+    that cannot take the write (unconfigured, an unsupported URL scheme, a
+    locked or unwritable database).
+
+    **Refuses the write, never the score.**  A low or ``-inf`` score is
+    persisted, never refused, because the row is the record of a completed
+    scoring — the miss is a score the comparison keeps (prd §438, docs §598,
+    and feature 249's whole point that a policy which emitted no pick is
+    *scored* ``-inf``, not dropped).  What is refused is what a *row* is: the
+    ask that would name nothing (a NaN, an empty id) or a store that will not
+    take it.  The validation fires **before the store is touched**, so a
+    refused ask spends nothing and the caller can fix the argument and ask
+    again.
+
+    Split by the repair the caller must make — fix the ask (the carrier, the
+    score, the ids, the beta) or fix the store (the URL, the scheme, the
+    lock) — the same two-place split :class:`ReplayMetricsError` keeps, and
+    for the same reason: a caller paged by this class has to know whether to
+    reach for the argument or the database.  The store's own refusal is
+    chained, never swallowed — surfaced as this member's vocabulary so a
+    caller catching :class:`ReplayError` still catches a store that could not
+    take the row, exactly as 254's write refuses on its side.
+
+    The repair is the argument handed to :func:`replay.persist_replay_score` —
+    a readable carrier, a real score, non-empty ids, a finite beta, a store
+    that can take the row — never a re-run over a *miss*, which is not a
+    failure at all: the miss is persisted as the floor, the record of a
+    scoring that completed.
     """
 
 
