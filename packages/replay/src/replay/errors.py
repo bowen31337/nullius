@@ -1,13 +1,13 @@
 """The replay member's error vocabulary — one base class, split by repair.
 
-The base class for every failure of the replay path, and the five subclasses
-the transition, the resident read and the observability write raise.  One
-base class so a caller — the dreaming loop, a nightly runner, an operator
-script, a later feature in this category (246–255 all depend on feature 245)
-— can catch every failure of the replay path with a single ``except``, the
-discipline :mod:`bootstrap.errors`, :mod:`artifacts._errors`,
-:mod:`discovery.errors` and :mod:`policy_runtime.errors` each state for
-their own member.
+The base class for every failure of the replay path, and the six subclasses
+the transition, the resident read, the observability write and the
+``recomputation_suspected`` alert raise.  One base class so a caller — the
+dreaming loop, a nightly runner, an operator script, a later feature in this
+category (246–255 all depend on feature 245) — can catch every failure of the
+replay path with a single ``except``, the discipline
+:mod:`bootstrap.errors`, :mod:`artifacts._errors`, :mod:`discovery.errors` and
+:mod:`policy_runtime.errors` each state for their own member.
 
 The subclasses split by **what the caller must do about it**, which is the
 split that matters on this path rather than which line of code failed:
@@ -49,23 +49,44 @@ split that matters on this path rather than which line of code failed:
   write (unconfigured, unsupported scheme, locked, corrupt rows).  The repair
   is a real population or a repaired store — never a re-summarise over a
   population that already measured, which is the naive re-run the feature
-  refuses for the same reason 251's read refuses a re-sweep.
+  refuses for the same reason 251's read refuses a re-sweep;
+* :class:`RecomputationSuspectedError` — **not a broken contract at all, but
+  the alert itself**: the replay path was *told* something, and what it was
+  told is that a replay took long enough that docs §10.4's cost model has
+  broken.  app_spec.xml, "Replay Engine", feature 253: *"System emits a
+  ``recomputation_suspected`` alert when a replay exceeds 200 milliseconds,
+  because the cost model has then broken."*  The repair is not the replay's —
+  a slow replay is a **correct** replay, measured and persisted, never refused
+  (feature 252's law, and 254 keeps its tail as measured) — it is the
+  *deployment's*: §15's recovery row is *"revert to stored-float artifacts"*,
+  so the caller checks the resident read (251) and the walk (245) before the
+  next dreaming cycle.  The class is also raised for a carrier that is not a
+  measured replay (a bare number, a duration that is not a finite non-negative
+  real, a flag that is not a bool, a carrier whose flag disagrees with its own
+  duration), which is a broken *ask* — reported as one, never as a cost model
+  that broke.
 
-The five are deliberately *not* two classes, because they have one repair
+The six are deliberately *not* two classes, because they have one repair
 each and the repairs are in different places: a broken tree is repaired at
 the store, a broken residence at the arena or the store, a handed-in
 generator or loader at the caller, a broken report at the population or the
-metrics store.  A caller that re-derived one from the other would be unable
-to tell an operator *which* knob to turn, which is the same argument
+metrics store, and a suspected recomputation at the deployment's replay path.
+A caller that re-derived one from the other would be unable to tell an
+operator *which* knob to turn, which is the same argument
 :mod:`policy_runtime.errors` states for keeping
 :class:`~policy_runtime.PolicyFilesystemError` and
 :class:`~policy_runtime.PolicyImportError` apart.
 
 All are :class:`ReplayError`, so the one base class catches every way a
-replay's transition, returns read and latency report can fail — the property
-a dreaming loop that replays a policy across two hundred stored worlds
-depends on, where one malformed tree or one unreadable campaign must be a
-catchable value rather than an escape that ends the cycle.
+replay's transition, returns read, latency report and cost-model alert can
+fail — the property a dreaming loop that replays a policy across two hundred
+stored worlds depends on, where one malformed tree or one unreadable campaign
+must be a catchable value rather than an escape that ends the cycle.  The
+alert's being in this vocabulary is load-bearing rather than convenient: a
+dreaming loop that already catches :class:`ReplayError` around each replay
+must not have the one loud thing a broken cost model produces escape it as an
+uncaught exception, because that would end the cycle instead of telling the
+operator about it.
 
 :class:`ChildGenerationRefused` is **not** a child of
 :class:`ReplayTreeError`, :class:`ParquetReadRefused` is **not** a child of
@@ -85,13 +106,33 @@ population that is not one, or a store that cannot take it.  A caller that
 caught it to skip a bad deployment would be skipping the deployment's only
 supervision of the 50 ms target, so the repair the messages name is always
 *fix the population or the store*, never *drop the report*.
+
+:class:`RecomputationSuspectedError` **is not a child of
+:class:`ReplayMetricsError**, and the non-nesting is the load-bearing half of
+its split for the same reason the other two non-nestings are: the report's
+class is caught by a caller that wants to skip a bad *summary* — a broken
+population, a store that will not take the write — and the alert is not a
+summary at all.  A caller that skipped a campaign because its latency report
+could not be written would, under a nesting, also be silently skipping the
+one emission that says the *cost model of the architecture has broken*: the
+two facts have different repairs (fix the store, versus go and look at the
+replay path) and the second must reach an operator from every deployment,
+configured store or not.  The alert's durability is the caller's logger or
+monitor, so it depends on no store and no report — which is exactly why it
+cannot be reachable only through one.
 """
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - typing only; alert.py imports this module
+    from .alert import RecomputationSuspected
+
 __all__ = [
     "ChildGenerationRefused",
     "ParquetReadRefused",
+    "RecomputationSuspectedError",
     "ReplayError",
     "ReplayMetricsError",
     "ReplayReturnsError",
@@ -255,3 +296,68 @@ class ReplayMetricsError(ReplayError):
     *report* would spend the replays again for a figure the caller already
     holds, the same naive re-run feature 251's read refuses on its side.
     """
+
+
+class RecomputationSuspectedError(ReplayError):
+    """The ``recomputation_suspected`` alert — feature 253's emission, by type.
+
+    app_spec.xml, "Replay Engine", feature 253: *"System emits a
+    ``recomputation_suspected`` alert when a replay exceeds 200 milliseconds,
+    because the cost model has then broken."*  docs/nullius-tech-architecture.md
+    §10.4 is the argument, and its third sentence is the whole feature: *"If a
+    replay exceeds ~200 ms, something is recomputing rather than reading, and
+    the cost model of the architecture has broken."*
+
+    **This is not a failure of the replay — it is the alert about one.**  A
+    replay that took 300 ms is a *correct* replay: it walked recorded children,
+    it read the resident array, it produced its answer.  Feature 252 states the
+    law this class's feature inherits — *measures and persists; never refuses a
+    slow replay* — and its sibling (254) persists the slow tail as measured.
+    What has failed is the *deployment's* premise: §10.4's target rests on a
+    replay being pure array arithmetic over cached Parquet, and a replay that
+    recomputed instead of reading means the resident read (feature 251) or the
+    recorded-child walk (feature 245) has stopped being what it is.  §15's
+    recovery row is *"revert to stored-float artifacts"*, so the repair is an
+    operator's — check the read and the walk before the next dreaming cycle —
+    and it is never *drop the replay*.
+
+    Raised by :func:`replay.emit_recomputation_suspected` when a measured replay
+    passed the broken-cost-model point, carrying the
+    :class:`~replay.alert.RecomputationSuspected` record on its ``alert``
+    attribute — the shape :class:`~canary.CanaryDeterminismBrokenError`,
+    :class:`~nulloracle.UnrecoverableStateError` and ``snapshot``'s
+    ``CorruptionError`` take, and for the same reason: raising *is* the
+    emission, so a monitor that catches the alert to keep sweeping eight thousand
+    replays still has the structured record in hand, and a caller that knows
+    nothing about alerts still cannot miss one.
+
+    **Not a subclass of** :class:`ReplayMetricsError`, and not of any other
+    subclass here: see this module's docstring for why a caller skipping a bad
+    *report* must not silently skip the alert, and why the alert must be
+    reachable from a deployment that configured no store at all.  It *is* a
+    :class:`ReplayError`, so a dreaming loop's single ``except ReplayError``
+    catches it — the one loud thing a broken cost model produces must not escape
+    as an uncaught exception and end the cycle in place of telling the operator.
+
+    Also raised for a *broken ask*: a carrier that is not a measured replay (a
+    bare number, a duration that is not a finite non-negative real, a flag that
+    is not a bool, or a carrier whose flag disagrees with its own duration).
+    That is a different fact from the alert — a caller's mistake, not a cost
+    model's — and the messages say which, so an operator paged by this class can
+    tell the two apart by reading the one they were sent.
+    """
+
+    #: The structured record of the alert.  Present on every emission
+    #: :func:`replay.emit_recomputation_suspected` raises; ``None`` only on a
+    #: hand-built error with no diagnosis behind it, and on the
+    #: carrier-is-not-a-replay refusals — those carry no record because no
+    #: measurement produced one.
+    alert: RecomputationSuspected | None
+
+    def __init__(
+        self,
+        message: str,
+        alert: RecomputationSuspected | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.alert = alert

@@ -125,6 +125,34 @@ per-replay state beside the transition, so the composed facade gains nothing and
 there is no ``replay-``prefixed component.  It does not widen ``replay_score``
 (feature 255's table, a separate lineage); the record stays this module's own.
 
+**Feature 253 — the ``recomputation_suspected`` alert — is the other child the
+parent named, and it registers nothing either.**  app_spec.xml, "Replay
+Engine", feature 253: *System emits a ``recomputation_suspected`` alert when a
+replay exceeds 200 milliseconds, because the cost model has then broken.*
+docs §10.4's third sentence is the whole argument — *"If a replay exceeds
+~200 ms, something is recomputing rather than reading, and the cost model of
+the architecture has broken"* — and it names a **diagnosis**, not a failure of
+the replay's result: a slow replay is still a correct replay.  So it lives in
+:mod:`replay.alert`: :func:`~replay.alert.emit_recomputation_suspected` reads
+one of 252's measured records, and when the replay passed the point — the flag
+:attr:`~replay.duration.ReplayDuration.exceeds_alert_threshold`, which 252
+derives from the one measured number and which this feature therefore reads
+rather than recomputing, the stance :mod:`replay.metrics` states on its side
+(*"not a second place the threshold could live"*) — it emits
+:class:`~replay.RecomputationSuspectedError` carrying a
+:class:`~replay.alert.RecomputationSuspected` record; when it did not, it
+returns ``None`` and writes nothing, the shape :func:`canary.halt_dreaming`
+gives §12's own ``if``.  Raising *is* the emission, the workspace's alert
+convention (canary's ``determinism_broken``, nulloracle's
+``unrecoverable_state``, snapshot's corruption alert), so the alert is
+catchable by type and the record rides on the error.  **It does not refuse the
+replay** — 252 explicitly permits a replay to reach 200 ms and only alerts
+there — and it keeps **no store** and **no component**: 254's table already
+persists the very duration the alert is about, the alert's durability is the
+caller's logger or monitor, and the member's one ``@register`` contribution
+stays the facade above.  Feature 252's and 254's docstrings both name 253 as
+the emission they deliberately stopped short of; this is where it lands.
+
 **Feature 254 — replay latency at p50 and p99 — is the writer the parent
 predicted, and it registers nothing either.**  app_spec.xml, "Replay
 Engine", feature 254: *System persists replay latency at p50 and p99 into
@@ -174,6 +202,13 @@ from typing import Any
 
 from app.module_loader import register
 
+from .alert import (
+    RECOMPUTATION_SUSPECTED,
+    RecomputationSuspected,
+    emit_recomputation_suspected,
+    recomputation_suspected_error,
+    suspected_recomputation,
+)
 from .duration import (
     REPLAY_DURATION_ALERT_THRESHOLD,
     REPLAY_DURATION_TARGET,
@@ -183,6 +218,7 @@ from .duration import (
 from .errors import (
     ChildGenerationRefused,
     ParquetReadRefused,
+    RecomputationSuspectedError,
     ReplayError,
     ReplayMetricsError,
     ReplayReturnsError,
@@ -211,6 +247,7 @@ from .transition import (
 
 __all__ = [
     "COMPONENT_NAME",
+    "RECOMPUTATION_SUSPECTED",
     "REPLAY_DURATION_ALERT_THRESHOLD",
     "REPLAY_DURATION_TARGET",
     "REPLAY_LATENCY_METHOD",
@@ -219,6 +256,8 @@ __all__ = [
     "RESIDENT_READ_POLICY",
     "ChildGenerationRefused",
     "ParquetReadRefused",
+    "RecomputationSuspected",
+    "RecomputationSuspectedError",
     "ReplayDuration",
     "ReplayEngine",
     "ReplayError",
@@ -230,10 +269,12 @@ __all__ = [
     "ReplayTreeError",
     "build_replay_engine",
     "child_map",
+    "emit_recomputation_suspected",
     "load_latest_replay_latency",
     "load_replay_latency",
     "measure_replay",
     "persist_replay_latency",
+    "recomputation_suspected_error",
     "recorded_child",
     "replay_component",
     "replay_latency",
@@ -241,6 +282,7 @@ __all__ = [
     "replay_transition",
     "resident_returns",
     "resolve_tree",
+    "suspected_recomputation",
 ]
 
 #: The component name the replay member registers under — the plugin name the
