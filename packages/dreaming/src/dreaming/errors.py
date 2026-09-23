@@ -38,6 +38,19 @@ workspace's error discipline names everywhere, and the reason
 :class:`~discovery.errors.VoidCampaignError` each insist on sitting beside the
 planning error rather than under it.
 
+**Feature 277's two classes take the same split for the revision cap.**
+:class:`CapRequestError` is the *ask* face — a malformed id, figure, rung,
+instant or URL, refused before anything is read or written, exactly as
+:class:`FreezeRequestError` is for feature 270's asks — and
+:class:`CapRecordError` is the *store* face — a database that holds no pool to
+cap, or a row that will not read back — exactly as :class:`PoolFrozenError`
+is for feature 270's world.  The cap's refusals deliberately translate at the
+seam from the member's one spellings of the shared rules (the iteration-id
+rule, the URL translation, the stamp format all live in
+:mod:`dreaming.cycle`), so a caller of the cap never meets the freeze's
+vocabulary for an act that held nothing; the one refusal this member mints
+for a thin pool stays feature 275's, delegated, in feature 275's word.
+
 **Why :class:`PoolFrozenError` is its own class and not a borrowed one.**
 Three members already read this pool and each has its own vocabulary for its
 own act — :class:`~tripwires.errors.TripwireExcisionError`,
@@ -63,6 +76,8 @@ that is already going and must not have its pool moved underneath it.
 from __future__ import annotations
 
 __all__ = [
+    "CapRecordError",
+    "CapRequestError",
     "DreamingError",
     "FreezeRequestError",
     "PoolFrozenError",
@@ -186,4 +201,57 @@ class PoolTooThinError(DreamingError):
     of, and names §12.1, so an operator reading a refusal can see both ends of
     the judgement: *how many worlds the pool held* and *which floor it was
     measured against*.
+    """
+
+
+class CapRequestError(DreamingError):
+    """The revision cap could not be asked for as the caller asked for it.
+
+    app_spec.xml, "Dreaming Loop & Meta-Selection", feature 277: *System
+    persists the revision cap used per cycle, raising M to 40 once the pool
+    holds 50 or more worlds.*  This is the *ask* face of that sentence: an
+    iteration id that is not non-empty text, a pool figure or a ladder rung
+    that is not a world count, a raise boundary below the floor it must sit
+    at or above, an instant that is not timezone-aware, a URL that names no
+    database or one this member cannot speak.  Every one is a fact about the
+    **request**, refused before anything is read or written, and the repair
+    is to re-consider what was asked for — exactly the stance
+    :class:`FreezeRequestError` takes for feature 270's own malformed asks.
+
+    Deliberately **not** a :class:`FreezeRequestError`, though the shapes it
+    refuses are the member's shared ones: the id rule, the URL translation
+    and the stamp format are spelled once in :mod:`dreaming.cycle` and
+    *translated* into this class at the cap's seam, because a caller that
+    recorded a cap and caught the freeze's request class would read *your
+    hold was malformed* about an act that held nothing — the seam discipline
+    the whole workspace states for error vocabularies.  And deliberately not
+    a :class:`PoolTooThinError`: a pool below the ladder floor is refused by
+    the ladder's own judgment in its own word, and this class never speaks
+    for it.
+
+    No code word: feature 275's ``pool_too_thin`` is mandated by its own
+    sentence and feature 270's codes name pool-facts, while every refusal
+    here names its subject in its first words — the shape
+    :class:`FreezeRequestError` itself takes.
+    """
+
+
+class CapRecordError(DreamingError):
+    """The store could not ground a revision cap's record.
+
+    The world-side face of feature 277's sentence: a database that holds no
+    pool tables (so there is no pool to cap, and a row written against it
+    would assert a tournament over nothing), or a recorded row whose stamp
+    will not read back.  Each is a fact about the **store** rather than
+    about the ask — the URL and the iteration were well formed — so the
+    repair is to point at the database the replay pool lives in (or migrate
+    it), never to re-send the same ask.
+
+    A sibling of :class:`PoolFrozenError` rather than a face of it, because
+    the two name different worlds: *the pool is held and something tried to
+    move it* (feature 270's subject, repair: stop writing or close the
+    cycle) against *there is no pool here to cap* (feature 277's own fact,
+    repair: point at the pool).  A caller that caught one and read it as
+    the other would wait for a cycle that does not exist, or close one that
+    was never open.
     """

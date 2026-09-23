@@ -82,6 +82,30 @@ member gives the floor is the same honest pool size it gives feature 270: the
 hold records ``world_count`` at the moment it opened, and a pool that is not
 there is refused rather than counted as zero.
 
+**It carries the revision cap's schedule and its per-cycle record as a third
+sentence.**  §C5 runs ``M`` code revisions per outer iteration, and §12.1's
+ladder caps ``M`` by the pool's size — *"20–50: dreaming with M capped at
+8–10"*, *"50+: full dreaming, M = 30–40"* — so feature 277's sentence takes
+the top rung: the cap rises to 40 (:data:`FULL_DREAMING_CAP`) once the pool
+holds 50 or more worlds (:data:`FULL_DREAMING_WORLDS`).  The schedule
+(:func:`dreaming.cap.revision_cap`) is the same shape the floor is — a
+judgment over the count the caller already has, delegating the bottom rung to
+feature 275's own refusal — and the record
+(:func:`dreaming.cap.record_cycle_cap`) writes one row per cycle into this
+member's own ``cycle_cap`` table (:data:`CYCLE_CAP_TABLE`), append-only, each
+row carrying the pool size its cap was decided over.  The cap is persisted
+rather than remembered because Appendix B's selection bar — ``advantage >
+√(2 ln M) · σ_V / √n_worlds``, the bar feature 280 applies to the winning
+revision — reads ``M`` back, and a bar computed over an ``M`` nobody recorded
+is a bar over a number nobody ran.  The record takes the figure rather than
+counting the pool (the same verdict-count split the floor states), refuses a
+database that holds no pool for the same reason the freeze does — a cap over
+a pool that is not there caps nothing — and its refusals are its own pair of
+classes (:class:`~dreaming.errors.CapRequestError`,
+:class:`~dreaming.errors.CapRecordError`), translated at the seam from the
+member's one spellings of the shared rules, never borrowed from feature 270's
+vocabulary.
+
 **It is not the evaluator, the selector, or the splitter.**  Running ``M``
 revisions (features 271-274), rotating the holdout split per cycle (feature
 279), the paired statistic and its bar (feature 280) and the argmax persisted
@@ -144,6 +168,17 @@ from __future__ import annotations
 
 from app.module_loader import register
 
+from .cap import (
+    CAPPED_SWEEP_CAP,
+    CYCLE_CAP_TABLE,
+    FULL_DREAMING_CAP,
+    FULL_DREAMING_WORLDS,
+    CapRecord,
+    cycle_cap_schema,
+    cycle_caps,
+    record_cycle_cap,
+    revision_cap,
+)
 from .cycle import (
     DATABASE_URL_ENV,
     FREEZE_CODE,
@@ -163,6 +198,8 @@ from .cycle import (
     sqlite_path,
 )
 from .errors import (
+    CapRecordError,
+    CapRequestError,
     DreamingError,
     FreezeRequestError,
     PoolFrozenError,
@@ -183,10 +220,14 @@ from .layout import (
 )
 
 __all__ = [
+    "CAPPED_SWEEP_CAP",
     "COMPONENT_NAME",
+    "CYCLE_CAP_TABLE",
     "DATABASE_URL_ENV",
     "FREEZE_CODE",
     "FREEZE_TABLE",
+    "FULL_DREAMING_CAP",
+    "FULL_DREAMING_WORLDS",
     "LADDER_FLOOR_WORLDS",
     "POOL_SCHEMA_BY_TABLE",
     "POOL_TABLES",
@@ -196,6 +237,9 @@ __all__ = [
     "UNGUARDED_CODE",
     "WORLD_COLUMNS",
     "WORLD_TABLE",
+    "CapRecord",
+    "CapRecordError",
+    "CapRequestError",
     "CycleFreeze",
     "DreamingError",
     "FreezeRecord",
@@ -203,6 +247,8 @@ __all__ = [
     "PoolFrozenError",
     "PoolTooThinError",
     "build_cycle_freeze",
+    "cycle_cap_schema",
+    "cycle_caps",
     "cycle_freeze_schema",
     "expected_triggers",
     "ladder_floor",
@@ -211,7 +257,9 @@ __all__ = [
     "pool_bootstrap_schema",
     "pool_commitment",
     "pool_tables_present",
+    "record_cycle_cap",
     "rejects_thin_pool",
+    "revision_cap",
     "sqlite_path",
     "validated_floor",
 ]

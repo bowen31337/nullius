@@ -1,0 +1,225 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 277 (System persists the revision cap used per cycle, raising M to 40 once the pool holds 50 or more worlds)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 277 in the existing dreaming member
+    (packages/dreaming, import name dreaming; seat src/app/modules/dreaming):
+    the top rung of docs/alpha-engine-prd.md §12.1's pool-size ladder and the
+    per-cycle persistence of it. Two halves in one new module,
+    dreaming/cap.py. (1) The schedule — revision_cap(world_count, *,
+    floor=20, full_dreaming=50), a pure judgment over a count the caller
+    already has (the same verdict-gate shape feature 275's
+    rejects_thin_pool takes): 10 (CAPPED_SWEEP_CAP) on the 20–50 rung,
+    40 (FULL_DREAMING_CAP) once the pool holds 50 or more worlds
+    (FULL_DREAMING_WORLDS), and a refusal below the floor delegated to
+    feature 275's own rejects_thin_pool so the bottom rung is refused in the
+    floor's own word (pool_too_thin) by the floor's own one spelling — which
+    is what depends_on 275 means in code. 40 is the figure §12.1 itself
+    computes the bar with ("At M = 40 (bar ≈ 2.72) … n &gt; 53 worlds"), and
+    50 is the M3 precondition's own threshold ("≥ 50 worlds in the pool
+    (§12.1)"); the middle rung's 10 is §12.1's "capped at 8–10" at the count
+    feature 276's refusal fixes, stated here as the band's cap so the ladder
+    has one spelling — feature 276 is a sibling (both depend on 275 only)
+    and is not imported, cannot be imported, and does not exist yet at the
+    time this lands. (2) The record — record_cycle_cap(iteration_id,
+    world_count, *, floor=…, full_dreaming=…, database_url=None,
+    recorded_at=None, env=None) writes one row per cycle into this member's
+    own lazily-created cycle_cap table (CYCLE_CAP_TABLE, member-owned like
+    pool_freeze, never in the shared migration chain): the row carries the
+    iteration, the instant (the member's one stamp shape, UTC truncated to
+    the second), the pool size the cap was decided over, and the cap — which
+    the record DECIDES (the caller cannot hand one in), so a row can never
+    disagree with the ladder. cycle_caps(*, database_url=None, env=None) is
+    the audit read: every record, oldest first, ordered by (recorded_at,
+    id). The cap is persisted rather than remembered because Appendix B's
+    selection bar (advantage &gt; √(2 ln M) · σ_V / √n_worlds — feature
+    280's test) reads M back, and a bar computed over an M nobody recorded
+    is a bar over a number nobody ran. The table is append-only with no
+    unique index and no triggers (a cap is a judgment, not a hold) and its
+    ids are minted per occurrence (sha256 over iteration, instant and a
+    draw) so a retried cycle recorded inside the same second never collides
+    on the primary key — the lesson cycle.py's _hold_id states for holds.
+    Two new error siblings under DreamingError: CapRequestError (the ask's
+    own facts — malformed id, figure, rung, instant, or URL) and
+    CapRecordError (the store's facts — a database that holds no pool to
+    cap, refused BEFORE the table is created so a refusal leaves no trace;
+    or a row whose stamp will not read back). The member's one spellings of
+    the shared rules (validated_iteration_id, sqlite_path, _stamp,
+    _parsed_instant — all in dreaming.cycle) are reused and their refusals
+    are translated at the cap's seam, so a caller of the cap never meets
+    feature 270's FreezeRequestError or PoolFrozenError for an act that
+    held nothing. No central registry, router, app factory, middleware,
+    settings, or migration is edited; no new @register component is added
+    (feature 270's single "dreaming" component is untouched); the member
+    joins by workspace-scan convention and does not import another
+    workspace member.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/* members, import names are
+      underscored slugs) / pytest (ruff + mypy conventions). The module loader
+      (src/app/module_loader.py) discovers members from the root pyproject.toml
+      `[tool.uv.workspace] members = ["packages/*"]`, imports each package so
+      its module-level `@register` fires, and composes what each `@register`
+      builder contributes under a component name. `app` (src/app) is a
+      namespace package with no `__init__.py`; the seats in src/app/modules/
+      &lt;member&gt;/ are reached by namespace import (e.g. app.modules.dreaming).
+      A member never imports another member — it reaches shared shapes
+      through `app.*`, never through a sibling package's import name.</stack>
+    <test_baseline>The repository-level suite under tests/ is collected by
+      pytest with testpaths=tests; each workspace member's own suite lives
+      under packages/&lt;member&gt;/tests/ and is collected under its own conftest
+      (same-basename files collide under one pytest run), and is NOT graded by
+      the bare `uv run pytest` acceptance gate — a member suite must be run
+      explicitly (run both `uv run pytest tests/` and the member's own
+      `packages/dreaming/tests/`). Measure the real numbers by running the
+      suite before relying on them. The repo lint is red on main (mypy
+      absent, pre-existing ruff errors), so lint only the changed files and
+      compare to a sibling. The dreaming member is stdlib-only, and feature
+      277 keeps it that way: hashlib, secrets, sqlite3, datetime, os.</test_baseline>
+    <conventions>
+      snake_case modules, hand-written __slots__ value classes for store
+      records (the member's FreezeRecord precedent), docstrings that cite
+      app_spec.xml feature numbers and docs/alpha-engine-prd.md /
+      docs/nullius-tech-architecture.md sections, stdlib-only computation,
+      `@register` only in the package `__init__` (never a submodule — a
+      submodule's registration fires only on the first `create_app()` of a
+      process), degrade-don't-break composition, member-owned tables created
+      lazily beside the only module that writes them (never in the shared
+      migration chain, which is order-sensitive and excluded from this
+      feature's file claim), per-occurrence row ids so a retried window never
+      collides on the primary key, the §12 ordering rule (ordered history
+      reads), and the error-vocabulary discipline that no member imports
+      another and a caller must be able to catch one feature's refusal
+      without catching a neighbouring feature's (translate at the seam).
+      Features 270 (the cycle freeze, cycle.py), 275 (the ladder floor,
+      ladder.py) already live in this member; feature 277 is a third sentence
+      within it, not a new member. Feature 276 (the 20–50 ceiling refusal) is
+      a parallel sibling and MUST NOT be imported or assumed present.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Dreaming Loop &amp; Meta-Selection">
+      <feature index="277" shape="plugin" plugin="dreaming" depends_on="275">
+        System persists the revision cap used per cycle, raising M to 40 once
+        the pool holds 50 or more worlds.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    The schedule and the record are free functions in the dreaming member's
+    new cap module, reached directly from the member (`from dreaming import
+    revision_cap, record_cycle_cap, cycle_caps, CapRecord, CapRequestError,
+    CapRecordError, FULL_DREAMING_WORLDS, FULL_DREAMING_CAP,
+    CAPPED_SWEEP_CAP, CYCLE_CAP_TABLE, cycle_cap_schema`) and re-exported by
+    the member __init__, the way feature 275's floor names are. No composed
+    application needs a second component: feature 270's single "dreaming"
+    component (the CycleFreeze) is untouched, and the seat
+    (src/app/modules/dreaming) is not edited — the floor set that precedent
+    and feature 277 follows it. The count the schedule reads is the pool's
+    size, which the member already computes (pool_commitment returns
+    (digest, world_count) and a feature-270 hold records world_count at the
+    moment it opened); in the loop the caller holds the figure from
+    freeze.open()'s FreezeRecord and hands it to record_cycle_cap, so the
+    count is never performed twice and the record never counts the pool — it
+    only refuses (via layout.pool_tables_present, a sqlite_master probe that
+    reads no pool row) a database that holds no pool at all. Feature 280's
+    bar and the M-revision sweep (features 271-274) read M back from the
+    record via cycle_caps(); the table lives in the same database the replay
+    pool and pool_freeze live in (DATABASE_URL, sqlite:///), resolved the
+    way open_cycle_freeze resolves it: an explicit URL first, then the
+    deployment environment, then a named refusal when neither names one.
+  </integration_points>
+  <constraints>
+    - The revision cap is decided by the schedule, never accepted from the
+      caller: the row's revision_cap is always revision_cap()'s answer over
+      the row's world_count, so a record can never disagree with §12.1's
+      ladder.
+    - The boundary is exact and inclusive: world_count &gt;= 50 answers 40
+      (FULL_DREAMING_CAP); 20 &lt;= world_count &lt; 50 answers 10
+      (CAPPED_SWEEP_CAP); world_count &lt; 20 is refused by feature 275's own
+      rejects_thin_pool in its own word (pool_too_thin) — the floor keyword
+      passes straight through to the ladder's gate so the two spellings of
+      the bottom rung cannot disagree.
+    - Feature 276 is a parallel sibling: this feature MUST NOT import it,
+      reference its module, or assume it has landed. The shared 10 is the
+      PRD's figure, spelled here as the band's cap constant.
+    - The schedule is a judgment over a count, not a count the feature
+      performs: revision_cap takes the figure and opens no database; the
+      record takes the figure too and reads no pool row — it only probes
+      table presence, and refuses (before creating anything) a database
+      that holds no pool.
+    - Two new error siblings under DreamingError — CapRequestError (the
+      ask) and CapRecordError (the store) — that borrow none of the
+      member's existing three classes and are borrowed by none of them.
+      The member's one spellings of the shared rules (iteration id, sqlite
+      URL, stamp format, all in dreaming.cycle) are reused with their
+      refusals translated at the cap's seam. Neither new class carries a
+      code word; the one thin-pool refusal the record mints is feature
+      275's, delegated, in feature 275's word.
+    - One row per cycle-occurrence: append-only, per-occurrence ids (a
+      retry in the same second is a second row, never an overwrite or a
+      primary-key collision), no unique index, no triggers, history ordered
+      by (recorded_at, id). The table is member-owned, created lazily
+      beside the only module that writes it, never in the shared migration
+      chain.
+    - No central registry, router, app factory, middleware, settings, or
+      migration is edited. No new @register component and no seat export:
+      feature 270's single "dreaming" component is the member's whole
+      composition and its suite (test_component.py) is untouched.
+    - All existing tests in the dreaming member (packages/dreaming/tests)
+      and in tests/ must stay green. The member's own suite must be run
+      explicitly (it is not graded by the bare `uv run pytest` gate).
+    - Do not edit the order-sensitive shared files: src/app/middleware.py,
+      src/app/settings.py, migrations/versions/**, alembic/versions/**.
+  </constraints>
+  <implementation_steps>
+    <step>
+      Phase 1 — the vocabulary and the schedule. Add CapRequestError and
+      CapRecordError to dreaming.errors as siblings of the member's existing
+      three under DreamingError. Add dreaming/cap.py with the constants
+      (FULL_DREAMING_WORLDS = 50, FULL_DREAMING_CAP = 40, CAPPED_SWEEP_CAP
+      = 10, CYCLE_CAP_TABLE = "cycle_cap"), cycle_cap_schema() returning the
+      idempotent one-table DDL as text (no triggers, no unique index, the
+      persistence rationale in the schema comment), and revision_cap() — a
+      pure function validating the figure (CapRequestError for a malformed
+      one, bool refused), the floor (delegated to ladder.validated_floor, in
+      the ladder's vocabulary), and the boundary (CapRequestError, including
+      a boundary below the floor, which would erase the middle rung), then
+      delegating the thin judgment to rejects_thin_pool and answering 40 at
+      or above the boundary and 10 below it.
+    </step>
+    <step>
+      Phase 2 — the record and the read. In dreaming/cap.py add CapRecord
+      (hand-written __slots__, the row's five facts, the member's stamp
+      shape parsed back with the refusal translated to CapRecordError),
+      record_cycle_cap() — validate the ask, decide the cap by the schedule,
+      resolve the store (explicit URL, then DATABASE_URL, then a named
+      CapRequestError), probe pool presence before any DDL so a refusal
+      leaves no trace (CapRecordError), insert one row with a per-occurrence
+      id, and return the record — and cycle_caps() — the ordered history
+      read over the same resolution and probe. Re-export everything from
+      the member __init__ and extend the member docstring with the third
+      sentence. Reuse validated_iteration_id, sqlite_path, _stamp and
+      _parsed_instant from dreaming.cycle with their refusals translated at
+      the seam.
+    </step>
+    <step>
+      Phase 3 — the tests and verification. Add packages/dreaming/tests/
+      test_cap.py pinning: the exact boundary (49 → 10, 50 → 40), the three
+      rungs, the constants against §12.1's figures, the delegated thin
+      refusal (pool_too_thin, §12.1 named), the pure-function shape, the
+      floor/boundary parameters and their validation (a boundary below the
+      floor refused), the record's decide-then-persist contract (row cap
+      always equals revision_cap(figure)), persistence and read-back
+      equality, ordered history, the retry-is-a-new-occurrence law, the
+      lazy table creation, the empty history over an untouched pool, every
+      refusal (thin, malformed id, naive instant, no URL, unspeakable URL,
+      no pool — each in the right class, each leaving nothing written), the
+      schema text (five columns, IF NOT EXISTS, no TRIGGER, no UNIQUE), and
+      the vocabulary siblinghood. Extend test_errors.py with the cap pair's
+      sibling test. Run the member suite (uv run pytest
+      packages/dreaming/tests) and the repository-level suite (uv run pytest
+      tests/) — both — and lint only the changed files against a sibling.
+    </step>
+  </implementation_steps>
+</project_specification>

@@ -99,6 +99,31 @@ class TestTheVocabulary:
         assert not issubclass(PoolFrozenError, PoolTooThinError)
         assert POOL_TOO_THIN_CODE != FREEZE_CODE
 
+    def test_the_member_carries_the_revision_cap_as_its_own_pair(self):
+        """Feature 277's two classes take the ask/store split for the cap.
+
+        The revision cap's schedule and record (``dreaming.cap``) refuse in
+        their own vocabulary — :class:`CapRequestError` for the ask's own
+        facts, :class:`CapRecordError` for the store's — never in feature
+        270's, even where the rules are the member's shared ones (the
+        iteration-id rule, the URL translation, the stamp format), which are
+        translated at the cap's seam rather than re-raised as the freeze's.
+        """
+        import dreaming
+
+        for cap_class in (dreaming.CapRequestError, dreaming.CapRecordError):
+            assert issubclass(cap_class, dreaming.DreamingError)
+            # Siblings of all three existing classes — a caller catches a
+            # cap's refusal without catching a hold's, a thin pool's, or a
+            # malformed freeze ask's, and vice versa.
+            for sibling in (
+                FreezeRequestError,
+                PoolFrozenError,
+                PoolTooThinError,
+            ):
+                assert not issubclass(cap_class, sibling)
+                assert not issubclass(sibling, cap_class)
+
 
 class TestTheMessages:
     """What a refusal says, since the message *is* the repair instruction."""
