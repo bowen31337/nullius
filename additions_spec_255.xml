@@ -1,0 +1,215 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 255 (System persists one replay_score row per run carrying policy version, world id, beta, score and committed pick)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 255 in the existing replay member
+    (packages/replay, import name replay; seat src/app/modules/replay): the
+    writer that persists one `replay_score` row per replay run, carrying the
+    policy version, the world id, the `beta` at which the run was scored, the
+    resulting score, and the committed pick. Feature 255 declares
+    `depends_on=249`, and it is the *persistence* half of the cost argument the
+    Replay Engine category is made of — the parent (249) answers the score and
+    the pick at termination, and this feature is the row that row is written
+    into.
+
+    The table already exists: migration 0109 (`replay_score_and_policy_revision`)
+    created `replay_score` with eight columns — an id, the policy version, the
+    world id, `beta`, `score`, the committed pick, a holdout flag and a
+    created-at stamp — and feature 249's docstring and the `TerminalPick` value
+    are already shaped to those columns. What does not exist is the writer that
+    takes feature 249's `TerminalPick` and inserts the row. Feature 255 is that
+    writer: one new module, `replay/score.py`, and one verb —
+    `persist_replay_score(pick, policy_version, world_id, beta, *, is_holdout=…,
+    database_url=…)` — that validates its ask, opens the store `DATABASE_URL`
+    names, ensures the table exists on connect, and inserts exactly one row.
+
+    The row is the record of a completed scoring (migration 0109: *"a row in
+    this table is the record of a completed scoring, and a null score would be a
+    scoring that did not happen"*), so the writer is a *write*, never a refusal
+    of a low score: a policy that scored `−∞` for not committing (feature 249's
+    miss) is still a completed scoring and is written with its `−∞` and a NULL
+    `committed_pick`. The writer refuses the *malformed ask* — a `TerminalPick`
+    that is not one, a non-finite/non-`−∞` score, a non-empty-string policy
+    version or world id, a non-number beta — before the store is touched, the
+    ordering every store in this member states (245's refusal before the tree is
+    read, 251's before the arena, 252's before the clock).
+
+    The store is the one relational store every member store addresses by
+    `DATABASE_URL` (`sqlite:///` on a single machine, Postgres behind a versioned
+    migration in production). This feature does not add a migration and does not
+    edit migration 0109: the table is ensured to exist on connect (the
+    idempotent-create contract every store in this workspace states), the same
+    stance feature 254's `replay.metrics` takes for its `replay_latency_metrics`
+    table. A member never imports a member, so the
+    `TerminalPick` arrives duck-typed and is read by what it *is* — its `pick`
+    (absent-or-present) and its `score` (always present) — never `isinstance`-ed.
+
+    The committed pick is persisted as the node id the policy committed to
+    (feature 222's `CommittedPick.node_id`, migration 0109's nullable
+    `committed_pick`), or NULL for a policy that emitted no pick — the decision
+    that was never made stays distinguishable from one that was.
+  </addition_summary>
+
+  <existing_context>
+    <stack>Python / uv workspace (packages/*) / app factory scanning src/app/modules/*</stack>
+    <test_baseline>member suites under packages/*/tests plus repo-level tests/; run both (the acceptance gate grades tests/ alone)</test_baseline>
+    <conventions>snake_case, frozen dataclasses for values, duck-typed cross-member seams (never isinstance), one-verb reads, refusals before the act spends, error vocabularies split by repair, stdlib-only import-cheap members, docstrings that argue each decision and name what the module deliberately does not do</conventions>
+
+    Feature 255 is the persistence half of the Replay Engine category and builds
+    on the features already implemented:
+
+    * **feature 245** (replay/transition.py) — the stored tree reveals only
+      recorded children; the stateless `ReplayEngine` facade.
+    * **feature 248** (replay/rounds.py) — the round loop that returns the
+      revealed set.
+    * **feature 249** (replay/pick.py) — the committed pick at termination and
+      the `−∞` miss. This feature's whole subject is feature 249's answer: the
+      `TerminalPick` (`pick` absent-able, `score` always present) is the pair
+      migration 0109 shapes the `replay_score` row around, and feature 249's
+      docstring names this feature as its persistence half — *"it does not
+      persist: `replay_score` is feature 255's row, written from this value."*
+      The writer takes that value and inserts one row; it does not re-derive the
+      pair.
+    * **feature 252** (replay/duration.py) — the measured duration; its module
+      states that it does not widen `replay_score` (migration 0109, feature 255)
+      — that table carries `policy_version, world_id, beta, score,
+      committed_pick` and belongs to a separate lineage.
+    * **feature 254** (replay/metrics.py) — the observability latency store.
+      This is the in-member precedent for a `DATABASE_URL` store: a member-owned
+      table created idempotently on connect, the population validated before the
+      store is touched, the store opened through `_open_store` (missing URL /
+      non-sqlite scheme / host-bearing URL each refused by name), the write
+      chained to the store's own refusal. Feature 255 takes the same shape for
+      the `replay_score` row.
+
+    The schema is migration 0109 (`migrations/versions/0109_replay_score_and_policy_revision.py`):
+    `replay_score` — a uuid id, the policy version, the world id, `beta`,
+    `score`, the committed pick, a holdout flag and a created-at stamp. The
+    migration is
+    `IF NOT EXISTS` and re-runnable; this feature's idempotent create is a
+    no-op against a database the migration already created the tables in.
+
+    The `beta` scalar is `policy_runtime.EpisodeBeta` (feature 106): a `float`
+    subclass that binds like a float and is recorded as a plain REAL, so the
+    writer stores it as a number, not a string. The committed pick is
+    `policy_runtime.CommittedPick` (feature 222), carrying `node_id` — the one
+    field the store's `committed_pick` column persists.
+  </existing_context>
+
+  <integration_points>
+    The writer is called by the scoring driver that curries feature 256's
+    objective into feature 249's scorer and then runs feature 249's
+    `committed_pick(record, scorer)`: after the terminal requirement answers the
+    `TerminalPick`, the driver persists one `replay_score` row per run. New verb
+    `ReplayEngine.persist_replay_score(...)` on the stateless replay facade, the
+    composed spelling of the free function. New error sibling
+    `ReplayScoreError` under `ReplayError`, joining the replay member's
+    vocabulary. The writer opens the store `DATABASE_URL` names and creates the
+    `replay_score` table idempotently on connect — no migration edit, no shared
+    schema file.
+  </integration_points>
+
+  <constraints>
+    Do not edit migration 0109 or any migration, the app factory, middleware,
+    or settings (core-task territory). Do not add a second `replay` component —
+    the member's one `@register` contribution stays feature 245's stateless
+    facade, which gains the `persist_replay_score` verb. A member never imports
+    a member: the writer reads the `TerminalPick` duck-typed (its `pick` and its
+    `score`), never `isinstance`-ing it, and does not import policy_runtime,
+    scoring, or any sibling. The `replay_score` table is created idempotently on
+    connect — the writer does not widen or alter migration 0109. A low or `−∞`
+    score is persisted, never refused: the row is the record of a completed
+    scoring, and the miss is a score the comparison keeps. Every existing member
+    suite and the repo-level tests/ suite must stay green. Follow the member's
+    docstring style: argue each decision, name what the module deliberately does
+    not do, cite app_spec.xml and the documents (docs §10.1, prd §313, §438).
+  </constraints>
+
+  <layout profile="uv-workspace"/>
+
+  <features_to_add>
+    <category name="replay_score persistence">
+      <feature index="255" shape="plugin" plugin="replay" depends_on="249">
+        <description>System persists one replay_score row per run carrying policy version, world id, beta, score and committed pick, inserting the row into the relational store DATABASE_URL names and creating the table idempotently on connect. app_spec.xml, "Replay Engine", feature 255, and docs §10.1's `score(pick, book, epoch, revealed, rounds)` read from the persistence side: each (policy, world) replay is one completed scoring, and migration 0109's replay_score row is the record of it — one row per run, carrying the policy version under test, the world it was replayed against, the beta at which it was scored, the resulting score, and the committed pick. One new module, replay/score.py, and one verb — persist_replay_score(pick, policy_version, world_id, beta, *, is_holdout=False, database_url=None) — that takes feature 249's TerminalPick (the pick absent-able, the score always present, the pair the row is shaped around) and inserts exactly one row. The ask is validated before the store is touched: the pick is a TerminalPick read duck-typed (a carrier with no `pick` attribute and no `score` attribute is refused, naming what arrived — the module loader imports a member under a synthetic name and re-executes it, so an isinstance would refuse the very value composition produces); the score is a real number or −∞ (a NaN is refused — it compares false against everything and would drop out of every argmax, reading as "no scoring"; an infinity is the miss, persisted as the floor); the policy version and world id are non-empty strings (an id that names nothing writes a row no (policy, world) pair names); the beta is a finite real number (migration 0109's beta column is required). The committed pick is persisted as the node id the policy committed to (feature 222's CommittedPick.node_id) or NULL for a policy that emitted no pick — the decision that was never made stays distinguishable from one that was (migration 0109's nullable committed_pick). A low or −∞ score is persisted, never refused: the row is the record of a completed scoring (migration 0109), and the miss is a score the comparison keeps (prd §438, docs §598). The store is the one relational store every member store addresses by DATABASE_URL (sqlite:/// on a single machine); the table is ensured to exist on connect (the idempotent-create contract every store in this workspace states) — this feature adds no migration and does not edit migration 0109. The write is refused — never the score — when the store cannot take it (unconfigured, an unsupported URL scheme, a locked or unwritable database), surfaced chained to the store's own refusal, the state feature 254 exists to rule out on its side. One new ReplayError sibling, ReplayScoreError, split by the repair the caller must make (fix the ask or the store), argued in replay/errors.py. Pure over the TerminalPick and the store it is handed; the composed spelling is the verb ReplayEngine.persist_replay_score on 245's stateless facade. Stdlib only — datetime, json, math, os, sqlite3, contextlib, pathlib, typing, urllib.parse beside the member's own error — no numerics, no Polars, no PyArrow, so importing this member on every factory scan costs composition nothing.</description>
+      </feature>
+    </category>
+  </features_to_add>
+
+  <implementation_steps>
+    <phase name="replay_score persistence">
+      Add replay/score.py with the writer persist_replay_score(pick, policy_version, world_id, beta, *, is_holdout=False, database_url=None): validate the TerminalPick duck-typed (a carrier with no `pick` and no `score` is refused), the score a real number or −∞ (NaN refused, −∞ persisted as the miss's floor), the policy version and world id non-empty strings, and the beta a finite real — all before the store is touched; then open the store DATABASE_URL names, create the replay_score table idempotently on connect, and insert exactly one row (the committed pick as the node id, or NULL for the miss).
+      Add the ReplayScoreError sibling under ReplayError in replay/errors.py and argue it in the module docstring's per-class repair split and the non-nesting paragraph — a different knob from the tree, the residence, the loop ask, the terminal ask, the handed-in generator/loader, the broken report, the suspected recomputation, and the sequestration epoch.
+      Export persist_replay_score and ReplayScoreError from replay/__init__.py; the member's one @register component stays 245's replay facade, which gains the persist_replay_score verb.
+      Add the composed spelling ReplayEngine.persist_replay_score(...) to replay/transition.py, delegating to the free function through a method-body import (the same import-cycle seam run/pick/reject_observed_epoch take).
+      Add packages/replay/tests/test_score.py — the feature's own suite over duck-typed doubles: one row per run; the committed pick persisted as the node id; the miss persisted as −∞ with a NULL committed_pick and the scorer never called on the miss; NaN refused (not persisted); a low score persisted (never refused); the ask validated before the store is touched (a non-TerminalPick carrier, a blank policy version, a non-number beta each refused without opening a connection); the table created idempotently on connect; the row round-trips (read back the five carried columns); the store refused by name (missing URL, non-sqlite scheme). A repo-level tests/replay wiring test composes the app, takes the replay component, and proves the facade verb persists one row carrying the five values into a real sqlite store.
+    </phase>
+  </implementation_steps>
+
+  <deliverables>
+    <deliverable name="score.py">
+      packages/replay/src/replay/score.py — the replay_score writer, with
+      `persist_replay_score` in `__all__`. The verb validates the TerminalPick
+      duck-typed (a carrier with no `pick` attribute and no `score` attribute is
+      refused, naming what arrived — never isinstance; the module loader imports
+      a member under a synthetic name and re-executes it, so the composed value
+      can be a second class object of the same name), the score a real number or
+      −∞ (NaN refused — it compares false against everything and would read as
+      "no scoring"; −∞ is the miss, persisted as the floor), the policy version
+      and world id non-empty strings, and the beta a finite real, all before the
+      store is touched; then opens the store DATABASE_URL names, creates the
+      replay_score table, ensuring it exists on connect (the idempotent-create
+      contract —
+      no migration edit), and inserts exactly one row carrying policy_version,
+      world_id, beta, score and committed_pick (the node id, or NULL for the
+      miss). A low or −∞ score is persisted, never refused: the row is the
+      record of a completed scoring (migration 0109). The miss path never calls
+      the scorer (feature 249's law, carried into the write). No @register, no
+      migration, no second component. The module docstring argues the
+      write-not-refuse stance, the before-the-store ordering, the duck-typed
+      TerminalPick read, the −∞/NULL polarity, the idempotent create, and what
+      the module deliberately does not do (score, widen migration 0109, censor a
+      low score, import a member).
+    </deliverable>
+    <deliverable name="errors.py">
+      packages/replay/src/replay/errors.py — the `ReplayScoreError` sibling
+      under `ReplayError`, added to `__all__`, for the malformed persist ask (a
+      carrier that is not a TerminalPick, a NaN score, a blank policy version or
+      world id, a non-number beta) or a store that cannot take the write (the
+      repair: fix the ask or the store). The module docstring's per-class repair
+      split gains the new class and the non-nesting paragraph argues it is a
+      different knob from the tree, the residence, the loop ask, the terminal
+      ask, the handed-in generator/loader, the broken report, the suspected
+      recomputation, and the sequestration epoch.
+    </deliverable>
+    <deliverable name="__init__.py">
+      packages/replay/src/replay/__init__.py — export `persist_replay_score`
+      and `ReplayScoreError`; the member's one `@register` component stays 245's
+      `replay` facade, which gains the `persist_replay_score` verb.
+    </deliverable>
+    <deliverable name="transition.py">
+      packages/replay/src/replay/transition.py — the composed spelling
+      `ReplayEngine.persist_replay_score(pick, policy_version, world_id, beta,
+      *, is_holdout=False, database_url=None)`, delegating to the free function
+      through a method-body import (the same import-cycle seam `run`, `pick` and
+      `reject_observed_epoch` take). No other change to the facade.
+    </deliverable>
+    <deliverable name="tests">
+      packages/replay/tests/test_score.py — the feature's own suite, against
+      duck-typed doubles: one row per run (persisting twice writes two rows);
+      the committed pick persisted as the node id the policy committed to; the
+      miss persisted as −∞ with a NULL committed_pick and the scorer never
+      called on the miss (a betraying scorer raises if touched, pinning the
+      never-called property over the write path); a NaN score refused and not
+      persisted; a low (finite) score persisted, never refused; the ask
+      validated before the store is touched (a carrier with no `pick`/`score`, a
+      blank policy version, a non-number beta each refused without opening a
+      connection); the table created idempotently on connect (persisting twice
+      into a fresh store does not error); the row round-trips (read back
+      policy_version, world_id, beta, score, committed_pick); the store refused
+      by name (missing URL, non-sqlite scheme). A repo-level tests/replay wiring
+      test composes the app, takes the replay component, and proves the facade
+      verb persists one row carrying the five values into a real sqlite store —
+      the duck-typed TerminalPick seam end to end. test_errors.py (if present)
+      extended with the new sibling against the member's whole vocabulary.
+    </deliverable>
+  </deliverables>
+</project_specification>
