@@ -248,17 +248,51 @@ bar over a number nobody ran"* refusal — and
 opening with ``advantage_below_bar``), with the cap's request and record
 refusals translated at the seam, never borrowed.
 
-**It is not the evaluator, the selector, or the rotator.**  Running ``M``
+**It carries the holdout's rotation as a ninth sentence, and that is the
+clause of §12.1's top rung the split's own call leaves as an argument.**
+§10.3.1 spells the split with it — ``pool.split(0.7,
+rotate_each_cycle=True)`` — and §12.1's ladder row carries it as the
+rung's last clause: *"50+: full dreaming, ``M = 30–40``, 70/30
+train/holdout split on worlds, holdout rotated each cycle."*  Feature
+279's sentence (*"System rotates the holdout split every cycle,
+persisting which worlds were held out per iteration"*) is both halves of
+that clause, and :mod:`dreaming.rotation` is its two acts:
+:func:`dreaming.rotation.cycle_rotation` is the member's own law — **a
+cycle's rotation is its own name**, the validated iteration id handed to
+feature 278's rank as the discriminator, so *the split of cycle N* is
+recomputable from the cycle's name alone and the append-only history is
+never an input to the splits it describes — and
+:func:`dreaming.rotation.record_cycle_holdout` is the persisting half:
+read the pool, take the split at the cycle's own rotation, and write one
+row per cycle into this member's own ``cycle_holdout`` table
+(:data:`CYCLE_HOLDOUT_TABLE`) carrying **which worlds were held out**, in
+the split's own rank order, beside the pool's size and the exact share the
+half was taken by, with :func:`dreaming.rotation.cycle_holdouts` answering
+the account an operator asks for after the fact: *which worlds did each
+cycle report on?*  The rotation exists because a holdout that never moves
+is a holdout the loop can *learn* — the winner of every cycle selected on
+the same 70% and reported on the same 30% is §12.1's multiple-testing
+problem one level up again, spread over time — and the record exists
+because §12's M3 exit criterion is *"evaluated on worlds held out of the
+dreaming loop"*, and a criterion read over worlds nobody recorded is a
+criterion read over nothing.  Its refusals are its own pair of classes
+(:class:`~dreaming.errors.HoldoutRequestError` for the ask's own facts,
+:class:`~dreaming.errors.HoldoutRecordError` for a store that holds no
+pool or a row that will not read back) under the one base, with the thin
+pool delegated to feature 275's refusal as the cap, the ceiling and the
+split delegate theirs — a pool too thin to dream on has no halves to
+rotate.
+
+**It is not the evaluator or the selector.**  Running ``M``
 revisions and evaluating every candidate against every stored world
 (features 271-272), including the incumbent in the candidate set and
-persisting the argmax to ``policy_revision`` (features 273-274), and
-rotating the split per cycle and persisting which worlds were held out per
-iteration (feature 279) are all their own features depending on this one.
-This member holds the pool, splits it, compares arms over it and bars a
-winner that does not survive the noise its own tournament earned; it never
-runs a policy, never scores a world and never picks a winner — the bar
-*refuses* one, and the act of refusing a winner is not the act of crowning
-it.
+persisting the argmax to ``policy_revision`` (features 273-274) are all
+their own features depending on this one.  This member holds the pool,
+splits it, rotates the split per cycle and persists which worlds each
+iteration held out, compares arms over it and bars a winner that does not
+survive the noise its own tournament earned; it never runs a policy,
+never scores a world and never picks a winner — the bar *refuses* one, and
+the act of refusing a winner is not the act of crowning it.
 
 **It never writes the pool's tables.**  Feature 270's whole subject is not
 writing them.  ``pool_freeze`` is this member's own table and the only table it
@@ -358,6 +392,8 @@ from .errors import (
     CapRequestError,
     DreamingError,
     FreezeRequestError,
+    HoldoutRecordError,
+    HoldoutRequestError,
     PairedComparisonError,
     PoolFrozenError,
     PoolTooThinError,
@@ -394,6 +430,14 @@ from .paired import (
     power_capacity,
     rejects_proportion_comparison,
 )
+from .rotation import (
+    CYCLE_HOLDOUT_TABLE,
+    HoldoutRecord,
+    cycle_holdout_schema,
+    cycle_holdouts,
+    cycle_rotation,
+    record_cycle_holdout,
+)
 from .split import (
     TRAIN_FRACTION,
     PoolSplit,
@@ -413,6 +457,7 @@ __all__ = [
     "CAPPED_SWEEP_CAP",
     "COMPONENT_NAME",
     "CYCLE_CAP_TABLE",
+    "CYCLE_HOLDOUT_TABLE",
     "DATABASE_URL_ENV",
     "FREEZE_CODE",
     "FREEZE_TABLE",
@@ -445,6 +490,9 @@ __all__ = [
     "FamilyTransfer",
     "FreezeRecord",
     "FreezeRequestError",
+    "HoldoutRecord",
+    "HoldoutRecordError",
+    "HoldoutRequestError",
     "PairedComparisonError",
     "PairedDifference",
     "PoolFrozenError",
@@ -462,6 +510,9 @@ __all__ = [
     "cycle_cap_schema",
     "cycle_caps",
     "cycle_freeze_schema",
+    "cycle_holdout_schema",
+    "cycle_holdouts",
+    "cycle_rotation",
     "expected_triggers",
     "family_transfer",
     "ladder_floor",
@@ -477,6 +528,7 @@ __all__ = [
     "pooled_family_transfer",
     "power_capacity",
     "record_cycle_cap",
+    "record_cycle_holdout",
     "rejects_proportion_comparison",
     "rejects_thin_pool",
     "rejects_unbarred_winner",

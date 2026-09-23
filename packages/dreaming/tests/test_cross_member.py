@@ -47,6 +47,7 @@ ineffective.
 
 from __future__ import annotations
 
+import datetime as dt
 import importlib.util
 import sqlite3
 import sys
@@ -59,6 +60,7 @@ from dreaming import (
     REPLAY_SCORE_TABLE,
     WORLD_TABLE,
     CycleFreeze,
+    HoldoutRecordError,
     PairedComparisonError,
     TransferStoreError,
     pool_commitment,
@@ -906,3 +908,149 @@ class TestTheTransferSeam:
             )
 
         assert "no pool" in str(refusal.value)
+
+
+class TestTheRotationSeam:
+    """The holdout's rotation, pinned against the owners' own pool.
+
+    Feature 279 reads the pool through the one law it does not own — the
+    membership (:func:`dreaming.pool_worlds`'s union, feature 278's
+    restatement) — and writes one row of its own beside it.  What this class
+    pins is the seam over the *owners'* tables: a pool built by ``0109`` and
+    feature 188's store, the cycle's holdout recorded from it, and the
+    persisted half agreeing with the split taken directly through feature
+    278's own seam at the same rotation — *one* split, not two that merely
+    agree.  The same discipline the split, comparison and transfer seams
+    above apply, turned on the sentence's second clause: *persisting which
+    worlds were held out per iteration* is only a claim the store can check
+    if the worlds came from the owners' tables in the first place.
+    """
+
+    def _owners_pool(self, tmp_path: Path) -> str:
+        """A pool both owners built: migrated by ``0109``, authored by 188."""
+        bootstrap_src = REPO_ROOT / "packages" / "bootstrap" / "src"
+        if str(bootstrap_src) not in sys.path:
+            sys.path.insert(0, str(bootstrap_src))
+        bootstrap = pytest.importorskip(
+            "bootstrap", reason="the bootstrap member is absent from this checkout"
+        )
+
+        migration = _load_migration(
+            "m0109_rotation", "0109_replay_score_and_policy_revision.py"
+        )
+        database_url = f"sqlite:///{tmp_path / 'rotation-seam.db'}"
+        migration.apply(database_url)
+        bootstrap.BootstrapPool(database_url).persist_worlds(40)
+        return database_url
+
+    def _write_scores(self, url: str, financial_ids: tuple[str, ...]) -> None:
+        """Score rows over the given financial worlds and one shared world.
+
+        Writes through ``0109``'s own eight columns, raw — the replay
+        member's writer is not this member's to drive — and names one
+        *bootstrap* world too, so the union law does its work before the
+        rotation ever ranks a world: an authored world that was replayed is
+        the honest shape of a dreaming pool, and the record's half must
+        still hold it once.
+        """
+        with closing(sqlite3.connect(sqlite_path(url))) as connection, connection:
+            shared = connection.execute(
+                f"SELECT world_id FROM {WORLD_TABLE} LIMIT 1"
+            ).fetchone()[0]
+            for world_id in (*financial_ids, shared):
+                connection.execute(
+                    f"INSERT INTO {REPLAY_SCORE_TABLE} (id, policy_version, "
+                    "world_id, beta, score, committed_pick, is_holdout, "
+                    "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        f"score-rotation-{world_id}",
+                        "pi-0",
+                        world_id,
+                        0.0,
+                        1.0,
+                        None,
+                        0,
+                        "2026-01-01T00:00:00Z",
+                    ),
+                )
+
+    def test_the_persisted_holdout_is_the_split_at_the_cycles_own_rotation(
+        self, tmp_path: Path
+    ) -> None:
+        """One spelling over the owners' pool: the row's half *is* 278's answer.
+
+        43 worlds — forty authored, three financial, one shared — split
+        30/13 at any rotation, and the row recorded for cycle 7 carries
+        exactly the half ``split_replay_pool(rotation="cycle-7")`` answers,
+        beside the pool's size and the exact share.  A caller marking
+        ``replay_score`` rows through the split's own predicates during the
+        cycle and this member recording the cycle run one split.
+        """
+        url = self._owners_pool(tmp_path)
+        self._write_scores(url, ("world-fin-1", "world-fin-2", "world-fin-3"))
+
+        record = dreaming.record_cycle_holdout(
+            "cycle-7",
+            database_url=url,
+            recorded_at=dt.datetime(2026, 3, 1, 12, 0, 0, tzinfo=dt.UTC),
+        )
+        direct = dreaming.split_replay_pool(database_url=url, rotation="cycle-7")
+
+        assert record.iteration_id == "cycle-7"
+        assert record.world_count == 43
+        assert record.holdout == direct.holdout
+        assert len(record.holdout) == 13
+        assert record.fraction == dreaming.TRAIN_FRACTION
+        assert set(record.holdout) | set(direct.train) == set(
+            dreaming.pool_worlds(sqlite_path(url))
+        )
+        assert not (set(record.holdout) & set(direct.train))
+
+    def test_the_owners_pool_rotates_cycle_by_cycle(self, tmp_path: Path) -> None:
+        """§12.1's *"holdout rotated each cycle"* over tables this member did
+        not build: two cycles answer two halves, and the audit read answers
+        both rows oldest-first."""
+        url = self._owners_pool(tmp_path)
+        self._write_scores(url, ("world-fin-1", "world-fin-2", "world-fin-3"))
+
+        first = dreaming.record_cycle_holdout(
+            "cycle-1",
+            database_url=url,
+            recorded_at=dt.datetime(2026, 3, 1, 9, 0, 0, tzinfo=dt.UTC),
+        )
+        second = dreaming.record_cycle_holdout(
+            "cycle-2",
+            database_url=url,
+            recorded_at=dt.datetime(2026, 3, 1, 10, 0, 0, tzinfo=dt.UTC),
+        )
+
+        assert first.holdout != second.holdout
+        assert dreaming.cycle_holdouts(database_url=url) == (first, second)
+
+    def test_a_0109_only_database_holds_no_pool_to_hold_worlds_out_of(
+        self, tmp_path: Path
+    ) -> None:
+        """``0109`` makes the score table and not the world table (pinned four
+        classes up), so the record's probe refuses — in this feature's own
+        store class, never re-raised as the split's, and before the table is
+        created so a refused record leaves no trace."""
+        migration = _load_migration(
+            "m0109_rotation_alone", "0109_replay_score_and_policy_revision.py"
+        )
+        database_url = f"sqlite:///{tmp_path / 'rotation-alone.db'}"
+        migration.apply(database_url)
+
+        with pytest.raises(HoldoutRecordError) as refusal:
+            dreaming.record_cycle_holdout(
+                "cycle-1",
+                database_url=database_url,
+                recorded_at=dt.datetime(2026, 3, 1, 12, 0, 0, tzinfo=dt.UTC),
+            )
+
+        assert "no pool" in str(refusal.value)
+        assert not isinstance(refusal.value, dreaming.SplitStoreError)
+        with closing(sqlite3.connect(sqlite_path(database_url))) as connection:
+            left = connection.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'cycle_holdout'"
+            ).fetchone()[0]
+        assert left == 0

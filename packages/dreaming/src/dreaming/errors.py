@@ -164,6 +164,28 @@ translated at the bar's seam for the reason every translation in this member
 gives: the caller asked for a bar, and must not be told the cap could not be
 recorded.
 
+**Feature 279 rotates the split, and its two classes take the ask/store split
+the cap and the split state.**  app_spec.xml, feature 279: *System rotates the
+holdout split every cycle, persisting which worlds were held out per
+iteration.*  The sentence has a per-cycle act and a record, and they fail in
+the two places the member's other store seams fail:
+:class:`HoldoutRequestError` is the *ask* face — an iteration id that is not
+non-empty text (and so names no cycle to rotate for), a train fraction that
+names no exact share in ``(0, 1)``, an instant that is not timezone-aware, or
+a URL that names no database or one this member cannot speak — and
+:class:`HoldoutRecordError` is the *store* face: a database that holds no pool
+tables (no pool to hold worlds out of), or a recorded row whose stamp, worlds
+or fraction will not read back.  The pair deliberately mints nothing the
+features it delegates to already own: a pool below the ladder floor is feature
+275's refusal, delegated through the split's judgment in the floor's own word,
+and everything about the 70/30 arithmetic — the rank, the sizes, the
+disjointness — is feature 278's, consumed from :mod:`dreaming.split` rather
+than respelled, with its one request class translated at this seam so a caller
+recording a rotation never meets the split's word for an act that split
+nothing.  No code word, for the reason :class:`RevisionCeilingError` gives:
+feature 279's sentence mandates none, so every refusal opens with its subject
+— the cycle, the pool or the row that was wrong.
+
 **Why :class:`PoolFrozenError` is its own class and not a borrowed one.**
 Three members already read this pool and each has its own vocabulary for its
 own act — :class:`~tripwires.errors.TripwireExcisionError`,
@@ -195,6 +217,8 @@ __all__ = [
     "CapRequestError",
     "DreamingError",
     "FreezeRequestError",
+    "HoldoutRecordError",
+    "HoldoutRequestError",
     "PairedComparisonError",
     "PoolFrozenError",
     "PoolTooThinError",
@@ -774,4 +798,79 @@ class SelectionBarError(DreamingError):
     figures behind it, and names the repair — so an operator reading a
     deployment log sees both ends of the judgement: *what the winner
     earned* and *what surviving selection noise costs*.
+    """
+
+
+class HoldoutRequestError(DreamingError):
+    """A cycle's holdout rotation could not be asked for as the caller asked.
+
+    app_spec.xml, "Dreaming Loop & Meta-Selection", feature 279: *System
+    rotates the holdout split every cycle, persisting which worlds were held
+    out per iteration.*  This is the *ask* face of that sentence: an
+    iteration id that is not non-empty text (a cycle that cannot be named
+    cannot be rotated for — its holdout would be a record attributed to no
+    cycle, and an operator reading the history could not say which
+    tournament the worlds were held out of), a train fraction that names no
+    exact share in ``(0, 1)`` (translated at the seam from the split's one
+    spelling of the rule, because the 70/30 arithmetic is feature 278's), an
+    instant that is not a timezone-aware datetime, or a URL that names no
+    database or one this member cannot speak.  Every one is a fact about the
+    **request**, refused before anything is read or written, and the repair
+    is to re-consider what was asked for — the stance
+    :class:`FreezeRequestError` takes for feature 270's asks and the cap,
+    split, transfer and bar pairs take for their own.
+
+    Deliberately **not** a :class:`FreezeRequestError` or a
+    :class:`SplitRequestError`, though the rules it refuses are the member's
+    shared ones: the iteration-id rule and the URL translation are spelled
+    once in :mod:`dreaming.cycle` and the fraction rule once in
+    :mod:`dreaming.split`, both *translated* into this class at the
+    rotation's seam, because a caller that recorded a rotation and caught
+    another feature's word would read *your hold was malformed* or *your
+    split was malformed* about an act that held and split nothing — the seam
+    discipline the whole workspace states for error vocabularies.  And
+    deliberately not a :class:`PoolTooThinError`: a pool below the ladder
+    floor is feature 275's fact, refused by the split's judgment in the
+    floor's own word, and this class never speaks for it.
+
+    No code word, for the reason :class:`CapRequestError` gives: feature
+    279's sentence mandates none, so every message opens with its subject —
+    the cycle, the fraction or the instant that was wrong — and a reader is
+    told *what to fix* rather than handed a token to grep for.
+    """
+
+
+class HoldoutRecordError(DreamingError):
+    """The store could not ground a cycle's holdout record.
+
+    The store-side face of feature 279's sentence, and it is where the
+    feature's own claim is checked: *"persisting which worlds were held out
+    per iteration"* is a claim **about the pool** — the holdout is a share of
+    the pool's worlds — and at the store seam the pool is ground truth.  Two
+    ways the store refuses to ground it, both facts about the **store**
+    rather than the ask (the URL was well formed, the iteration named a
+    cycle, the fraction named a share):
+
+    * **the database holds no pool tables** — no ``replay_score`` and no
+      ``bootstrap_world``, so there is no pool here to hold worlds out of,
+      and a row written against it would name worlds that were never read
+      while the cycle believed its reporting half existed.  Refused *before*
+      the record's table is created, so a refused record leaves no trace.
+    * **a recorded row will not read back** — a stamp that is not the
+      member's ISO-8601, a holdout half that is not a list of non-empty
+      world ids, or a fraction that names no exact share: each is a value
+      this member never writes, arrived by a hand, and a record that
+      answered it would report a holdout nobody took.
+
+    The repair is to point ``DATABASE_URL`` at the database the replay pool
+    lives in (or migrate it), never to re-send the same ask against a store
+    that still holds nothing to hold out of.  A sibling of
+    :class:`PoolFrozenError`, :class:`CapRecordError`,
+    :class:`SplitStoreError` and :class:`BarRecordError` rather than a face
+    of any of them, because the five name different worlds: *the pool is
+    held and something tried to move it* (feature 270), *there is no pool
+    here to cap* (feature 277), *there is no pool here to split* (feature
+    278), *there is no recorded ``M`` here to bar a winner at* (feature 280)
+    and *there is no pool here — or no readable row — to hold worlds out
+    of* (feature 279).
     """

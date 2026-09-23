@@ -321,6 +321,65 @@ class TestTheVocabulary:
         assert POOL_TOO_THIN_CODE not in message
         assert FREEZE_CODE not in message
 
+    def test_the_member_carries_the_rotation_as_its_own_pair(self):
+        """Feature 279's two classes take the ask/store split the cap states.
+
+        The holdout's per-cycle rotation and its record
+        (``dreaming.rotation``) refuse in their own vocabulary —
+        :class:`HoldoutRequestError` for the ask's own facts (an iteration id
+        that is not non-empty text, a train fraction outside ``(0, 1)``, a
+        naive instant, no database named), :class:`HoldoutRecordError` for a
+        store that holds no pool or a row that will not read back — never
+        feature 270's and never the split's, even where the rules are the
+        member's shared ones (the id rule and the URL translation spelled in
+        ``dreaming.cycle``, the fraction rule in ``dreaming.split``, both
+        *translated* at the rotation's seam rather than re-raised), and
+        never feature 275's: a pool below the ladder floor is the floor's
+        refusal, delegated through the split's judgment in the floor's own
+        word, because a pool too thin to dream on has no halves to rotate.
+        """
+        import dreaming
+
+        for rotation_class in (
+            dreaming.HoldoutRequestError,
+            dreaming.HoldoutRecordError,
+        ):
+            assert issubclass(rotation_class, dreaming.DreamingError)
+            # Siblings of every existing class — a caller catches a
+            # rotation's refusal without catching a hold's, a thin pool's,
+            # a cap's, a ceiling's, a split's, a comparison's, a transfer's
+            # or a bar's, and vice versa.
+            for sibling in (
+                FreezeRequestError,
+                PoolFrozenError,
+                PoolTooThinError,
+                dreaming.CapRequestError,
+                dreaming.CapRecordError,
+                dreaming.RevisionCeilingError,
+                dreaming.SplitRequestError,
+                dreaming.SplitStoreError,
+                dreaming.ProportionComparisonError,
+                dreaming.PairedComparisonError,
+                dreaming.TransferRequestError,
+                dreaming.TransferStoreError,
+                dreaming.BarRequestError,
+                dreaming.BarRecordError,
+                dreaming.SelectionBarError,
+            ):
+                assert not issubclass(rotation_class, sibling)
+                assert not issubclass(sibling, rotation_class)
+
+        # No code word, like features 276/278/282's and unlike 281's pair:
+        # feature 279's sentence mandates none, so the refusal opens with
+        # its subject — and never mints the thin pool's or the freeze's
+        # word, both of which are delegated where they apply.
+        with pytest.raises(dreaming.HoldoutRequestError) as refusal:
+            dreaming.cycle_rotation(None)
+
+        message = str(refusal.value)
+        assert POOL_TOO_THIN_CODE not in message
+        assert FREEZE_CODE not in message
+
     def test_the_member_carries_the_selection_bar_as_its_own_three(self):
         """Feature 280's three classes split by repair, and the third is the verdict.
 
