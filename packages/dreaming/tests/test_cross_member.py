@@ -500,3 +500,154 @@ class TestTheSplitSeam:
         assert set(split.train) | set(split.holdout) == set(
             dreaming.pool_worlds(sqlite_path(url))
         )
+
+
+class TestTheComparisonSeam:
+    """The paired statistic's read, pinned against ``0109``'s own built table.
+
+    Feature 281 reads two columns of a table it does not own — ``world_id``,
+    which is what makes two readings *pair*, and ``score``, which is the
+    out-of-sample IR §11.0 compares — and the read is the feature's whole
+    claim: §10.3.1's *"same policy pair on the same worlds"* is true here only
+    because both arms come out of one table keyed by world, so a world only one
+    arm was replayed against is **refused** rather than silently dropped.
+
+    The tests below stand a pool up through ``0109``'s **real** ``apply()`` —
+    not this member's stand-in DDL, which the member's own suite uses — and
+    compare over it.  That is the same discipline the classes above apply to
+    the restatement, turned on the read: what makes the pairing a fact about
+    the store rather than about this member's opinion of it is that the
+    *owner's* table is the one the arms are read from.
+    """
+
+    def _migrated_pool(self, tmp_path: Path) -> str:
+        """A database ``0109`` built, holding two arms over three shared worlds.
+
+        The arms differ by more than a constant on purpose: a pair whose every
+        world moved by the same amount is refused by the statistic itself (a
+        standard error of exactly zero), so a fixture that wrote ``pi-0`` and
+        ``pi-1`` as one figure shifted would exercise the refusal rather than
+        the comparison.
+        """
+        migration = _load_migration(
+            "m0109_paired", "0109_replay_score_and_policy_revision.py"
+        )
+        database_url = f"sqlite:///{tmp_path / 'paired-seam.db'}"
+        migration.apply(database_url)
+
+        baselines = {"world-a": 0.10, "world-b": 0.20, "world-c": 0.30}
+        candidate = {"world-a": 0.40, "world-b": 0.65, "world-c": 0.50}
+        with closing(sqlite3.connect(sqlite_path(database_url))) as connection, connection:
+            for policy, readings in (("pi-0", baselines), ("pi-1", candidate)):
+                for world_id, score in readings.items():
+                    connection.execute(
+                        f"INSERT INTO {REPLAY_SCORE_TABLE} (id, policy_version, "
+                        "world_id, beta, score, committed_pick, is_holdout, "
+                        "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            f"score-{policy}-{world_id}",
+                            policy,
+                            world_id,
+                            0.0,
+                            score,
+                            None,
+                            0,
+                            "2026-01-01T00:00:00Z",
+                        ),
+                    )
+        return database_url
+
+    def test_the_arms_are_read_from_the_owners_own_table(self, tmp_path: Path) -> None:
+        """The feature's call over a pool the migration built, not this member's stand-in.
+
+        The comparison's two numbers — the mean paired difference and the
+        worlds it was taken over — are computed here independently from the
+        figures written above, so the agreement is about the *read* and not
+        about the statistic agreeing with itself.
+        """
+        url = self._migrated_pool(tmp_path)
+
+        record = dreaming.paired_pool_difference(
+            "pi-1", "pi-0", database_url=url
+        )
+
+        differences = (0.30, 0.45, 0.20)
+        assert record.paired_worlds == 3
+        assert record.mean_difference == pytest.approx(sum(differences) / 3)
+        assert set(dict(record.differences)) == {"world-a", "world-b", "world-c"}
+
+    def test_a_world_only_one_arm_was_replayed_against_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """The unpaired case, over the owner's table rather than a hand-built one.
+
+        A partially-replayed pool is the ordinary way this state arrives, and
+        dropping the unshared world is the tempting edit that would turn
+        §10.3.1's paired comparison into the unpaired one §11.0 rejects.  The
+        refusal has to come from the store read as well as from a caller
+        holding two dicts, which is what this pins.
+        """
+        url = self._migrated_pool(tmp_path)
+        with closing(sqlite3.connect(sqlite_path(url))) as connection, connection:
+            connection.execute(
+                f"INSERT INTO {REPLAY_SCORE_TABLE} (id, policy_version, "
+                "world_id, beta, score, committed_pick, is_holdout, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "score-pi-1-world-d",
+                    "pi-1",
+                    "world-d",
+                    0.0,
+                    0.9,
+                    None,
+                    0,
+                    "2026-01-01T00:00:00Z",
+                ),
+            )
+
+        with pytest.raises(dreaming.PairedComparisonError) as refusal:
+            dreaming.paired_pool_difference("pi-1", "pi-0", database_url=url)
+
+        assert "world-d" in str(refusal.value)
+
+    def test_a_third_policys_rows_are_not_paired_in(self, tmp_path: Path) -> None:
+        """The read selects the two arms it was asked for, and no others.
+
+        ``replay_score`` holds every policy the pool has ever replayed, so a
+        read without its ``policy_version`` predicate would pair a candidate
+        against whichever rows happened to sort last — and the figures would
+        look like a comparison of two named arms.  This is the store-side
+        version of the same discipline the module's single-``policy_version``
+        read states in its docstring, pinned by putting a third arm in the
+        table and checking it changes nothing.
+
+        The claim is deliberately narrow because ``0109`` alone builds one
+        table: the split's agreement (feature 278's own cross-member class
+        names feature 281 as the consumer of its disjointness) needs
+        ``bootstrap_world`` too, which the bootstrap member authors, and is
+        pinned from that side rather than restated here.
+        """
+        url = self._migrated_pool(tmp_path)
+        with closing(sqlite3.connect(sqlite_path(url))) as connection, connection:
+            connection.execute(
+                f"INSERT INTO {REPLAY_SCORE_TABLE} (id, policy_version, "
+                "world_id, beta, score, committed_pick, is_holdout, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "score-pi-2-world-a",
+                    "pi-2",
+                    "world-a",
+                    0.0,
+                    99.0,
+                    None,
+                    0,
+                    "2026-01-01T00:00:00Z",
+                ),
+            )
+
+        record = dreaming.paired_pool_difference("pi-1", "pi-0", database_url=url)
+
+        assert record.paired_worlds == 3
+        assert record.mean_difference == pytest.approx((0.30 + 0.45 + 0.20) / 3)
+        # The third arm's 99.0 reading is in the table and not in the comparison.
+        assert max(abs(value) for _, value in record.differences) < 1.0

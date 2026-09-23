@@ -80,6 +80,25 @@ vocabulary never mints is the thin pool's: a pool below the ladder floor is
 feature 275's fact, delegated to :func:`dreaming.ladder.rejects_thin_pool` in
 the floor's own word, the same delegation the cap and the ceiling perform.
 
+**Feature 281 rejects a comparison, and its two classes are the two halves of
+that rejection.**  §11.0's rule — *"Raw FDR is a proportion, and proportions are
+power-poor … Fix the statistic, not the ambition"* — has a refusal and a
+replacement, and they fail differently: :class:`ProportionComparisonError` is
+raised when the caller asked for a **difference in proportions**, whose repair
+is *ask for the paired continuous statistic instead*, while
+:class:`PairedComparisonError` is raised when the paired statistic **is** what
+was asked for and the worlds handed to it do not pair, whose repair is
+*compare the arms over the worlds that carry both*.  The first is a fact about
+the **question**; the second is a fact about the **evidence**.  They are
+siblings under the one base and neither is a face of the other, for the reason
+every pair in this module is split: a caller that must react differently to
+*your statistic is wrong* and *your worlds are wrong* cannot catch one class
+and tell them apart.  Both are also deliberately not :class:`PoolTooThinError`
+— feature 275's floor judges the pool against §12.1's ladder rung *before* any
+comparison runs, in the floor's own word, and a pool it admits can still fail
+to pair; the repairs are different (grow the pool, against compare the arms
+over their shared worlds) so the classes are different.
+
 **Why :class:`PoolFrozenError` is its own class and not a borrowed one.**
 Three members already read this pool and each has its own vocabulary for its
 own act — :class:`~tripwires.errors.TripwireExcisionError`,
@@ -109,8 +128,10 @@ __all__ = [
     "CapRequestError",
     "DreamingError",
     "FreezeRequestError",
+    "PairedComparisonError",
     "PoolFrozenError",
     "PoolTooThinError",
+    "ProportionComparisonError",
     "RevisionCeilingError",
     "SplitRequestError",
     "SplitStoreError",
@@ -384,4 +405,107 @@ class SplitStoreError(DreamingError):
     278).  A caller that caught one and read it as another would wait for a
     cycle that does not exist, or close one that was never open, or re-send a
     split against a database that still holds nothing to split.
+    """
+
+
+class ProportionComparisonError(DreamingError):
+    """A policy comparison was asked for as a difference in proportions.
+
+    app_spec.xml, "Dreaming Loop & Meta-Selection", feature 281: *System
+    rejects a difference-in-proportions comparison, using a paired continuous
+    statistic over the same worlds instead.*  This is the **rejects** of that
+    sentence, and it is the half of the feature that comes first: §11.0 of
+    docs/alpha-engine-prd.md states the rule in its own opening sentence —
+    *"Raw FDR is a proportion, and proportions are power-poor"* — and
+    docs/nullius-tech-architecture.md §10.3.1 states it as the reason the
+    comparison is a paired IR test at all:
+
+        Policy comparison uses a **paired** continuous statistic — OOS IR of
+        the committed pick, same policy pair on the same worlds — not a
+        difference in proportions.  A proportion test for ``0.30 → 0.21``
+        needs ~364 independent commits per arm before clustering; the paired
+        IR test needs ~56 worlds.
+
+    **A committed-pick outcome is binary, and that is exactly the trap.**  The
+    quantity §11.0 names — the false discovery *rate* — is a proportion: a
+    count of committed picks that were right over the picks committed.  Two
+    arms' rates are therefore two proportions, and testing the difference
+    between them is the single most natural thing to reach for, which is why
+    the sentence in the spec exists at all.  It is also unbuildable here: 364
+    independent commits per arm at 80% power, before the design effect that
+    clustering replays by world adds.  The §C5 loop runs ``M`` revisions
+    against a pool of worlds, not thousands of independent commits, so a
+    proportion test on this pool is a test with no power wearing a
+    conventional name — *"that test is not buildable at this scale"*.
+
+    **The repair is not to ask again, and it is not to widen the pool either.**
+    §11.0's instruction is *"Fix the statistic, not the ambition"*: the
+    comparison is a paired continuous statistic over the same worlds — the
+    out-of-sample IR of the committed pick, continuous and zero in expectation
+    under the null, differenced world by world.  So a caller that meets this
+    class has asked the wrong *question*, and the answer is
+    :func:`dreaming.paired.paired_ir_difference` over the same pool it was
+    already holding — never more worlds, which would be paying the pool's
+    price for a statistic that stays under-powered either way.  That is why it
+    is its own class and not a face of :class:`PoolTooThinError`, whose repair
+    (*grow the pool*) is the wrong action here, and not a face of
+    :class:`PairedComparisonError`, which is the *other* half of feature 281:
+    it is raised when the comparison **is** the right statistic and the pool
+    it was handed cannot ground one.  A caller that caught the two together
+    would read *your statistic is wrong* as *your worlds are wrong*.
+
+    Every message opens with :data:`dreaming.paired.PROPORTION_CODE`
+    (``proportion_comparison``), states the figure the caller named and what
+    §11.0's arithmetic says that figure needs, and names the paired
+    alternative — so an operator reading the refusal sees both ends of the
+    judgement: *what was asked for* and *what to ask for instead*.
+    """
+
+
+class PairedComparisonError(DreamingError):
+    """A paired comparison could not be grounded on the worlds it was handed.
+
+    The second half of feature 281's sentence, and the point of *"over the
+    same worlds"*: the comparison is paired, so it needs worlds that were
+    **paired** — the same world carrying a figure for each arm of the
+    comparison.  §10.3.1 spells the seam as *"same policy pair on the same
+    worlds"*, and a difference of paired figures is only defined where both
+    figures exist.
+
+    Three ways the pool fails that, and the repair is the same for all three —
+    *compare the arms over the worlds that carry both* — which is why this is
+    one class and not three:
+
+    * **a world carries only one arm's figure.**  The pair is incomplete: the
+      world was replayed against one policy and not the other, so it
+      contributes no difference.  Including it would mean inventing the
+      missing arm; averaging it in as a zero difference would be the same
+      invention spelled less visibly.
+    * **the two arms' world sets are not the same worlds at all.**  Nothing is
+      paired by construction, and the difference is between two populations
+      rather than between two readings of one population — which is the
+      *unpaired* comparison §11.0 rejects, arriving through the arithmetic
+      rather than through the caller's request.
+    * **fewer than two paired worlds survive.**  One world is one difference,
+      and one difference has no spread; the sample deviation is a division by
+      ``n − 1`` and at ``n = 1`` there is no deviation to divide by.  Reporting
+      a t figure off it would mean reporting a spread this pool does not have.
+
+    **Deliberately not a face of :class:`ProportionComparisonError`.**  That
+    class's repair is *the statistic is the wrong one*; this class's repair is
+    *the statistic is right and these worlds cannot ground it*, which the
+    caller reaches by comparing the arms over their shared worlds — the pool's
+    other worlds are not the fix, and a caller that caught the two together
+    would go looking for a better statistic when its worlds were the problem.
+    Nor is it a :class:`PoolTooThinError`: feature 275's floor judges the
+    *pool* against §12.1's ladder rung, while this refusal is about the
+    **overlap** of two arms within a pool the floor has already admitted — the
+    thin-pool refusal fires before any comparison, in the floor's own word,
+    and this class never speaks for it.
+
+    Refusals open with :data:`dreaming.paired.PAIRED_CODE` (``unpaired_worlds``)
+    — the greppable-code convention ``pool_frozen``, ``pool_too_thin``,
+    ``illegal_theme`` and ``full_history_fit`` already follow in this workspace
+    — and name the arm's world set, so an operator can see *which* worlds failed
+    to pair rather than only that pairing failed.
     """

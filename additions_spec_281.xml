@@ -1,0 +1,191 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 281 (System rejects a difference-in-proportions comparison, using a paired continuous statistic over the same worlds instead)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 281 in the existing dreaming member
+    (packages/dreaming, import name dreaming; seat src/app/modules/dreaming):
+    the statistic docs/alpha-engine-prd.md §12's M3 gate judges with, and the
+    refusal that keeps the proportion comparison off the table. Both halves in
+    one new module, dreaming/paired.py. The sentence has a REJECTS and an
+    INSTEAD, and §11.0 states both — "Raw FDR is a proportion, and proportions
+    are power-poor … That test is not buildable at this scale. Fix the
+    statistic, not the ambition … run the comparison paired — same policy pair,
+    same worlds. A paired t-test detecting ΔIR = 0.3 with σ_diff ≈ 0.8 needs
+    ~56 worlds, which is reachable." docs/nullius-tech-architecture.md §10.3.1
+    restates it as the reason M3 is shaped as it is. (1) The statistic —
+    paired_ir_difference(candidate, baseline, *, spread=None, delta=0.0,
+    power=0.80): each arm is a mapping of world id to that arm's out-of-sample
+    IR, the two are paired BY WORLD ID (never by position), and the per-world
+    differences are tested against zero. Returns a new frozen-value
+    PairedDifference record carrying the two arms' means, the mean paired
+    difference, the Bessel-corrected sample deviation of the differences (the
+    (n − 1) divisor, because the deviation is estimated from the same worlds
+    the test runs on), the standard error (spread/√n), the t statistic, the
+    two-sided p-value at PAIRED_LEVEL = 0.95, the per-world differences as
+    ordered (world_id, d) pairs, and the tail limit's own name; with
+    is_positive (the sign of ΔIR), clears(*, delta=0.0, level=0.05) reading
+    §12's exit criterion literally as "Paired ΔIR &gt; 0.3 with p &lt; 0.05" with
+    both edges STRICT, and row() for a store- or report-shaped mapping. The
+    two-sided p comes from statistics.NormalDist (no Student-t survival
+    function is available in this workspace's stdlib-only member) and the
+    record names that limit so a reader at a handful of worlds can compute the
+    exact t tail from the t, the n and the name. A world only ONE arm carries
+    is REFUSED, never dropped: dropping is the silent failure the feature is
+    about, because it converts the comparison into the unpaired one §11.0
+    rejects — the two arms averaged over different world sets — while the t
+    figure that comes out still looks paired. The same claim appears at three
+    levels: the two world sets must be exactly equal; a bare sequence of
+    figures is refused, because without world ids there is nothing to pair on
+    and accepting it would mean pairing by position (the unpaired comparison
+    wearing the paired signature); and the store seam reads both arms from ONE
+    table keyed by world. Fewer than two paired worlds is refused (one
+    difference has no spread — n − 1 is a division by zero), and a pool on
+    which every world moved by the same amount is refused for the same reason
+    arrived at a larger n (a standard error of exactly zero), rather than
+    answered with an infinity that reads like overwhelming evidence. (2) The
+    verdict — rejects_proportion_comparison(proportion, *, arm_size,
+    rate_delta, delta, spread, power=0.80), the shape this member's ladder
+    already uses for a judgment over figures the caller holds
+    (rejects_thin_pool, rejects_uncapped_sweep); it never opens a database,
+    because a verdict is not a count and the count is the caller's. It compares
+    two CAPACITIES: what a two-proportion test of that size, clustered as
+    §11.0 says replays are, would need, against what the paired statistic needs
+    (power_capacity). An arm_size below the PAIRED requirement is refused
+    outright (that is the M3 precondition, and no statistic funds it, so the
+    repair is the pool's: accumulate worlds — and the refusal is what depends_on
+    278's split feeds). An arm_size BETWEEN the two requirements is refused
+    too, and THAT is the feature's own sentence: the size buys the paired
+    comparison and does not buy the proportion one, so the comparison that
+    works is available and the one being asked for is not. An arm_size that
+    funds the proportion test is ADMITTED — the module forbids a comparison the
+    evidence does not support, and refusing there would be editorialising
+    rather than judging; a refusal that always fired would be wrong. Two effect
+    sizes are SEPARATE required keywords, rate_delta and delta, because §11.0's
+    two worked examples use different quantities on different scales (0.30 →
+    0.21 is a 0.09 shift between two RATES; ΔIR = 0.3 is a difference between
+    two CONTINUOUS readings), and both formulas take "a difference" — so one
+    keyword serving both would inflate one requirement by (0.3/0.09)² ≈ 11× or
+    shrink the other past the precondition's meaning, returning a plausible
+    integer either way with nothing announcing the substitution. The
+    precondition is asked FIRST and asked of the paired requirement, because
+    that is the figure §12's M3 gate is written against; otherwise an enormous
+    rate_delta could shrink the proportion requirement below its arm size and
+    slip a caller past an unfunded pool. (3) The arithmetic, reproduced rather
+    than quoted — Appendix B's n ≈ 8(σ_diff/Δ)² is power_capacity(delta, *,
+    spread, power), where the 8 is NOT a hard-coded constant but
+    (z_{α/2} + z_β)² at 95%/80%, generalised so a caller states its own power;
+    it rounds UP, because the figure is a requirement and a pool one world
+    short of it does not fund the test. It answers 56 at (0.3, 0.8) — the
+    PRD's "~56 worlds" — and the proportion side is the standard two-sample
+    sizing over §11.0's own rate pair, answering 365 at (0.30, 0.09) against
+    the PRD's "~364 independent commits per arm", ×4 (the named
+    PROPORTION_DESIGN_EFFECT, applied as a multiple rather than modelled
+    because §11.0 gives "well over a thousand" as an order-of-magnitude floor)
+    = 1460, the "well over a thousand". A delta of zero, in either formula, is
+    REFUSED rather than answered with an infinity — for the proportion side it
+    is refused by name rather than left to a division by delta², which would
+    raise the interpreter's own ZeroDivisionError about floats for a fact about
+    the pair of rates — and a rate shift is refused when it would carry a rate
+    off the unit interval. A spread of zero answers zero worlds, deliberately:
+    two arms that read identically everywhere need no worlds to be told apart,
+    and the arithmetic's own value is right. (4) The store seam —
+    paired_pool_difference(candidate_policy, baseline_policy, *, database_url,
+    spread, delta, power, env): name the two arms by their policy_version,
+    resolve the database the deployment names (an explicit URL first, then
+    DATABASE_URL, refused by name when neither does), read each arm's per-world
+    readings from replay_score, and compare them paired. §10.3.1's "same policy
+    pair on the same worlds" is exactly what reading both arms from ONE pool
+    buys: the worlds pair by construction rather than by the caller's
+    bookkeeping. A policy with several rows for one world (several beta
+    readings) takes the last by id, deterministically — never SELECT DISTINCT,
+    which would return two readings for a world and drop one silently at the
+    dict boundary. Refuses a database holding no replay_score table (no pool to
+    compare over) and a policy compared against ITSELF (every difference would
+    be exactly zero — a fact about the comparison, not about the pool, and the
+    arithmetic's own message would describe the pool instead). The comparison
+    WRITES NOTHING: it is a read, so a comparison taken under feature 270's
+    hold is permitted — which is load-bearing for the loop, since §C5 holds the
+    pool fixed for the whole outer iteration and the comparison is what the
+    iteration is for. Two new error SIBLINGS under DreamingError, split by the
+    REPAIR the caller must make: ProportionComparisonError (code
+    proportion_comparison) for the QUESTION being the wrong one (repair: ask
+    for the paired statistic) and PairedComparisonError (code unpaired_worlds)
+    for the question being right and the EVIDENCE not pairing (repair: compare
+    the arms over the worlds that carry both). Neither is feature 275's
+    pool_too_thin, whose repair is grow the pool — a caller catching them
+    together would go looking for more worlds when its statistic was the
+    problem, or be told to switch statistics while holding 40 worlds, which
+    funds neither test. Feature 270's FreezeRequestError from the URL seam is
+    TRANSLATED rather than propagated, so a caller comparing two arms never
+    meets "your hold was malformed" for an act that held nothing. The member's
+    one spellings of the shared rules (sqlite_path, the freezes's URL
+    translation) are reused and translated at this module's seam. No central
+    registry, router, app factory, middleware, settings, or migration is
+    edited, and no table is created or written; no new @register component is
+    added (feature 270's single "dreaming" component is untouched); the member
+    joins by workspace-scan convention and does not import another workspace
+    member. The module is stdlib-only: statistics, math, sqlite3, os.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/* members, import names are
+      underscored slugs) / pytest (ruff + mypy conventions). The module loader
+      (src/app/module_loader.py) discovers members from the root pyproject.toml
+      `[tool.uv.workspace] members = ["packages/*"]`, imports each package so
+      its module-level `@register` fires, and composes what each `@register`
+      builder contributes under a component name. `app` (src/app) is a
+      namespace package with no `__init__.py`; the seats in src/app/modules/
+      &lt;member&gt;/ are reached by namespace import (e.g. app.modules.dreaming).
+      A member never imports another member — it reaches shared shapes
+      through `app.*`, never through a sibling package's import name.</stack>
+    <test_baseline>The repository-level suite under tests/ is collected by
+      pytest with testpaths=tests; each workspace member's own suite lives
+      under packages/&lt;member&gt;/tests/ and is collected under its own conftest
+      (same-basename files collide under one pytest run), and is NOT graded by
+      the bare `uv run pytest` acceptance gate — a member suite must be run
+      explicitly (run both `uv run pytest tests/` and the member's own
+      `packages/dreaming/tests/`). Baseline before this feature: 270 passed in
+      packages/dreaming/tests, 1084 passed at the repository level. The repo
+      lint is red on main (mypy absent, pre-existing ruff errors), so lint only
+      the changed files and compare to a sibling. The dreaming member is
+      stdlib-only, and feature 281 keeps it that way: statistics, math, os,
+      sqlite3.</test_baseline>
+    <conventions>
+      snake_case modules, hand-written __slots__ value classes for records
+      (this member's FreezeRecord/PoolSplit/CapRecord precedent), docstrings
+      that cite the governing documents by section and quote the sentence they
+      implement, refusals that open with a greppable code prefix and name the
+      repair, error classes split by the repair rather than by where the
+      failure was noticed, and every figure the PRD states reproduced from its
+      formula rather than quoted. The member's honesty stance: a module cites
+      the document it implements and says what it is NOT (this one is not a
+      component, holds nothing, writes nothing, and speaks for neither the
+      pool's size nor the ladder).</conventions>
+    <context>existing modules in packages/dreaming/src/dreaming/: errors.py
+      (the member's vocabulary), layout.py (the pool's restated shape),
+      cycle.py (feature 270's freeze, and sqlite_path), ladder.py (feature
+      275, the floor), ceiling.py (feature 276), cap.py (feature 277),
+      split.py (feature 278, the 70/30 train/holdout split this feature's
+      precondition consumes). Tests live in packages/dreaming/tests/ with
+      their own conftest.py providing database_url, pool, scores and freeze
+      fixtures.</context>
+  </existing_context>
+  <deliverables>
+    <deliverable name="paired.py">
+      packages/dreaming/src/dreaming/paired.py — the statistic, the verdict and
+      the store seam, with PAIRED_CODE, PAIRED_LEVEL, POWER, PROPORTION_CODE
+      and PROPORTION_DESIGN_EFFECT as module constants; paired_ir_difference,
+      paired_pool_difference, rejects_proportion_comparison, power_capacity and
+      PairedDifference in __all__. No @register, no table, no write.
+    </deliverable>
+    <deliverable name="errors.py"></deliverable>
+    <deliverable name="__init__.py"></deliverable>
+    <deliverable name="tests">
+      packages/dreaming/tests/test_paired.py — the feature's own suite, with
+      the arithmetic pinned against §11.0's derived figures rather than against
+      the module re-run, the pairing refusals, the band's three outcomes, the
+      two-effect-size separation and the store seam; test_errors.py extended
+      with the sibling pin against the member's whole vocabulary;
+      test_cross_member.py extended with the read pinned against 0109's own
+      executed DDL.
+    </deliverable>
+  </deliverables>
+</project_specification>

@@ -153,6 +153,37 @@ refusals are its own pair of classes
 pool delegated to feature 275's refusal as the cap and the ceiling delegate
 theirs — a pool too thin to dream on needs no train and no holdout.
 
+**It carries the comparison's own shape as a sixth sentence, and that is the
+half of §11.0 the split cannot state.**  §12.1's top rung and §10.3.1's bar are
+both written against a *paired continuous statistic*, and §11.0 is where the
+PRD says why: *"Raw FDR is a proportion, and proportions are power-poor …
+Fix the statistic, not the ambition."*  Feature 281's sentence is that
+instruction as a refusal — *"System rejects a difference-in-proportions
+comparison, using a paired continuous statistic over the same worlds
+instead"* — and :mod:`dreaming.paired` is the two halves of it:
+:func:`dreaming.paired.rejects_proportion_comparison` is the **rejects**, a
+verdict over figures the caller already holds (the shape the floor, the
+ceiling and the schedule all take) that compares §11.0's two capacities and
+refuses the comparison the pool cannot fund, naming the paired statistic the
+caller should ask for instead; and
+:func:`dreaming.paired.paired_ir_difference` is the replacement — the two
+arms' per-world out-of-sample IR readings in, a
+:class:`dreaming.paired.PairedDifference` out, tested paired over the worlds
+**both** arms carry, world by world.  The pairing is the whole of the ~364 →
+~56 improvement §11.0 computes: the arms replay the same worlds, so the
+world-to-world variation cancels inside each difference and what is left has
+the deviation ``σ_diff`` the PRD's arithmetic is written at.  A world only one
+arm carries is therefore **refused** rather than dropped — dropping it
+silently converts the comparison into the unpaired one §11.0 rejects, arriving
+through the arithmetic instead of through the request, and the ``t`` figure
+that comes out still looks paired.  The split (feature 278) is what makes the
+*same worlds* a set the selection never touched; this is what makes the
+comparison over them honest.  Its refusals are its own pair of classes
+(:class:`~dreaming.errors.ProportionComparisonError` for the wrong statistic,
+:class:`~dreaming.errors.PairedComparisonError` for worlds that will not pair)
+under the one base, with the thin pool delegated to feature 275's refusal as
+the cap, the ceiling and the split delegate theirs.
+
 **It is not the evaluator, the selector, or the rotator.**  Running ``M``
 revisions (features 271-274), rotating the split per cycle and persisting
 which worlds were held out per iteration (feature 279), the paired statistic
@@ -252,8 +283,10 @@ from .errors import (
     CapRequestError,
     DreamingError,
     FreezeRequestError,
+    PairedComparisonError,
     PoolFrozenError,
     PoolTooThinError,
+    ProportionComparisonError,
     RevisionCeilingError,
     SplitRequestError,
     SplitStoreError,
@@ -270,6 +303,18 @@ from .layout import (
     WORLD_COLUMNS,
     pool_bootstrap_schema,
     pool_tables_present,
+)
+from .paired import (
+    PAIRED_CODE,
+    PAIRED_LEVEL,
+    POWER,
+    PROPORTION_CODE,
+    PROPORTION_DESIGN_EFFECT,
+    PairedDifference,
+    paired_ir_difference,
+    paired_pool_difference,
+    power_capacity,
+    rejects_proportion_comparison,
 )
 from .split import (
     TRAIN_FRACTION,
@@ -289,9 +334,14 @@ __all__ = [
     "FULL_DREAMING_CAP",
     "FULL_DREAMING_WORLDS",
     "LADDER_FLOOR_WORLDS",
+    "PAIRED_CODE",
+    "PAIRED_LEVEL",
     "POOL_SCHEMA_BY_TABLE",
     "POOL_TABLES",
     "POOL_TOO_THIN_CODE",
+    "POWER",
+    "PROPORTION_CODE",
+    "PROPORTION_DESIGN_EFFECT",
     "REPLAY_SCORE_COLUMNS",
     "REPLAY_SCORE_TABLE",
     "TRAIN_FRACTION",
@@ -305,9 +355,12 @@ __all__ = [
     "DreamingError",
     "FreezeRecord",
     "FreezeRequestError",
+    "PairedComparisonError",
+    "PairedDifference",
     "PoolFrozenError",
     "PoolSplit",
     "PoolTooThinError",
+    "ProportionComparisonError",
     "RevisionCeilingError",
     "SplitRequestError",
     "SplitStoreError",
@@ -319,11 +372,15 @@ __all__ = [
     "ladder_floor",
     "missing_guards",
     "open_cycle_freeze",
+    "paired_ir_difference",
+    "paired_pool_difference",
     "pool_bootstrap_schema",
     "pool_commitment",
     "pool_tables_present",
     "pool_worlds",
+    "power_capacity",
     "record_cycle_cap",
+    "rejects_proportion_comparison",
     "rejects_thin_pool",
     "rejects_uncapped_sweep",
     "revision_cap",

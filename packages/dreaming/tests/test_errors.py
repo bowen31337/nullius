@@ -203,6 +203,76 @@ class TestTheVocabulary:
         assert POOL_TOO_THIN_CODE not in message
         assert FREEZE_CODE not in message
 
+    def test_the_member_carries_the_comparison_as_its_own_pair(self):
+        """Feature 281's two classes split by *what is wrong*, not by where it was noticed.
+
+        §11.0's sentence replaces one statistic with another, so it has two
+        ways to be met and two repairs:
+
+        * :class:`ProportionComparisonError` — the **question** is the wrong
+          one.  The proportion test is power-poor at this pool's scale and the
+          paired continuous statistic is not.  Repair: *ask for the paired
+          statistic*;
+        * :class:`PairedComparisonError` — the question is right and the
+          **evidence** will not pair.  A world carries one arm and not the
+          other, or too few worlds carry both.  Repair: *compare the arms over
+          the worlds that carry both*.
+
+        Neither is feature 275's ``pool_too_thin``, and that is the line worth
+        pinning hardest: the floor's repair is *grow the pool*, and a caller
+        that caught them together would go looking for more worlds when the
+        problem was its statistic — or, in the other direction, be told to
+        switch statistics while holding 40 worlds, which funds neither test.
+        Pinned because the tempting edit is to reach for the class that already
+        exists and whose name is about a pool being the wrong size.
+        """
+        import dreaming
+
+        for paired_class in (
+            dreaming.ProportionComparisonError,
+            dreaming.PairedComparisonError,
+        ):
+            assert issubclass(paired_class, dreaming.DreamingError)
+            # Siblings of every existing class — a caller catches a
+            # comparison's refusal without catching a hold's, a thin pool's, a
+            # cap's, a ceiling's, a malformed freeze ask's or a split's.
+            for sibling in (
+                FreezeRequestError,
+                PoolFrozenError,
+                PoolTooThinError,
+                dreaming.CapRequestError,
+                dreaming.CapRecordError,
+                dreaming.RevisionCeilingError,
+                dreaming.SplitRequestError,
+                dreaming.SplitStoreError,
+            ):
+                assert not issubclass(paired_class, sibling)
+                assert not issubclass(sibling, paired_class)
+
+        # A code word each, unlike features 276/278's: these refusals are the
+        # two faces of one document section, so an operator grepping a log
+        # needs to land on the right face.
+        with pytest.raises(dreaming.ProportionComparisonError) as proportion:
+            dreaming.rejects_proportion_comparison(
+                0.30,
+                arm_size=100,
+                rate_delta=0.09,
+                delta=0.3,
+                spread=0.8,
+            )
+        with pytest.raises(dreaming.PairedComparisonError) as paired:
+            dreaming.paired_ir_difference({"w-a": 0.5}, {"w-a": 0.1})
+
+        assert str(proportion.value).startswith(dreaming.PROPORTION_CODE)
+        assert str(paired.value).startswith(dreaming.PAIRED_CODE)
+        assert dreaming.PROPORTION_CODE != dreaming.PAIRED_CODE
+
+        # ...and neither refusal ever mints the vocabulary this member already
+        # has for a pool that is the wrong size.
+        for refusal in (proportion.value, paired.value):
+            assert POOL_TOO_THIN_CODE not in str(refusal)
+            assert FREEZE_CODE not in str(refusal)
+
 
 class TestTheMessages:
     """What a refusal says, since the message *is* the repair instruction."""
