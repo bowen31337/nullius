@@ -133,6 +133,7 @@ from types import MappingProxyType
 from typing import Any
 
 from .errors import ChildGenerationRefused, ReplayTreeError
+from .returns import ReplayReturns, resident_returns
 
 __all__ = [
     "ReplayEngine",
@@ -510,11 +511,13 @@ class ReplayEngine:
     The value this member registers under :data:`replay.COMPONENT_NAME`, and
     the one object a composed application carries for the replay path.  It
     holds **nothing**: no tree, no store, no deployment state — ``__slots__``
-    is empty — and its single verb opens a :class:`ReplayTransition` over the
-    tree it is handed.  This is the shape :class:`canary.ModelInference` takes
-    for the same reason on the same kind of seam: a component that is a *fact
-    about the path* rather than a thing a deployment configures, so two callers
-    can never observe each other through it and there is nothing to misset.
+    is empty — and its verbs open a :class:`ReplayTransition` over the tree
+    it is handed and a :class:`~replay.ReplayReturns` over a resident pin
+    arena (feature 251).  This is the shape :class:`canary.ModelInference`
+    takes for the same reason on the same kind of seam: a component that is
+    a *fact about the path* rather than a thing a deployment configures, so
+    two callers can never observe each other through it and there is
+    nothing to misset.
 
     **Why the component does not hold the deployment's tree.**  A store-bound
     builder that resolved the tree at build time would be reaching the
@@ -581,6 +584,36 @@ class ReplayEngine:
         the missing campaign.
         """
         return self.transition(self.tree())
+
+    def returns(
+        self,
+        pins: Any,
+        campaign_id: Any,
+        *,
+        horizon: int | None = None,
+        load: Any = None,
+    ) -> ReplayReturns:
+        """Open a replay's resident read of one campaign axis — feature 251.
+
+        The same act as :func:`replay.resident_returns`, reached through
+        the composed component so a caller holding the application needs no
+        import of this member: the campaign's ``(campaign_id, horizon)``
+        axis is pinned through the resident pin arena (handed in duck-typed
+        — the arena is per-replay state feature 175 deliberately never
+        composed, so there is nothing here to resolve and the caller that
+        built the arena hands it over, exactly as it hands a tree to
+        :meth:`transition`), and the resident array the arena holds is the
+        answer for the read's lifetime.
+
+        A caller that hands the read a ``loader`` meets the same
+        :class:`~replay.ParquetReadRefused` the free function raises — the
+        component is a spelling of the member's verb, not a second
+        implementation, so there is no route to a Parquet read by holding
+        the component.
+        """
+        return resident_returns(
+            pins, campaign_id, horizon=horizon, load=load
+        )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid only
         return "ReplayEngine()"

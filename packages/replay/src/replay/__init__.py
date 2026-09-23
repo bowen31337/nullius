@@ -79,9 +79,32 @@ the ``artifacts-code-hash-dedup`` precedent — rather than a second ``replay``,
 which would put two components of one name in the registry and let the later
 import silently win.
 
-**Stdlib only, and import-cheap.**  ``collections.abc``, ``dataclasses`` and
-``typing`` beside the factory's registration protocol; no numerics, no Polars,
-no PyArrow, no environment and no clock.  A member whose import pulled a
+**Feature 251 — the campaign-returns read — takes the same stance and registers
+nothing.**  app_spec.xml, "Replay Engine", feature 251: *System reads campaign
+returns from the pinned resident array rather than from Parquet on each
+replay.*  It lives in :mod:`replay.returns`: a replay reads a campaign's
+returns by pinning the campaign's ``(campaign_id, horizon)`` axis through a
+resident pin arena (feature 175's ``CampaignPins`` — per-replay state that
+member deliberately never composed, so it arrives as a duck-typed argument the
+way the tree arrives at the transition) and answering the one resident array
+the arena holds, for the read's lifetime, released when the replay lets go.
+The Parquet spelling is refused at the verb it would arrive through: a
+handed-in ``load`` — the callable shape of feature 174's sweep — is refused
+with :class:`~replay.ParquetReadRefused` *before the arena is touched and
+before the loader is called*, the ordering of feature 245's generator refusal
+for its reason (a refusal that read first would have spent the I/O it was
+refusing to spend).  §9.3 puts the number the naive reading costs (*"200
+worlds × 40 policy versions done naively is ~160 GB per dreaming cycle"*) and
+§10.4 the premise of the 50 ms target (*"a replay is pure array arithmetic
+over cached Parquet"*); the read is the law that keeps both true.  The
+:class:`~replay.ReplayReturns` is per-replay state beside the transition, and
+the composed facade gains the verb (:meth:`~replay.ReplayEngine.returns`)
+rather than a ``replay-``prefixed component the spec does not ask for.
+
+**Stdlib only, and import-cheap.**  ``collections.abc``, ``dataclasses``,
+``datetime`` and ``typing`` beside the factory's registration protocol; no
+numerics, no Polars, no PyArrow, no environment and no clock.  A member
+whose import pulled a
 numerical stack in would make every factory scan pay for a dependency the replay
 path itself may not use — §12's determinism contract prohibits a GPU in the
 replay path and §11.2's materialization row keeps inference out of it, and the
@@ -94,7 +117,14 @@ from typing import Any
 
 from app.module_loader import register
 
-from .errors import ChildGenerationRefused, ReplayError, ReplayTreeError
+from .errors import (
+    ChildGenerationRefused,
+    ParquetReadRefused,
+    ReplayError,
+    ReplayReturnsError,
+    ReplayTreeError,
+)
+from .returns import RESIDENT_READ_POLICY, ReplayReturns, resident_returns
 from .transition import (
     ReplayEngine,
     ReplayTransition,
@@ -108,8 +138,12 @@ from .transition import (
 __all__ = [
     "COMPONENT_NAME",
     "ChildGenerationRefused",
+    "ParquetReadRefused",
+    "RESIDENT_READ_POLICY",
     "ReplayEngine",
     "ReplayError",
+    "ReplayReturns",
+    "ReplayReturnsError",
     "ReplayTransition",
     "ReplayTreeError",
     "build_replay_engine",
@@ -118,6 +152,7 @@ __all__ = [
     "replay_component",
     "replay_roots",
     "replay_transition",
+    "resident_returns",
     "resolve_tree",
 ]
 
