@@ -6,7 +6,7 @@ low-volatility chop and crash"* — against docs/alpha-engine-prd.md §C7's
 coverage ledger and the three-column table feature 107's migration
 (``migrations/versions/0107_regime_coverage.py``) already declares.
 
-The member's surface is four modules.  :mod:`regime.coverage` is the
+The member's surface is five modules.  :mod:`regime.coverage` is the
 ledger's act itself: :class:`~regime.coverage.RegimeCoverage`, the store
 that persists one stratum's stored-world count into ``regime_coverage``,
 names a stratum without asserting a count, and reads one stratum's row
@@ -24,7 +24,14 @@ distinct, and :func:`~regime.ledger.read_ledger` is the module-level
 spelling for a caller that holds a URL rather than a store.  The read is
 also the store's own verb
 (:meth:`~regime.coverage.RegimeCoverage.ledger`), which is the form every
-composed reader uses.  :mod:`regime.census`
+composed reader uses.  :mod:`regime.diversity` is feature 289's act, the
+reading's *verdict*: :func:`~regime.diversity.rejects_regime_diverse_claim`
+refuses a regime-diverse claim while fewer than three strata hold stored
+worlds — a free function over the ledger the read answers with, raising
+:class:`~regime.errors.DiversityClaimError` (opening
+``not_regime_diverse``) rather than counting, persisting or re-reading
+anything, so the claim is stopped before it is published.
+:mod:`regime.census`
 is feature 290's act, the one that makes the numbers the ledger holds:
 :func:`~regime.census.assign_strata` assigns each stored world a
 stratum through the causal rolling-window labeler (duck-read at the
@@ -42,9 +49,11 @@ masquerades as fresh history*.
 :class:`~regime.errors.RegimeError`,
 :class:`~regime.errors.CoverageError` (the persist's three faces: the
 ask, the row, the address), :class:`~regime.errors.StratumAssignmentError`
-(feature 290's fit refusal) and
+(feature 290's fit refusal),
 :class:`~regime.errors.BackfillProvenanceError` (feature 288's
-``no_origin`` refusal), each a sibling rather than a child for the reason
+``no_origin`` refusal) and :class:`~regime.errors.DiversityClaimError`
+(feature 289's ``not_regime_diverse`` verdict), each a sibling rather
+than a child for the reason
 that module states, with the argument for why the category's *judgement*
 refusals sit beside them as siblings rather than under them.  This module
 re-exports all of them and registers the one component; it carries no
@@ -137,9 +146,15 @@ from .coverage import (
     RegimeCoverage,
     persist_coverage,
 )
+from .diversity import (
+    NOT_REGIME_DIVERSE_CODE,
+    REGIME_DIVERSITY_FLOOR,
+    rejects_regime_diverse_claim,
+)
 from .errors import (
     BackfillProvenanceError,
     CoverageError,
+    DiversityClaimError,
     RegimeError,
     StratumAssignmentError,
 )
@@ -168,8 +183,10 @@ __all__ = [
     "DEFAULT_STRATA",
     "EPOCH_ID_COLUMN",
     "FULL_HISTORY_FIT_CODE",
+    "NOT_REGIME_DIVERSE_CODE",
     "NO_ORIGIN_CODE",
     "RECORDED_AT_COLUMN",
+    "REGIME_DIVERSITY_FLOOR",
     "STRATUM_COLUMN",
     "UPDATED_AT_COLUMN",
     "WORLD_COUNT_COLUMN",
@@ -182,6 +199,7 @@ __all__ = [
     "CoverageError",
     "CoverageHole",
     "CoverageLedger",
+    "DiversityClaimError",
     "RegimeCoverage",
     "RegimeError",
     "StratumAssignment",
@@ -193,6 +211,7 @@ __all__ = [
     "persist_coverage",
     "read_ledger",
     "record_backfilled_world",
+    "rejects_regime_diverse_claim",
     "split_world_id",
 ]
 

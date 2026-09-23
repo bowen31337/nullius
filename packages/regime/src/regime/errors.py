@@ -35,12 +35,13 @@ One class rather than three because the caller's position is the same in
 all three cases: the count it asked to persist was not persisted, and the
 next step is to read which of the three faces the message names.  That is
 the same repair :class:`~discovery.errors.AttemptLogError` gathers under
-one class for its own act, and the contrast with this member's future
-classes is the reason the split rule is worth stating here: features 285
-and 289 add *judgement* refusals (a promotion blocked on coverage, a
-diversity claim refused on stratum count) whose repair is a decision about
-evidence rather than a corrected re-ask, and they will sit **beside** this
-class as siblings, not under it — the shape
+one class for its own act, and the contrast with this member's judgement
+classes is the reason the split rule is worth stating here: feature 289's
+:class:`DiversityClaimError` — a diversity claim refused on stratum
+count — and feature 285's promotion block beside it are *judgement*
+refusals whose repair is a decision about evidence rather than a
+corrected re-ask, and they sit **beside** this class as siblings, not
+under it — the shape
 :class:`~discovery.errors.IllegalThemeError` takes beside
 :class:`~discovery.errors.CampaignPlanningError`, and for the same reason:
 a well-formed ask that runs into a configured space or a judged threshold
@@ -75,6 +76,34 @@ one word the ``full_history_fit`` of the class above and
 :mod:`discovery.errors`' ``illegal_theme`` and :mod:`dreaming.errors`'
 ``pool_frozen`` already establish.
 
+:class:`DiversityClaimError` is feature 289's, and it is the judgement
+refusal the paragraphs above reserved a sibling seat for: a
+regime-diverse claim — the report that the replay pool spans regimes —
+refused *while fewer than three strata hold stored worlds*.  It carries
+the two faces of that one act:
+
+* **the ask** — a ledger carrying no readable ``covered`` figure
+  (nothing handed in, a string, a store where the reading belongs), or a
+  floor that is not a positive whole count of strata.  Nothing about the
+  pool was judged; the repair is to hand the judgment feature 284's
+  reading and a floor that is a count.
+* **the verdict** — the reading's covered strata fall below the floor.
+  Every message opens with ``not_regime_diverse`` so the refusal is
+  greppable by the one word that names the finding, and the repair is a
+  decision about evidence, never a corrected re-ask: withdraw the claim,
+  or raise the figure — the census (feature 290) and the backfill
+  (feature 287) are the acts that do.
+
+Deliberately **not** a :class:`CoverageError`, for the reason the first
+paragraphs state: a caller catching the two together would read *the
+coverage count could not be written* where the truth is *the pool does
+not carry the diversity being claimed*, and the two repairs have nothing
+in common.  Deliberately **not** a
+:class:`StratumAssignmentError` or a :class:`BackfillProvenanceError`
+either: nothing was assigned a stratum and no world states an origin —
+the claim is the subject, and it is the only one this class speaks
+about.
+
 This member deliberately does **not** raise
 :class:`feature_store.regime_labeler.FullHistoryFitError`, even though the
 labeler that assigns worlds to strata is the source of the names this
@@ -98,6 +127,7 @@ from __future__ import annotations
 __all__ = [
     "BackfillProvenanceError",
     "CoverageError",
+    "DiversityClaimError",
     "RegimeError",
     "StratumAssignmentError",
 ]
@@ -193,5 +223,24 @@ class BackfillProvenanceError(RegimeError):
     :class:`CoverageError` already names for the same variable, so the
     member keeps one vocabulary for one fault and this class speaks only
     about a world's provenance.
+    """
+
+
+class DiversityClaimError(RegimeError):
+    """A regime-diverse claim was refused on the strata that hold worlds.
+
+    Raised for the ask (a ledger carrying no readable ``covered`` figure,
+    or a floor that is not a positive whole count of strata) and for the
+    verdict (fewer strata hold stored worlds than the regime-diversity
+    floor demands) — the two faces of feature 289's one act, and the two
+    repairs the module docstring states.  Every verdict message opens
+    with ``not_regime_diverse``, states the figure and names the strata
+    that hold stored worlds, and states the floor, so an operator's log
+    line says what the claim leaned on and how far short it fell.
+
+    A claim that meets the floor never sees this class — the judgment
+    returns ``None`` and the caller proceeds — so the verdict face has no
+    ``admitted`` spelling to catch by accident: every message this class
+    raises is either about the ask or is a refusal.
     """
 
