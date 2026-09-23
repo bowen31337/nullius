@@ -163,6 +163,46 @@ class TestTheVocabulary:
         assert POOL_TOO_THIN_CODE not in message
         assert FREEZE_CODE not in message
 
+    def test_the_member_carries_the_split_as_its_own_pair(self):
+        """Feature 278's two classes take the ask/store split the cap states.
+
+        The pool's 70/30 split (``dreaming.split``) refuses in its own
+        vocabulary — :class:`SplitRequestError` for the ask's own facts
+        (world ids, rotation, fraction, the URL), :class:`SplitStoreError`
+        for a database that holds no pool to split — never in feature 270's,
+        even where the rule is the member's shared one (the URL translation,
+        translated at the split's seam rather than re-raised as the freeze's),
+        and never feature 275's: a pool below the ladder floor is the floor's
+        refusal, delegated, in the floor's own word.
+        """
+        import dreaming
+
+        for split_class in (dreaming.SplitRequestError, dreaming.SplitStoreError):
+            assert issubclass(split_class, dreaming.DreamingError)
+            # Siblings of every existing class — a caller catches a split's
+            # refusal without catching a hold's, a thin pool's, a cap's, a
+            # ceiling's or a malformed freeze ask's, and vice versa.
+            for sibling in (
+                FreezeRequestError,
+                PoolFrozenError,
+                PoolTooThinError,
+                dreaming.CapRequestError,
+                dreaming.CapRecordError,
+                dreaming.RevisionCeilingError,
+            ):
+                assert not issubclass(split_class, sibling)
+                assert not issubclass(sibling, split_class)
+
+        # No code word: feature 278's sentence mandates none, so the refusal
+        # opens with its subject rather than a token — and the one refusal
+        # this vocabulary never mints is the thin pool's.
+        with pytest.raises(dreaming.SplitRequestError) as refusal:
+            dreaming.split_pool("world-aaa")
+
+        message = str(refusal.value)
+        assert POOL_TOO_THIN_CODE not in message
+        assert FREEZE_CODE not in message
+
 
 class TestTheMessages:
     """What a refusal says, since the message *is* the repair instruction."""

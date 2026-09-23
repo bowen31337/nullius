@@ -128,12 +128,39 @@ worlds at ``M = 40``, and a pool of 20–50 is short of that by construction —
 so a wider sweep is *available* only once the pool clears the band, and the
 selection bar stays low because it cannot be raised.
 
-**It is not the evaluator, the selector, or the splitter.**  Running ``M``
-revisions (features 271-274), rotating the holdout split per cycle (feature
-279), the paired statistic and its bar (feature 280) and the argmax persisted
-to ``policy_revision`` are all their own features depending on this one.  This
-member holds the pool and hands back the commitment, the count and the
-refusal; it never runs a policy and never picks a winner.
+**It carries the pool's train/holdout split as a fifth sentence.**  §12.1's
+top rung reads *"50+: full dreaming, ``M = 30–40``, 70/30 train/holdout split
+on worlds"*, and §10.3.1 spells the call with the feature's own clause as its
+comment — ``train, holdout = pool.split(0.7, ...)  # select on train, report
+on holdout``.  Feature 278's sentence (*"System splits the pool 70 to 30 into
+train and holdout, which returns selection on train with reporting on
+holdout"*) is that call: :func:`dreaming.split.split_replay_pool` resolves the
+database the deployment names, reads the pool's worlds
+(:func:`dreaming.split.pool_worlds` — a world once, whichever half names it
+and however many score rows name it), and answers a
+:class:`dreaming.split.PoolSplit` whose two halves are the pool's worlds
+ranked by a digest over a rotation and each id.  The arithmetic is exact
+rational largest-remainder — 20 worlds split 14/6, 50 split 35/15, and the
+indivisible pool's odd world goes to the half with the larger remainder, ties
+to the holdout — and the assignment is deterministic, so the same pool at the
+same rotation answers the same split in any process.  The split exists because
+a cycle that reported on the worlds it selected over would be grading its own
+homework: §12.1's *"the dreaming loop overfits its own replay pool"* is the
+warning, and a holdout the selection never touched is the mitigation.  Its
+refusals are its own pair of classes
+(:class:`~dreaming.errors.SplitRequestError`,
+:class:`~dreaming.errors.SplitStoreError`) under the one base, with the thin
+pool delegated to feature 275's refusal as the cap and the ceiling delegate
+theirs — a pool too thin to dream on needs no train and no holdout.
+
+**It is not the evaluator, the selector, or the rotator.**  Running ``M``
+revisions (features 271-274), rotating the split per cycle and persisting
+which worlds were held out per iteration (feature 279), the paired statistic
+and its bar (features 280-281) and the argmax persisted to
+``policy_revision`` are all their own features depending on this one.  This
+member holds the pool, splits it, and hands back the commitment, the count,
+the halves and the refusal; it never runs a policy, never scores a world and
+never picks a winner.
 
 **It never writes the pool's tables.**  Feature 270's whole subject is not
 writing them.  ``pool_freeze`` is this member's own table and the only table it
@@ -228,6 +255,8 @@ from .errors import (
     PoolFrozenError,
     PoolTooThinError,
     RevisionCeilingError,
+    SplitRequestError,
+    SplitStoreError,
 )
 from .ladder import (
     LADDER_FLOOR_WORLDS,
@@ -241,6 +270,13 @@ from .layout import (
     WORLD_COLUMNS,
     pool_bootstrap_schema,
     pool_tables_present,
+)
+from .split import (
+    TRAIN_FRACTION,
+    PoolSplit,
+    pool_worlds,
+    split_pool,
+    split_replay_pool,
 )
 
 __all__ = [
@@ -258,6 +294,7 @@ __all__ = [
     "POOL_TOO_THIN_CODE",
     "REPLAY_SCORE_COLUMNS",
     "REPLAY_SCORE_TABLE",
+    "TRAIN_FRACTION",
     "UNGUARDED_CODE",
     "WORLD_COLUMNS",
     "WORLD_TABLE",
@@ -269,8 +306,11 @@ __all__ = [
     "FreezeRecord",
     "FreezeRequestError",
     "PoolFrozenError",
+    "PoolSplit",
     "PoolTooThinError",
     "RevisionCeilingError",
+    "SplitRequestError",
+    "SplitStoreError",
     "build_cycle_freeze",
     "cycle_cap_schema",
     "cycle_caps",
@@ -282,10 +322,13 @@ __all__ = [
     "pool_bootstrap_schema",
     "pool_commitment",
     "pool_tables_present",
+    "pool_worlds",
     "record_cycle_cap",
     "rejects_thin_pool",
     "rejects_uncapped_sweep",
     "revision_cap",
+    "split_pool",
+    "split_replay_pool",
     "sqlite_path",
     "validated_floor",
 ]

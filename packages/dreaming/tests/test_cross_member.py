@@ -363,3 +363,140 @@ class TestTheSeam:
 
         assert REPLAY_SCORE_TABLE in tables
         assert WORLD_TABLE not in tables
+
+
+class TestTheSplitSeam:
+    """The split's membership read, pinned against the owners' own census.
+
+    Feature 278 restates one law it does not own — *what a world of the pool
+    is* — the same way it restates the pool's table names: spelled here, never
+    imported, because no member in this workspace imports another.  The law
+    is the union — ``bootstrap_world``'s rows plus ``replay_score``'s distinct
+    worlds, a world once whichever half names it — and feature 186 already
+    states it from the other side of the member boundary
+    (:func:`bootstrap.world_census`, whose ``n_financial`` is the distinct
+    score worlds the bootstrap pool does not hold).  The tests below stand a
+    pool up through both owners' own entry points and pin the two spellings
+    against each other: the split's enumeration, the census's two figures,
+    and one shared world that both halves name, counted once.
+    """
+
+    def _owners_pool(self, tmp_path: Path) -> str:
+        """A pool both owners built: migrated by ``0109``, authored by 188.
+
+        The same stand-up ``TestTheSeam`` spells, returned as a URL so a test
+        can read it through this member and through the bootstrap pool with
+        no second construction.  The store's 40-50 band is its own floor, so
+        forty worlds is the smallest pool this helper can honestly author.
+        """
+        bootstrap_src = REPO_ROOT / "packages" / "bootstrap" / "src"
+        if str(bootstrap_src) not in sys.path:
+            sys.path.insert(0, str(bootstrap_src))
+        bootstrap = pytest.importorskip(
+            "bootstrap", reason="the bootstrap member is absent from this checkout"
+        )
+
+        migration = _load_migration(
+            "m0109_split", "0109_replay_score_and_policy_revision.py"
+        )
+        database_url = f"sqlite:///{tmp_path / 'split-seam.db'}"
+        migration.apply(database_url)
+        bootstrap.BootstrapPool(database_url).persist_worlds(40)
+        return database_url
+
+    def _write_scores(self, url: str, financial_ids: tuple[str, ...]) -> str:
+        """Score rows over the given financial worlds and one shared world.
+
+        Writes through ``0109``'s own eight columns, raw — the replay member's
+        writer is not this member's to drive — and deliberately names one
+        *bootstrap* world too, because an authored world that has been
+        replayed is the honest shape of a dreaming pool and the one row that
+        makes the union law do work: both halves name that world, and every
+        read below must still hold it once.  Returns the shared world's id.
+        """
+        with closing(sqlite3.connect(sqlite_path(url))) as connection, connection:
+            shared = connection.execute(
+                f"SELECT world_id FROM {WORLD_TABLE} LIMIT 1"
+            ).fetchone()[0]
+            for world_id in (*financial_ids, shared):
+                connection.execute(
+                    f"INSERT INTO {REPLAY_SCORE_TABLE} (id, policy_version, "
+                    "world_id, beta, score, committed_pick, is_holdout, "
+                    "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        f"score-{world_id}",
+                        "pi-0",
+                        world_id,
+                        0.0,
+                        1.0,
+                        None,
+                        0,
+                        "2026-01-01T00:00:00Z",
+                    ),
+                )
+        return shared
+
+    def test_the_enumeration_is_the_census(self, tmp_path: Path) -> None:
+        """One law, two members, one figure: 40 authored + 3 financial = 43.
+
+        The split's ``pool_worlds`` and feature 186's ``world_census`` each
+        spell the pool's membership without importing the other, so the pin
+        is the only thing that keeps them one law: a census that grew a third
+        figure, or an enumeration that started counting score rows, breaks
+        this test the moment it drifts.
+        """
+        bootstrap_src = REPO_ROOT / "packages" / "bootstrap" / "src"
+        if str(bootstrap_src) not in sys.path:
+            sys.path.insert(0, str(bootstrap_src))
+        pytest.importorskip(
+            "bootstrap", reason="the bootstrap member is absent from this checkout"
+        )
+        from bootstrap import BootstrapPool, world_census
+
+        url = self._owners_pool(tmp_path)
+        self._write_scores(url, ("world-fin-1", "world-fin-2", "world-fin-3"))
+
+        worlds = dreaming.pool_worlds(sqlite_path(url))
+        census = world_census(BootstrapPool(url))
+
+        assert len(worlds) == 43
+        assert census.n_bootstrap == 40
+        assert census.n_financial == 3  # the shared world is not financial
+        assert len(worlds) == census.n_bootstrap + census.n_financial
+
+    def test_a_world_both_halves_name_is_held_once(self, tmp_path: Path) -> None:
+        """The row that makes the union do work: one world, two tables, once.
+
+        The shared world is in ``bootstrap_world`` *and* in
+        ``replay_score`` — the census counts it as bootstrap and not
+        financial, and the split's enumeration must count it once, in id
+        order with the rest, rather than twice or once per score row.
+        """
+        url = self._owners_pool(tmp_path)
+        shared = self._write_scores(url, ("world-fin-1",))
+
+        worlds = dreaming.pool_worlds(sqlite_path(url))
+
+        assert worlds.count(shared) == 1
+        assert worlds == tuple(sorted(worlds))
+        assert shared in worlds and "world-fin-1" in worlds
+
+    def test_the_owners_pool_splits(self, tmp_path: Path) -> None:
+        """The feature's own call over a pool this member did not build.
+
+        43 worlds split 30/13 — the odd world's remainder (0.9 against 0.1)
+        outbids for the holdout — and every world the owners put in the pool
+        lands on exactly one side, which is the disjointness the paired
+        statistic (feature 281) and the bar (feature 280) stand on.
+        """
+        url = self._owners_pool(tmp_path)
+        self._write_scores(url, ("world-fin-1", "world-fin-2", "world-fin-3"))
+
+        split = dreaming.split_replay_pool(database_url=url)
+
+        assert len(split.train) == 30
+        assert len(split.holdout) == 13
+        assert not (set(split.train) & set(split.holdout))
+        assert set(split.train) | set(split.holdout) == set(
+            dreaming.pool_worlds(sqlite_path(url))
+        )

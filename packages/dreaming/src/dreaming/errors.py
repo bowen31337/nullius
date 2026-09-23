@@ -68,6 +68,18 @@ malformed.  The band's edges and its cap are *not* respelled here or in
 ``CAPPED_SWEEP_CAP`` / ``FULL_DREAMING_WORLDS``, consumed from the modules that
 state them, so the ladder has one spelling per rung.
 
+**Feature 278's split takes the ask/store split the cap states, for the act of
+splitting.**  :class:`SplitRequestError` is the *ask* face — world ids that are
+not non-empty text, a pool handed with the same world twice, a rotation that is
+not text, a train fraction outside ``(0, 1)``, a world asked of a predicate the
+split does not hold, or no database named at all — and :class:`SplitStoreError`
+is the *store* face: a database that holds no pool tables, so there is no pool
+to split.  The two repairs differ exactly as the cap's do (re-consider the ask
+against point at the pool the replay loop lives in), and the one refusal this
+vocabulary never mints is the thin pool's: a pool below the ladder floor is
+feature 275's fact, delegated to :func:`dreaming.ladder.rejects_thin_pool` in
+the floor's own word, the same delegation the cap and the ceiling perform.
+
 **Why :class:`PoolFrozenError` is its own class and not a borrowed one.**
 Three members already read this pool and each has its own vocabulary for its
 own act — :class:`~tripwires.errors.TripwireExcisionError`,
@@ -100,6 +112,8 @@ __all__ = [
     "PoolFrozenError",
     "PoolTooThinError",
     "RevisionCeilingError",
+    "SplitRequestError",
+    "SplitStoreError",
 ]
 
 
@@ -314,4 +328,60 @@ class RevisionCeilingError(DreamingError):
     own pair, so a reader is told *what to lower* rather than handed a token to
     grep for.  The one thin-pool refusal this member mints stays feature 275's,
     delegated, in feature 275's word.
+    """
+
+
+class SplitRequestError(DreamingError):
+    """The split could not be asked for as the caller asked for it.
+
+    app_spec.xml, "Dreaming Loop & Meta-Selection", feature 278: *System splits
+    the pool 70 to 30 into train and holdout, which returns selection on train
+    with reporting on holdout.*  This is the *ask* face of that sentence: world
+    ids that are not non-empty text, a pool handed with one world twice, a bare
+    string where the pool's worlds belong (it names one world, not many), a
+    rotation that is not text, a train fraction outside ``(0, 1)`` or one a
+    rational reading cannot ground, a world asked of a predicate the split does
+    not hold, or no database named for the pool to be read from.  Every one is
+    a fact about the **request**, refused before anything is split, and the
+    repair is to re-consider what was asked for — the stance
+    :class:`FreezeRequestError` takes for feature 270's asks and
+    :class:`CapRequestError` for feature 277's.
+
+    Deliberately **not** a :class:`FreezeRequestError`, though one of its
+    refusals is translated from the member's one spelling of what a
+    ``sqlite:///`` URL names (:func:`dreaming.cycle.sqlite_path`): a caller
+    that split a pool and caught the freeze's request class would read *your
+    hold was malformed* about an act that held nothing — the seam discipline
+    the whole workspace states for error vocabularies, applied inside the
+    member exactly as ``dreaming.cap`` applies it.  And deliberately not a
+    :class:`PoolTooThinError`: a pool below the ladder floor is feature 275's
+    fact, refused by the ladder's own judgment in its own word, and this class
+    never speaks for it.
+
+    No code word, for the reason :class:`RevisionCeilingError` gives: feature
+    278's sentence mandates none, so every message opens with its subject —
+    the worlds, the rotation or the fraction that was wrong — and a reader is
+    told *what to fix* rather than handed a token to grep for.
+    """
+
+
+class SplitStoreError(DreamingError):
+    """The store could not ground a train/holdout split.
+
+    The store-side face of feature 278's sentence: a database that holds no
+    ``replay_score`` and no ``bootstrap_world`` table, so there is no pool
+    here to split — a split written over it would partition worlds that do not
+    exist while the cycle believed it had a train half to select on and a
+    holdout half to report on.  A fact about the **store** rather than the ask
+    (the URL was well formed and named a database), so the repair is to point
+    ``DATABASE_URL`` at the database the replay pool lives in, or migrate it —
+    never to re-send the same ask.
+
+    A sibling of :class:`PoolFrozenError` and :class:`CapRecordError` rather
+    than a face of either, because the three name different worlds: *the pool
+    is held and something tried to move it* (feature 270), *there is no pool
+    here to cap* (feature 277) and *there is no pool here to split* (feature
+    278).  A caller that caught one and read it as another would wait for a
+    cycle that does not exist, or close one that was never open, or re-send a
+    split against a database that still holds nothing to split.
     """
