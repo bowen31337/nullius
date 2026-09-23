@@ -63,7 +63,12 @@ re-derive the arithmetic beside it.
 β-terms (257-262) extend the objective inside the member, each landing
 its adjustment through the ``adjusted`` seam on the value this component
 answers — no second seat, for the same reason no second spelling of the
-arithmetic exists.  Feature 263's aggregation has since taken exactly
+arithmetic exists.  Feature 262's β₆ orthogonality bonus has since taken
+exactly that path: the formula's last term and its only addition is pure
+arithmetic measured against the committed book
+(:func:`scoring.orthogonality_bonus`, reached from the member's own
+namespace), with no component beside ``scoring`` and no second seat
+beside this module.  Feature 263's aggregation has since taken exactly
 that path: the blend of the stratum mean and the stratum minimum is pure
 arithmetic like the objective, so it lives as the member's second law
 (:func:`scoring.aggregate_objective`, reached from the member's own

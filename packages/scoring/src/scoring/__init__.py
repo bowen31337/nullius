@@ -121,6 +121,28 @@ open set and a stratum name is not feature 241's legal theme, so the
 regime set is the caller's to *declare* (and this module's to check when
 declared), never this member's to enumerate.
 
+**The β₆ orthogonality bonus is the member's fourth law (feature 262).**
+*"System adds a beta-six orthogonality bonus measured against the
+committed book, which returns the final world score"* — prd §7.1's last
+line and its only addition, ``+ β₆ · orthogonality(committed book)``
+(docs §10.3 agrees, line 498): five of the six β-terms take away and
+this one *pays*, for the one thing a committed pick can offer that the
+book it joins does not already hold.  It lives in
+:mod:`scoring._orthogonality` as :func:`~scoring.orthogonality_bonus`
+(the verb) and :data:`~scoring.BETA_SIX_DEFAULT` (the coefficient's
+stated default — neither document sizes it), with its own refusal
+:class:`~scoring.OrthogonalityError`.  The figure it pays on is
+``1 − |ρ|``, ρ the population correlation of the pick's and the
+committed book's panels over the sequestered epoch — pinned to the very
+panel that earned the score, which the seam verifies by recomputing the
+leading term's ratio in this member's one spelling.  Like the blend and
+the index it is pure arithmetic — no store, no clock, no environment —
+so it adds no component and no seat: the bonus rides
+:meth:`~scoring.WorldScore.adjusted` exactly as :mod:`scoring._objective`
+promised the six β-terms would, visible, signed and arguable, and the
+penalties (features 257 through 261) will find the seam already shaped
+when they land their own terms through it.
+
 **No persistence here, by the same law that keeps the arithmetic pure.**
 The ``replay_score`` row is the replay plugin's (feature 255); this
 member answers the value it is written from, exactly as migration 0109
@@ -146,9 +168,11 @@ from ._aggregate import (
     aggregate_objective,
 )
 from ._objective import IR_DATES_MINIMUM, WorldScore, world_objective
+from ._orthogonality import BETA_SIX_DEFAULT, orthogonality_bonus
 from ._regime_index import PLAIN_MEAN_CODE, regime_aggregate, regime_strata
 from .errors import (
     AggregationError,
+    OrthogonalityError,
     RegimeIndexError,
     ScoringError,
     WorldObjectiveError,
@@ -158,6 +182,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the annotation is lazy
     from collections.abc import Callable
 
 __all__ = [
+    "BETA_SIX_DEFAULT",
     "COMPONENT_NAME",
     "IR_DATES_MINIMUM",
     "LAMBDA_CEILING",
@@ -166,11 +191,13 @@ __all__ = [
     "PLAIN_MEAN_CODE",
     "AggregatedObjective",
     "AggregationError",
+    "OrthogonalityError",
     "RegimeIndexError",
     "ScoringError",
     "WorldObjectiveError",
     "WorldScore",
     "aggregate_objective",
+    "orthogonality_bonus",
     "regime_aggregate",
     "regime_strata",
     "world_objective",

@@ -34,7 +34,10 @@ the type it was handed), and a three-stratum pool of world scores whose
 figures are dyadic so the blend is hand-computable to the bit: stratum
 means 0.75, 0.5 and 0.25 over two, two and three worlds, an unweighted
 stratum mean of 0.5 exactly, a minimum of 0.25, and therefore a λ = 0.5
-blend of 0.375 — every number in the chain exact in binary.
+blend of 0.375 — every number in the chain exact in binary.  Feature
+262's suite adds the committed book's panel beside those: a series
+orthogonal to the pick's by construction, dyadic throughout, so the β₆
+bonus it earns is the coefficient exactly and is checkable with ``==``.
 
 The path bootstrap puts both import roots on ``sys.path`` regardless of
 how pytest was invoked — the workspace's ``src/`` (for
@@ -211,6 +214,35 @@ class StandInLabel:
 TREND = "high-volatility trend"
 CHOP = "low-volatility chop"
 CRASH = "crash"
+
+
+@pytest.fixture
+def book(panel: dict[dt.date, float]) -> dict[dt.date, float]:
+    """The committed book's panel over the pick's sequestered dates —
+    orthogonal by construction, exactly.
+
+    Feature 262's suite measures the β₆ bonus against this series.  The
+    pick's readings sorted by date are (0.1, −0.1, 0.0, 0.2) — mean 0.05,
+    deviations ``(a, −b, −a, b)`` with a = 0.05 and b = 3a — and the book
+    below alternates ``(f, −f, f, −f)`` with f = 0.3, so its deviations
+    pair against the pick's as ``(a·f, b·f, −a·f, −b·f)``: the four
+    rounded products cancel as exact real values whatever the rounding of
+    each, the ``fsum`` of them is a signed zero, and the correlation is
+    0.0 to the bit — not merely to an epsilon — so the bonus's full
+    payment is checkable with ``==``.  The book is not proportional to
+    the pick (b ≠ a keeps the pick from alternating), so the zero is a
+    genuine orthogonality and not a degenerate one.  Keyed in non-sorted
+    order on purpose, to match the panel it is measured against.
+    Variants of this series (collinear, anti-collinear, partial) are
+    built inside the tests that pin those laws, because each is the
+    *point* of its own test rather than shared vocabulary.
+    """
+    return {
+        dt.date(2026, 3, 4): -0.3,
+        dt.date(2026, 3, 1): 0.3,
+        dt.date(2026, 3, 3): 0.3,
+        dt.date(2026, 3, 2): -0.3,
+    }
 
 
 @pytest.fixture

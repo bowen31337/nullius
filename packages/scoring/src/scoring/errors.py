@@ -21,7 +21,10 @@ own statement of which asks those are).  Feature 264 adds
 average across regimes — *"indexing aggregation strata by regime instead"*
 — and it sits **beside** :class:`AggregationError` rather than under it,
 which is worth stating because the two are one feature apart and share an
-input.  263 refuses an ask it cannot *blend*: a λ outside the band, a
+input.  Feature 262 adds the β-terms' first: :class:`OrthogonalityError`,
+the refusal of a bonus ask that cannot be measured — the one β-term this
+member has so far, and the place the rest (257 through 261) will each add
+their own when they land.  263 refuses an ask it cannot *blend*: a λ outside the band, a
 stratum handed over with no worlds, a carrier it cannot read.  264 refuses
 an ask it cannot *partition*: scores with no labels, a scored world the
 census never binned, a labelled world no score was earned for, a declared
@@ -31,7 +34,14 @@ against a census that has not run — and folding them would put two
 different next steps behind one ``except``.  The same reasoning
 :mod:`regime.errors` states for putting
 :class:`~regime.errors.StratumAssignmentError` beside
-:class:`~regime.errors.CoverageError`.  Every refusal the three classes
+:class:`~regime.errors.CoverageError`.  And 262's refusal sits beside
+256's for the member's own version of that reason: the objective refuses
+an ask that cannot be *scored* (a pick panel with no ratio in it), the
+bonus refuses one whose *payment* cannot be measured (a book that misses
+the epoch, a panel that did not measure the score it sits beside, a
+coefficient that flips the term's sign), and the two repairs send the
+operator to different members — sequestration against the resident
+array.  Every refusal the four classes
 carry is a fact about the *ask* — a world that is not a name, a pick that
 names no node, a sequestered panel that cannot define a ratio, a stratum
 that holds no worlds, a λ outside the band prd §7.2 states, a pool whose
@@ -62,6 +72,7 @@ from __future__ import annotations
 
 __all__ = [
     "AggregationError",
+    "OrthogonalityError",
     "RegimeIndexError",
     "ScoringError",
     "WorldObjectiveError",
@@ -118,6 +129,43 @@ class AggregationError(ScoringError):
     the same guarantee :class:`WorldObjectiveError` makes one feature
     earlier, held here for the number the dreaming loop's argmax ranks
     candidates on (feature 274).
+    """
+
+
+class OrthogonalityError(ScoringError):
+    """A beta-six bonus ask that cannot be measured (feature 262).
+
+    The ask was malformed in this term's own inputs — a coefficient that
+    is not a finite non-negative real (the spec's verb is *adds*, and a
+    negative one would counterfeit a penalty through the bonus seam), a
+    score carrier exposing no finite ``ir_oos`` to pin the sequestered
+    panel against or no ``adjusted`` seam to ride, a pick panel whose
+    recomputed ratio is not the measurement the score carries (the bonus
+    would be measured on data the score never saw), or a committed-book
+    panel that is not a mapping of dates to finite reals, that misses a
+    date of the sequestered epoch, or that never varied across it (a
+    correlation of ``0/0`` is undefined, and no bonus is invented for
+    one) — and the refusal names which, because the repairs differ: a
+    mis-set knob against a book the resident array under-covers against
+    a caller re-using a panel from another score.
+
+    The pick panel's *shape* refusals are deliberately not this class's:
+    they are feature 256's own :class:`WorldObjectiveError`, raised by
+    256's code through the recomputation this seam performs, because a
+    panel that cannot define an information ratio is refused the same
+    way wherever it was rejected and both classes share the
+    :class:`ScoringError` base a replay loop's single ``except``
+    catches.  Beside :class:`WorldObjectiveError`, never under it: 256
+    refuses an ask that cannot be *scored*, this class refuses one
+    whose *bonus* cannot be measured, and folding them would send the
+    operator looking for a sequestration fault in the resident array.
+
+    No partial value escapes a refusal: the bonus either answers the
+    moved :class:`~scoring.WorldScore` or raises, so a caller can never
+    hold a half-paid score it must remember to discard — the guarantee
+    :class:`WorldObjectiveError` makes one feature earlier and every
+    β-term landing after this one inherits by riding the same frozen
+    seam.
     """
 
 
