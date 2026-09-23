@@ -24,9 +24,11 @@ which is worth stating because the two are one feature apart and share an
 input.  Feature 262 adds the β-terms' first: :class:`OrthogonalityError`,
 the refusal of a bonus ask that cannot be measured; feature 261 adds the
 penalties' first, :class:`SwitchPenaltyError`, the refusal of a switch
-charge that cannot be counted — the two β-terms this member has so far,
-and the place the rest (257 through 260) will each add their own when
-they land.  263 refuses an ask it cannot *blend*: a λ outside the band, a
+charge that cannot be counted; feature 260 adds
+:class:`DivergencePenaltyError`, the refusal of a sim-reality divergence
+that cannot be read — the three β-terms this member has so far, and the
+place the rest (257 through 259) will each add their own when they land.
+263 refuses an ask it cannot *blend*: a λ outside the band, a
 stratum handed over with no worlds, a carrier it cannot read.  264 refuses
 an ask it cannot *partition*: scores with no labels, a scored world the
 census never binned, a labelled world no score was earned for, a declared
@@ -51,7 +53,15 @@ read as zero switches, a price or a coefficient that flips the term's
 sign), and its repairs differ from both — a census that has not run
 against a cost model that mis-set its price — so folding it under
 either would send the operator looking for a sequestration fault in
-the labeler.  Every refusal the five classes
+the labeler.  And 260's refusal sits beside all three for the member's
+own version of that reason: the divergence penalty refuses an ask
+whose *divergence* cannot be read (a coefficient that flips the term's
+sign, a forward or backtest information coefficient that is absent, or
+one outside the ``[−1, 1]`` an information coefficient is bounded by),
+and its repair lands on the forward-test record — a member none of the
+other three refusals names — so folding it would send the operator
+hunting for a sequencing or labelling fault in a data path this term
+never reads.  Every refusal the six classes
 carry is a fact about the *ask* — a world that is not a name, a pick that
 names no node, a sequestered panel that cannot define a ratio, a stratum
 that holds no worlds, a λ outside the band prd §7.2 states, a pool whose
@@ -82,6 +92,7 @@ from __future__ import annotations
 
 __all__ = [
     "AggregationError",
+    "DivergencePenaltyError",
     "OrthogonalityError",
     "RegimeIndexError",
     "ScoringError",
@@ -207,6 +218,48 @@ class SwitchPenaltyError(ScoringError):
     hold a half-charged score it must remember to discard — the
     guarantee :class:`WorldObjectiveError` makes one feature earlier and
     every β-term landing through the same frozen seam inherits.
+    """
+
+
+class DivergencePenaltyError(ScoringError):
+    """A beta-four divergence charge that cannot be measured (feature 260).
+
+    The ask was malformed in this term's own inputs — a coefficient that
+    is not a finite non-negative real (the spec's verb is *subtracts*, and
+    a negative one would counterfeit a bonus through the penalty seam,
+    teaching the loop to prefer the families whose backtests flattered
+    them most), a score carrier exposing no ``adjusted`` seam to ride, or
+    an ``ic_forward``/``ic_backtest`` that is not a finite real in
+    ``[−1, 1]`` — and the refusal names which, because the repairs differ:
+    a mis-set knob against a backtest metric the evaluator wrote wrongly
+    against a forward figure the forward-tracking member wrote wrongly.
+
+    The *absence* of a forward IC is deliberately not representable here,
+    and that is the class's sharpest edge rather than an omission: prd
+    §7.1's own sentence is that β₄ *"is computable only for nodes that
+    have been through the forward-test queue"*, so a pick with no forward
+    record has no figure to hand over and a caller with none must not call
+    this term — but a stand-in *must not* be read as a zero either way
+    (read as zero, an absent forward IC charges the pick its entire
+    backtest figure on no evidence; read as "no divergence", it pays it in
+    full).  Neither is a measurement, so the seam takes two figures and
+    refuses anything that is not one.  The same stance
+    :class:`SwitchPenaltyError` takes toward an unlabelled horizon, whose
+    switch count is unknown rather than zero.
+
+    Beside :class:`WorldObjectiveError`, :class:`OrthogonalityError` and
+    :class:`SwitchPenaltyError`, never under any of them: 256 refuses an
+    ask that cannot be *scored*, 262 one whose *bonus* cannot be measured,
+    261 one whose *charge* cannot be counted, and this class one whose
+    *divergence* cannot be read — the four repairs sending the operator to
+    different members (sequestration, the resident array, the regime
+    labeler, the forward-test record).
+
+    No partial value escapes a refusal: the penalty either answers the
+    moved :class:`~scoring.WorldScore` or raises, so a caller can never
+    hold a half-charged score it must remember to discard — the guarantee
+    :class:`WorldObjectiveError` makes one feature earlier and every
+    β-term landing through the same frozen seam inherits.
     """
 
 

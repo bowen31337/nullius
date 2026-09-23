@@ -164,7 +164,41 @@ environment — so it adds no component and no seat: the composed
 ``scoring`` component stays the per-world objective, and the term is
 reached through this namespace, landing its visible, signed, arguable
 delta through :meth:`~scoring.WorldScore.adjusted` exactly as the
-objective's own docstring promised the six β-terms would.
+objective's own docstring promised the six β-terms would — and the
+remaining penalties (features 257 through 259) will find the seam
+already shaped when they land their own terms through it.
+
+**The β₄ divergence penalty is the member's sixth law (feature 260).**
+*"System subtracts a beta-four term proportional to absolute divergence
+between forward and backtest information coefficient, which returns the
+adjusted score"* — prd §7.1's fourth line and one of its five
+subtractions, ``− β₄ · |IC_forward − IC_backtest|`` (docs §10.3 agrees,
+line 497).  It lives in :mod:`scoring._divergence` as
+:func:`~scoring.divergence_penalty` (the verb),
+:data:`~scoring.BETA_FOUR_DEFAULT` (the coefficient's stated default —
+neither document sizes it, and this one is deliberately steeper than its
+siblings'), :data:`~scoring.IC_BOUND` (the ``[−1, 1]`` an information
+coefficient is bounded by as a correlation, which both figures are held
+to), and its own refusal :class:`~scoring.DivergencePenaltyError`.  The
+charge is one product of three non-negative factors — the coefficient,
+and the two figures' absolute difference, derived *here* off the pair
+rather than taken as a pre-computed divergence, because the divergence is
+a fact about the pair and only the pair carries it.  prd §7.1's own
+sentence that β₄ *"is computable only for nodes that have been through
+the forward-test queue"* (line 329) is what makes the two figures
+required rather than defaulted: a pick with no forward record has no
+forward IC to hand over, and neither an absent figure read as zero (which
+charges the pick its whole backtest on no evidence) nor one read as "no
+divergence" (which pays it in full) is a measurement.  Like every other
+term of the formula it is pure arithmetic — no store, no clock, no
+environment — so it adds no component and no seat: the composed
+``scoring`` component stays the per-world objective, and the term is
+reached through this namespace.  It deliberately does **not** read the
+figure feature 337 stores as a *ratio* (``live IC ÷ backtest IC``, prd
+§8.2's secondary scorecard line): that is a different measurement of the
+same pair, and dividing a backtest IC by it to manufacture a forward one
+would be this member inventing a reading the forward-test record did not
+hold.
 
 **No persistence here, by the same law that keeps the arithmetic pure.**
 The ``replay_score`` row is the replay plugin's (feature 255); this
@@ -190,12 +224,14 @@ from ._aggregate import (
     AggregatedObjective,
     aggregate_objective,
 )
+from ._divergence import BETA_FOUR_DEFAULT, IC_BOUND, divergence_penalty
 from ._objective import IR_DATES_MINIMUM, WorldScore, world_objective
 from ._orthogonality import BETA_SIX_DEFAULT, orthogonality_bonus
 from ._regime_index import PLAIN_MEAN_CODE, regime_aggregate, regime_strata
 from ._switches import BETA_FIVE_DEFAULT, switch_penalty
 from .errors import (
     AggregationError,
+    DivergencePenaltyError,
     OrthogonalityError,
     RegimeIndexError,
     ScoringError,
@@ -208,8 +244,10 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the annotation is lazy
 
 __all__ = [
     "BETA_FIVE_DEFAULT",
+    "BETA_FOUR_DEFAULT",
     "BETA_SIX_DEFAULT",
     "COMPONENT_NAME",
+    "IC_BOUND",
     "IR_DATES_MINIMUM",
     "LAMBDA_CEILING",
     "LAMBDA_DEFAULT",
@@ -217,6 +255,7 @@ __all__ = [
     "PLAIN_MEAN_CODE",
     "AggregatedObjective",
     "AggregationError",
+    "DivergencePenaltyError",
     "OrthogonalityError",
     "RegimeIndexError",
     "ScoringError",
@@ -224,6 +263,7 @@ __all__ = [
     "WorldObjectiveError",
     "WorldScore",
     "aggregate_objective",
+    "divergence_penalty",
     "orthogonality_bonus",
     "regime_aggregate",
     "regime_strata",

@@ -72,6 +72,11 @@ beside this module.  Feature 261's β₅ switch penalty has taken it since:
 one charge per regime crossing of the scored horizon, counted off the
 ordered path of regime labels the caller hands over
 (:func:`scoring.switch_penalty`, reached from the member's own
+namespace), with no component and no second seat either.  Feature 260's
+β₄ divergence penalty has taken the same path since: the gap between the
+pick's forward and backtest information coefficient, derived off the pair
+the caller hands over rather than read from any store
+(:func:`scoring.divergence_penalty`, reached from the member's own
 namespace), with no component and no second seat either.  Feature 263's aggregation has since taken exactly
 that path: the blend of the stratum mean and the stratum minimum is pure
 arithmetic like the objective, so it lives as the member's second law
