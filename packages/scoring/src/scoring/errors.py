@@ -16,15 +16,31 @@ Feature 256 needs exactly one: :class:`WorldObjectiveError`, the refusal
 of a per-world objective ask that cannot be scored.  Feature 263 adds the
 aggregation's own: :class:`AggregationError`, the refusal of a cross-world
 ask that cannot be blended (see :mod:`scoring._aggregate` for that law's
-own statement of which asks those are).  Every refusal either carries is a
-fact about the *ask* — a world that is not a name, a pick that names no
-node, a sequestered panel that cannot define a ratio, a stratum that holds
-no worlds, a λ outside the band prd §7.2 states — and nothing was read
-from any store and nothing is written when one raises, so the repair is
-always to re-consider what was handed in.  That is a smaller taxonomy than
-the store-owning members need because the objective is pure arithmetic:
-it has no ordering laws to contradict and no deployment state to be
-absent.  The division of labour that keeps it small is stated in
+own statement of which asks those are).  Feature 264 adds
+:class:`RegimeIndexError`, the refusal of an ask whose arithmetic would
+average across regimes — *"indexing aggregation strata by regime instead"*
+— and it sits **beside** :class:`AggregationError` rather than under it,
+which is worth stating because the two are one feature apart and share an
+input.  263 refuses an ask it cannot *blend*: a λ outside the band, a
+stratum handed over with no worlds, a carrier it cannot read.  264 refuses
+an ask it cannot *partition*: scores with no labels, a scored world the
+census never binned, a labelled world no score was earned for, a declared
+regime the join does not cover.  Both end in a mean somebody did not
+choose, but the repairs differ — a mis-set knob or a malformed carrier
+against a census that has not run — and folding them would put two
+different next steps behind one ``except``.  The same reasoning
+:mod:`regime.errors` states for putting
+:class:`~regime.errors.StratumAssignmentError` beside
+:class:`~regime.errors.CoverageError`.  Every refusal the three classes
+carry is a fact about the *ask* — a world that is not a name, a pick that
+names no node, a sequestered panel that cannot define a ratio, a stratum
+that holds no worlds, a λ outside the band prd §7.2 states, a pool whose
+labels and scores are not one set — and nothing was read from any store
+and nothing is written when one raises, so the repair is always to
+re-consider what was handed in.  That is a smaller taxonomy than the
+store-owning members need because the objective is pure arithmetic: it has
+no ordering laws to contradict and no deployment state to be absent.  The
+division of labour that keeps it small is stated in
 :mod:`scoring._objective` and worth restating here, because the two
 refusals a caller might expect from a "scoring" member and does not get
 are deliberate:
@@ -44,7 +60,12 @@ are deliberate:
 
 from __future__ import annotations
 
-__all__ = ["AggregationError", "ScoringError", "WorldObjectiveError"]
+__all__ = [
+    "AggregationError",
+    "RegimeIndexError",
+    "ScoringError",
+    "WorldObjectiveError",
+]
 
 
 class ScoringError(Exception):
@@ -97,4 +118,34 @@ class AggregationError(ScoringError):
     the same guarantee :class:`WorldObjectiveError` makes one feature
     earlier, held here for the number the dreaming loop's argmax ranks
     candidates on (feature 274).
+    """
+
+
+class RegimeIndexError(ScoringError):
+    """A regime index that would average across regimes (feature 264).
+
+    Feature 264's refusal — *System rejects a plain mean across regimes,
+    indexing aggregation strata by regime instead* — and four of its faces
+    open with :data:`scoring.PLAIN_MEAN_CODE` (``plain_mean``), the one
+    word that names what the ask would have computed: scores with no
+    labels to stratify them by, a scored world the census never binned, a
+    labelled world no score was earned for, and a declared regime the join
+    does not cover.  They are one class because they are one failure — a
+    mean over whatever worlds or regimes happened to be present, which is
+    prd §7.2's ``(1/t)·Σ V_i^m`` arrived at by four different routes — and
+    the repair is the same in all four: close the partition, by running
+    the census (feature 290) over the pool that was scored, or by handing
+    over the worlds the labels cover.
+
+    The remaining faces are ordinary shape refusals and carry no code: a
+    ``strata`` vocabulary that cannot be checked against (not a sequence,
+    empty, a repeated name, a name that names nothing), a label carrier
+    whose ``stratum`` is not a name or names a regime outside the declared
+    vocabulary, a world labelled or scored twice, a score carrier that is
+    not a world score, and an ask with no legal regimes at all.
+
+    Beside :class:`AggregationError`, never under it: 263 refuses an ask
+    that cannot be *blended*, this class refuses an ask that cannot be
+    *partitioned*, and the module docstring above states why the two
+    repairs must stay distinguishable behind separate ``except``s.
     """

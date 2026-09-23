@@ -92,7 +92,34 @@ reaches the verb the way sibling features reach this member's value
 types — through the member's own namespace, the growth pattern the
 policy-runtime member's free seams set.  The strata it blends over are
 names, not yet regimes: *which* strata exist and the rejection of a
-plain mean across them is feature 264's law over this seam.
+plain mean across them is feature 264's law over this seam — and that law
+has since landed, in :mod:`scoring._regime_index`.
+
+**The regime index is the member's third law (feature 264).**  *"System
+rejects a plain mean across regimes, indexing aggregation strata by regime
+instead"* — the feature whose dependency is 263 and whose sentence is the
+other half of the same thought.  The regime a world belongs to is not
+readable off a world score, so the strata the blend is taken over are a
+*join*: feature 290's census assigns each stored world a stratum with the
+causal rolling-window labeler, and :func:`~scoring.regime_strata` keys the
+scores by those labels — the sentence's second clause — while refusing the
+four shapes that would quietly average across regimes instead, all opening
+with :data:`~scoring.PLAIN_MEAN_CODE` (``plain_mean``).  It lives in
+:mod:`scoring._regime_index` beside the other two laws, with its own
+refusal :class:`~scoring.RegimeIndexError` — a **sibling** of
+:class:`~scoring.AggregationError`, never a child, because 263 refuses an
+ask that cannot be blended and 264 refuses one that cannot be partitioned,
+and the two repairs must stay distinguishable.
+:func:`~scoring.regime_aggregate` composes the two so the aggregation this
+category actually performs is one call whose strata are regimes by
+construction.  It is pure
+arithmetic like both, so the member still adds no component: the composed
+``scoring`` component remains the per-world objective, and the index and
+the blend are reached through this namespace.  Like 263's blend it
+deliberately closes no vocabulary — feature 283's ``DEFAULT_STRATA`` is an
+open set and a stratum name is not feature 241's legal theme, so the
+regime set is the caller's to *declare* (and this module's to check when
+declared), never this member's to enumerate.
 
 **No persistence here, by the same law that keeps the arithmetic pure.**
 The ``replay_score`` row is the replay plugin's (feature 255); this
@@ -119,7 +146,13 @@ from ._aggregate import (
     aggregate_objective,
 )
 from ._objective import IR_DATES_MINIMUM, WorldScore, world_objective
-from .errors import AggregationError, ScoringError, WorldObjectiveError
+from ._regime_index import PLAIN_MEAN_CODE, regime_aggregate, regime_strata
+from .errors import (
+    AggregationError,
+    RegimeIndexError,
+    ScoringError,
+    WorldObjectiveError,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the annotation is lazy
     from collections.abc import Callable
@@ -130,12 +163,16 @@ __all__ = [
     "LAMBDA_CEILING",
     "LAMBDA_DEFAULT",
     "LAMBDA_FLOOR",
+    "PLAIN_MEAN_CODE",
     "AggregatedObjective",
     "AggregationError",
+    "RegimeIndexError",
     "ScoringError",
     "WorldObjectiveError",
     "WorldScore",
     "aggregate_objective",
+    "regime_aggregate",
+    "regime_strata",
     "world_objective",
 ]
 

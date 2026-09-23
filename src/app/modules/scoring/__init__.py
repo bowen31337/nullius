@@ -69,11 +69,17 @@ arithmetic like the objective, so it lives as the member's second law
 (:func:`scoring.aggregate_objective`, reached from the member's own
 namespace) with no component beside ``scoring`` and no second seat
 beside this module — the composed callable here stays the per-world
-objective the replay's scoring step routes through.  The first feature
-of the category that owns deployment state — feature 265's scorer
-process holding the sidecar key, then 267's per-campaign ``FDR_deploy``
-store — takes its own component name beside ``scoring`` and its own
-sibling seat module beside this one, exactly the growth
+objective the replay's scoring step routes through.  Feature 264's
+regime index has taken the same path since: *which* strata the blend is
+taken over, and the refusal of a plain mean across them, is pure
+arithmetic over labels the census wrote — a join, not a store — so it
+lives as the member's third law (:func:`scoring.regime_strata`,
+:func:`scoring.regime_aggregate`, reached from the member's own
+namespace) with no component and no second seat either.  The first
+feature of the category that owns deployment state — feature 265's
+scorer process holding the sidecar key, then 267's per-campaign
+``FDR_deploy`` store — takes its own component name beside ``scoring``
+and its own sibling seat module beside this one, exactly the growth
 ``app.modules.bootstrap`` took when feature 188's pool arrived: a second
 module answering *what is the composed scorer process?*, this one going
 on answering *what is the composed objective?*

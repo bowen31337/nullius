@@ -186,3 +186,48 @@ def strata() -> dict[str, list[WorldScore]]:
             world_score("crash-c", 0.25),
         ],
     }
+
+
+@dataclass(frozen=True)
+class StandInLabel:
+    """A stand-in for feature 290's stratum assignment.
+
+    The census that bins the pool lives in the regime member, and the
+    scoring member never imports it, so the label seam is duck-typed —
+    any object exposing non-empty ``world_id`` and ``stratum`` text —
+    and this is the shape feature 264's index reads: the same two fields
+    the real :class:`~regime.StratumAssignment` carries, no dependency
+    on the member that owns the real value.
+    """
+
+    world_id: str
+    stratum: str
+
+
+#: The three regime names the fixtures label with — feature 283's own
+#: sentence, restated here rather than imported for the same reason the
+#: ``strata`` fixture restates them: a member never imports another
+#: member, and the index reads whatever names it is given.
+TREND = "high-volatility trend"
+CHOP = "low-volatility chop"
+CRASH = "crash"
+
+
+@pytest.fixture
+def labels() -> list[StandInLabel]:
+    """The census's rows for the ``strata`` fixture's seven worlds.
+
+    One label per world, matching :func:`strata` name for name, so the
+    index built from the pair reproduces the fixture the blend's own
+    suite aggregates — the two features are one pipeline, and this is
+    the seam where 290's output becomes 263's input.
+    """
+    return [
+        StandInLabel("trend-a", TREND),
+        StandInLabel("trend-b", TREND),
+        StandInLabel("chop-a", CHOP),
+        StandInLabel("chop-b", CHOP),
+        StandInLabel("crash-a", CRASH),
+        StandInLabel("crash-b", CRASH),
+        StandInLabel("crash-c", CRASH),
+    ]
