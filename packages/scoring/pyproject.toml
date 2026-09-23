@@ -1,0 +1,39 @@
+# nullius workspace member: the scoring plugin
+# (app_spec.xml, "Objective Scoring & CVaR Aggregation", feature 256;
+# docs/alpha-engine-prd.md §7.1 for the per-world objective's leading term and
+# docs/nullius-tech-architecture.md §10.3 for the same formula the replay
+# engine's scoring step states).
+#
+# Joins the uv workspace by convention — packages/scoring with this file —
+# so the module loader (src/app/module_loader.py) discovers it by scanning
+# the members the root pyproject.toml declares.  No edit to any central
+# registry, router table or app factory is needed or wanted to wire this
+# package in.
+#
+# Dependencies: the workspace root, and nothing else.  The per-world
+# objective is arithmetic over return readings the caller already holds —
+# §10.3's "pure array arithmetic over cached Parquet" is the replay's cost
+# target, and this member owns the objective's *law*, not its data plumbing
+# — so the member adds no third-party dependency and no numerics beyond
+# the standard library's :mod:`math`.  The information ratio's one spelling
+# (mean over population standard deviation, feature 80's) is restated here
+# rather than imported from the evaluator member, because a workspace
+# member never imports another workspace member and reaches shared shapes
+# through ``app.*``.
+
+[project]
+name = "scoring"
+version = "0.1.0"
+description = "Computes the per-world objective starting from the out-of-sample information ratio of the committed pick."
+requires-python = ">=3.12"
+dependencies = ["nullius"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/scoring"]

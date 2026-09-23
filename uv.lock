@@ -20,6 +20,7 @@ members = [
     "providers",
     "regime",
     "sandbox",
+    "scoring",
     "signal-agent",
     "snapshot",
     "tripwires",
@@ -510,6 +511,17 @@ requires-dist = [{ name = "nullius", editable = "." }]
 name = "sandbox"
 version = "0.1.0"
 source = { editable = "packages/sandbox" }
+dependencies = [
+    { name = "nullius" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "nullius", editable = "." }]
+
+[[package]]
+name = "scoring"
+version = "0.1.0"
+source = { editable = "packages/scoring" }
 dependencies = [
     { name = "nullius" },
 ]
