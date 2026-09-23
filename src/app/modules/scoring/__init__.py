@@ -68,7 +68,11 @@ exactly that path: the formula's last term and its only addition is pure
 arithmetic measured against the committed book
 (:func:`scoring.orthogonality_bonus`, reached from the member's own
 namespace), with no component beside ``scoring`` and no second seat
-beside this module.  Feature 263's aggregation has since taken exactly
+beside this module.  Feature 261's β₅ switch penalty has taken it since:
+one charge per regime crossing of the scored horizon, counted off the
+ordered path of regime labels the caller hands over
+(:func:`scoring.switch_penalty`, reached from the member's own
+namespace), with no component and no second seat either.  Feature 263's aggregation has since taken exactly
 that path: the blend of the stratum mean and the stratum minimum is pure
 arithmetic like the objective, so it lives as the member's second law
 (:func:`scoring.aggregate_objective`, reached from the member's own

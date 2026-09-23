@@ -143,6 +143,29 @@ promised the six β-terms would, visible, signed and arguable, and the
 penalties (features 257 through 261) will find the seam already shaped
 when they land their own terms through it.
 
+**The β₅ switch penalty is the member's fifth law (feature 261).**
+*"System subtracts a beta-five term proportional to switch cost times
+regime switch count, which returns the adjusted score"* — prd §7.1's
+fifth line and one of its five subtractions,
+``− β₅ · switch_cost · n_regime_switches`` (docs §10.3 agrees, line
+497).  It lives in :mod:`scoring._switches` as
+:func:`~scoring.switch_penalty` (the verb) and
+:data:`~scoring.BETA_FIVE_DEFAULT` (the coefficient's stated default —
+neither document sizes it), with its own refusal
+:class:`~scoring.SwitchPenaltyError`, the penalties' first.  The
+charge is one product of three non-negative factors — the coefficient,
+the deployment's own switch cost (keyword-only and required: a price
+is cost-model state, not a knob the member may default), and the
+horizon's regime switch count, counted *here* off the ordered path of
+regime labels the caller hands over, because the count is a fact about
+the labels' order and only the path carries it.  Like every other term
+of the formula it is pure arithmetic — no store, no clock, no
+environment — so it adds no component and no seat: the composed
+``scoring`` component stays the per-world objective, and the term is
+reached through this namespace, landing its visible, signed, arguable
+delta through :meth:`~scoring.WorldScore.adjusted` exactly as the
+objective's own docstring promised the six β-terms would.
+
 **No persistence here, by the same law that keeps the arithmetic pure.**
 The ``replay_score`` row is the replay plugin's (feature 255); this
 member answers the value it is written from, exactly as migration 0109
@@ -170,11 +193,13 @@ from ._aggregate import (
 from ._objective import IR_DATES_MINIMUM, WorldScore, world_objective
 from ._orthogonality import BETA_SIX_DEFAULT, orthogonality_bonus
 from ._regime_index import PLAIN_MEAN_CODE, regime_aggregate, regime_strata
+from ._switches import BETA_FIVE_DEFAULT, switch_penalty
 from .errors import (
     AggregationError,
     OrthogonalityError,
     RegimeIndexError,
     ScoringError,
+    SwitchPenaltyError,
     WorldObjectiveError,
 )
 
@@ -182,6 +207,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the annotation is lazy
     from collections.abc import Callable
 
 __all__ = [
+    "BETA_FIVE_DEFAULT",
     "BETA_SIX_DEFAULT",
     "COMPONENT_NAME",
     "IR_DATES_MINIMUM",
@@ -194,12 +220,14 @@ __all__ = [
     "OrthogonalityError",
     "RegimeIndexError",
     "ScoringError",
+    "SwitchPenaltyError",
     "WorldObjectiveError",
     "WorldScore",
     "aggregate_objective",
     "orthogonality_bonus",
     "regime_aggregate",
     "regime_strata",
+    "switch_penalty",
     "world_objective",
 ]
 

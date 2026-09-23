@@ -22,9 +22,11 @@ average across regimes — *"indexing aggregation strata by regime instead"*
 — and it sits **beside** :class:`AggregationError` rather than under it,
 which is worth stating because the two are one feature apart and share an
 input.  Feature 262 adds the β-terms' first: :class:`OrthogonalityError`,
-the refusal of a bonus ask that cannot be measured — the one β-term this
-member has so far, and the place the rest (257 through 261) will each add
-their own when they land.  263 refuses an ask it cannot *blend*: a λ outside the band, a
+the refusal of a bonus ask that cannot be measured; feature 261 adds the
+penalties' first, :class:`SwitchPenaltyError`, the refusal of a switch
+charge that cannot be counted — the two β-terms this member has so far,
+and the place the rest (257 through 260) will each add their own when
+they land.  263 refuses an ask it cannot *blend*: a λ outside the band, a
 stratum handed over with no worlds, a carrier it cannot read.  264 refuses
 an ask it cannot *partition*: scores with no labels, a scored world the
 census never binned, a labelled world no score was earned for, a declared
@@ -41,7 +43,15 @@ bonus refuses one whose *payment* cannot be measured (a book that misses
 the epoch, a panel that did not measure the score it sits beside, a
 coefficient that flips the term's sign), and the two repairs send the
 operator to different members — sequestration against the resident
-array.  Every refusal the four classes
+array.  And 261's refusal sits beside
+both of theirs for the member's own version of that reason: the switch
+penalty refuses an ask whose *charge* cannot be counted (a regime path
+that is not an ordered sequence of names, a horizon nobody labelled
+read as zero switches, a price or a coefficient that flips the term's
+sign), and its repairs differ from both — a census that has not run
+against a cost model that mis-set its price — so folding it under
+either would send the operator looking for a sequestration fault in
+the labeler.  Every refusal the five classes
 carry is a fact about the *ask* — a world that is not a name, a pick that
 names no node, a sequestered panel that cannot define a ratio, a stratum
 that holds no worlds, a λ outside the band prd §7.2 states, a pool whose
@@ -75,6 +85,7 @@ __all__ = [
     "OrthogonalityError",
     "RegimeIndexError",
     "ScoringError",
+    "SwitchPenaltyError",
     "WorldObjectiveError",
 ]
 
@@ -166,6 +177,36 @@ class OrthogonalityError(ScoringError):
     :class:`WorldObjectiveError` makes one feature earlier and every
     β-term landing after this one inherits by riding the same frozen
     seam.
+    """
+
+
+class SwitchPenaltyError(ScoringError):
+    """A beta-five switch charge that cannot be counted (feature 261).
+
+    The ask was malformed in this term's own inputs — a coefficient or
+    a switch cost that is not a finite non-negative real (the spec's
+    verb is *subtracts*, and a negative coefficient would counterfeit a
+    bonus through the penalty seam while a negative cost would pay the
+    policy for every crossing it makes), a score carrier exposing no
+    ``adjusted`` seam to ride, or a regime path that is not an ordered
+    sequence of names, holds a label that names no regime, or holds no
+    windows at all (an unlabelled horizon's count is unknown, not
+    zero) — and the refusal names which, because the repairs differ: a
+    mis-set knob against a cost model's price against a census that has
+    not run over the scored epoch.
+
+    Beside :class:`WorldObjectiveError` and :class:`OrthogonalityError`,
+    never under either: 256 refuses an ask that cannot be *scored*, 262
+    refuses one whose *bonus* cannot be measured, this class refuses one
+    whose *charge* cannot be counted, and the three repairs send the
+    operator to different members — sequestration, the resident array,
+    the regime labeler.
+
+    No partial value escapes a refusal: the penalty either answers the
+    moved :class:`~scoring.WorldScore` or raises, so a caller can never
+    hold a half-charged score it must remember to discard — the
+    guarantee :class:`WorldObjectiveError` makes one feature earlier and
+    every β-term landing through the same frozen seam inherits.
     """
 
 
