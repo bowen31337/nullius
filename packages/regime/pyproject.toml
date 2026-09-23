@@ -1,0 +1,38 @@
+# nullius workspace member: the regime plugin
+# (app_spec.xml, "Regime Coverage Strata", feature 283;
+# docs/alpha-engine-prd.md §C7 for the ledger this member writes).
+#
+# Joins the uv workspace by convention — packages/regime with this file
+# — so the module loader (src/app/module_loader.py) discovers it by scanning
+# the members the root pyproject.toml declares.  No edit to any central
+# registry, router table or app factory is needed or wanted to wire this
+# package in.
+#
+# Dependencies: the workspace root, and nothing else.  The factory's
+# registration protocol (`import app.module_loader`) is the whole of it —
+# the same one-dependency shape the discovery member ships, and for the
+# same reason: this member's first feature is a persistence act (one row
+# per named stratum) over a three-column table the spec's own migration
+# already declares (``migrations/versions/0107_regime_coverage.py``), so
+# there is no data file to ship, no download to declare and no
+# third-party numerics to trust.  ``sqlite3`` and ``urllib.parse`` are the
+# whole of the I/O, and the counts themselves arrive as the caller's —
+# the labeler that assigns them (feature 290) is another feature's, and
+# this member counts nothing on its own.
+
+[project]
+name = "regime"
+version = "0.1.0"
+description = "Persists the §C7 regime coverage ledger: one stored-world count per named stratum."
+requires-python = ">=3.12"
+dependencies = ["nullius"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/regime"]
