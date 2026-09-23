@@ -125,14 +125,47 @@ per-replay state beside the transition, so the composed facade gains nothing and
 there is no ``replay-``prefixed component.  It does not widen ``replay_score``
 (feature 255's table, a separate lineage); the record stays this module's own.
 
-**Stdlib only, and import-cheap.**  ``collections.abc``, ``dataclasses``,
-``datetime`` and ``typing`` beside the factory's registration protocol; no
-numerics, no Polars, no PyArrow, no environment and no clock.  A member
-whose import pulled a
-numerical stack in would make every factory scan pay for a dependency the replay
-path itself may not use — §12's determinism contract prohibits a GPU in the
-replay path and §11.2's materialization row keeps inference out of it, and the
-cheapest way to keep both is to have nothing here that could.
+**Feature 254 — replay latency at p50 and p99 — is the writer the parent
+predicted, and it registers nothing either.**  app_spec.xml, "Replay
+Engine", feature 254: *System persists replay latency at p50 and p99 into
+the observability metrics store.*  docs §16 names the metric among the
+research metrics (*"replay latency p50/p99"*) and states the store as a
+sentence with a scale on it — *"Prometheus + Grafana, or a single Postgres
+metrics table ... At this scale the simpler option is defensible"* — and the
+workspace's spelling of the simpler option is the one relational store
+every member store already addresses by ``DATABASE_URL``.  So feature 252's
+prediction (*"There is no observability member in this workspace yet —
+feature 254 would be the first to write one"*) lands as :mod:`replay.metrics`:
+a population of the parent's :class:`~replay.duration.ReplayDuration`
+records is summarised at p50 and p99 (the linear method, restated in pure
+Python because a member never imports another member and the replay path
+may not grow a numerical stack) and persisted into this member's own table
+in that store, created idempotently on connect — the samples as the source
+of truth, the two percentiles as the derived view over them, one row per
+summarising instant so the table is a history of snapshots.  The population
+is read duck-typed (the loader's synthetic-name wrinkle again), the report
+is refused — never the replay — when the population is not one or the store
+cannot take the write (:class:`~replay.ReplayMetricsError`, the fifth
+subclass), and the slow tail is persisted as measured, because 252's law
+is the parent of this feature and the alert on the tail is 253's.  No
+component: a store addressed by ``DATABASE_URL`` is never composed, the
+stance every store in this workspace takes, so the member's one
+``@register`` contribution stays the facade above.
+
+**Stdlib only, and import-cheap.**  ``collections.abc``, ``contextlib``,
+``dataclasses``, ``datetime``, ``json``, ``math``, ``os``, ``sqlite3``,
+``time``, ``typing``, ``urllib.parse`` beside the factory's registration
+protocol; no numerics, no Polars, no PyArrow.  A member whose import pulled
+a numerical stack in would make every factory scan pay for a dependency the
+replay path itself may not use — §12's determinism contract prohibits a GPU
+in the replay path and §11.2's materialization row keeps inference out of
+it, and the cheapest way to keep both is to have nothing here that could.
+The one ambient the member reaches is the one the workspace's stores share
+(``DATABASE_URL``, feature 254's metrics table), and the one wall clock it
+reads stamps that table's row key — the *walk-time* modules (the
+transition, the read, the duration) consult no environment and no clock,
+and the only clock a duration is ever measured on remains 252's
+:func:`time.perf_counter`.
 """
 
 from __future__ import annotations
@@ -151,8 +184,19 @@ from .errors import (
     ChildGenerationRefused,
     ParquetReadRefused,
     ReplayError,
+    ReplayMetricsError,
     ReplayReturnsError,
     ReplayTreeError,
+)
+from .metrics import (
+    REPLAY_LATENCY_METHOD,
+    REPLAY_LATENCY_QUANTILES,
+    REPLAY_LATENCY_TABLE,
+    ReplayLatency,
+    load_latest_replay_latency,
+    load_replay_latency,
+    persist_replay_latency,
+    replay_latency,
 )
 from .returns import RESIDENT_READ_POLICY, ReplayReturns, resident_returns
 from .transition import (
@@ -167,23 +211,32 @@ from .transition import (
 
 __all__ = [
     "COMPONENT_NAME",
-    "ChildGenerationRefused",
-    "ParquetReadRefused",
     "REPLAY_DURATION_ALERT_THRESHOLD",
     "REPLAY_DURATION_TARGET",
+    "REPLAY_LATENCY_METHOD",
+    "REPLAY_LATENCY_QUANTILES",
+    "REPLAY_LATENCY_TABLE",
     "RESIDENT_READ_POLICY",
+    "ChildGenerationRefused",
+    "ParquetReadRefused",
     "ReplayDuration",
     "ReplayEngine",
     "ReplayError",
+    "ReplayLatency",
+    "ReplayMetricsError",
     "ReplayReturns",
     "ReplayReturnsError",
     "ReplayTransition",
     "ReplayTreeError",
     "build_replay_engine",
     "child_map",
+    "load_latest_replay_latency",
+    "load_replay_latency",
     "measure_replay",
+    "persist_replay_latency",
     "recorded_child",
     "replay_component",
+    "replay_latency",
     "replay_roots",
     "replay_transition",
     "resident_returns",

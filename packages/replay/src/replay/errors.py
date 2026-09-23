@@ -1,12 +1,13 @@
 """The replay member's error vocabulary — one base class, split by repair.
 
-The base class for every failure of the replay path, and the four subclasses
-the transition and the resident read raise.  One base class so a caller — the
-dreaming loop, a nightly runner, an operator script, a later feature in this
-category (246–255 all depend on feature 245) — can catch every failure of the
-replay path with a single ``except``, the discipline :mod:`bootstrap.errors`,
-:mod:`artifacts._errors`, :mod:`discovery.errors` and
-:mod:`policy_runtime.errors` each state for their own member.
+The base class for every failure of the replay path, and the five subclasses
+the transition, the resident read and the observability write raise.  One
+base class so a caller — the dreaming loop, a nightly runner, an operator
+script, a later feature in this category (246–255 all depend on feature 245)
+— can catch every failure of the replay path with a single ``except``, the
+discipline :mod:`bootstrap.errors`, :mod:`artifacts._errors`,
+:mod:`discovery.errors` and :mod:`policy_runtime.errors` each state for
+their own member.
 
 The subclasses split by **what the caller must do about it**, which is the
 split that matters on this path rather than which line of code failed:
@@ -40,22 +41,31 @@ split that matters on this path rather than which line of code failed:
   perfectly resident axis raises it — it is a fact about the **call**: a
   caller handed the read a loader, and the replay path has no Parquet
   spelling.  The repair is on the caller's side of the seam: pin the axis in
-  a resident arena (feature 175) and hand the *arena* to the read.
+  a resident arena (feature 175) and hand the *arena* to the read;
+* :class:`ReplayMetricsError` — the *observability report's* contract was
+  broken: a population that is not one (empty, not a population, a carrier
+  that is not a measured duration, a duration that is not a finite
+  non-negative real), or a metrics store that cannot take the read or the
+  write (unconfigured, unsupported scheme, locked, corrupt rows).  The repair
+  is a real population or a repaired store — never a re-summarise over a
+  population that already measured, which is the naive re-run the feature
+  refuses for the same reason 251's read refuses a re-sweep.
 
-The four are deliberately *not* two classes, because they have one repair
+The five are deliberately *not* two classes, because they have one repair
 each and the repairs are in different places: a broken tree is repaired at
 the store, a broken residence at the arena or the store, a handed-in
-generator or loader at the caller.  A caller that re-derived one from the
-other would be unable to tell an operator *which* knob to turn, which is the
-same argument :mod:`policy_runtime.errors` states for keeping
+generator or loader at the caller, a broken report at the population or the
+metrics store.  A caller that re-derived one from the other would be unable
+to tell an operator *which* knob to turn, which is the same argument
+:mod:`policy_runtime.errors` states for keeping
 :class:`~policy_runtime.PolicyFilesystemError` and
 :class:`~policy_runtime.PolicyImportError` apart.
 
 All are :class:`ReplayError`, so the one base class catches every way a
-replay's transition and returns read can fail — the property a dreaming loop
-that replays a policy across two hundred stored worlds depends on, where one
-malformed tree or one unreadable campaign must be a catchable value rather
-than an escape that ends the cycle.
+replay's transition, returns read and latency report can fail — the property
+a dreaming loop that replays a policy across two hundred stored worlds
+depends on, where one malformed tree or one unreadable campaign must be a
+catchable value rather than an escape that ends the cycle.
 
 :class:`ChildGenerationRefused` is **not** a child of
 :class:`ReplayTreeError`, :class:`ParquetReadRefused` is **not** a child of
@@ -65,6 +75,16 @@ order to skip a bad world must not silently skip the refusal that says *the
 replay path has no generative transition at all* or *no Parquet spelling at
 all*, because neither is a fact about the world and the skip would hide a
 broken caller from every world in the pool.
+
+:class:`ReplayMetricsError` **refuses the report, never the replay.**  A slow
+population — one whose tail passes docs §10.4's ~200 ms point — is persisted
+as measured, because feature 252's law (*measures and persists; never
+refuses*) is the parent of this class's feature and the alert on the tail is
+253's, not the store's.  The class refuses only what a report *is*: a
+population that is not one, or a store that cannot take it.  A caller that
+caught it to skip a bad deployment would be skipping the deployment's only
+supervision of the 50 ms target, so the repair the messages name is always
+*fix the population or the store*, never *drop the report*.
 """
 
 from __future__ import annotations
@@ -73,6 +93,7 @@ __all__ = [
     "ChildGenerationRefused",
     "ParquetReadRefused",
     "ReplayError",
+    "ReplayMetricsError",
     "ReplayReturnsError",
     "ReplayTreeError",
 ]
@@ -198,4 +219,39 @@ class ParquetReadRefused(ReplayError):
     The message names the law, §9.3's number and the repair (pin the axis in
     a resident arena and hand the arena), because the caller who reached for
     a loader is the caller who has to move the read rather than retry it.
+    """
+
+
+class ReplayMetricsError(ReplayError):
+    """The observability report a population was summarised into is not one.
+
+    app_spec.xml, "Replay Engine", feature 254: *"System persists replay
+    latency at p50 and p99 into the observability metrics store"* — read from
+    the reporting side: a population of feature 252's measured durations is
+    summarised into the two percentiles docs §16 names among the research
+    metrics (*"replay latency p50/p99"*) and written into the store an
+    operator reads them from.  Every failure of that side is refused here:
+    a population that is not one (empty, not iterable, a carrier that is not
+    a measured duration, a duration that is not a finite non-negative real
+    number, a snapshot instant that names no row), and a metrics store that
+    cannot take the write or answer the read (unconfigured, an unsupported
+    URL scheme, a locked or unwritable database, rows whose samples do not
+    read back as the population they claim).
+
+    **Refuses the report, never the replay.**  A slow population — one whose
+    tail passes docs §10.4's ~200 ms broken-cost-model point — is persisted
+    as measured, because feature 252's law (*measures and persists; never
+    refuses a slow replay*) is this class's feature's parent, and the alert
+    on the tail is feature 253's ``recomputation_suspected``, not the
+    store's.  What is refused is what a report *is*: a figure no population
+    measured, or a write that did not land.  A latency that measured but
+    never landed is surfaced (chained to the store's own refusal), never
+    swallowed — the state the feature exists to rule out, exactly as a cost
+    model that resolved but never persisted is feature 59's and a latency
+    distribution that measured but never landed is feature 67's.
+
+    The repair is a real population or a repaired store, never a re-run over
+    a population that already measured: re-measuring to fix a broken
+    *report* would spend the replays again for a figure the caller already
+    holds, the same naive re-run feature 251's read refuses on its side.
     """
