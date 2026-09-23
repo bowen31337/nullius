@@ -59,7 +59,10 @@ from dreaming import (
     REPLAY_SCORE_TABLE,
     WORLD_TABLE,
     CycleFreeze,
+    PairedComparisonError,
+    TransferStoreError,
     pool_commitment,
+    pooled_family_transfer,
     sqlite_path,
 )
 
@@ -651,3 +654,255 @@ class TestTheComparisonSeam:
         assert record.mean_difference == pytest.approx((0.30 + 0.45 + 0.20) / 3)
         # The third arm's 99.0 reading is in the table and not in the comparison.
         assert max(abs(value) for _, value in record.differences) < 1.0
+
+
+class TestTheTransferSeam:
+    """The family holdout's reads, pinned against the owners' own pool.
+
+    Feature 282 reads the pool through two laws it does not own: the
+    membership (:func:`dreaming.pool_worlds`'s union, feature 278's
+    restatement) and the arms (:func:`dreaming.paired._pool_arm`, feature
+    281's read).  The family census itself is the caller's fact — no column
+    of either table carries it — so what this class pins is the seam over
+    the *owners'* tables: a pool built by ``0109`` and feature 188's store,
+    both arms read from the owner's own ``replay_score``, and the transfer
+    taken over a family the caller declares.  The same discipline the split
+    and the comparison seams above apply, turned on the family-shaped
+    holdout: what makes the held-out family a fact about one pool rather
+    than about this member's opinion of it is that the owner's tables are
+    what the figure was read from.
+    """
+
+    #: The financial family's worlds — the roots a dreaming pool's replayed
+    #: half carries.  Deliberately not a theme of feature 241's default set
+    #: for the retained root: this seam tests the *read*, not the config, and
+    #: a slug the legal set happens to carry would suggest the set was
+    #: consulted here when no member may consult another's.
+    FINANCIAL_ROOT = "momentum"
+    AUTHORED_ROOT = "hpo"
+
+    def _owners_pool(self, tmp_path: Path) -> str:
+        """A pool both owners built: migrated by ``0109``, authored by 188."""
+        bootstrap_src = REPO_ROOT / "packages" / "bootstrap" / "src"
+        if str(bootstrap_src) not in sys.path:
+            sys.path.insert(0, str(bootstrap_src))
+        bootstrap = pytest.importorskip(
+            "bootstrap", reason="the bootstrap member is absent from this checkout"
+        )
+
+        migration = _load_migration(
+            "m0109_transfer", "0109_replay_score_and_policy_revision.py"
+        )
+        database_url = f"sqlite:///{tmp_path / 'transfer-seam.db'}"
+        migration.apply(database_url)
+        bootstrap.BootstrapPool(database_url).persist_worlds(40)
+        return database_url
+
+    def _write_two_arms(self, url: str) -> tuple[dict[str, float], dict[str, float]]:
+        """Both arms' readings over the financial worlds and one authored one.
+
+        Written through ``0109``'s own eight columns, raw — the replay
+        member's writer is not this member's to drive.  The authored world is
+        named on purpose: a world that is in ``bootstrap_world`` *and* scored
+        is the honest shape of a dreaming pool, and holding the financial
+        family out must leave that world retained — the restriction is by
+        family, not by replay presence.  Returns the two arms in
+        (candidate, baseline) order for the independent arithmetic below.
+        """
+        with closing(sqlite3.connect(sqlite_path(url))) as connection, connection:
+            authored = connection.execute(
+                f"SELECT world_id FROM {WORLD_TABLE} LIMIT 1"
+            ).fetchone()[0]
+            for world_id in ("world-fin-1", "world-fin-2", "world-fin-3", authored):
+                connection.execute(
+                    f"INSERT INTO {REPLAY_SCORE_TABLE} (id, policy_version, "
+                    "world_id, beta, score, committed_pick, is_holdout, "
+                    "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        f"score-pi-0-{world_id}",
+                        "pi-0",
+                        world_id,
+                        0.0,
+                        {"world-fin-1": 0.10, "world-fin-2": 0.20, "world-fin-3": 0.30}.get(world_id, 0.15),
+                        None,
+                        0,
+                        "2026-01-01T00:00:00Z",
+                    ),
+                )
+                connection.execute(
+                    f"INSERT INTO {REPLAY_SCORE_TABLE} (id, policy_version, "
+                    "world_id, beta, score, committed_pick, is_holdout, "
+                    "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        f"score-pi-1-{world_id}",
+                        "pi-1",
+                        world_id,
+                        0.0,
+                        {"world-fin-1": 0.40, "world-fin-2": 0.55, "world-fin-3": 0.50}.get(world_id, 0.45),
+                        None,
+                        0,
+                        "2026-01-01T00:00:00Z",
+                    ),
+                )
+        return (
+            {"world-fin-1": 0.40, "world-fin-2": 0.55, "world-fin-3": 0.50},
+            {"world-fin-1": 0.10, "world-fin-2": 0.20, "world-fin-3": 0.30},
+        )
+
+    def _census(self, url: str, *, extra: dict[str, str] | None = None) -> dict[str, str]:
+        """The pool's families, as the caller holds them: authored ``hpo``,
+        financial ``momentum``."""
+        with closing(sqlite3.connect(sqlite_path(url))) as connection:
+            authored = [
+                row[0]
+                for row in connection.execute(f"SELECT world_id FROM {WORLD_TABLE}")
+            ]
+        census = {world: self.AUTHORED_ROOT for world in authored}
+        census.update(
+            {
+                "world-fin-1": self.FINANCIAL_ROOT,
+                "world-fin-2": self.FINANCIAL_ROOT,
+                "world-fin-3": self.FINANCIAL_ROOT,
+            }
+        )
+        if extra:
+            census.update(extra)
+        return census
+
+    def test_the_transfer_is_taken_over_the_owners_own_pool(
+        self, tmp_path: Path
+    ) -> None:
+        """§11.1's ``lofo_delta_ir`` line, run over tables this member did not build.
+
+        The three figures are computed independently from the rows this test
+        wrote: the delta is the mean of the financial family's per-world
+        differences, the held-out half is exactly that family, and the
+        retained count is the forty worlds feature 188 authored — the
+        authored world that was also replayed stays retained, because the
+        restriction is by family and not by replay presence.
+        """
+        url = self._owners_pool(tmp_path)
+        candidate, baseline = self._write_two_arms(url)
+
+        transfer = pooled_family_transfer(
+            "pi-1",
+            "pi-0",
+            themes=self._census(url),
+            theme=self.FINANCIAL_ROOT,
+            database_url=url,
+        )
+
+        differences = [
+            candidate[world] - baseline[world]
+            for world in ("world-fin-1", "world-fin-2", "world-fin-3")
+        ]
+        assert transfer.delta_ir == pytest.approx(sum(differences) / 3)
+        assert transfer.held_out == ("world-fin-1", "world-fin-2", "world-fin-3")
+        assert transfer.retained_worlds == 40
+        # The authored-and-replayed world has rows under both arms and is
+        # still not in the comparison: its family was not asked out.
+        assert transfer.difference.paired_worlds == 3
+        assert dict(transfer.difference.differences).keys() == {
+            "world-fin-1",
+            "world-fin-2",
+            "world-fin-3",
+        }
+
+    def test_a_census_that_disagrees_with_the_owners_pool_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """The pool is ground truth at this seam, in either direction.
+
+        A census that misses authored worlds would leave them in no family —
+        invisible to a partition claiming to be *of* the pool — and one that
+        invents a world grounds the figure on a world the owners never put
+        in.  Both are the store's refusal, with the disagreement named.
+        """
+        url = self._owners_pool(tmp_path)
+        self._write_two_arms(url)
+        short = self._census(url)
+        dropped = sorted(short)[:1][0]
+        del short[dropped]
+
+        with pytest.raises(TransferStoreError) as missing:
+            pooled_family_transfer(
+                "pi-1",
+                "pi-0",
+                themes=short,
+                theme=self.FINANCIAL_ROOT,
+                database_url=url,
+            )
+
+        assert repr(dropped) in str(missing.value)
+
+        padded = self._census(url, extra={"world-phantom": self.FINANCIAL_ROOT})
+        with pytest.raises(TransferStoreError) as phantom:
+            pooled_family_transfer(
+                "pi-1",
+                "pi-0",
+                themes=padded,
+                theme=self.FINANCIAL_ROOT,
+                database_url=url,
+            )
+
+        assert "'world-phantom'" in str(phantom.value)
+
+    def test_a_family_world_only_one_arm_was_replayed_against_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """The delegated pairing law, over the owner's own table."""
+        url = self._owners_pool(tmp_path)
+        self._write_two_arms(url)
+        with closing(sqlite3.connect(sqlite_path(url))) as connection, connection:
+            connection.execute(
+                f"INSERT INTO {REPLAY_SCORE_TABLE} (id, policy_version, "
+                "world_id, beta, score, committed_pick, is_holdout, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "score-pi-1-world-fin-4",
+                    "pi-1",
+                    "world-fin-4",
+                    0.0,
+                    0.9,
+                    None,
+                    0,
+                    "2026-01-01T00:00:00Z",
+                ),
+            )
+
+        with pytest.raises(PairedComparisonError) as refusal:
+            pooled_family_transfer(
+                "pi-1",
+                "pi-0",
+                themes=self._census(url, extra={"world-fin-4": self.FINANCIAL_ROOT}),
+                theme=self.FINANCIAL_ROOT,
+                database_url=url,
+            )
+
+        assert "world-fin-4" in str(refusal.value)
+
+    def test_a_0109_only_database_holds_no_pool_to_hold_a_family_out_of(
+        self, tmp_path: Path
+    ) -> None:
+        """``0109`` makes the score table and not the world table (pinned two
+        classes up), so the membership read refuses — translated into this
+        feature's store class, never re-raised as the split's."""
+        migration = _load_migration(
+            "m0109_transfer_alone", "0109_replay_score_and_policy_revision.py"
+        )
+        database_url = f"sqlite:///{tmp_path / 'transfer-alone.db'}"
+        migration.apply(database_url)
+
+        with pytest.raises(TransferStoreError) as refusal:
+            pooled_family_transfer(
+                "pi-1",
+                "pi-0",
+                themes={
+                    "world-fin-1": self.FINANCIAL_ROOT,
+                    **{f"w{i:03d}": self.AUTHORED_ROOT for i in range(20)},
+                },
+                theme=self.FINANCIAL_ROOT,
+                database_url=database_url,
+            )
+
+        assert "no pool" in str(refusal.value)

@@ -184,6 +184,34 @@ comparison over them honest.  Its refusals are its own pair of classes
 under the one base, with the thin pool delegated to feature 275's refusal as
 the cap, the ceiling and the split delegate theirs.
 
+**It carries the family-shaped holdout as a seventh sentence, and that is the
+half of §4.5 the world-shaped split cannot state.**  Feature 278's split
+protects the *report* from the *selection*, but it samples worlds, not
+families: a random 30% of the pool carries every family the pool carries,
+nearly in proportion, so the holdout worlds of family ``F`` sat beside train
+worlds of ``F`` in the pool the selection read — and a policy that had
+memorised ``F``'s texture passes that holdout with a ΔIR that is not
+transfer.  Feature 282's sentence (*"System computes leave-one-family-out
+transfer by holding an entire theme root out of the pool, which returns the
+delta on that held-out theme"*) is §4.5's other holdout, the one
+*"memorized family texture"* cannot survive: :mod:`dreaming.transfer` holds
+the root out **entirely** — every world whose theme root is the family named
+leaves the pool — and answers the paired delta on that family's worlds alone
+(:func:`dreaming.transfer.family_transfer`, §11.1's ``lofo_delta_ir`` line
+made to run), with the store seam
+(:func:`dreaming.transfer.pooled_family_transfer`) reading both arms from the
+pool's own ``replay_score`` rows and refusing a family census that disagrees
+with the pool's membership in either direction.  The family a world belongs
+to is not a column of the pool — it is the world's own fact, carried by the
+question seam's ``meta()`` — so the caller hands the census in whole, and
+the arithmetic is feature 281's, restricted to the held-out family's worlds
+and never respelled; the floor judges the pool that *remains*, delegated to
+feature 275's refusal as the cap, the ceiling and the split delegate theirs.
+Its refusals are its own pair of classes
+(:class:`~dreaming.errors.TransferRequestError` for the ask's own facts,
+:class:`~dreaming.errors.TransferStoreError` for a store that holds no pool
+or no honest census of one) under the one base.
+
 **It is not the evaluator, the selector, or the rotator.**  Running ``M``
 revisions (features 271-274), rotating the split per cycle and persisting
 which worlds were held out per iteration (feature 279), the paired statistic
@@ -290,6 +318,8 @@ from .errors import (
     RevisionCeilingError,
     SplitRequestError,
     SplitStoreError,
+    TransferRequestError,
+    TransferStoreError,
 )
 from .ladder import (
     LADDER_FLOOR_WORLDS,
@@ -323,6 +353,13 @@ from .split import (
     split_pool,
     split_replay_pool,
 )
+from .transfer import (
+    FamilyPartition,
+    FamilyTransfer,
+    family_transfer,
+    leave_one_family_out,
+    pooled_family_transfer,
+)
 
 __all__ = [
     "CAPPED_SWEEP_CAP",
@@ -353,6 +390,8 @@ __all__ = [
     "CapRequestError",
     "CycleFreeze",
     "DreamingError",
+    "FamilyPartition",
+    "FamilyTransfer",
     "FreezeRecord",
     "FreezeRequestError",
     "PairedComparisonError",
@@ -364,12 +403,16 @@ __all__ = [
     "RevisionCeilingError",
     "SplitRequestError",
     "SplitStoreError",
+    "TransferRequestError",
+    "TransferStoreError",
     "build_cycle_freeze",
     "cycle_cap_schema",
     "cycle_caps",
     "cycle_freeze_schema",
     "expected_triggers",
+    "family_transfer",
     "ladder_floor",
+    "leave_one_family_out",
     "missing_guards",
     "open_cycle_freeze",
     "paired_ir_difference",
@@ -378,6 +421,7 @@ __all__ = [
     "pool_commitment",
     "pool_tables_present",
     "pool_worlds",
+    "pooled_family_transfer",
     "power_capacity",
     "record_cycle_cap",
     "rejects_proportion_comparison",

@@ -99,6 +99,34 @@ comparison runs, in the floor's own word, and a pool it admits can still fail
 to pair; the repairs are different (grow the pool, against compare the arms
 over their shared worlds) so the classes are different.
 
+**Feature 282 holds a family out, and its two classes take the ask/store
+split the cap and the split state.**  app_spec.xml, feature 282: *System
+computes leave-one-family-out transfer by holding an entire theme root out of
+the pool, which returns the delta on that held-out theme.*  §4.5 makes the
+metric a standing requirement (*"the only honest way to tell learned research
+discipline from memorized family texture"*), and a requirement with two
+halves fails in two places: :class:`TransferRequestError` is the *ask* face —
+a family census that is not a mapping of non-empty world ids to non-empty
+roots (a bare string refused where a mapping belongs, because Python would
+iterate its characters as worlds), a theme root that is blank or one the pool
+does not carry, a bare string where an arm's readings belong, one policy
+named as both arms, or no database named at all — and
+:class:`TransferStoreError` is the *store* face: a database that holds no
+pool tables (no pool to hold a family out of), or a family census that
+disagrees with the pool's membership in **either direction** — worlds the
+pool holds that no family names, or worlds a family names that the pool does
+not hold — because *"holding an entire theme root out of the pool"* is a
+claim about the pool and at the store seam the pool is ground truth.  The
+pair deliberately does not mint what the features it delegates to already
+own: a retained pool below the ladder floor is feature 275's refusal,
+delegated in the floor's word, and everything about the readings on the
+held-out family — a world only one arm carries, a family too small to spread,
+a non-finite figure — is feature 281's, delegated in the comparison's own
+vocabulary, because the delta on a held-out theme *is* a paired comparison
+over that theme's worlds.  No code word: feature 282's verb is *computes*, so
+every refusal opens with its subject — the shape features 276's and 278's
+classes state for their own code-word-free sentences.
+
 **Why :class:`PoolFrozenError` is its own class and not a borrowed one.**
 Three members already read this pool and each has its own vocabulary for its
 own act — :class:`~tripwires.errors.TripwireExcisionError`,
@@ -135,6 +163,8 @@ __all__ = [
     "RevisionCeilingError",
     "SplitRequestError",
     "SplitStoreError",
+    "TransferRequestError",
+    "TransferStoreError",
 ]
 
 
@@ -508,4 +538,86 @@ class PairedComparisonError(DreamingError):
     ``illegal_theme`` and ``full_history_fit`` already follow in this workspace
     — and name the arm's world set, so an operator can see *which* worlds failed
     to pair rather than only that pairing failed.
+    """
+
+
+class TransferRequestError(DreamingError):
+    """A leave-one-family-out transfer could not be asked for as asked.
+
+    app_spec.xml, "Dreaming Loop & Meta-Selection", feature 282: *System
+    computes leave-one-family-out transfer by holding an entire theme root out
+    of the pool, which returns the delta on that held-out theme.*  This is the
+    *ask* face of that sentence: a family census that is not a mapping of
+    non-empty world ids to non-empty theme roots (a bare string refused where
+    a mapping belongs — Python would iterate its *characters*, and a pool
+    handed as one world's id would silently become as many one-character
+    worlds as it has letters), a theme root that is blank or one the pool
+    does not carry (a root with no worlds removes nothing, so the delta on
+    it would be a figure over no evidence that still looked like a
+    measurement), a bare string where an arm's readings belong, one policy
+    named as both arms (every difference exactly zero, reporting no transfer
+    while looking like a measurement of it), or no database named for the
+    pool to be read from.  Every one is a fact about the **request**,
+    refused before anything is read or compared, and the repair is to
+    re-consider what was asked for — the stance
+    :class:`FreezeRequestError` takes for feature 270's asks,
+    :class:`CapRequestError` for feature 277's and
+    :class:`SplitRequestError` for feature 278's.
+
+    Deliberately **not** a :class:`FreezeRequestError`, though one of its
+    refusals is translated from the member's one spelling of what a
+    ``sqlite:///`` URL names (:func:`dreaming.cycle.sqlite_path`): a caller
+    that took a transfer and caught the freeze's request class would read
+    *your hold was malformed* about an act that held nothing — the seam
+    discipline the whole workspace states for error vocabularies.  And
+    deliberately neither :class:`PoolTooThinError` nor
+    :class:`PairedComparisonError`: the retained pool's size is the
+    ladder's judgment, delegated to
+    :func:`dreaming.ladder.rejects_thin_pool` in the floor's own word, and
+    the readings on the held-out family are feature 281's, delegated to
+    :func:`dreaming.paired.paired_ir_difference` in the comparison's own
+    vocabulary — this class never speaks for either.
+
+    No code word, for the reason :class:`RevisionCeilingError` gives:
+    feature 282's verb is *computes* and mandates none, so every message
+    opens with its subject — the families, the root or the arm that was
+    wrong — and a reader is told *what to fix* rather than handed a token
+    to grep for.
+    """
+
+
+class TransferStoreError(DreamingError):
+    """The store could not ground a leave-one-family-out transfer.
+
+    The store-side face of feature 282's sentence, and it is where the
+    feature's own claim is checked: *"holding an entire theme root out of
+    the pool"* is a claim **about the pool**, and at the store seam the pool
+    is ground truth.  Two ways the store refuses to ground it, both facts
+    about the **store** rather than the ask (the URL was well formed, the
+    root was named, the arms were two policies):
+
+    * **the database holds no pool tables** — no ``replay_score`` and no
+      ``bootstrap_world``, so there is no pool here to hold a family out of,
+      and a transfer written over it would report a delta on a family of
+      worlds that were never read while nothing in the figure looked wrong.
+    * **the family census disagrees with the pool's membership, in either
+      direction.**  A census that misses pool worlds leaves them in no
+      family — neither held out nor retained, invisible to a partition that
+      claims to be *of the pool*, silently free to sit under a selection
+      that believed their family was gone.  A census naming worlds the
+      store does not hold grounds the figure partly on worlds that do not
+      exist.  The refusal names the disagreement, because an operator
+      holding a stale census should see the drift rather than a refusal
+      about statistics.
+
+    The repair is to point ``DATABASE_URL`` at the database the replay pool
+    lives in (or migrate it), and to re-read the pool's families for every
+    world it holds — never to re-send the same ask against the same stale
+    census.  A sibling of :class:`PoolFrozenError`, :class:`CapRecordError`
+    and :class:`SplitStoreError` rather than a face of any of them, because
+    the four name different worlds: *the pool is held and something tried to
+    move it* (feature 270), *there is no pool here to cap* (feature 277),
+    *there is no pool here to split* (feature 278) and *there is no pool
+    here — or no honest census of one — to hold a family out of* (feature
+    282).
     """

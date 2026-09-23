@@ -1,0 +1,190 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 282 (System computes leave-one-family-out transfer by holding an entire theme root out of the pool, which returns the delta on that held-out theme)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 282 in the existing dreaming member
+    (packages/dreaming, import name dreaming; seat src/app/modules/dreaming):
+    the family-shaped holdout §4.5 calls a standing requirement — "Hold an
+    entire theme root out of the dreaming pool, then evaluate on worlds from
+    that theme. It measures transfer directly, costs almost nothing, and is
+    the only honest way to tell learned research discipline from memorized
+    family texture." docs/alpha-engine-prd.md §11 carries the metric ("ΔIR
+    on a held-out theme root", target "&gt; 0"), §12's M3 exit repeats the
+    bar, §13 names it the mitigation for a family-specific overfit
+    signature, and §15 is why the holdout must be family-shaped rather than
+    world-shaped: "shape features do not [transfer] and two of them invert
+    sign across families." docs/nullius-tech-architecture.md §11.1 spells
+    the call in code — "# Standing metric: hold an entire theme out of the
+    dreaming pool, evaluate on it. lofo_delta_ir = evaluate(policy,
+    worlds_of_theme(held_out_theme))" — and §16 lists the metric among the
+    research metrics. One new module, dreaming/transfer.py, three spellings
+    of one act. (1) The judgment — leave_one_family_out(themes, *, theme,
+    floor=LADDER_FLOOR_WORLDS): the pool's families (a mapping of world id
+    to the theme root that world belongs to) and the root to hold out in, a
+    FamilyPartition out, the shape of the ladder's other verdicts
+    (rejects_thin_pool, revision_cap, split_pool) — a pure function of what
+    the caller already holds, never opening a database. The holdout is
+    ENTIRE by construction: every world whose root is the named theme is
+    held out, everything else retained, decided by nothing but the root —
+    there is no parameter that could hold half a family out. Both halves in
+    the pool's id order (the same total order pool_worlds answers), so the
+    same census constructs the same partition in any process; roots (every
+    family the pool carried) and family_count/world_count carried so an
+    operator sees the pool's breadth; is_held_out/is_retained predicates
+    for the caller marking readings, both REFUSING a world the partition
+    does not hold rather than answering False (a world outside the pool is
+    in no family, and an answer that read as one side would let a caller
+    mark a world the holdout never saw). The floor judges the pool that
+    REMAINS, delegated to feature 275's rejects_thin_pool over the retained
+    count in the floor's own word — a transfer figure over a selection that
+    could never have run is a number about nothing — so a pool whose worlds
+    all carry one root (the campaign-diversity failure) is refused by the
+    delegated floor as an empty retained half, not by a second law minted
+    here. (2) The call — family_transfer(candidate, baseline, *, themes,
+    theme, floor, spread, delta, power): §11.1's line made to run. Both
+    arms' per-world out-of-sample IR readings are restricted to the worlds
+    of the held-out root ONLY, and the differences over exactly those
+    worlds are tested paired through feature 281's paired_ir_difference —
+    the arithmetic is consumed, never respelled, because the delta on a
+    held-out theme IS a paired comparison over that theme's worlds.
+    Readings for any other world are not evaluated: that is the hold-out
+    itself rather than a drop, and it is what makes the figure a transfer
+    measurement — nothing the selection could have read on the held-out
+    family is in the comparison (the reason the 70/30 split of feature 278
+    cannot replace this holdout: a random 30% carries every family nearly
+    in proportion, so the holdout worlds of family F sat beside train
+    worlds of F in the pool the selection read, and memorised family
+    texture passes it). Everything downstream of the restriction is
+    delegated to the pairing's own law in its own vocabulary
+    (PairedComparisonError): a family world only one arm carries, a family
+    too small to spread, a non-finite figure, the capacity keywords passed
+    straight through so the two spellings of §11.0's arithmetic cannot
+    disagree. Returns a FamilyTransfer carrying the held-out root, its
+    worlds (the evidence the delta is over), the retained count (the pool
+    the selection runs over, the figure the delegated floor judged), and
+    feature 281's PairedDifference whole — carried rather than flattened,
+    with delta_ir (§11.1's own variable name) and transfers (§11's "&gt; 0",
+    strict: a delta of exactly zero is not transfer) as the record's
+    readings of it. (3) The family is the caller's fact — theme_root is not
+    a column of the pool's tables and this module does not invent one; the
+    family a world belongs to is carried by the question seam's meta()
+    (architecture §11) and the adapters that wrap each pool's worlds, and
+    no member imports another, so the caller hands the census in whole as a
+    mapping of world id to theme root, the same stance split_pool takes for
+    the pool's ids. The seam validates what it reads: non-empty text ids
+    and roots, a bare string REFUSED where a mapping belongs (Python would
+    iterate its characters as worlds — a pool nobody holds, divided into
+    families nobody authored), a root the pool does not carry refused naming
+    the roots it does carry (a root with no worlds removes nothing, and an
+    empty holdout's refusal would describe a pairing failure where the fact
+    is a stale census). (4) The store seam —
+    pooled_family_transfer(candidate_policy, baseline_policy, *, themes,
+    theme, database_url, floor, spread, delta, power, env): the two arms
+    named by policy_version, the database resolved the way the split's and
+    the comparison's seams resolve it (an explicit URL first, then
+    DATABASE_URL, refused by name when neither names one, and feature 270's
+    FreezeRequestError from the URL seam TRANSLATED into this module's
+    class), the pool's membership read through feature 278's pool_worlds
+    (the union law — a world once, whichever half names it), each arm's
+    readings read through feature 281's _pool_arm (last row by id,
+    deterministically), and the transfer answered over them. The families
+    must cover the pool EXACTLY, in both directions: a census that misses
+    pool worlds leaves them in no family — invisible to a partition
+    claiming to be of the pool, silently free to sit under a selection that
+    believed their family was gone — and a census naming worlds the store
+    does not hold grounds the figure on worlds that do not exist; both
+    refused with the disagreement named, because "holding an entire theme
+    root out of the pool" is a claim about the pool and at the store seam
+    the pool is ground truth. One policy named as both arms is refused
+    before any database is opened (every difference exactly zero — a figure
+    reporting no transfer while looking like a measurement of it). The
+    transfer WRITES NOTHING: it is a read, so it runs under feature 270's
+    hold, which is load-bearing — §C5 holds the pool fixed for the whole
+    outer iteration and the standing metric is what the iteration computes
+    during it. Two new error SIBLINGS under DreamingError, split by the
+    REPAIR the caller must make: TransferRequestError for the ask's own
+    facts and TransferStoreError for a store that holds no pool or no
+    honest census of one. No code word: feature 282's verb is "computes",
+    so every refusal opens with its subject (the shape features 276/278's
+    classes state); neither class ever mints feature 275's pool_too_thin or
+    feature 281's codes, both delegated where they apply. No central
+    registry, router, app factory, middleware, settings, or migration is
+    edited; no table is created or written; no new @register component is
+    added (feature 270's single "dreaming" component is untouched); the
+    member joins by workspace-scan convention and does not import another
+    workspace member (the membership law and the arm read are consumed from
+    the member's own siblings). The module is stdlib-only: os,
+    collections.abc, pathlib, typing.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/* members, import names are
+      underscored slugs) / pytest (ruff + mypy conventions). The module loader
+      (src/app/module_loader.py) discovers members from the root pyproject.toml
+      `[tool.uv.workspace] members = ["packages/*"]`, imports each package so
+      its module-level `@register` fires, and composes what each `@register`
+      builder contributes under a component name. `app` (src/app) is a
+      namespace package with no `__init__.py`; the seats in src/app/modules/
+      &lt;member&gt;/ are reached by namespace import (e.g. app.modules.dreaming).
+      A member never imports another member — it reaches shared shapes
+      through `app.*`, never through a sibling package's import name.</stack>
+    <test_baseline>The repository-level suite under tests/ is collected by
+      pytest with testpaths=tests; each workspace member's own suite lives
+      under packages/&lt;member&gt;/tests/ and is collected under its own conftest
+      (same-basename files collide under one pytest run), and is NOT graded by
+      the bare `uv run pytest` acceptance gate — a member suite must be run
+      explicitly (run both `uv run pytest tests/` and the member's own
+      `packages/dreaming/tests/`). Baseline before this feature: 365 passed in
+      packages/dreaming/tests, 1084 passed at the repository level. The repo
+      lint is red on main (mypy absent, pre-existing ruff errors), so lint only
+      the changed files and compare to a sibling. The dreaming member is
+      stdlib-only, and feature 282 keeps it that way: os, collections.abc,
+      pathlib, typing.</test_baseline>
+    <conventions>
+      snake_case modules, hand-written __slots__ value classes for records
+      (this member's FreezeRecord/PoolSplit/CapRecord/PairedDifference
+      precedent), docstrings that cite the governing documents by section and
+      quote the sentence they implement, refusals that name the subject and
+      the repair, error classes split by the repair rather than by where the
+      failure was noticed, and delegation rather than restatement wherever a
+      sibling already owns the law (the floor to ladder.rejects_thin_pool,
+      the membership to split.pool_worlds, the arithmetic and the pairing to
+      paired.paired_ir_difference). The member's honesty stance: a module
+      cites the document it implements and says what it is NOT (this one is
+      not the selector, not the 70/30 split, not the bar, not the campaign
+      constraint; it is no component, holds nothing, writes nothing).</conventions>
+    <context>existing modules in packages/dreaming/src/dreaming/: errors.py
+      (the member's vocabulary), layout.py (the pool's restated shape),
+      cycle.py (feature 270's freeze, and sqlite_path), ladder.py (feature
+      275, the floor), ceiling.py (feature 276), cap.py (feature 277),
+      split.py (feature 278, the 70/30 train/holdout split whose
+      pool_worlds this feature's store seam consumes), paired.py (feature
+      281, the paired continuous statistic this feature's delta IS,
+      restricted to a family). Tests live in packages/dreaming/tests/ with
+      their own conftest.py providing database_url, pool, scores and freeze
+      fixtures.</context>
+  </existing_context>
+  <deliverables>
+    <deliverable name="transfer.py">
+      packages/dreaming/src/dreaming/transfer.py — the judgment, the call and
+      the store seam, with leave_one_family_out, family_transfer,
+      pooled_family_transfer, FamilyPartition and FamilyTransfer in __all__.
+      No @register, no table, no write, no new constants (the floor and the
+      power are consumed from their owning modules).
+    </deliverable>
+    <deliverable name="errors.py"></deliverable>
+    <deliverable name="__init__.py"></deliverable>
+    <deliverable name="tests">
+      packages/dreaming/tests/test_transfer.py — the feature's own suite: the
+      holdout pinned entire (every world of the family, only those, in id
+      order whatever the census order), the floor judging the retained pool
+      in the ladder's own word, the delta agreeing with an independently
+      restricted paired comparison and not moving when retained readings
+      move, the unknown root refused naming the carried ones, the census
+      shape, the delegated pairing laws, and the store seam (writes nothing,
+      runs under a hold, the exact-cover census in both directions, the
+      union law over the scores fixture); test_errors.py extended with the
+      sibling pin against the member's whole vocabulary;
+      test_cross_member.py extended with the read pinned against a pool
+      built by 0109's own apply() and feature 188's own store.
+    </deliverable>
+  </deliverables>
+</project_specification>

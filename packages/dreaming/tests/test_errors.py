@@ -273,6 +273,54 @@ class TestTheVocabulary:
             assert POOL_TOO_THIN_CODE not in str(refusal)
             assert FREEZE_CODE not in str(refusal)
 
+    def test_the_member_carries_the_transfer_as_its_own_pair(self):
+        """Feature 282's two classes take the ask/store split the cap states.
+
+        The family-shaped holdout (``dreaming.transfer``) refuses in its own
+        vocabulary — :class:`TransferRequestError` for the ask's own facts (a
+        census that is not a mapping of non-empty ids to non-empty roots, a
+        root the pool does not carry, one policy on both arms, no database
+        named), :class:`TransferStoreError` for a store that holds no pool or
+        no honest census of one — never feature 270's, and never the paired
+        comparison's: a world that will not pair is feature 281's fact,
+        refused by its own law in its own word, because the delta on a
+        held-out theme *is* a paired comparison over that theme's worlds.
+        Pinned as a sibling of every existing class so a caller catches a
+        transfer's refusal without catching anyone else's.
+        """
+        import dreaming
+
+        for transfer_class in (
+            dreaming.TransferRequestError,
+            dreaming.TransferStoreError,
+        ):
+            assert issubclass(transfer_class, dreaming.DreamingError)
+            for sibling in (
+                FreezeRequestError,
+                PoolFrozenError,
+                PoolTooThinError,
+                dreaming.CapRequestError,
+                dreaming.CapRecordError,
+                dreaming.RevisionCeilingError,
+                dreaming.SplitRequestError,
+                dreaming.SplitStoreError,
+                dreaming.ProportionComparisonError,
+                dreaming.PairedComparisonError,
+            ):
+                assert not issubclass(transfer_class, sibling)
+                assert not issubclass(sibling, transfer_class)
+
+        # No code word, like features 276/278's and unlike 281's pair:
+        # feature 282's verb is "computes" and mandates none, so the refusal
+        # opens with its subject — and never mints the thin pool's or the
+        # freeze's word, both of which are delegated where they apply.
+        with pytest.raises(dreaming.TransferRequestError) as refusal:
+            dreaming.leave_one_family_out("hpo", theme="hpo")
+
+        message = str(refusal.value)
+        assert POOL_TOO_THIN_CODE not in message
+        assert FREEZE_CODE not in message
+
 
 class TestTheMessages:
     """What a refusal says, since the message *is* the repair instruction."""
