@@ -295,6 +295,55 @@ def test_the_refusal_is_built_not_raised_by_the_message_builder() -> None:
     assert FORBIDDEN_DEPENDENCY_CODE in str(refusal)
 
 
+def test_a_granted_name_is_refused_by_the_builder_not_indexed() -> None:
+    # §1's prohibition covers two names and *grants* the rest, so a caller may
+    # hand the builder a name the wall does not forbid — an audit walking the
+    # dependencies a deployment resolves is the obvious one.  Before this was
+    # total that call raised a bare ``KeyError`` out of the phrase table: a
+    # fault in the wall's *own* tables reported for a name the wall simply does
+    # not refuse, which names no dependency at all and lands outside both this
+    # member's vocabulary and the caller's ``except ReplayError``.
+    for granted in ("artifacts", "artifact_store", "book", "ledger"):
+        with pytest.raises(ForbiddenDependencyError) as raised:
+            refused_dependency(granted, _Spy())
+        message = str(raised.value)
+        assert FORBIDDEN_DEPENDENCY_CODE in message
+        assert granted in message, "the refusal must name what it was asked about"
+        assert "replay_path_forbids" in message, "and point at the verb that answers"
+
+
+def test_the_builder_refuses_a_granted_name_in_the_walls_vocabulary() -> None:
+    # The alignment with ``dependency_feature``, which answers the same question
+    # the same way: a function that is only meaningful about a forbidden
+    # dependency refuses a caller who asks it about a granted one, rather than
+    # inventing an answer.  Both are ``ForbiddenDependencyError``, both name the
+    # name, and both send the caller to ``replay_path_forbids``.
+    with pytest.raises(ForbiddenDependencyError) as builder:
+        refused_dependency("artifacts", _Spy())
+    with pytest.raises(ForbiddenDependencyError) as feature:
+        dependency_feature("artifacts")
+    for raised in (builder, feature):
+        assert "artifacts" in str(raised.value)
+        assert "replay_path_forbids" in str(raised.value)
+
+
+def test_a_granted_name_still_answers_through_the_predicate() -> None:
+    # And the repair the refusal names is real: the verb it sends the caller to
+    # answers about the very name the builder refused to build a line for.  A
+    # refusal that pointed at a function which also refused would be a loop.
+    assert replay_path_forbids("artifacts") is False
+
+
+def test_the_builder_still_refuses_a_name_that_names_nothing() -> None:
+    # The refusal grew no blind spot: a value that cannot name a dependency is
+    # still refused by the check every verb here shares — the argument check
+    # fires first, so this stays the message it always was.
+    for wrong in ("", "   ", None, 246, b"artifacts"):
+        with pytest.raises(ForbiddenDependencyError) as raised:
+            refused_dependency(wrong, _Spy())
+        assert FORBIDDEN_DEPENDENCY_CODE in str(raised.value)
+
+
 def test_the_refusal_is_a_replay_error(marked: None) -> None:
     # The one base class, so a dreaming loop's single ``except ReplayError``
     # catches a forbidden reach — the property the member's error module states

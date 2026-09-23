@@ -244,6 +244,33 @@ _REPAIRS: Final[Mapping[str, str]] = MappingProxyType(
 #: different facts about the caller's code even though both are refused.
 _ABSENT_TARGET: Final[str] = "<no target named — a bare reach>"
 
+#: §1's sentence, quoted with its document and its number — the line every
+#: message this module builds carries, because it is the sentence the whole
+#: wall is made of and the one an operator greps the log for.  A constant
+#: rather than a literal at each raise site: the forbidden branch and the
+#: granted branch both quote it, and two spellings of one quotation is two
+#: chances for one of them to drift from the document.
+_ARCHITECTURE_SENTENCE: Final[str] = (
+    "docs/nullius-tech-architecture.md §1: *\"The replay engine has read "
+    "access to the artifact store and zero access to the evaluator or "
+    "sandbox. This is what makes dreaming free. If replay can trigger "
+    "evaluation, the cost model of the entire system collapses.\"*"
+)
+
+#: :func:`refused_dependency`'s whole message, built once per name the wall
+#: answers for rather than at the raise site — ``(phrase, feature, repair)``
+#: for a forbidden name, derived from the three tables above so a name's spec
+#: wording, its forbidding feature and its repair are read from one source.
+#: The unpacking is the check: a table edited without its siblings fails at
+#: import rather than building half a line when a replay reaches for the
+#: evaluator at three in the morning.
+_REFUSAL_FACTS: Final[Mapping[str, tuple[str, int, str]]] = MappingProxyType(
+    {
+        name: (MESSAGE_PHRASES[name], _DEPENDENCY_FEATURES[name], _REPAIRS[name])
+        for name in FORBIDDEN_DEPENDENCIES
+    }
+)
+
 
 def validate_dependency_name(name: Any) -> str:
     """Check that ``name`` is a dependency name, or refuse it.
@@ -346,21 +373,43 @@ def refused_dependency(name: Any, target: Any = _ABSENT_TARGET) -> ForbiddenDepe
     enforced, says that nothing was run, and states the repair — because an
     operator reading it has a replay path that reached for the evaluator and
     needs to know which knob to turn, not merely that something was forbidden.
+
+    **The builder answers for every name it is handed, and it says which
+    question it is answering.**  §1's prohibition covers two names and *grants*
+    the rest (see :data:`FORBIDDEN_DEPENDENCIES`), so a caller may hand this
+    function a name the wall never forbids — an audit walking the dependencies
+    a deployment resolves is the obvious one — and there is no refusal to build
+    for it.  What there must **not** be is a bare :class:`KeyError` out of a
+    phrase table: that reports a fault in the wall's own tables for a name the
+    wall simply does not refuse, and it names no dependency at all.  So a name
+    this wall does not forbid is refused outright, in the wall's own code and
+    vocabulary, naming the name and pointing at
+    :func:`replay_path_forbids` — the function that *does* have an answer about
+    it.  That is the repair :func:`dependency_feature` states to a caller who
+    asks it about a granted name, and repeating it here is the point: this
+    function is as meaningful about the artifact store as that one is, which is
+    to say not at all, and a caller who asks anyway is told so rather than
+    handed a line about a refusal that never happened.
     """
     dependency = validate_dependency_name(name)
-    phrase = MESSAGE_PHRASES[dependency]
-    feature = _DEPENDENCY_FEATURES[dependency]
+    if dependency not in _REFUSAL_FACTS:
+        raise ForbiddenDependencyError(
+            f"{FORBIDDEN_DEPENDENCY_CODE}: {dependency!r} is not a dependency "
+            f"this wall forbids, so there is no refusal to build for it: §1 "
+            f"forbids the replay path {sorted(FORBIDDEN_DEPENDENCIES)} and "
+            f"grants it read access to the artifact store. Ask "
+            f"replay_path_forbids() for a name's standing — this function "
+            f"builds the message of a refusal that happened, and none is about "
+            f"{dependency!r} (features 246, 247)"
+        )
+    phrase, feature, repair = _REFUSAL_FACTS[dependency]
     return ForbiddenDependencyError(
         f"{FORBIDDEN_DEPENDENCY_CODE}: the replay path reached {phrase} "
-        f"({_target_name(target)}) — app_spec.xml feature "
-        f"{feature} refuses every replay-path call reaching {phrase}, because "
-        f"the replay engine has read access to the artifact store alone. "
-        f"docs/nullius-tech-architecture.md §1: *\"The replay engine has read "
-        f"access to the artifact store and zero access to the evaluator or "
-        f"sandbox. This is what makes dreaming free. If replay can trigger "
-        f"evaluation, the cost model of the entire system collapses.\"* The "
-        f"call was refused before it was made: {phrase} ran nothing and "
-        f"nothing was spent. {_REPAIRS[dependency]}"
+        f"({_target_name(target)}) — app_spec.xml feature {feature} "
+        f"refuses every replay-path call reaching {phrase}, because the "
+        f"replay engine has read access to the artifact store alone. "
+        f"{_ARCHITECTURE_SENTENCE} The call was refused before it was "
+        f"made: {phrase} ran nothing and nothing was spent. {repair}"
     )
 
 
