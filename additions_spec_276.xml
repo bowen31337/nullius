@@ -1,0 +1,199 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 276 (System rejects a revision count above 10 while the pool holds between 20 and 50 worlds, so the selection bar stays low)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 276 in the existing dreaming member
+    (packages/dreaming, import name dreaming; seat src/app/modules/dreaming):
+    the middle rung of docs/alpha-engine-prd.md §12.1's pool-size ladder — the
+    ceiling that keeps a thin pool's sweep narrow so the selection bar stays
+    low. One new module, dreaming/ceiling.py, holding one free function,
+    rejects_uncapped_sweep(revision_count, world_count, *, floor=20,
+    full_dreaming=50, ceiling=10), a verdict over counts the caller already has
+    (the same shape feature 275's rejects_thin_pool takes): raises
+    RevisionCeilingError when the revision count exceeds the band's ceiling
+    while the pool sits in the 20–50 band, returns without raising above it
+    (the pool has cleared 50, feature 277's raise has fired, and M is that
+    feature's to answer at 40), and delegates a pool below the floor to feature
+    275's own rejects_thin_pool so the bottom rung is refused in the floor's
+    own word (pool_too_thin) by the floor's own one spelling of the rule —
+    which is what depends_on 275 means in code. The band's three figures are
+    CONSUMED, never respelled: the ceiling defaults to feature 277's
+    CAPPED_SWEEP_CAP (10 — the same constant that feature's schedule answers
+    on this band, imported from dreaming.cap), the band's lower edge to feature
+    275's LADDER_FLOOR_WORLDS (20), and its upper edge to feature 277's
+    FULL_DREAMING_WORLDS (50). This is what makes the entitlement and the
+    refusal one number: the default judgment admits exactly what
+    dreaming.cap.revision_cap answers, at every pool size, by construction
+    rather than by agreement. One new error sibling under DreamingError —
+    RevisionCeilingError, deliberately WITHOUT a code word (feature 276's
+    sentence mandates none; feature 275's pool_too_thin is mandated by its
+    own), whose repair (lower M to the band's cap, or grow the pool until the
+    raise applies) is neither the floor's (grow the pool before dreaming at
+    all) nor feature 277's CapRequestError's (re-consider the ask) — so a
+    caller can catch each apart. No central registry, router, app factory,
+    middleware, settings, or migration is edited; no new @register component
+    and no seat edit (feature 270's single "dreaming" component is untouched);
+    no table, no persistence, no third party — the module imports typing, the
+    member's own .cap, .errors and .ladder, and nothing else, so the factory's
+    scan pays nothing for the ceiling.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/* members, import names are
+      underscored slugs) / pytest (ruff + mypy conventions). The module loader
+      (src/app/module_loader.py) discovers members from the root pyproject.toml
+      `[tool.uv.workspace] members = ["packages/*"]`, imports each package so
+      its module-level `@register` fires, and composes what each `@register`
+      builder contributes under a component name. `app` (src/app) is a
+      namespace package with no `__init__.py`, and the seats in src/app/modules/
+      &lt;member&gt;/ are reached as submodules. A member never imports another
+      member — it reaches shared shapes through `app.*`, never through a
+      sibling package's import name.</stack>
+    <test_baseline>The repository-level suite under tests/ is collected by
+      pytest with testpaths=tests; each workspace member's own suite lives
+      under packages/&lt;member&gt;/tests/ and is collected under its own conftest
+      (same-basename files collide under one pytest run), and is NOT graded by
+      the bare `uv run pytest` acceptance gate — a member suite must be run
+      explicitly (run both `uv run pytest tests/` and `packages/dreaming/tests/`).
+      The repository venv is created by a bare `uv sync`, which does NOT install
+      pyarrow/polars; the repo-level suite therefore fails collection in
+      tests/contract and tests/feature-store with `ModuleNotFoundError: No
+      module named 'polars'` until `uv sync --all-packages` is run. Measure the
+      real numbers by running the suite before relying on them. The repo lint is
+      red on main (mypy absent, pre-existing ruff errors), so lint only the
+      changed files and compare to a sibling. The dreaming member is
+      stdlib-only, and feature 276 keeps it that way: `typing` plus the member's
+      own modules, and no more.</test_baseline>
+    <conventions>
+      snake_case modules, docstrings that cite app_spec.xml feature numbers and
+      docs/alpha-engine-prd.md sections, stdlib-only computation, a verdict-gate
+      free function (raises on refusal, returns otherwise) rather than an
+      evaluator or a component, `@register` only in the package `__init__`
+      (never a submodule — a submodule's registration fires only on the first
+      `create_app()` of a process), degrade-don't-break composition, and the
+      error-vocabulary discipline: one base class per member, the subclasses
+      split by the repair a caller must make (not by which line raised), no
+      member imports another, and a caller must be able to catch one feature's
+      refusal without catching a neighbouring feature's — so a shared rule is
+      translated at the seam rather than re-raised in a neighbour's class.
+      Features 270 (the cycle freeze, cycle.py), 275 (the ladder floor,
+      ladder.py) and 277 (the revision cap's schedule and record, cap.py)
+      already live in this member; feature 276 is a fourth sentence within it,
+      not a new member — and it is the middle rung the other two bracket, so it
+      consumes their figures rather than restating them.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Dreaming Loop &amp; Meta-Selection">
+      <feature index="276" shape="plugin" plugin="dreaming" depends_on="275">
+        System rejects a revision count above 10 while the pool holds between
+        20 and 50 worlds, so the selection bar stays low.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    The judgment is a free function in the dreaming member's new ceiling module,
+    reached directly from the member (`from dreaming import
+    rejects_uncapped_sweep, RevisionCeilingError`) and re-exported by the member
+    __init__, the way feature 275's floor names are. No composed application
+    needs a second component: feature 270's single "dreaming" component (the
+    CycleFreeze) is untouched, and the seat (src/app/modules/dreaming) is not
+    edited — the floor set that precedent and feature 276 follows it, exactly as
+    feature 277 did. The two counts the judgment reads are ones the caller
+    already has at the point §C5's loop needs them: the pool's size is recorded
+    by the hold the cycle opened (a feature-270 FreezeRecord carries
+    world_count, and pool_commitment computes it), and the revision count is the
+    caller's own intent for the sweep it is about to run. Feature 277's schedule
+    (dreaming.cap.revision_cap) answers the cap a cycle is *entitled to* on each
+    rung and this judgment refuses the count it is *allowed* — they are the same
+    10 on the band, consumed from the one constant, so the loop calls
+    revision_cap for M and rejects_uncapped_sweep to enforce the ceiling, and
+    the two can never disagree. Neither judgment opens a database.
+  </integration_points>
+  <constraints>
+    - The ceiling applies to exactly ONE rung and is exact at both edges:
+      world_count &gt;= 50 admits any revision count (feature 277's raise has
+      fired; the top rung has no ceiling); 20 &lt;= world_count &lt; 50 admits a
+      count &lt;= ceiling and refuses a count &gt; ceiling; world_count &lt; 20 is
+      refused by feature 275's own rejects_thin_pool in its own word
+      (pool_too_thin).
+    - The band's three figures are consumed, never respelled: ceiling defaults
+      to dreaming.cap.CAPPED_SWEEP_CAP (10), full_dreaming to
+      dreaming.cap.FULL_DREAMING_WORLDS (50), floor to dreaming.ladder.
+      LADDER_FLOOR_WORLDS (20). No ladder figure is spelled as a literal in the
+      new module. The default judgment must never refuse what
+      revision_cap(world_count) answers, at any pool size.
+    - One new error sibling under DreamingError — RevisionCeilingError — that
+      borrows none of the member's existing five classes and is borrowed by none
+      of them. It carries no code word: feature 276's sentence mandates none,
+      and every message opens with its subject (the count, the ceiling, the band
+      and the pool's size), states the repair (lower M to the band's cap, or grow
+      the pool until the raise applies), names §12.1 and cites Appendix B's
+      sqrt(2 ln M) bar and the section's n &gt; 53 at M = 40. The one thin-pool
+      refusal this feature mints is feature 275's, delegated, in feature 275's
+      word.
+    - The judgment is a verdict over counts, not a count the feature performs:
+      rejects_uncapped_sweep takes both figures as arguments and opens no
+      database, reads no pool row, resolves no path and imports nothing that
+      could (no sqlite3, no sqlite_path, no connection). A malformed count or
+      rung is refused rather than answered, so a cycle whose inputs are wrong is
+      never silently admitted or blocked on a value that is not a count.
+    - The floor keyword passes straight through to the ladder's gate, and a
+      malformed floor is refused by ladder.validated_floor in the ladder's own
+      class (PoolTooThinError), because the floor is feature 275's fact. A
+      boundary below the floor is refused in this feature's class, naming both
+      edges.
+    - No central registry, router, app factory, middleware, settings, or
+      migration is edited. No new @register component, no table, no persistence,
+      and no seat export: feature 270's single "dreaming" component is the
+      member's whole composition and its suite (test_component.py) is untouched.
+    - All existing tests in the dreaming member (packages/dreaming/tests) and in
+      tests/ must stay green. The member's own suite must be run explicitly (it
+      is not graded by the bare `uv run pytest` gate).
+    - Do not edit the order-sensitive shared files: src/app/middleware.py,
+      src/app/settings.py, migrations/versions/**, alembic/versions/**.
+  </constraints>
+  <implementation_steps>
+    <step>
+      Phase 1 — the class and the judgment. Add
+      RevisionCeilingError(DreamingError) to dreaming.errors as a sibling of the
+      member's existing five classes, following the repair-split discipline (the
+      repair for a too-wide sweep is neither to grow the pool before dreaming at
+      all — the floor's — nor to re-send a malformed ask — the cap's — but to
+      lower M to the band's cap or grow the pool until the raise applies), and
+      extend the errors module docstring with the ladder's third rung. Add
+      dreaming/ceiling.py with the three input validators (the revision count,
+      the pool figure and the band's upper edge, each in this module's own
+      vocabulary; the floor delegated to ladder.validated_floor) and
+      rejects_uncapped_sweep(revision_count, world_count, *, floor=20,
+      full_dreaming=50, ceiling=10) — a pure function that validates in the
+      documented order, refuses a boundary below the floor, delegates the thin
+      judgment to rejects_thin_pool, returns without raising at or above the
+      upper edge, and raises RevisionCeilingError above the ceiling inside the
+      band. Re-export the function and the class from the member __init__.py.
+    </step>
+    <step>
+      Phase 2 — the tests. Add packages/dreaming/tests/test_ceiling.py pinning:
+      the exact band (20 and 49 refuse a count of 11; 20 and 49 admit 10), both
+      edges (the inclusive admitted side, the floor as the band's first pool, 49
+      capped against 50 raised), the absence of a ceiling above the band (40 and
+      1000 admitted at 50, 60, 500), the consumed-constant law (the module
+      attributes ARE dreaming.cap's objects; the default judgment admits
+      revision_cap(world_count) for every pool from 20 to 200 and refuses
+      exactly revision_cap + 1 below the band only), zero revisions admitted on
+      every rung, the refusal's content (both figures, both edges, §12.1, the
+      sqrt(2 ln M) bar, n &gt; 53, and the two half-repairs), the parameters and
+      their validation (a custom ceiling, a zero ceiling, a custom upper edge, a
+      raised floor, the boundary-below-floor refusal, and the degenerate
+      floor-equals-edge case), the pure-function shape verified by denial (no
+      sqlite3 / sqlite_path / connect on the module), every malformed input in
+      the right class (a bool/float/str/negative count or figure refused in this
+      module's class, a malformed floor in the ladder's), the delegated thin
+      refusal (pool_too_thin, §12.1 named, winning over the ceiling when both
+      facts are true, and the delegation pinned as the floor's own function
+      object), and the vocabulary siblinghood (five ways, no code word, and the
+      module spelling no ladder literal). Extend test_errors.py with the ceiling
+      class's sibling test. Run both suites and lint only the changed files
+      against a sibling.
+    </step>
+  </implementation_steps>
+</project_specification>

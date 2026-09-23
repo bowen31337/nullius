@@ -56,13 +56,6 @@ account of which cycle is holding what.
 What it is not
 --------------
 
-**It is not the evaluator, the selector, or the splitter.**  Running ``M``
-revisions (features 271-274), rotating the holdout split per cycle (feature
-279), the paired statistic and its bar (feature 280) and the argmax persisted
-to ``policy_revision`` (features 276-277) are all their own features depending
-on this one.  This member holds the pool and hands back the commitment, the
-count and the refusal; it never runs a policy and never picks a winner.
-
 **It carries the ladder's floor as a second sentence, not a third face of
 feature 270.**  §12.1's floor — *"below 20 worlds: do not run dreaming; fixed
 exploration; accumulate history"* — is a precondition on a run that has *not*
@@ -106,12 +99,41 @@ classes (:class:`~dreaming.errors.CapRequestError`,
 member's one spellings of the shared rules, never borrowed from feature 270's
 vocabulary.
 
+**It carries the middle rung's ceiling as a fourth sentence, and that is the
+half of the ladder the schedule cannot state.**  Feature 277 *answers* the cap
+the thin band runs under — 10 — while feature 276 *refuses* a cycle that means
+to run more than that while the pool sits in the band: *"System rejects a
+revision count above 10 while the pool holds between 20 and 50 worlds, so the
+selection bar stays low."*  The refusal is
+:func:`dreaming.ceiling.rejects_uncapped_sweep`, the same verdict-over-counts
+shape the floor is — the revision count the caller means to run and the pool's
+size in, a refusal out — and it consumes rather than respells every ladder
+figure it judges by: the band's cap is feature 277's
+:data:`CAPPED_SWEEP_CAP`, its edges are feature 275's floor and feature 277's
+:data:`FULL_DREAMING_WORLDS`.  So the number a cycle is *entitled to* on the
+thin rung and the number it is *refused above* are one constant, and the
+default judgment admits exactly what the schedule answers at every pool size.
+Above the band there is no ceiling — the pool has cleared 50, the raise has
+fired, and ``M`` is feature 277's to answer at 40 — and below it the refusal is
+feature 275's, delegated, in the floor's own word, because a pool that may not
+dream at all needs no cap on its sweep.  The one refusal the sentence itself
+mints is :class:`~dreaming.errors.RevisionCeilingError`, its own class and
+deliberately without a code word: its repair (*lower ``M`` to the band's cap,
+or grow the pool until the raise applies*) is neither the floor's (*grow the
+pool before dreaming at all*) nor the cap's (*re-consider the ask*), so a
+caller that caught it as either would act on the wrong fact.  The reason the
+ceiling exists at all is §12.1's own arithmetic: Appendix B's bar is
+``advantage > √(2 ln M) · σ_V / √n_worlds``, ``§12.1`` computes ``n > 53``
+worlds at ``M = 40``, and a pool of 20–50 is short of that by construction —
+so a wider sweep is *available* only once the pool clears the band, and the
+selection bar stays low because it cannot be raised.
+
 **It is not the evaluator, the selector, or the splitter.**  Running ``M``
 revisions (features 271-274), rotating the holdout split per cycle (feature
 279), the paired statistic and its bar (feature 280) and the argmax persisted
-to ``policy_revision`` (features 276-277) are all their own features depending
-on this one.  This member holds the pool and hands back the commitment, the
-count and the refusal; it never runs a policy and never picks a winner.
+to ``policy_revision`` are all their own features depending on this one.  This
+member holds the pool and hands back the commitment, the count and the
+refusal; it never runs a policy and never picks a winner.
 
 **It never writes the pool's tables.**  Feature 270's whole subject is not
 writing them.  ``pool_freeze`` is this member's own table and the only table it
@@ -179,6 +201,7 @@ from .cap import (
     record_cycle_cap,
     revision_cap,
 )
+from .ceiling import rejects_uncapped_sweep
 from .cycle import (
     DATABASE_URL_ENV,
     FREEZE_CODE,
@@ -204,6 +227,7 @@ from .errors import (
     FreezeRequestError,
     PoolFrozenError,
     PoolTooThinError,
+    RevisionCeilingError,
 )
 from .ladder import (
     LADDER_FLOOR_WORLDS,
@@ -246,6 +270,7 @@ __all__ = [
     "FreezeRequestError",
     "PoolFrozenError",
     "PoolTooThinError",
+    "RevisionCeilingError",
     "build_cycle_freeze",
     "cycle_cap_schema",
     "cycle_caps",
@@ -259,6 +284,7 @@ __all__ = [
     "pool_tables_present",
     "record_cycle_cap",
     "rejects_thin_pool",
+    "rejects_uncapped_sweep",
     "revision_cap",
     "sqlite_path",
     "validated_floor",

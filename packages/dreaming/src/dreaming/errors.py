@@ -51,6 +51,23 @@ rule, the URL translation, the stamp format all live in
 vocabulary for an act that held nothing; the one refusal this member mints
 for a thin pool stays feature 275's, delegated, in feature 275's word.
 
+**Feature 276's ceiling is a third sentence, and its class is its own rather
+than a face of the floor's.**  §12.1's ladder has three rungs and this member
+now carries all three: the floor refuses a run below 20 worlds
+(:class:`PoolTooThinError`), the *schedule* answers the cap a cycle runs under
+(feature 277's ``dreaming.cap``), and the *ceiling* refuses a sweep wider than
+the thin rung funds (:class:`RevisionCeilingError`).  The ceiling's class sits
+beside :class:`PoolTooThinError` rather than under it because the two would
+otherwise be caught together and their repairs are different: a thin pool means
+*grow the pool before dreaming at all*, while a too-wide sweep means *this pool
+may dream — lower ``M`` to the band's cap, or grow the pool until the raise
+applies*.  It is likewise not feature 277's :class:`CapRequestError`: a count
+of 40 is a well-formed ask and a legal one one rung up, so nothing about it is
+malformed.  The band's edges and its cap are *not* respelled here or in
+``dreaming.ceiling`` — they are feature 275's floor and feature 277's
+``CAPPED_SWEEP_CAP`` / ``FULL_DREAMING_WORLDS``, consumed from the modules that
+state them, so the ladder has one spelling per rung.
+
 **Why :class:`PoolFrozenError` is its own class and not a borrowed one.**
 Three members already read this pool and each has its own vocabulary for its
 own act — :class:`~tripwires.errors.TripwireExcisionError`,
@@ -82,6 +99,7 @@ __all__ = [
     "FreezeRequestError",
     "PoolFrozenError",
     "PoolTooThinError",
+    "RevisionCeilingError",
 ]
 
 
@@ -254,4 +272,46 @@ class CapRecordError(DreamingError):
     repair: point at the pool).  A caller that caught one and read it as
     the other would wait for a cycle that does not exist, or close one that
     was never open.
+    """
+
+
+class RevisionCeilingError(DreamingError):
+    """The sweep is wider than the pool's rung of the ladder funds.
+
+    app_spec.xml, "Dreaming Loop & Meta-Selection", feature 276: *System
+    rejects a revision count above 10 while the pool holds between 20 and 50
+    worlds, so the selection bar stays low.*  docs/alpha-engine-prd.md §12.1
+    states the rule as the middle row of its ladder — *"20–50: dreaming with
+    ``M`` capped at 8–10 so the selection bar stays low; cap policy
+    complexity"* — and this class is the refusal that enforces it.
+
+    **Why it exists, in one figure.**  Appendix B's meta-level bar is
+    ``true_advantage > √(2 ln M) · σ_V / √n_worlds``, so ``M`` enters the width
+    of the multiple-testing correction the *selected* revision will be judged
+    against: §12.1 computes ``n > 53`` worlds at ``M = 40``, and a pool of
+    20–50 is short of that by construction.  A bar at ``M = 40`` is ≈1.27× the
+    bar at ``M = 10``, so an uncapped sweep on the thin rung judges its winner
+    against a bar the rung cannot afford — the same overfitting §12.1 names in
+    *"the dreaming loop overfits its own replay pool"*.
+
+    **Its repair is its own, which is why it is its own class.**  *Lower ``M``
+    to the band's ceiling, or grow the pool until the raise applies.*  The two
+    classes a caller could otherwise catch this as both name repairs that are
+    wrong here: :class:`PoolTooThinError` means *do not dream at all, grow the
+    pool first* — this pool may dream, just not that widely — and
+    :class:`CapRequestError` means *the ask was malformed* — a count of 40 is
+    perfectly well formed, and legal one rung up where feature 277 answers it.
+    Folding these together would make a caller that must react differently to
+    *your sweep is too wide for this pool* and *your pool is too thin to dream
+    on* catch one class and re-inspect something it cannot tell apart, which is
+    the failure this member's vocabulary is split to prevent.
+
+    **No code word, and deliberately.**  Feature 275's ``pool_too_thin`` is
+    mandated by its own sentence (*"which returns a ``pool_too_thin`` error
+    message"*), and feature 276's sentence mandates none: it names its subject
+    in prose.  So every message here opens with its subject — the count, the
+    ceiling and the band — the shape :class:`CapRequestError` states for its
+    own pair, so a reader is told *what to lower* rather than handed a token to
+    grep for.  The one thin-pool refusal this member mints stays feature 275's,
+    delegated, in feature 275's word.
     """

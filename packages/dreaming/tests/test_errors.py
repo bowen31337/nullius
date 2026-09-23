@@ -124,6 +124,45 @@ class TestTheVocabulary:
                 assert not issubclass(cap_class, sibling)
                 assert not issubclass(sibling, cap_class)
 
+    def test_the_member_carries_the_middle_rung_ceiling_as_its_own_class(self):
+        """Feature 276's ceiling is a fifth sentence, and its own class.
+
+        §12.1's ladder has three rungs and this member now carries all three:
+        the floor refuses a run below 20 worlds (feature 275's
+        ``pool_too_thin``), the schedule *answers* the cap a cycle runs under
+        (feature 277's ``dreaming.cap``), and the ceiling *refuses* a sweep
+        wider than the thin rung funds (:class:`RevisionCeilingError`).  The
+        ceiling's repair — *lower ``M`` to the band's cap, or grow the pool
+        until the raise applies* — is neither the floor's (*grow the pool
+        before dreaming at all*) nor the cap's (*re-consider the ask*), so a
+        caller that must react differently to the three must be able to catch
+        them apart.  Pinned because the tempting edit is to fold it into
+        feature 275's thin-pool refusal, where a pool's size is already being
+        read: this pool *may* dream, just not that widely.
+        """
+        import dreaming
+
+        ceiling_class = dreaming.RevisionCeilingError
+        assert issubclass(ceiling_class, dreaming.DreamingError)
+        for sibling in (
+            FreezeRequestError,
+            PoolFrozenError,
+            PoolTooThinError,
+            dreaming.CapRequestError,
+            dreaming.CapRecordError,
+        ):
+            assert not issubclass(ceiling_class, sibling)
+            assert not issubclass(sibling, ceiling_class)
+
+        # No code word: feature 276's sentence mandates none, so the refusal
+        # opens with its subject rather than a token — unlike feature 275's.
+        with pytest.raises(ceiling_class) as refusal:
+            dreaming.rejects_uncapped_sweep(11, 30)
+
+        message = str(refusal.value)
+        assert POOL_TOO_THIN_CODE not in message
+        assert FREEZE_CODE not in message
+
 
 class TestTheMessages:
     """What a refusal says, since the message *is* the repair instruction."""
