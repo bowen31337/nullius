@@ -224,6 +224,8 @@ __all__ = [
     "PoolTooThinError",
     "ProportionComparisonError",
     "RevisionCeilingError",
+    "RevisionError",
+    "RevisionRequestError",
     "SelectionBarError",
     "SplitRequestError",
     "SplitStoreError",
@@ -443,6 +445,70 @@ class RevisionCeilingError(DreamingError):
     own pair, so a reader is told *what to lower* rather than handed a token to
     grep for.  The one thin-pool refusal this member mints stays feature 275's,
     delegated, in feature 275's word.
+    """
+
+
+class RevisionRequestError(DreamingError):
+    """The revision sweep could not be asked for as the caller asked for it.
+
+    app_spec.xml, "Dreaming Loop & Meta-Selection", feature 271: *System
+    produces M revisions of the exploration policy source between iterations,
+    which returns candidate modules.*  This is the *ask* face of that
+    sentence: an incumbent source that is not non-empty text, a revision count
+    that is not a genuine positive integer, a seed that is neither text nor an
+    integer, or a parent version that is not None or non-empty text.  Every
+    one is a fact about the **request**, refused before anything is produced,
+    and the repair is to re-consider what was asked for — exactly the stance
+    :class:`CapRequestError` takes for feature 277's asks and
+    :class:`FreezeRequestError` for feature 270's.
+
+    Deliberately **not** a :class:`RevisionError`: nothing has been produced
+    while this is raised, so a caller that caught the two together would read
+    *your ask was malformed* as *the policy cannot fund M distinct revisions* —
+    two failures a developer repairs differently, one by fixing the call and
+    the other by growing the policy's authored constants or shrinking M.  It
+    is likewise not :class:`PoolTooThinError`: a pool below the ladder floor is
+    feature 275's precondition, judged from the pool before the sweep is ever
+    asked for, and this module opens no database and reads no pool row.
+
+    No code word, for the reason :class:`RevisionCeilingError` gives: feature
+    271's verb is *produces*, so every refusal here opens with its subject —
+    the source, the count, the seed or the parent version that was wrong — and
+    a reader is told *what to fix in the ask* rather than handed a token to
+    grep for.
+    """
+
+
+class RevisionError(DreamingError):
+    """The revision sweep could not be produced from the incumbent as asked.
+
+    The *verdict* face of feature 271's sentence: a revised source that does
+    not parse, or — the common case — fewer than ``M`` *distinct* candidate
+    modules remaining after deduplication.  A candidate's identity is its
+    ``code_hash`` (the sha256 of its source), so two revisions that jitter the
+    incumbent into the same text are one candidate, and a policy whose authored
+    numeric constants cannot fund ``M`` distinct perturbations names no sweep
+    of that size.  This is a fact about the **production**, not the ask — the
+    ask was well formed and the count was legal — so the repair is never to
+    re-send the same call: it is to grow the incumbent's authored constants or
+    to shrink ``M``, the developer's decision rather than a corrected ask.
+
+    Deliberately **not** a :class:`RevisionRequestError`: a count of 40 is a
+    well-formed ask and a legal one one rung up, and folding these together
+    would make a caller that must react differently to *your ask was
+    malformed* and *this policy cannot fund that many revisions* catch one
+    class and re-inspect something it cannot tell apart, which is the failure
+    this member's vocabulary is split to prevent.  It is not
+    :class:`SelectionBarError` either: that verdict is *the winner did not
+    survive its own tournament — keep the incumbent*, a selection outcome an
+    operator greps a deployment log for, while this verdict is a developer fact
+    about the candidate set the sweep was built from.
+
+    No code word, for the reason :class:`RevisionCeilingError` and
+    :class:`RevisionRequestError` give: feature 271's sentence mandates none,
+    so every refusal here opens with its subject — the shortfall or the
+    unparseable source — and a reader is told *what the production could not
+    do* rather than handed a token to grep for.
     """
 
 

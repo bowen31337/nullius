@@ -1,0 +1,316 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 271 (System produces M revisions of the exploration policy source between iterations, which returns candidate modules)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 271 in the existing dreaming member
+    (packages/dreaming, import name dreaming; seat src/app/modules/dreaming):
+    the first act of docs/alpha-engine-prd.md §C5's dreaming loop and the
+    first clause of docs §12.1's middle rung — *"run `M` code revisions of
+    `π`"*, the production of the candidate set the sweep evaluates. Two halves
+    in one new pure module, dreaming/reviser.py. (1) The value — a candidate
+    module, :class:`CandidateModule`: the revised policy **source** (a complete
+    Python module the replay engine can import as a policy), its
+    ``code_hash`` (sha256 of the source — the identity feature 274 persists to
+    ``policy_revision.code_hash``, migration ``0109``), its ``module_id`` (a
+    version string derived from the code_hash, collision-free for distinct
+    sources, the spelling the loop hands to feature 274 as ``policy_version``),
+    its ``parent_version`` (the incumbent it was derived from — ``π^0 = π_t``,
+    nullable for a root) and its ``revision_index`` (1..M). Frozen,
+    __slots__, validated at construction, the member's FreezeRecord/CapRecord
+    precedent. (2) The act — :func:`revise_policy(incumbent_source, count, *,
+    seed=…, incumbent_version=None, reviser=None)`: validates the ask, then
+    produces ``count`` candidate modules, one per revision index 1..M, each a
+    **structure-preserving** transform of the incumbent's authored source — the
+    AST's identifiers, control flow and call structure are unchanged and only
+    the numeric-literal *values* are jittered by a deterministic, seeded,
+    bounded factor — and returns them in index order. The transform is
+    admissible **by construction**: because it changes magnitudes and adds no
+    comparison, no hardcoded node id, no unreachable path and no model call, a
+    candidate descended from an admitted incumbent still carries none of
+    feature 230's four anti-patterns nor feature 231's learned component — so
+    the candidates are exactly the kind feature 230 admits, and the loop
+    screens each with policy-runtime's ``screen_policy`` before replay (feature
+    271 owns production, feature 230 owns the gate, and this member imports no
+    other member). The default reviser is that seeded numeric jitter
+    (:func:`default_reviser`, the REVISION_BAND default the loop's offline
+    tuning replaces, exactly the way feature 227's ``_PATIENCE_FLOOR`` and
+    feature 277's schedule state a named default the cycle supersedes); a
+    pluggable ``reviser`` lets a deployment substitute its own
+    ``(incumbent_source, revision_index, seed) -> source`` policy-development
+    strategy without moving the contract. The production is **deterministic**:
+    the same ``(incumbent_source, count, seed, incumbent_version)`` answers the
+    same candidate modules to the last code_hash in any process — docs §12's
+    determinism contract, the same property feature 278's split and feature
+    279's rotation hold one transform over. ``revise_policy`` deduplicates the
+    produced candidates by ``code_hash`` and **refuses** with
+    :class:`RevisionError` when it cannot produce ``count`` *distinct*
+    candidates — a policy with too few authored constants to perturb names no
+    sweep of ``M`` — rather than silently returning duplicates that would
+    collapse the argmax onto one source. It is **pure**: no store, no pool
+    read, no clock, no environment, no ``@register`` component — it reads the
+    incumbent source the caller already holds and opens no database, the same
+    read-side stance feature 230 takes for its own gate. Two new error siblings
+    under DreamingError: :class:`RevisionRequestError` (the ask's own facts —
+    malformed incumbent source, count, seed or parent version, refused before
+    anything is produced) and :class:`RevisionError` (the production verdict —
+    a revised source that does not parse, or a shortfall of distinct
+    candidates). No central registry, router, app factory, middleware,
+    settings, or migration is edited; no table is created (the module persists
+    nothing — feature 274 writes the argmax into ``policy_revision``); the
+    member's single "dreaming" component is untouched and the seat is not
+    edited — feature 275's floor names set that precedent and feature 271
+    follows it. The module joins by workspace-scan convention and imports no
+    other workspace member; stdlib only — ``ast``, ``hashlib`` and
+    ``secrets``/``hashlib`` for the deterministic draw.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/* members, import names are
+      underscored slugs) / pytest (ruff + mypy conventions). The module loader
+      (src/app/module_loader.py) discovers members from the root pyproject.toml
+      `[tool.uv.workspace] members = ["packages/*"]`, imports each package so
+      its module-level `@register` fires, and composes what each `@register`
+      builder contributes under a component name. `app` (src/app) is a
+      namespace package with no `__init__.py`; the seats in src/app/modules/
+      &lt;member&gt;/ are reached by namespace import (e.g. app.modules.dreaming).
+      A member never imports another member — it reaches shared shapes
+      through `app.*`, never through a sibling package's import name.</stack>
+    <test_baseline>The repository-level suite under tests/ is collected by
+      pytest with testpaths=tests; each workspace member's own suite lives
+      under packages/&lt;member&gt;/tests/ and is collected under its own conftest
+      (same-basename files collide under one pytest run), and is NOT graded by
+      the bare `uv run pytest` acceptance gate — a member suite must be run
+      explicitly (run both `uv run pytest tests/` and the member's own
+      `packages/dreaming/tests/`). Measure the real numbers by running the
+      suite before relying on them. The repo lint is red on main (mypy
+      absent, pre-existing ruff errors), so lint only the changed files and
+      compare to a sibling. The dreaming member is stdlib-only, and feature
+      271 keeps it that way: ast, hashlib.</test_baseline>
+    <conventions>
+      snake_case modules, hand-written __slots__ value classes for store
+      records (the member's FreezeRecord precedent), docstrings that cite
+      app_spec.xml feature numbers and docs/alpha-engine-prd.md /
+      docs/nullius-tech-architecture.md sections, stdlib-only computation,
+      `@register` only in the package `__init__` (never a submodule — a
+      submodule's registration fires only on the first `create_app()` of a
+      process), degrade-don't-break composition, member-owned tables created
+      lazily beside the only module that writes them (never in the shared
+      migration chain, which is order-sensitive and excluded from this
+      feature's file claim), per-occurrence row ids so a retried window never
+      collides on the primary key, the §12 ordering rule (ordered history
+      reads), and the error-vocabulary discipline that no member imports
+      another and a caller must be able to catch one feature's refusal
+      without catching a neighbouring feature's (translate at the seam).
+      Features 270 (the cycle freeze, cycle.py), 275 (the ladder floor,
+      ladder.py), 277 (the revision cap, cap.py), 276 (the 20–50 ceiling,
+      ceiling.py), 278 (the split, split.py), 279 (the rotation, rotation.py),
+      280 (the selection bar, bar.py), 281 (the paired comparison, paired.py),
+      282 (the family transfer, transfer.py) already live in this member;
+      feature 271 is a new sentence within it — the *production* half of the
+      sweep, pure and store-free, the read-side sibling of feature 230's gate.
+      Features 272 (evaluate each candidate on every stored world), 273 (keep
+      the incumbent in the candidate set) and 274 (persist the argmax to
+      policy_revision) are parallel siblings and MUST NOT be imported or
+      assumed present — feature 271 produces the candidates those consume and
+      does none of their acts.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Dreaming Loop &amp; Meta-Selection">
+      <feature index="271" shape="plugin" plugin="dreaming" depends_on="270">
+        System produces M revisions of the exploration policy source between
+        iterations, which returns candidate modules.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Feature 271 is the production half of the §C5 sweep and the first of the
+    271-274 chain the dreaming member's own docstring names as "depending on
+    this one" (feature 270): the M-revision sweep runs inside the outer
+    iteration whose pool feature 270 holds fixed, so ``depends_on="270"`` is
+    the loop-ordering fact, **not** a code import — revise_policy is pure and
+    imports nothing from dreaming.cycle, the way the member's no-cross-member
+    rule requires. The candidates it returns are consumed by the three
+    siblings that follow: feature 272 replays each candidate module's source
+    against every stored world (reading the source this module returns, not a
+    path or a checkpoint), feature 273 adds the incumbent (π^0, the
+    parent_version this module records) back into the candidate set so the
+    argmax never falls below the current policy, and feature 274 aggregates
+    each candidate over the pool and persists the argmax — writing the
+    winner's module_id as policy_revision.policy_version and its code_hash as
+    policy_revision.code_hash (migration 0109). Feature 271 persists nothing
+    itself: a candidate module is a value the sweep carries, and only the
+    selected one becomes a row. The count M the loop runs is feature 277's
+    schedule (dreaming.cap.revision_cap) and is bounded before the sweep by
+    feature 276's ceiling (dreaming.ceiling.rejects_uncapped_sweep) — feature
+    271 takes the count it is handed and does not re-decide it, the same
+    "judgment over a count the caller already has" split the cap, the ceiling,
+    the floor and the split all take. Each produced candidate is screened by
+    the loop with policy-runtime's screen_policy (feature 230, the admission
+    gate in the policy-runtime member) before replay: feature 271 produces
+    candidates admissible by construction and feature 230 pronounces
+    admissibility, two acts across two members that this feature never joins —
+    the candidate's source is the only thing that crosses the boundary, and a
+    candidate that fails the gate is the loop's to discard, not this module's
+    to pre-refuse. The seed that fixes the jitter is the cycle's own act — the
+    loop passes a cycle-derived seed (the iteration id, the way feature 279's
+    rotation keys its split on the cycle's name), so a retried sweep at the
+    same seed reproduces the same candidates the way feature 279 reproduces
+    the same holdout. The module is reached directly from the member
+    (`from dreaming import revise_policy, default_reviser, candidate_module,
+    CandidateModule, RevisionRequestError, RevisionError, REVISION_BAND`) and
+    re-exported by the member __init__, the way feature 275's floor names are.
+  </integration_points>
+  <constraints>
+    - The candidate module is exactly five facts and nothing derived at
+      construction beyond its identity: ``source`` (non-empty text — a blank
+      or non-str source is refused), ``code_hash`` (sha256 hex of the source,
+      computed by the factory, never handed in), ``module_id`` (derived from
+      the code_hash, non-empty, collision-free for distinct sources — the
+      factory defaults it to a ``cand-``-prefixed code_hash digest when the
+      caller names none), ``parent_version`` (None or non-empty text; None for
+      a root, the incumbent's version otherwise) and ``revision_index`` (a
+      genuine positive integer — a bool is not an index). The value is frozen
+      with hand-written __slots__, the member's FreezeRecord stance, so two
+      callers holding one candidate cannot move each other's source.
+    - The revision is **structure-preserving**: the default reviser parses the
+      incumbent with ``ast``, jitters only numeric-literal *values* by a
+      deterministic bounded factor in ``[1 − REVISION_BAND, 1 + REVISION_BAND]``
+      derived per literal-site from ``(seed, revision_index)`` via hashlib (no
+      ``random`` — the draw must reproduce across processes), and unparses with
+      ``ast.unparse``. It changes no identifier, no control-flow node, no call,
+      no import and no comparison, so a candidate descended from an admitted
+      incumbent carries none of feature 230's four anti-patterns (no absolute
+      score constant, no hardcoded node id, ``commit()`` reachable on every
+      terminating path) and none of feature 231's learned component — the
+      transform alters a magnitude where those checks look at structure. A
+      zero constant is jittered additively so it is not annihilated; a bool
+      literal is left untouched (it is not a tunable magnitude). The jitter
+      factor is a pure function of ``(seed, revision_index, site)`` so the
+      same inputs reproduce the same candidate in any process (docs §12).
+    - The production is deterministic and pure: revise_policy reads the
+      incumbent source the caller already holds and opens no database, reads
+      no pool row, resolves no path, imports nothing that could (no sqlite3,
+      no os, no environment). ``depends_on="270"`` is the loop-ordering fact,
+      not a code dependency — the module imports nothing from dreaming.cycle.
+    - The count is taken, not decided: revise_policy accepts the ``count`` it
+      is handed (a genuine positive integer — zero, a negative, a bool, a
+      float or a non-str/non-int is refused with RevisionRequestError) and
+      produces one candidate per index 1..count. It does not cap the count
+      (feature 276's ceiling refuses a too-wide sweep *before* the loop calls
+      this) and does not read the pool to size it (feature 275's floor is the
+      loop's precondition, checked before the sweep — a pool too thin to dream
+      on is refused before revise_policy is ever called, so this module does
+      not mint a thin-pool refusal and does not import ladder.py).
+    - Distinctness is a verdict, not a silence: revise_policy deduplicates the
+      produced candidates by code_hash and, if fewer than ``count`` distinct
+      candidates remain, refuses with RevisionError naming the shortfall — a
+      policy whose authored constants cannot fund ``M`` distinct perturbations
+      names no sweep of that size, and returning duplicates would collapse the
+      argmax onto one source. The default reviser therefore requires an
+      incumbent carrying perturbable numeric constants; a source with none is
+      the shortfall's common case and is refused, not padded.
+    - Two new error siblings under DreamingError — RevisionRequestError (the
+      ask: malformed incumbent source, count, seed or parent version, refused
+      before anything is produced) and RevisionError (the verdict: a revised
+      source that does not parse, or a shortfall of distinct candidates) —
+      that borrow none of the member's existing classes and are borrowed by
+      none of them. Neither carries a code word: feature 271's verb is
+      *produces*, so every refusal opens with its subject (the shape features
+      276, 278 and 282's code-word-free sentences state), and the production
+      verdict is a developer fact the loop repairs by growing the policy's
+      authored constants or shrinking M, not an operator-greppable selection
+      outcome like feature 280's bar.
+    - Feature 271 produces candidates; it does **not** evaluate, select, keep
+      the incumbent, or persist. It never runs a policy, never scores a world,
+      never reads replay_score or bootstrap_world, never writes a
+      policy_revision row, and never includes π^0 in its own output — those
+      are features 272, 273 and 274, parallel siblings that consume this
+      module's candidates and MUST NOT be imported or assumed present. The
+      admissibility gate (feature 230) is the loop's verb over the produced
+      source, not this module's; feature 271 states that its candidates are
+      admissible by construction and names the gate, but imports neither
+      policy_runtime nor its screen.
+    - No central registry, router, app factory, middleware, settings, or
+      migration is edited. No new @register component, no table, no
+      persistence, and no seat export: feature 270's single "dreaming"
+      component is the member's whole composition and its suite
+      (test_component.py) is untouched. The module is re-exported from the
+      member __init__ and its docstring carries the new sentence, the way
+      feature 275's floor names are.
+    - All existing tests in the dreaming member (packages/dreaming/tests) and
+      in tests/ must stay green. The member's own suite must be run explicitly
+      (it is not graded by the bare `uv run pytest` gate).
+    - Do not edit the order-sensitive shared files: src/app/middleware.py,
+      src/app/settings.py, migrations/versions/**, alembic/versions/**.
+  </constraints>
+  <implementation_steps>
+    <step>
+      Phase 1 — the value and the vocabulary. Add RevisionRequestError and
+      RevisionError to dreaming.errors as siblings of the member's existing
+      classes under DreamingError, following the repair-split discipline (the
+      request refusal is *the ask was malformed — re-consider the source,
+      count or seed*; the verdict refusal is *the policy cannot fund M
+      distinct revisions — grow its authored constants or shrink M*; neither
+      is the thin pool's *grow the pool*, the freeze's *wait*, or the bar's
+      *keep the incumbent*), and extend the errors module docstring with the
+      sweep's production sentence. Add dreaming/reviser.py with REVISION_BAND
+      (the jitter half-width, a named default the loop's offline tuning
+      replaces), the CandidateModule value class (hand-written __slots__, the
+      five facts, validated at construction — source non-empty text,
+      revision_index a genuine positive non-bool int, parent_version None or
+      non-empty text, code_hash and module_id non-empty), and the
+      candidate_module(source, *, parent_version=None, revision_index=1,
+      module_id=None) factory that computes code_hash = sha256(source),
+      defaults module_id to a cand-prefixed digest, validates and returns the
+      value — the one spelling of a candidate, so the sweep and any later
+      feature in this category build one through it.
+    </step>
+    <step>
+      Phase 2 — the act. In dreaming/reviser.py add default_reviser
+      (incumbent_source, revision_index, seed) — parse with ast, jitter only
+      numeric-literal values by the deterministic bounded factor derived per
+      site from (seed, revision_index) via hashlib, leave bools and structure
+      untouched, unparse and return the source — and
+      revise_policy(incumbent_source, count, *, seed=…, incumbent_version=None,
+      reviser=None): validate the ask (RevisionRequestError for a blank or
+      non-str incumbent, a non-positive/non-int/bool count, a malformed seed,
+      or a malformed parent version, each naming what it refused), run the
+      pluggable reviser (default_reviser when none is given) once per index
+      1..count, build each candidate through candidate_module with the passed
+      incumbent_version as parent_version, deduplicate by code_hash, refuse
+      with RevisionError on a shortfall of distinct candidates, and return the
+      tuple in index order. Re-export everything from the member __init__ and
+      extend the member docstring with the production sentence. The seed is
+      validated as text or int and drives only the deterministic draw — it is
+      never stored, and the same seed reproduces the same candidates.
+    </step>
+    <step>
+      Phase 3 — the tests and verification. Add packages/dreaming/tests/
+      test_reviser.py pinning: the value contract (a blank/non-str source
+      refused, a bool revision_index refused, a negative index refused, a root
+      parent_version None, the code_hash equals sha256(source), the module_id
+      default derives from the code_hash and a caller-named one is honoured,
+      two equal sources answer equal frozen values), the determinism law (the
+      same (incumbent, count, seed) answers the same code_hashes in a second
+      process-order, and count candidates at indices 1..count), the
+      structure-preserving transform (ast.dump of a candidate matches the
+      incumbent modulo numeric-constant values; identifiers, control flow and
+      calls unchanged; a bool literal untouched; a zero constant jittered
+      additively not annihilated), the distinctness verdict (a policy with
+      several authored thresholds yields count distinct candidates; a source
+      with no perturbable constant refuses with RevisionError naming the
+      shortfall, leaving nothing produced), the count validation (0, −1, a
+      bool, a float, a non-str each refused with RevisionRequestError), the
+      seed and parent-version validation, the pluggable-reviser seam (a
+      custom reviser's sources flow through unchanged and a reviser that
+      returns the incumbent verbatim collapses to the shortfall refusal), the
+      pure-function shape verified by denial (no sqlite3 / os / open /
+      environment access on the module), and the vocabulary siblinghood (the
+      request/verdict split, no code word, opens with the subject). Extend
+      test_errors.py with the reviser pair's sibling test. Run the member
+      suite (uv run pytest packages/dreaming/tests) and the repository-level
+      suite (uv run pytest tests/) — both — and lint only the changed files
+      against a sibling.
+    </step>
+  </implementation_steps>
+</project_specification>

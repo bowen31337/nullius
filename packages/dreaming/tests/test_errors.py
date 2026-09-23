@@ -36,6 +36,8 @@ from dreaming import (
     FreezeRequestError,
     PoolFrozenError,
     PoolTooThinError,
+    RevisionError,
+    RevisionRequestError,
 )
 from dreaming.cycle import validated_iteration_id
 
@@ -123,6 +125,81 @@ class TestTheVocabulary:
             ):
                 assert not issubclass(cap_class, sibling)
                 assert not issubclass(sibling, cap_class)
+
+    def test_the_member_carries_the_revision_sweep_as_its_own_pair(self):
+        """Feature 271's two classes take the ask/verdict split the cap states.
+
+        The M-revision sweep (``dreaming.reviser``) refuses in its own
+        vocabulary — :class:`RevisionRequestError` for the **ask's** own facts
+        (an incumbent source that is not non-empty text, a count that is not a
+        genuine positive integer, a seed that is neither text nor int, a parent
+        version that is not None or non-empty text), :class:`RevisionError` for
+        the **production** verdict (a revised source that does not parse, or a
+        shortfall of distinct candidates after deduplication by ``code_hash``)
+        — never feature 270's, and never the cap's or the ceiling's, even
+        though all three are about the sweep's size: the ask's fault is *fix
+        the call*, the shortfall's repair is *grow the policy's authored
+        constants or shrink M*, and a count of 40 is a well-formed ask one rung
+        up.  A member that folded the shortfall into the malformed ask would
+        make a caller that must react differently to *your arguments were
+        wrong* and *this policy cannot fund that many revisions* catch one
+        class and re-inspect something it cannot tell apart.
+        """
+        import dreaming
+
+        for reviser_class in (
+            dreaming.RevisionRequestError,
+            dreaming.RevisionError,
+        ):
+            assert issubclass(reviser_class, dreaming.DreamingError)
+            # Siblings of every existing class — a caller catches a revision
+            # sweep's refusal without catching a hold's, a thin pool's, a
+            # cap's, a ceiling's, a split's, a comparison's, a transfer's, a
+            # rotation's or a bar's, and vice versa.
+            for sibling in (
+                FreezeRequestError,
+                PoolFrozenError,
+                PoolTooThinError,
+                dreaming.CapRequestError,
+                dreaming.CapRecordError,
+                dreaming.RevisionCeilingError,
+                dreaming.SplitRequestError,
+                dreaming.SplitStoreError,
+                dreaming.ProportionComparisonError,
+                dreaming.PairedComparisonError,
+                dreaming.TransferRequestError,
+                dreaming.TransferStoreError,
+                dreaming.HoldoutRequestError,
+                dreaming.HoldoutRecordError,
+                dreaming.BarRequestError,
+                dreaming.BarRecordError,
+                dreaming.SelectionBarError,
+            ):
+                assert not issubclass(reviser_class, sibling)
+                assert not issubclass(sibling, reviser_class)
+
+        # The ask and the verdict are two classes, not one: a malformed ask is
+        # refused before anything is produced, so a well-formed call can still
+        # refuse with the verdict.
+        assert not issubclass(RevisionRequestError, RevisionError)
+        assert not issubclass(RevisionError, RevisionRequestError)
+
+        # No code word, like features 276/278's: feature 271's verb is
+        # *produces* and mandates none, so each refusal opens with its subject
+        # — the source or count that was wrong, or the shortfall — and neither
+        # ever mints the thin pool's or the freeze's word.
+        with pytest.raises(RevisionRequestError) as blank_ask:
+            dreaming.revise_policy("", 3)
+        with pytest.raises(RevisionError) as shortfall:
+            dreaming.revise_policy("def p(beta):\n    return beta", 3)
+
+        for refusal in (blank_ask.value, shortfall.value):
+            assert POOL_TOO_THIN_CODE not in str(refusal)
+            assert FREEZE_CODE not in str(refusal)
+        # The ask names what was wrong with the request; the verdict names the
+        # shortfall — two subjects, neither a greppable token.
+        assert "policy source" in str(blank_ask.value)
+        assert "distinct candidate" in str(shortfall.value)
 
     def test_the_member_carries_the_middle_rung_ceiling_as_its_own_class(self):
         """Feature 276's ceiling is a fifth sentence, and its own class.

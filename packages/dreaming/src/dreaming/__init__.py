@@ -283,16 +283,42 @@ pool delegated to feature 275's refusal as the cap, the ceiling and the
 split delegate theirs — a pool too thin to dream on has no halves to
 rotate.
 
-**It is not the evaluator or the selector.**  Running ``M``
-revisions and evaluating every candidate against every stored world
-(features 271-272), including the incumbent in the candidate set and
-persisting the argmax to ``policy_revision`` (features 273-274) are all
-their own features depending on this one.  This member holds the pool,
-splits it, rotates the split per cycle and persists which worlds each
-iteration held out, compares arms over it and bars a winner that does not
-survive the noise its own tournament earned; it never runs a policy,
-never scores a world and never picks a winner — the bar *refuses* one, and
-the act of refusing a winner is not the act of crowning it.
+**It carries the sweep's production as its first sentence.**  §C5's loop
+begins *"run ``M`` code revisions of ``π``"*, and feature 271's sentence is
+that production: :mod:`dreaming.reviser` answers ``M`` candidate modules, one
+per revision index ``1..M``, each a complete policy source the replay engine
+can import and replay.  A candidate (:class:`dreaming.reviser.CandidateModule`)
+carries its revised ``source``, its ``code_hash`` (the sha256 identity feature
+274 persists to ``policy_revision.code_hash``), its ``module_id`` (the version
+feature 274 writes as ``policy_revision.policy_version``), its ``parent_version``
+(``π^0 = π_t``'s version, so feature 273 can add the incumbent back) and its
+``revision_index``.  The default reviser is a seeded, deterministic,
+structure-preserving perturbation — :func:`dreaming.reviser.default_reviser`
+parses the incumbent, jitters only its numeric-literal magnitudes within
+:data:`dreaming.reviser.REVISION_BAND`, and unparses — so a candidate descended
+from an admitted incumbent carries none of feature 230's anti-patterns nor
+feature 231's learned component, admissible by construction; the loop screens
+each with policy-runtime's gate (feature 230, in the policy-runtime member,
+which this member never imports) before replay.  The production is deterministic
+in ``(source, count, seed)`` and deduplicates by ``code_hash``, refusing with
+:class:`~dreaming.errors.RevisionError` when the incumbent cannot fund ``M``
+distinct candidates — a production verdict, not a malformed ask — while a
+malformed ask is :class:`~dreaming.errors.RevisionRequestError`.  It is pure and
+store-free: it reads the source the caller holds, opens no database and imports
+nothing from :mod:`dreaming.cycle`, so ``depends_on="270"`` is the loop-ordering
+fact, not a code dependency.  A pluggable ``reviser`` lets a deployment
+substitute its own policy-development strategy without moving the contract.
+
+**It is not the evaluator or the selector.**  Evaluating every candidate
+against every stored world (feature 272), including the incumbent in the
+candidate set (feature 273) and persisting the argmax to ``policy_revision``
+(feature 274) are all their own features depending on this one.  This member
+holds the pool, splits it, rotates the split per cycle and persists which
+worlds each iteration held out, compares arms over it and bars a winner that
+does not survive the noise its own tournament earned; it produces the candidate
+set but never runs a policy, never scores a world and never picks a winner —
+the bar *refuses* one, and the act of refusing a winner is not the act of
+crowning it.
 
 **It never writes the pool's tables.**  Feature 270's whole subject is not
 writing them.  ``pool_freeze`` is this member's own table and the only table it
@@ -399,6 +425,8 @@ from .errors import (
     PoolTooThinError,
     ProportionComparisonError,
     RevisionCeilingError,
+    RevisionError,
+    RevisionRequestError,
     SelectionBarError,
     SplitRequestError,
     SplitStoreError,
@@ -429,6 +457,13 @@ from .paired import (
     paired_pool_difference,
     power_capacity,
     rejects_proportion_comparison,
+)
+from .reviser import (
+    REVISION_BAND,
+    CandidateModule,
+    candidate_module,
+    default_reviser,
+    revise_policy,
 )
 from .rotation import (
     CYCLE_HOLDOUT_TABLE,
@@ -474,6 +509,7 @@ __all__ = [
     "PROPORTION_DESIGN_EFFECT",
     "REPLAY_SCORE_COLUMNS",
     "REPLAY_SCORE_TABLE",
+    "REVISION_BAND",
     "SELECTION_BAR_CODE",
     "TRAIN_FRACTION",
     "UNGUARDED_CODE",
@@ -481,6 +517,7 @@ __all__ = [
     "WORLD_TABLE",
     "BarRecordError",
     "BarRequestError",
+    "CandidateModule",
     "CapRecord",
     "CapRecordError",
     "CapRequestError",
@@ -500,12 +537,15 @@ __all__ = [
     "PoolTooThinError",
     "ProportionComparisonError",
     "RevisionCeilingError",
+    "RevisionError",
+    "RevisionRequestError",
     "SelectionBarError",
     "SplitRequestError",
     "SplitStoreError",
     "TransferRequestError",
     "TransferStoreError",
     "build_cycle_freeze",
+    "candidate_module",
     "cycle_bar",
     "cycle_cap_schema",
     "cycle_caps",
@@ -513,6 +553,7 @@ __all__ = [
     "cycle_holdout_schema",
     "cycle_holdouts",
     "cycle_rotation",
+    "default_reviser",
     "expected_triggers",
     "family_transfer",
     "ladder_floor",
@@ -533,6 +574,7 @@ __all__ = [
     "rejects_thin_pool",
     "rejects_unbarred_winner",
     "rejects_uncapped_sweep",
+    "revise_policy",
     "revision_cap",
     "selection_bar",
     "split_pool",
