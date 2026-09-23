@@ -1,0 +1,42 @@
+# nullius workspace member: the replay plugin
+# (app_spec.xml, "Replay Engine", feature 245; docs/nullius-tech-architecture.md
+# §10 for the replay engine, §10.1 for the transition this member's first
+# feature is, and §1 / P5 for the cost argument the whole category is a
+# prohibition inside).
+#
+# Joins the uv workspace by convention — packages/replay with this file — so
+# the module loader (src/app/module_loader.py) discovers it by scanning the
+# members the root pyproject.toml declares. No edit to any central registry,
+# router table or app factory is needed or wanted to wire this package in.
+#
+# Dependencies: the workspace root, and nothing else. The factory's
+# registration protocol (`import app.module_loader`) is the whole of it —
+# the same one-dependency shape the policy-runtime, discovery and bootstrap
+# members ship, and for the same reason: a replay is pure arithmetic over
+# bytes that were already computed and stored (§10.1 "the economic engine of
+# the whole system": a replay reads materialized values rather than computing
+# them). This member walks a stored tree, so it has no numerics to trust, no
+# data file to ship and no third-party dependency to declare — and, per §12's
+# "No inference in the replay path" row, nothing here may grow one.
+#
+# A member never imports another member. The campaign tree a replay walks
+# arrives through the app namespace (`app.modules.policy-runtime`, the seat
+# feature 217 ships) and is duck-typed at the seam, so this package never
+# names `policy_runtime` and the two cannot drift into a cyclic dependency.
+
+[project]
+name = "replay"
+version = "0.1.0"
+description = "Deterministic replay over a stored discovery tree: the transition reveals only recorded children, and never generates one."
+requires-python = ">=3.12"
+dependencies = ["nullius"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/replay"]
