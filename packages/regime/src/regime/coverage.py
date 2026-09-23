@@ -653,10 +653,11 @@ class RegimeCoverage:
         row would report a count nobody wrote.
 
         Deliberately a *one-stratum* read.  The coverage ledger as a whole
-        — every named stratum's count at a glance — is feature 284's
-        verb, and this store's read exists for the write's read-back and
-        for the caller that holds one stratum's name (a promotion gate
-        asking after its deployment regime, feature 285).
+        — every named stratum's count at a glance — is
+        :meth:`ledger`, feature 284's verb, and this store's read exists
+        for the write's read-back and for the caller that holds one
+        stratum's name (a promotion gate asking after its deployment
+        regime, feature 285).
         """
         name = _validated_stratum(stratum)
         with closing(self._connect()) as connection:
@@ -664,6 +665,62 @@ class RegimeCoverage:
         if row is None:
             return None
         return self._count_from_row(row)
+
+    def ledger(self) -> Any:
+        """The current coverage ledger — every named stratum, feature 284.
+
+        app_spec.xml, "Regime Coverage Strata", feature 284: *System
+        returns the current coverage ledger showing stored world counts
+        for every named stratum.*  Where :meth:`get` answers one name the
+        caller already holds, this answers the *table* — one ``SELECT``
+        over every row, in stratum order — and the difference is the
+        point of the feature rather than a convenience:
+        :data:`DEFAULT_STRATA` is a default vocabulary, not an
+        enumeration of what the ledger may hold, so a reader that walked
+        the three names would report nothing about a deployment whose
+        labeler carves five.  §C7's ledger is the *distribution* of the
+        pool across regimes, and a distribution is not readable one
+        stratum at a time.
+
+        Returns a :class:`~regime.ledger.CoverageLedger`: the rows, each
+        a :class:`CoverageCount` read back from the table, sorted by
+        stratum, with the counts, the named-empty set, the covered set
+        and the vocabulary holes as views derived on demand.  The rows are
+        the record — this store holds no cache of them, and a ledger read
+        is a question about the *table*, so a memo would turn *what does
+        the pool hold now?* into a question about this process's history.
+        The census (feature 290) and the backfill (287) write counts from
+        other callers, §C6's excision removes worlds between reads, and
+        the endpoint that publishes this ledger (feature 343) and the
+        promotion gate that blocks on it (285) run in other processes
+        entirely.
+
+        An empty ledger is a legitimate answer, not an error: a database
+        where no census has run yet names no stratum, and ``len(ledger)
+        == 0`` is the honest report of that state.  It is deliberately
+        *not* the same fact as a ledger naming a stratum and holding zero
+        worlds — ``0107`` detail 1's distinction, kept apart on this side
+        as on that one: the second is a row in :meth:`ledger`'s answer and
+        a member of :attr:`~regime.ledger.CoverageLedger.empty`, the
+        first is absence from it.
+
+        Refuses what :meth:`get` refuses, in the same class: a
+        ``DATABASE_URL`` this member cannot speak, and a stored row too
+        corrupt to be a count — the latter naming the stratum it came
+        off, because a whole-ledger read's most useful failure is *which
+        row is unreadable*.
+
+        The body lives in :mod:`regime.ledger`, imported here **lazily**:
+        that module imports this one for the value types and the column
+        names, so a scope-level import in either direction would be a
+        cycle, and the deferred import is the plain answer — the write
+        module stays about writing, the read module owns the only
+        whole-table ``SELECT`` in the member, and the two are one call
+        apart rather than one import apart.
+        """
+        from .ledger import _read_ledger
+
+        return _read_ledger(self)
 
     # -- The words ----------------------------------------------------------
 

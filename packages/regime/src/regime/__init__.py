@@ -13,7 +13,18 @@ names a stratum without asserting a count, and reads one stratum's row
 back; :data:`~regime.coverage.DEFAULT_STRATA`, the three names the
 feature's own sentence spells; and
 :func:`~regime.coverage.persist_coverage`, the module-level spelling of
-the persist for the caller that holds no store.  :mod:`regime.census`
+the persist for the caller that holds no store.  :mod:`regime.ledger`
+is feature 284's act, the ledger's *reader*:
+:class:`~regime.ledger.CoverageLedger` is §C7's ledger as a whole — every
+named stratum's row, read in one pass in name order, with the counts, the
+named-empty set, the covered set and the vocabulary holes as views derived
+on demand; :class:`~regime.ledger.CoverageHole` is the *never named* fact,
+kept a distinct type from the named-empty one ``0107`` detail 1 keeps
+distinct, and :func:`~regime.ledger.read_ledger` is the module-level
+spelling for a caller that holds a URL rather than a store.  The read is
+also the store's own verb
+(:meth:`~regime.coverage.RegimeCoverage.ledger`), which is the form every
+composed reader uses.  :mod:`regime.census`
 is feature 290's act, the one that makes the numbers the ledger holds:
 :func:`~regime.census.assign_strata` assigns each stored world a
 stratum through the causal rolling-window labeler (duck-read at the
@@ -132,6 +143,7 @@ from .errors import (
     RegimeError,
     StratumAssignmentError,
 )
+from .ledger import CoverageHole, CoverageLedger, read_ledger
 from .origins import (
     BACKFILLED_WORLD_TABLE,
     CAMPAIGN_ID_COLUMN,
@@ -168,6 +180,8 @@ __all__ = [
     "BackfilledWorldRecord",
     "CoverageCount",
     "CoverageError",
+    "CoverageHole",
+    "CoverageLedger",
     "RegimeCoverage",
     "RegimeError",
     "StratumAssignment",
@@ -177,6 +191,7 @@ __all__ = [
     "build_regime_coverage",
     "census_coverage",
     "persist_coverage",
+    "read_ledger",
     "record_backfilled_world",
     "split_world_id",
 ]
