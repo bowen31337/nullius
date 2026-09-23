@@ -1,0 +1,6 @@
+{
+  "path": "additions_spec_250.xml",
+  "action": "archive",
+  "reason": "orphan untracked file with no task provenance",
+  "matched_glob": null
+}

@@ -1,0 +1,263 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 250 (System rejects a sequestered epoch the policy has observed in any world when scoring the committed pick)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 250 in the existing replay member
+    (packages/replay, import name replay; seat src/app/modules/replay): the
+    out-of-sample sequestration guard over the committed pick's scoring epoch.
+    Feature 250 declares `depends_on=249`, and it is the boundary the scoring
+    member (256) explicitly declines to police — the scoring member's own
+    docstring (packages/scoring/src/scoring/_objective.py) states that
+    *"which dates those are is the replay engine's sequestration decision … and
+    a scorer that re-derived the split would be a second place the barrier
+    could leak"*, and names the epoch argument to docs §10.1's
+    `score(pick, book, epoch, revealed, rounds)` as standing "where the caller
+    stands". Feature 250 is that caller-side decision, made to run: a pure gate
+    over the scoring epoch that refuses it when the policy has already observed
+    it in any world, so a committed pick is never scored on an epoch it has
+    seen.
+
+    prd §313's Change A is the whole reason the feature exists: during replay
+    the policy *"sees only in-sample metrics and diagnostics"*, and at
+    termination *"it is scored on a sequestered epoch it has never observed in
+    any world"*. The scoring member (256) measures the committed pick's
+    out-of-sample information ratio over the epoch it is handed, but it cannot
+    and does not tell a sequestered date from an in-sample one — a mean and a
+    standard deviation cannot see that boundary. Feature 250 enforces the
+    boundary by identity: the epoch the pick is scored on must not be any epoch
+    the policy has observed across the worlds it was replayed in.
+
+    One new module, replay/sequestration.py, and one verb —
+    `reject_observed_epoch(epoch, observed)`. It is a gate, not a computation:
+    it returns nothing on the pass (scoring proceeds) and refuses on the fail.
+    It does not score (249's), does not compute the information ratio or read
+    the panel (256's), and does not derive the observed set from world ids
+    (the caller's sequestration decision — the caller holds the worlds and
+    passes their epoch union). The scoring flow fires it before the terminal
+    requirement: guard the epoch, then `committed_pick(record, scorer)`.
+
+    (1) The guard. `reject_observed_epoch` takes the sequestered scoring epoch
+    and the set of epochs the policy has observed across the worlds it was
+    replayed in — the union over worlds, which is what "in any world" means —
+    and refuses when the scoring epoch is among them. The two arguments are
+    duck-typed and validated as epoch names: the epoch is a non-empty string
+    (the same coined-name namespace as the ledger's `epoch_id` and the
+    world-id's epoch half), and the observed set is an iterable of such names.
+    The comparison is exact string identity — epoch ids are coined once and
+    stored exactly as spelled (feature 88's epoch_id, feature 287's world-id
+    epoch half), so a match is a match and there is nothing to normalise.
+
+    (2) The refusal fires BEFORE the scorer is called. The scoring flow is the
+    guard, then feature 249's `committed_pick(record, scorer)`: a refusal that
+    scored first would have spent the contaminated score — the very leak the
+    barrier exists to prevent — so the epoch is checked before the objective
+    runs, the same ordering 245's generator refusal and 248's argument refusals
+    hold (a refusal that ran first would have spent the thing it was refusing
+    to spend). The pass returns nothing: the miss is not a value, it is the
+    absence of a reason to refuse, and returning the epoch or a bool would be a
+    computation the gate does not own.
+
+    (3) The two collaborators arrive duck-typed, because a member never imports
+    another member, and the guard reads each argument as what it *is*, never
+    `isinstance`s it:
+
+    * **`epoch`** — the sequestered epoch the committed pick is scored on, the
+      same `epoch` docs §10.1's `score(pick, book, epoch, …)` closes over. A
+      non-empty string name; a blank, a `bool`, or a non-string is refused,
+      naming what arrived, because an epoch that names nothing cannot be
+      checked against the observed set — the same name-validation the committed
+      pick applies to its id and the scoring member applies to its `epoch_id`.
+    * **`observed`** — the epochs the policy has observed in any world, the
+      caller's sequestration decision passed in. An iterable of epoch-name
+      strings; a carrier that is not iterable (a bare string, a non-collection)
+      is refused, because the guard has no observed set to check against, and a
+      guard that answered a non-iterable as "empty" would let every epoch
+      through — the leak the feature exists to close.
+
+    **The miss is not a refusal and not a score.** A scoring epoch the policy
+    has not observed passes the gate — the function returns `None` and the
+    scoring flow proceeds to the objective — because an unobserved epoch is the
+    ordinary, wanted case, not a state to report. The gate speaks only when the
+    boundary is crossed: the scoring epoch is one the policy has already seen,
+    so scoring it would dress an in-sample reading as out-of-sample.
+
+    **One new error sibling under `ReplayError`, split by the repair the caller
+    must make:** `ReplaySequestrationError` — the scoring epoch the policy has
+    observed in a world, so it is not sequestered. The repair is a different
+    epoch: choose a sequestered epoch the policy has not observed (the
+    sequestration decision, corrected). It is deliberately the ninth
+    `ReplayError` subclass, not a child of any existing one: its repair (pick
+    an unobserved epoch) is a different knob from a broken tree (a different
+    tree), a broken residence (a different arena), a malformed loop ask, a
+    malformed terminal ask, a handed-in generator or loader, a broken report,
+    or a suspected recomputation — and a caller catching `ReplayError` around
+    each replay must be able to tell the operator which knob to turn. The
+    message names the observed epoch and that the pick must be scored on an
+    epoch it has never observed in any world (prd §313's Change A).
+
+    **What this module deliberately does not do.** It does not score — the
+    committed pick's score is feature 249's `committed_pick` over this guard's
+    pass. It does not compute the information ratio or validate the panel —
+    that is feature 256's objective, which measures the pick over the epoch
+    this guard has already cleared. It does not derive the observed set from
+    world ids — the caller holds the worlds (each world id is
+    `&lt;campaign_id&gt;@&lt;epoch_id&gt;`, feature 287) and passes their epoch union;
+    restating the world-id split here would couple the replay member to the
+    regime member's world model, and a member never imports a member. It does
+    not check out-of-sample-ness of the panel's dates — that is 256's
+    refinement, and this guard checks the epoch by identity, not by date. It
+    does not persist — the guard is pure over the epoch and the set it is
+    handed, and holds no store, no clock, no environment.
+
+    The composed spelling is a verb on 245's stateless facade
+    (`ReplayEngine.reject_observed_epoch`), the law the package `__init__`
+    states (one component per member name; the feature adds a verb, not a
+    component). Stdlib only — `collections.abc` and `typing` beside the
+    member's own error — so importing this member on every factory scan costs
+    composition nothing, and the guard is one membership test.
+  </addition_summary>
+
+  <existing_context>
+    <stack>Python / uv workspace (packages/*) / app factory scanning src/app/modules/*</stack>
+    <test_baseline>member suites under packages/*/tests plus repo-level tests/; run both (the acceptance gate grades tests/ alone)</test_baseline>
+    <conventions>snake_case, frozen dataclasses for values, duck-typed cross-member seams (never isinstance), one-verb reads, refusals before the act spends, error vocabularies split by repair, stdlib-only import-cheap members, docstrings that argue each decision and name what the module deliberately does not do</conventions>
+
+    Feature 250 is the fourth feature of the Replay Engine category to land in
+    the replay member, and it builds on three already implemented:
+
+    * **feature 245** (replay/transition.py) — the stored tree reveals only
+      recorded children; the stateless `ReplayEngine` facade the new verb joins.
+    * **feature 248** (replay/rounds.py) — the round loop that returns the
+      revealed set; the scoring flow's `revealed` and `rounds` are its return.
+    * **feature 249** (replay/pick.py) — the committed pick at termination and
+      the −∞ miss; `committed_pick(record, scorer)` is the act feature 250's
+      guard precedes, and the scorer it guards is `score(pick, book, epoch,
+      revealed, rounds)` curried to the pick. Feature 249's docstring lists
+      what it deliberately does not do — it does not screen (feature 230's
+      static check), does not validate the scorer's return, does not require
+      the node be revealed — and out-of-sample sequestration is not among the
+      acts it performs: that is feature 250's, over 249's return.
+
+    The scoring half of the seam is feature 256 (packages/scoring, the
+    per-world objective), already implemented. Its docstring is the load-bearing
+    hand-off: the objective *"cannot see that boundary — a mean and a standard
+    deviation cannot tell a sequestered date from an in-sample one — so this
+    module does not pretend to check it"*, and *"which dates those are is the
+    replay engine's sequestration decision … and a scorer that re-derived the
+    split would be a second place the barrier could leak"*. Feature 250 is that
+    decision. The objective carries `epoch_id` (optional keyword) "for exactly
+    that reason: the score is only legible relative to the epoch it was
+    measured on" — the same epoch identity feature 250 guards.
+
+    The epoch namespace is shared and already coined: the ledger's
+    `epoch_id` (feature 88, `epoch_ledger`, "a sequestered epoch is a holdout
+    the loop has never shown a policy"), the world id's epoch half
+    (`&lt;campaign_id&gt;@&lt;epoch_id&gt;`, feature 287's `split_world_id`), and the
+    backfilled-world origin (feature 288). Feature 250 compares epoch ids by
+    exact string identity across that namespace — no normalisation, matching
+    feature 88's "stored and returned exactly as the caller spelled it".
+  </existing_context>
+
+  <integration_points>
+    The guard fires in the scoring flow before feature 249's committed_pick —
+    guard the scoring epoch against the observed set, then score the pick.
+    New verb `ReplayEngine.reject_observed_epoch(epoch, observed)` on the
+    stateless replay facade, the composed spelling of the free function.
+    New error sibling `ReplaySequestrationError` under `ReplayError`, joining
+    the replay member's eight-subclass vocabulary (which becomes nine).
+    The guard is reached by the scoring driver that curries feature 256's
+    objective into feature 249's scorer — the same driver that wires
+    `score(pick, book, epoch, revealed, rounds)`.
+  </integration_points>
+
+  <constraints>
+    Do not modify the scoring member (packages/scoring) — feature 256's
+    deferral of out-of-sample-ness is deliberate, and feature 250 is the
+    replay member's side of the same boundary. Do not modify feature 249's
+    committed_pick, feature 245's transition, or feature 248's loop. Do not
+    edit the app factory, middleware, settings, or any migration (core-task
+    territory). Do not add a store, a table, a clock, or an environment — the
+    guard is pure. A member never imports a member: the guard does not import
+    scoring, policy_runtime, regime, or ledger; it reads its two arguments
+    duck-typed. Every existing member suite and the repo-level tests/ suite
+    must stay green. Follow the member's docstring style: argue each decision,
+    name what the module deliberately does not do, cite app_spec.xml and the
+    documents (prd §313, docs §10.1).
+  </constraints>
+
+  <layout profile="uv-workspace"/>
+
+  <features_to_add>
+    <category name="Committed-pick sequestration guard">
+      <feature index="250" shape="plugin" plugin="replay" depends_on="249">
+        <description>System rejects a sequestered epoch the policy has observed in any world when scoring the committed pick, which returns nothing on the pass and refuses on the fail. app_spec.xml, "Replay Engine", feature 250, and prd §313's Change A — the policy "is scored on a sequestered epoch it has never observed in any world" — read from the guard's side: the epoch the committed pick is scored on must not be any epoch the policy has observed across the worlds it was replayed in, so a pick is never scored on an epoch it has seen. One new module, replay/sequestration.py, and one verb — reject_observed_epoch(epoch, observed) — a gate over the scoring epoch (docs §10.1's `score(pick, book, epoch, revealed, rounds)`), fired before feature 249's committed_pick so a refusal never spends the contaminated score. The epoch is a non-empty string name (the ledger's epoch_id / world-id epoch-half namespace, compared by exact string identity — coined once, stored exactly, nothing to normalise); the observed set is the caller's sequestration decision, the union of epochs across the worlds the policy was replayed in, an iterable of such names. Refused before the scorer is called: a blank, a bool, or a non-string epoch (naming what arrived, an epoch that names nothing cannot be checked); a carrier that is not iterable (no observed set to check against, and answering it as empty would let every epoch through — the leak the feature closes). The pass returns None (the miss is the absence of a reason to refuse, not a value); the fail raises the new ReplayError sibling ReplaySequestrationError (the scoring epoch the policy has observed in a world — the repair is a different, unobserved epoch, a knob distinct from a broken tree, residence, loop ask, terminal ask, handed-in generator/loader, broken report, or suspected recomputation, argued in replay/errors.py). The guard does not score (249's), does not compute the IR or read the panel (256's), does not derive the observed set from world ids (the caller holds the worlds and passes their epoch union — a member never imports a member, and restating the world-id split couples replay to regime), does not check the panel's dates (256's), and does not persist. Pure, stdlib only, import-cheap; the composed spelling is the verb ReplayEngine.reject_observed_epoch on 245's stateless facade.</description>
+      </feature>
+    </category>
+  </features_to_add>
+
+  <implementation_steps>
+    <phase name="Committed-pick sequestration guard">
+      Add replay/sequestration.py with the pure gate reject_observed_epoch(epoch, observed): validate the epoch as a non-empty string name, validate the observed set as an iterable of such names, and refuse when the scoring epoch is among them (exact string identity), returning None on the pass.
+      Add the ReplaySequestrationError sibling under ReplayError in replay/errors.py, raising the subclass count from eight to nine and arguing the repair (choose an unobserved epoch) in the module docstring's per-class split.
+      Export reject_observed_epoch and ReplaySequestrationError from replay/__init__.py and add the composed verb ReplayEngine.reject_observed_epoch to the stateless facade (transition.py), delegating through a method-body import as run/pick already do.
+      Add packages/replay/tests/test_sequestration.py — the feature's own suite over duck-typed doubles — and a repo-level tests/replay wiring test proving the composed facade verb refuses an observed epoch and passes an unobserved one.
+    </phase>
+  </implementation_steps>
+
+  <deliverables>
+    <deliverable name="sequestration.py">
+      packages/replay/src/replay/sequestration.py — the out-of-sample
+      sequestration guard, with `reject_observed_epoch(epoch, observed)` in
+      `__all__`. The verb validates the epoch as a non-empty string name and
+      the observed set as an iterable of such names, then refuses when the
+      scoring epoch is among the observed epochs (exact string identity),
+      returning None on the pass. The refusal fires before the scorer is
+      called, so a contaminated epoch never reaches the objective. No
+      `@register`, no table, no write, no store, no clock; the miss returns
+      nothing. The module docstring argues the gate-not-computation stance, the
+      before-the-scorer ordering, the exact-identity comparison, the duck-typed
+      arguments, and what the module deliberately does not do (score, compute
+      the IR, derive the observed set from world ids, check the panel's dates,
+      persist).
+    </deliverable>
+    <deliverable name="errors.py">
+      packages/replay/src/replay/errors.py — the `ReplaySequestrationError`
+      sibling under `ReplayError`, added to `__all__`, for the scoring epoch
+      the policy has observed in a world (the repair: choose an unobserved
+      epoch). The module docstring's "eight subclasses" becomes nine, and the
+      new class is argued in the per-class repair split and the non-nesting
+      paragraph — a different knob from the tree, the residence, the loop ask,
+      the terminal ask, the handed-in generator/loader, the broken report, and
+      the suspected recomputation.
+    </deliverable>
+    <deliverable name="__init__.py">
+      packages/replay/src/replay/__init__.py — export `reject_observed_epoch`
+      and `ReplaySequestrationError`; the member's one `@register` component
+      stays 245's `replay` facade, which gains the `reject_observed_epoch` verb.
+    </deliverable>
+    <deliverable name="transition.py">
+      packages/replay/src/replay/transition.py — the composed spelling
+      `ReplayEngine.reject_observed_epoch(epoch, observed)`, delegating to the
+      free function through a method-body import (the same import-cycle seam
+      `run` and `pick` take). No other change to the facade.
+    </deliverable>
+    <deliverable name="tests">
+      packages/replay/tests/test_sequestration.py — the feature's own suite,
+      against duck-typed doubles: the pass returns None for an unobserved epoch
+      (the miss is not a value); the refusal for an epoch the policy has
+      observed in a world (naming the epoch and prd §313's Change A); the exact
+      string-identity comparison (a differently-spelled epoch is not a match);
+      the epoch validated a non-empty string (blank, bool, non-string each
+      refused, naming what arrived); the observed set validated iterable (a bare
+      string and a non-collection refused — answering them as empty would let
+      every epoch through); every refusal a `ReplaySequestrationError` and not
+      any other `ReplayError` sibling; the guard never calls the scorer (a
+      betraying objective raises if touched, pinning that the refusal fires
+      before the score); idempotence (guarding the same epoch twice answers the
+      same). test_errors.py extended with the ninth-sibling pin against the
+      member's whole vocabulary. A repo-level tests/replay wiring test
+      composes the app, takes the replay component, and proves the facade verb
+      refuses an observed epoch and passes an unobserved one — the duck-typed
+      seam end to end.
+    </deliverable>
+  </deliverables>
+</project_specification>
