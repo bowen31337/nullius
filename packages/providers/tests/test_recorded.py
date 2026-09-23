@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import pytest
 from providers import (
+    FIXTURE_MISSING_CODE,
     FixtureNotFoundError,
     Provider,
     ProviderError,
@@ -100,6 +101,44 @@ def test_fixture_not_found_is_a_provider_error():
     # CI check that the loop never fell back to a live network has one handle
     # for every way the offline path can stop.
     assert issubclass(FixtureNotFoundError, ProviderError)
+
+
+def test_the_refusal_carries_the_fixture_missing_code(make_request, make_completion):
+    # Feature 195's load-bearing half: the stop is not an anonymous exception but
+    # a greppable *fixture_missing* message, the way signal_agent's refusals open
+    # with their own code (illegal_theme).  A campaign log and a CI check that
+    # scans for prompts requested with nothing recorded find them by this word.
+    recorded = make_request(model="m1", bodies=(("user", "q1"),))
+    backend = RecordedProvider(
+        [RecordedResponse(request=recorded, completion=make_completion("a1", model="m1"))]
+    )
+
+    with pytest.raises(FixtureNotFoundError) as excinfo:
+        backend.complete(make_request(model="m2", bodies=(("user", "q2"),)))
+
+    assert str(excinfo.value).startswith(FIXTURE_MISSING_CODE)
+    assert str(excinfo.value).startswith("fixture_missing")
+
+
+def test_fixture_missing_code_is_the_token_feature_195_names():
+    # The code is the feature's own subject written as a word, spelled once and
+    # matched by value, not a substring a caller greps by eye: the constant and
+    # the literal agree, so a rename is one edit.
+    assert FIXTURE_MISSING_CODE == "fixture_missing"
+
+
+def test_the_error_exposes_its_code_without_matching_message_text():
+    # A caller can branch on the verdict by a fact about the error, not a
+    # substring hunt — the code is exposed directly, the way a caller reads
+    # illegal_theme off a theme refusal.
+    assert FixtureNotFoundError("x").code == FIXTURE_MISSING_CODE
+
+
+def test_the_code_prefixes_the_message_no_matter_who_raises_it():
+    # The code is prefixed by the type's constructor, not by each raise site, so
+    # the token and the error are one edit and cannot drift apart: any
+    # FixtureNotFoundError — however it is built — carries fixture_missing.
+    assert str(FixtureNotFoundError("anything")).startswith("fixture_missing: ")
 
 
 def test_backend_builds_from_a_hash_keyed_mapping(make_request, make_completion):

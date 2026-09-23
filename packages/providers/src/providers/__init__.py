@@ -94,15 +94,18 @@ every call is answered from what was captured rather than from a live transport.
   single ``except ProviderError`` covers a malformed completion, a missing
   provider and a missing recording, and a CI check that the loop never fell
   back to a live network has one handle for every way the offline path can
-  stop.  Its user-facing *fixture_missing* wording is feature 195's; this
-  module owns the error and its no-fallback behaviour, which is feature 193's.
+  stop.  Its message opens with :data:`FIXTURE_MISSING_CODE` — the greppable
+  ``fixture_missing`` token feature 195 names for this stop — and the code and
+  the type are one edit, so they never drift apart.  This module owns the
+  error, its code and its no-fallback behaviour, which is feature 193's.
 
 Feature 194 — *"System records a live provider exchange into a fixture file
 keyed by a prompt hash, persisting request and response together"* — is the
 persistence half of the same story, and feature 195's *fixture_missing*
-message is the third: together they make the record the backend replays.  Those
-are separate features; this package contributes the backend, the key and the
-error this one names.
+message — the :data:`FIXTURE_MISSING_CODE` the refusal carries — is the third:
+together they make the record the backend replays.  Those are separate
+features; this package contributes the backend, the key, the error and the code
+this one names.
 
 Feature 198 — *"System rejects a depth model without a 1 million token
 context at flat pricing, because calls at depth 2 or greater carry a large
@@ -524,9 +527,9 @@ from ._pinning import (
     require_agent_model_id,
 )
 from ._provider import Provider
-from ._recorder import Exchange, RecordingProvider
 from ._recorded import RecordedProvider, RecordedResponse, prompt_hash
-from ._recorded_errors import FixtureNotFoundError
+from ._recorded_errors import FIXTURE_MISSING_CODE, FixtureNotFoundError
+from ._recorder import Exchange, RecordingProvider
 from ._request import Message, Request
 from ._root import (
     DATABASE_URL_ENV,
@@ -631,6 +634,7 @@ __all__ = [
     "DEPTH_RUN_WINDOW_TABLE",
     "ENDPOINT_COLUMN",
     "END_AT_COLUMN",
+    "FIXTURE_MISSING_CODE",
     "FLAT_AT_ANY_CONTEXT",
     "HOSTED_API_CKPT_HASH",
     "INPUT_TOKENS_COLUMN",

@@ -25,9 +25,11 @@ load-bearing half of the sentence — *no network access* — and it is enforced
 the seam: a :class:`RecordedProvider` has no transport to forward to, so a
 prompt with no recorded response is a hard stop the caller must fix by recording
 it (feature 194), not a gap to paper over with an inference request.  The
-user-facing *fixture_missing* wording of that stop is feature 195's, which
-builds on this error type; this module owns the error and its no-fallback
-behaviour, which is feature 193's.
+user-facing *fixture_missing* wording of that stop is this module's
+:data:`FIXTURE_MISSING_CODE` — feature 195, which builds on this error type and
+gives the stop a greppable code the way ``signal_agent`` gives its refusals an
+``illegal_theme`` code; this module owns the error, its code and its
+no-fallback behaviour together, so the token and the type never drift apart.
 
 Stdlib-only, like the rest of this tree: the error is the contract, and a
 contract should not depend on the transport it stands in for.
@@ -35,9 +37,21 @@ contract should not depend on the transport it stands in for.
 
 from __future__ import annotations
 
+from typing import Final
+
 from ._errors import ProviderError
 
-__all__ = ["FixtureNotFoundError"]
+__all__ = ["FIXTURE_MISSING_CODE", "FixtureNotFoundError"]
+
+#: The greppable code this refusal carries — feature 195's own subject written
+#: as a token, its sentence naming it in so many words ("returns a
+#: *fixture_missing* error message").  An operator grepping a campaign log or a
+#: CI check scanning for prompts that were requested with nothing recorded finds
+#: them by this word, the way ``signal_agent`` greps ``illegal_theme``.  It
+#: prefixes the raised message at the seam (:meth:`providers.RecordedProvider`
+#: ``._complete``), so a log line and a retry prompt say the same thing; kept
+#: here, beside the error it identifies, so the token and the type are one edit.
+FIXTURE_MISSING_CODE: Final[str] = "fixture_missing"
 
 
 class FixtureNotFoundError(ProviderError):
@@ -51,6 +65,15 @@ class FixtureNotFoundError(ProviderError):
     The refusal is therefore a hard stop, raised at the seam, that the caller
     fixes by recording the prompt rather than by catching and retrying online.
 
+    Its message opens with :data:`FIXTURE_MISSING_CODE` — the greppable
+    ``fixture_missing`` token feature 195 names for this stop, the way
+    ``signal_agent`` opens an ``illegal_theme`` refusal with its own code — so a
+    campaign log and a CI check that scanned for prompts requested with nothing
+    recorded find them by the feature's own word.  The code is prefixed by the
+    constructor rather than by each raise site, so the token and the type are
+    one edit: a :class:`FixtureNotFoundError` carries ``fixture_missing`` no
+    matter who raises it, and the two cannot drift apart.
+
     Distinct from :class:`~providers.ProviderNotConfiguredError` because "there
     is no backend at all" and "the backend has no answer for *this* prompt" are
     two different problems a caller may want to tell apart — the first is a
@@ -59,3 +82,22 @@ class FixtureNotFoundError(ProviderError):
     :class:`~providers.CompletionMalformedError` because a missing recording is
     not an answer that came back wrong; nothing answered.
     """
+
+    def __init__(self, message: str) -> None:
+        # Prefix the caller's sentence with the refusal's greppable code, so a
+        # log line and a retry prompt carry the same token and a caller need
+        # not remember to add it.  Owned here, at the type, so the code and the
+        # error are one edit — the discipline feature 195's sentence asks for,
+        # and the reason the constant lives beside this class rather than at
+        # the single raise site.
+        super().__init__(f"{FIXTURE_MISSING_CODE}: {message}")
+
+    @property
+    def code(self) -> str:
+        """The refusal's greppable code — :data:`FIXTURE_MISSING_CODE`.
+
+        Exposed so a caller can branch on the verdict without matching message
+        text, the way a caller greps ``illegal_theme`` out of a log: the code
+        is a fact about the error, not a substring to hunt for.
+        """
+        return FIXTURE_MISSING_CODE
