@@ -6,7 +6,7 @@ low-volatility chop and crash"* — against docs/alpha-engine-prd.md §C7's
 coverage ledger and the three-column table feature 107's migration
 (``migrations/versions/0107_regime_coverage.py``) already declares.
 
-The member's surface is five modules.  :mod:`regime.coverage` is the
+The member's surface is six modules.  :mod:`regime.coverage` is the
 ledger's act itself: :class:`~regime.coverage.RegimeCoverage`, the store
 that persists one stratum's stored-world count into ``regime_coverage``,
 names a stratum without asserting a count, and reads one stratum's row
@@ -31,6 +31,18 @@ worlds — a free function over the ledger the read answers with, raising
 :class:`~regime.errors.DiversityClaimError` (opening
 ``not_regime_diverse``) rather than counting, persisting or re-reading
 anything, so the claim is stopped before it is published.
+:mod:`regime.warning` is feature 286's act, the category's *report*:
+:func:`~regime.warning.emit_empty_stratum_warning` emits the
+``empty_stratum`` warning through :func:`warnings.warn` when any named
+stratum holds 0 stored worlds — the spec's one emission that is a
+*warning* rather than an *alert*, over §C7's own ``crash: 0`` state the
+census writes on purpose, so it is visible, greppable and non-fatal
+where its refusing siblings halt; :class:`~regime.warning.EmptyStratumWarning`
+is both the category the machinery dispatches on and the record that
+carries the names, and :func:`~regime.warning.empty_stratum_warning` is
+the same finding as a value (or ``None``) for the caller that renders
+it itself.  It fires on the named-empty row and never on the
+never-named absence, the law ``0107`` detail 1 makes this module's own.
 :mod:`regime.census`
 is feature 290's act, the one that makes the numbers the ledger holds:
 :func:`~regime.census.assign_strata` assigns each stored world a
@@ -51,8 +63,12 @@ masquerades as fresh history*.
 ask, the row, the address), :class:`~regime.errors.StratumAssignmentError`
 (feature 290's fit refusal),
 :class:`~regime.errors.BackfillProvenanceError` (feature 288's
-``no_origin`` refusal) and :class:`~regime.errors.DiversityClaimError`
-(feature 289's ``not_regime_diverse`` verdict), each a sibling rather
+``no_origin`` refusal), :class:`~regime.errors.DiversityClaimError`
+(feature 289's ``not_regime_diverse`` verdict) and
+:class:`~regime.errors.EmptyStratumWarningError` (feature 286's refusal
+of an ``empty_stratum`` warning that could not be read off a reading —
+the finding itself is *warned*, never raised, which is why its class
+carries only the ask), each a sibling rather
 than a child for the reason
 that module states, with the argument for why the category's *judgement*
 refusals sit beside them as siblings rather than under them.  This module
@@ -155,6 +171,7 @@ from .errors import (
     BackfillProvenanceError,
     CoverageError,
     DiversityClaimError,
+    EmptyStratumWarningError,
     RegimeError,
     StratumAssignmentError,
 )
@@ -173,6 +190,12 @@ from .origins import (
     record_backfilled_world,
     split_world_id,
 )
+from .warning import (
+    EMPTY_STRATUM_CODE,
+    EmptyStratumWarning,
+    emit_empty_stratum_warning,
+    empty_stratum_warning,
+)
 
 __all__ = [
     "BACKFILLED_WORLD_TABLE",
@@ -181,6 +204,7 @@ __all__ = [
     "COVERAGE_TABLE",
     "DATABASE_URL_ENV",
     "DEFAULT_STRATA",
+    "EMPTY_STRATUM_CODE",
     "EPOCH_ID_COLUMN",
     "FULL_HISTORY_FIT_CODE",
     "NOT_REGIME_DIVERSE_CODE",
@@ -200,6 +224,8 @@ __all__ = [
     "CoverageHole",
     "CoverageLedger",
     "DiversityClaimError",
+    "EmptyStratumWarning",
+    "EmptyStratumWarningError",
     "RegimeCoverage",
     "RegimeError",
     "StratumAssignment",
@@ -208,6 +234,8 @@ __all__ = [
     "assign_strata",
     "build_regime_coverage",
     "census_coverage",
+    "emit_empty_stratum_warning",
+    "empty_stratum_warning",
     "persist_coverage",
     "read_ledger",
     "record_backfilled_world",

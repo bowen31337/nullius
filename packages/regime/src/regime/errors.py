@@ -79,7 +79,18 @@ one word the ``full_history_fit`` of the class above and
 :class:`DiversityClaimError` is feature 289's, and it is the judgement
 refusal the paragraphs above reserved a sibling seat for: a
 regime-diverse claim — the report that the replay pool spans regimes —
-refused *while fewer than three strata hold stored worlds*.  It carries
+refused *while fewer than three strata hold stored worlds*.  Its seat
+neighbour :class:`EmptyStratumWarningError` is feature 286's, and the
+two are the category's judgements over the same reading split by what
+they do with the finding they reach: 289's stops a report (the verdict
+**raises**), 286's publishes one (the warning is *emitted* through
+``warnings.warn`` and the caller proceeds — the only emission in the
+whole spec whose sentence says *warning* rather than *alert*, over a
+state §C7's own example ledger writes down on purpose: ``crash: 0``).
+That split is why 286's class carries only the *ask* of its act and
+never its finding — stated in that class's own docstring, because the
+finding-half of the argument belongs to the module that emits.
+:class:`DiversityClaimError` carries
 the two faces of that one act:
 
 * **the ask** — a ledger carrying no readable ``covered`` figure
@@ -128,6 +139,7 @@ __all__ = [
     "BackfillProvenanceError",
     "CoverageError",
     "DiversityClaimError",
+    "EmptyStratumWarningError",
     "RegimeError",
     "StratumAssignmentError",
 ]
@@ -242,5 +254,54 @@ class DiversityClaimError(RegimeError):
     returns ``None`` and the caller proceeds — so the verdict face has no
     ``admitted`` spelling to catch by accident: every message this class
     raises is either about the ask or is a refusal.
+    """
+
+
+class EmptyStratumWarningError(RegimeError):
+    """An ``empty_stratum`` warning could not be read off the reading as asked.
+
+    Feature 286's refusal, and it carries only the *ask* faces of that
+    one act — *emit an ``empty_stratum`` warning when any named regime
+    stratum holds 0 stored worlds*:
+
+    * **the ask** — a ledger carrying no readable ``empty`` view (nothing
+      handed in, a string, a view that cannot be read), or a store handed
+      in where the reading belongs.  Nothing was warned; the repair is to
+      call feature 284's read (either spelling) and hand the emission the
+      :class:`~regime.ledger.CoverageLedger` it answers with.  Silence
+      here is not an option for the same reason it is not one at the
+      diversity seam: a caller whose emission failed quietly would read
+      a warning-less log as *every stratum holds worlds*, which is the
+      exact blindness §C7's ledger exists to cure.
+    * **the carrier's own consistency** — a row the reading's ``empty``
+      view names whose own ``world_count`` is not a genuine count, or is
+      a count that is not zero, or a row carrying no usable stratum name
+      at all.  A reading that names as empty a stratum whose row says
+      three would warn *crash holds no worlds* about a row that
+      contradicts it — a phantom finding an operator would chase — so
+      the carrier is refused rather than believed, the discipline
+      feature 253's alert states for a record whose flag disagrees with
+      its own duration.  The repair is to the carrier or the data, never
+      to the pool: the warning is about the rows, and the rows have to
+      be able to say what they are.
+
+    Deliberately **no** face of this class is the finding itself.  A
+    named stratum holding no stored worlds is §C7's ``crash: 0`` — a
+    by-design state the census writes (zeros included) and the warning
+    *warns* about — and the feature's whole distinction from its
+    refusing siblings is that the finding is emitted, never raised:
+    :class:`~regime.warning.EmptyStratumWarning` is the warning, this
+    class is only the refusal of an emission that could not be made
+    honestly.  There is therefore no ``empty_stratum``-found spelling to
+    catch by accident: every message this class raises is about the ask
+    or the carrier, never about the pool.
+
+    Deliberately **not** a :class:`CoverageError` (nothing failed to
+    persist), **not** a :class:`DiversityClaimError` (no claim was
+    judged — the warning blocks nothing), and **not** the warning record
+    itself (a :class:`Warning` subclass must stay outside this module so
+    the refusal vocabulary and the emitted category never sit behind one
+    ``except``): three different acts, three different repairs, the
+    split this module exists to state.
     """
 
