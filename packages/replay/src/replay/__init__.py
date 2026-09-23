@@ -110,6 +110,37 @@ no store, no clock: the composed facade gains the verb
 (:meth:`~replay.ReplayEngine.pick`) rather than a ``replay-``prefixed
 component the spec does not ask for.
 
+**Features 246 and 247 — the dependency wall — are the pair that makes the
+first paragraph's sentence true of a *call*, and they register nothing either.**
+app_spec.xml, "Replay Engine", feature 246 (``depends_on=245``): *System
+rejects every replay-path call reaching the evaluator, granting the replay
+engine read access to the artifact store alone.*  Feature 247
+(``depends_on=246``, ``covers="cq-9"``): *System rejects any replay-path call
+reaching the evaluator or the sandbox, which returns a ``forbidden_dependency``
+error message.*  They live in :mod:`replay.dependencies`, and they are the
+prohibition the category is built inside: docs §1's *"The replay engine has
+read access to the artifact store and zero access to the evaluator or sandbox.
+This is what makes dreaming free. If replay can trigger evaluation, the cost
+model of the entire system collapses."*  The shape is feature 146's
+(:mod:`canary._inference`) one dependency over: the mark is the replay path's
+*dynamic extent* — read through the app-namespace seam, deliberately **not**
+re-implemented, so a replay guarded by one marker is guarded by both — and
+:func:`~replay.reach` refuses a forbidden reach **before the target is called
+and before any argument is looked at**, the ordering 245's generator refusal
+and 251's loader refusal hold for the same reason.  Off the replay path the
+seam delegates untouched, because the evaluation path is exactly where an
+evaluator is meant to run (§6's pipeline, §5.2's sandbox).  **One class for both
+sentences** (:class:`~replay.ForbiddenDependencyError`, the tenth sibling): they
+share one repair — move the reach off the replay path and read what the
+evaluation already wrote — so two classes would let a caller catching 246's half
+silently miss the sandbox half, which is the gap 247 exists to close.  §1's
+*grant* is honored by the forbidden set being a prohibition rather than a closed
+allowlist: the artifact store is not named at all, so a replay's read of a stored
+artifact is a call the wall never intercepts.  No component, no store, no clock:
+the composed facade gains a property
+(:attr:`~replay.ReplayEngine.dependencies`) rather than a ``replay-``prefixed
+component the spec does not ask for.
+
 **Feature 251 — the campaign-returns read — takes the same stance and registers
 nothing.**  app_spec.xml, "Replay Engine", feature 251: *System reads campaign
 returns from the pinned resident array rather than from Parquet on each
@@ -212,19 +243,24 @@ stance every store in this workspace takes, so the member's one
 ``@register`` contribution stays the facade above.
 
 **Stdlib only, and import-cheap.**  ``collections.abc``, ``contextlib``,
-``dataclasses``, ``datetime``, ``json``, ``math``, ``os``, ``sqlite3``,
-``time``, ``typing``, ``urllib.parse`` beside the factory's registration
-protocol; no numerics, no Polars, no PyArrow.  A member whose import pulled
-a numerical stack in would make every factory scan pay for a dependency the
-replay path itself may not use — §12's determinism contract prohibits a GPU
-in the replay path and §11.2's materialization row keeps inference out of
-it, and the cheapest way to keep both is to have nothing here that could.
-The one ambient the member reaches is the one the workspace's stores share
-(``DATABASE_URL``, feature 254's metrics table), and the one wall clock it
-reads stamps that table's row key — the *walk-time* modules (the
-transition, the read, the duration) consult no environment and no clock,
-and the only clock a duration is ever measured on remains 252's
-:func:`time.perf_counter`.
+``dataclasses``, ``datetime``, ``importlib``, ``json``, ``math``, ``os``,
+``sqlite3``, ``time``, ``types``, ``typing``, ``urllib.parse`` beside the
+factory's registration protocol; no numerics, no Polars, no PyArrow.  A member
+whose import pulled a numerical stack in would make every factory scan pay for
+a dependency the replay path itself may not use — §12's determinism contract
+prohibits a GPU in the replay path and §11.2's materialization row keeps
+inference out of it, and the cheapest way to keep both is to have nothing here
+that could.  The one ambient the member reaches is the one the workspace's
+stores share (``DATABASE_URL``, feature 254's metrics table), and the one wall
+clock it reads stamps that table's row key — the *walk-time* modules (the
+transition, the dependency wall, the read, the duration) consult no
+environment and no clock, and the only clock a duration is ever measured on
+remains 252's :func:`time.perf_counter`.  The wall's one cross-member reach
+(:func:`~replay.is_replaying`, feature 146's mark) is an ``importlib`` at call
+time, not an import statement — the seam :func:`~replay.resolve_tree` takes —
+so this member's ``pyproject.toml`` keeps its one-dependency shape and
+composition pays nothing for a wall reached only by a caller about to span a
+replay path.
 """
 
 from __future__ import annotations
@@ -240,6 +276,20 @@ from .alert import (
     recomputation_suspected_error,
     suspected_recomputation,
 )
+from .dependencies import (
+    EVALUATOR_DEPENDENCY,
+    FORBIDDEN_DEPENDENCIES,
+    FORBIDDEN_DEPENDENCY_CODE,
+    MESSAGE_PHRASES,
+    SANDBOX_DEPENDENCY,
+    ReplayPathDependencies,
+    dependency_feature,
+    is_replaying,
+    reach,
+    refused_dependency,
+    replay_path_forbids,
+    validate_dependency_name,
+)
 from .duration import (
     REPLAY_DURATION_ALERT_THRESHOLD,
     REPLAY_DURATION_TARGET,
@@ -248,6 +298,7 @@ from .duration import (
 )
 from .errors import (
     ChildGenerationRefused,
+    ForbiddenDependencyError,
     ParquetReadRefused,
     RecomputationSuspectedError,
     ReplayError,
@@ -284,6 +335,10 @@ from .transition import (
 
 __all__ = [
     "COMPONENT_NAME",
+    "EVALUATOR_DEPENDENCY",
+    "FORBIDDEN_DEPENDENCIES",
+    "FORBIDDEN_DEPENDENCY_CODE",
+    "MESSAGE_PHRASES",
     "NON_COMMITTING_SCORE",
     "RECOMPUTATION_SUSPECTED",
     "REPLAY_DURATION_ALERT_THRESHOLD",
@@ -293,7 +348,9 @@ __all__ = [
     "REPLAY_LATENCY_TABLE",
     "REPLAY_SCORE_TABLE",
     "RESIDENT_READ_POLICY",
+    "SANDBOX_DEPENDENCY",
     "ChildGenerationRefused",
+    "ForbiddenDependencyError",
     "ParquetReadRefused",
     "RecomputationSuspected",
     "RecomputationSuspectedError",
@@ -302,6 +359,7 @@ __all__ = [
     "ReplayError",
     "ReplayLatency",
     "ReplayMetricsError",
+    "ReplayPathDependencies",
     "ReplayPickError",
     "ReplayReturns",
     "ReplayReturnsError",
@@ -313,22 +371,28 @@ __all__ = [
     "build_replay_engine",
     "child_map",
     "committed_pick",
+    "dependency_feature",
     "emit_recomputation_suspected",
+    "is_replaying",
     "load_latest_replay_latency",
     "load_replay_latency",
     "measure_replay",
     "persist_replay_latency",
     "persist_replay_score",
+    "reach",
     "recomputation_suspected_error",
     "recorded_child",
+    "refused_dependency",
     "replay_component",
     "replay_latency",
+    "replay_path_forbids",
     "replay_roots",
     "replay_transition",
     "resident_returns",
     "resolve_tree",
     "run_replay",
     "suspected_recomputation",
+    "validate_dependency_name",
 ]
 
 #: The component name the replay member registers under — the plugin name the

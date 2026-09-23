@@ -138,6 +138,7 @@ from .returns import ReplayReturns, resident_returns
 if TYPE_CHECKING:  # pragma: no cover - typing only; the facade imports the
     # verb itself inside the method body, the same seam `run` takes, so this
     # module stays import-cheap and free of a hard dependency at composition.
+    from .dependencies import ReplayPathDependencies
     from .pick import TerminalPick
 
 __all__ = [
@@ -741,6 +742,41 @@ class ReplayEngine:
         return resident_returns(
             pins, campaign_id, horizon=horizon, load=load
         )
+
+    @property
+    def dependencies(self) -> ReplayPathDependencies:
+        """§1's dependency wall — features 246 and 247, as a value.
+
+        The composed spelling of :mod:`replay.dependencies`: *"The replay
+        engine has read access to the artifact store and zero access to the
+        evaluator or sandbox."*  A caller holding the composed component
+        refuses a forbidden reach through this value
+        (:meth:`~replay.ReplayPathDependencies.evaluator`,
+        :meth:`~replay.ReplayPathDependencies.sandbox`,
+        :meth:`~replay.ReplayPathDependencies.reach`) without importing the
+        member's submodules by name — the role
+        :class:`canary.ModelInference` plays for feature 146's inference
+        refusal, on the same kind of seam and for the same reason.
+
+        A **property returning a fresh stateless facade** rather than a
+        composed component of its own, and the choice is the member's
+        one-component rule stated for this feature: the wall is a fact about
+        where a call sits (§1, §12), not a thing a deployment configures, so
+        there is nothing to misset, nothing to resolve and no second
+        ``replay-``prefixed name the spec does not ask for — and returning a
+        fresh value each time costs nothing
+        (:class:`~replay.ReplayPathDependencies` has empty ``__slots__`` and
+        holds nothing), while a cached one would be one more piece of state on
+        a facade whose whole property is that it holds none.
+
+        Imported inside the method rather than at module top, the same seam
+        :meth:`run`, :meth:`pick` and :meth:`returns` take: the facade's module
+        stays import-cheap at composition, and the wall is reached only by a
+        caller about to span a replay path.
+        """
+        from .dependencies import ReplayPathDependencies
+
+        return ReplayPathDependencies()
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid only
         return "ReplayEngine()"

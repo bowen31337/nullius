@@ -1,14 +1,14 @@
 """The replay member's error vocabulary — one base class, split by repair.
 
-The base class for every failure of the replay path, and the nine subclasses
-the transition, the round loop, the terminal pick, the resident read, the
-observability write, the persistence write and the ``recomputation_suspected``
-alert raise.  One base class so a caller — the dreaming loop, a nightly runner,
-an operator script, a later feature in this category (246–255 all depend on
-feature 245) — can catch every failure of the replay path with a single
-``except``, the discipline :mod:`bootstrap.errors`, :mod:`artifacts._errors`,
-:mod:`discovery.errors` and :mod:`policy_runtime.errors` each state for their
-own member.
+The base class for every failure of the replay path, and the ten subclasses
+the transition, the dependency wall, the round loop, the terminal pick, the
+resident read, the observability write, the persistence write and the
+``recomputation_suspected`` alert raise.  One base class so a caller — the
+dreaming loop, a nightly runner, an operator script, a later feature in this
+category (246–255 all depend on feature 245) — can catch every failure of the
+replay path with a single ``except``, the discipline
+:mod:`bootstrap.errors`, :mod:`artifacts._errors`, :mod:`discovery.errors` and
+:mod:`policy_runtime.errors` each state for their own member.
 
 The subclasses split by **what the caller must do about it**, which is the
 split that matters on this path rather than which line of code failed:
@@ -28,6 +28,20 @@ split that matters on this path rather than which line of code failed:
   generative transition.  The repair is on the caller's side of the seam: run
   the act online (feature 239's ``CONTINUE(v)``, in the discovery member's
   loop) and replay the tree it wrote;
+* :class:`ForbiddenDependencyError` — the replay itself was asked to **reach
+  the evaluator or the sandbox**, which is the one reach app_spec.xml features
+  246 and 247 name as refused: *"System rejects every replay-path call reaching
+  the evaluator, granting the replay engine read access to the artifact store
+  alone"*, and *"System rejects any replay-path call reaching the evaluator or
+  the sandbox, which returns a ``forbidden_dependency`` error message."*  Like
+  :class:`ChildGenerationRefused` this is not a fact about the tree or the
+  campaign — a perfectly evaluable node raises it — it is a fact about the
+  **call**: a replay path reached for §1's forbidden dependency, and the
+  refusal is what makes dreaming free (*"If replay can trigger evaluation, the
+  cost model of the entire system collapses"*).  The repair is on the caller's
+  side of the seam: read what the evaluation already wrote (feature 240's
+  persisted attempt, feature 251's resident read) and let the evaluator or the
+  sandbox run where it belongs — online, in the discovery loop;
 * :class:`ReplayPickError` — the *terminal requirement's* ask was malformed:
   a scorer that is not callable, a carrier that is not an episode's commit
   record (no termination read to perform), a termination read that cannot say
@@ -74,11 +88,11 @@ split that matters on this path rather than which line of code failed:
   duration), which is a broken *ask* — reported as one, never as a cost model
   that broke.
 
-The nine are deliberately *not* fewer classes, because they have one repair
+The ten are deliberately *not* fewer classes, because they have one repair
 each and the repairs are in different places: a broken tree is repaired at
 the store, a broken residence at the arena or the store, a handed-in
-generator or loader at the caller, a broken loop ask or terminal ask at the
-caller, a broken report at the population or the
+generator, loader or forbidden reach at the caller, a broken loop ask or
+terminal ask at the caller, a broken report at the population or the
 metrics store, a broken persistence ask or store at the caller or the store,
 and a suspected recomputation at the deployment's replay path.
 A caller that re-derived one from the other would be unable to tell an
@@ -87,9 +101,19 @@ operator *which* knob to turn, which is the same argument
 :class:`~policy_runtime.PolicyFilesystemError` and
 :class:`~policy_runtime.PolicyImportError` apart.
 
+**Features 246 and 247 share one class and not two**, and the sharing is the
+load-bearing half of that pair's split.  The two sentences have one repair —
+*move the reach off the replay path* — so two classes would put two names on
+one repair and let a caller catching the evaluator half silently miss the
+sandbox half, which is the very state feature 247 exists to close (*"reaching
+the evaluator **or the sandbox**"*).  One class, one code
+(:data:`~replay.FORBIDDEN_DEPENDENCY_CODE`), one forbidden set
+(:data:`~replay.FORBIDDEN_DEPENDENCIES`) — and the message names which half
+fired, so nothing an operator needs is lost to the sharing.
+
 All are :class:`ReplayError`, so the one base class catches every way a
-replay's transition, round loop, terminal pick, returns read, latency report
-and cost-model alert can
+replay's transition, dependency reach, round loop, terminal pick, returns
+read, latency report and cost-model alert can
 fail — the property a dreaming loop that replays a policy across two hundred
 stored worlds depends on, where one malformed tree or one unreadable campaign
 must be a catchable value rather than an escape that ends the cycle.  The
@@ -101,12 +125,16 @@ operator about it.
 
 :class:`ChildGenerationRefused` is **not** a child of
 :class:`ReplayTreeError`, :class:`ParquetReadRefused` is **not** a child of
-:class:`ReplayReturnsError`, and both non-nestings are the load-bearing half
-of the split: a caller that catches the tree's or the residence's failures in
-order to skip a bad world must not silently skip the refusal that says *the
-replay path has no generative transition at all* or *no Parquet spelling at
-all*, because neither is a fact about the world and the skip would hide a
-broken caller from every world in the pool.
+:class:`ReplayReturnsError`, :class:`ForbiddenDependencyError` is **not** a
+child of :class:`ReplayRoundError`, and all three non-nestings are the
+load-bearing half of the split: a caller that catches the tree's, the
+residence's or the loop's failures in order to skip a bad world must not
+silently skip the refusal that says *the replay path has no generative
+transition at all*, *no Parquet spelling at all*, or *no reach into the
+evaluator or the sandbox at all*, because none is a fact about the world and
+the skip would hide a broken caller from every world in the pool — and the
+third would hide it silently, since a replay that never reached for the
+evaluator is exactly what the wall exists to produce.
 
 :class:`ReplayMetricsError` **refuses the report, never the replay.**  A slow
 population — one whose tail passes docs §10.4's ~200 ms point — is persisted
@@ -142,6 +170,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; alert.py imports this modul
 
 __all__ = [
     "ChildGenerationRefused",
+    "ForbiddenDependencyError",
     "ParquetReadRefused",
     "RecomputationSuspectedError",
     "ReplayError",
@@ -208,6 +237,65 @@ class ChildGenerationRefused(ReplayError):
     where the tree is written, then replay the recorded tree), because the
     caller who reached for a generator is the caller who has to move the act
     rather than retry it.
+    """
+
+
+class ForbiddenDependencyError(ReplayError):
+    """The replay path reached for the evaluator or the sandbox — §1 forbids it.
+
+    app_spec.xml, "Replay Engine", feature 246: *"System rejects every
+    replay-path call reaching the evaluator, granting the replay engine read
+    access to the artifact store alone."*  Feature 247 (``depends_on=246``,
+    ``covers="cq-9"``): *"System rejects any replay-path call reaching the
+    evaluator or the sandbox, which returns a ``forbidden_dependency`` error
+    message."*  docs/nullius-tech-architecture.md §1 is the sentence both are
+    made of, and the whole cost argument of the system is its last clause:
+    *"The replay engine has read access to the artifact store and zero access
+    to the evaluator or sandbox. This is what makes dreaming free. If replay
+    can trigger evaluation, the cost model of the entire system collapses."*
+
+    Raised by :func:`replay.reach` (and the composed facade's
+    :meth:`replay.ReplayPathDependencies.evaluator` /
+    :meth:`~replay.ReplayPathDependencies.sandbox`) when a call arrives from
+    inside feature 146's marked replay path
+    (:func:`replay.is_replaying` — the dynamic extent feature 142's nightly
+    replay enters) and names a forbidden dependency.  The refusal fires
+    **before the call is made and before any argument is looked at**, the
+    ordering :class:`ChildGenerationRefused` and :class:`ParquetReadRefused`
+    state for their own seams and for the same reason: §1's collapse *is* an
+    evaluation that ran, so a refusal that called first and raised afterwards
+    would have spent the container, the ledger's trial and the wall clock it
+    was refusing to spend — and would have produced a score no frozen pair
+    contributed.
+
+    **One class for both features' sentences, deliberately.**  They share one
+    repair — take the reach off the replay path and read what the evaluation
+    already wrote — so two classes would put two names on one repair and let a
+    caller catching 246's half silently miss 247's, which is exactly the gap
+    247 exists to close.  The message opens with the code feature 247 names
+    (:data:`replay.FORBIDDEN_DEPENDENCY_CODE`, ``forbidden_dependency``),
+    quotes §1 with its number, names the dependency in the spec's own words
+    and the feature whose sentence fired, says plainly that nothing ran, and
+    states the repair (:data:`replay.dependencies` carries all of it) —
+    because an operator reading it has a replay path that reached for the
+    evaluator and needs to know which knob to turn, not merely that something
+    was forbidden.
+
+    Also raised for a *broken ask*: a name that is not a dependency name (not
+    a non-empty string, or a string this wall cannot place).  That is a
+    different fact from a forbidden reach — a caller's wiring mistake rather
+    than the replay path's — and the messages say which, so an operator paged
+    by this class can tell the two apart by reading the one they were sent.
+
+    **Not a subclass of** :class:`ReplayRoundError`, and the non-nesting is
+    the load-bearing half of the split, the same argument this module makes
+    for :class:`ChildGenerationRefused` and :class:`ParquetReadRefused`: a
+    caller that catches the loop's malformed ask in order to skip a bad world
+    must not silently skip the refusal that says *the replay path has no reach
+    into the evaluator or the sandbox*, because that one is not a fact about
+    the world — and in a dreaming loop that skips worlds on a caught
+    :class:`ReplayRoundError`, a nesting would turn the one wall §1 is built
+    of into a per-world skip that reports itself as nothing at all.
     """
 
 
