@@ -47,6 +47,18 @@ a well-formed ask that runs into a configured space or a judged threshold
 is not a malformed one, and folding the two would put two different
 repairs behind one ``except``.
 
+:class:`StratumAssignmentError` is that shape's first arrival — feature
+290's, and a *fit* refusal rather than a judgement one: the census that
+assigns each stored world a stratum refuses a full-history regime fit
+(a labeler whose stated window is unbounded, or whose window spans a
+world's whole usable series), and the repair is a corrected
+configuration, not a decision about evidence and not a corrected row.
+It sits beside :class:`CoverageError` for the same reason the judgement
+classes will: the assignment is a different act from the persist, and a
+caller that must react to *my labeler was configured as a full-history
+fit* would misread it as *the ledger row could not be written* if the
+two shared one ``except``.
+
 This member deliberately does **not** raise
 :class:`feature_store.regime_labeler.FullHistoryFitError`, even though the
 labeler that assigns worlds to strata is the source of the names this
@@ -56,12 +68,18 @@ look in the wrong module for the cause — the labeler refuses a fit
 (feature 58's law), while this member refuses a *row*.  Different acts,
 different vocabularies; the seam between them is the caller that holds
 both, and ``packages/regime/tests/test_cross_member.py`` is what keeps the
-stratum count the two agree on honest.
+stratum count the two agree on honest.  Feature 290's census is where
+that paragraph stops being a promise about the future and becomes the
+seam itself: it duck-reads the labeler (``k``, ``window``,
+``label_features``) and refuses in **this** vocabulary, so the
+``full_history_fit`` a caller catches out of a census is this member's
+class even when the labeler behind it is feature 58's — the law restated
+at the one seam where the labeler's output becomes the ledger's input.
 """
 
 from __future__ import annotations
 
-__all__ = ["CoverageError", "RegimeError"]
+__all__ = ["CoverageError", "RegimeError", "StratumAssignmentError"]
 
 
 class RegimeError(Exception):
@@ -79,3 +97,37 @@ class CoverageError(RegimeError):
     question, so an operator's log line says which row of the ledger the
     refusal concerns.
     """
+
+
+class StratumAssignmentError(RegimeError):
+    """A stored world could not be assigned a stratum as asked.
+
+    Feature 290's refusal, and it carries the faces of the census's one
+    act — *assign each stored world to a stratum with the causal
+    rolling-window labeler*:
+
+    * **the fit** — the full-history face the feature's own sentence
+      leads with, opening with ``full_history_fit`` so it is greppable by
+      the one word that names it: a labeler whose stated ``window`` is
+      ``None`` or absent or not a finite positive integer (an unbounded
+      span *is* a full-history fit), or whose window spans all of a
+      world's usable feature vectors (the one fit behind that world's
+      stratum would be a fit over its entire history).  The repair is to
+      the configuration: a finite trailing window, strictly shorter than
+      every world's series.
+    * **the vocabulary** — a stratum set the labeler's label space
+      cannot be checked against: the wrong count of names, a duplicate,
+      a name that cannot be one.  The repair is to the declared
+      vocabulary, which is the labeler's configuration.
+    * **the world** — a world that cannot be binned: no id, no usable
+      regime features, an answer outside the label space, or an id
+      already counted.  Every message names the world it is about.
+
+    Deliberately **not** the labeler's own
+    :class:`feature_store.regime_labeler.FullHistoryFitError` — the
+    module docstring above states the law — and deliberately **not** a
+    :class:`CoverageError`: nothing failed to persist here, and a caller
+    catching the two together would read *the ledger refused my row*
+    where the truth is *the fit was configured as a full-history one*.
+    """
+

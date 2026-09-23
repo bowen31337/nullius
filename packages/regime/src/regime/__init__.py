@@ -6,21 +6,29 @@ low-volatility chop and crash"* — against docs/alpha-engine-prd.md §C7's
 coverage ledger and the three-column table feature 107's migration
 (``migrations/versions/0107_regime_coverage.py``) already declares.
 
-The member's surface is two modules.  :mod:`regime.coverage` is the act
-itself: :class:`~regime.coverage.RegimeCoverage`, the store that persists
-one stratum's stored-world count into ``regime_coverage``, names a
-stratum without asserting a count, and reads one stratum's row back;
-:data:`~regime.coverage.DEFAULT_STRATA`, the three names the feature's own
-sentence spells; and :func:`~regime.coverage.persist_coverage`, the
-module-level spelling of the persist for the caller that holds no store.
-:mod:`regime.errors` is the member's error vocabulary —
-:class:`~regime.errors.RegimeError` and
-:class:`~regime.errors.CoverageError`, one class carrying the three faces
-of the one act (the ask, the row, the address), with the argument for why
-the category's later *judgement* refusals will sit beside it as siblings
-rather than under it.  This module re-exports both and registers the one
-component; it carries no logic of its own, which is the same shape every
-member in this workspace takes.
+The member's surface is three modules.  :mod:`regime.coverage` is the
+ledger's act itself: :class:`~regime.coverage.RegimeCoverage`, the store
+that persists one stratum's stored-world count into ``regime_coverage``,
+names a stratum without asserting a count, and reads one stratum's row
+back; :data:`~regime.coverage.DEFAULT_STRATA`, the three names the
+feature's own sentence spells; and
+:func:`~regime.coverage.persist_coverage`, the module-level spelling of
+the persist for the caller that holds no store.  :mod:`regime.census`
+is feature 290's act, the one that makes the numbers the ledger holds:
+:func:`~regime.census.assign_strata` assigns each stored world a
+stratum through the causal rolling-window labeler (duck-read at the
+seam, refusing a full-history fit in this member's own vocabulary), and
+:func:`~regime.census.census_coverage` writes the counts through the
+coverage store, zeros included.  :mod:`regime.errors` is the member's
+error vocabulary — :class:`~regime.errors.RegimeError`,
+:class:`~regime.errors.CoverageError` (the persist's three faces: the
+ask, the row, the address) and :class:`~regime.errors.
+StratumAssignmentError` (feature 290's fit refusal, a sibling rather
+than a child for the reason that module states), with the argument for
+why the category's later *judgement* refusals will sit beside them as
+siblings rather than under them.  This module re-exports all three and
+registers the one component; it carries no logic of its own, which is
+the same shape every member in this workspace takes.
 
 **Why the ledger's writer is a component at all — and why nothing else in
 this category will be.**  The factory's registration protocol is for
@@ -87,6 +95,12 @@ from __future__ import annotations
 
 from app.module_loader import register
 
+from .census import (
+    FULL_HISTORY_FIT_CODE,
+    StratumAssignment,
+    assign_strata,
+    census_coverage,
+)
 from .coverage import (
     COVERAGE_TABLE,
     DATABASE_URL_ENV,
@@ -98,13 +112,14 @@ from .coverage import (
     RegimeCoverage,
     persist_coverage,
 )
-from .errors import CoverageError, RegimeError
+from .errors import CoverageError, RegimeError, StratumAssignmentError
 
 __all__ = [
     "COMPONENT_NAME",
     "COVERAGE_TABLE",
     "DATABASE_URL_ENV",
     "DEFAULT_STRATA",
+    "FULL_HISTORY_FIT_CODE",
     "STRATUM_COLUMN",
     "UPDATED_AT_COLUMN",
     "WORLD_COUNT_COLUMN",
@@ -112,7 +127,11 @@ __all__ = [
     "CoverageError",
     "RegimeCoverage",
     "RegimeError",
+    "StratumAssignment",
+    "StratumAssignmentError",
+    "assign_strata",
     "build_regime_coverage",
+    "census_coverage",
     "persist_coverage",
 ]
 

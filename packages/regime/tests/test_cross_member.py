@@ -9,8 +9,8 @@ state the discipline; the latter demonstrates the in-function import that
 costs one test when a sibling is absent rather than the collection of
 the whole suite).
 
-This member restates two spellings, and both are the convergence
-``0107``'s own docstring sets up:
+This member restates three spellings, and the first two are the
+convergence ``0107``'s own docstring sets up:
 
 **The DDL.**  ``migrations/versions/0107_regime_coverage.py`` (feature
 107) is the coverage table's first creator, and the regime store is its
@@ -37,6 +37,21 @@ publish and the one a silent edit would corrupt in both directions — a
 labeler carving four clusters would label worlds no ledger stratum
 holds, and a ledger naming two would count worlds it cannot bin.
 
+**The labeler seam (feature 290).**  The census
+(:mod:`regime.census`) duck-reads the labeler's own surface — ``k``,
+``window``, ``label_features`` — and refuses a full-history fit in
+*this* member's vocabulary (:class:`regime.errors.
+StratumAssignmentError`, opening ``full_history_fit``), never in the
+labeler's (:class:`feature_store.regime_labeler.FullHistoryFitError`).
+That is a promise made in prose by :mod:`regime.errors` — *"the law
+restated at the one seam where the labeler's output becomes the
+ledger's input"* — and prose about another member's module is exactly
+what a suite like this one exists to keep honest: the tests below drive
+the *real* labeler through the census and pin, from the data side, that
+the surface agrees, that the closing label is the label the census
+keeps, and that the degeneracy refusal is this member's class raised
+*before* the labeler's own guard could fire.
+
 **Why the imports are inside the tests.**  A module-scope
 ``import feature_store`` would make this member's suite fail to collect
 wherever the sibling member is absent, which is the outcome the
@@ -53,6 +68,7 @@ owner.
 from __future__ import annotations
 
 import importlib.util
+import random
 import sqlite3
 import sys
 from contextlib import closing
@@ -60,7 +76,15 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
-from regime import COVERAGE_TABLE, DEFAULT_STRATA, RegimeCoverage
+from regime import (
+    COVERAGE_TABLE,
+    DEFAULT_STRATA,
+    FULL_HISTORY_FIT_CODE,
+    RegimeCoverage,
+    StratumAssignmentError,
+    assign_strata,
+    census_coverage,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FEATURE_STORE_SRC = REPO_ROOT / "packages" / "feature-store" / "src"
@@ -202,3 +226,138 @@ class TestTheStratumCountTheLabelerCarves:
         # and ledger rows no labeler can fill.
         labeler = _labeler()
         assert labeler.DEFAULT_K == len(DEFAULT_STRATA) == 3
+
+
+# -- The census seam (feature 290) --------------------------------------------------
+
+
+class _PanelWorld:
+    """A stand-in stored world carrying the labeler's own feature rows.
+
+    The census duck-reads ``world_id`` and ``regime_rows``; the rows
+    below are the shape :func:`feature_store.regime_labeler.
+    regime_feature_matrix` hands ``label_features`` — dated, finite,
+    one vector per trading day, four features wide by the labeler's
+    own default horizons — so the stand-in exercises the real seam at
+    the real width without pretending to be a price panel.
+    """
+
+    __slots__ = ("regime_rows", "world_id")
+
+    def __init__(self, world_id: str, rows) -> None:
+        self.world_id = world_id
+        self.regime_rows = rows
+
+
+def _vol_rows(seed: int, n: int, scale: float) -> tuple[tuple[float, ...], ...]:
+    """``n`` dated four-feature rows at a volatility ``scale``.
+
+    Deterministic (a seeded generator, never the module RNG — the same
+    discipline the labeler's own ``KMEANS_SEED`` states), so the same
+    world rides the seam to the same stratum in any order of tests.
+    The scale is the worlds' planted difference: one calm, one choppy,
+    one crashing, so the census has three genuinely different epochs
+    to bin — the §C7 situation the ledger exists to count.
+    """
+    rng = random.Random(seed)
+    return tuple(
+        tuple(scale * (0.5 + rng.random()) for _ in range(4)) for _ in range(n)
+    )
+
+
+class TestTheCensusRidesTheRealLabeler:
+    """Feature 290's seam, driven by the labeler it was written for."""
+
+    def test_the_real_labeler_carries_the_surface_the_census_reads(self) -> None:
+        # The duck-read contract, pinned by name against the real
+        # object: a labeler that stopped carrying ``k``, ``window`` or
+        # ``label_features`` would be refused by the census as a
+        # full-history configuration or a non-labeler, so this is the
+        # agreement the whole seam hangs off.
+        labeler = _labeler().RegimeLabeler(k=3, window=10)
+        assert labeler.k == 3
+        assert labeler.window == 10
+        assert callable(labeler.label_features)
+
+    def test_each_world_is_assigned_the_closing_label_the_labeler_answered(
+        self,
+    ) -> None:
+        # The census's one rule — a world's stratum is the label of its
+        # last dated row — checked against the labeler's own answer
+        # rather than a stand-in's: the assignment the census returns
+        # must be the vocabulary's name for the very index the real
+        # ``label_features`` closed with.
+        labeler = _labeler().RegimeLabeler(k=3, window=10)
+        worlds = [
+            _PanelWorld("w-calm", _vol_rows(0x101, 40, 0.2)),
+            _PanelWorld("w-chop", _vol_rows(0x202, 40, 1.0)),
+        ]
+        assigned = assign_strata(worlds, labeler)
+        by_id = {assignment.world_id: assignment for assignment in assigned}
+        for world in worlds:
+            closing = labeler.label_features(world.regime_rows)[-1]
+            assert closing is not None, "the census's pre-check promised a window"
+            assert by_id[world.world_id].stratum == DEFAULT_STRATA[closing]
+
+    def test_the_census_is_deterministic_across_the_seam(self) -> None:
+        # §12's reproducibility, restated over a member boundary: the
+        # same worlds and the same labeler answer the same strata in
+        # either order of calls, bit for bit — the labeler's seeded
+        # k-means is the only arithmetic in the path, and the census
+        # adds none of its own.
+        labeler = _labeler().RegimeLabeler(k=3, window=10)
+        worlds = [
+            _PanelWorld("w-calm", _vol_rows(0x101, 40, 0.2)),
+            _PanelWorld("w-chop", _vol_rows(0x202, 40, 1.0)),
+            _PanelWorld("w-crash", _vol_rows(0x303, 40, 4.0)),
+        ]
+        assert assign_strata(worlds, labeler) == assign_strata(
+            list(reversed(worlds)), labeler
+        )
+
+    def test_the_full_history_span_is_refused_in_this_members_vocabulary(
+        self,
+    ) -> None:
+        # The degeneracy face with the real numbers: the labeler's own
+        # default window (63) over a 63-row world is exactly the
+        # configuration its own guard exists to refuse — and the census
+        # refuses it *first*, in its own class, so what a caller catches
+        # out of a census is this member's error whatever labeler sits
+        # behind the seam.  The two-vocabulary law, pinned from the
+        # data side.
+        labeler_module = _labeler()
+        labeler = labeler_module.RegimeLabeler(k=3, window=63)
+        world = _PanelWorld("w-thin", _vol_rows(0x404, 63, 1.0))
+        with pytest.raises(StratumAssignmentError, match=FULL_HISTORY_FIT_CODE):
+            assign_strata([world], labeler)
+        try:
+            assign_strata([world], labeler)
+        except StratumAssignmentError as exc:
+            assert not isinstance(exc, labeler_module.FullHistoryFitError)
+
+    def test_the_labelers_own_guard_still_fires_at_its_own_seam(self) -> None:
+        # The same law in the labeler's vocabulary, at the labeler's own
+        # seam: feature 58's constructor refuses ``window=None`` — the
+        # unbounded span — before any census ever sees the labeler.
+        # Both refusals are the feature's one sentence; neither member
+        # borrows the other's class to raise it.
+        labeler_module = _labeler()
+        with pytest.raises(labeler_module.FullHistoryFitError, match="unbounded"):
+            labeler_module.RegimeLabeler(k=3, window=None)
+
+    def test_the_census_counts_the_pool_through_the_store(
+        self, database_url: str
+    ) -> None:
+        # The whole feature in one call, over the real labeler and the
+        # real store: worlds in, one row per named stratum out, counts
+        # that sum to the number of worlds — the number §C7's ledger
+        # exists to hold, made by the causal fit the feature demands.
+        labeler = _labeler().RegimeLabeler(k=3, window=10)
+        worlds = [
+            _PanelWorld("w-calm", _vol_rows(0x101, 40, 0.2)),
+            _PanelWorld("w-chop", _vol_rows(0x202, 40, 1.0)),
+            _PanelWorld("w-crash", _vol_rows(0x303, 40, 4.0)),
+        ]
+        rows = census_coverage(worlds, labeler, RegimeCoverage(database_url))
+        assert [row.stratum for row in rows] == list(DEFAULT_STRATA)
+        assert sum(row.world_count for row in rows) == len(worlds)
