@@ -6,7 +6,7 @@ low-volatility chop and crash"* — against docs/alpha-engine-prd.md §C7's
 coverage ledger and the three-column table feature 107's migration
 (``migrations/versions/0107_regime_coverage.py``) already declares.
 
-The member's surface is three modules.  :mod:`regime.coverage` is the
+The member's surface is four modules.  :mod:`regime.coverage` is the
 ledger's act itself: :class:`~regime.coverage.RegimeCoverage`, the store
 that persists one stratum's stored-world count into ``regime_coverage``,
 names a stratum without asserting a count, and reads one stratum's row
@@ -19,16 +19,26 @@ is feature 290's act, the one that makes the numbers the ledger holds:
 stratum through the causal rolling-window labeler (duck-read at the
 seam, refusing a full-history fit in this member's own vocabulary), and
 :func:`~regime.census.census_coverage` writes the counts through the
-coverage store, zeros included.  :mod:`regime.errors` is the member's
-error vocabulary — :class:`~regime.errors.RegimeError`,
+coverage store, zeros included.  :mod:`regime.origins` is features
+287/288's: :func:`~regime.origins.split_world_id` reads a synthesized
+world's originating campaign and epoch back out of the
+``<campaign_id>@<epoch_id>`` identity feature 287 spelled, and
+:class:`~regime.origins.WorldBackfill` records that origin — one
+row per world, in this member's own table in the same database, created
+idempotently so no migration is needed — so that *backfill never
+masquerades as fresh history*.
+:mod:`regime.errors` is the member's error vocabulary —
+:class:`~regime.errors.RegimeError`,
 :class:`~regime.errors.CoverageError` (the persist's three faces: the
-ask, the row, the address) and :class:`~regime.errors.
-StratumAssignmentError` (feature 290's fit refusal, a sibling rather
-than a child for the reason that module states), with the argument for
-why the category's later *judgement* refusals will sit beside them as
-siblings rather than under them.  This module re-exports all three and
-registers the one component; it carries no logic of its own, which is
-the same shape every member in this workspace takes.
+ask, the row, the address), :class:`~regime.errors.StratumAssignmentError`
+(feature 290's fit refusal) and
+:class:`~regime.errors.BackfillProvenanceError` (feature 288's
+``no_origin`` refusal), each a sibling rather than a child for the reason
+that module states, with the argument for why the category's *judgement*
+refusals sit beside them as siblings rather than under them.  This module
+re-exports all of them and registers the one component; it carries no
+logic of its own, which is the same shape every member in this workspace
+takes.
 
 **Why the ledger's writer is a component at all — and why nothing else in
 this category will be.**  The factory's registration protocol is for
@@ -43,9 +53,13 @@ store serves; feature 285's promotion block and feature 289's diversity
 refusal are thresholds applied to counts the caller read through this
 store; feature 286's ``empty_stratum`` warning is a fact about a row this
 store already holds (``world_count == 0`` is what
-:meth:`~regime.coverage.CoverageCount.empty` answers); features 287 and
-288's backfill and feature 290's causal labeler *write* through this
-store rather than beside it.  A builder takes no arguments and is built
+:meth:`~regime.coverage.CoverageCount.empty` answers); feature 290's
+causal labeler *writes* through this store rather than beside it; and
+features 287 and 288's backfill adds a **second member-owned table in the
+same database** — :mod:`regime.origins`, the store that records a
+synthesized world with the campaign it came from — reached directly
+rather than through a component, because a store addressed by
+``DATABASE_URL`` is never composed.  A builder takes no arguments and is built
 on every ``create_app()`` call, while each of those acts is a function of
 evidence the factory does not hold — the pool's census, a manifest, a
 price panel — so registering one would be a component pointed at state no
@@ -112,27 +126,59 @@ from .coverage import (
     RegimeCoverage,
     persist_coverage,
 )
-from .errors import CoverageError, RegimeError, StratumAssignmentError
+from .errors import (
+    BackfillProvenanceError,
+    CoverageError,
+    RegimeError,
+    StratumAssignmentError,
+)
+from .origins import (
+    BACKFILLED_WORLD_TABLE,
+    CAMPAIGN_ID_COLUMN,
+    EPOCH_ID_COLUMN,
+    NO_ORIGIN_CODE,
+    RECORDED_AT_COLUMN,
+    WORLD_ID_COLUMN,
+    WORLD_ID_SEPARATOR,
+    BackfilledWorldRecord,
+    BackfillProvenance,
+    WorldBackfill,
+    record_backfilled_world,
+    split_world_id,
+)
 
 __all__ = [
+    "BACKFILLED_WORLD_TABLE",
+    "CAMPAIGN_ID_COLUMN",
     "COMPONENT_NAME",
     "COVERAGE_TABLE",
     "DATABASE_URL_ENV",
     "DEFAULT_STRATA",
+    "EPOCH_ID_COLUMN",
     "FULL_HISTORY_FIT_CODE",
+    "NO_ORIGIN_CODE",
+    "RECORDED_AT_COLUMN",
     "STRATUM_COLUMN",
     "UPDATED_AT_COLUMN",
     "WORLD_COUNT_COLUMN",
+    "WORLD_ID_COLUMN",
+    "WORLD_ID_SEPARATOR",
+    "BackfillProvenance",
+    "BackfillProvenanceError",
+    "BackfilledWorldRecord",
     "CoverageCount",
     "CoverageError",
     "RegimeCoverage",
     "RegimeError",
     "StratumAssignment",
     "StratumAssignmentError",
+    "WorldBackfill",
     "assign_strata",
     "build_regime_coverage",
     "census_coverage",
     "persist_coverage",
+    "record_backfilled_world",
+    "split_world_id",
 ]
 
 #: The name the regime member registers its coverage ledger under.

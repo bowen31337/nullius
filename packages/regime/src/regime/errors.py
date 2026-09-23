@@ -59,6 +59,22 @@ caller that must react to *my labeler was configured as a full-history
 fit* would misread it as *the ledger row could not be written* if the
 two shared one ``except``.
 
+:class:`BackfillProvenanceError` is feature 288's, and it is the third
+class rather than a face of either of the first two because it is about a
+different noun entirely: not a *count* and not an *assignment*, but a
+world's **origin**.  Feature 287's backfill synthesizes worlds by
+replaying stored discovery trees against historical epochs they were
+never run on, and §C7's coverage number counts those worlds — so a
+synthetic world that could not say which tree it came from would be
+counted as one the system really traded, which is the masquerade feature
+288's own sentence names.  Its repair is neither a corrected re-ask to
+the ledger nor a corrected labeler configuration: it is to re-derive the
+world from the tree and the epoch, or to correct the spelling that
+produced it.  It opens every message with ``no_origin``, the greppable
+one word the ``full_history_fit`` of the class above and
+:mod:`discovery.errors`' ``illegal_theme`` and :mod:`dreaming.errors`'
+``pool_frozen`` already establish.
+
 This member deliberately does **not** raise
 :class:`feature_store.regime_labeler.FullHistoryFitError`, even though the
 labeler that assigns worlds to strata is the source of the names this
@@ -79,7 +95,12 @@ at the one seam where the labeler's output becomes the ledger's input.
 
 from __future__ import annotations
 
-__all__ = ["CoverageError", "RegimeError", "StratumAssignmentError"]
+__all__ = [
+    "BackfillProvenanceError",
+    "CoverageError",
+    "RegimeError",
+    "StratumAssignmentError",
+]
 
 
 class RegimeError(Exception):
@@ -129,5 +150,48 @@ class StratumAssignmentError(RegimeError):
     :class:`CoverageError`: nothing failed to persist here, and a caller
     catching the two together would read *the ledger refused my row*
     where the truth is *the fit was configured as a full-history one*.
+    """
+
+
+class BackfillProvenanceError(RegimeError):
+    """A backfilled world's origin could not be recorded, or was not there.
+
+    Feature 288's refusal — *persist a backfilled world with its
+    originating campaign reference, so backfill never masquerades as
+    fresh history* — and it carries the faces of that one act:
+
+    * **the ask** — a carrier that states no origin.  A world whose id
+      carries no ``@`` separator is a synthetic world that names no tree
+      it came from; so are a blank campaign half and a blank epoch half.
+      Every message opens with ``no_origin`` so the refusal is greppable
+      by the one word the feature's sentence turns on.  The repair is to
+      *re-derive the world* from the stored tree and the epoch it was
+      replayed against, rather than to re-send the name: a world that
+      cannot say where it came from is exactly the world that must not be
+      seated, because seating it is the masquerade.
+    * **the disagreement** — a carrier, or a stored row, that states a
+      ``campaign_id`` or ``epoch_id`` contradicting its own ``world_id``.
+      A backfilled world's origin is read *out of* its identity (feature
+      287 spelled the id ``<campaign_id>@<epoch_id>`` for that reason), so
+      a world stating two origins has none a reader could rely on.  The
+      repair is to the spelling the caller assembled the world with, or to
+      the row an outside tool wrote; this store refuses rather than picking
+      a half to believe.
+    * **the vintage** — a stored row whose ``recorded_at`` is absent,
+      although the table declares it ``NOT NULL``.  A recorded origin
+      without an instant is not evidence of when the pool grew, so a row
+      without one is not a record this store can report; the repair is to
+      the data, and the message names the world.
+
+    Deliberately **not** a :class:`CoverageError`: the two acts differ, and
+    a caller catching them together would read *the coverage count could
+    not be written* where the truth is *the synthetic world could not say
+    where it came from*.  Deliberately **not** a
+    :class:`StratumAssignmentError` either: nothing was assigned a stratum
+    here.  A ``DATABASE_URL`` this member cannot speak is also **not** this
+    class — it is an address fault, with the address repair
+    :class:`CoverageError` already names for the same variable, so the
+    member keeps one vocabulary for one fault and this class speaks only
+    about a world's provenance.
     """
 

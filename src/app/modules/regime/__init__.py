@@ -16,7 +16,7 @@ this seat rather than through a second component — feature 284's
 ``GET /metrics/regime-coverage`` reads what it holds, feature 285's
 promotion block and feature 289's diversity refusal judge counts read
 out of it, feature 286's ``empty_stratum`` warning fires on the
-named-empty rows it lands, and features 287/288/290's backfill and
+named-empty rows it lands, and features 287/288's backfill and 290's
 labeling write through it — so the one question this module answers is
 the one every reader of §C7's ledger starts from.
 
