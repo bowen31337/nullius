@@ -222,6 +222,7 @@ from .errors import (
     ReplayError,
     ReplayMetricsError,
     ReplayReturnsError,
+    ReplayRoundError,
     ReplayTreeError,
 )
 from .metrics import (
@@ -235,6 +236,7 @@ from .metrics import (
     replay_latency,
 )
 from .returns import RESIDENT_READ_POLICY, ReplayReturns, resident_returns
+from .rounds import run_replay
 from .transition import (
     ReplayEngine,
     ReplayTransition,
@@ -265,6 +267,7 @@ __all__ = [
     "ReplayMetricsError",
     "ReplayReturns",
     "ReplayReturnsError",
+    "ReplayRoundError",
     "ReplayTransition",
     "ReplayTreeError",
     "build_replay_engine",
@@ -282,6 +285,7 @@ __all__ = [
     "replay_transition",
     "resident_returns",
     "resolve_tree",
+    "run_replay",
     "suspected_recomputation",
 ]
 

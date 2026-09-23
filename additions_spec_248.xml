@@ -1,0 +1,316 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 248 (System loops policy selection until no batch is selected or the round cap is reached, which returns the revealed set)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 248 in the existing replay member
+    (packages/replay, import name replay; seat src/app/modules/replay): the
+    outer loop of docs/nullius-tech-architecture.md §10.1's `replay()`, the
+    part feature 245's own plan explicitly cedes — "The loop, the round cap
+    and the 'no batch selected' termination are feature 248's; this module
+    owns one step." Feature 248 declares `depends_on=245`, and it is the loop
+    that drives 245's transition:
+
+        revealed = {tree.root}
+        rounds = 0
+        while rounds &lt; K2:                         # the cap is 248's
+            batch = policy.select(prefix_view(revealed))   # prefix-only
+            if not batch:                            # no batch → terminate
+                break
+            for v in batch:
+                child = tree.child_of(v)             # 245's transition
+                if child:
+                    revealed.add(child)
+            rounds += 1
+        return revealed                              # the revealed set
+
+    One new module, replay/rounds.py, and one verb — `run_replay(select,
+    question, tree, *, round_cap)`. It is the runtime's half of §10.1's
+    asymmetry: 245 is one step (`child = tree.child_of(v)`), and 248 is the
+    loop that takes those steps until the policy stops selecting or the round
+    cap is hit, then hands back the revealed set. It does not select, does not
+    score, does not commit — those are the policy's (the `select` it is
+    handed), feature 249's and feature 250's — and it does not re-derive a
+    recorded child: it drives 245's `ReplayTransition`, which is what
+    `depends_on=245` means structurally.
+
+    (1) The loop. `run_replay` opens 245's transition at the tree's roots
+    (`ReplayTransition.over(tree)` — the prefix seeded at the parentless
+    nodes, exactly 245's `{tree.root}`), then repeats: build the policy's
+    prefix from the transition's revealed set, ask the policy for a batch,
+    and — when a batch comes back — advance the transition by each selected
+    node's recorded child, one `transition(v)` per element, until either the
+    policy returns no batch or the round cap is reached. It returns the
+    revealed set as 245 reports it (`transition.prefix()`, ascending, §12's
+    ordering rule), never a count, a score or a commit — the sentence names
+    one return, "the revealed set", and a loop that returned more would be
+    wearing feature 249's or 250's verb. Termination is the disjunction the
+    sentence states: `if not batch: break` (no batch selected — feature 3/242's
+    "the policy has selected no batch", the empty list `legal_actions` hands a
+    leaf) OR `rounds &gt;= round_cap` (the cap). Both are tested; a loop that
+    honored only one would either run forever on a policy that always selects,
+    or stop one round short of a policy that would have selected again.
+
+    (2) The two collaborators arrive duck-typed, because a member never
+    imports another member — not even its own past, and not the policy-runtime
+    member whose `PolicyQuestion` and authored-policy `select` the loop drives.
+    The seam therefore reads what each collaborator *is*, never `isinstance`s
+    it (the module loader imports a member under a synthetic name and
+    re-executes it, so the composed `PolicyQuestion` this process hands out is
+    a second class object of the same name):
+
+    * **`select`** — the callable shape of `policy.select(prefix_view(...))`.
+      The loop never names `prefix_view` or a `Policy` (it owns neither and
+      may not import them); the caller wires the closure — `lambda q:
+      policy.select(prefix_view(q))` — and hands the callable in. The loop
+      calls `select(question)` once per round and treats a falsy answer as
+      termination. `select` is validated callable **before the tree is opened
+      and before the first round runs**: a non-callable is refused, because a
+      loop that opened a transition and read a tree and then discovered it had
+      no policy to call would have spent the walk it was meant to guard
+      against spending — the same ordering 245's generator refusal and 251's
+      loader refusal hold (a refusal that ran first would have spent the thing
+      it was refusing to spend).
+    * **`question`** — the read-side question (feature 217's `PolicyQuestion`,
+      the object `prefix_view` is built over). The loop reads exactly one verb
+      off it — `probe_batch` — and nothing else. It does not build a prefix
+      view (223's), does not read `observed`/`legal_actions`/`meta`/`budget`
+      (the policy's, through the surface the caller supplies), and does not
+      reveal on the policy's behalf (220's). It syncs the question's reveal
+      set to the transition's revealed set, and that is the whole of its
+      demand on the question. A carrier with no callable `probe_batch` is
+      refused in the member's vocabulary, naming what arrived.
+
+    (3) The reveal-set reconciliation — the load-bearing detail, and the
+    reason the loop touches the question at all. The transition and the
+    question are two objects over one tree, each holding its own reveal set:
+    245's transition grows `revealed` by the recorded child; 217's question
+    grows its reveal set by `probe_batch`. `prefix_view(question)` exposes
+    only `question.observed()` — the question's reveal set — so the policy
+    sees the prefix the question has revealed, not the prefix the transition
+    has. If the two sets drift, the policy is shown a frontier the walk is not
+    standing on. The loop is the reconciler: it seeds the question with the
+    roots once (`question.probe_batch(transition.prefix())`, so the policy's
+    first view is the seeded prefix), and after each round it reveals into the
+    question **exactly the children the transition newly revealed** — the
+    non-`None` returns of that round's `transition(v)` calls — by one
+    `probe_batch(newly)`. It does not re-probe the whole prefix each round:
+    `probe_batch` is idempotent and all-or-nothing (a duplicate is one cell,
+    the whole call runs ascending, a batch naming a node the tree does not
+    hold reveals none of them), so re-probing would be correct but quadratic
+    in the campaign's nodes across the rounds — the very cost 245 refuses on
+    its side (per-step re-derivation measured at 76 ms for a 500-node
+    campaign against 252's 50 ms budget). Revealing only the new children
+    keeps the question's reveal set equal to the transition's revealed set at
+    every `select`, in O(N) over the whole walk rather than O(rounds × N). The
+    reconciliation reads `probe_batch`'s contract, it does not restate it: a
+    node the transition revealed is a node the tree holds (245 adds only
+    recorded children, and refuses a tree that records several at
+    construction), so the sync never hands `probe_batch` a node outside the
+    tree, and `probe_batch`'s own all-or-nothing validation is the second
+    statement of a fact the transition already guarantees.
+
+    (4) The round cap — `K2`, and it is a **required argument, validated as a
+    positive integer, with no default and no module constant**. docs §10.1
+    writes `while rounds &lt; K2` with `K2` a symbolic bound, never a number,
+    and the repository's recorded hard constraints forbid an absolute target
+    (prd §436: "no absolute score targets"; the admission gate 230 refuses a
+    policy with a hardcoded cap). So the cap is the caller's policy decision —
+    a deployment chooses how many selection rounds a replay may take — and
+    this module spells no number for it. `round_cap` is refused when it is not
+    a positive integer (a `bool`, a zero, a negative, a non-int) **before the
+    transition is opened**, because a cap that is not a positive count names no
+    loop: zero or negative would terminate before a single round (a silent
+    no-op that reads as a completed replay), and a non-int would break the
+    `rounds &lt; round_cap` comparison. The refusal names the value and that the
+    cap is a positive round count. This module is deliberately the *only*
+    place a round count is compared, so the cap cannot be restated at a second
+    `while` elsewhere in the member.
+
+    (5) One new error SIBLING under `ReplayError`, split by the repair the
+    caller must make: `ReplayRoundError` — the round loop's ask is malformed,
+    and the repair is on the caller's side of the call (pass a callable
+    `select`, a positive `round_cap`, a question that fronts the campaign). It
+    carries the three refusals the loop owns — the non-callable `select`, the
+    non-positive `round_cap`, the carrier with no `probe_batch` — because they
+    share one repair (fix the argument handed to `run_replay`) and a caller's
+    single `except ReplayError` must catch every way the loop's ask can fail,
+    the discipline `replay.errors` states for the tree, the residence and the
+    report. It is **not** a child of `ReplayTreeError`: a malformed ask to the
+    loop is a different repair from a stored tree no transition can walk, and a
+    caller skipping a bad tree must not silently skip the refusal that says the
+    loop was handed no callable policy. A malformed *tree*, by contrast, still
+    surfaces as 245's `ReplayTreeError` — the loop opens the transition and
+    lets its refusal propagate, because the tree's unfitness is a statement
+    about the tree, repaired at the store, not a statement about the loop's
+    arguments.
+
+    (6) The composed spelling — `ReplayEngine.run(select, question, *,
+    round_cap)` on 245's stateless facade, reached through the component the
+    member registers under `replay`. It resolves the deployment's campaign
+    tree (`self.tree()`, the call-time resolution 245 already owns, never at
+    composition — the recursion the facade's docstring argues) and delegates
+    to `run_replay`. The import of `run_replay` is deferred into the method
+    body, not at module top: `rounds.py` imports `ReplayTransition` from
+    `transition.py`, so a top-level `from .rounds import run_replay` in
+    `transition.py` would close an import cycle; the deferred import is the
+    same seam `resolve_tree` takes (`importlib.import_module` inside the
+    function) and keeps `transition.py` import-cheap at composition. No second
+    `replay` component, no `replay-`-prefixed sibling — the loop's behaviour
+    is added to the facade, the law the package `__init__` states (one
+    component per member name).
+
+    **What this module deliberately is not.** It is not the selector: `select`
+    is the caller's closure over the policy and `prefix_view`, and a loop that
+    chose the batch would be a runtime making the policy's decision — the
+    exact overreach 245's docstring refuses ("a transition that chose what to
+    reveal would be a runtime making the policy's decision"). It is not feature
+    249's commit — the loop returns the revealed set and stops; the committed
+    pick `policy.commit()` and the negative-infinity-on-none are 249's, over
+    this loop's return. It is not feature 250's scoring, not feature 222's
+    score, not feature 255's `replay_score` row — the loop measures no score
+    and persists nothing. It is not 245's transition — it drives it, one step
+    per selected node, and does not re-derive a recorded child. It is not the
+    prefix-only barrier (223's view, 224's answer surface, 225's armed guard):
+    the loop trusts that `select` returns a prefix-only batch — the barrier
+    enforces that, at the surface and the guard, not here — and does not
+    re-police which nodes the batch names; a batch element the tree does not
+    hold is refused by 245's `transition(v)`, not by a second barrier minted
+    in the loop. It holds no store, opens no database, consults no clock, and
+    is pure over the tree and the two collaborators it is handed — the §12
+    determinism contract, restated for the loop: two replays of one policy on
+    one tree are one revealed set.
+
+    No central registry, router, app factory, middleware, settings or
+    migration is edited; no table is created or written; no new `@register`
+    component is added (245's single `replay` component is untouched, the
+    facade gains a verb). The member joins by workspace-scan convention and
+    does not import another workspace member — the tree and the question are
+    consumed duck-typed, and `select`/`prefix_view`/`policy` are the caller's.
+    The module is stdlib-only: `collections.abc`, `typing`.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/* members, import names are
+      underscored slugs) / pytest (ruff + mypy conventions). The module loader
+      (src/app/module_loader.py) discovers members from the root pyproject.toml
+      `[tool.uv.workspace] members = ["packages/*"]`, imports each package so
+      its module-level `@register` fires, and composes what each `@register`
+      builder contributes under a component name. `app` (src/app) is a namespace
+      package with no `__init__.py`; the seats in src/app/modules/&lt;member&gt;/
+      are reached by namespace import (e.g. app.modules.replay). A member never
+      imports another member — it reaches shared shapes through `app.*`, never
+      through a sibling package's import name.</stack>
+    <test_baseline>The repository-level suite under tests/ is collected by
+      pytest with testpaths=tests; each workspace member's own suite lives under
+      packages/&lt;member&gt;/tests/ and is collected under its own conftest
+      (same-basename files collide under one pytest run), and is NOT graded by
+      the bare `uv run pytest` acceptance gate — a member suite must be run
+      explicitly (run both `uv run pytest tests/` and the member's own
+      `packages/replay/tests/`). The replay member suite baseline is the feature
+      245/251–254 suite already in packages/replay/tests. The repo lint is red
+      on main (mypy absent, pre-existing ruff errors), so lint only the changed
+      files and compare to a sibling. The replay member is stdlib-only, and
+      feature 248 keeps it that way: collections.abc, typing.</test_baseline>
+    <conventions>
+      snake_case modules, one verb and its refusals per module, docstrings that
+      cite the governing documents by section and quote the sentence they
+      implement, refusals that name the subject and the repair, error classes
+      split by the repair rather than by where the failure was noticed, and
+      delegation rather than restatement wherever a sibling already owns the law
+      (the recorded child to 245's transition, the reveal-set sync to
+      `probe_batch`'s idempotency, the ordering to §12). The member's honesty
+      stance: a module cites the document it implements and says what it is NOT
+      (this one is not the selector, not the commit, not the score, not the
+      transition, not the barrier; it is no component, holds nothing, persists
+      nothing). The duck-typed seam validates what it reads rather than
+      `isinstance`-ing the carrier, because the loader's synthetic module name
+      makes a class check refuse a composed record.
+    </conventions>
+    <context>existing modules in packages/replay/src/replay/: errors.py (the
+      member's vocabulary — ReplayError and its siblings ReplayTreeError,
+      ChildGenerationRefused, ReplayReturnsError, ParquetReadRefused,
+      ReplayMetricsError, RecomputationSuspectedError), transition.py (feature
+      245 — ReplayTransition, ReplayEngine, replay_transition, replay_roots,
+      child_map, recorded_child; the transition owns the revealed set and the
+      recorded-child step the loop drives), returns.py (251), duration.py (252),
+      alert.py (253), metrics.py (254). The policy-runtime member's
+      `PolicyQuestion.probe_batch` (feature 220) is the batch-reveal verb the
+      loop's sync consumes — idempotent, all-or-nothing, ascending, returning
+      only the cells newly revealed — reached duck-typed, never imported. Tests
+      live in packages/replay/tests/ with their own conftest.py providing a
+      duck-typed StoredTree/ StoredNode vocabulary and a `transition` fixture;
+      the repo-level tests/replay/ suite pins the composed wiring over the real
+      CampaignTree.</context>
+  </existing_context>
+  <features_to_add>
+    <category name="Replay round loop">
+      <feature index="248">
+        <description>System loops policy selection over one stored tree until no batch is selected or the round cap is reached, and returns the revealed set — the outer `while rounds &lt; K2` loop of docs/nullius-tech-architecture.md §10.1's `replay()`, the part feature 245's plan cedes ("The loop, the round cap and the 'no batch selected' termination are feature 248's"). It exposes `run_replay(select, question, tree, *, round_cap)`: it opens feature 245's `ReplayTransition.over(tree)` (the prefix seeded at the tree's roots), then repeats — build the policy's prefix from the transition's revealed set, ask the caller-supplied `select(question)` for a batch, and when a batch comes back advance the transition by each selected node's recorded child (one `transition(v)` per element) — until either the policy returns no batch (`if not batch: break`, feature 3/242's "the policy has selected no batch") or `rounds &gt;= round_cap`. It returns `transition.prefix()` (the revealed set, ascending, §12's ordering rule) and nothing else — no count, no score, no commit (those are the policy's `select`, feature 249's `commit` and feature 250/255's scoring). The two collaborators arrive duck-typed (a member never imports another member): `select` is the callable shape of `policy.select(prefix_view(...))` the caller wires as a closure, validated callable before the tree is opened; `question` is feature 217's read-side `PolicyQuestion`, read through exactly one verb, `probe_batch`, which the loop uses to keep the question's reveal set equal to the transition's revealed set so the policy is always shown the frontier the walk is standing on — seeding the roots once, then revealing only the children each round newly revealed (the non-`None` returns of that round's `transition(v)`), never re-probing the whole prefix (idempotent though `probe_batch` is, re-probing is O(rounds × N) where revealing the new children is O(N) over the walk — the per-step re-derivation cost 245 refuses). The round cap `K2` is a required argument, validated a positive integer, with no default and no module constant (docs §10.1's `K2` is a symbolic bound and the repository forbids an absolute target, prd §436); it is refused when not a positive integer (bool, zero, negative, non-int) before the transition is opened. One new error sibling under `ReplayError` — `ReplayRoundError`, for the loop's malformed ask (non-callable `select`, non-positive `round_cap`, a carrier with no callable `probe_batch`), never a child of `ReplayTreeError` (a malformed ask to the loop is a different repair from a stored tree no transition can walk); a malformed tree still surfaces as 245's `ReplayTreeError` through the loop. The composed spelling `ReplayEngine.run(select, question, *, round_cap)` on feature 245's stateless facade resolves the deployment's tree via `self.tree()` and delegates to `run_replay` through a method-body import (the import-cycle seam the facade's `resolve_tree` already takes). No new `@register` component (245's single `replay` facade gains a verb), no table, no write, no store, no clock; stdlib-only (`collections.abc`, `typing`).</description>
+      </feature>
+      <feature index="248">
+        <description>System passes an end-to-end replay in which a stub policy that closes over the question's revealed set selects, per round, the frontier node whose recorded child the stub tree holds; `run_replay` drives feature 245's transition (never re-deriving a recorded child — the stub asserts the transition, not the tree, advanced), seeds the question with the roots, keeps the question's reveal set equal to `transition.prefix()` at every `select`, reveals each newly-recorded child into the question exactly once (a counting `probe_batch` double asserts no node is re-probed), terminates on no batch (a `select` returning `[]` stops the walk and returns the current prefix) and on the round cap (a `select` that always returns a batch stops at exactly `round_cap` rounds with a frontier remaining), returns the revealed set ascending, is idempotent (a `select` that re-selects an already-revealed node reveals nothing new and does not double-count), and refuses a non-callable `select`, a non-positive `round_cap` (bool, zero, negative, non-int, each naming the value) and a carrier with no callable `probe_batch` before the transition is opened (a watched tree is never addressed), every refusal a `ReplayRoundError` and not a `ReplayTreeError`; a malformed tree still surfaces as 245's `ReplayTreeError`; and the loop over the real `CampaignTree` with a stub policy closing over `prefix_view(question)` proves the duck-typed seam matches the composed question and the reveal-set reconciliation holds end to end.</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <deliverables>
+    <deliverable name="rounds.py">
+      packages/replay/src/replay/rounds.py — the round loop and its refusals,
+      with `run_replay(select, question, tree, *, round_cap)` in `__all__`. The
+      loop opens 245's `ReplayTransition.over(tree)`, seeds the question's
+      reveal set with the roots, then loops `select(question)` to a batch,
+      advances the transition by each selected node's recorded child, syncs the
+      question with the round's newly revealed children via one
+      `probe_batch(newly)`, and terminates on no batch or the round cap,
+      returning `transition.prefix()`. `select` validated callable,
+      `round_cap` validated a positive int, and the question's `probe_batch`
+      validated — all before the transition is opened. No `@register`, no
+      table, no write, no store, no clock; the round cap carries no constant.
+    </deliverable>
+    <deliverable name="errors.py">
+      packages/replay/src/replay/errors.py — the `ReplayRoundError` sibling
+      under `ReplayError`, added to `__all__`, for the round loop's malformed
+      ask (non-callable `select`, non-positive `round_cap`, a carrier with no
+      `probe_batch`); not a child of `ReplayTreeError`, argued in the module
+      docstring by the repair.
+    </deliverable>
+    <deliverable name="transition.py">
+      packages/replay/src/replay/transition.py — the composed spelling
+      `ReplayEngine.run(select, question, *, round_cap)`, resolving the
+      deployment's tree via `self.tree()` and delegating to `run_replay`
+      through a method-body import (the import-cycle seam the seat's
+      `resolve_tree` already takes). No other change to 245's transition.
+    </deliverable>
+    <deliverable name="__init__.py">
+      packages/replay/src/replay/__init__.py — export `run_replay` and
+      `ReplayRoundError`; the member's one `@register` component stays 245's
+      `replay` facade, which gains the `run` verb.
+    </deliverable>
+    <deliverable name="tests">
+      packages/replay/tests/test_rounds.py — the feature's own suite, against
+      duck-typed doubles (a stub `select`, a stub question exposing only
+      `probe_batch` over a reveal set, the StoredTree of conftest): the loop
+      drives 245's transition (never re-deriving a recorded child — pinned by
+      a `select` that asserts the transition, not the tree, advanced), the
+      prefix seeded at the roots, the reveal set kept equal to the prefix at
+      every `select` (the stub reads the question's `observed`-equivalent and
+      the test asserts it matches `transition.prefix()`), termination on no
+      batch (a `select` that returns `[]` stops the walk and returns the
+      current prefix), termination on the round cap (a `select` that always
+      returns a batch stops at exactly `round_cap` rounds even with a frontier
+      remaining), the new-children sync revealing each node into the question
+      exactly once (a counting `probe_batch` double asserts no node is
+      re-probed — the anti-quadratic claim), the order of refusals (a
+      non-callable `select`, a non-positive `round_cap`, and a carrier with no
+      `probe_batch` each refused before the transition is opened — a watched
+      tree is never addressed), `round_cap` validated a positive int (bool,
+      zero, negative, non-int refused, each naming the value), every refusal a
+      `ReplayRoundError` and not a `ReplayTreeError`, a malformed tree still
+      surfacing as 245's `ReplayTreeError` through the loop, the revealed set
+      returned ascending, and idempotence (a `select` that re-selects an
+      already-revealed node reveals nothing new and does not double-count).
+      test_errors.py extended with the sibling pin against the member's whole
+      vocabulary; a repo-level tests/replay/ wiring test exercises the loop
+      over the real CampaignTree with a stub policy closing over
+      `prefix_view(question)`, proving the duck-typed seam matches the composed
+      question and the reveal-set reconciliation holds end to end.
+    </deliverable>
+  </deliverables>
+</project_specification>

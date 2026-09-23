@@ -585,6 +585,44 @@ class ReplayEngine:
         """
         return self.transition(self.tree())
 
+    def run(
+        self,
+        select: Any,
+        question: Any,
+        *,
+        round_cap: int,
+    ) -> tuple[str, ...]:
+        """Loop policy selection until no batch or the round cap — feature 248.
+
+        The composed spelling of :func:`replay.run_replay`: resolve the
+        deployment's tree via :meth:`tree` (the call-time resolution this
+        class's docstring argues — never at composition, for the recursion
+        reason), then drive feature 245's transition until the policy returns
+        no batch or ``round_cap`` rounds are reached, and hand back the
+        revealed set.  The two calls are one verb here because they are one
+        act — *replay the campaign this process is pointed at, round by round*
+        — and a caller that has a tree of its own hands it to
+        :func:`replay.run_replay` directly.
+
+        ``select`` and ``question`` arrive duck-typed, exactly as the free
+        function takes them: ``select`` is the caller's closure over the policy
+        and the prefix view (``lambda q: policy.select(prefix_view(q))``), and
+        ``question`` is the read-side question, read through its
+        ``probe_batch``.  A non-callable ``select``, a non-positive
+        ``round_cap`` (a ``bool``, a zero, a negative, a non-``int``) or a
+        carrier with no callable ``probe_batch`` is refused as
+        :class:`~replay.ReplayRoundError` before the tree is resolved; a
+        deployment with no committed campaign is feature 245's
+        :class:`~replay.ReplayTreeError` from :meth:`tree`, and a malformed
+        tree surfaces the same way.
+
+        Returns the revealed set ascending — :func:`replay.run_replay`'s
+        return — and nothing else: no count, no score, no commit.
+        """
+        from .rounds import run_replay
+
+        return run_replay(select, question, self.tree(), round_cap=round_cap)
+
     def returns(
         self,
         pins: Any,

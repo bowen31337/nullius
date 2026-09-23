@@ -136,6 +136,7 @@ __all__ = [
     "ReplayError",
     "ReplayMetricsError",
     "ReplayReturnsError",
+    "ReplayRoundError",
     "ReplayTreeError",
 ]
 
@@ -221,6 +222,62 @@ class ReplayReturnsError(ReplayError):
     the same broken residence: it would fail the same way, and (for a
     released read) re-opening would load again, which is the naive
     per-replay sweep the feature exists to refuse.
+    """
+
+
+class ReplayRoundError(ReplayError):
+    """The round loop's ask is malformed — the loop's one refusal vocabulary.
+
+    app_spec.xml feature 248: *"System loops policy selection until no batch
+    is selected or the round cap is reached, which returns the revealed
+    set."*  The loop is the outer ``while rounds < K2`` of
+    docs/nullius-tech-architecture.md §10.1's ``replay()`` — the part feature
+    245's plan cedes ("The loop, the round cap and the 'no batch selected'
+    termination are feature 248's") — and it drives feature 245's transition,
+    a caller-supplied ``select`` closure and the read-side question.  Its
+    three refusals share one repair, and the repair is on the caller's side of
+    the call:
+
+    * the **non-callable ``select``** — the loop is handed the callable shape
+      of ``policy.select(prefix_view(...))`` (the caller wires the closure over
+      the policy and the prefix view; a member never imports another member, so
+      the loop cannot name either), and a value that is not callable names no
+      policy to call.  The refusal fires **before the tree is opened and before
+      the first round runs**, for the reason feature 245's generator refusal
+      and feature 251's loader refusal fire first: a loop that opened a
+      transition and read a tree and then discovered it had no policy to call
+      would have spent the walk it was meant to guard against spending;
+    * the **non-positive ``round_cap``** — ``K2`` is a required argument,
+      validated a positive integer, with no default and no module constant
+      (docs §10.1's ``K2`` is a symbolic bound and the repository forbids an
+      absolute target, prd §436).  A ``bool``, a zero, a negative or a
+      non-``int`` names no loop: zero or negative would terminate before a
+      single round (a silent no-op that reads as a completed replay), and a
+      non-``int`` breaks the ``rounds < round_cap`` comparison.  Refused
+      before the transition is opened, naming the value;
+    * a **carrier with no callable ``probe_batch``** — the loop keeps the
+      question's reveal set equal to the transition's revealed set through one
+      verb, feature 217's ``probe_batch`` (idempotent, all-or-nothing,
+      ascending, returning only the cells newly revealed), and a question that
+      fronts the campaign through no such verb cannot be reconciled to the
+      walk.  Refused naming what arrived, in this member's vocabulary.
+
+    **Not a subclass of** :class:`ReplayTreeError`, and the non-nesting is the
+    load-bearing half of the split, the same argument this module makes for
+    :class:`ChildGenerationRefused` and :class:`ParquetReadRefused`: a caller
+    that catches the tree's failures in order to skip a bad world must not
+    silently skip the refusal that says *the loop was handed no callable
+    policy at all* or *a round cap that names no loop*, because neither is a
+    fact about the world and the skip would hide a broken caller from every
+    world in the pool.  A malformed *tree*, by contrast, still surfaces as
+    feature 245's :class:`ReplayTreeError` through the loop — the loop opens
+    the transition and lets its refusal propagate, because the tree's
+    unfitness is a statement about the tree, repaired at the store, not a
+    statement about the loop's arguments.
+
+    The repair is the argument handed to the loop — a callable ``select``, a
+    positive ``round_cap``, a question that fronts the campaign — never a
+    re-run over the same malformed ask, which would refuse the same way.
     """
 
 
