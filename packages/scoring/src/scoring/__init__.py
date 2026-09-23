@@ -17,9 +17,9 @@ aggregation"*.  This member is the objective's half of that sentence, and
 feature 256 is its head: the leading term and the scalar it starts.  The
 six β-adjustments (features 257 through 262), the cross-world CVaR
 aggregation (263-264), the scorer-process calibration figures (265-269)
-are this member's later features — each arriving as its own law over the
-:class:`~scoring.WorldScore` this one answers, through the
-:meth:`~scoring.WorldScore.adjusted` seam, never by rewriting the
+are this member's later features — the β-terms arriving as their own
+signed deltas through the :meth:`~scoring.WorldScore.adjusted` seam, the
+aggregation consuming the scores whole, and none of them rewriting the
 measurement underneath.
 
 This package is a workspace member discovered by convention.  The module
@@ -71,6 +71,29 @@ term and the node metrics a policy read in-sample are one axis by
 construction, which is prd §7.1's Change A whole: scored on a sequestered
 epoch, on the same ruler the diagnostics spoke.
 
+**The aggregation over worlds is the member's second law (feature 263).**
+*"System aggregates across worlds as a blend of the stratum mean and the
+stratum minimum, which returns a score with lambda between 0.5 and
+0.7"* — prd §7.2's and docs §10.3's ``V^m = (1 − λ) · mean_g(V_g^m) +
+λ · min_g(V_g^m)``, the two lines the PRD calls *"larger impact than
+anything else in this section"*.  It lives in :mod:`scoring._aggregate`
+as :func:`~scoring.aggregate_objective` (the verb),
+:class:`~scoring.AggregatedObjective` (the value, carrying the score,
+the λ that blended it, the two terms, and every stratum's figure), the
+band constants :data:`~scoring.LAMBDA_FLOOR` /
+:data:`~scoring.LAMBDA_CEILING` / :data:`~scoring.LAMBDA_DEFAULT`, and
+its own refusal :class:`~scoring.AggregationError`.  Like the objective
+it is pure arithmetic — no store, no clock, no environment — so it adds
+no component and no seat: the composed ``scoring`` component stays the
+per-world objective (the callable the replay's scoring step routes
+through), and the dreaming loop that will rank candidates on this
+scalar (feature 274, persisting ``policy_revision.aggregate_score``)
+reaches the verb the way sibling features reach this member's value
+types — through the member's own namespace, the growth pattern the
+policy-runtime member's free seams set.  The strata it blends over are
+names, not yet regimes: *which* strata exist and the rejection of a
+plain mean across them is feature 264's law over this seam.
+
 **No persistence here, by the same law that keeps the arithmetic pure.**
 The ``replay_score`` row is the replay plugin's (feature 255); this
 member answers the value it is written from, exactly as migration 0109
@@ -88,8 +111,15 @@ from typing import TYPE_CHECKING
 
 from app.module_loader import register
 
+from ._aggregate import (
+    LAMBDA_CEILING,
+    LAMBDA_DEFAULT,
+    LAMBDA_FLOOR,
+    AggregatedObjective,
+    aggregate_objective,
+)
 from ._objective import IR_DATES_MINIMUM, WorldScore, world_objective
-from .errors import ScoringError, WorldObjectiveError
+from .errors import AggregationError, ScoringError, WorldObjectiveError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the annotation is lazy
     from collections.abc import Callable
@@ -97,9 +127,15 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the annotation is lazy
 __all__ = [
     "COMPONENT_NAME",
     "IR_DATES_MINIMUM",
+    "LAMBDA_CEILING",
+    "LAMBDA_DEFAULT",
+    "LAMBDA_FLOOR",
+    "AggregatedObjective",
+    "AggregationError",
     "ScoringError",
     "WorldObjectiveError",
     "WorldScore",
+    "aggregate_objective",
     "world_objective",
 ]
 

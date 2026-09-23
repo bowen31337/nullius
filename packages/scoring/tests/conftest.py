@@ -26,7 +26,15 @@ written in: a sequestered panel with a hand-computed information ratio
 reads), the committed pick's address, and a stand-in for feature 222's
 committed value — a plain object exposing ``node_id``, because a member
 never imports another member and the duck-typed seam is the honest way to
-test what crosses it.
+test what crosses it.  Feature 263's suite adds the aggregation's own
+vocabulary beside them: a stand-in carrier exposing exactly the two
+attributes the blend reads (``world_id`` and ``score`` — and nothing
+else, which is what proves the seam validates what it reads rather than
+the type it was handed), and a three-stratum pool of world scores whose
+figures are dyadic so the blend is hand-computable to the bit: stratum
+means 0.75, 0.5 and 0.25 over two, two and three worlds, an unweighted
+stratum mean of 0.5 exactly, a minimum of 0.25, and therefore a λ = 0.5
+blend of 0.375 — every number in the chain exact in binary.
 
 The path bootstrap puts both import roots on ``sys.path`` regardless of
 how pytest was invoked — the workspace's ``src/`` (for
@@ -73,6 +81,37 @@ class StandInPick:
     node_id: str
 
 
+@dataclass(frozen=True)
+class StandInScore:
+    """A stand-in carrier for the aggregation's duck-typed world seam.
+
+    Feature 256's :class:`~scoring.WorldScore` is the intended carrier,
+    but the module loader imports this member under a synthetic name and
+    re-executes it, so a score this process composed may be a second
+    ``WorldScore`` class object — the blend therefore reads the two
+    attributes it needs and validates what it reads.  This is the shape
+    that proves it: exactly ``world_id`` and ``score``, nothing else, so
+    a test aggregating these exercises the seam the composed process
+    actually depends on.
+    """
+
+    world_id: str
+    score: float
+
+
+def world_score(world_id: str, score: float) -> WorldScore:
+    """One world score at a stated scalar, for building a pool by hand.
+
+    The objective's own value, constructed directly (its constructor is
+    public and validates), with the measurement and the objective equal
+    — feature 256's birth equality — which is the state every world
+    enters an aggregation in until a β-term moves it.
+    """
+    return WorldScore(
+        world_id=world_id, node_id=f"campaign-01/{world_id}", ir_oos=score, score=score
+    )
+
+
 @pytest.fixture
 def pick_node_id() -> str:
     """The committed pick's address — one node, named once."""
@@ -109,3 +148,41 @@ def score(pick: StandInPick, panel: dict[dt.date, float]) -> WorldScore:
     """The objective's answer for the committed pick over the panel — the
     value every later assertion adjusts from."""
     return world_objective("financial-campaign-01", pick, panel)
+
+
+@pytest.fixture
+def strata() -> dict[str, list[WorldScore]]:
+    """A three-stratum pool whose blend is hand-computable to the bit.
+
+    The stratum names are the default three the coverage ledger's own
+    sentence names (feature 283's *"high-volatility trend",
+    "low-volatility chop" and "crash"* — restated here, not imported,
+    because a member never imports another member), and the scalars are
+    dyadic so every figure downstream is exact:
+
+    * trend: two worlds at 0.75 → figure 0.75
+    * chop: two worlds at 0.5 → figure 0.5
+    * crash: three worlds at 0.25 → figure 0.25 (three worlds on
+      purpose: the strata weigh equally, not by world count)
+
+    The unweighted stratum mean is (0.75 + 0.5 + 0.25)/3 = 0.5 exactly,
+    the stratum minimum is 0.25 (crash), and the blend is therefore
+    0.375 at λ = 0.5, 0.35 at the default λ = 0.6, 0.325 at λ = 0.7 —
+    the first and last checkable with ``==``, the middle within one
+    float of its decimal.
+    """
+    return {
+        "high-volatility trend": [
+            world_score("trend-a", 0.75),
+            world_score("trend-b", 0.75),
+        ],
+        "low-volatility chop": [
+            world_score("chop-a", 0.5),
+            world_score("chop-b", 0.5),
+        ],
+        "crash": [
+            world_score("crash-a", 0.25),
+            world_score("crash-b", 0.25),
+            world_score("crash-c", 0.25),
+        ],
+    }

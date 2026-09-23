@@ -63,13 +63,20 @@ re-derive the arithmetic beside it.
 β-terms (257-262) extend the objective inside the member, each landing
 its adjustment through the ``adjusted`` seam on the value this component
 answers — no second seat, for the same reason no second spelling of the
-arithmetic exists.  The first feature of the category that owns
-deployment state — feature 265's scorer process holding the sidecar key,
-then 267's per-campaign ``FDR_deploy`` store — takes its own component
-name beside ``scoring`` and its own sibling seat module beside this one,
-exactly the growth ``app.modules.bootstrap`` took when feature 188's pool
-arrived: a second module answering *what is the composed scorer
-process?*, this one going on answering *what is the composed objective?*
+arithmetic exists.  Feature 263's aggregation has since taken exactly
+that path: the blend of the stratum mean and the stratum minimum is pure
+arithmetic like the objective, so it lives as the member's second law
+(:func:`scoring.aggregate_objective`, reached from the member's own
+namespace) with no component beside ``scoring`` and no second seat
+beside this module — the composed callable here stays the per-world
+objective the replay's scoring step routes through.  The first feature
+of the category that owns deployment state — feature 265's scorer
+process holding the sidecar key, then 267's per-campaign ``FDR_deploy``
+store — takes its own component name beside ``scoring`` and its own
+sibling seat module beside this one, exactly the growth
+``app.modules.bootstrap`` took when feature 188's pool arrived: a second
+module answering *what is the composed scorer process?*, this one going
+on answering *what is the composed objective?*
 """
 
 from __future__ import annotations
