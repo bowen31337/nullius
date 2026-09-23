@@ -1,0 +1,50 @@
+# nullius workspace member: the dreaming plugin
+# (app_spec.xml, "Dreaming Loop & Meta-Selection", feature 270;
+# docs/alpha-engine-prd.md §C5 and §12.1 for the loop this member opens and
+# docs/nullius-tech-architecture.md §10.3.1 for its meta-selection bar).
+#
+# Joins the uv workspace by convention — packages/dreaming with this file —
+# so the module loader (src/app/module_loader.py) discovers it by scanning
+# the members the root pyproject.toml declares.  No edit to any central
+# registry, router table or app factory is needed or wanted to wire this
+# package in.
+#
+# Dependencies: the workspace root, and nothing else.  The factory's
+# registration protocol (`import app.module_loader`) is the whole of it —
+# the same one-dependency shape the bootstrap and discovery members ship,
+# and for the same reason: this member's first feature is a *freeze* over
+# a relational store the spec's own migrations already created
+# (``migrations/versions/0109_replay_score_and_policy_revision.py`` and the
+# pool's ``bootstrap_world``), so there is no data file to ship, no download
+# to declare and no third-party numerics to trust.  ``hashlib``,
+# ``sqlite3`` and ``urllib.parse`` are the whole of the arithmetic and the
+# whole of the I/O.
+#
+# That the member needs no dependency is a property of the feature rather
+# than an accident.  Three members already read the pool this feature holds
+# fixed — ``tripwires.excise`` refuses its poisoned branch, ``canary._void``
+# refuses its broken window, ``bootstrap._census`` counts its two halves —
+# and every one of them *refuses to write it*, each stating in as many words
+# that the pool's rows are the evidence (``0109``'s own word) and that a
+# feature which deleted or flagged them would be rewriting the reason a past
+# policy revision was selected.  Feature 270 is the rule those three were
+# already obeying: during a dreaming iteration the pool does not move, and
+# this member is what says so out loud and what refuses the writer that
+# tries.
+
+[project]
+name = "dreaming"
+version = "0.1.0"
+description = "Holds the replay pool fixed for a dreaming iteration and refuses a pool mutation during one."
+requires-python = ">=3.12"
+dependencies = ["nullius"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dreaming"]

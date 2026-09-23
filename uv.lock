@@ -9,6 +9,7 @@ members = [
     "canary",
     "cost-model",
     "discovery",
+    "dreaming",
     "evaluator",
     "ledger",
     "nullius",
@@ -228,6 +229,17 @@ wheels = [
 name = "discovery"
 version = "0.1.0"
 source = { editable = "packages/discovery" }
+dependencies = [
+    { name = "nullius" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "nullius", editable = "." }]
+
+[[package]]
+name = "dreaming"
+version = "0.1.0"
+source = { editable = "packages/dreaming" }
 dependencies = [
     { name = "nullius" },
 ]

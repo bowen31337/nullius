@@ -1,0 +1,137 @@
+"""The dreaming member's error vocabulary — feature 270's two faces.
+
+One base class (:class:`DreamingError`) so a caller — the campaign loop that
+closes a cycle, the replay member's writer, an operator script, a later feature
+in this category — can catch every failure of the dreaming path with a single
+``except``.  The subclasses split by *what the caller must do about it*, not by
+which line of code raised, the discipline :mod:`bootstrap.errors`,
+:mod:`nulloracle.errors` and :mod:`discovery.errors` state for their own trees.
+
+**This member opens with two classes, and the split between them is the whole
+of feature 270.**  app_spec.xml, "Dreaming Loop & Meta-Selection", feature 270:
+*System rejects a replay pool mutation during a dreaming iteration, holding the
+pool fixed for the cycle.*  That sentence names one **rule** — the pool does
+not move while an iteration holds it — and the rule can be broken from two
+sides, which is what the two classes are:
+
+* :class:`FreezeRequestError` — the *holding* could not be asked for as the
+  caller asked for it.  An iteration id that is not text, or a freeze object
+  handed a database URL this member cannot speak.  Every one of these is a
+  fact about the **request**: nothing was read, nothing was written, and the
+  repair is to re-consider what was asked for.
+* :class:`PoolFrozenError` — the pool is held fixed and it **moved anyway**,
+  or something tried to move it.  Every one of these is a fact about the
+  **world**: the ask was well formed, and the contradiction is between the
+  statement being run (or the pool as found) and the freeze that is open.
+  The repair is never to re-send a corrected ask.
+
+Folding the two together would make a caller that must react differently to
+*my iteration id was a typo* and *the cycle's pool is being written into* catch
+one class and re-inspect something it cannot tell apart — the failure the
+workspace's error discipline names everywhere, and the reason
+:class:`~discovery.errors.IllegalThemeError` and
+:class:`~discovery.errors.VoidCampaignError` each insist on sitting beside the
+planning error rather than under it.
+
+**Why :class:`PoolFrozenError` is its own class and not a borrowed one.**
+Three members already read this pool and each has its own vocabulary for its
+own act — :class:`~tripwires.errors.TripwireExcisionError`,
+:class:`~canary.CanaryVoidError`, :class:`~bootstrap.BootstrapPoolError` — and
+none of them means *the pool is held fixed*, because none of them is about the
+dreaming loop's cycle.  The workspace contract is additionally that no member
+imports another, so this class cannot be a subclass of one of them even if the
+meaning were close.  A caller that wants every failure of this member's path
+catches :class:`DreamingError`; a caller that wants to know *specifically*
+that a write collided with a cycle catches :class:`PoolFrozenError` and reads
+the iteration id out of the message.
+
+**The two codes.**  :data:`dreaming.cycle.FREEZE_CODE` (``pool_frozen``) opens
+every :class:`PoolFrozenError` message, so the rejection is greppable by the
+one word that names it — the convention §7.3's ``heterogeneous_world``, §7.4's
+``void_campaign`` and feature 241's ``illegal_theme`` already follow in this
+workspace.  This module deliberately does **not** carry feature 275's
+``pool_too_thin``: the ladder's floor is a precondition *on a run* (feature
+275's sentence, and its own code), while this member's sentence is about a run
+that is already going and must not have its pool moved underneath it.
+"""
+
+from __future__ import annotations
+
+__all__ = [
+    "DreamingError",
+    "FreezeRequestError",
+    "PoolFrozenError",
+]
+
+
+class DreamingError(Exception):
+    """Base class for every failure of the dreaming loop's path."""
+
+
+class FreezeRequestError(DreamingError):
+    """The freeze could not be held as the caller asked for it.
+
+    Raised before anything is read or written: an iteration id that is not
+    non-empty text, an instant that is not a timezone-aware datetime, or a
+    store handed a database URL this member cannot speak.  Each is a fact
+    about the *request*, and the repair is to re-consider what was asked for —
+    exactly as :class:`~discovery.errors.CampaignPlanningError` states for the
+    campaign planner's own malformed asks, and for the same reason: the
+    failure is identical however often it is retried.
+
+    Deliberately **not** a :class:`PoolFrozenError`.  Nothing is frozen while
+    this is raised — no row has been written and no iteration holds anything —
+    so a caller that caught the two together would read *your ask was
+    malformed* as *the pool is under a cycle right now*.
+    """
+
+
+class PoolFrozenError(DreamingError):
+    """The replay pool was held fixed for a cycle, and it moved anyway.
+
+    app_spec.xml, "Dreaming Loop & Meta-Selection", feature 270: *System
+    rejects a replay pool mutation during a dreaming iteration, holding the
+    pool fixed for the cycle.*  This is the *rejects* of that sentence, and it
+    carries **three faces of the one question** — *did the pool move while an
+    iteration held it?* — the shape
+    :class:`~discovery.errors.IllegalThemeError` documents for its own two:
+
+    * **A writer was refused.**  An insert, update or delete on one of the
+      pool's tables was attempted while an iteration held the freeze.  This is
+      the face the feature's sentence names, and it is enforced **in the
+      database** — by a ``BEFORE`` trigger over the pool's tables that
+      consults this member's open-freeze row — rather than by a Python
+      wrapper, which is the property that makes it a rule instead of a
+      convention: a raw ``sqlite3`` session, the replay member's own writer or
+      a hand-run ``UPDATE`` is refused exactly as a caller that went through
+      :meth:`~dreaming.cycle.CycleFreeze.guard` is.  A guard the writer could
+      walk around by opening the database itself would be no guard at all.
+    * **A second iteration tried to hold a pool already held.**  §12.1's loop
+      runs *one* cycle at a time — the holdout rotation (feature 279) and the
+      revision cap (feature 277) are per-cycle facts — so two open freezes
+      would be two cycles walking one pool with neither able to say which
+      scores belonged to which.  The store refuses the second with this class
+      rather than silently nesting, and names the iteration that holds it.
+    * **The pool was found changed when the freeze was checked.**  A freeze
+      records the pool's commitment — its membership digest and its size —
+      when it opens, and :meth:`~dreaming.cycle.CycleFreeze.verify` compares
+      that against the pool as it stands.  A difference means the pool moved
+      while it was supposed to be fixed, which is the failure the first face
+      exists to prevent and which the commitment exists to *detect*: a
+      trigger can be dropped, a database restored from a backup, a table
+      replaced by a hand.  This face is what makes "holding the pool fixed" an
+      observable claim rather than a promise.
+
+    One class rather than three because they are one predicate read from three
+    sides, and because the repair a caller makes is the same for all of them:
+    **stop writing, or close the iteration.**  It is emphatically not a
+    corrected re-ask — nothing about any of these statements is malformed, and
+    the write a caller attempted would be perfectly legal in the next cycle,
+    when no iteration is holding anything.
+
+    Every message opens with :data:`dreaming.cycle.FREEZE_CODE`
+    (``pool_frozen``), names the iteration doing the holding, and — for the
+    first face — the table and the operation that was refused, so an operator
+    reading a refusal can identify both ends of the collision: *which* cycle
+    was walking the pool and *what* was reaching into it.
+    """
