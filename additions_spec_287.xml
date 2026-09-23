@@ -1,0 +1,238 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 287 (System backfills coverage by replaying stored discovery trees against historical epochs, which creates worlds those trees were never run on)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 287 in the existing regime plugin
+    (packages/regime, import name regime): a coverage *backfill* that
+    synthesizes replay worlds by crossing each stored discovery tree with
+    each historical epoch, assigns each synthesized world a regime stratum
+    with the causal rolling-window labeler, and writes the counts through
+    the coverage store feature 283 already ships. The sentence's first
+    clause is the act: `backfill_coverage(trees, epochs, labeler, store, *,
+    strata=DEFAULT_STRATA)` takes a collection of stored campaign trees and
+    a collection of historical epochs, produces one synthesized world per
+    (tree, epoch) pair — a world the tree was never run on, because the
+    tree was discovered on its own campaign's data and is now replayed
+    against a historical epoch it never saw — assigns each world its
+    closing stratum, and persists one `regime_coverage` row per named
+    stratum (zeros included, in vocabulary order) through the store,
+    answering with the rows the table holds. The tree contributes the
+    world's provenance and a walkability check (a stored tree reveals only
+    recorded children, never a generated one — the replay law restated at
+    this seam, since the backfill must not invoke the evaluator or the
+    agent); the epoch contributes the market the tree is replayed against
+    (its dated regime-feature rows). It reuses feature 290's assignment
+    half (`assign_strata`) for the stratum and feature 283's store for the
+    persist, so every refusal those halves raise fires here too; its own
+    novel refusal is walkability — a tree that cannot be walked as a
+    recorded tree is refused, opening `unwalkable_tree`. It is a pure
+    function of evidence the factory does not hold (the trees, the epochs),
+    so it adds no new `@register` component (the regime member's one
+    component, feature 283's ledger, is untouched) and is reached directly
+    from the member (`from regime import backfill_coverage`), the way
+    feature 290's `census_coverage` is. No central registry, router, app
+    factory, middleware, settings or migration is edited; the member joins
+    by workspace-scan convention and does not import another workspace
+    member — the trees, epochs and labeler arrive duck-typed across the
+    same "no member imports another" seam the coverage and census modules
+    already take.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/regime member, import name
+      regime; the labeler is packages/feature-store, import name
+      feature_store, reached only duck-typed and only in tests via
+      importorskip) / pytest (ruff + mypy conventions). The module loader
+      (src/app/module_loader.py) discovers members from the root
+      pyproject.toml `[tool.uv.workspace] members = ["packages/*"]`,
+      imports each package so its module-level `@register` fires, and
+      composes what each `@register` builder contributes under a component
+      name. `app` (src/app) is a namespace package; the regime seat
+      (src/app/modules/regime) answers *what is the composed coverage
+      ledger?* for a caller that holds the app namespace. A member never
+      imports another member — it reaches shared shapes through `app.*` or
+      restates them, never through a sibling package's import name.</stack>
+    <test_baseline>The regime member's own suite under
+      packages/regime/tests/ (test_coverage, test_census, test_component,
+      test_cross_member) plus the seat suite at src/app/modules/regime.
+      The member is stdlib-only at module scope (the factory's scan imports
+      the package to fire its `@register`, so it must pay nothing); the
+      labeler and the discovery-tree shapes are reached in tests only,
+      duck-typed, with `pytest.importorskip` for the sibling member so a
+      workspace that does not carry it loses one test and nothing else.
+      The repository-level suite under tests/ is collected by pytest's
+      testpaths and does NOT collect packages/*/tests (see the
+      acceptance-gate memory), so the member's own suite must be run
+      explicitly as well. Lint only the new files and compare to a sibling
+      — the repo is red on main (mypy absent, ~163 pre-existing ruff
+      errors), so a baseline via `--stdin-filename` misreports.</test_baseline>
+    <conventions>
+      - One act, one module: `backfill.py` holds the backfill verb, the
+        synthesized-world value and the walkability check; `__init__.py`
+        re-exports the new names and carries no logic, the shape every
+        member in this workspace takes.
+      - No `@register` component: the backfill is a function of evidence
+        the factory does not hold (the trees, the epochs), exactly the
+        argument the regime member's own docstring makes for every feature
+        in this category past the ledger. Reached directly from the member.
+      - Duck-typed seams, never `isinstance`: the module loader imports a
+        member under a synthetic name and re-executes it, so a composed
+        application serves a *second* class object of the same shape; a
+        type gate would refuse the very value the composition seam hands
+        out. Validate what you read.
+      - Error vocabulary splits by *what the caller must do about it*: the
+        backfill's refusal is a sibling of `CoverageError` (the persist)
+        and `StratumAssignmentError` (the fit), not a child — a caller
+        catching them together would read the wrong repair. It opens with a
+        greppable code (`unwalkable_tree`), the `pool_frozen` /
+        `illegal_theme` / `full_history_fit` precedent.
+      - The count is the caller's, the persisting is the store's, and
+        validation is total before the first write: every refusal the
+        synthesis and assignment can raise fires before the first
+        `record`, so a refused backfill leaves the ledger untouched.
+      - Zeros are written: §C7's example ledger writes `crash: 0`, and a
+        vocabulary stratum no synthesized world landed in is the
+        named-empty row feature 286's warning fires on.
+      - The synthesized world's `world_id` carries the tree's campaign
+        provenance (`&lt;campaign_id&gt;@&lt;epoch_id&gt;), so a backfilled world is
+        distinguishable from a fresh one — the seed feature 288 persists as
+        the originating campaign reference, so backfill never masquerades
+        as fresh history.
+      - Stdlib only, import-cheap: `dataclasses` and `collections`; no
+        third-party import at module scope.
+    </conventions>
+  </existing_context>
+  <features_to_add>
+    <category name="Regime Coverage Strata">
+      <feature index="287">
+        <description>System exposes `backfill_coverage(trees, epochs, labeler, store, *, strata=DEFAULT_STRATA)`, the coverage backfill: it synthesizes one replay world per (stored discovery tree, historical epoch) pair — a world the tree was never run on, because the tree was discovered on its own campaign's data and is now replayed against a historical epoch it never saw — assigns each synthesized world its closing regime stratum with the causal rolling-window labeler, and persists one `regime_coverage` row per named stratum (zeros included, in vocabulary order) through the coverage store, answering with the rows the table holds. The tree contributes the world's provenance and a recorded-tree walkability check; the epoch contributes the dated market the tree is replayed against. It reuses feature 290's `assign_strata` for the stratum and feature 283's store for the persist, so every refusal those halves raise fires here too; its own novel refusal is walkability. It is a pure function of evidence the factory does not hold, so it adds no new `@register` component and is reached directly from the member (`from regime import backfill_coverage`), the way `census_coverage` is. The steps, in the order they must happen: (1) validate the labeler surface and the vocabulary (delegated to `assign_strata`'s guards, so a full-history fit and a mis-sized vocabulary are refused before any world is made); (2) synthesize one world per (tree, epoch), refusing an unwalkable tree or an epoch without market by name before any write; (3) assign each synthesized world a stratum via `assign_strata`; (4) `record` one count per named stratum, zeros included; (5) answer with the rows the table holds. A refused backfill leaves the ledger untouched.</description>
+      </feature>
+      <feature index="287">
+        <description>System synthesizes a frozen `BackfilledWorld` value per (tree, epoch) pair — the world the backfill creates. It carries two fields: `world_id`, the pool's identity for the world, spelled `&lt;campaign_id&gt;@&lt;epoch_id&gt; so the world carries the tree's originating campaign as provenance (a backfilled world is thereby distinguishable from a fresh one — the seed feature 288 persists as the originating campaign reference, so backfill never masquerades as fresh history), and `regime_rows`, the epoch's dated regime-feature vectors (the market the tree is replayed against — the same usable-row contract feature 290's worlds carry, which the caller has already converted from the epoch's price panel via the feature store's `regime_feature_matrix`, so the conversion crosses the seam as a value, never an import). Frozen, for the same reason `CoverageCount` and `StratumAssignment` are: this value is the record of a synthesized world, and a caller who could edit it in memory could re-type the pool's coverage without touching the ledger the gates read. `row()` renders it as a fresh mapping keyed by `world_id` and `stratum`, the record discipline. The `&lt;campaign_id&gt;@&lt;epoch_id&gt; spelling is validated: both halves are non-empty text, stripped, and the `@` is the member's own separator, never normalised away — a world id that states no tree and no epoch names no provenance a reader could resolve.</description>
+      </feature>
+      <feature index="287">
+        <description>System exposes `BackfillCoverageError(RegimeError)`, the backfill's refusal vocabulary — a sibling of `CoverageError` (the persist) and `StratumAssignmentError` (the fit), never a child, for the reason the errors module states for every later refusal in this category: a caller catching them together would read the wrong repair (a walkability refusal is not a malformed count and not a full-history fit). It opens every message with the greppable code `unwalkable_tree` (the `pool_frozen` / `full_history_fit` precedent), so an operator greps one word for the refusal. Its two faces: the **tree** — a tree that cannot be walked as a recorded tree (no `nodes`, no roots, or a non-root node whose `parent_id` names no node in the tree, i.e. a recorded child the tree does not hold — the backfill reveals only recorded edges and never generates one, the replay law restated at this seam because the backfill must not invoke the evaluator or the agent), naming the tree; and the **epoch** — an epoch without a market (no `epoch_id`, or no usable `regime_rows`, so the world it would make has no regime to be labeled), naming the epoch. The full-history fit and the mis-sized vocabulary are deliberately NOT this class: they are the assignment half's `StratumAssignmentError`, which the backfill lets propagate unwrapped (it already names the world and the face, and re-wrapping it would put a second message in front of the one an operator needs).</description>
+      </feature>
+      <feature index="287">
+        <description>System walks a stored discovery tree as a recorded tree only — the walkability check the backfill runs before it will synthesize a world from a tree. A stored campaign tree carries `nodes` (an iterable of node records, each carrying `node_id` and `parent_id`) and is walkable iff it has at least one root (a node whose `parent_id` is absent or empty — the recorded roots the replay walk begins from) and every non-root node's `parent_id` names another node the tree holds (a recorded edge — the child the tree already revealed, never a generated one). A tree that fails either is refused as `unwalkable_tree`, naming the tree, before any world is made, so a refused backfill leaves the ledger untouched. The check is duck-typed (the tree arrives as the policy-runtime member's `CampaignTree` — `(node_id, parent_id, depth, payload)`, feature 217 — but this member owns no copy of it and validates what it reads), and it reads only the two attributes the walk needs (`node_id`, `parent_id`) — never the payload, never the depth — the "ask the surface the act needs" discipline feature 189's labeling states. A tree's identity is its `campaign_id` (the campaign the tree belongs to, the value every reader of the campaign row resolves); a tree that carries no `campaign_id` is refused as `unwalkable_tree`, because a synthesized world with no tree provenance names no origin a reader could resolve.</description>
+      </feature>
+      <feature index="287">
+        <description>System reads one historical epoch's market as the thing a tree is replayed against — the epoch seam. An epoch carries `epoch_id` (the pool's own identity for it — a sequestered epoch's key, the id feature 88's ledger charges; non-empty text, stripped) and `regime_rows` (its dated regime-feature vectors in date order, every column finite — the usable rows the feature store's `regime_feature_matrix` builds from the epoch's price panel; the panel-to-rows conversion is the caller's, so the epoch crosses the seam already converted, the same stance feature 290's world takes). An epoch with no `epoch_id`, or whose `regime_rows` are empty or unusable, is refused as `unwalkable_tree`'s epoch face — an epoch without a market would make a world with no regime to be labeled, and the one thing the backfill must not do is synthesize an unlabeled world. One synthesized world per (tree, epoch): the epoch's `regime_rows` are the world's, and the epoch's `epoch_id` is half of the world's provenance. The epoch is read causally — the rows are the market the tree faced, dated, and the label the census keeps is the closing one — so a backfilled world's stratum is the epoch's closing regime as the labeler judged it, never a whole-series aggregate.</description>
+      </feature>
+      <feature index="287">
+        <description>System passes an end-to-end backfill: a set of stored trees crossed with a set of historical epochs synthesizes one world per pair, each assigned its closing stratum, and the ledger ends holding one row per named stratum (zeros included — a stratum no synthesized world landed in is the named-empty row), read back through the store; a tree that cannot be walked as a recorded tree (a non-root node whose parent is absent — a recorded child the tree does not hold) is refused as `unwalkable_tree` with the ledger untouched; an epoch without a market (empty `regime_rows`) is refused naming the epoch with the ledger untouched; and the synthesized world's `world_id` carries the tree's campaign provenance (`&lt;campaign_id&gt;@&lt;epoch_id&gt;), so a backfilled world is distinguishable from a fresh one. A re-run over the same trees and epochs is idempotent by the store's own law (a re-issued count lands the standing row), and a lower count is persisted, not refused — §C6's excision removes worlds from the pool between backfills, and the ledger records what is true now.</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Reaches feature 283's coverage store (`regime.coverage.RegimeCoverage`,
+    its `record` method) for the persist and feature 290's assignment half
+    (`regime.census.assign_strata`) for the stratum — both reused, never
+    re-implemented, so a refusal either half raises propagates unwrapped.
+    Reuses feature 283's `DEFAULT_STRATA` as the default vocabulary. The
+    synthesized world (`BackfilledWorld`) is shaped for feature 290's
+    `assign_strata` (it carries `world_id` and `regime_rows`, the census's
+    exact world seam), so the backfill's output is the census's input. The
+    `world_id` provenance (`&lt;campaign_id&gt;@&lt;epoch_id&gt;) is the seed feature
+    288 persists as the originating campaign reference. No `@register`
+    component is added (the regime member's one component, feature 283's
+    ledger, is untouched), no seat is widened (the backfill is reached
+    directly from the member, the way `census_coverage` is), and no
+    endpoint, table or migration is added. Does not import another
+    workspace member: the trees (policy-runtime's `CampaignTree`), the
+    epochs (the ledger's epoch shape) and the labeler (feature-store's
+    `RegimeLabeler`) arrive duck-typed across the same "no member imports
+    another" seam the coverage and census modules already take.
+  </integration_points>
+  <constraints>
+    - No member imports another: the trees, epochs and labeler are
+      duck-typed; validate `node_id`/`parent_id`/`campaign_id` off a tree,
+      `epoch_id`/`regime_rows` off an epoch, and `k`/`window`/
+      `label_features` off the labeler, and translate every refusal into
+      this member's own vocabulary.
+    - No new `@register` component and no seat edit: the backfill is a
+      function of evidence the factory does not hold, reached directly from
+      the member (`from regime import backfill_coverage`).
+    - No new table, endpoint or migration: the counts land in feature
+      283's `regime_coverage` through feature 283's store.
+    - Do not edit a central registry, router, app factory, middleware,
+      settings or migration (core-task, order-sensitive shared files).
+    - Validation is total before the first write: an unwalkable tree, an
+      epoch without a market, a full-history labeler and a mis-sized
+      vocabulary are all refused before any `record`, so a refused backfill
+      leaves the ledger untouched.
+    - The full-history fit and mis-sized vocabulary refusals are the
+      assignment half's (`StratumAssignmentError`), propagated unwrapped —
+      the backfill does not re-wrap them and does not restate them in its
+      own class.
+    - The synthesized world's `regime_rows` are the epoch's, already
+      converted from the price panel by the caller (the feature store's
+      `regime_feature_matrix`); the backfill does no panel-to-rows
+      conversion and touches no price data.
+    - The backfill reveals only recorded tree edges and never generates a
+      child — it must not invoke the evaluator, the agent or the sandbox.
+    - Zeros are written (a vocabulary stratum no world landed in is a
+      named-empty row), in vocabulary order, and the answer is the rows the
+      table holds, read back by the store.
+    - Stdlib only and import-cheap at module scope; the factory's scan pays
+      nothing for the backfill.
+  </constraints>
+  <implementation_steps>
+    <phase name="Feature 287 — the coverage backfill">
+      1. Create `packages/regime/src/regime/backfill.py`. Import stdlib
+         only at module scope (`dataclasses`, `collections.abc`,
+         `typing`).
+      2. Define `BackfillCoverageError(RegimeError)` and the
+         `UNWALKABLE_TREE` code constant; write the two-faced messages
+         (tree, epoch), each opening with the code and naming what it is
+         about.
+      3. Define the frozen `BackfilledWorld` dataclass (`world_id`,
+         `regime_rows`) with `__post_init__` validation of the
+         `&lt;campaign_id&gt;@&lt;epoch_id&gt; spelling and a `row()` renderer; refuse
+         a world id that states no tree or no epoch.
+      4. Write the tree walkability check: read `nodes`, find the roots
+         (absent/empty `parent_id`), and require every non-root node's
+         `parent_id` to name a node the tree holds; read the tree's
+         `campaign_id`; refuse `unwalkable_tree` naming the tree.
+      5. Write the epoch seam read: `epoch_id` (non-empty text, stripped)
+         and `regime_rows` (non-empty usable vectors); refuse the epoch
+         face naming the epoch.
+      6. Write `backfill_coverage(trees, epochs, labeler, store, *,
+         strata=DEFAULT_STRATA)`: validate the labeler+vocabulary via
+         `assign_strata`'s guards; synthesize one `BackfilledWorld` per
+         (tree, epoch), refusing by name before any write; assign strata
+         via `assign_strata`; `record` one count per named stratum (zeros
+         included, vocabulary order); answer with the rows the table
+         holds.
+      7. Re-export `backfill_coverage`, `BackfilledWorld` and
+         `BackfillCoverageError` from `packages/regime/src/regime/
+         __init__.py` (`__all__` widened), carrying no logic.
+      8. Write `packages/regime/tests/test_backfill.py` (the verb, the
+         synthesized world, the two refusal faces, zeros-included,
+         idempotence, the untouched-ledger assertions, read back through
+         raw SQL) and extend `test_cross_member.py` to pin that a
+         backfilled world's `regime_rows` equal the epoch's and its
+         `world_id` carries the campaign provenance, driven through the
+         real labeler.
+      9. Lint the new files only, comparing to a sibling; run both the
+         member suite and the seat suite.
+    </phase>
+  </implementation_steps>
+  <success_criteria>
+    - `claw-forge validate-spec additions_spec_287.xml` reports
+      `clean` with zero errors (INFO advisories and the known brownfield
+      warnings that also appear in `skipped_layers` are not blockers).
+    - `backfill_coverage` synthesizes one world per (tree, epoch), assigns
+      each its closing stratum, and the ledger ends holding one row per
+      named stratum (zeros included), read back through the store.
+    - An unwalkable tree (a recorded child the tree does not hold) and an
+      epoch without a market are refused as `BackfillCoverageError`
+      (`unwalkable_tree`) with the ledger untouched.
+    - The full-history fit and mis-sized vocabulary are refused as
+      `StratumAssignmentError`, propagated unwrapped, not re-wrapped.
+    - The synthesized world's `world_id` carries the tree's campaign
+      provenance (`&lt;campaign_id&gt;@&lt;epoch_id&gt;), distinguishable from a fresh
+      world.
+    - The member suite (packages/regime/tests) and the seat suite
+      (src/app/modules/regime) both pass, stdlib-only at module scope, and
+      lint is clean on the new files.
+  </success_criteria>
+</project_specification>
