@@ -1,0 +1,220 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 321 (System rejects live order submission without an explicit flag, defaulting to shadow mode against a sub-account)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 321 in the existing router member
+    (packages/router, import name router; seat src/app/modules/router): a
+    *live-submission gate*, `require_live_flag(mode, *, live_flag="live")`
+    (and an `OrderMode` value type plus a `LiveSubmissionNotAuthorised`
+    error), that refuses to place a live order unless the order request
+    carries an explicit opt-in flag, and that otherwise resolves the order to
+    shadow mode against a sub-account. This is the safety gate the order
+    path's other router features deliberately do not carry: feature 312's
+    rounding and feature 313's minimum-notional check are properties of the
+    order *values* (they validate the price and quantity against the venue
+    grid the exchangeInfo store, feature 310, persists), while feature 321 is
+    a property of the order's *authority* — whether the caller has explicitly
+    elected to send real orders to the live venue at all. The two sentences
+    have different repairs and different greppable codes, and the workspace's
+    error-vocabulary discipline (no member imports another; a shared helper
+    that raises another feature's error type defeats the caller's `except`)
+    forbids feature 321 from borrowing feature 312/313's value-check errors.
+    So feature 321 adds its own code, `live_not_authorised`, and its own error
+    class, in the same member, as a sibling of the router member's existing
+    `RouterError` vocabulary under that same base — not a new member, not a
+    new component, not a new table. The footprint is three production files and their test: one new module (`packages/router/src/router/order_gate.py`) plus two small edits to existing files in that member (its error vocabulary and its `__init__.py` re-export). The gate is a *judgment over a mode the
+    caller already has*, not a mode the feature decides: the order request
+    that reaches the router already states whether it is a live order or a
+    shadow order (feature 314's passive/aggresive choice, feature 316's client
+    order id, all presuppose an order that has already been classified as
+    live or shadow), so feature 321 takes the mode as an argument — the same
+    verdict-gate shape feature 187's headline refusal, feature 230's admission
+    gate and feature 275's pool floor take — and refuses when the mode is live
+    and the explicit flag was not supplied. The default is shadow: a request
+    that names no mode, or names a mode the gate cannot confirm as live, is
+    resolved to shadow mode against the configured sub-account, never silently
+    admitted as live. The explicit flag is a keyword of the gate, defaulting
+    to the string "live", validated to be a non-empty string so a flag that is
+    not an account selector cannot silently admit an order. No central
+    registry, router, app factory, middleware, settings, or migration is
+    edited; no new `@register` component is added (the router member's single
+    `"router"` component, feature 310's exchangeInfo store, is untouched); the
+    member joins by workspace-scan convention and does not import another
+    workspace member.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/* members, import names are
+      underscored slugs) / pytest (ruff + mypy conventions). The module loader
+      (src/app/module_loader.py) discovers members from the root pyproject.toml
+      `[tool.uv.workspace] members = ["packages/*"]`, imports each package so
+      its module-level `@register` fires, and composes what each `@register`
+      builder contributes under a component name. `app` (src/app) is a namespace
+      package with no `__init__.py`; the seats in src/app/modules/&lt;member&gt;/
+      are reached by namespace import (e.g. app.modules.router,
+      app.modules.dreaming). A member never imports another member — it reaches
+      shared shapes through `app.*`, never through a sibling package's import
+      name.</stack>
+    <test_baseline>The repository-level suite under tests/ is collected by
+      pytest with testpaths=tests; each workspace member's own suite lives under
+      packages/&lt;member&gt;/tests/ and is collected under its own conftest
+      (same-basename files collide under one pytest run), and is NOT graded by
+      the bare `uv run pytest` acceptance gate — a member suite must be run
+      explicitly (run both `uv run pytest tests/` and the member's own
+      `packages/router/tests/`). Feature 321 is a pure judgment over a string the
+      caller already has, so it adds no third-party dependency: it is a
+      comparison over the order's mode and the explicit flag. Measure the real
+      numbers by running the suite before relying on them. The repo lint is red
+      on main (mypy absent, pre-existing ruff errors), so lint only the changed
+      files and compare to a sibling.</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, docstrings that
+      cite app_spec.xml feature numbers and docs/alpha-engine-prd.md /
+      docs/nullius-tech-architecture.md sections, stdlib-only computation,
+      `@register` only in the package `__init__` (never a submodule — a
+      submodule's registration fires only on the first `create_app()` of a
+      process), degrade-don't-break composition (a builder that raises would
+      take composition down for every unrelated feature, so a builder returns
+      `None` for a deployment that names no store), member-owned tables created
+      lazily beside the only module that writes them (never in the shared
+      migration chain, which is order-sensitive and excluded from this feature's
+      file claim), and the error-vocabulary discipline that no member imports
+      another and a shared helper that raises another feature's error type
+      defeats the caller's `except` (translate at the seam). The router member
+      already lives in this workspace (packages/router: the exchangeInfo
+      narrowing module, the append-only exchangeInfo version store, the error
+      vocabulary holding RouterError / RouterFilterError / RouterStoreError, and
+      the `__init__` that re-exports and fires `@register("router")`, seat
+      src/app/modules/router). Feature 321 is a
+      sibling within that member, not a new member. The governing documents are
+      docs/alpha-engine-prd.md §M4 ("Paper trading against the live feed with
+      real order placement on a sub-account. Pre-register success criteria in a
+      hashed file before the shadow run starts") and §17 ("Separate keys per
+      environment. The shadow sub-account key must not work on the live
+      account"), and docs/nullius-tech-architecture.md §16's live metrics and
+      the M4 milestone ("live/book, live/exec in shadow mode, forward").
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Order Routing &amp; Venue Filters">
+      <feature index="321" shape="plugin" plugin="router" depends_on="310" covers="cq-13">
+        System rejects live order submission without an explicit flag,
+        defaulting to shadow mode against a sub-account.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    The gate is a pure judgment over an order's mode the caller already has,
+    added to the router member (packages/router) as a sibling of feature 310's
+    exchangeInfo store. It is reached directly from the member (`from router
+    import require_live_flag, OrderMode, LiveSubmissionNotAuthorised,
+    LIVE_SUBMISSION_NOT_AUTHORISED_CODE`), the way feature 310's
+    `resolve_router_filters` and its errors are, and — for a composed
+    application — through the existing seat (`app.modules.router`), which
+    already hands back feature 310's single `router` component; feature 321 adds
+    no second component and edits no seat. The mode the judgment reads is the
+    order request's own declared mode (live or shadow), which the caller obtains
+    from the same order object it asks to judge, and the judgment never decides
+    the mode itself. The explicit flag (default "live") is a keyword of the
+    gate so a deployment may name the opt-in differently; it is validated to be
+    a non-empty string. The shadow sub-account the gate defaults to is the
+    account a deployment has already configured for shadow trading (the
+    sub-account whose key, per docs/alpha-engine-prd.md §17, must not work on
+    the live account) — the gate names that account as the destination of a
+    demoted order, it does not open a connection to it. The caller wires the
+    gate into the order path at the single point where an order is about to be
+    submitted: it calls the gate with the order's mode, and on the refusal it
+    either surfaces the error (when the caller expected a live order) or routes
+    the order to shadow against the sub-account (when the caller supplied no
+    mode).
+  </integration_points>
+  <constraints>
+    - Feature 321 is a gate on an order's *authority*, and is deliberately NOT
+      feature 312's rounding or feature 313's minimum-notional check: it must
+      use its own code, `live_not_authorised`, and its own error class,
+      `LiveSubmissionNotAuthorised`, a sibling of the router member's existing
+      `RouterError` vocabulary under that same base. It must NOT reuse
+      `RouterFilterError`, `RouterStoreError`, or any of feature 310-313's
+      value-check errors for the live-authority refusal, and feature 310-313's
+      existing behaviour, messages, codes and tests must be untouched.
+    - No member imports another. The mode the judgment reads is obtained from
+      the order request the caller already holds, never from a sibling member's
+      import; the gate performs no I/O and opens no venue connection.
+    - No central registry, router, app factory, middleware, settings, or
+      migration is edited. No new `@register` component is added — feature 310's
+      single `"router"` component is untouched, and feature 321 adds no
+      component, no table, and no seat export.
+    - The gate is a judgment over a mode, not a decision the feature makes:
+      `require_live_flag(mode, *, live_flag="live")` takes the order's mode as
+      an argument and returns the resolved mode (shadow when the mode is not
+      confirmed live); it raises `LiveSubmissionNotAuthorised` only when the
+      mode is live and the explicit flag was not supplied.
+    - The explicit flag defaults to "live" and is validated to be a non-empty
+      string; the order's mode is validated to be a string. A mode that is not
+      a recognised order mode (neither live nor shadow) is resolved to shadow,
+      never admitted as live — failing safe.
+    - The refusal message opens with the code `live_not_authorised`, states the
+      supplied mode and the flag that was required, states the repair (supply
+      the explicit live flag, or submit in shadow mode against the sub-account),
+      and names the governing document (§M4 / §17).
+    - The shadow default is the sub-account a deployment has configured for
+      shadow trading (docs/alpha-engine-prd.md §17's separate shadow key); the
+      gate names that account as the destination of a demoted order, it does not
+      open a connection to it or hold its credentials.
+    - All existing tests in the router member (packages/router/tests) and in
+      tests/ must stay green. The member's own suite must be run explicitly
+      (it is not graded by the bare `uv run pytest` gate).
+    - Do not edit the order-sensitive shared files: src/app/middleware.py,
+      src/app/settings.py, migrations/versions/**, alembic/versions/**.
+  </constraints>
+  <implementation_steps>
+    <step>
+      Phase 1 — the value type, the code and the class. The footprint is three
+      production files and their test: one new module plus two small edits to
+      existing files. (1) Add a `LIVE_SUBMISSION_NOT_AUTHORISED_CODE =
+      "live_not_authorised"` constant and a `LiveSubmissionNotAuthorised(
+      RouterError)` error class to the member's existing error vocabulary as a sibling of feature 310's
+      three classes. (2) Add an `OrderMode` value type — a frozen, string-valued
+      type with the two members the order path recognises, `SHADOW` and `LIVE`,
+      the shadow sub-account being the destination of a demoted order
+      (docs/alpha-engine-prd.md §M4, §17) — and `require_live_flag(mode, *,
+      live_flag="live")` to one new module, `packages/router/src/router/
+      order_gate.py`: a pure function that validates `mode` is a string and
+      `live_flag` is a non-empty string, resolves an unrecognised or shadow mode
+      to shadow (failing safe, never admitting as live), and raises
+      `LiveSubmissionNotAuthorised` (message opening with `live_not_authorised`,
+      stating the supplied mode and the required flag, the repair, and §M4/§17)
+      when the mode is live and the explicit flag was not supplied. (3) Re-export
+      `OrderMode`, `require_live_flag`, `LiveSubmissionNotAuthorised` and the
+      code constant from the member's existing `__init__` alongside feature
+      310's existing names. No new component, table, or seat export.
+    </step>
+    <step>
+      Phase 2 — the tests. Add one test module,
+      `packages/router/tests/test_order_gate.py`, asserting: an explicit live
+      flag admits a live order (returns live); a live order without the flag is
+      refused with `live_not_authorised` (the error opens with the code, names
+      the supplied mode and the required flag, states the repair, and cites
+      §M4/§17); a shadow order is admitted and resolves to shadow; an
+      unrecognised or absent mode resolves to shadow rather than admitting as
+      live (fail safe); the explicit flag is a parameter (a custom flag changes
+      what counts as the opt-in) and is validated (an empty or non-string flag
+      is refused in the gate's own vocabulary); the mode is validated (a
+      non-string mode is refused); `LiveSubmissionNotAuthorised` is a
+      `RouterError` and a sibling of feature 310's three classes (not a
+      subclass of `RouterFilterError` or `RouterStoreError`); and feature
+      310-313's vocabulary is unchanged (the existing router tests asserting the
+      member's exports and errors are preserved — feature 321 adds names, it
+      does not remove or reword any).
+    </step>
+    <step>
+      Phase 3 — verify. Run the router member's own suite
+      (`uv run pytest packages/router/tests`) and the repository-level suite
+      (`uv run pytest tests/`) — both, since the member suite is not graded by
+      the bare gate — and confirm all pass. Lint only the changed files against
+      a sibling (the repo lint is red on main). Confirm feature 310-313's
+      behaviour and tests are untouched, that no new component is registered
+      (`scan_components` still reports exactly one `router` component), and that
+      no order-sensitive shared file was edited.
+    </step>
+  </implementation_steps>
+</project_specification>
