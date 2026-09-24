@@ -1,4 +1,4 @@
-"""The book combiner — feature 301.
+"""The book combiner and its leverage cap — features 301 and 308.
 
 app_spec.xml, "Portfolio Book Construction", feature 301: *System combines
 promoted signals by information-ratio weighting, which returns a single
@@ -8,6 +8,20 @@ out-of-sample information ratio and one target score per symbol — weights
 signal *i* by ``w_i = IR_i`` and returns a single :class:`CompositeBook`
 holding one composite target score per symbol, the weighted average of that
 symbol's scores across the signals.
+
+app_spec.xml, feature 308 is this category's second sentence and the second
+act this package carries: *System rejects a leverage target above one quarter
+of the Kelly fraction implied by the book Sharpe and volatility.*
+:func:`leverage_cap` is the figure the sentence turns on — one quarter of
+Appendix B's ``f* = S/σ`` — and :func:`rejects_overleveraged_target` is its
+*rejects*, the verdict a caller runs on its last line before handing a sized
+book to the order layer.  The pair arrives as free functions beside the
+combiner rather than as a second component, the way feature 276's ceiling
+arrives beside feature 270's freeze in the dreaming member: the sentence's
+whole input is figures the caller already holds (the book's Sharpe, its
+volatility and the target), so there is nothing for the factory to compose
+and nothing for a deployment to configure.  One component remains, and the
+member's suite pins that.
 
 This package is a workspace member: it self-registers with the application
 factory under the component name :data:`COMPONENT_NAME` — scanning the
@@ -44,18 +58,29 @@ The information-ratio weighting is a convention, not a knob: a weight is a
 portfolio decision the combiner applies rather than accepts, so two
 deployments report the same composite for the same signals.  Downstream
 features — covariance shrinkage, volatility targeting, position limits —
-take this composite and rescale it; they do not re-open this weight.
+take this composite and rescale it; they do not re-open this weight.  Feature
+308's cap is the same stance on the sizing step's own figure: the quarter is
+the document's, not a deployment's, because it is the discount against a
+Sharpe the document itself calls a noisy estimate (their one knob, the
+configured volatility target, is feature 303's).
 
 Absence is not zero, twice over: a signal with a non-positive or
 non-finite information ratio is refused (its standing to weight the book is
 undefined, not zero), and a signal that carries no score for a symbol the
 book covers is refused (it expresses no view — zero-filling would
 counterfeit one).  Neither is defaulted; a refused combine forms no value.
+The cap draws the same line where it applies and not where it does not: a
+non-positive Sharpe is answered (a losing book's fraction is a measured fact
+whose consequence is *no admissible leverage*, not an error), while a
+volatility of zero is refused (a book with no scale has no fraction at all).
 
 This module is stdlib-only — dataclasses, mappings and square-free
 arithmetic; no polars, no pyarrow, no lake, no environment, no HTTP, and no
 import of any other member — so importing this member costs composition
-nothing and the combiner is import-cheap on the replay path.
+nothing and the combiner is import-cheap on the replay path.  The leverage
+cap adds nothing to that bill: :mod:`book._leverage` imports ``math`` and the
+member's own error vocabulary and nothing else, so the cap costs the
+factory's scan no more than the combiner does.
 """
 
 from __future__ import annotations
@@ -65,18 +90,36 @@ from typing import TYPE_CHECKING
 from app.module_loader import register
 
 from ._combine import CompositeBook, PromotedSignal, combine
-from .errors import BookConstructionError
+from ._leverage import (
+    KELLY_FRACTION,
+    OVERLEVERAGE_CODE,
+    kelly_fraction,
+    leverage_cap,
+    rejects_overleveraged_target,
+)
+from .errors import (
+    BookConstructionError,
+    LeverageRequestError,
+    LeverageTargetError,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a dependency
     from collections.abc import Callable, Iterable
 
 __all__ = [
     "COMPONENT_NAME",
+    "KELLY_FRACTION",
+    "OVERLEVERAGE_CODE",
     "BookConstructionError",
     "CompositeBook",
+    "LeverageRequestError",
+    "LeverageTargetError",
     "PromotedSignal",
     "build_book_combiner",
     "combine",
+    "kelly_fraction",
+    "leverage_cap",
+    "rejects_overleveraged_target",
 ]
 
 #: The component name the book member registers under.  Kept here so

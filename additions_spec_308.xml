@@ -1,0 +1,292 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 308 (System rejects a leverage target above one quarter of the Kelly fraction implied by the book Sharpe and volatility)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 308 in the existing `book` plugin
+    (packages/book, import name book; seat src/app/modules/book): the
+    leverage cap. The sentence's verb is a judgment —
+    `rejects_overleveraged_target(target, sharpe=…, volatility=…)` — over
+    the book's two figures and the leverage the caller means to hold. Its
+    arithmetic is docs/alpha-engine-prd.md Appendix B's own line, which
+    states both halves the sentence is built from: *"Kelly fraction, Sharpe
+    S, vol σ → f* = S/σ  (use ≤ ¼ Kelly)"*. So the fraction (feature
+    308's *"the Kelly fraction implied by the book Sharpe and volatility"*)
+    is `f* = sharpe / volatility`, the bound (its *"one quarter of"*) is
+    `f* * 0.25`, and the *rejects* fires when the target sits **above** that
+    bound. The quarter is a module constant (`KELLY_FRACTION = 0.25`), not a
+    parameter — it is the document's stated discount against a Sharpe the
+    document itself calls a noisy estimate (§1.2: *"A backtest Sharpe of 4.0
+    is a noisy, biased, adversarially exploitable estimate"*), the way §C8
+    puts portfolio construction *"explicitly outside the search space"*;
+    the knob in this neighbourhood is feature 303's configured volatility
+    target, and it is a different feature's. Three spellings of one act:
+    `kelly_fraction(sharpe, *, volatility)` answers Appendix B's `f*`
+    itself; `leverage_cap(sharpe, *, volatility)` answers the sentence's one
+    quarter of it; and `rejects_overleveraged_target(target, *, sharpe,
+    volatility)` is the sentence's *rejects*, raising
+    `LeverageTargetError` (opening with the greppable code
+    `leverage_above_quarter_kelly`) when the target is above the cap and
+    returning None when it is not. All three are free functions beside the
+    combiner, not a second component — the shape feature 276's ceiling takes
+    beside feature 270's freeze in the dreaming member: the sentence's whole
+    input is figures the caller already holds, so there is nothing for the
+    factory to compose and nothing for a deployment to configure.
+
+    Two edges carry the feature. The edge is the sentence's own word *above*,
+    so a target exactly at the cap is admitted — Appendix B's *"use ≤ ¼
+    Kelly"* is inclusive where it admits — and this is deliberately **not**
+    the strict "only then" edge feature 280 enforces on its own sentence,
+    because the two sentences say different words. And the admissible set is
+    the cap **intersected with the target's own domain**: a leverage target
+    is a gross exposure of zero or more (a negative one is a position's
+    direction, refused as the ask's own fact, since this module sizes no
+    position), so the set admitted is `0 ≤ target ≤ cap`. On a cap at or
+    below zero — a book whose measured Sharpe is itself non-positive, so
+    `f* = S/σ` is not positive either — that set is the single point `0`:
+    the flat book is admitted and every long leverage refused. A non-positive
+    Sharpe is therefore **answered, not refused**: it is a measurement a
+    losing book carries, not a malformed ask, and the refusal names the
+    Sharpe that put the cap there rather than reporting the book as
+    malformed — the distinction feature 301 draws on a different figure,
+    where a non-positive *information ratio* is refused because a signal's
+    *standing* to weight the book is undefined without one. The refusal's
+    message states the repair that actually exists in each case (lower the
+    target, for a positive cap; hold the book flat, for a non-positive one).
+
+    The vocabulary is this feature's own, as siblings under feature 301's
+    one base: `LeverageRequestError` for the ask's own facts (a sharpe that
+    is not a finite real, a volatility that is not a finite strictly
+    positive real, a target that is not a finite real of zero or more),
+    refused before anything is computed and carrying no code; and
+    `LeverageTargetError` for the one judgment the sentence mints. Both
+    descend from `BookConstructionError` — the one-base-per-member shape the
+    dreaming and regime members state for their own vocabularies — so a
+    caller that refuses book work wholesale still writes one `except`, while
+    a caller that must react differently to *this book may not carry that
+    leverage* and *your signals cannot be combined* catches the siblings.
+    No central registry, router, app factory, middleware, settings or
+    migration is edited; the member joins by workspace-scan convention, adds
+    no `@register`, no table and no endpoint, and imports no other workspace
+    member — the two figures arrive as numbers because a member never
+    re-derives a measurement it was handed.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (the `book` member already exists:
+      packages/book, import name book; seat src/app/modules/book) / pytest
+      (ruff + mypy conventions). The member currently carries feature 301 —
+      `_combine.py` (the IR-weighted `combine` verb, `PromotedSignal`,
+      `CompositeBook`), `errors.py` (the base `BookConstructionError`) and
+      `__init__.py` (the public surface plus the one `@register` builder,
+      `build_book_combiner`, returning `combine` unchanged under the
+      component name `book`). Feature 308 adds one module and no
+      registration.</stack>
+    <test_baseline>The book member's own suite under packages/book/tests/
+      (test_combine, test_component, and this feature's test_leverage). The
+      member is stdlib-only at module scope (the factory's scan imports the
+      package to fire its `@register`, so it must pay nothing), and feature
+      308's module adds only `math` and the member's own `.errors` to that
+      bill. The repository-level suite under tests/ is collected by pytest's
+      testpaths and does NOT collect packages/*/tests (see the
+      acceptance-gate memory), so the member's own suite must be run
+      explicitly as well. Lint only the new files and compare to a sibling —
+      the repo is red on main (mypy absent, ~163 pre-existing ruff errors),
+      so a baseline via `--stdin-filename` misreports.</test_baseline>
+    <conventions>
+      - One act, one module: `_leverage.py` holds the cap's three verbs and
+        the two validators; the two refusal classes are added to the
+        existing `errors.py` beside feature 301's base class (one place per
+        member, as its docstring already states); `__init__.py` widens its
+        re-export and `__all__` and gains no logic — the shape every member
+        in this workspace takes.
+      - A verdict, not a measurement: the cap takes the book's Sharpe, its
+        volatility and the target as figures the caller already holds. It
+        opens no database, reads no environment, consults no clock, counts
+        nothing and re-derives neither figure — the shape
+        `dreaming.bar.rejects_unbarred_winner` and
+        `dreaming.ceiling.rejects_uncapped_sweep` take for their own
+        verdicts, and the reason a member never imports another member
+        (the arithmetic is restated here rather than borrowed from the
+        evaluator or the scoring member).
+      - The quarter is a constant, not a knob: `KELLY_FRACTION = 0.25`,
+        and no verb accepts a fraction keyword. A weight is a portfolio
+        decision the member applies rather than accepts (feature 301's own
+        stance), and Appendix B's *"use ≤ ¼ Kelly"* is the document's
+        discount against a Sharpe the document calls noisy — a deployment
+        that wants less leverage simply asks for less, since the cap is a
+        ceiling and admits everything at or below it.
+      - The edge is the sentence's own word and is strict on the refused
+        side: a target *at* the cap runs (`use ≤ ¼ Kelly` is inclusive
+        where it admits), one float above it does not. Deliberately the
+        opposite reading to feature 280's "only when".
+      - The admissible set is the cap intersected with the target's domain
+        (`0 ≤ target ≤ cap`), so a flat book is admitted on every book
+        including a losing one, and a negative target is refused as the
+        ask's own fact rather than admitted below a negative cap.
+      - A non-positive Sharpe is answered, not refused: the fraction is a
+        measured fact about a losing book, and the honest consequence — a
+        cap at or below zero that admits no long leverage — is the answer,
+        with the refusal naming the Sharpe. A zero volatility *is* refused
+        (the fraction would be a division by exactly nothing), and a
+        negative one (a scale that is not a measurement, which would flip a
+        losing book's cap positive). A zero Sharpe answers a zero cap and
+        admits only the flat book.
+      - Error vocabulary: two new siblings under `BookConstructionError`
+        (`LeverageRequestError` for the ask, no code because a malformed ask
+        names its subject in its first words; `LeverageTargetError` for the
+        judgment, opening with `leverage_above_quarter_kelly`), so a caller
+        that refuses the whole book surface writes one `except` and a caller
+        that must react differently can still tell the two facts apart —
+        the `pool_too_thin` / `advantage_below_bar` precedent for the one
+        refusal an operator greps a deployment log for.
+      - Every refusal message names the figures behind it (the target, the
+        cap, the fraction, the Sharpe and the volatility) and cites
+        Appendix B's line and §1.2's reason for the quarter, so the refusal
+        is actionable without a stack trace.
+      - Deterministic: pure arithmetic over its three arguments, so the same
+        figures answer identical values and the module holds no state.
+      - Do not edit a central registry, router, app factory, middleware,
+        settings or migration (core-task, order-sensitive shared files); no
+        new component is registered, so the composition story is unchanged
+        and `app.order` still carries exactly one `book`.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Portfolio Book Construction">
+      <feature index="308" shape="plugin" plugin="book" depends_on="301">
+        <description>System exposes `rejects_overleveraged_target(target, *, sharpe, volatility)` — the cap's judgment — beside `kelly_fraction(sharpe, *, volatility)` (Appendix B's `f* = S/σ` itself) and `leverage_cap(sharpe, *, volatility)` (the sentence's one quarter of it), and `KELLY_FRACTION = 0.25` with them. The arithmetic is the document's, applied rather than paraphrased: `f* = sharpe / volatility`, `cap = f* * KELLY_FRACTION`, and the verdict raises `LeverageTargetError` — opening with `OVERLEVERAGE_CODE` (`leverage_above_quarter_kelly`) — when `target > max(cap, 0.0)`, returning None otherwise. The `max(cap, 0.0)` is the admissible set stated once: a leverage target is a gross exposure of zero or more (a negative one is refused as the ask's own fact), so the set admitted is `0 ≤ target ≤ cap`, and on a non-positive cap — a book whose measured Sharpe is non-positive — that set is the single point `0` (the flat book admitted, every long leverage refused). The edge is the word *above* and strict on the refused side: a target exactly at a positive cap runs (Appendix B's *"use ≤ ¼ Kelly"* is inclusive where it admits) and one float over it does not. The refusal names the target, the cap, the fraction, the Sharpe and the volatility, cites Appendix B's line and §1.2's reason for the quarter, and states the repair that exists in each case — *lower the target to one quarter Kelly or below* for a positive cap, *hold the book at no leverage and re-ask once the measured Sharpe is positive* for a non-positive one. A refused target forms no value.</description>
+      </feature>
+      <feature index="308" shape="plugin" plugin="book" depends_on="301">
+        <description>System defines the cap's two refusal classes in the member's one error module, as siblings under feature 301's `BookConstructionError` — the one-base-per-member shape the dreaming and regime members state for their own vocabularies, so a caller that refuses book work wholesale writes one `except` while a caller that must react differently to *this book may not carry that leverage* and *your signals cannot be combined* catches the specific siblings (a leverage target is refusable for a book whose signals weighted up perfectly, so the two facts are genuinely different). `LeverageRequestError` is the ask's face and carries no code word, for the reason `dreaming.errors.CapRequestError` gives — a malformed ask names its subject in its first words and a token there would hand a reader a developer's word for a fact they can simply fix. It refuses, before anything is computed: a `sharpe` that is not a finite real (a `bool` is a flag where a figure belongs; `nan`/`±inf` answer a cap that is not a number, so a verdict on it would decide nothing while looking like it decided); a `volatility` that is not a finite *strictly positive* real (a zero leaves `f* = S/σ` a division by exactly nothing — a book with no scale has no fraction at all rather than an infinite one — and a negative scale would flip a losing book's cap positive); and a `target` that is not a finite real of *zero or more* (a leverage is a gross exposure; a negative one is a position's direction, which this module does not size, and admitted below a negative cap it would pass an over-leverage check while meaning something else). It deliberately does **not** refuse a non-positive Sharpe: a losing book's Sharpe is a measurement, and the honest consequence is the answer the arithmetic returns and the judgment states in the book's own terms; refusing it here would hide the book's figure behind a validation and leave a caller unable to tell *no long leverage is admissible* from *your ask named no figure*. `LeverageTargetError` is the judgment and opens every message with `leverage_above_quarter_kelly`; its repair is its own, which is why it is its own class.</description>
+      </feature>
+      <feature index="308" shape="plugin" plugin="book" depends_on="301">
+        <description>System keeps the cap a free function beside the combiner rather than a second component: `_leverage.py` is imported by the member's `__init__.py`, which widens its re-export (the three verbs, `KELLY_FRACTION`, `OVERLEVERAGE_CODE` and the two error classes join feature 301's names) and gains no `@register`. No new component is composed, `app.order` still carries exactly one `book`, and the seat (`src/app/modules/book`) is unchanged and still re-exports nothing — a caller that wants the cap reaches the member's own namespace, the discipline every seat in this workspace states. The module is stdlib-only at module scope (`math` and the member's own `.errors`), so the factory's scan — which imports this package on every `create_app()` to fire its `@register` — pays nothing for the cap beyond the import it already paid for the combiner, and the replay path stays import-cheap. No table, endpoint, migration, seat edit, central registry, router, app factory, middleware or settings change.</description>
+      </feature>
+      <feature index="308" shape="plugin" plugin="book" depends_on="301">
+        <description>System passes an end-to-end cap over the member's own fixtures: at a book Sharpe of 1.0 and a volatility of 0.2 Appendix B's fraction is 5.0, its quarter is 1.25 exactly (dyadic throughout, so the boundary is checkable with `==`), a target of 1.25 runs, 1.26 is refused as `leverage_above_quarter_kelly` naming the target, the cap, the fraction and the figures, and every target below the cap runs because a ceiling never raises what the caller asked for. A re-run over the same figures answers identical values. A non-positive Sharpe answers a negative fraction and a negative cap (a losing book admits no long leverage and the refusal names the Sharpe), a zero Sharpe answers a zero cap and admits only the flat book, and a zero volatility is refused as the ask's own fact with the message naming the division. A malformed figure is refused as `LeverageRequestError` even when the target is wildly over-leveraged, because the ask's own facts settle before anything is judged. Both error classes are subclasses of `BookConstructionError`, neither is a subclass of the other, and feature 301's `combine([])` still raises the bare base — so the hierarchy the cap added leaves the old surface reachable.</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Feature 308 is a leaf of the Portfolio Book Construction category: it
+    consumes what feature 301 produces (the book whose Sharpe and volatility
+    the cap is computed from) and nothing consumes it in this feature set —
+    it is a bound the caller applies on its last line before handing a sized
+    book to the order layer, reached the way feature 276's ceiling is reached
+    beside feature 270's freeze, as a free function rather than through the
+    factory. `depends_on="301"` is therefore a *value* dependency and not a
+    code import: the cap never touches `combine`, `CompositeBook` or
+    `PromotedSignal`, and the only import it takes from the member is the
+    error vocabulary, because the figures it judges (the book's Sharpe, its
+    volatility, the target) arrive as numbers. The member imports no other
+    workspace member, and the two figures are deliberately not re-derived
+    here — the measurement of a book's Sharpe is the evaluator's business and
+    a verdict is not a measurement. The categories' later features take this
+    bound as given: feature 304 applies per-position and concentration limits,
+    which bound the *size of a position* where this bounds the *book's
+    exposure*, and neither subsumes the other; feature 305 returns the final
+    target weights the order layer consumes. No `@register` name collides
+    (no new component is registered), no table, endpoint or migration is
+    added, and no central registry, router, app factory, middleware, settings
+    or migration is edited.
+  </integration_points>
+  <constraints>
+    - No member imports another: the cap takes the book's Sharpe, its
+      volatility and the target as figures the caller holds; the arithmetic
+      (`f* = S/σ`, one quarter of it) is restated in this member's own terms,
+      never borrowed from the evaluator or the scoring member.
+    - No new component, no `@register`, no seat edit: the cap is a free
+      function beside the combiner, the way feature 276's ceiling sits beside
+      feature 270's freeze. `__init__.py` widens its re-export and carries no
+      logic; the seat still re-exports nothing.
+    - The quarter is a constant, not a knob: `KELLY_FRACTION = 0.25`, and no
+      verb accepts a fraction keyword. A deployment that wants less leverage
+      asks for less; the cap is a ceiling and admits everything at or below
+      it.
+    - The edge is the sentence's own word *above*, strict on the refused
+      side: a target at a positive cap runs, one float over it does not.
+    - The admissible set is the cap intersected with the target's domain
+      (`0 ≤ target ≤ cap`): the flat book is admitted on every book, and a
+      negative target is refused as the ask's own fact rather than admitted
+      below a negative cap.
+    - A non-positive Sharpe is answered, not refused — it is a measurement,
+      not a malformed ask — and the refusal it produces names the Sharpe. A
+      zero volatility is refused (division by exactly nothing), a negative
+      one refused (a scale that is not a measurement), a zero Sharpe answered
+      (a zero cap admitting only the flat book).
+    - Validation is total before any judgment is formed: the ask's own facts
+      are refused as `LeverageRequestError` before the cap is computed, so a
+      caller that handed a broken figure is told what to fix rather than told
+      its book is over-bet.
+    - Two new error classes, siblings under `BookConstructionError`; the
+      judgment's message opens with the greppable
+      `leverage_above_quarter_kelly` and names every figure behind it; the
+      ask's carries no code.
+    - Stdlib only (`math`, `typing`, the member's own `.errors`), no
+      database, no environment, no clock, no state — import-cheap at module
+      scope so the factory's scan pays nothing.
+    - Do not edit a central registry, router, app factory, middleware,
+      settings or migration (core-task, order-sensitive shared files).
+  </constraints>
+  <implementation_steps>
+    <phase name="Feature 308 — reject a leverage target above one quarter Kelly">
+      <step>1. `packages/book/src/book/_leverage.py`: `KELLY_FRACTION`,
+        `OVERLEVERAGE_CODE`, the three validators (`_validated_sharpe`,
+        `_validated_volatility`, `_validated_target`), the one spelling of
+        the arithmetic (`_fraction`, `_cap`), the refuse-message builder
+        (`_overshoot`, which picks the repair that exists), and the three
+        public verbs (`kelly_fraction`, `leverage_cap`,
+        `rejects_overleveraged_target`). Stdlib only.</step>
+      <step>2. `packages/book/src/book/errors.py`: add
+        `LeverageRequestError` and `LeverageTargetError` as siblings under
+        `BookConstructionError`, widen `__all__`, and widen the module
+        docstring's code list with `leverage_above_quarter_kelly`; update the
+        base class's docstring to state that it is now the member's whole
+        refusal surface's base.</step>
+      <step>3. `packages/book/src/book/__init__.py`: re-export the three
+        verbs, the two constants and the two classes; widen `__all__`; state
+        in the package docstring that the member now carries two features and
+        that the cap arrives as free functions rather than a second
+        component. Add no `@register`.</step>
+      <step>4. `packages/book/tests/test_leverage.py`: the arithmetic against
+        Appendix B's own figures, the constant pinned, the strict edge, the
+        losing book (answered fraction, negative cap, no long leverage, the
+        flat book admitted, the correct repair stated), the ask's refusals in
+        their order, the vocabulary's hierarchy, and the layering claims
+        (stdlib-only parsed from the AST, no other member imported, no store
+        or environment, no second quarter in any signature).</step>
+      <step>5. `packages/book/tests/test_component.py`: pin that the cap
+        registers no second component (the registry still carries exactly one
+        name), that it is reachable without the factory and has no component
+        key, and that the member's `__all__` is exactly the two features'
+        names.</step>
+      <step>6. Validate and run the member's own suite (the repo-level suite
+        under tests/ does not collect packages/*/tests — run the member suite
+        explicitly), confirm the repository-level acceptance suite is
+        unaffected, and lint only the new and changed files against a sibling
+        baseline.</step>
+    </phase>
+  </implementation_steps>
+  <success_criteria>
+    - `kelly_fraction` answers Appendix B's `f* = S/σ` to the bit, and
+      `leverage_cap` answers exactly one quarter of the fraction the module
+      itself reports — checked against each other so the two cannot drift.
+    - `rejects_overleveraged_target` refuses a target above the cap with
+      `LeverageTargetError` opening with `leverage_above_quarter_kelly` and
+      naming the target, the cap, the fraction, the Sharpe and the
+      volatility; a target at the cap and every target below it runs.
+    - A non-positive Sharpe is answered (a fraction at or below zero, a cap
+      at or below zero) and refuses every long leverage while admitting the
+      flat book; the refusal names the Sharpe and states the achievable
+      repair rather than prescribing a negative target. A zero volatility is
+      refused as the ask's own fact; a zero Sharpe answers a zero cap.
+    - `LeverageRequestError` and `LeverageTargetError` are both subclasses of
+      `BookConstructionError` and neither of the other; `combine([])` still
+      raises the bare base.
+    - No new component is registered (`app.order` carries exactly one
+      `book`), the seat is unchanged, no table, endpoint or migration is
+      added, and no central registry, router, app factory, middleware or
+      settings is edited.
+    - The module is stdlib-only and import-cheap; the member's own suite is
+      green and the repository-level acceptance suite is unaffected.
+  </success_criteria>
+</project_specification>

@@ -151,3 +151,91 @@ def test_a_fresh_registry_scans_the_member_in() -> None:
     # The one registration — the combiner (301) — fires from the one
     # ``__init__.py``.
     assert [component.name for component in registry.components()] == ["book"]
+
+
+# -- The leverage cap's composition story (feature 308) ---------------------------
+#
+# Feature 308 arrives as free functions beside the combiner, not as a second
+# component — the shape feature 276's ceiling takes beside feature 270's freeze
+# in the dreaming member.  Its whole input is figures the caller already holds
+# (the book's Sharpe, its volatility, the target), so there is nothing for the
+# factory to compose and nothing for a deployment to configure.  The tests
+# below pin that absence, because "no new component" is a claim a later edit
+# could quietly falsify — and a second registration would show up here as a
+# second name in ``app.order``, silently rebuilding composition for every
+# feature in the workspace.
+
+
+def test_the_leverage_cap_registers_no_second_component() -> None:
+    # The single-registration assertion above is the strong form; this is the
+    # same fact read through the composed application, so a component added by
+    # any route (not just this module's own ``__init__``) is caught.
+    src_root = Path(member.__file__).resolve().parent.parent
+    registry = Registration()
+    scan_components(src_root, registry=registry)
+    names = [component.name for component in registry.components()]
+    assert names.count("book") == 1
+    assert len(names) == 1
+
+
+def test_the_cap_is_reachable_without_the_factory() -> None:
+    # A free function, reached the way the ladder's verdicts are: imported
+    # from the member, not asked of the composed application.  There is no
+    # ``leverage`` component to ``app.get``, and a deployment cannot configure
+    # the quarter — which is the design decision, not an omission.
+    assert callable(member.leverage_cap)
+    assert callable(member.rejects_overleveraged_target)
+    assert callable(member.kelly_fraction)
+    assert member.KELLY_FRACTION == 0.25
+    app = create_app()
+    assert "leverage" not in app
+    assert "book-leverage" not in app
+
+
+def test_the_cap_costs_the_scan_nothing() -> None:
+    # The layering promise: the factory imports this package to fire its
+    # ``@register``, so anything at module scope is paid on every
+    # ``create_app()``.  The cap is answered from the same import that was
+    # already being paid for — no new top-level import, no environment read,
+    # no third party — so importing the member for the cap alone is the same
+    # bill the combiner alone already charged.
+    assert member.leverage_cap(1.0, volatility=0.2) == 1.25
+
+
+def test_the_members_public_surface_carries_both_features() -> None:
+    # The exported surface is the two features' own names and nothing else:
+    # 301's combiner, its value types and its one base error; 308's three
+    # verbs, its two constants and its two sibling classes.  Pinned because
+    # the seat deliberately re-exports none of it — a caller who wants these
+    # reaches the member's namespace, so the namespace *is* the contract and a
+    # name that drifted off it would leave a caller with no way in.
+    assert set(member.__all__) == {
+        "COMPONENT_NAME",
+        "KELLY_FRACTION",
+        "OVERLEVERAGE_CODE",
+        "BookConstructionError",
+        "CompositeBook",
+        "LeverageRequestError",
+        "LeverageTargetError",
+        "PromotedSignal",
+        "build_book_combiner",
+        "combine",
+        "kelly_fraction",
+        "leverage_cap",
+        "rejects_overleveraged_target",
+    }
+    for name in member.__all__:
+        assert hasattr(member, name), name
+
+
+def test_the_cap_never_respells_the_quarter_as_a_parameter() -> None:
+    # ``build_book_combiner`` takes no arguments because the combiner's whole
+    # configuration is its arithmetic; the cap's whole configuration is
+    # Appendix B's figures, and a builder that had grown a ``kelly_fraction``
+    # keyword would be a deployment knob on a document constant.  This is the
+    # one place the two features' composition stories meet, so it is pinned
+    # here rather than in either feature's own suite.
+    import inspect
+
+    parameters = inspect.signature(member.build_book_combiner).parameters
+    assert not parameters
