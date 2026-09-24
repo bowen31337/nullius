@@ -1,5 +1,5 @@
-"""The book member's refusal vocabulary — features 301, 303, 304, 306, 307 and
-308.
+"""The book member's refusal vocabulary — features 301, 303, 304, 305, 306, 307
+and 308.
 
 app_spec.xml, "Portfolio Book Construction", feature 301: *System combines
 promoted signals by information-ratio weighting, which returns a single
@@ -134,6 +134,38 @@ refusable though both limits were perfectly well stated, and a mis-stated limit
 is refusable though the book sits inside a perfectly good bound, so the two
 facts are genuinely different.
 
+app_spec.xml, feature 305 — the last arrow of §C8's own chain — is a further
+face: *System returns final target weights as the only output consumed by the
+order layer.*  Its refusals join the others here for the reason the limits' did:
+the base stays one, and the sentence's two failures are different facts about a
+different subject — the value that is not a published book at all (305's ask)
+and an instruction carrying a second published set beside the one meant for the
+orders (305's judgment), where 304's subject was target weights outside the
+deployment's bounds.  The act adds the two codes an operator greps a deployment
+log for on this path:
+
+* ``no_book`` — what the caller handed over is not a book: a value carrying no
+  ``weights``, a non-mapping, a published set covering no symbols, or a value
+  meant for the order layer that declares itself nothing (refused rather than
+  passed on as an instruction, because an instruction naming no book is the
+  *absence* of a book — a book held flat is every symbol weighted ``0.0``, and
+  that one is published);
+* ``annexed_record`` — a second record declaring itself the order layer's output
+  is in the instruction (refused rather than reconciled, because two published
+  sets leave the order layer choosing between them, which is the construction's
+  own act performed one layer down with no bound re-run).
+
+The act's two faces are the same pair of shapes the others are — the ask's own
+facts (:class:`FinalWeightsRequestError`, carrying ``no_book`` where the value
+is not a book and no code where a book was well stated but badly stated key by
+key) and the one judgment the sentence mints
+(:class:`OrderLayerOutputError`, carrying ``annexed_record``).  Both are
+subclasses of the base with the same consequence, and the same reason to be
+siblings rather than aliases: an instruction carrying a second published set is
+refusable though both sets are perfectly well stated, and a value carrying no
+book is refusable though no second record is involved, so the two facts are
+genuinely different.
+
 The authorship guard adds the second, and it is the one an operator greps
 a deployment log for on feature 306's path — the refusal that says the
 search reached for the construction:
@@ -177,11 +209,13 @@ __all__ = [
     "BookChangeRequestError",
     "BookConstructionError",
     "ChangelogEntryRequestError",
+    "FinalWeightsRequestError",
     "LeverageRequestError",
     "LeverageTargetError",
     "LimitBreachError",
     "LimitRequestError",
     "MissingChangelogEntryError",
+    "OrderLayerOutputError",
     "VolatilityTargetError",
     "VolatilityTargetRequestError",
 ]
@@ -211,23 +245,27 @@ class BookConstructionError(Exception):
     :class:`VolatilityTargetError` (feature 303's verdict) join them,
     :class:`LimitRequestError` (feature 304's ask) and
     :class:`LimitBreachError` (feature 304's verdict) join them too,
+    :class:`FinalWeightsRequestError` (feature 305's ask) and
+    :class:`OrderLayerOutputError` (feature 305's verdict) join them,
     :class:`BookChangeRequestError` (feature 306's ask) and
     :class:`AgentAuthoredModificationError` (feature 306's verdict) join them,
     and :class:`ChangelogEntryRequestError` (feature 307's ask) and
     :class:`MissingChangelogEntryError` (feature 307's verdict) join them as
     well, so a caller that must refuse rather than rank catches this one class
-    and catches the act's, the cap's, the guard's, the limits' and the
-    companion's failures with it.  A caller that has to *react* differently to
-    *your signals cannot be combined*, *this book expresses no view to size*,
-    *this book may not carry that leverage*, *these weights breach a limit*,
-    *an agent authored this change to the construction* and *this change had no
-    changelog entry* catches the specific siblings instead — see each for why
-    the distinction is worth a class.  The classes are siblings rather than
+    and catches the act's, the cap's, the guard's, the limits', the published
+    set's and the companion's failures with it.  A caller that has to *react*
+    differently to *your signals cannot be combined*, *this book expresses no
+    view to size*, *this book may not carry that leverage*, *these weights
+    breach a limit*, *no book reached the orders*, *this change to the
+    construction was authored by an agent* and *this change had no changelog
+    entry* catches the specific siblings instead — see each for why the
+    distinction is worth a class.  The classes are siblings rather than
     aliases because the facts are genuinely different: a leverage target is
     refusable for a book whose signals weighted up perfectly, a flat composite
     is refusable though both volatility figures were perfectly well stated, a
     breaching book is refusable though both limits were perfectly well stated,
-    an agent-authored change is refusable though perfectly well stated, and a
+    a value carrying no book is refusable though nothing else was involved, an
+    agent-authored change is refusable though perfectly well stated, and a
     change whose entry is absent is refusable though the entry field was
     perfectly well formed — it was simply not handed.
     """
@@ -711,4 +749,97 @@ class LimitBreachError(BookConstructionError):
     spending within it — so this class is raised strictly above it, the edge
     feature 308 states for its cap and Appendix B's *"use ≤ ¼ Kelly"* states
     for the quarter.
+    """
+
+
+class FinalWeightsRequestError(BookConstructionError):
+    """The final target weights could not be published as the caller asked.
+
+    app_spec.xml, "Portfolio Book Construction", feature 305: *System returns
+    final target weights as the only output consumed by the order layer.*  This
+    class is the *ask* face of that sentence and never the judgment: it refuses
+    the value the caller means to publish as the construction's output — a value
+    carrying no ``weights`` mapping, a non-mapping, a published set covering no
+    symbols, a blank symbol name, a weight that is not a finite real, and a
+    value meant for the order layer that declares itself no published book —
+    **before** any instruction reaches the orders, the ordering every verdict
+    and act in this workspace states.
+
+    It is raised by :func:`book.final_target_weights`, by
+    :func:`book.is_only_output` and by :func:`book.assert_only_output` when the
+    value meant for the orders is not a published book, and by the construction
+    of a :class:`book.FinalTargetWeights` that the act would not itself produce,
+    because that record's own self-check states the same facts about the same
+    fields through the same reader.
+
+    **The code is carried, and it is one word for several failures.**  Every
+    message where the value is not a book at all opens with
+    :data:`book.NO_BOOK_CODE` (``no_book``), because those failures share one
+    repair — *hand a book* — and an operator greps one word to learn that no
+    instruction reached the order layer.  A message about a symbol or a weight
+    *inside* an otherwise real book carries no code, the reason
+    :class:`LimitRequestError` gives for its own: a malformed key or magnitude
+    names its subject in its first words, and a token there would hand a reader
+    a developer's word for a fact they can simply state.
+
+    **What it deliberately does not refuse: a book held flat.**  Every weight
+    ``0.0`` — feature 303's own answer for a configured target of zero, and a
+    set feature 304 admits at every limit of zero or more — is a decision the
+    construction is entitled to publish.  *Hold nothing* is an instruction,
+    where a value carrying no weights, an empty book and a malformed weight are
+    the *absence* of one.  Refusing the flat book here would report a risk
+    appetite's own consequence as a malformed ask.
+
+    **Why it is its own class rather than the base alone.**  The repair differs.
+    A bare :class:`BookConstructionError` means *your signals cannot be
+    combined — fix the signals*; this one means *what you meant to hand the
+    order layer is not a book — publish the construction's own book*, and the
+    two are not the same instruction.  A caller that must react differently to
+    them can tell them apart by class; a caller that refuses book work wholesale
+    still catches one class, the base this descends from.
+    """
+
+
+class OrderLayerOutputError(BookConstructionError):
+    """A second record claimed the order layer's output — feature 305's judgment.
+
+    app_spec.xml, "Portfolio Book Construction", feature 305: *System returns
+    final target weights as the only output consumed by the order layer.*  This
+    class is the judgment that sentence mints — the one refusal on the
+    publication path that is a *verdict* rather than an ask's own fact — and it
+    is raised by :func:`book.is_only_output` and
+    :func:`book.assert_only_output` when the instruction meant for the order
+    layer carries a second record declaring itself a published final weight set
+    beside the one the caller handed over.  Its message opens with the greppable
+    code :data:`book.ANNEXED_RECORD_CODE` (``annexed_record``).
+
+    **Why the boundary is there, stated where the refusal is caught.**  §C8's
+    chain ends at *"orders"* and docs/nullius-tech-architecture.md §13.1 names
+    the same last link as the *"target weights"*; §13.2's execution engine is
+    the process on the other side of that seam, and it holds a book.  A chain
+    whose every step returned its own record would hand that engine three or
+    four things to reconcile and it would have to decide which is the book —
+    the construction's job performed one layer down, with no bound re-run and no
+    document saying which record wins.  This class is the refusal that enforces
+    the sentence's *only*.
+
+    **The construction's working is not this refusal.**  The composite, the
+    gross book, the scale and the target weights are figures a caller may
+    legitimately hold beside the published set — those records are where the
+    construction's arithmetic belongs.  What is refused is a second *published*
+    set: two records both declaring themselves the order layer's instruction.
+
+    **Its repair is its own, which is why it is its own class.**  *Hand the
+    order layer exactly one published set* — this module reconciles nothing and
+    chooses nothing, because picking between two instructions would be this
+    member deciding which book the orders hold.  The two classes a caller could
+    otherwise catch this as both name repairs that are wrong here:
+    :class:`FinalWeightsRequestError` means *what you handed over is not a book*
+    (both sets are perfectly well stated), and the bare
+    :class:`BookConstructionError` means *your signals cannot be combined* (they
+    combined; the construction is real and it published more than one
+    instruction).  Folding these together would make a caller that must react
+    differently to *two instructions reached the orders* and *your ask named no
+    book* catch one class and re-inspect something it cannot tell apart, which
+    is the failure this vocabulary is split to prevent.
     """

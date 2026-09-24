@@ -1,6 +1,7 @@
 """The book combiner, its volatility target, its position and concentration
-limits, its authorship guard, its changelog companion and its leverage cap —
-six features: 301, 303, 304, 306, 307 and 308.
+limits, its publication of the final target weights, its authorship guard, its
+changelog companion and its leverage cap — seven features: 301, 303, 304, 305,
+306, 307 and 308.
 
 app_spec.xml, "Portfolio Book Construction", feature 301: *System combines
 promoted signals by information-ratio weighting, which returns a single
@@ -47,6 +48,28 @@ as a pure function of the weights; :func:`is_breaching_limits` is the fact
 without the refusal.  The act arrives beside the combiner in the same shape the
 cap and the guard do — free functions, no second component — because its whole
 input is a value and two figures the caller already holds.
+
+app_spec.xml, feature 305 is §C8's own last arrow, one step after the limits
+and the step the orders consume: *System returns final target weights as the
+only output consumed by the order layer.*  :func:`final_target_weights` is its
+verb: it takes the bounded book feature 304's verdict let through and answers a
+frozen :class:`FinalTargetWeights` carrying the weights the order layer holds
+*unchanged* — this act re-runs no arithmetic, because feature 301 already
+combined, feature 303 already scaled and feature 304 already bounded, and a
+second answer to a question an earlier step answered is exactly the drift the
+sentence's *only* forecloses.  :func:`is_only_output` reads that *only* over
+the construction's whole surface — the value meant for the orders and
+everything else the caller holds — answering ``True`` exactly when one value
+declares itself a published final weight set and no second one does; the
+construction's *working* (the composite, the gross book, the scale, the target
+weights) is not a second output and may be held beside it.
+:func:`assert_only_output` is the same judgment as a verdict.  It arrives as
+free functions beside the combiner in the same shape the cap and the limits do,
+because its whole input is a value the caller already holds.  Absence is not
+zero here as everywhere else in the member: a value carrying no ``weights``, a
+set covering no symbols and a non-finite weight are the *absence* of a book and
+are refused, while a book held flat (every weight ``0.0``, feature 303's
+zero-target answer) is a decision and is published.
 
 app_spec.xml, feature 306 is the category's boundary sentence:
 *System keeps book construction human-authored and version-controlled,
@@ -194,7 +217,12 @@ protocol, which takes no arguments, cannot express one and no component
 reasons about it.  Nor the limits: :mod:`book._limits` imports ``math``,
 ``collections``, ``dataclasses``, ``typing`` and that same vocabulary, and its
 two figures reach the call the same way the target does — the same structural
-argument, read on the two bounds one step after it.
+argument, read on the two bounds one step after it.  Nor the publication:
+:mod:`book._publish` imports ``math``, ``collections``, ``dataclasses``,
+``types``, ``typing`` and that same vocabulary, and it reads a value the caller
+holds rather than computing one — the chain's last step adds no arithmetic, so
+it costs the factory's scan no more than the combiner does, and there is
+nothing for a deployment to configure because nothing about it is a figure.
 """
 
 from __future__ import annotations
@@ -234,6 +262,15 @@ from ._limits import (
     is_breaching_limits,
     rejects_breaching_target_weights,
 )
+from ._publish import (
+    ANNEXED_RECORD_CODE,
+    NO_BOOK_CODE,
+    PUBLISHED_KIND,
+    FinalTargetWeights,
+    assert_only_output,
+    final_target_weights,
+    is_only_output,
+)
 from ._volatility import (
     FLAT_BOOK_CODE,
     TargetWeights,
@@ -244,11 +281,13 @@ from .errors import (
     BookChangeRequestError,
     BookConstructionError,
     ChangelogEntryRequestError,
+    FinalWeightsRequestError,
     LeverageRequestError,
     LeverageTargetError,
     LimitBreachError,
     LimitRequestError,
     MissingChangelogEntryError,
+    OrderLayerOutputError,
     VolatilityTargetError,
     VolatilityTargetRequestError,
 )
@@ -259,6 +298,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a depende
 __all__ = [
     "AGENT_AUTHOR_KINDS",
     "AGENT_MODIFICATION_CODE",
+    "ANNEXED_RECORD_CODE",
     "AUTHOR_KINDS",
     "COMPONENT_NAME",
     "CONCENTRATION_LIMIT_CODE",
@@ -266,8 +306,10 @@ __all__ = [
     "HUMAN_AUTHOR_KIND",
     "KELLY_FRACTION",
     "MISSING_CHANGELOG_ENTRY_CODE",
+    "NO_BOOK_CODE",
     "OVERLEVERAGE_CODE",
     "PER_POSITION_LIMIT_CODE",
+    "PUBLISHED_KIND",
     "REVISION_HEX_LENGTH",
     "AgentAuthoredModificationError",
     "BookChangeRequestError",
@@ -276,22 +318,28 @@ __all__ = [
     "ChangelogEntry",
     "ChangelogEntryRequestError",
     "CompositeBook",
+    "FinalTargetWeights",
+    "FinalWeightsRequestError",
     "LeverageRequestError",
     "LeverageTargetError",
     "LimitBreachError",
     "LimitRequestError",
     "MissingChangelogEntryError",
+    "OrderLayerOutputError",
     "PromotedSignal",
     "TargetWeights",
     "VolatilityTargetError",
     "VolatilityTargetRequestError",
     "apply_volatility_target",
+    "assert_only_output",
     "build_book_combiner",
     "combine",
     "concentration",
+    "final_target_weights",
     "is_agent_authored",
     "is_breaching_limits",
     "is_missing_changelog_entry",
+    "is_only_output",
     "kelly_fraction",
     "leverage_cap",
     "rejects_agent_authored_modification",
