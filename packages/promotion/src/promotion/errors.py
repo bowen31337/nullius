@@ -197,10 +197,58 @@ window length that is not a positive count), the address, the absence (no
 registry row, or a row still open) and the row read back corrupt all open with
 :data:`PROMOTION_WINDOW_ERROR_CODE` and all name what they are about.
 
-**The tree is open, and that is the seam 292-296 land on.**  The category's
-next features extend this module with siblings — feature 292's
-``criteria_mismatch`` verdict, 295's retirement refusal, 296's terminal state —
-and the discipline is the one stated above: a new class is a sibling when its
+**Feature 295 adds the tree's eighth class, and it is the first whose
+refusal *is* the act.**  :class:`EpochSelectionError` carries *"System
+rejects further selection of a sequestered epoch once it has served three
+promotion decisions"* — §13 item 4's threshold, read off the count feature
+294 just persisted.  It is deliberately **none** of the seven beside it:
+
+* not :class:`PromotionError` — that class carries the pre-registration's
+  *ask* face, and a caller whose single ``except`` guards the selection
+  path would read *the body was malformed* where the truth is *the epoch is
+  spent*;
+* not :class:`PromotionStoreError` — no row failed to land, because this
+  feature writes nothing at all: the count landed, and that landing is
+  exactly the fact the refusal stands on;
+* not :class:`PromotionBlockError` nor :class:`VoidCalibrationError` — the
+  two *merit* refusals are findings about the replay pool and the campaign,
+  read from other members' tables.  This one's noun is the *holdout
+  resource* — an epoch the system itself sequestered and has now spent —
+  and its repair is unlike either merit's: select a clean epoch, or stop,
+  which §13 item 4 calls *"a legitimate terminal state"* rather than a
+  fault to fix;
+* not :class:`PromotionDecisionError` nor :class:`EpochChargeError` —
+  those are *write* faces, a stamp and a count that did not land, and their
+  repair is to the database.  Here both landed; the count this refusal
+  stands on is exactly the figure feature 294 persisted, and conflating the
+  classes would send an operator debugging a write that succeeded when the
+  finding is §13 item 4's own budget reached;
+* not :class:`PromotionWindowError` — the closest of the seven, and the one
+  the split is for.  That class reports a question that *cannot be
+  answered* (no row, or a row still open), repaired in the registration
+  state.  This one's question is answered, and the answer is *no*: the
+  epoch is sealed, its count is on the row, and §13 item 4 refuses the
+  fourth booking.  An operator who greps the window's word for this
+  refusal would be looking for a missing write that never happened.
+
+Its faces stay **gathered** in one class, the argument every gathered class
+above makes: this feature's caller is the same **gate**, and a gate's one
+failure mode is silence.  A caller whose single ``except
+EpochSelectionError`` guards its selection path must not be able to walk
+through a hole because a malformed epoch arrived in a different class from
+an unreachable database or an epoch nobody sealed — in every case the epoch
+stands unjudged and the booking it was headed for must not proceed, which
+is the fourth promotion on a spent holdout that §13 item 4's ledger exists
+to prevent.  So the ask (a malformed epoch name, a count that is not a
+count), the address, the absence (an epoch nobody sealed), the spend (a
+count that has reached the budget) and the row (one that cannot be read
+back) all open with :data:`EPOCH_SELECTION_ERROR_CODE` and all name what
+they are about.
+
+**The tree is open, and that is the seam 292 and 296 land on.**  The
+category's remaining features extend this module with siblings — feature
+292's ``criteria_mismatch`` verdict, 296's terminal state — and the
+discipline is the one stated above: a new class is a sibling when its
 repair differs, and a face of an existing one when the caller's position is
 the same.  Nothing here presumes which of the two any later feature is.
 """
@@ -209,12 +257,14 @@ from __future__ import annotations
 
 __all__ = [
     "EPOCH_CHARGE_ERROR_CODE",
+    "EPOCH_SELECTION_ERROR_CODE",
     "PROMOTION_BLOCK_ERROR_CODE",
     "PROMOTION_DECISION_ERROR_CODE",
     "PROMOTION_REGISTRY_ERROR_CODE",
     "PROMOTION_WINDOW_ERROR_CODE",
     "VOID_CALIBRATION_ERROR_CODE",
     "EpochChargeError",
+    "EpochSelectionError",
     "PromotionBlockError",
     "PromotionDecisionError",
     "PromotionError",
@@ -627,4 +677,87 @@ class PromotionWindowError(PromotionError):
     Every message opens with :data:`PROMOTION_WINDOW_ERROR_CODE` and names the
     node the window was asked about, so an operator's log line says which
     promotion's window could not be opened and in which of the four ways.
+    """
+
+
+#: The greppable word that opens every :class:`EpochSelectionError` message:
+#: the epoch's §13 item 4 budget is spent and further selection of it is
+#: refused.  Spelled beside the charge's own word
+#: (``epoch_charge_unpersisted``) but not in its letter, because the two are
+#: the *write* and the *refusal* over one column: an operator greps the
+#: charge's word for *a count did not land* and this one for *a count reached
+#: its budget*, and landing on the wrong one sends them debugging a write
+#: that succeeded when the finding is §13 item 4's own law.
+EPOCH_SELECTION_ERROR_CODE = "epoch_budget_spent"
+
+
+class EpochSelectionError(PromotionError):
+    """Further selection of a sequestered epoch was refused: its budget is spent.
+
+    Feature 295's class: *"System rejects further selection of a sequestered
+    epoch once it has served three promotion decisions."*  Raised by
+    :func:`promotion.selection.rejects_further_selection` and
+    :meth:`promotion.selection.EpochSelections.select` when the count feature
+    294 persists against an epoch has reached §13 item 4's budget of three —
+    and by the module's own paths for the malformed asks, the unreachable
+    addresses and the unreadable rows they share with the act.
+
+    **Its noun is a resource the system has spent, and that is why it is its
+    own class.**  The member's tree splits by *the repair the caller must
+    make*, and this refusal's repair is unlike any of the seven beside it:
+
+    * not :class:`PromotionError` — the pre-registration's *ask* face.  The
+      selection's ask may be well formed; what is wrong is the epoch's
+      history, and re-sending the ask cannot fix that;
+    * not :class:`PromotionStoreError` — nothing failed to write, because
+      this feature writes nothing at all.  The count is on the row; the
+      refusal is the point, not a failure;
+    * not :class:`PromotionBlockError` nor :class:`VoidCalibrationError` —
+      the two *merit* refusals are findings about the pool's coverage and
+      the campaign's calibration, read from other members' tables.  This
+      one's noun is the sequestered holdout itself — the system's own
+      depleting resource — and its repair is not to grow coverage or to
+      re-plan a campaign: it is to select a clean epoch, or to stop, the
+      terminal state §13 item 4 explicitly legitimates;
+    * not :class:`PromotionDecisionError` nor :class:`EpochChargeError` —
+      the closest pair, and the ones the split is for.  Those report a
+      stamp and a count that *did not land*, and their repair is to the
+      database.  Here both landed; the figure this refusal stands on is
+      exactly the one feature 294 persisted, and conflating the classes
+      would send an operator debugging a write that succeeded when the
+      finding is that §13 item 4's budget has been served;
+    * not :class:`PromotionWindowError` — that class reports a question
+      that *cannot be answered* (a node nobody registered, a row still
+      open), with a repair in the registration state.  This one's question
+      is answered: the epoch is sealed, its count is on the row, and the
+      answer is *no*.  An operator who greps the window's word for this
+      refusal would be looking for a missing write that never happened.
+
+    Five faces, **gathered** rather than split, because the caller is a gate
+    and a gate's one failure mode is silence — the argument every gathered
+    class above states one feature over the last:
+
+    * **the ask** — a malformed epoch name, or a served count that is not a
+      non-negative count.  Nothing was read and nothing was judged; the
+      repair is to re-send the ask.
+    * **the address** — a ``DATABASE_URL`` this member cannot speak.  The
+      repair is to the deployment.
+    * **the absence** — no ``epoch_ledger`` row for the epoch, which is
+      *nobody sealed it*, a different fact from a sealed epoch serving
+      zero.  The repair is the sealing process's act, not a booking.
+    * **the spend** — the count has reached §13 item 4's budget of three.
+      The repair is a clean epoch (feature 297's depleting count reports
+      how many remain) or the stop §13 item 4 calls legitimate.
+    * **the row** — a ledger row that cannot be read back.  The repair is
+      to the database.
+
+    In every one of them the epoch stands unjudged for selection, and that
+    is the state the class exists to make loud: a spent epoch that quietly
+    went unjudged is read as clean and booked a fourth time, which is the
+    exact reuse §13 item 4's ledger exists to prevent, arrived at by
+    silence rather than by decision.
+
+    Every message opens with :data:`EPOCH_SELECTION_ERROR_CODE` and names
+    the epoch the selection was about, so an operator's log line says which
+    sequestered epoch was refused and in which of the five ways.
     """

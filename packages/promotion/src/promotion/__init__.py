@@ -9,7 +9,7 @@ and hashed before the evaluation that decides them"*, and against the
 (``migrations/versions/0108_forward_and_universe_tables.py``) already
 declares.
 
-The member's surface is nine modules.  :mod:`promotion.criteria` is *what* a
+The member's surface is ten modules.  :mod:`promotion.criteria` is *what* a
 promotion is judged against and *how it is hashed*:
 :class:`~promotion.criteria.PromotionCriteria`, the six terms §13.7's
 "criteria" enumerates — the paired ΔIR advantage, the significance level, the
@@ -70,7 +70,20 @@ and :func:`~promotion.epoch.charge_epoch` /
 :func:`~promotion.epoch.epoch_charge` as the write and the read.  It
 judges nothing and it takes no ``epoch_id``: the epoch billed is read off
 the row the pre-registration booked, the mirror of the decision's own
-refusal, and the threshold the count feeds is features 295-297's.  :mod:`promotion.forward` is feature 300's *window*:
+refusal, and the threshold the count feeds is features 295-297's.
+:mod:`promotion.selection` is feature 295's *gate*:
+:class:`~promotion.selection.EpochSelections`, the reader that refuses
+further selection of a sequestered epoch once it has served §13 item 4's
+three promotion decisions — reading the row through
+:meth:`~promotion.epoch.EpochCharges.epoch`, feature 294's own seam, so
+the gate holds no connection, authors no DDL and spells no statement —
+with :data:`~promotion.selection.SEQUESTERED_EPOCH_BUDGET` as the PRD's
+own number spelled once and
+:func:`~promotion.selection.rejects_further_selection` as the comparison
+on its own, :func:`~promotion.selection.select_epoch` as the act at module
+level.  It judges the count and only the count — the ``retired`` flag is
+feature 296's and the depleting remainder feature 297's — and it writes
+nothing: the refusal is the act.  :mod:`promotion.forward` is feature 300's *window*:
 :class:`~promotion.forward.PromotionWindow`, the derived forward measurement
 window a promotion opened — the feature's sentence, *"timestamps every promoted
 signal at promotion, which creates its forward measurement window"*, answered as
@@ -104,7 +117,14 @@ face, opening :data:`~promotion.errors.EPOCH_CHARGE_ERROR_CODE` — an
 epoch's running decision count that did not land in the ledger, gathered
 across the same gate's faces for the same caller-position reason, and
 spelled beside the decision's word but not in its letter because the two
-are two writes to two tables one decision apart), and
+are two writes to two tables one decision apart), feature
+295's :class:`~promotion.errors.EpochSelectionError` (the *budgeting*
+face, opening :data:`~promotion.errors.EPOCH_SELECTION_ERROR_CODE` —
+further selection of a sequestered epoch refused because the count §13
+item 4 budgets it by has been served, gathered across the same gate's
+faces for the same caller-position reason, and spelled beside the charge's
+word but not in its letter because the two are the write and the refusal
+over one column), and
 feature 300's :class:`~promotion.errors.PromotionWindowError` (the *reading*
 face, opening
 :data:`~promotion.errors.PROMOTION_WINDOW_ERROR_CODE` — a window that could not
@@ -260,12 +280,14 @@ from .epoch import (
 )
 from .errors import (
     EPOCH_CHARGE_ERROR_CODE,
+    EPOCH_SELECTION_ERROR_CODE,
     PROMOTION_BLOCK_ERROR_CODE,
     PROMOTION_DECISION_ERROR_CODE,
     PROMOTION_REGISTRY_ERROR_CODE,
     PROMOTION_WINDOW_ERROR_CODE,
     VOID_CALIBRATION_ERROR_CODE,
     EpochChargeError,
+    EpochSelectionError,
     PromotionBlockError,
     PromotionDecisionError,
     PromotionError,
@@ -313,6 +335,13 @@ from .schema import (
     bootstrap_schema,
     migrations_dir,
 )
+from .selection import (
+    SEQUESTERED_EPOCH_BUDGET,
+    EpochSelectionError,
+    EpochSelections,
+    rejects_further_selection,
+    select_epoch,
+)
 
 __all__ = [
     "BLOCKED_AT_COLUMN",
@@ -334,6 +363,7 @@ __all__ = [
     "EPOCH_CHARGE_ERROR_CODE",
     "EPOCH_ID_COLUMN",
     "EPOCH_LEDGER_TABLE",
+    "EPOCH_SELECTION_ERROR_CODE",
     "FORWARD_WINDOW_TABLE",
     "MIGRATION_ORDER",
     "NODE_ID_COLUMN",
@@ -351,11 +381,14 @@ __all__ = [
     "REGIME_COLUMN",
     "RETIRED_COLUMN",
     "SEALED_AT_COLUMN",
+    "SEQUESTERED_EPOCH_BUDGET",
     "VOID_CALIBRATION_ERROR_CODE",
     "WINDOW_DAYS_COLUMN",
     "WORLD_COUNT_COLUMN",
     "EpochChargeError",
     "EpochCharges",
+    "EpochSelectionError",
+    "EpochSelections",
     "PreRegisterEndpoint",
     "PreRegistrationRequest",
     "PreRegistrationResponse",
@@ -392,8 +425,10 @@ __all__ = [
     "promotion_window",
     "promotion_windows",
     "record_decision",
+    "rejects_further_selection",
     "rejects_void_calibration",
     "rejects_void_promotion",
+    "select_epoch",
     "utc_now",
     "window_closes_at",
 ]
