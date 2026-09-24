@@ -1,7 +1,7 @@
-"""The book combiner, its volatility target, its position and concentration
-limits, its publication of the final target weights, its authorship guard, its
-changelog companion, its leverage cap and its rebalance record — eight features:
-301, 303, 304, 305, 306, 307, 308 and 309.
+"""The book combiner, its covariance shrinkage, its volatility target, its
+position and concentration limits, its publication of the final target
+weights, its authorship guard, its changelog companion, its leverage cap and
+its rebalance record — nine features: 301 through 309.
 
 app_spec.xml, "Portfolio Book Construction", feature 301: *System combines
 promoted signals by information-ratio weighting, which returns a single
@@ -12,9 +12,32 @@ signal *i* by ``w_i = IR_i`` and returns a single :class:`CompositeBook`
 holding one composite target score per symbol, the weighted average of that
 symbol's scores across the signals.
 
-app_spec.xml, feature 303 is the category's second act and the one this
-package carries beside the combiner: *System applies volatility targeting to
-the combined book, which returns weights scaled to a configured annualized
+app_spec.xml, feature 302 is the qualifier inside §C8's own first arrow and
+the category's second act: *System applies Ledoit-Wolf shrinkage to the
+signal covariance before combination, which returns a stabilized weight
+vector.*  :func:`stabilize_weights` is its verb: it takes the same promoted
+signals :func:`combine` reads — one step earlier on the chain — estimates the
+signals' sample covariance from their demeaned per-symbol scores (each symbol
+one joint observation of all the signals, the only joint sample a promoted
+signal carries), shrinks that estimate toward the scaled identity by the
+intensity Ledoit & Wolf (2004) derive from the sample itself, and answers the
+solve ``Σ⁻¹·IR`` normalized to one unit of gross as a frozen
+:class:`StabilizedWeights` whose construction re-checks the mixture, the
+normalization and the solve.  The intensity is a measurement the estimator
+takes, never a configuration: the sentence names *Ledoit-Wolf*, and what that
+names over a bare shrinkage is precisely that nobody dials it — no
+``shrinkage=`` keyword exists, the boundary the member states for every
+other figure §C8 gives no number for.  A correlated signal can stabilize to
+a *negative* weight — the hedge the arithmetic produces, its sign the view —
+which is what the sentence's *before combination* buys: a weighting that
+knows how the signals move together before they are combined.  On the book
+where the covariance adds nothing — orthogonal signals of equal variance —
+the shrunk estimate is the scaled identity outright and the stabilized vector
+*is* the information-ratio weighting, so the two acts agree exactly where
+301's own weighting is already the answer.
+
+app_spec.xml, feature 303 is the category's third act: *System applies
+volatility targeting to the combined book, which returns weights scaled to a configured annualized
 volatility.*  :func:`apply_volatility_target` is its verb: it takes the
 composite 301 answers and the book's own annualized volatility, normalizes the
 composite into a book at one unit of gross exposure (a target *score* carries
@@ -185,8 +208,13 @@ the component the way the scoring member's objective is.
 The information-ratio weighting is a convention, not a knob: a weight is a
 portfolio decision the combiner applies rather than accepts, so two
 deployments report the same composite for the same signals.  Downstream
-features — covariance shrinkage, position limits — take this composite and
-rescale it; they do not re-open this weight.  Feature 303 is the rescaling
+features — the volatility target, the limits — take this composite and
+rescale it; they do not re-open this weight.  The covariance shrinkage is
+the one act that reads the *signals* rather than the composite, and it sits
+*before* this one in the order its own sentence names: it answers a
+stabilized weight vector beside the combiner's — the two are read against
+each other, never merged, and the combiner's weighting stays exactly where
+this feature pinned it.  Feature 303 is the rescaling
 that does happen here, and it rescales the *composite's exposure* without
 touching the weighting: the normalized weights it derives are IR_i / Σ_j IR_j
 read through one factor, so the ranking 301 fixed is exactly the ranking the
@@ -203,15 +231,24 @@ estimate (their one knob, the configured volatility target, is feature 303's
 stated over arrive the same way, as required keywords of
 :func:`rejects_breaching_target_weights`).
 
-Absence is not zero, three times over: a signal with a non-positive or
+Absence is not zero, five times over: a signal with a non-positive or
 non-finite information ratio is refused (its standing to weight the book is
 undefined, not zero); a signal that carries no score for a symbol the book
 covers is refused (it expresses no view — zero-filling would counterfeit
-one); and a composite whose scores are *all* zero is refused by feature 303's
+one); a composite whose scores are *all* zero is refused by feature 303's
 act (its gross score is exactly nothing, so the normalization to a book is a
 division by nothing — answering an all-zero weight set would counterfeit a
-book from no view).  None is defaulted; a refused combine or scaling forms no
-value.  The cap draws the same line where it applies and not where it does
+book from no view); a book whose every signal scores every symbol
+identically is refused by feature 302's act as ``dispersionless_book`` (the
+sample covariance is the zero matrix — no second moment exists for any
+shrinkage to stabilize, and a one-symbol book is always this refusal); and a
+book whose shrunk covariance has no inverse is refused as
+``singular_covariance`` (no weight vector solves ``Σ·w = IR``, and
+pseudo-inverting would fabricate a direction the sample does not carry — a
+two-symbol book of two or more signals is always this refusal, while a
+*thin but lift-able* one is answered, because carrying the sample off its
+deficiency is what the shrinkage is for).  None is defaulted; a refused
+combine or scaling forms no value.  The cap draws the same line where it applies and not where it does
 not: a non-positive Sharpe is answered (a losing book's fraction is a measured
 fact whose consequence is *no admissible leverage*, not an error), while a
 volatility of zero is refused (a book with no scale has no fraction at all).
@@ -260,6 +297,13 @@ argument, read on the two bounds one step after it.  Nor the publication:
 holds rather than computing one — the chain's last step adds no arithmetic, so
 it costs the factory's scan no more than the combiner does, and there is
 nothing for a deployment to configure because nothing about it is a figure.
+Nor the shrinkage: :mod:`book._shrinkage` imports ``math``, ``collections``,
+``dataclasses``, ``types``, ``typing`` and that same vocabulary — the Ledoit
+& Wolf (2004) estimator is spelled on the page rather than imported, because
+the member is stdlib-only — and the one figure it produces, the intensity,
+is estimated from the sample at the *call*, so the registration protocol,
+which takes no arguments, cannot express it and no deployment can find it:
+the estimator's whole point is that nobody dials it.
 """
 
 from __future__ import annotations
@@ -316,6 +360,12 @@ from ._rebalance import (
     RebalanceTargetWeights,
     RebalanceTargetWeightsStore,
 )
+from ._shrinkage import (
+    DISPERSIONLESS_BOOK_CODE,
+    SINGULAR_COVARIANCE_CODE,
+    StabilizedWeights,
+    stabilize_weights,
+)
 from ._volatility import (
     FLAT_BOOK_CODE,
     TargetWeights,
@@ -336,6 +386,8 @@ from .errors import (
     RebalanceRequestError,
     RebalanceRewriteError,
     RebalanceStoreError,
+    ShrinkageError,
+    ShrinkageRequestError,
     VolatilityTargetError,
     VolatilityTargetRequestError,
 )
@@ -351,6 +403,7 @@ __all__ = [
     "COMPONENT_NAME",
     "CONCENTRATION_LIMIT_CODE",
     "DATABASE_URL_ENV",
+    "DISPERSIONLESS_BOOK_CODE",
     "FLAT_BOOK_CODE",
     "HUMAN_AUTHOR_KIND",
     "KELLY_FRACTION",
@@ -363,6 +416,7 @@ __all__ = [
     "REBALANCE_RECORDED_CODE",
     "REBALANCE_TARGET_WEIGHTS_TABLE",
     "REVISION_HEX_LENGTH",
+    "SINGULAR_COVARIANCE_CODE",
     "AgentAuthoredModificationError",
     "BookChangeRequestError",
     "BookConstructionChange",
@@ -384,6 +438,9 @@ __all__ = [
     "RebalanceStoreError",
     "RebalanceTargetWeights",
     "RebalanceTargetWeightsStore",
+    "ShrinkageError",
+    "ShrinkageRequestError",
+    "StabilizedWeights",
     "TargetWeights",
     "VolatilityTargetError",
     "VolatilityTargetRequestError",
@@ -403,6 +460,7 @@ __all__ = [
     "rejects_breaching_target_weights",
     "rejects_overleveraged_target",
     "requires_changelog_entry",
+    "stabilize_weights",
 ]
 
 #: The component name the book member registers under.  Kept here so

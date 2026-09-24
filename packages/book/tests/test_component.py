@@ -38,6 +38,7 @@ ranking it feeds computed over nothing.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import book as member
@@ -512,24 +513,25 @@ def test_the_changelog_companion_takes_no_content_parameter() -> None:
         assert set(inspect.signature(call).parameters) == {"change", "entry"}
 
 
-def test_the_members_public_surface_carries_the_eight_features() -> None:
-    # The exported surface is the eight features' own names and nothing
-    # else: 301's combiner, its value types and its one base error; 303's
-    # act, its record, its one code constant and its two sibling classes;
-    # 304's three verbs, its two code constants and its two sibling classes;
-    # 305's record, its three constants, its two verbs, its predicate and its
-    # two sibling classes; 306's record, its five constants, its predicate,
-    # its verdict and its two sibling classes; 307's record, its one code
-    # constant, its predicate, its verdict and its two sibling classes; 308's
-    # three verbs, its two constants and its two sibling classes; and 309's
-    # store, its record, its one environment constant, its table constant, its
-    # two code constants and its three sibling classes — the last being the
-    # member's first feature with three faces rather than two, because a store
-    # has the *write that did not land* to name as well as the ask and the
-    # judgment.  Pinned because the seat deliberately re-exports none of it — a
-    # caller who wants these reaches the member's namespace, so the namespace
-    # *is* the contract and a name that drifted off it would leave a caller with
-    # no way in.
+def test_the_members_public_surface_carries_the_nine_features() -> None:
+    # The exported surface is the nine features' own names and nothing
+    # else: 301's combiner, its value types and its one base error; 302's
+    # verb, its record, its two code constants and its two sibling classes;
+    # 303's act, its record, its one code constant and its two sibling
+    # classes; 304's three verbs, its two code constants and its two sibling
+    # classes; 305's record, its three constants, its two verbs, its
+    # predicate and its two sibling classes; 306's record, its five
+    # constants, its predicate, its verdict and its two sibling classes;
+    # 307's record, its one code constant, its predicate, its verdict and its
+    # two sibling classes; 308's three verbs, its two constants and its two
+    # sibling classes; and 309's store, its record, its one environment
+    # constant, its table constant, its two code constants and its three
+    # sibling classes — the last being the member's first feature with three
+    # faces rather than two, because a store has the *write that did not
+    # land* to name as well as the ask and the judgment.  Pinned because the
+    # seat deliberately re-exports none of it — a caller who wants these
+    # reaches the member's namespace, so the namespace *is* the contract and
+    # a name that drifted off it would leave a caller with no way in.
     assert set(member.__all__) == {
         "AGENT_AUTHOR_KINDS",
         "AGENT_MODIFICATION_CODE",
@@ -538,6 +540,7 @@ def test_the_members_public_surface_carries_the_eight_features() -> None:
         "COMPONENT_NAME",
         "CONCENTRATION_LIMIT_CODE",
         "DATABASE_URL_ENV",
+        "DISPERSIONLESS_BOOK_CODE",
         "FLAT_BOOK_CODE",
         "HUMAN_AUTHOR_KIND",
         "KELLY_FRACTION",
@@ -550,6 +553,7 @@ def test_the_members_public_surface_carries_the_eight_features() -> None:
         "REBALANCE_RECORDED_CODE",
         "REBALANCE_TARGET_WEIGHTS_TABLE",
         "REVISION_HEX_LENGTH",
+        "SINGULAR_COVARIANCE_CODE",
         "AgentAuthoredModificationError",
         "BookChangeRequestError",
         "BookConstructionChange",
@@ -571,6 +575,9 @@ def test_the_members_public_surface_carries_the_eight_features() -> None:
         "RebalanceStoreError",
         "RebalanceTargetWeights",
         "RebalanceTargetWeightsStore",
+        "ShrinkageError",
+        "ShrinkageRequestError",
+        "StabilizedWeights",
         "TargetWeights",
         "VolatilityTargetError",
         "VolatilityTargetRequestError",
@@ -590,6 +597,7 @@ def test_the_members_public_surface_carries_the_eight_features() -> None:
         "rejects_breaching_target_weights",
         "rejects_overleveraged_target",
         "requires_changelog_entry",
+        "stabilize_weights",
     }
     for name in member.__all__:
         assert hasattr(member, name), name
@@ -663,7 +671,11 @@ def test_the_final_weights_never_cross_composition() -> None:
 
     parameters = inspect.signature(member.build_book_combiner).parameters
     assert not parameters
-    for call in (member.final_target_weights, member.is_only_output, member.assert_only_output):
+    for call in (
+        member.final_target_weights,
+        member.is_only_output,
+        member.assert_only_output,
+    ):
         for parameter in inspect.signature(call).parameters.values():
             assert parameter.default is inspect.Parameter.empty
 
@@ -678,6 +690,7 @@ def test_the_final_weights_never_cross_composition() -> None:
 # coverage ledger is: a class beside the combiner, with a ``resolve`` classmethod
 # that answers ``None`` for a deployment that named no database.  These tests pin
 # that, because "no new component" is a claim a later edit could quietly falsify.
+
 
 def test_the_rebalance_record_registers_no_second_component() -> None:
     # The single-registration assertion above is the strong form; this is the
@@ -745,3 +758,79 @@ def test_the_rebalance_store_never_crosses_composition() -> None:
         member.RebalanceTargetWeightsStore.__init__
     ).parameters
     assert set(parameters) == {"self", "database_url"}
+
+
+# -- The covariance shrinkage's composition story (feature 302) -------------------
+#
+# Feature 302 arrives as a free function beside the combiner, in the same shape
+# the target, the limits and the cap did: its whole input is the promoted
+# signals the caller already holds, so there is nothing for the factory to
+# compose.  The one thing it must never grow is an *intensity* parameter,
+# because the sentence names Ledoit-Wolf — and what that names over a bare
+# shrinkage is precisely that the intensity is a measurement the estimator
+# takes from the sample, not a number a caller sets.  A ``shrinkage=``
+# keyword anywhere on the path would let a deployment dial the estimator to
+# zero and hold the raw sample covariance wearing a stabilized name.
+
+
+def test_the_shrinkage_registers_no_second_component() -> None:
+    # The single-registration assertion above is the strong form; this is the
+    # same fact read through a fresh scan, so a component added by any route
+    # (not just this module's own ``__init__.py``) is caught — a second name
+    # here would silently rebuild composition for every feature in the
+    # workspace.
+    src_root = Path(member.__file__).resolve().parent.parent
+    registry = Registration()
+    scan_components(src_root, registry=registry)
+    names = [component.name for component in registry.components()]
+    assert names.count("book") == 1
+    assert len(names) == 1
+
+
+def test_the_shrinkage_is_reachable_without_the_factory() -> None:
+    # A free function, reached the way the cap's, the target's and the guard's
+    # verbs are: imported from the member, not asked of the composed
+    # application.  There is no ``shrinkage`` component to ``app.get`` — and
+    # there could not be one that carried an intensity, because the factory's
+    # builders take no arguments and the estimator's whole point is that
+    # nobody dials it.
+    assert callable(member.stabilize_weights)
+    assert callable(member.StabilizedWeights)
+    assert member.DISPERSIONLESS_BOOK_CODE == "dispersionless_book"
+    assert member.SINGULAR_COVARIANCE_CODE == "singular_covariance"
+    app = create_app()
+    assert "shrinkage" not in app
+    assert "book-shrinkage" not in app
+
+
+def test_the_shrinkage_costs_the_scan_nothing() -> None:
+    # The layering promise: the factory imports this package to fire its
+    # ``@register``, so anything at module scope is paid on every
+    # ``create_app()``.  The act is answered from the same import that was
+    # already being paid for — no new top-level import beyond the stdlib's
+    # ``collections``, ``dataclasses``, ``math``, ``types`` and ``typing``
+    # (the Ledoit & Wolf estimator is spelled on the page, not imported,
+    # because the member is stdlib-only), no environment read, no third
+    # party — and the one figure it produces, the intensity, is estimated
+    # from the sample at the call, so there is nothing here for a composition
+    # to carry.
+    stabilized = member.stabilize_weights(_signals())
+    assert math.fsum(abs(w) for w in stabilized.weights.values()) == pytest.approx(1.0)
+
+
+def test_the_shrinkage_never_respells_the_intensity_as_a_parameter() -> None:
+    # ``build_book_combiner`` takes no arguments because the combiner's whole
+    # configuration is its arithmetic; the shrinkage's whole configuration is
+    # the sample itself, and a verb that had grown a ``shrinkage`` keyword
+    # would be a deployment knob on an estimator whose entire claim is that
+    # its intensity is measured, never set — the boundary the quarter (308)
+    # and the configured-volatility-as-required-keyword (303) state for their
+    # own figures, read on the one figure the documents hand to the
+    # estimator's own arithmetic.  Pinned through the function objects, so a
+    # renamed keyword still fails.
+    import inspect
+
+    parameters = inspect.signature(member.build_book_combiner).parameters
+    assert not parameters
+    parameters = inspect.signature(member.stabilize_weights).parameters
+    assert set(parameters) == {"signals"}

@@ -1,5 +1,5 @@
-"""The book member's refusal vocabulary — features 301, 303, 304, 305, 306, 307,
-308 and 309.
+"""The book member's refusal vocabulary — features 301, 302, 303, 304, 305,
+306, 307, 308 and 309.
 
 app_spec.xml, "Portfolio Book Construction", feature 301: *System combines
 promoted signals by information-ratio weighting, which returns a single
@@ -7,7 +7,44 @@ composite target score per symbol.*  A combine can fail only because the
 promoted signals it was handed cannot be weighted into a book, and this
 module is the one place those failures are named.
 
-app_spec.xml, feature 308 — this category's second sentence — is the sibling:
+app_spec.xml, feature 302 — the qualifier inside §C8's own first arrow — is
+the earliest sibling: *System applies Ledoit-Wolf shrinkage to the signal
+covariance before combination, which returns a stabilized weight vector.*
+Its refusals join 301's here, for the reason 301's own docstring states this
+module exists at all: one base class, so a caller can refuse the whole book
+surface with a single ``except``.  The two sentences' failures are different
+facts about different subjects — a *signal* that cannot be weighted (301)
+and a *signal covariance* that cannot be stabilized (302) — so the
+shrinkage's classes are **named siblings under
+:class:`BookConstructionError`** rather than additions to it, exactly the
+shape the cap's, the target's and the guard's take.  The ask face reads the
+same promoted-signal surface the combiner reads, one step earlier on the
+chain, so it refuses the same facts with **feature 301's own code words**
+(``empty_book``, ``unnamed_signal``, ``duplicate_signal``,
+``non_finite_ir``, ``non_positive_ir``, ``signal_without_scores``,
+``non_finite_score``, ``uncovered_symbol``) in its own class — the reason
+feature 309's ask states for importing ``no_book`` rather than respelling
+it: it is the same fact about the same surface, and a caller reading a
+deployment log should not have to learn a second token for it.  The one
+judgment the sentence mints adds the two codes of its own an operator greps
+a deployment log for on this path:
+
+* ``dispersionless_book`` — every promoted signal scores every symbol the
+  book covers at the same value, so the demeaned observations are all zero
+  and the sample signal covariance is the zero matrix: there is no second
+  moment for shrinkage to stabilize (refused rather than answered with a
+  fabricated vector, the stance feature 303 takes on the flat composite,
+  read one arrow earlier on the covariance's own divisor — and a book of
+  one symbol is always this refusal);
+* ``singular_covariance`` — the Ledoit-Wolf shrunk covariance has no
+  inverse, so no weight vector solves ``Σ·w = IR``: the demeaned
+  observations span at most one fewer dimension than they are many, and the
+  estimator's shrinkage was not enough to lift the sample off that (a
+  two-symbol book of two or more signals is always this refusal — refused
+  rather than pseudo-inverted, because a direction the sample does not
+  carry is a view nobody expressed).
+
+app_spec.xml, feature 308 — a further sentence of the category — is the sibling:
 *System rejects a leverage target above one quarter of the Kelly fraction
 implied by the book Sharpe and volatility.*  Its refusals live here beside
 301's, for the reason 301's own docstring states this module exists at all:
@@ -267,6 +304,8 @@ __all__ = [
     "RebalanceRequestError",
     "RebalanceRewriteError",
     "RebalanceStoreError",
+    "ShrinkageError",
+    "ShrinkageRequestError",
     "VolatilityTargetError",
     "VolatilityTargetRequestError",
 ]
@@ -290,7 +329,9 @@ class BookConstructionError(Exception):
 
     It is also the **base of the member's whole refusal surface**, which is
     the one-base-per-member shape the dreaming and regime members state for
-    their own vocabularies: :class:`LeverageRequestError` (feature 308's ask)
+    their own vocabularies: :class:`ShrinkageRequestError` (feature 302's
+    ask) and :class:`ShrinkageError` (feature 302's verdict) descend from
+    it, :class:`LeverageRequestError` (feature 308's ask)
     and :class:`LeverageTargetError` (feature 308's verdict) descend from it,
     :class:`VolatilityTargetRequestError` (feature 303's ask) and
     :class:`VolatilityTargetError` (feature 303's verdict) join them,
@@ -309,7 +350,8 @@ class BookConstructionError(Exception):
     value — so a caller that must refuse rather than rank catches this one class
     and catches the act's, the cap's, the guard's, the limits', the published
     set's, the companion's and the record's failures with it.  A caller that has
-    to *react* differently to *your signals cannot be combined*, *this book
+    to *react* differently to *your signals cannot be combined*, *your
+    covariance cannot be stabilized*, *this book
     expresses no view to size*, *this book may not carry that leverage*, *these
     weights breach a limit*, *no book reached the orders*, *this change to the
     construction was authored by an agent*, *this change had no changelog
@@ -317,7 +359,8 @@ class BookConstructionError(Exception):
     unreachable* catches the specific siblings instead — see each for why the
     distinction is worth a class.  The classes are siblings rather than
     aliases because the facts are genuinely different: a leverage target is
-    refusable for a book whose signals weighted up perfectly, a flat composite
+    refusable for a book whose signals weighted up perfectly, a dispersionless
+    book is refusable though every signal was perfectly well stated, a flat composite
     is refusable though both volatility figures were perfectly well stated, a
     breaching book is refusable though both limits were perfectly well stated,
     a value carrying no book is refusable though nothing else was involved, an
@@ -325,6 +368,115 @@ class BookConstructionError(Exception):
     change whose entry is absent is refusable though the entry field was
     perfectly well formed — it was simply not handed — and an unreachable store
     is refusable though the ask was flawless and no row was standing.
+    """
+
+
+class ShrinkageRequestError(BookConstructionError):
+    """The covariance shrinkage could not be asked for as the caller asked.
+
+    app_spec.xml, "Portfolio Book Construction", feature 302: *System applies
+    Ledoit-Wolf shrinkage to the signal covariance before combination, which
+    returns a stabilized weight vector.*  This class is the *ask* face of
+    that sentence and never the judgment: it refuses what cannot be read as
+    the promoted signals whose covariance the act estimates — no signals at
+    all, a signal carrying no ``signal_id``, two sharing one, an
+    ``information_ratio`` that is absent, non-finite or not positive, a
+    signal carrying no target scores, a score that is not a finite real,
+    and a signal that misses a symbol the book covers — **before** any
+    covariance is estimated or any solve attempted, the ordering every
+    verdict and act in this workspace states.
+
+    It is raised by :func:`book.stabilize_weights` and by the construction
+    of a :class:`book.StabilizedWeights` that the act would not itself
+    produce, because that record's own self-check states the same facts
+    about the same fields through the same readers.
+
+    **The code words are feature 301's own, imported rather than respelt.**
+    The act reads the same promoted-signal surface the combiner reads, one
+    step earlier on §C8's chain, so the *facts* are the same facts — and a
+    caller reading a deployment log should not have to learn a second
+    token for *a signal missed a symbol the book covers*.  This is the
+    discipline feature 309's ask states for ``no_book``, and the reason the
+    ask re-derives the reads in its own class rather than calling the
+    combiner's: a helper raising another feature's error type would defeat
+    a caller's ``except`` — the error-vocabulary trap this workspace states
+    at its member seams.
+
+    **No code word of its own, and deliberately.**  Every message about a
+    signal that cannot be read opens with the 301 word for that fact; the
+    one place this act mints words of its own is the judgment
+    (:class:`ShrinkageError`'s two), the shape feature 304's ask states for
+    its own: a malformed ask names its subject in its first words, and the
+    words are already greppable.
+
+    **Why it is its own class rather than the base alone.**  The repair
+    differs.  A bare :class:`BookConstructionError` means *your signals
+    cannot be combined — fix the signals*; this one means *your signals
+    cannot be read as a covariance either — fix the ask*, and the two are
+    not the same instruction on a path that runs *before* the combination.
+    A caller that must react differently to them can tell them apart by
+    class; a caller that refuses book work wholesale still catches one
+    class, the base this descends from.
+    """
+
+
+class ShrinkageError(BookConstructionError):
+    """The signal covariance cannot be stabilized — feature 302's judgment.
+
+    app_spec.xml, "Portfolio Book Construction", feature 302: *System applies
+    Ledoit-Wolf shrinkage to the signal covariance before combination, which
+    returns a stabilized weight vector.*  This class is the judgment that
+    sentence mints — the refusals on the shrinkage's path that are *verdicts*
+    rather than validations — and it is raised by
+    :func:`book.stabilize_weights` over a wholly well-stated book whose
+    covariance admits no stabilization.  Its message opens with the greppable
+    code of the fact that refused it:
+    :data:`book.DISPERSIONLESS_BOOK_CODE` (``dispersionless_book``) or
+    :data:`book.SINGULAR_COVARIANCE_CODE` (``singular_covariance``).
+
+    **Two codes on one class, and deliberately.**  The two facts are two
+    repairs — *hand signals that vary across the symbols* against *hand
+    more symbols or fewer signals* — and each is greppable, so an
+    operator's log line lands on the fact they have to fix; but the
+    *caller's position* is the same either way (the book it meant to
+    stabilize has no stabilized weight vector, and the repair is always to
+    hand a book with dispersion enough for its width), which is the test
+    feature 304's breach states for gathering two faults under one class.
+
+    **Why the boundaries are there, stated where the refusal is caught.**
+    Both are the *absence is not zero* line the member states everywhere,
+    read on this act's own arithmetic.  A book whose every signal scores
+    every symbol identically has a sample covariance of exactly the zero
+    matrix — no second moment exists for any shrinkage to stabilize, and
+    answering a weight vector anyway would counterfeit a stabilization no
+    sample supports (the same perpetration feature 303 refuses when it
+    declines to normalize a flat composite; a book of one symbol is always
+    this refusal, because a cross-section of one demeans to nothing).  And
+    a book whose shrunk covariance has no inverse has no weight vector to
+    answer — the solve ``Σ·w = IR`` is undefined rather than zero, and the
+    shrunk matrix ``ρmI + (1−ρ)S`` is positive definite whenever the
+    intensity is positive, so this refusal fires exactly where the sample
+    was too thin for its book and the estimator could not lift it: two
+    demeaned observations are always collinear, so a two-symbol book of
+    two or more signals is always refused here.  A *thin but lift-able*
+    book — three signals over three symbols — is answered, because the
+    shrinkage carries it off its deficiency: that rescue is the sentence's
+    *stabilized* made structural.
+
+    **Its repair is its own, which is why it is its own class.**  *Hand a
+    book with dispersion enough for its width* — this module fabricates no
+    direction and pseudo-inverts nothing, because a weight vector the
+    sample does not carry is a view nobody expressed.  The two classes a
+    caller could otherwise catch this as both name repairs that are wrong
+    here: :class:`ShrinkageRequestError` means *your signals could not be
+    read* (they were read perfectly — their covariance simply has no
+    stabilization), and the bare :class:`BookConstructionError` means
+    *your signals cannot be combined* (they combined; it is the
+    stabilization that found nothing to stand on).  Folding these together
+    would make a caller that must react differently to *this book cannot
+    be stabilized* and *your ask was malformed* catch one class and
+    re-inspect something it cannot tell apart, which is the failure this
+    vocabulary is split to prevent.
     """
 
 
