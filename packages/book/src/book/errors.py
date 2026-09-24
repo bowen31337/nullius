@@ -114,8 +114,10 @@ __all__ = [
     "AgentAuthoredModificationError",
     "BookChangeRequestError",
     "BookConstructionError",
+    "ChangelogEntryRequestError",
     "LeverageRequestError",
     "LeverageTargetError",
+    "MissingChangelogEntryError",
 ]
 
 
@@ -136,17 +138,22 @@ class BookConstructionError(Exception):
     the one-base-per-member shape the dreaming and regime members state for
     their own vocabularies: :class:`LeverageRequestError` (feature 308's ask)
     and :class:`LeverageTargetError` (feature 308's verdict) descend from it,
-    and :class:`BookChangeRequestError` (feature 306's ask) and
+    :class:`BookChangeRequestError` (feature 306's ask) and
     :class:`AgentAuthoredModificationError` (feature 306's verdict) join them,
+    and :class:`ChangelogEntryRequestError` (feature 307's ask) and
+    :class:`MissingChangelogEntryError` (feature 307's verdict) join them too,
     so a caller that must refuse rather than rank catches this one class and
-    catches the cap's and the guard's failures with it.  A caller that has to
-    *react* differently to *your signals cannot be combined*, *this book may
-    not carry that leverage* and *an agent authored this change to the
-    construction* catches the specific siblings instead — see each for why
-    the distinction is worth a class.  The classes are siblings rather than
-    aliases because the facts are genuinely different: a leverage target is
-    refusable for a book whose signals weighted up perfectly, and an
-    agent-authored change is refusable though perfectly well stated.
+    catches the cap's, the guard's and the companion's failures with it.  A
+    caller that has to *react* differently to *your signals cannot be
+    combined*, *this book may not carry that leverage*, *an agent authored this
+    change to the construction* and *this change had no changelog entry*
+    catches the specific siblings instead — see each for why the distinction is
+    worth a class.  The classes are siblings rather than aliases because the
+    facts are genuinely different: a leverage target is refusable for a book
+    whose signals weighted up perfectly, an agent-authored change is refusable
+    though perfectly well stated, and a change whose entry is absent is
+    refusable though the entry field was perfectly well formed — it was simply
+    not handed.
     """
 
 
@@ -325,4 +332,85 @@ class AgentAuthoredModificationError(BookConstructionError):
     ``dreaming``, ``optimizer``, ``worker`` — and nothing outside the one
     human kind is admitted by any route, so the refusal is complete in the
     sentence's own word: *any*.
+    """
+
+
+class ChangelogEntryRequestError(BookConstructionError):
+    """The companion could not be asked for as the caller asked for it.
+
+    app_spec.xml, "Portfolio Book Construction", feature 307: *System requires
+    a changelog entry accompanying every book construction change, which
+    returns a validation failure when absent.*  This class is the *ask* face of
+    that sentence and never the judgment: it refuses a change that is not
+    present to be accompanied, or an entry that cannot be stated at all — a
+    subject or body that is not a non-empty string — **before** any absence is
+    judged, the ordering every verdict and store in this workspace states.
+
+    **What it deliberately does not refuse: an absent entry.**  A change whose
+    entry was simply not handed is perfectly well *asked for* — the change and
+    the (absent) entry are real facts — and refusing it here would hide the
+    sentence's own judgment behind a validation, leaving a caller unable to
+    tell *the change had no changelog entry* (the refusal the operator greps
+    for) from *your entry named no body*.  The judgment is
+    :class:`MissingChangelogEntryError`'s alone.
+
+    **No code word, and deliberately.**  Feature 307's sentence mandates no
+    token (it names its subject in prose), and every message here opens with
+    its subject — the field, its type and what it is for — the shape
+    :class:`BookChangeRequestError` states for its own pair, so a reader is
+    told *what to fix* rather than handed a token to grep for.  The one code
+    the sentence's path carries is :class:`MissingChangelogEntryError`'s, on
+    the verdict alone.
+
+    **Why it is its own class rather than the base alone.**  The repair
+    differs.  A bare :class:`BookConstructionError` means *your signals cannot
+    be combined — fix the signals*; this one means *your entry (or change)
+    could not be stated — state it*, and the two are not the same instruction.
+    A caller that must react differently to them can tell them apart by class;
+    a caller that refuses book work wholesale still catches one class, the base
+    this descends from.
+    """
+
+
+class MissingChangelogEntryError(BookConstructionError):
+    """The change had no changelog entry beside it — feature 307's judgment.
+
+    app_spec.xml, "Portfolio Book Construction", feature 307: *System requires
+    a changelog entry accompanying every book construction change, which
+    returns a validation failure when absent.*  This class is the judgment that
+    sentence mints — the one refusal on the companion's path that is a *verdict*
+    rather than a validation — and it is raised by
+    :func:`book.requires_changelog_entry` when a present change's entry is
+    absent.  Its message opens with the greppable code
+    :data:`book.MISSING_CHANGELOG_ENTRY_CODE` (``missing_changelog_entry``).
+
+    **Why the boundary is presence, not content, stated where the refusal is
+    caught.**  docs/alpha-engine-prd.md §C8 closes the construction's own
+    section with it: *"Changing it is a human decision with a changelog entry,
+    not a discovery."*  The entry is the human's own document — the record of
+    what changed and why — and this package validates no changelog prose (what
+    the entry *says* is none of its business), so the entry is admitted as
+    *present* when it is a well-stated :class:`book.ChangelogEntry` and refused
+    as *absent* when it is not there at all.  This class is the refusal that
+    enforces §C8's *"with a changelog entry"*: a change lands only when its
+    entry accompanies it.
+
+    **Its repair is its own, which is why it is its own class.**  *A human
+    accompanies the change with the changelog entry it requires* — the same
+    subject, decided by a person, committed under version control, with the
+    entry that documents it.  There is no fabrication repair — this module does
+    not invent the human's own document — and the other classes a caller could
+    catch this as both name repairs that are wrong here:
+    :class:`ChangelogEntryRequestError` means *your entry could not be stated*
+    (no entry was handed at all, or it was stated badly), and the bare
+    :class:`BookConstructionError` means *your signals cannot be combined* (no
+    signals are involved).  Folding these together would make a caller that
+    must react differently to *the change had no entry beside it* and *your
+    entry was malformed* catch one class and re-inspect something it cannot
+    tell apart, which is the failure this vocabulary is split to prevent.
+
+    **The refusal names the change.**  Every refusal states the change the
+    entry was meant to accompany — its subject, its author, its kind, its
+    revision — so the operator can see *which change* meant to land without its
+    record.
     """

@@ -270,15 +270,90 @@ def test_the_guard_costs_the_scan_nothing() -> None:
     assert member.rejects_agent_authored_modification(change) is None
 
 
-def test_the_members_public_surface_carries_the_three_features() -> None:
-    # The exported surface is the three features' own names and nothing
+# -- The changelog companion's composition story (feature 307) ------------------
+#
+# Feature 307 arrives as free functions beside the combiner too, in the same
+# shape the cap and the guard did: its whole input is two records the caller
+# already holds (the change and the entry that should accompany it), so there
+# is nothing for the factory to compose and nothing for a deployment to
+# configure — and the one thing it must never grow is a parameter that judges
+# the entry's content, because the companion enforces presence, not prose.
+
+
+def test_the_changelog_companion_registers_no_second_component() -> None:
+    # The single-registration assertion above is the strong form; this is
+    # the same fact read through a fresh scan, so a component added by any
+    # route (not just this module's own ``__init__``) is caught — a second
+    # name here would silently rebuild composition for every feature in
+    # the workspace.
+    src_root = Path(member.__file__).resolve().parent.parent
+    registry = Registration()
+    scan_components(src_root, registry=registry)
+    names = [component.name for component in registry.components()]
+    assert names.count("book") == 1
+    assert len(names) == 1
+
+
+def test_the_changelog_companion_is_reachable_without_the_factory() -> None:
+    # A free function, reached the way the cap's and guard's verdicts are:
+    # imported from the member, not asked of the composed application.
+    # There is no ``changelog`` component to ``app.get``, and a deployment
+    # cannot configure the companion's boundary — which is the design
+    # decision, not an omission: the boundary is §C8's presence line, not a
+    # deployment's.
+    assert callable(member.requires_changelog_entry)
+    assert callable(member.is_missing_changelog_entry)
+    assert member.MISSING_CHANGELOG_ENTRY_CODE == "missing_changelog_entry"
+    app = create_app()
+    assert "changelog" not in app
+    assert "book-changelog" not in app
+
+
+def test_the_companion_costs_the_scan_nothing() -> None:
+    # The layering promise: the factory imports this package to fire its
+    # ``@register``, so anything at module scope is paid on every
+    # ``create_app()``.  The companion is answered from the same import that
+    # was already being paid for — no new top-level import beyond the
+    # stdlib's ``dataclasses`` and ``typing``, no environment read, no third
+    # party — and it judges two records it is handed rather than state it
+    # would have to go looking for.
+    change = member.BookConstructionChange(
+        "the information-ratio weighting",
+        "Ada Lovelace",
+        "human",
+        "0123456789abcdef0123456789abcdef01234567",
+    )
+    entry = member.ChangelogEntry(
+        "the information-ratio weighting",
+        "Changed the information-ratio weighting from equal to IR-proportional.",
+    )
+    assert member.requires_changelog_entry(change, entry) is None
+    assert member.is_missing_changelog_entry(change, None) is True
+
+
+def test_the_changelog_companion_takes_no_content_parameter() -> None:
+    # ``build_book_combiner`` takes no arguments because the combiner's
+    # whole configuration is its arithmetic; the companion's whole
+    # configuration is two records, and a verb that had grown a content
+    # keyword would be a deployment knob on a document rule — the companion
+    # enforces presence, never prose.  This is pinned through the function
+    # objects rather than the source text, so a renamed keyword still fails.
+    import inspect
+
+    for call in (member.is_missing_changelog_entry, member.requires_changelog_entry):
+        assert set(inspect.signature(call).parameters) == {"change", "entry"}
+
+
+def test_the_members_public_surface_carries_the_four_features() -> None:
+    # The exported surface is the four features' own names and nothing
     # else: 301's combiner, its value types and its one base error; 306's
     # record, its five constants, its predicate, its verdict and its two
-    # sibling classes; 308's three verbs, its two constants and its two
-    # sibling classes.  Pinned because the seat deliberately re-exports
-    # none of it — a caller who wants these reaches the member's
-    # namespace, so the namespace *is* the contract and a name that
-    # drifted off it would leave a caller with no way in.
+    # sibling classes; 307's record, its one code constant, its predicate,
+    # its verdict and its two sibling classes; 308's three verbs, its two
+    # constants and its two sibling classes.  Pinned because the seat
+    # deliberately re-exports none of it — a caller who wants these reaches
+    # the member's namespace, so the namespace *is* the contract and a name
+    # that drifted off it would leave a caller with no way in.
     assert set(member.__all__) == {
         "AGENT_AUTHOR_KINDS",
         "AGENT_MODIFICATION_CODE",
@@ -286,23 +361,29 @@ def test_the_members_public_surface_carries_the_three_features() -> None:
         "COMPONENT_NAME",
         "HUMAN_AUTHOR_KIND",
         "KELLY_FRACTION",
+        "MISSING_CHANGELOG_ENTRY_CODE",
         "OVERLEVERAGE_CODE",
         "REVISION_HEX_LENGTH",
         "AgentAuthoredModificationError",
         "BookChangeRequestError",
         "BookConstructionChange",
         "BookConstructionError",
+        "ChangelogEntry",
+        "ChangelogEntryRequestError",
         "CompositeBook",
         "LeverageRequestError",
         "LeverageTargetError",
+        "MissingChangelogEntryError",
         "PromotedSignal",
         "build_book_combiner",
         "combine",
         "is_agent_authored",
+        "is_missing_changelog_entry",
         "kelly_fraction",
         "leverage_cap",
         "rejects_agent_authored_modification",
         "rejects_overleveraged_target",
+        "requires_changelog_entry",
     }
     for name in member.__all__:
         assert hasattr(member, name), name

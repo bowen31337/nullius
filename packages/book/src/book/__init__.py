@@ -1,5 +1,5 @@
-"""The book combiner, its authorship guard and its leverage cap — three
-features: 301, 306 and 308.
+"""The book combiner, its authorship guard, its changelog companion and its
+leverage cap — four features: 301, 306, 307 and 308.
 
 app_spec.xml, "Portfolio Book Construction", feature 301: *System combines
 promoted signals by information-ratio weighting, which returns a single
@@ -29,6 +29,24 @@ because its whole input is a record the caller already holds, and the
 one human kind (:data:`HUMAN_AUTHOR_KIND`) is a constant rather than a
 parameter for the same reason the weighting and the quarter are: a
 deployment that could widen the admitted set could opt an agent in.
+
+app_spec.xml, feature 307 is the category's companion sentence, building on
+feature 306's record: *System requires a changelog entry accompanying every
+book construction change, which returns a validation failure when absent.*
+It is §C8's remaining clause — *"Changing it is a human decision **with a
+changelog entry**, not a discovery"* — made structural beside the guard.
+:class:`ChangelogEntry` is the entry as its carrier states it (the subject the
+entry documents, the body the entry's prose — a frozen record of exactly two
+fields, the human's own document, never a projection of the change's four
+fields); :func:`is_missing_changelog_entry` is the fact without the refusal;
+:func:`requires_changelog_entry` is the sentence's *requires*, the verdict a
+caller runs on the write path so a change never lands without the entry §C8
+demands.  The companion arrives beside the combiner in the same shape the guard
+and the cap do — free functions, no second component — because its whole input
+is two records the caller already holds, and the boundary is presence rather
+than content: an entry is admitted as present when it is well stated and
+refused as absent when it is not there, because this package validates no
+changelog prose.
 
 app_spec.xml, feature 308 is this category's third sentence and a further
 act this package carries: *System rejects a leverage target above one quarter
@@ -123,6 +141,12 @@ from ._authorship import (
     is_agent_authored,
     rejects_agent_authored_modification,
 )
+from ._changelog import (
+    MISSING_CHANGELOG_ENTRY_CODE,
+    ChangelogEntry,
+    is_missing_changelog_entry,
+    requires_changelog_entry,
+)
 from ._combine import CompositeBook, PromotedSignal, combine
 from ._leverage import (
     KELLY_FRACTION,
@@ -135,8 +159,10 @@ from .errors import (
     AgentAuthoredModificationError,
     BookChangeRequestError,
     BookConstructionError,
+    ChangelogEntryRequestError,
     LeverageRequestError,
     LeverageTargetError,
+    MissingChangelogEntryError,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a dependency
@@ -149,23 +175,29 @@ __all__ = [
     "COMPONENT_NAME",
     "HUMAN_AUTHOR_KIND",
     "KELLY_FRACTION",
+    "MISSING_CHANGELOG_ENTRY_CODE",
     "OVERLEVERAGE_CODE",
     "REVISION_HEX_LENGTH",
     "AgentAuthoredModificationError",
     "BookChangeRequestError",
     "BookConstructionChange",
     "BookConstructionError",
+    "ChangelogEntry",
+    "ChangelogEntryRequestError",
     "CompositeBook",
     "LeverageRequestError",
     "LeverageTargetError",
+    "MissingChangelogEntryError",
     "PromotedSignal",
     "build_book_combiner",
     "combine",
     "is_agent_authored",
+    "is_missing_changelog_entry",
     "kelly_fraction",
     "leverage_cap",
     "rejects_agent_authored_modification",
     "rejects_overleveraged_target",
+    "requires_changelog_entry",
 ]
 
 #: The component name the book member registers under.  Kept here so
