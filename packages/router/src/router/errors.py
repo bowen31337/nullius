@@ -94,6 +94,24 @@ violated, not by which line of code failed:
   the *stored result* — whose repair is to fix the call or the row rather than
   to fix the derivation.
 
+* :class:`RouterCrossMarginError` — feature 315's fault, and a *sibling* of
+  every class above rather than a child of any of them.  Its noun is the
+  *arrangement a book's positions settle under* — the margin mode and the
+  account those positions live in — which is not a fetched document
+  (:class:`RouterFilterError`), not a persisted filter version
+  (:class:`RouterStoreError`), not the router's liveness
+  (:class:`RouterSubmissionHealthError`), not the order's own name
+  (:class:`RouterClientOrderIdError`), not a pacing fault
+  (:class:`RouterRateLimitError`) and not the placement being asked about
+  (:class:`RouterSubmissionResultError`): a configuration that merges two
+  books' positions is none of those repairs, and a caller told any of them
+  would go and fix the wrong thing while the venue kept one position with N
+  legs.  It is deliberately **not** :class:`RouterClientOrderIdError` even
+  though both judge a ``book_id``: that class refuses a name it cannot hash
+  *into a key*, while this one refuses an arrangement *that name's book* is
+  configured with — the book is spelled perfectly well in the fault this
+  class reports, and it is the margin around it that is wrong.
+
 Every message names the offending value and the contract it broke, because
 these are operational signals for a pipeline the order path trusts for its
 step size and tick size, not debugging aids.
@@ -108,6 +126,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, and limiter imports this
 
 __all__ = [
     "CLIENT_ORDER_ID_CODE",
+    "CROSS_MARGIN_CODE",
     "ORDER_SUBMISSION_UNHEALTHY_CODE",
     "RATE_LIMITED_CODE",
     "RETRY_BACKOFF_CODE",
@@ -115,6 +134,7 @@ __all__ = [
     "WEIGHT_BUCKET_CODE",
     "WEIGHT_SCHEDULE_CODE",
     "RouterClientOrderIdError",
+    "RouterCrossMarginError",
     "RouterError",
     "RouterFilterError",
     "RouterRateLimitedError",
@@ -185,6 +205,18 @@ RETRY_BACKOFF_CODE = "retry_backoff"
 #: fault — and a token that named it would send an operator grepping for
 #: faults to the rows that are working.
 SUBMISSION_RESULT_CODE = "submission_result"
+
+#: Feature 315's greppable token, for a *margin arrangement* this system will
+#: not trade under.  Every :class:`RouterCrossMarginError` message opens with
+#: it, so a configuration fault is one grep apart from the venue's own
+#: rejections (which feature 320 records and this member never writes) and
+#: from the *identifier* faults feature 316 names
+#: (:data:`CLIENT_ORDER_ID_CODE`), which also judge a ``book_id`` but refuse a
+#: name rather than an arrangement.  It deliberately does not spell ``margin``
+#: on its own: ``isolated`` is the mode this system uses and the mode a
+#: correct configuration states, so a token that named the noun would send an
+#: operator grepping for faults to every configuration that mentions it.
+CROSS_MARGIN_CODE = "cross_margin"
 
 
 class RouterError(Exception):
@@ -411,6 +443,42 @@ class RouterRetryError(RouterRateLimitError):
     Every message opens with :data:`RETRY_BACKOFF_CODE`, so an operator
     greps one token for retry faults — a token that is not
     :data:`RATE_LIMITED_CODE`, whose grep the refusal itself owns.
+    """
+
+
+class RouterCrossMarginError(RouterError):
+    """A margin arrangement that would merge two books' independent positions.
+
+    app_spec.xml, "Order Routing & Venue Filters", feature 315: *System uses
+    isolated margin per book, which rejects a cross-margin configuration that
+    would merge independent positions.*  This is the failure of that
+    sentence's *rejects*: a book configured to settle its positions under
+    cross margin — the whole account's balance standing behind every leg —
+    when the sentence requires each book's positions to be margined on their
+    own.  ``docs/nullius-tech-architecture.md`` §13.2 and
+    ``docs/alpha-engine-prd.md`` C9 state the reason in one line each: *"Cross
+    margin converts N independent positions into one position with N legs, and
+    a single leg's liquidation cascades into the rest."*
+
+    **The noun is the arrangement, not the book's spelling.**  A sibling of
+    the fetch fault (:class:`RouterFilterError`), the record fault
+    (:class:`RouterStoreError`), the health fault
+    (:class:`RouterSubmissionHealthError`), the derived-identity fault
+    (:class:`RouterClientOrderIdError`), the rate-limit tree
+    (:class:`RouterRateLimitError`) and the duplicate-submission fault
+    (:class:`RouterSubmissionResultError`) rather than a child of any of
+    them, because none of those repairs repairs a merged margin account.  The
+    split from :class:`RouterClientOrderIdError` is the fine one: both judge
+    a ``book_id``, and that class refuses a name it cannot *hash into a key*
+    while this one refuses the *arrangement that name's book* is configured
+    with — the name in this fault is perfectly well formed, and a caller sent
+    to fix its spelling instead of its margin mode would leave the venue
+    holding one position with N legs.
+
+    Every message opens with :data:`CROSS_MARGIN_CODE`, and names the book,
+    the account and the mode that was supplied, because a deployment editing
+    its book configuration is the audience and the repair — *margin this
+    book on its own* — is one line of a config file, not a stack trace.
     """
 
 

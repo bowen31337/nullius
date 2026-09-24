@@ -97,6 +97,22 @@ placement.  Like features 310's, 320's and 318's stores it is addressed by
 ``DATABASE_URL`` and never composed — the member still registers exactly
 one component — and the member's suite pins that.
 
+Feature 315 adds an eighth: :mod:`router.margin` — *isolated margin per
+book*, the arrangement a book's positions settle under, and this system's
+refusal to trade one that would merge them.  ``docs/nullius-tech-
+architecture.md`` §13.2 and ``docs/alpha-engine-prd.md`` C9 state the rule
+and its reason in one line each: *"Isolated margin per book. Cross margin
+converts N independent positions into one position with N legs, and a single
+leg's liquidation cascades into the rest."*  It is the category's only
+feature whose noun is a *deployment's configuration* rather than an order,
+a key, a document or a log — the order path builds exactly the same orders
+under either arrangement, against the same filters and the same keys, so
+nothing downstream can detect the difference and the gate has to stand
+before the first order.  It adds no table (a margin mode is a property of
+one process's startup configuration, not a fact the next process must agree
+on) and no component, and the member still registers exactly one, feature
+310's exchangeInfo store.
+
 This package also *is* a component of the composed application: importing
 it registers a builder with the application factory
 (``app.module_loader.register``), so the module loader discovers it by
@@ -127,6 +143,7 @@ from .client_order_id import (
 )
 from .errors import (
     CLIENT_ORDER_ID_CODE,
+    CROSS_MARGIN_CODE,
     ORDER_SUBMISSION_UNHEALTHY_CODE,
     RATE_LIMITED_CODE,
     RETRY_BACKOFF_CODE,
@@ -134,6 +151,7 @@ from .errors import (
     WEIGHT_BUCKET_CODE,
     WEIGHT_SCHEDULE_CODE,
     RouterClientOrderIdError,
+    RouterCrossMarginError,
     RouterError,
     RouterFilterError,
     RouterRateLimitedError,
@@ -163,6 +181,14 @@ from .limiter import (
     RateLimitHeadroom,
     RouterRateLimiter,
     VenueWeightSchedule,
+)
+from .margin import (
+    CROSS_MARGIN,
+    ISOLATED_MARGIN,
+    MARGIN_MODES,
+    BookMargin,
+    MarginScope,
+    require_isolated_margin,
 )
 from .retry import (
     DEFAULT_BACKOFF_SCHEDULE,
@@ -203,10 +229,14 @@ __all__ = [
     "CLIENT_ORDER_ID_CODE",
     "CLIENT_ORDER_ID_LENGTH",
     "COMPONENT_NAME",
+    "CROSS_MARGIN",
+    "CROSS_MARGIN_CODE",
     "DATABASE_URL_ENV",
     "DEFAULT_BACKOFF_SCHEDULE",
     "DEFAULT_VENUE_WEIGHT_SCHEDULE",
     "DEFAULT_WEIGHT_SCOPE",
+    "ISOLATED_MARGIN",
+    "MARGIN_MODES",
     "OPERATION_ACCOUNT",
     "OPERATION_CANCEL_ORDER",
     "OPERATION_CANCEL_REPLACE_ORDER",
@@ -236,7 +266,9 @@ __all__ = [
     "WEIGHT_LIMIT_TYPE",
     "WEIGHT_SCHEDULE_CODE",
     "BackoffSchedule",
+    "BookMargin",
     "ClientOrderId",
+    "MarginScope",
     "OrderPlacement",
     "PlacementOrder",
     "PlacementResult",
@@ -244,6 +276,7 @@ __all__ = [
     "RateLimitRetryEvent",
     "RetryEventLog",
     "RouterClientOrderIdError",
+    "RouterCrossMarginError",
     "RouterError",
     "RouterExchangeInfoStore",
     "RouterExchangeInfoVersion",
@@ -267,6 +300,7 @@ __all__ = [
     "derive_client_order_id",
     "normalize_client_order_id",
     "process_identity",
+    "require_isolated_margin",
     "resolve_router_filters",
     "retry_rate_limited",
 ]
