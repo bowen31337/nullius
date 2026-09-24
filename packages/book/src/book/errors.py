@@ -1,5 +1,5 @@
-"""The book member's refusal vocabulary — features 301, 303, 304, 305, 306, 307
-and 308.
+"""The book member's refusal vocabulary — features 301, 303, 304, 305, 306, 307,
+308 and 309.
 
 app_spec.xml, "Portfolio Book Construction", feature 301: *System combines
 promoted signals by information-ratio weighting, which returns a single
@@ -166,6 +166,54 @@ refusable though both sets are perfectly well stated, and a value carrying no
 book is refusable though no second record is involved, so the two facts are
 genuinely different.
 
+app_spec.xml, feature 309 — the category's last sentence, and the only one in it
+that touches a database — is a further face: *System persists each rebalance
+target weight set with its originating promoted signal identifiers.*  Its
+refusals join the others here for the reason 305's did: the base stays one, and
+the sentence's failures are different facts about a different subject.  **The
+subject is new in one respect**: every feature 303-308 mints a *pair* — the ask's
+own facts and the one judgment its sentence mints — because none of them keeps
+state, and a store has a third face this member has never had to name: the write
+that did not land, and the address that made it impossible.  Every
+store-bearing feature in this workspace names that face in a class of its own
+(``PromotionStoreError``, ``RouterStoreError``, ``CoverageError``), for the
+reason :mod:`promotion.errors` argues at length — a malformed ask and an
+unreachable database must not arrive in the same class, because the caller's
+position differs: *fix what you handed me* against *your store is unreachable*.
+So 309 is the member's first feature with **three** faces rather than two.  It
+adds the two codes an operator greps a deployment log for on this path:
+
+* ``no_originating_signals`` — the provenance the caller handed over names no
+  promoted signals at all: an absent, empty or non-iterable argument, or a bare
+  string of names standing in for the signals themselves (refused rather than
+  recorded as an empty provenance, because the sentence *pairs* the set with the
+  signals it came from — a set written down with no provenance is the absence of
+  one, not a provenance that happens to be empty, and a name is a claim nothing
+  can check against the book);
+* ``rebalance_already_recorded`` — the rebalance already carries a different
+  recorded set: the system records *each* rebalance's set with its provenance,
+  so one rebalance has one row, and two sets for one instant leave every reader
+  of the record choosing between them with nothing downstream to re-derive it
+  (refused rather than overwritten, because the row *is* the record — a silent
+  overwrite would be a rebalance nobody decided, recorded as though somebody
+  had).
+
+The feature's three faces are the ask's own facts
+(:class:`RebalanceRequestError`, carrying ``no_book`` where the value is not a
+book — feature 305's own word, because it is the same fact about the same
+surface read one step further along the chain — carrying
+``no_originating_signals`` where the provenance names none, and no code where an
+element names its own subject), the one judgment the sentence mints
+(:class:`RebalanceRewriteError`, carrying ``rebalance_already_recorded``) and the
+store's own faults (:class:`RebalanceStoreError`, which carries no code: an
+address or a row that cannot be spoken is not a token an operator greps a
+*deployment log* for, and its message names the address or the row instead).  All
+three are subclasses of the base with the same consequence, and the same reason
+to be siblings rather than aliases: an already-recorded rebalance is refusable
+though both sets are perfectly well stated, a value carrying no book is refusable
+though no standing row is involved, and an unreachable store is refusable though
+the ask was flawless — so no two of the three facts are the same.
+
 The authorship guard adds the second, and it is the one an operator greps
 a deployment log for on feature 306's path — the refusal that says the
 search reached for the construction:
@@ -216,6 +264,9 @@ __all__ = [
     "LimitRequestError",
     "MissingChangelogEntryError",
     "OrderLayerOutputError",
+    "RebalanceRequestError",
+    "RebalanceRewriteError",
+    "RebalanceStoreError",
     "VolatilityTargetError",
     "VolatilityTargetRequestError",
 ]
@@ -251,23 +302,29 @@ class BookConstructionError(Exception):
     :class:`AgentAuthoredModificationError` (feature 306's verdict) join them,
     and :class:`ChangelogEntryRequestError` (feature 307's ask) and
     :class:`MissingChangelogEntryError` (feature 307's verdict) join them as
-    well, so a caller that must refuse rather than rank catches this one class
+    well, and so do :class:`RebalanceRequestError` (feature 309's ask),
+    :class:`RebalanceRewriteError` (feature 309's verdict) and
+    :class:`RebalanceStoreError` (feature 309's store) — the last of which is
+    the member's first class whose subject is the *database* rather than a
+    value — so a caller that must refuse rather than rank catches this one class
     and catches the act's, the cap's, the guard's, the limits', the published
-    set's and the companion's failures with it.  A caller that has to *react*
-    differently to *your signals cannot be combined*, *this book expresses no
-    view to size*, *this book may not carry that leverage*, *these weights
-    breach a limit*, *no book reached the orders*, *this change to the
-    construction was authored by an agent* and *this change had no changelog
-    entry* catches the specific siblings instead — see each for why the
+    set's, the companion's and the record's failures with it.  A caller that has
+    to *react* differently to *your signals cannot be combined*, *this book
+    expresses no view to size*, *this book may not carry that leverage*, *these
+    weights breach a limit*, *no book reached the orders*, *this change to the
+    construction was authored by an agent*, *this change had no changelog
+    entry*, *this rebalance is already recorded differently* and *your store is
+    unreachable* catches the specific siblings instead — see each for why the
     distinction is worth a class.  The classes are siblings rather than
     aliases because the facts are genuinely different: a leverage target is
     refusable for a book whose signals weighted up perfectly, a flat composite
     is refusable though both volatility figures were perfectly well stated, a
     breaching book is refusable though both limits were perfectly well stated,
     a value carrying no book is refusable though nothing else was involved, an
-    agent-authored change is refusable though perfectly well stated, and a
+    agent-authored change is refusable though perfectly well stated, a
     change whose entry is absent is refusable though the entry field was
-    perfectly well formed — it was simply not handed.
+    perfectly well formed — it was simply not handed — and an unreachable store
+    is refusable though the ask was flawless and no row was standing.
     """
 
 
@@ -842,4 +899,159 @@ class OrderLayerOutputError(BookConstructionError):
     differently to *two instructions reached the orders* and *your ask named no
     book* catch one class and re-inspect something it cannot tell apart, which
     is the failure this vocabulary is split to prevent.
+    """
+
+
+class RebalanceRequestError(BookConstructionError):
+    """The rebalance target weight set could not be recorded as the caller asked.
+
+    app_spec.xml, "Portfolio Book Construction", feature 309: *System persists
+    each rebalance target weight set with its originating promoted signal
+    identifiers.*  This class is the *ask* face of that sentence and never the
+    judgment: it refuses a value carrying no ``weights`` mapping, a non-mapping,
+    a set covering no symbols, a blank symbol name, a weight that is not a
+    finite real, a book id that states nothing, an instant that is not a
+    timezone-aware datetime or is not a datetime at all, a provenance that is
+    absent, empty or not iterable, a signal carrying no ``signal_id``, a
+    ``signal_id`` that states nothing, and a duplicate identifier — **before**
+    anything is opened, so a malformed persist never touches the database and
+    leaves no row behind.
+
+    It is also raised by :meth:`book.RebalanceTargetWeights.weight` when a
+    symbol the recorded set does not cover is asked for, under feature 301's
+    own ``uncovered_symbol`` word, and by the construction of a
+    :class:`book.RebalanceTargetWeights` that the act would not itself produce,
+    because that record's own self-check states the same facts about the same
+    fields through the same readers.
+
+    **Two codes are carried, and two failures carry none.**  Every message where
+    the value is not a book at all opens with :data:`book.NO_BOOK_CODE`
+    (``no_book``) — feature 305's own word, **imported rather than respelt**,
+    because it is the same fact about the same ``weights`` surface read one step
+    further along the chain, and a caller reading a deployment log should not
+    have to learn a second token for it.  Every message where the provenance
+    names no signals at all opens with
+    :data:`book.NO_ORIGINATING_SIGNALS_CODE` (``no_originating_signals``) — a
+    *separate* word, because the repair differs: *hand the book to record*
+    against *hand the signals it came from*.  A message about a symbol, a
+    weight, a book id, an instant or one signal *inside* an otherwise real ask
+    carries no code, the reason :class:`LimitRequestError` gives for its own: a
+    malformed key or magnitude names its subject in its first words, and a token
+    there would hand a reader a developer's word for a fact they can simply
+    state.  A duplicate identifier is the one exception, and it is not this
+    module's invention either: it opens with feature 301's own
+    ``duplicate_signal`` word, because it is the same malformed-set fact about
+    the same identifiers read one step further along the chain.
+
+    **What it deliberately does not refuse: a book held flat.**  Every weight
+    ``0.0`` — feature 303's own answer for a configured target of zero, and a
+    set feature 304 admits at every limit of zero or more — is a decision a
+    rebalance is entitled to record.  *Hold nothing* is a decision with a real
+    provenance, not the absence of one: three signals placed a book at zero, and
+    the record says so.  Refusing the flat set here would report a risk
+    appetite's own consequence as a malformed ask.
+
+    **Why it is its own class rather than the base alone.**  The repair differs.
+    A bare :class:`BookConstructionError` means *your signals cannot be
+    combined — fix the signals*; this one means *what you handed me is not a
+    rebalance to record — fix the ask*, and the two are not the same
+    instruction.  A caller that must react differently to them can tell them
+    apart by class; a caller that refuses book work wholesale still catches one
+    class, the base this descends from.
+    """
+
+
+class RebalanceRewriteError(BookConstructionError):
+    """The rebalance already carries a different recorded set — feature 309's judgment.
+
+    app_spec.xml, "Portfolio Book Construction", feature 309: *System persists
+    each rebalance target weight set with its originating promoted signal
+    identifiers.*  This class is the judgment that sentence mints — the one
+    refusal on the recording path that is a *verdict* rather than an ask's own
+    fact — and it is raised by
+    :meth:`book.RebalanceTargetWeightsStore.record` when the rebalance it was
+    asked to record already stands in the table with a **different** set of
+    weights or a different provenance.  Its message opens with the greppable
+    code :data:`book.REBALANCE_RECORDED_CODE`
+    (``rebalance_already_recorded``) and names both records: the standing one,
+    with the instant it was written, and the one this call offered.
+
+    **Why the boundary is there, stated where the refusal is caught.**  The
+    sentence says *each*, so one rebalance has one row — and this is the only
+    place in the member where the row *is* the record.  Feature 305's
+    ``annexed_record`` is the same shape one layer up, but there the caller had
+    a running construction to re-run and a bound to re-apply; here there is
+    nothing downstream that re-derives the set and nothing that would notice a
+    silent overwrite, so two sets for one rebalance instant would leave every
+    reader of this table choosing between them with no document saying which
+    wins.  Rewriting would be a rebalance nobody decided, recorded as though
+    somebody had — and this member's whole stance is that a decision it cannot
+    attribute is a decision it does not make.
+
+    **The edge is content, on both halves, and that is the sentence's own
+    pairing.**  A re-issue carrying the *same* set and the *same* provenance is
+    not this refusal at all — it is answered with the standing record untouched,
+    ``recorded_at`` included, because a re-issue is the same call arriving twice
+    and the set did not change so the instant it was recorded did not either.
+    A re-issue that changed only the provenance *is* this refusal: the
+    provenance is half of what the feature writes down, so a different one is a
+    different record of the rebalance rather than a retry of the same one.
+
+    **Its repair is its own, which is why it is its own class.**  *Record the
+    set under the instant it was actually computed for* — this store reconciles
+    nothing and overwrites nothing, because choosing between two sets would be
+    this member deciding which book the rebalance was.  The two classes a caller
+    could otherwise catch this as both name repairs that are wrong here:
+    :class:`RebalanceRequestError` means *what you handed me is not a rebalance
+    to record* (both sets are perfectly well stated), and the bare
+    :class:`BookConstructionError` means *your signals cannot be combined* (they
+    combined; the construction is real and it aimed the book twice).
+    """
+
+
+class RebalanceStoreError(BookConstructionError):
+    """The rebalance record could not be written or read — feature 309's store face.
+
+    app_spec.xml, "Portfolio Book Construction", feature 309: *System persists
+    each rebalance target weight set with its originating promoted signal
+    identifiers.*  This class is the **third** face of that sentence, and it is
+    the first class in this member whose subject is the *database* rather than a
+    value: it refuses a ``DATABASE_URL`` that is not a non-empty string, a URL
+    whose scheme is not ``sqlite``, a URL carrying a host, a pathless or
+    in-memory URL, a database that could not be opened or locked, and a stored
+    row that will not decode into a record.  Its message carries **no code**: a
+    token exists so an operator can grep a deployment log for one refusal, and
+    the faults here name themselves better than any word would — the address
+    that could not be spoken, or the book and the instant of the row that would
+    not decode.
+
+    **Why this face exists at all, and why it is a third class.**  Features
+    303-308 each minted a pair, because none of them kept state.  A store has a
+    fault the member has never had to name — *the write did not land* — and this
+    workspace keeps it apart from the ask on purpose: the caller's position
+    differs.  A malformed ask is *fix what you handed me*; an unreachable store,
+    a locked database or a corrupt row is *your store is unreachable or damaged*,
+    and a caller that catches one as the other will repair the wrong thing — it
+    will re-validate a flawless ask, or it will hand a well-stated set to a
+    database that cannot take it.  Every store-bearing feature in this workspace
+    draws the same line in its own class (``PromotionStoreError``,
+    ``RouterStoreError``, ``CoverageError``), and :mod:`promotion.errors` argues
+    it at length.
+
+    **A corrupt row is this class rather than the ask's, and deliberately.**  A
+    refusal from the value layer on a stored row would be raised as
+    :class:`RebalanceRequestError`, which would tell a caller *fix what you
+    passed* about a row it never passed — so
+    :meth:`book.RebalanceTargetWeightsStore._from_row` re-raises it here, naming
+    the book and the instant the row came from, the place
+    :func:`regime.coverage.RegimeCoverage._count_from_row` names the stratum.
+    The repair is *repair the row*, and only this class says so.
+
+    **Why a caller should care that the write landed at all.**  A rebalance the
+    system computed and could not write down is exactly the gap feature 309
+    exists to close: the set is the evidence, and there is no second copy of it
+    — nothing downstream re-derives the book, and the provenance the sentence
+    pairs with it is on no value the order path holds.  So a caller that cannot
+    record must not proceed as though it had, and this class is what tells it
+    so.
     """

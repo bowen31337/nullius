@@ -512,8 +512,8 @@ def test_the_changelog_companion_takes_no_content_parameter() -> None:
         assert set(inspect.signature(call).parameters) == {"change", "entry"}
 
 
-def test_the_members_public_surface_carries_the_seven_features() -> None:
-    # The exported surface is the seven features' own names and nothing
+def test_the_members_public_surface_carries_the_eight_features() -> None:
+    # The exported surface is the eight features' own names and nothing
     # else: 301's combiner, its value types and its one base error; 303's
     # act, its record, its one code constant and its two sibling classes;
     # 304's three verbs, its two code constants and its two sibling classes;
@@ -521,10 +521,15 @@ def test_the_members_public_surface_carries_the_seven_features() -> None:
     # two sibling classes; 306's record, its five constants, its predicate,
     # its verdict and its two sibling classes; 307's record, its one code
     # constant, its predicate, its verdict and its two sibling classes; 308's
-    # three verbs, its two constants and its two sibling classes.  Pinned
-    # because the seat deliberately re-exports none of it — a caller who wants
-    # these reaches the member's namespace, so the namespace *is* the contract
-    # and a name that drifted off it would leave a caller with no way in.
+    # three verbs, its two constants and its two sibling classes; and 309's
+    # store, its record, its one environment constant, its table constant, its
+    # two code constants and its three sibling classes — the last being the
+    # member's first feature with three faces rather than two, because a store
+    # has the *write that did not land* to name as well as the ask and the
+    # judgment.  Pinned because the seat deliberately re-exports none of it — a
+    # caller who wants these reaches the member's namespace, so the namespace
+    # *is* the contract and a name that drifted off it would leave a caller with
+    # no way in.
     assert set(member.__all__) == {
         "AGENT_AUTHOR_KINDS",
         "AGENT_MODIFICATION_CODE",
@@ -532,14 +537,18 @@ def test_the_members_public_surface_carries_the_seven_features() -> None:
         "AUTHOR_KINDS",
         "COMPONENT_NAME",
         "CONCENTRATION_LIMIT_CODE",
+        "DATABASE_URL_ENV",
         "FLAT_BOOK_CODE",
         "HUMAN_AUTHOR_KIND",
         "KELLY_FRACTION",
         "MISSING_CHANGELOG_ENTRY_CODE",
         "NO_BOOK_CODE",
+        "NO_ORIGINATING_SIGNALS_CODE",
         "OVERLEVERAGE_CODE",
         "PER_POSITION_LIMIT_CODE",
         "PUBLISHED_KIND",
+        "REBALANCE_RECORDED_CODE",
+        "REBALANCE_TARGET_WEIGHTS_TABLE",
         "REVISION_HEX_LENGTH",
         "AgentAuthoredModificationError",
         "BookChangeRequestError",
@@ -557,6 +566,11 @@ def test_the_members_public_surface_carries_the_seven_features() -> None:
         "MissingChangelogEntryError",
         "OrderLayerOutputError",
         "PromotedSignal",
+        "RebalanceRequestError",
+        "RebalanceRewriteError",
+        "RebalanceStoreError",
+        "RebalanceTargetWeights",
+        "RebalanceTargetWeightsStore",
         "TargetWeights",
         "VolatilityTargetError",
         "VolatilityTargetRequestError",
@@ -652,3 +666,82 @@ def test_the_final_weights_never_cross_composition() -> None:
     for call in (member.final_target_weights, member.is_only_output, member.assert_only_output):
         for parameter in inspect.signature(call).parameters.values():
             assert parameter.default is inspect.Parameter.empty
+
+
+# -- The rebalance record's composition story (feature 309) -----------------------
+#
+# Feature 309 is the first feature in this member that keeps state, and it is the
+# sharpest version of the question the other seven answer: the store's address is
+# a *deployment's* (``DATABASE_URL``), and a builder that read one would fail to
+# compose for every feature in the workspace — or worse, silently absent the
+# member's only component.  So the store is reached the way the regime member's
+# coverage ledger is: a class beside the combiner, with a ``resolve`` classmethod
+# that answers ``None`` for a deployment that named no database.  These tests pin
+# that, because "no new component" is a claim a later edit could quietly falsify.
+
+def test_the_rebalance_record_registers_no_second_component() -> None:
+    # The single-registration assertion above is the strong form; this is the
+    # same fact read through a fresh scan, so a component added by any route
+    # (not just this module's own ``__init__``) is caught — a second name here
+    # would silently rebuild composition for every feature in the workspace.
+    src_root = Path(member.__file__).resolve().parent.parent
+    registry = Registration()
+    scan_components(src_root, registry=registry)
+    names = [component.name for component in registry.components()]
+    assert names.count("book") == 1
+    assert len(names) == 1
+
+
+def test_the_rebalance_store_is_reachable_without_the_factory() -> None:
+    # A class beside the combiner, reached the way the regime member's coverage
+    # ledger is: imported from the member, not asked of the composed
+    # application.  There is no ``rebalance`` component to ``app.get`` — and
+    # there could not be one that carried the database address, because the
+    # factory's builders take no arguments.
+    assert callable(member.RebalanceTargetWeightsStore)
+    assert callable(member.RebalanceTargetWeightsStore.resolve)
+    assert member.REBALANCE_TARGET_WEIGHTS_TABLE == "book_rebalance_target_weights"
+    assert member.DATABASE_URL_ENV == "DATABASE_URL"
+    app = create_app()
+    assert "rebalance" not in app
+    assert "book-rebalance" not in app
+
+
+def test_the_builder_still_needs_no_environment_after_feature_309(
+    monkeypatch,
+) -> None:
+    # Feature 309 is where this package stops being environment-free — its store
+    # reads ``DATABASE_URL`` — and this is the test that keeps the *component*
+    # free of it anyway.  The address is read at the call
+    # (``RebalanceTargetWeightsStore.resolve``) and never at composition, so a
+    # deployment that named no database still composes the combiner, and a
+    # deployment that named a broken one still composes it too.  Without this,
+    # the member's one component would become conditional on a variable nothing
+    # else in its arithmetic knows about.
+    monkeypatch.setenv("DATABASE_URL", "not-even-a-url")
+    app = create_app()
+    component = app.get("book")
+    assert callable(component)
+    assert _fields(component(_signals())) == _fields(combine(_signals()))
+
+
+def test_the_rebalance_store_never_crosses_composition() -> None:
+    # The builder still takes no arguments — the property that makes every figure
+    # *and every address* in this category unreachable from composition.  The
+    # store's own signature is where the address lives: a DSN reaches the call
+    # that opens it (``__init__`` / ``resolve``), never a builder, so the factory
+    # cannot point one deployment's books at another's records.
+    import inspect
+
+    parameters = inspect.signature(member.build_book_combiner).parameters
+    assert not parameters
+    # ``resolve`` takes only the environment mapping it reads — no address
+    # argument, because the address *is* what it reads the environment for.
+    parameters = inspect.signature(
+        member.RebalanceTargetWeightsStore.resolve
+    ).parameters
+    assert set(parameters) == {"env"}
+    parameters = inspect.signature(
+        member.RebalanceTargetWeightsStore.__init__
+    ).parameters
+    assert set(parameters) == {"self", "database_url"}

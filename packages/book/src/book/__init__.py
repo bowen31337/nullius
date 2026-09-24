@@ -1,7 +1,7 @@
 """The book combiner, its volatility target, its position and concentration
 limits, its publication of the final target weights, its authorship guard, its
-changelog companion and its leverage cap — seven features: 301, 303, 304, 305,
-306, 307 and 308.
+changelog companion, its leverage cap and its rebalance record — eight features:
+301, 303, 304, 305, 306, 307, 308 and 309.
 
 app_spec.xml, "Portfolio Book Construction", feature 301: *System combines
 promoted signals by information-ratio weighting, which returns a single
@@ -123,6 +123,34 @@ volatility and the target), so there is nothing for the factory to compose
 and nothing for a deployment to configure.  One component remains, and the
 member's suite pins that.
 
+app_spec.xml, feature 309 is this category's last sentence, and the only one in
+it that keeps state: *System persists each rebalance target weight set with its
+originating promoted signal identifiers.*  :meth:`RebalanceTargetWeightsStore.record`
+is its verb.  The provenance it pairs with the set is on **no value the chain
+hands downstream** — feature 301's :class:`CompositeBook` is keyed by
+``signal_id``, but feature 303's :class:`TargetWeights` and feature 305's
+:class:`FinalTargetWeights` are keyed by symbol only, deliberately, because
+feature 305's *only* is what keeps the construction's working out of the order
+layer's instruction — so writing it down is the only way the chain's output can
+ever be audited back to the views that produced it.  The act reads the set off
+the value the caller already holds (duck-typed, feature 305's own ``weights``
+surface) and the identifiers off the **promoted signals themselves** rather than
+a list of names, because provenance nothing checks is the one thing an audit
+table exists to avoid.  The record is keyed by the rebalance —
+``(book_id, rebalance_ts)``, §13.2's own triple read at its head — with one row
+per rebalance, so a re-issue of the same set and provenance answers the standing
+row untouched while a *different* set for the same instant is refused: the row
+is the only record there is, and nothing downstream re-derives it.
+
+Feature 309 is also where this package stops being environment-free, and the
+docstring below says so rather than leaving the claim standing: it is the
+member's first feature that opens the deployment's relational store.  It is
+reached the way :meth:`regime.coverage.RegimeCoverage.resolve` is — a class
+beside the combiner with a ``resolve`` classmethod that answers ``None`` for a
+deployment that named no database — and not through a second component, because
+a builder runs with no arguments and must not fail composition while this
+store's address is a deployment's.  One component remains.
+
 This package is a workspace member: it self-registers with the application
 factory under the component name :data:`COMPONENT_NAME` — scanning the
 workspace imports it, its ``@register`` builder fires, and
@@ -200,9 +228,18 @@ feature 303's ``flat_book`` is a division by exactly nothing standing in for a
 book nobody built.
 
 This module is stdlib-only — dataclasses, mappings and square-free
-arithmetic; no polars, no pyarrow, no lake, no environment, no HTTP, and no
-import of any other member — so importing this member costs composition
-nothing and the combiner is import-cheap on the replay path.  The leverage
+arithmetic; no polars, no pyarrow, no lake, no HTTP, and no import of any other
+member — so importing this member costs composition nothing and the combiner is
+import-cheap on the replay path.  **One qualification, stated here rather than
+left implied: feature 309's store is the member's first code that reads the
+environment and touches a database.**  :mod:`book._rebalance` imports ``json``,
+``math``, ``os``, ``sqlite3``, ``collections``, ``contextlib``, ``dataclasses``,
+``datetime``, ``pathlib``, ``types``, ``typing`` and ``urllib.parse`` — all
+stdlib — and it reads ``DATABASE_URL`` at the *call* and never at composition,
+so the factory's scan still pays only the imports it already paid and a builder
+still takes no arguments.  That is the same boundary features 303, 304 and 305
+state for their own figures, read on an address instead: a deployment knob
+reaches the call, and never the composition.  The leverage
 cap adds nothing to that bill: :mod:`book._leverage` imports ``math`` and the
 member's own error vocabulary and nothing else, so the cap costs the
 factory's scan no more than the combiner does.  Neither does the guard:
@@ -271,6 +308,14 @@ from ._publish import (
     final_target_weights,
     is_only_output,
 )
+from ._rebalance import (
+    DATABASE_URL_ENV,
+    NO_ORIGINATING_SIGNALS_CODE,
+    REBALANCE_RECORDED_CODE,
+    REBALANCE_TARGET_WEIGHTS_TABLE,
+    RebalanceTargetWeights,
+    RebalanceTargetWeightsStore,
+)
 from ._volatility import (
     FLAT_BOOK_CODE,
     TargetWeights,
@@ -288,6 +333,9 @@ from .errors import (
     LimitRequestError,
     MissingChangelogEntryError,
     OrderLayerOutputError,
+    RebalanceRequestError,
+    RebalanceRewriteError,
+    RebalanceStoreError,
     VolatilityTargetError,
     VolatilityTargetRequestError,
 )
@@ -302,14 +350,18 @@ __all__ = [
     "AUTHOR_KINDS",
     "COMPONENT_NAME",
     "CONCENTRATION_LIMIT_CODE",
+    "DATABASE_URL_ENV",
     "FLAT_BOOK_CODE",
     "HUMAN_AUTHOR_KIND",
     "KELLY_FRACTION",
     "MISSING_CHANGELOG_ENTRY_CODE",
     "NO_BOOK_CODE",
+    "NO_ORIGINATING_SIGNALS_CODE",
     "OVERLEVERAGE_CODE",
     "PER_POSITION_LIMIT_CODE",
     "PUBLISHED_KIND",
+    "REBALANCE_RECORDED_CODE",
+    "REBALANCE_TARGET_WEIGHTS_TABLE",
     "REVISION_HEX_LENGTH",
     "AgentAuthoredModificationError",
     "BookChangeRequestError",
@@ -327,6 +379,11 @@ __all__ = [
     "MissingChangelogEntryError",
     "OrderLayerOutputError",
     "PromotedSignal",
+    "RebalanceRequestError",
+    "RebalanceRewriteError",
+    "RebalanceStoreError",
+    "RebalanceTargetWeights",
+    "RebalanceTargetWeightsStore",
     "TargetWeights",
     "VolatilityTargetError",
     "VolatilityTargetRequestError",
