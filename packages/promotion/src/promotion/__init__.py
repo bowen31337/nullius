@@ -9,7 +9,7 @@ and hashed before the evaluation that decides them"*, and against the
 (``migrations/versions/0108_forward_and_universe_tables.py``) already
 declares.
 
-The member's surface is five modules.  :mod:`promotion.criteria` is *what* a
+The member's surface is six modules.  :mod:`promotion.criteria` is *what* a
 promotion is judged against and *how it is hashed*:
 :class:`~promotion.criteria.PromotionCriteria`, the six terms §13.7's
 "criteria" enumerates — the paired ΔIR advantage, the significance level, the
@@ -27,26 +27,39 @@ answer; :class:`~promotion.pre_register.PreRegisterEndpoint`, the route
 itself with :data:`~promotion.pre_register.PRE_REGISTER_ROUTE` pinned on it;
 and :class:`~promotion.pre_register.PromotionRecord`, the row as the table
 holds it.  :mod:`promotion.schema` is the DDL adapter: it runs the *owning
-migrations'* own ``statements("sqlite")`` for the three tables this one
-``INSERT`` needs — ``node``, ``epoch_ledger`` and ``promotion_registry`` — so
-this member authors no DDL and cannot drift from the schema's owners.
-:mod:`promotion.blocking` is feature 299's *reason*:
+migrations'* own ``statements("sqlite")`` for the tables this member's
+statements need — feature 291's three (``node``, ``epoch_ledger`` and
+``promotion_registry``) and feature 298's two (``node`` and ``campaign``), one
+set per act — so this member authors no DDL and cannot drift from the schema's
+owners.  :mod:`promotion.blocking` is feature 299's *reason*:
 :class:`~promotion.blocking.PromotionBlocks`, the store that records why a
 promotion was blocked on §C7's regime coverage, with
 :class:`~promotion.blocking.PromotionBlock` as the row and
 :func:`~promotion.blocking.blocking_reason` rendering the one canonical sentence
-that row explains itself with.  :mod:`promotion.errors` is the member's error
+that row explains itself with.  :mod:`promotion.calibration` is feature 298's
+*refusal*: :class:`~promotion.calibration.PromotionCalibrations`, the gate that
+follows a promoted node to the campaign that spawned it and refuses the
+promotion when that campaign's §7.4 verdict is ``VOID``, with
+:func:`~promotion.calibration.rejects_void_calibration` as the comparison and
+:func:`~promotion.calibration.rejects_void_promotion` as the act.  The two are
+the category's two merit refusals and are deliberately **not** one thing: they
+read different tables, they answer different questions, and their repairs differ
+— grow the pool's coverage (§C7) versus re-plan a campaign whose control is gone
+(§7.4).  :mod:`promotion.errors` is the member's error
 vocabulary: :class:`~promotion.errors.PromotionError` (the *ask* face: a
 malformed body, a criterion that is not a number, a re-registration with
 different criteria), :class:`~promotion.errors.PromotionStoreError` (the
 *address, parent and write* face, every message opening
-:data:`~promotion.errors.PROMOTION_REGISTRY_ERROR_CODE`), and feature 299's
-:class:`~promotion.errors.PromotionBlockError` (the *merit* face — a promotion
-refused on coverage rather than on form), split by the repair rather than by
-the code path except where a gate's caller position overrides the split — the
-argument that module states.  This module re-exports all of it and registers
-the one component; it carries no logic of its own, which is the same shape every
-member in this workspace takes.
+:data:`~promotion.errors.PROMOTION_REGISTRY_ERROR_CODE`), feature 299's
+:class:`~promotion.errors.PromotionBlockError` (the *§C7 coverage* merit face —
+a promotion refused on the pool's coverage rather than on form), and feature
+298's :class:`~promotion.errors.VoidCalibrationError` (the *§7.4 calibration*
+merit face, opening :data:`~promotion.errors.VOID_CALIBRATION_ERROR_CODE`, the
+literal it shares with feature 243's own gate in the discovery member), split by
+the repair rather than by the code path except where a gate's caller position
+overrides the split — the argument that module states.  This module re-exports
+all of it and registers the one component; it carries no logic of its own, which
+is the same shape every member in this workspace takes.
 
 **The two-timestamp law is created here and enforced elsewhere.**  ``0108``
 declares ``pre_registered_at TIMESTAMPTZ NOT NULL`` and ``decided_at
@@ -112,7 +125,9 @@ store, 293's decision closes a row this store opened, 294's count advances a
 column in ``epoch_ledger``, 295's threshold reads that column, 296's terminal
 state is what remains when every epoch is retired, 297's depleting count is a
 read of the same table, 298's ``VOID`` refusal is a judgement over the
-campaign row, and 300's promotion timestamp is a fact placed by 293's write.
+campaign row (and is constructed from a URL by the caller that has one, like
+299's block store beside it), and 300's promotion timestamp is a fact placed by
+293's write.
 A builder takes no arguments and is built on every ``create_app()`` call,
 while each of those acts is a function of evidence the factory does not hold —
 a decision, a count, a calibration status — so registering one would be a
@@ -155,13 +170,26 @@ from .blocking import (
     blocked_promotion,
     blocking_reason,
 )
+from .calibration import (
+    CALIBRATION_STATUS_COLUMN,
+    CALIBRATION_STATUS_OK,
+    CALIBRATION_STATUS_VOID,
+    CAMPAIGN_ID_COLUMN,
+    CAMPAIGN_TABLE,
+    PromotionCalibrations,
+    campaign_calibration,
+    rejects_void_calibration,
+    rejects_void_promotion,
+)
 from .criteria import CRITERIA_FIELDS, PromotionCriteria, criteria_hash
 from .errors import (
     PROMOTION_BLOCK_ERROR_CODE,
     PROMOTION_REGISTRY_ERROR_CODE,
+    VOID_CALIBRATION_ERROR_CODE,
     PromotionBlockError,
     PromotionError,
     PromotionStoreError,
+    VoidCalibrationError,
 )
 from .pre_register import (
     CRITERIA_HASH_COLUMN,
@@ -179,14 +207,22 @@ from .pre_register import (
     utc_now,
 )
 from .schema import (
+    CALIBRATION_MIGRATION_ORDER,
     MIGRATION_ORDER,
     PROMOTION_REGISTRY_TABLE,
+    bootstrap_calibration_schema,
     bootstrap_schema,
     migrations_dir,
 )
 
 __all__ = [
     "BLOCKED_AT_COLUMN",
+    "CALIBRATION_MIGRATION_ORDER",
+    "CALIBRATION_STATUS_COLUMN",
+    "CALIBRATION_STATUS_OK",
+    "CALIBRATION_STATUS_VOID",
+    "CAMPAIGN_ID_COLUMN",
+    "CAMPAIGN_TABLE",
     "COMPONENT_NAME",
     "COVERAGE_THRESHOLD_COLUMN",
     "CRITERIA_FIELDS",
@@ -203,6 +239,7 @@ __all__ = [
     "PROMOTION_REGISTRY_ERROR_CODE",
     "PROMOTION_REGISTRY_TABLE",
     "REGIME_COLUMN",
+    "VOID_CALIBRATION_ERROR_CODE",
     "WORLD_COUNT_COLUMN",
     "PreRegisterEndpoint",
     "PreRegistrationRequest",
@@ -211,16 +248,22 @@ __all__ = [
     "PromotionBlock",
     "PromotionBlockError",
     "PromotionBlocks",
+    "PromotionCalibrations",
     "PromotionCriteria",
     "PromotionError",
     "PromotionRecord",
     "PromotionStoreError",
+    "VoidCalibrationError",
     "blocked_promotion",
     "blocking_reason",
+    "bootstrap_calibration_schema",
     "bootstrap_schema",
     "build_promotion_registry",
+    "campaign_calibration",
     "criteria_hash",
     "migrations_dir",
+    "rejects_void_calibration",
+    "rejects_void_promotion",
     "utc_now",
 ]
 

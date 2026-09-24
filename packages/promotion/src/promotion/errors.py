@@ -64,6 +64,29 @@ the one place in the member where the split-by-repair rule is *overridden* by
 the caller's position, and :mod:`regime.errors` records the same override for
 the same reason one member over.
 
+**Feature 298 adds the tree's fourth class, and it is the second merit refusal
+without being a face of the first.**  :class:`VoidCalibrationError` carries
+*"System rejects a promotion when the campaign ``calibration_status`` is
+``VOID``, because a void campaign carries no usable calibration"* — §7.4's
+verdict read off the ``campaign`` row (feature 124 wrote it) and refusing the
+promotion of a hypothesis that came from that campaign.  It is **not** a
+:class:`PromotionBlockError`: the two are both merit refusals, and that is the
+whole of their resemblance.  The block is a finding about the *pool* — §C7's
+coverage ledger says the regime being deployed into is thin — and its repair is
+to grow the coverage.  This one is a finding about the *evidence* — §7.4 says the
+campaign's control is gone — and its repair is a judgement no coverage fix can
+make, because a campaign whose nulls are detectable cannot be repaired by adding
+worlds to it.  Gathering them would put two unrelated acts behind one ``except``
+and would leave a caller unable to tell *the pool is thin* from *this campaign's
+calibration is void*.  So the split is the repair's, the rule this module opens
+with — and it is the same split feature 243 draws in another member, where
+:class:`discovery.errors.VoidCampaignError` is kept out of
+``CampaignPlanningError`` and out of ``CampaignOrderError`` by exactly this
+argument.
+
+It shares feature 243's **code word** (``void_campaign``), deliberately, and the
+class docstring argues why: one finding, two doors, one word an operator greps.
+
 **The tree is open, and that is the seam 292-296 land on.**  The category's
 next features extend this module with siblings — feature 292's
 ``criteria_mismatch`` verdict, 295's retirement refusal, 296's terminal state —
@@ -77,9 +100,11 @@ from __future__ import annotations
 __all__ = [
     "PROMOTION_BLOCK_ERROR_CODE",
     "PROMOTION_REGISTRY_ERROR_CODE",
+    "VOID_CALIBRATION_ERROR_CODE",
     "PromotionBlockError",
     "PromotionError",
     "PromotionStoreError",
+    "VoidCalibrationError",
 ]
 
 
@@ -164,4 +189,79 @@ class PromotionBlockError(PromotionError):
     visible.  The split is the repair's, not the code path's; that the two
     classes share a code word on purpose is the *finding's* identity, not a
     licence to collapse them.
+    """
+
+
+#: The greppable word that opens every :class:`VoidCalibrationError` message:
+#: ``void_campaign`` — feature 243's own code word
+#: (:data:`discovery.manifest.VOID_CAMPAIGN_CODE`), **restated** rather than
+#: imported, because no member imports another and feature 243 is the discovery
+#: member's.
+#:
+#: The same literal is the right one here for the reason the block store gives
+#: about ``coverage_below_threshold``: it names the *finding* — a campaign §7.4
+#: voided, whose planted nulls the KS guard found detectable — and not the act,
+#: and an operator who greps it has to land on **both** gates that refuse a void
+#: campaign: feature 243's *when adding completed campaigns to the replay pool*
+#: and this feature's *when promoting from one*.  Two doors, one finding, one
+#: word to search for.  A second spelling invented here would send a reader
+#: looking for a second kind of void campaign, which does not exist.
+VOID_CALIBRATION_ERROR_CODE = "void_campaign"
+
+
+class VoidCalibrationError(PromotionError):
+    """A promotion was refused because its campaign's calibration is void.
+
+    app_spec.xml feature 298: *"System rejects a promotion when the campaign
+    ``calibration_status`` is ``VOID``, because a void campaign carries no
+    usable calibration."*  Raised by
+    :func:`promotion.calibration.rejects_void_calibration` and
+    :meth:`promotion.calibration.PromotionCalibrations.rejects_void_promotion`
+    when the campaign a promoted hypothesis came from carries
+    :data:`~promotion.calibration.CALIBRATION_STATUS_VOID` — the verdict §7.4's
+    KS guard (feature 124) wrote onto the ``campaign`` row.
+
+    **Its noun is evidence, not form, and that is why it is its own class.**  The
+    member's tree splits by *the repair the caller must make*, and this refusal's
+    repair is unlike any of the three beside it:
+
+    * not :class:`PromotionError` — the ask was well formed, and the campaign was
+      read before anything was judged.  Re-sending a corrected body is not the
+      repair, because there is no correction to make to the request;
+    * not :class:`PromotionStoreError` — nothing failed to write, and the row the
+      judgement was made on is exactly as it was.  The deployment is fine;
+    * not :class:`PromotionBlockError` — the subject is a different campaign
+      fault with a different reading behind it (§C7's coverage ledger versus
+      §7.4's calibration verdict) and a different repair, so gathering the two
+      would put one ``except`` behind two unrelated acts.  The block store's own
+      docstring reserves that class for the coverage finding by name.
+
+    A **void campaign** is not a form the caller can fix and not a store that
+    failed: it is a campaign whose planted nulls the agent may have learned to
+    identify, which — in the PRD's own words — voids **all** of that campaign's
+    calibration.  So this sits beside the other three as the tree's fourth
+    top-level sibling, and its repair is a judgement the caller must make:
+    re-plan the campaign under a fresh id, investigate the block length and
+    permutation scheme §4.3 indicts, or promote from a campaign that stands.
+
+    **Four faces, gathered**, the argument :class:`PromotionBlockError` states one
+    feature over and :class:`regime.errors.PromotionCoverageError` states one
+    member over: this feature's caller is the same **gate**, and a gate's one
+    failure mode is silence.  A caller whose single ``except VoidCalibrationError``
+    guards its promotion path must not be able to walk through a hole because a
+    malformed node id arrived in a different class from an unreachable database —
+    in every case the promotion is unjudged and must not proceed.  So the ask
+    (a malformed node or campaign identity, a status that is not text), the
+    address (a ``DATABASE_URL`` this member cannot speak), and the two absences
+    (a node the tree does not hold; a node whose campaign row is absent) all open
+    with :data:`VOID_CALIBRATION_ERROR_CODE` and all name what they are about.
+
+    Deliberately **not** a face of :class:`PromotionBlockError` even though both
+    are merit refusals: §C7's coverage block and §7.4's calibration verdict are
+    different findings about different facts, read from different tables, with
+    different repairs — and a caller that had to distinguish *the pool is thin*
+    from *this campaign's control is gone* would be unable to, behind one class.
+    That the two classes carry *different* code words is what makes each
+    greppable; that feature 243 and this class carry the *same* one is the
+    finding's identity, and no licence to collapse the classes.
     """

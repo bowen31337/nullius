@@ -1,4 +1,4 @@
-"""The four tables the pre-registration row leans on — created idempotently.
+"""The tables this member's statements lean on — created idempotently, per act.
 
 ``migrations/versions/0108_forward_and_universe_tables.py`` (feature 108) is
 ``promotion_registry``'s schema owner, and ``0118``/``0110`` own the two tables
@@ -28,6 +28,22 @@ pre-registration fails with ``no such table: main.node``, naming a table this
 member has no business creating.  So the bootstrap completes the **set**: the
 three tables the one ``INSERT`` genuinely needs, in the migration tree's own
 dependency order, and nothing more.
+
+**One set per act, and there are two of them.**  Feature 298's calibration gate
+reads two tables — ``node`` and the ``campaign`` row its ``campaign_id`` names —
+so it needs a bootstrap of its own, for the same structural reason from the other
+direction: this member's acts do not all lean on the same tables, and a bootstrap
+is a claim about *what one act's statements name*.  :data:`MIGRATION_ORDER`
+therefore stays exactly what it always was — feature 291's three, and the
+member's suite pins it as that claim — and :data:`CALIBRATION_MIGRATION_ORDER` is
+added beside it rather than widened into it.  The alternative (one four-table set
+both callers run) would work, since every statement is ``IF NOT EXISTS``, and is
+deliberately not taken: it would make the pre-registration write create
+``campaign`` for an ``INSERT`` that never reads it, and the calibration read
+create ``epoch_ledger`` and ``promotion_registry`` for two ``SELECT``s that never
+name them, so a reader could no longer tell a dependency from a habit.  Two
+orders, two bootstraps, one runner (:func:`_run_statements`) and one rule — *the
+set is the tables this act's own statements name*.
 
 **Why that is not a schema this member invents.**  Not one statement here is
 authored.  Every one comes from ``statements("sqlite")`` on a migration this
@@ -88,8 +104,10 @@ from types import ModuleType
 from .errors import PromotionError
 
 __all__ = [
+    "CALIBRATION_MIGRATION_ORDER",
     "MIGRATION_ORDER",
     "PROMOTION_REGISTRY_TABLE",
+    "bootstrap_calibration_schema",
     "bootstrap_schema",
     "migrations_dir",
 ]
@@ -108,6 +126,30 @@ MIGRATION_ORDER: tuple[tuple[str, str], ...] = (
     ("node", "0118_node_table"),
     ("epoch_ledger", "0110_epoch_ledger"),
     (PROMOTION_REGISTRY_TABLE, "0108_forward_and_universe_tables"),
+)
+
+#: The two tables feature 298's calibration judgement *reads*, and the
+#: migrations that create them, in the order they must run.
+#:
+#: Deliberately **not** a widening of :data:`MIGRATION_ORDER`, and the reason is
+#: the same one this module's docstring states for the three: a constant that
+#: lists the tables *one act* needs is a claim about that act, and the member's
+#: suite pins :data:`MIGRATION_ORDER` as *"the three tables feature 291's one
+#: ``INSERT`` needs"*.  Adding a fourth and a fifth there would silently widen
+#: that claim — every pre-registration would create ``campaign`` as well, for a
+#: write that reads nothing from it — while the calibration gate would still be
+#: pulling the pre-registration's two unrelated tables into a read that names
+#: neither.  Two acts, two sets, each the smallest set its own statement needs.
+#:
+#: ``node`` is shared with :data:`MIGRATION_ORDER` and that is not duplication:
+#: both acts genuinely read it, each names its own dependency, and neither
+#: reaches for the other's list.  ``campaign`` is the calibration gate's alone —
+#: ``0111`` is the fourth position in the assembled chain, after ``0110`` and
+#: before ``0112``, and it declares ``REQUIRES_TABLES = ()`` because the campaign
+#: row references nothing: it is the tree's root, not a leaf of it.
+CALIBRATION_MIGRATION_ORDER: tuple[tuple[str, str], ...] = (
+    ("node", "0118_node_table"),
+    ("campaign", "0111_campaign_table"),
 )
 
 
@@ -168,22 +210,65 @@ def _load_migration(revision: str) -> ModuleType:
     return module
 
 
-def _statements(dialect: str = "sqlite") -> tuple[str, ...]:
-    """Every statement the three migrations return for ``dialect``, in order.
+def _statements_for(
+    order: tuple[tuple[str, str], ...], dialect: str
+) -> tuple[str, ...]:
+    """Every statement the migrations in ``order`` return for ``dialect``.
+
+    The one loop both bootstraps run, so the two orders cannot diverge on *how*
+    a revision's statements are collected — a second spelling of this would be a
+    second place to get the "the migration is the author" discipline wrong.
 
     Each revision contributes all of its statements or none of them.  ``0108``
-    creates five tables besides ``promotion_registry``; taking that one
-    statement out of the tuple would be this member editing another's schema,
-    where running the tuple is what "the migration is the author" means.
-    Nothing is over-created by doing so: every statement is ``IF NOT EXISTS``,
-    so a database that already holds them is left exactly as it was, and the
-    tables the other features of this domain will need — ``forward_record``
-    among them — are already where their own writers expect them.
+    creates five tables besides ``promotion_registry`` and ``0118`` creates
+    three besides ``node``; taking one statement out of a tuple would be this
+    member editing another's schema, where running the tuple is what "the
+    migration is the author" means.  Nothing is over-created by doing so: every
+    statement is ``IF NOT EXISTS``, so a database that already holds them is left
+    exactly as it was, and the tables the other features of this domain will
+    need — ``forward_record`` among them — are already where their own writers
+    expect them.
     """
     collected: list[str] = []
-    for _table, revision in MIGRATION_ORDER:
+    for _table, revision in order:
         collected.extend(_load_migration(revision).statements(dialect))
     return tuple(collected)
+
+
+def _statements(dialect: str = "sqlite") -> tuple[str, ...]:
+    """Every statement the three pre-registration migrations return, in order.
+
+    The set feature 291's one ``INSERT`` needs — :data:`MIGRATION_ORDER`,
+    unchanged and unwidened.
+    """
+    return _statements_for(MIGRATION_ORDER, dialect)
+
+
+def _calibration_statements(dialect: str = "sqlite") -> tuple[str, ...]:
+    """Every statement feature 298's read needs, in order.
+
+    :data:`CALIBRATION_MIGRATION_ORDER` — ``node`` and ``campaign``, the two
+    tables the traversal and the status read name.
+    """
+    return _statements_for(CALIBRATION_MIGRATION_ORDER, dialect)
+
+
+def _run_statements(
+    connection: sqlite3.Connection, ddl: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Execute ``ddl`` on ``connection`` and return it — the one runner.
+
+    Spelled once so both bootstraps execute a statement tuple the same way, and
+    so a caller that needs a *different* set of owners goes through the same
+    door rather than growing a second copy of this loop.
+    """
+    cursor = connection.cursor()
+    try:
+        for statement in ddl:
+            cursor.execute(statement)
+    finally:
+        cursor.close()
+    return ddl
 
 
 def bootstrap_schema(
@@ -206,11 +291,40 @@ def bootstrap_schema(
     *"the statements agree because both were written from the spec's columns"*,
     but *"there is only one set of statements, and this runs it"*.
     """
-    ddl = _statements(dialect)
-    cursor = connection.cursor()
-    try:
-        for statement in ddl:
-            cursor.execute(statement)
-    finally:
-        cursor.close()
-    return ddl
+    return _run_statements(connection, _statements(dialect))
+
+
+def bootstrap_calibration_schema(
+    connection: sqlite3.Connection, *, dialect: str = "sqlite"
+) -> tuple[str, ...]:
+    """Create the two tables feature 298's read needs; returns the DDL run.
+
+    The calibration gate's half of the same contract
+    :func:`bootstrap_schema` states, over a *different* set of owners: ``node``
+    (``0118``) and ``campaign`` (``0111``), the only two tables the traversal and
+    the status read name.  Same discipline in every other respect — no statement
+    is authored here, each comes from ``statements(dialect)`` on the migration
+    that owns the table, loaded by file path and run whole — and the same
+    reasoning about idempotence: every statement is ``IF NOT EXISTS``, so a
+    database the chain has already migrated is left exactly as it was.
+
+    **Why this is a second set and not an argument to the first.**  A bootstrapping
+    caller could be handed the wider three-table set and it would work, because
+    every statement is ``IF NOT EXISTS``.  It is deliberately not offered, for
+    the reason this module is *a claim about authorship*: the set a store runs
+    should be the set its own statements name, or a reader cannot tell a
+    dependency from a habit.  Feature 291's ``INSERT`` names ``promotion_registry``
+    and its two ``REFERENCES`` parents; feature 298's two ``SELECT``s name
+    ``node`` and ``campaign``.  A gate that ran the pre-registration's three
+    would be creating ``epoch_ledger`` and ``promotion_registry`` — tables its
+    read never touches — which is precisely the *"every write fails, naming a
+    table this member has no business creating"* failure
+    :func:`bootstrap_schema` was built to avoid, approached from the other side.
+
+    ``node`` appears in both sets because both acts genuinely read it: the
+    registry's row references it by foreign key and the traversal starts at it.
+    That is a shared *dependency*, stated twice, and not a shared statement — the
+    two callers each name the file that owns it, so a rename cannot leave one of
+    them probing a table nobody writes.
+    """
+    return _run_statements(connection, _calibration_statements(dialect))
