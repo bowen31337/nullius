@@ -363,17 +363,34 @@ def test_a_re_registration_with_different_criteria_is_refused(
     assert registry_rows() == before  # the refusal wrote nothing
 
 
-def test_the_re_registration_refusal_is_not_feature_292s() -> None:
+def test_the_re_registration_refusal_is_not_feature_292s(seeded_database) -> None:
     # Feature 292 judges a *promotion* against a *hash*, at decision time, and
     # coins ``criteria_mismatch`` for it.  This module judges a *registration
     # request* against the *row it would rewrite*, before the evaluation, and
     # never spells that word — so the ground is still free for 292, and a
-    # caller cannot catch this refusal by reaching for that one.
+    # caller cannot catch this refusal by reaching for that one.  Feature 292
+    # lives in its own module, and the member re-exports it from there, not
+    # from here.
     from promotion import pre_register as pre_register_module
 
     assert "criteria_mismatch" not in code_of(pre_register_module)
-    assert not hasattr(member, "CRITERIA_MISMATCH_CODE")
-    assert not hasattr(member, "CriteriaMismatchError")
+    # The verdict is spelled in promotion.criteria_check, not here — a
+    # re-registration refusal must not be catchable as a criteria mismatch.
+    from promotion import criteria_check as criteria_check_module
+
+    assert not hasattr(pre_register_module, "CriteriaMismatchError")
+    assert not hasattr(pre_register_module, "criteria_mismatch")
+    # The member reaches the verdict, but only because it re-exports it from
+    # feature 292's module — not because pre_register owns it.
+    assert hasattr(member, "CriteriaMismatchError")
+    assert member.CriteriaMismatchError is criteria_check_module.CriteriaMismatchError
+    # And the re-registration refusal itself is still a PromotionError, never a
+    # CriteriaMismatchError — the repair is to register, not to re-decide.
+    endpoint = PreRegisterEndpoint(seeded_database)
+    endpoint.post(_request())
+    with pytest.raises(PromotionError) as raised:
+        endpoint.post(_request(criteria={**DEFAULT_CRITERIA_DOCUMENT, "theta": 0.4}))
+    assert type(raised.value) is not criteria_check_module.CriteriaMismatchError
 
 
 # -- The ask's refusals ------------------------------------------------------------

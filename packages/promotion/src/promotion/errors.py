@@ -27,8 +27,9 @@ caller's position is the same in all of them — *the pre-registration row was
 not recorded* — and the next step is to read which face the message names.
 The contrast is with the judgement refusals the category's later features add:
 feature 292's ``criteria_mismatch`` is a *verdict* about evidence, not a failed
-write, and it will sit beside this class rather than under it, the way
-:class:`regime.errors.DiversityClaimError` sits beside
+write, and it sits beside this class rather than under it —
+:class:`~promotion.errors.CriteriaMismatchError`, the category's first judgement
+verdict — the way :class:`regime.errors.DiversityClaimError` sits beside
 :class:`regime.errors.CoverageError`.
 
 **The one code word this feature owns.**  :data:`PROMOTION_REGISTRY_ERROR_CODE`
@@ -256,6 +257,7 @@ the same.  Nothing here presumes which of the two any later feature is.
 from __future__ import annotations
 
 __all__ = [
+    "CRITERIA_MISMATCH_ERROR_CODE",
     "EPOCH_CHARGE_ERROR_CODE",
     "EPOCH_SELECTION_ERROR_CODE",
     "NO_CLEAN_EPOCH_REMAINS_CODE",
@@ -264,6 +266,7 @@ __all__ = [
     "PROMOTION_REGISTRY_ERROR_CODE",
     "PROMOTION_WINDOW_ERROR_CODE",
     "VOID_CALIBRATION_ERROR_CODE",
+    "CriteriaMismatchError",
     "EpochChargeError",
     "EpochSelectionError",
     "PromotionBlockedError",
@@ -278,6 +281,92 @@ __all__ = [
 
 class PromotionError(Exception):
     """Base class for every failure of the promotion member's path."""
+
+
+#: The greppable word that opens every :class:`CriteriaMismatchError` message:
+#: a promotion was decided against criteria that are not the ones its row was
+#: pre-registered with. The category's first *judgement* verdict, and the one
+#: every sibling module defers to: feature 291's store names it as the refusal
+#: it deliberately does not coin, feature 293's decision names it as the
+#: verdict it declines to pronounce, and features 295-300 name it as the only
+#: comparison against the recorded hash. Spelled beside the base class rather
+#: than under the store's word, because a mismatch is not a failed write — the
+#: row was written and read back cleanly — and an operator who greps
+#: ``promotion_registry_unwritable`` is debugging feature 291's insert, while
+#: one who greps this word is reading a verdict that a promotion was judged
+#: against the wrong bar. The split is the repair's, which is the rule this
+#: module opens with.
+CRITERIA_MISMATCH_ERROR_CODE = "criteria_mismatch"
+
+
+class CriteriaMismatchError(PromotionError):
+    """A promotion was decided against criteria that differ from its pre-registered ones.
+
+    Feature 292's class: *"System rejects a promotion whose recorded criteria
+    hash differs from the pre-registered value, which returns a criteria_mismatch
+    error message."*  Raised by :func:`promotion.criteria_check.
+    rejects_mismatched_criteria` and :meth:`promotion.criteria_check.
+    CriteriaChecks.rejects_mismatched_criteria` when the digest of the criteria
+    the promotion is being decided under does not equal the digest feature 291
+    recorded on the row before the evaluation ran.
+
+    **Its noun is a verdict, not a form and not a write, and that is why it is
+    the category's first sibling rather than a face of any of the others.**  The
+    member's tree splits by *the repair the caller must make*, and this refusal's
+    repair is unlike every one beside it:
+
+    * not :class:`PromotionError` — that class carries the pre-registration's
+      *ask* face, and a caller whose single ``except`` guards the promotion path
+      would read *the body was malformed* where the truth is *this promotion was
+      judged against the wrong criteria*;
+    * not :class:`PromotionStoreError` — nothing failed to write or read back,
+      and the row the judgement was made on is exactly as feature 291 left it.
+      The store's word sends an operator to feature 291's insert, which is a
+      different act entirely;
+    * not :class:`PromotionBlockError` nor :class:`VoidCalibrationError` — the
+      two *merit* refusals are findings about the pool's coverage and the
+      campaign's calibration, read from other members' tables.  This one is a
+      finding about the *decision's own form*: not whether the promotion was
+      *good* (that is the deciding evaluation's verdict) but whether it was made
+      against the criteria that were fixed for it.  §13 item 7's whole promise is
+      that the criteria cannot change after the fact, and this class is the act
+      that enforces that promise at decision time — the comparison every sibling
+      module explicitly declines to make.
+    * not :class:`PromotionDecisionError`, :class:`EpochChargeError`,
+      :class:`PromotionWindowError`, :class:`EpochSelectionError` nor
+      :class:`PromotionBlockedError` — those report a stamp, a count, a window, a
+      budget or a terminal state over the registry and ledger rows; this feature
+      writes nothing and reads one column to compare.  An operator who greps any
+      of those words for this refusal would be looking for a write that never
+      happened, or a resource that was never the problem.
+
+    **Two faces, gathered**, because this feature's caller is the same **gate**,
+    and a gate's one failure mode is silence — the argument every gathered class
+    in this module states:
+
+    * **the mismatch** — the recomputed hash of the criteria the promotion is
+      being decided under differs from the digest feature 291 recorded.  The
+      repair is to re-run the deciding evaluation against the pre-registered
+      criteria, or to pre-register the criteria the promotion was actually judged
+      under against the hypothesis it is really about.
+    * **the absence** — no recorded hash to compare against: the node was never
+      pre-registered, or its row is still open.  Refused in this class rather than
+      the registry's, because the repair is feature 291's or feature 293's act,
+      not a criteria fix — and a caller whose single ``except CriteriaMismatchError``
+      guards its promotion path must read *this promotion was never registered*
+      and not *the registry could not be read*.
+
+    In every one of them the promotion is refused, and that is the state the class
+    exists to make loud: a promotion decided against a bar moved after the result
+    was known is precisely the post-hoc criterion §13 item 7's *before* exists to
+    prevent, and the silence of a boolean a caller forgets to branch on is how it
+    would slip through.
+
+    Every message opens with :data:`CRITERIA_MISMATCH_ERROR_CODE` and names the
+    node the promotion was about — and, on a mismatch, both hashes — so an
+    operator's log line says which promotion was refused, what its criteria were
+    fixed as, and what they were decided against.
+    """
 
 
 #: The greppable word that opens every :class:`PromotionStoreError` message:

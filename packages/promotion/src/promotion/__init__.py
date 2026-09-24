@@ -46,7 +46,22 @@ promotion when that campaign's §7.4 verdict is ``VOID``, with
 the category's two merit refusals and are deliberately **not** one thing: they
 read different tables, they answer different questions, and their repairs differ
 — grow the pool's coverage (§C7) versus re-plan a campaign whose control is gone
-(§7.4).  :mod:`promotion.decision` is feature 293's *stamp*:
+(§7.4).  :mod:`promotion.criteria_check` is feature 292's *verdict*: the
+category's first judgement, and the one every sibling module defers to —
+:class:`~promotion.criteria_check.CriteriaChecks`, the gate that reads a node's
+recorded ``criteria_hash`` through feature 291's store and weighs it against the
+digest of the criteria the promotion is being decided under, refusing the
+promotion with a ``criteria_mismatch`` when the two differ, with
+:func:`~promotion.criteria_check.rejects_mismatched_criteria` as the act,
+:func:`~promotion.criteria_check.matches_recorded_criteria` as the pure
+comparison, and :func:`~promotion.criteria_check.matches_criteria` as the read.
+It writes nothing and judges no merit — the verdict on the evidence is the
+deciding evaluation's — it only enforces §13 item 7's *before* at decision time:
+a promotion must be decided against the criteria that were fixed for it.  The
+refusal is the member's first sibling error, :class:`~promotion.errors.
+CriteriaMismatchError`, kept out of the store's ``promotion_registry_unwritable``
+by the split this module's error vocabulary states — a verdict, not a failed
+write.  :mod:`promotion.decision` is feature 293's *stamp*:
 :class:`~promotion.decision.PromotionDecisions`, the store that persists each
 promotion decision by closing the row the pre-registration opened — one
 ``UPDATE`` whose ``SET`` clause names ``decided_at`` and nothing else, so the
@@ -267,6 +282,14 @@ from .calibration import (
     rejects_void_promotion,
 )
 from .criteria import CRITERIA_FIELDS, PromotionCriteria, criteria_hash
+from .criteria_check import (
+    CRITERIA_MISMATCH_ERROR_CODE,
+    CriteriaChecks,
+    CriteriaMismatchError,
+    matches_criteria,
+    matches_recorded_criteria,
+    rejects_mismatched_criteria,
+)
 from .decision import PromotionDecisions, promotion_decision, record_decision
 from .epoch import (
     PROMOTION_DECISIONS_SERVED_COLUMN,
@@ -369,6 +392,7 @@ __all__ = [
     "COVERAGE_THRESHOLD_COLUMN",
     "CRITERIA_FIELDS",
     "CRITERIA_HASH_COLUMN",
+    "CRITERIA_MISMATCH_ERROR_CODE",
     "DATABASE_URL_ENV",
     "DECIDED_AT_COLUMN",
     "DECISION_MIGRATION_ORDER",
@@ -397,6 +421,8 @@ __all__ = [
     "VOID_CALIBRATION_ERROR_CODE",
     "WINDOW_DAYS_COLUMN",
     "WORLD_COUNT_COLUMN",
+    "CriteriaChecks",
+    "CriteriaMismatchError",
     "EpochChargeError",
     "EpochCharges",
     "EpochSelectionError",
