@@ -9,7 +9,7 @@ and hashed before the evaluation that decides them"*, and against the
 (``migrations/versions/0108_forward_and_universe_tables.py``) already
 declares.
 
-The member's surface is four modules.  :mod:`promotion.criteria` is *what* a
+The member's surface is five modules.  :mod:`promotion.criteria` is *what* a
 promotion is judged against and *how it is hashed*:
 :class:`~promotion.criteria.PromotionCriteria`, the six terms §13.7's
 "criteria" enumerates — the paired ΔIR advantage, the significance level, the
@@ -30,16 +30,23 @@ holds it.  :mod:`promotion.schema` is the DDL adapter: it runs the *owning
 migrations'* own ``statements("sqlite")`` for the three tables this one
 ``INSERT`` needs — ``node``, ``epoch_ledger`` and ``promotion_registry`` — so
 this member authors no DDL and cannot drift from the schema's owners.
-:mod:`promotion.errors` is the member's error vocabulary:
-:class:`~promotion.errors.PromotionError` (the *ask* face: a malformed body,
-a criterion that is not a number, a re-registration with different criteria)
-and :class:`~promotion.errors.PromotionStoreError` (the *address, parent and
-write* face, every message opening
-:data:`~promotion.errors.PROMOTION_REGISTRY_ERROR_CODE`), split by the
-repair rather than by the code path — the argument that module states.  This
-module re-exports all of it and registers the one component; it carries no
-logic of its own, which is the same shape every member in this workspace
-takes.
+:mod:`promotion.blocking` is feature 299's *reason*:
+:class:`~promotion.blocking.PromotionBlocks`, the store that records why a
+promotion was blocked on §C7's regime coverage, with
+:class:`~promotion.blocking.PromotionBlock` as the row and
+:func:`~promotion.blocking.blocking_reason` rendering the one canonical sentence
+that row explains itself with.  :mod:`promotion.errors` is the member's error
+vocabulary: :class:`~promotion.errors.PromotionError` (the *ask* face: a
+malformed body, a criterion that is not a number, a re-registration with
+different criteria), :class:`~promotion.errors.PromotionStoreError` (the
+*address, parent and write* face, every message opening
+:data:`~promotion.errors.PROMOTION_REGISTRY_ERROR_CODE`), and feature 299's
+:class:`~promotion.errors.PromotionBlockError` (the *merit* face — a promotion
+refused on coverage rather than on form), split by the repair rather than by
+the code path except where a gate's caller position overrides the split — the
+argument that module states.  This module re-exports all of it and registers
+the one component; it carries no logic of its own, which is the same shape every
+member in this workspace takes.
 
 **The two-timestamp law is created here and enforced elsewhere.**  ``0108``
 declares ``pre_registered_at TIMESTAMPTZ NOT NULL`` and ``decided_at
@@ -105,23 +112,54 @@ store, 293's decision closes a row this store opened, 294's count advances a
 column in ``epoch_ledger``, 295's threshold reads that column, 296's terminal
 state is what remains when every epoch is retired, 297's depleting count is a
 read of the same table, 298's ``VOID`` refusal is a judgement over the
-campaign row, 299's blocking reason is one more column's worth of state on a
-decision, and 300's promotion timestamp is a fact placed by 293's write.  A
-builder takes no arguments and is built on every ``create_app()`` call, while
-each of those acts is a function of evidence the factory does not hold — a
-decision, a count, a calibration status — so registering one would be a
+campaign row, and 300's promotion timestamp is a fact placed by 293's write.
+A builder takes no arguments and is built on every ``create_app()`` call,
+while each of those acts is a function of evidence the factory does not hold —
+a decision, a count, a calibration status — so registering one would be a
 component pointed at state no composition can supply.  The sibling seams will
 reach this store the only way the spec allows: by asking the composed
 ``promotion`` component, or by constructing a store from a URL.
+
+**Feature 299's block, and the design question it settled.**  This paragraph
+used to add *"299's blocking reason is one more column's worth of state on a
+decision"* to the list above, and feature 299 did not take that reading.
+:mod:`promotion.blocking` is a store of its own — ``promotion_block``, one row
+per node, keyed by ``node_id`` and foreign-keyed to ``node`` — and the reasons
+are three, each stated in full in that module's docstring: the spec's schema
+block declares ``promotion_registry``'s six columns and **no** seventh, and the
+migration tree that owns that DDL stops at ``0108``, which this member may not
+edit, so a column could only arrive as a runtime ``ALTER TABLE`` — a second,
+dialect-dependent spelling of a shared table's shape added by a member that does
+not own it; a blocked promotion is a different noun from a pre-registered one,
+with a different writer, lifetime and reader; and the block store's read must
+answer *is this node blocked, and why* for a node that may hold no registry row,
+which is a probe over the *decision* and awkward bolted onto a row with an
+identity of its own.  What that paragraph got right is kept: the block is state
+about one decision, written once, never revised, read back by node.  It is
+still not a second component — it is never registered and is constructed from a
+URL by the caller that has one, so the member's one ``build_*`` name stands.
 """
 
 from __future__ import annotations
 
 from app.module_loader import register
 
+from .blocking import (
+    BLOCKED_AT_COLUMN,
+    COVERAGE_THRESHOLD_COLUMN,
+    PROMOTION_BLOCK_TABLE,
+    REGIME_COLUMN,
+    WORLD_COUNT_COLUMN,
+    PromotionBlock,
+    PromotionBlocks,
+    blocked_promotion,
+    blocking_reason,
+)
 from .criteria import CRITERIA_FIELDS, PromotionCriteria, criteria_hash
 from .errors import (
+    PROMOTION_BLOCK_ERROR_CODE,
     PROMOTION_REGISTRY_ERROR_CODE,
+    PromotionBlockError,
     PromotionError,
     PromotionStoreError,
 )
@@ -148,7 +186,9 @@ from .schema import (
 )
 
 __all__ = [
+    "BLOCKED_AT_COLUMN",
     "COMPONENT_NAME",
+    "COVERAGE_THRESHOLD_COLUMN",
     "CRITERIA_FIELDS",
     "CRITERIA_HASH_COLUMN",
     "DATABASE_URL_ENV",
@@ -158,16 +198,25 @@ __all__ = [
     "NODE_ID_COLUMN",
     "PRE_REGISTERED_AT_COLUMN",
     "PRE_REGISTER_ROUTE",
+    "PROMOTION_BLOCK_ERROR_CODE",
+    "PROMOTION_BLOCK_TABLE",
     "PROMOTION_REGISTRY_ERROR_CODE",
     "PROMOTION_REGISTRY_TABLE",
+    "REGIME_COLUMN",
+    "WORLD_COUNT_COLUMN",
     "PreRegisterEndpoint",
     "PreRegistrationRequest",
     "PreRegistrationResponse",
     "PreRegistrations",
+    "PromotionBlock",
+    "PromotionBlockError",
+    "PromotionBlocks",
     "PromotionCriteria",
     "PromotionError",
     "PromotionRecord",
     "PromotionStoreError",
+    "blocked_promotion",
+    "blocking_reason",
     "bootstrap_schema",
     "build_promotion_registry",
     "criteria_hash",

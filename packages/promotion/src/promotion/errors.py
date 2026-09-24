@@ -39,7 +39,32 @@ refusal about a promotion's merits — a merits refusal is feature 292's, and
 naming this one after it would send a reader looking for a mismatch that never
 happened.
 
-**The tree is open, and that is the seam 293-296 land on.**  The category's
+**Feature 299's block is the tree's first sibling, and it is gathered.**
+:class:`PromotionBlockError` carries feature 299's one act — *System persists a
+blocking reason for a promotion whose deployment regime coverage sits below
+threshold* — and it is a **new class** rather than a face of either of the two
+above, because its noun is different: not *the ask was malformed* and not *the
+registry row did not land*, but *this promotion is blocked on coverage and the
+reason it is blocked was not recorded*.  The first promotion in this member
+that is refused on **merit** rather than on form, and its repair is neither a
+corrected body nor a corrected deployment: it is to grow the coverage, or to
+deploy into a regime the pool does cover — an act of the census (feature 290)
+and the backfill (feature 287), in another member entirely.
+
+Its four faces stay **gathered in one class**, and the argument is feature
+285's, restated because this member's caller is the same *gate*: a gate's one
+failure mode is silence.  A caller whose single ``except PromotionBlockError``
+guards its promotion path must not be able to walk through a hole because a
+malformed threshold arrived in a different class from an unreachable database —
+in either case the promotion is blocked and the reason is not on a row, and the
+caller that cannot tell *which* still must not proceed.  So the address, the
+ask, the absence and the write all open with
+:data:`PROMOTION_BLOCK_ERROR_CODE` and all name what they are about.  This is
+the one place in the member where the split-by-repair rule is *overridden* by
+the caller's position, and :mod:`regime.errors` records the same override for
+the same reason one member over.
+
+**The tree is open, and that is the seam 292-296 land on.**  The category's
 next features extend this module with siblings — feature 292's
 ``criteria_mismatch`` verdict, 295's retirement refusal, 296's terminal state —
 and the discipline is the one stated above: a new class is a sibling when its
@@ -50,7 +75,9 @@ the same.  Nothing here presumes which of the two any later feature is.
 from __future__ import annotations
 
 __all__ = [
+    "PROMOTION_BLOCK_ERROR_CODE",
     "PROMOTION_REGISTRY_ERROR_CODE",
+    "PromotionBlockError",
     "PromotionError",
     "PromotionStoreError",
 ]
@@ -82,4 +109,59 @@ class PromotionStoreError(PromotionError):
     is refusable without a database at all, and a caller that gathered the two
     would read *the store refused me* where the truth is *the body was not the
     six terms*.  The split is the repair's, not the code path's.
+    """
+
+
+#: The greppable word that opens every :class:`PromotionBlockError` message:
+#: ``coverage_below_threshold`` — feature 285's own code word, **restated**
+#: rather than imported, because no member imports another and the promotion
+#: plugin's features are another member's (``regime.promotion`` says so from
+#: its own side and names this feature as the reason the literal exists).
+#:
+#: The word names the *finding*, not this feature's act: the promotion was
+#: pointed at a deployment regime and the replay pool does not cover it.  An
+#: operator greps one word and lands on both halves of §C7's promotion block —
+#: the refusal feature 285 raises and the reason feature 299 records — which is
+#: the whole point of restating a literal instead of inventing a second name
+#: for one finding.
+PROMOTION_BLOCK_ERROR_CODE = "coverage_below_threshold"
+
+
+class PromotionBlockError(PromotionError):
+    """A promotion blocked on regime coverage could not be recorded as blocked.
+
+    Feature 299's class, and the member's first *merit* refusal: every other
+    failure in this tree is about a form (a malformed ask, a bad address) or
+    about a write, while this one is about a promotion's *evidence* — the
+    target deployment regime's stored-world count is below the threshold the
+    deployment configured, so §C7 blocks the promotion and this member persists
+    the reason.
+
+    Four faces, **gathered** rather than split, because the caller is a gate
+    and a gate's one failure mode is silence (the argument is in the module
+    docstring, and it is feature 285's):
+
+    * **the ask** — a malformed node, epoch, regime or threshold, or a
+      ``count`` that is not a count of worlds.  Nothing was read and nothing
+      was written; the repair is to re-send the ask.
+    * **the address** — a ``DATABASE_URL`` this member cannot speak.  The
+      repair is to the deployment.
+    * **the absence** — no ``promotion_registry`` row for the node, so there is
+      no decision for this reason to be the blocking reason *of*.  The repair
+      is to pre-register first (feature 291), which is §13 item 7's ordering
+      and not an incidental precondition.
+    * **the write** — the row did not land, or the read-back disagreed with
+      what was written.  The repair is to the database.
+
+    Every message opens with :data:`PROMOTION_BLOCK_ERROR_CODE` and names the
+    node the block was about, so an operator's log line says which promotion
+    was blocked and in which of the four ways.
+
+    Deliberately **not** a face of :class:`PromotionStoreError`.  A caller that
+    gathered the two would read *the registry could not be written to* where
+    the truth is *the pool does not cover the regime this promotion is aimed
+    at* — two different repairs, and the second is the one §C7 exists to make
+    visible.  The split is the repair's, not the code path's; that the two
+    classes share a code word on purpose is the *finding's* identity, not a
+    licence to collapse them.
     """
