@@ -224,6 +224,25 @@ _EPOCH_READ_SQL = (
     f"FROM {EPOCH_LEDGER_TABLE} WHERE {EPOCH_ID_COLUMN} = ?"
 )
 
+#: The whole-table read — the same four columns, over every row, ordered by
+#: the table's key so two reads of one store are comparable.  The read the
+#: exhaustion machinery's whole-table verdict (:func:`promotion.terminal.
+#: blocks_when_no_clean_epoch_remains`, feature 296) reaches through this
+#: store's ``epochs`` seam, and the mirror of feature 293's ``decisions()``
+#: listing over the registry.  Spelled here and not in the terminal module,
+#: so the count that verdict judges and the counts this feature persisted
+#: cannot be two readings of one table.  A second row for one epoch is
+#: unreachable through the owner's DDL — the key *is* the primary key — and
+#: is refused anyway, for the reason :meth:`EpochCharges._epoch_of` states:
+#: nothing this member writes can split one epoch's served count, so a
+#: doubled row is a hand that reached past it and would let the verdict read
+#: a spent epoch as clean.
+_LIST_EPOCHS_SQL = (
+    f"SELECT {EPOCH_ID_COLUMN}, {SEALED_AT_COLUMN}, "
+    f"{PROMOTION_DECISIONS_SERVED_COLUMN}, {RETIRED_COLUMN} "
+    f"FROM {EPOCH_LEDGER_TABLE} ORDER BY {EPOCH_ID_COLUMN}"
+)
+
 #: The write — one column in the ``SET`` clause, and that is the whole of
 #: the boundary this module states for it.  The ``WHERE`` names the key and
 #: nothing else, deliberately: unlike feature 293's once-only close, the
@@ -797,6 +816,77 @@ class EpochCharges:
         epoch = _charge_epoch_id(epoch_id)
         with closing(self._connect()) as connection:
             return self._epoch_of(connection, epoch)
+
+    def epochs(self) -> tuple[ServingEpoch, ...]:
+        """Every sequestered epoch's ledger row, ordered by the table's key.
+
+        The whole-table read feature 296's verdict reaches through this
+        store's ``epochs`` seam — the mirror of feature 293's
+        :meth:`~promotion.decision.PromotionDecisions.decisions` listing over
+        the registry, and the read the exhaustion machinery judges.  One
+        :class:`ServingEpoch` per row, carrying the count feature 294
+        persisted and the flag feature 296 reads, ordered by the epoch's own
+        name so two reads of one store are comparable.  The ledger the
+        verdict is a function of, and the only thing a verdict is drawn
+        from: this store holds no cache of counts, and neither does the
+        verdict.
+
+        A doubled row for one epoch is refused rather than resolved, for the
+        reason :meth:`_epoch_of` states: the key is the table's primary key,
+        so the state is unreachable through the owner's own DDL and a second
+        row is a hand that reached past this member — and it would split the
+        served count and let the whole-table verdict read a spent epoch as
+        clean.
+        """
+        with closing(self._connect()) as connection:
+            cursor = connection.execute(_LIST_EPOCHS_SQL)
+            try:
+                rows = cursor.fetchall()
+            finally:
+                cursor.close()
+        # Group by the epoch's name before building a value — the key is the
+        # table's primary key, so more than one row for a name is unreachable
+        # through the owner's own DDL and a hand that reached past this
+        # member, and a doubled row would split the served count and let the
+        # whole-table verdict read a spent epoch as clean.  Refused rather
+        # than resolved, the stance :meth:`_epoch_of` takes toward the same
+        # law, one row at a time.  ``sorted`` restates the ``ORDER BY`` on the
+        # group key so two reads of one store are comparable.
+        by_epoch: dict[str, list[tuple[Any, ...]]] = {}
+        for row in rows:
+            by_epoch.setdefault(row[0], []).append(row)
+        return tuple(
+            self._listed_epoch(epoch, by_epoch[epoch])
+            for epoch in sorted(by_epoch)
+        )
+
+    def _listed_epoch(
+        self, epoch: str, group: list[tuple[Any, ...]]
+    ) -> ServingEpoch:
+        """One epoch's value from its group of rows, refusing a split count.
+
+        The whole-table half of :meth:`_epoch_of`: where that method refuses
+        a second row for the one epoch it read, this one refuses a group that
+        holds more than one row for the epoch, for the same reason — the key
+        is the primary key, so the state is unreachable through the owner's
+        own DDL and a second row is a hand that reached past this member, and
+        it would split the served count the whole-table verdict judges.  A
+        single row is built through the read path's one constructor, so the
+        value the listing yields and the value :meth:`epoch` answers with are
+        built the same way.
+        """
+        if len(group) > 1:
+            raise EpochChargeError(
+                f"{EPOCH_CHARGE_ERROR_CODE}: {EPOCH_LEDGER_TABLE} holds "
+                f"{len(group)} rows for {EPOCH_ID_COLUMN} {epoch}. The "
+                "epoch's name is the table's primary key — one row per "
+                "sequestered epoch is the law the ledger exists on — and a "
+                "second row would split the served count and let feature "
+                "296's whole-table verdict read a spent epoch as clean, the "
+                "failure 0110's own docstring says the key exists to prevent "
+                "(feature 294)"
+            )
+        return _record_from_row(group[0], epoch)
 
     # -- The words ----------------------------------------------------------
 

@@ -281,6 +281,7 @@ from .epoch import (
 from .errors import (
     EPOCH_CHARGE_ERROR_CODE,
     EPOCH_SELECTION_ERROR_CODE,
+    NO_CLEAN_EPOCH_REMAINS_CODE,
     PROMOTION_BLOCK_ERROR_CODE,
     PROMOTION_DECISION_ERROR_CODE,
     PROMOTION_REGISTRY_ERROR_CODE,
@@ -288,6 +289,7 @@ from .errors import (
     VOID_CALIBRATION_ERROR_CODE,
     EpochChargeError,
     EpochSelectionError,
+    PromotionBlockedError,
     PromotionBlockError,
     PromotionDecisionError,
     PromotionError,
@@ -342,6 +344,11 @@ from .selection import (
     rejects_further_selection,
     select_epoch,
 )
+from .terminal import (
+    TerminalStates,
+    block_when_no_clean_epoch_remains,
+    blocks_when_no_clean_epoch_remains,
+)
 
 __all__ = [
     "BLOCKED_AT_COLUMN",
@@ -389,11 +396,13 @@ __all__ = [
     "EpochCharges",
     "EpochSelectionError",
     "EpochSelections",
+    "NO_CLEAN_EPOCH_REMAINS_CODE",
     "PreRegisterEndpoint",
     "PreRegistrationRequest",
     "PreRegistrationResponse",
     "PreRegistrations",
     "PromotionBlock",
+    "PromotionBlockedError",
     "PromotionBlockError",
     "PromotionBlocks",
     "PromotionCalibrations",
@@ -407,9 +416,12 @@ __all__ = [
     "PromotionWindowError",
     "PromotionWindows",
     "ServingEpoch",
+    "TerminalStates",
     "VoidCalibrationError",
+    "block_when_no_clean_epoch_remains",
     "blocked_promotion",
     "blocking_reason",
+    "blocks_when_no_clean_epoch_remains",
     "bootstrap_calibration_schema",
     "bootstrap_charge_schema",
     "bootstrap_decision_schema",

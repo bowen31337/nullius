@@ -258,6 +258,7 @@ from __future__ import annotations
 __all__ = [
     "EPOCH_CHARGE_ERROR_CODE",
     "EPOCH_SELECTION_ERROR_CODE",
+    "NO_CLEAN_EPOCH_REMAINS_CODE",
     "PROMOTION_BLOCK_ERROR_CODE",
     "PROMOTION_DECISION_ERROR_CODE",
     "PROMOTION_REGISTRY_ERROR_CODE",
@@ -265,6 +266,7 @@ __all__ = [
     "VOID_CALIBRATION_ERROR_CODE",
     "EpochChargeError",
     "EpochSelectionError",
+    "PromotionBlockedError",
     "PromotionBlockError",
     "PromotionDecisionError",
     "PromotionError",
@@ -760,4 +762,80 @@ class EpochSelectionError(PromotionError):
     Every message opens with :data:`EPOCH_SELECTION_ERROR_CODE` and names
     the epoch the selection was about, so an operator's log line says which
     sequestered epoch was refused and in which of the five ways.
+    """
+
+
+NO_CLEAN_EPOCH_REMAINS_CODE = "no_clean_epoch_remains"
+
+
+class PromotionBlockedError(PromotionError):
+    """Promotion was blocked: no clean sequestered epoch remains to run on.
+
+    Feature 296's class: *"System blocks promotion when no clean sequestered
+    epoch remains, which returns a terminal state rather than reusing a
+    retired epoch."*  Raised by :func:`promotion.terminal.
+    blocks_when_no_clean_epoch_remains` and :meth:`promotion.terminal.
+    TerminalStates.blocks` when every sequestered epoch has served §13 item
+    4's budget of three — or when the ledger holds no epoch at all — and by
+    the module's own paths for the malformed asks and the unreachable
+    addresses they share with the act.
+
+    **Its noun is the exhausted holdout itself, and that is why it is its
+    own class.**  The member's tree splits by *the repair the caller must
+    make*, and this refusal's repair is unlike any of the eight beside it:
+
+    * not :class:`PromotionError` — the pre-registration's *ask* face.  The
+      ask may be well formed; what is wrong is the whole ledger, and
+      re-sending the ask cannot fix that;
+    * not :class:`PromotionStoreError` — nothing failed to write, because
+      this feature writes nothing at all.  Every count is on its row, and
+      that landing is exactly the fact the refusal stands on;
+    * not :class:`PromotionBlockError` nor :class:`VoidCalibrationError` —
+      the two *merit* refusals are findings about the pool's coverage and
+      the campaign's calibration, read from other members' tables.  This
+      one's noun is the sequestered holdout itself — the system's own
+      depleting resource — and its repair is not to grow coverage or to
+      re-plan a campaign: it is to stop, the terminal state §13 item 4
+      explicitly legitimates;
+    * not :class:`PromotionDecisionError` nor :class:`EpochChargeError` —
+      those report a stamp and a count that *did not land*, and their repair
+      is to the database.  Here both landed on every row; the figure this
+      refusal stands on is exactly the one feature 294 persisted, and
+      conflating the classes would send an operator debugging a write that
+      succeeded when the finding is that §13 item 4's budget has been served
+      on every epoch;
+    * not :class:`EpochSelectionError` — the closest of the eight, and the
+      one the split is for.  That class reports *one epoch's budget is
+      spent*, with a repair of *select a clean epoch*.  This one reports
+      *every epoch is spent*, with **no clean epoch left to select** — the
+      terminal state, not a selection to redirect.  An operator who greps
+      :data:`EPOCH_SELECTION_ERROR_CODE` for this refusal would be looking
+      for a clean epoch that does not exist;
+    * not :class:`PromotionWindowError` — that class reports a question that
+      *cannot be answered* (a node nobody registered, a row still open), with
+      a repair in the registration state.  This one's question is answered,
+      and the answer is *no*: every epoch is spent, or there was never one to
+      spend.  An operator who greps the window's word for this refusal would
+      be looking for a missing write that never happened.
+
+    Two faces, **gathered** rather than split, because the caller is a gate
+    and a gate's one failure mode is silence — the argument every gathered
+    class above states one feature over the last:
+
+    * **the verdict** — every sequestered epoch has served §13 item 4's
+      budget, or the ledger holds no epoch at all.  The repair is to stop,
+      the terminal state §13 item 4 calls legitimate.
+    * **the ask** — a served count that is not a non-negative count.  Nothing
+      was judged; the repair is to re-send the ask.
+
+    In every one of them promotion is blocked and the caller must not
+    proceed, and that is the state the class exists to make loud: a system
+    that quietly had no clean epoch to run on would book a promotion against
+    nothing, which is the reuse §13 item 4's ledger exists to prevent,
+    arrived at by silence rather than by decision.
+
+    Every message opens with :data:`NO_CLEAN_EPOCH_REMAINS_CODE` and names
+    the exhausted ledger — how many epochs were judged, how many were spent,
+    and the terminal state §13 item 4 calls legitimate — so an operator's log
+    line says the system has stopped and in which of the two ways.
     """

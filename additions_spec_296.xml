@@ -1,0 +1,380 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 296 (System blocks promotion when no clean sequestered epoch remains, which returns a terminal state rather than reusing a retired epoch)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 296 in the existing promotion member
+    (packages/promotion, import name promotion; seat src/app/modules/promotion):
+    a *terminal-state verdict*, `blocks_when_no_clean_epoch_remains(epochs,
+    *, budget=SEQUESTERED_EPOCH_BUDGET)` (and a `PromotionBlockedError` error
+    class opening the greppable code `no_clean_epoch_remains`), that judges the
+    whole epoch ledger and refuses promotion when every sequestered epoch has
+    served §13 item 4's budget of three promotion decisions. This is the
+    second sentence of docs/alpha-engine-prd.md §13 item 4, quoted whole
+    because both of its sentences are this feature's brief:
+
+    Sequestered epochs are retired permanently after **3 promotion
+    decisions**. Track in a ledger. When clean epochs run out, the system
+    stops. That is a legitimate terminal state.
+
+    Feature 295 is the first sentence's threshold — it refuses one epoch once
+    that epoch has served its budget; feature 296 is the second sentence's
+    verdict — it declares the terminal state only when *every* epoch has. The
+    two are deliberately **not** one thing: 295 answers *may this epoch still
+    be spent?* about one row, while 296 answers *may the system continue at
+    all?* about the whole table, and the answer to the second is not the
+    conjunction of the firsts — an operator told "epoch X is spent" when the
+    truth is "every epoch is spent, so promotion stops" would go looking for a
+    clean epoch that does not exist. So feature 296 adds its own error class
+    and its own code, in the same member, as a sibling of feature 295's
+    `EpochSelectionError` under the same `PromotionError` base — not a new
+    member, not a new component, not a new table. The footprint is two
+    production files and their test: one new module
+    (`packages/promotion/src/promotion/terminal.py`) plus one edit to the
+    member's existing error vocabulary and its `__init__.py` re-export. The
+    verdict is a *judgment over the whole ledger the caller already reads*: it
+    takes the ledger's rows (duck-read as `epoch_id` and
+    `promotion_decisions_served`, so the composed listing and a test's
+    stand-ins judge identically) and either the system may continue or it may
+    not. It is deliberately **not** a route: feature 291's
+    `POST /promotion/pre-register` is the category's one exposure, and a second
+    endpoint that only refuses would be a second door to the same table with
+    none of the booking's obligations attached — the verdict is reached through
+    the seat (src/app/modules/promotion) the same way features 295 and 297
+    reach the ledger. No central registry, router, app factory, middleware,
+    settings, or migration is edited; no new `@register` component is added
+    (the promotion member's single `"promotion"` component, feature 291's
+    registry store, is untouched); the member joins by workspace-scan
+    convention and does not import another workspace member.
+  </addition_summary>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Promotion &amp; Epoch Governance">
+      <feature index="296" shape="plugin" plugin="promotion" depends_on="295" covers="cq-13">
+        System blocks promotion when no clean sequestered epoch remains, which
+        returns a terminal state rather than reusing a retired epoch.
+      </feature>
+    </category>
+  </features_to_add>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/* members, import names are
+      underscored slugs) / pytest (ruff + mypy conventions). The module loader
+      (src/app/module_loader.py) discovers members from the root pyproject.toml
+      `[tool.uv.workspace] members = ["packages/*"]`, imports each package so
+      its module-level `@register` fires, and composes what each `@register`
+      builder contributes under a component name. `app` (src/app) is a namespace
+      package with no `__init__.py`; the seats in src/app/modules/&lt;member&gt;/
+      are reached by namespace import (e.g. app.modules.promotion). A member
+      never imports another member — it reaches shared shapes through `app.*`,
+      never through a sibling package's import name.</stack>
+    <test_baseline>The repository-level suite under tests/ is collected by
+      pytest with testpaths=tests; each workspace member's own suite lives under
+      packages/&lt;member&gt;/tests/ and is collected under its own conftest
+      (same-basename files collide under one pytest run), and is NOT graded by
+      the bare `uv run pytest` acceptance gate — a member suite must be run
+      explicitly (run both `uv run pytest tests/` and the member's own
+      `packages/promotion/tests/`). Feature 296 is a pure judgment over ledger
+      rows the caller already holds, so it adds no third-party dependency: it is
+      a comparison over each row's served count against §13 item 4's budget of
+      three. Measure the real numbers by running the suite before relying on
+      them. The repo lint is red on main (mypy absent, pre-existing ruff
+      errors), so lint only the changed files and compare to a sibling.</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, docstrings that
+      cite app_spec.xml feature numbers and docs/alpha-engine-prd.md /
+      migrations/versions/0110_epoch_ledger.py by path, errors split by the
+      repair the caller must make, no member imports another, the set is the
+      tables an act's own statements name.
+    </conventions>
+    <dependencies>
+      Feature 291 (pre-registration, the registry row), feature 293 (the
+      decision stamp), feature 294 (the epoch charge, whose `epoch`/`epochs`
+      read this verdict is a function of), feature 295 (the selection gate,
+      whose per-epoch budget this verdict is deliberately not), feature 300
+      (the forward window, which reaches the same ledger). depends_on: 296 on
+      295.
+    </dependencies>
+  </existing_context>
+  <constraints>
+    - Feature 296 is a *whole-table verdict*, not a per-epoch one: it answers
+      *may the system continue?* by judging whether every sequestered epoch has
+      served §13 item 4's budget, and it is the second sentence of §13 item 4,
+      not the first. Feature 295's `rejects_further_selection` answers the first
+      sentence about one epoch (`served >= budget`); feature 296 answers the
+      second about the whole ledger (`every row served >= budget`). The two are
+      separate modules and separate error classes, because they answer different
+      questions with different repairs — 295's repair is *select a clean epoch*,
+      296's is *stop, the terminal state §13 item 4 calls legitimate*.
+    - The verdict takes the ledger's rows as a single argument — the whole-table
+      read feature 294's `epochs()` seam answers with — and judges them: it is
+      the read plus the comparison, and the comparison is pure and spelled on
+      its own as `blocks_when_no_clean_epoch_remains(rows, *,
+      budget=SEQUESTERED_EPOCH_BUDGET)`, the split feature 295's
+      `rejects_further_selection` and `EpochSelections.select` state for the
+      selection gate. The rows are duck-read (`epoch_id` and
+      `promotion_decisions_served`), so the composed listing and a test's
+      stand-ins judge identically.
+    - The verdict is *derived from the ledger*, not a persisted fact: it writes
+      nothing, spells no DDL, authors no statement, opens no connection, and
+      gains no fifth order in `promotion.schema` — the `retired` flag is the
+      exhaustion machinery's persistence of the verdict, and this verdict is the
+      judgment that precedes it, not a second spelling of it. It must not read
+      the `retired` flag to decide (that would be 296's own reader reading
+      itself — a circularity the terminal state is built to avoid), must not
+      read `sealed_at` (the sealing process's fact, which judges nothing here),
+      and must not read a pool, a score, a coverage ledger, a calibration status
+      or any promotion merit (whether the promotion *stands* is the deciding
+      evaluation's verdict, feature 292's mismatch is the only comparison
+      against the recorded hash, and features 298's and 299's refusals read the
+      campaign and the coverage ledger — tables this act never opens). It must
+      not spell feature 292's `criteria_mismatch` verdict.
+    - The budget is §13 item 4's own number, **three**, spelled once in feature
+      295's `SEQUESTERED_EPOCH_BUDGET` and *used* here, not restated — a second
+      spelling of `3` would be a second place the budget lives, free to disagree
+      with the one the selection gate compares against. The comparison is `>=`,
+      the spelling migrations/versions/0110_epoch_ledger.py's docstring gives
+      feature 295 (`promotion_decisions_served >= 3`), so an epoch that has
+      *exceeded* its budget counts as spent on the same comparison rather than
+      falling through an equality pin. The `budget` keyword defaults to that one
+      value and is not re-spelled.
+    - The verdict is **not** the conjunction of feature 295's per-epoch
+      refusals, and a test must catch the difference: when every epoch is spent
+      the verdict refuses with `no_clean_epoch_remains` and names the whole
+      ledger, but when one epoch is spent and another is clean it does **not**
+      refuse — it answers that the system may continue (the clean epoch),
+      leaving the per-epoch refusal to feature 295's gate at the moment that
+      spent epoch is selected. The verdict is a question about the *system's*
+      continuation, not about any one epoch's spend.
+    - An **empty ledger** — no sequestered epoch at all — is refused as a
+      distinct, terminal fact, not read as "zero spent, all clean": there is no
+      epoch to spend, so promotion has nothing to run on, and the verdict
+      refuses with `no_clean_epoch_remains` naming the absence. This keeps
+      feature 295's two answers apart (an absent row is *nobody sealed it*, not
+      a clean epoch) at the whole-table level: a ledger with no rows is not a
+      ledger full of clean epochs, and reading it as "all clean" would let a
+      deployment that never sequestered an epoch book a promotion against
+      nothing. The refusal names the sealing process's act as the repair.
+    - The verdict raises `PromotionBlockedError` (opening the greppable code
+      `no_clean_epoch_remains`) when the system may not continue — every epoch
+      spent, or the ledger empty — and answers that the system may continue
+      (returning the count of clean epochs remaining, so the caller that wants
+      to log or carry it does not read the table a second time, and so feature
+      297's depleting count and this verdict agree on the figure) otherwise.
+      Raising rather than answering a boolean is the stance feature 295's
+      `rejects_further_selection` takes: the verdict is the last line before the
+      system stops, so the stop has to be the function's own act rather than a
+      branch every caller must remember to make.
+    - `PromotionBlockedError` is a **sibling** of feature 295's
+      `EpochSelectionError` under `PromotionError`, not a face of it, not a face
+      of feature 294's `EpochChargeError`, and not a face of feature 293's
+      `PromotionDecisionError`: it is deliberately none of them, because its
+      noun is different — not *a count did not land* (294), not *a stamp did not
+      land* (293), not *one epoch's budget is spent* (295), but *every epoch is
+      spent, so promotion is blocked and the system stops*. An operator who
+      greps `epoch_budget_spent` for this refusal would be looking for one spent
+      epoch when the finding is that all of them are; an operator who greps
+      `epoch_charge_unpersisted` would be debugging a write that succeeded. So
+      feature 296 adds its own code, `no_clean_epoch_remains`, distinct from
+      295's `epoch_budget_spent` and 294's `epoch_charge_unpersisted` on their
+      shared `epoch_`/`epoch_charge_` domain prefix.
+    - Its faces stay **gathered** in one class, the argument every gathered
+      class in `promotion.errors` makes: this feature's caller is a gate, and a
+      gate's one failure mode is silence. A caller whose single `except
+      PromotionBlockedError` guards its promotion path must not be able to walk
+      through a hole because a malformed ask arrived in a different class from
+      the terminal state — in every case promotion is blocked and the caller
+      must not proceed. So the ask (a served count that is not a count) and the
+      verdict (every epoch spent, or the ledger empty) all open with
+      `no_clean_epoch_remains` and all name what they are about. This is the
+      same caller-position override the gathered classes before it state, one
+      member over.
+    - The verdict holds no cache of counts this process had already judged, for
+      the reason every store in this member states for its rows: the ledger is
+      the only record of what the epochs have served, so it is the only thing a
+      verdict is drawn from, judged on every call, in every process — a charge
+      lands in another process a moment after this one asked, and the epoch that
+      was clean is spent.
+    - No component, no seat, no router, no second builder. The member's
+      registered surface stays feature 291's one store, for the reason every
+      sibling states: a builder takes no arguments and is built on every
+      `create_app()` call, while *whether every epoch is spent* is a fact about
+      rows that move and no composition can supply it. The verdict is
+      constructed from the charge store by the caller that has one (or from a
+      URL through the module-level spelling), and the seat
+      (src/app/modules/promotion) is untouched — it must still export exactly
+      `{"COMPONENT_NAME", "promotion_registry_component"}` and must not
+      re-export the terminal vocabulary, the same discipline feature 295's seat
+      test pins for the selection vocabulary.
+    - Stdlib only, and import-cheap: `os`, `collections.abc` and `typing` at
+      module scope plus this member's own modules (`epoch` for the budget and
+      the `epochs` seam, `errors` for the shared base) — not even `sqlite3`,
+      because the connection is the charge store's and this module never opens
+      one — so the factory's scan imports this package for the near-nothing it
+      always did.
+    - All existing tests in the promotion member (packages/promotion/tests) and
+      in tests/ must stay green. The member's own suite must be run explicitly
+      (it is not graded by the bare gate).
+    - Do not edit the order-sensitive shared files: src/app/middleware.py,
+      src/app/settings.py, migrations/versions/**, alembic/versions/**.
+  </constraints>
+  <implementation_steps>
+    <step>
+      Phase 1 — the error class and the code. Add a
+      `NO_CLEAN_EPOCH_REMAINS_CODE = "no_clean_epoch_remains"` constant and a
+      `PromotionBlockedError(PromotionError)` error class to the member's
+      existing error vocabulary (`packages/promotion/src/promotion/errors.py`)
+      as the ninth top-level sibling of feature 295's `EpochSelectionError`,
+      under the same `PromotionError` base. Its noun is the exhausted holdout
+      resource itself — every sequestered epoch has served §13 item 4's budget,
+      so promotion is blocked and the system stops, the terminal state §13 item
+      4 explicitly legitimates — and its repair is unlike any of the eight
+      beside it: not *re-send the ask* (the ask may be well formed), not *fix
+      the deployment* (nothing failed to write — every count is on its row),
+      not *grow coverage or re-plan a campaign* (those are features 298's and
+      299's merit findings about the pool and the campaign), not *restore a
+      record* (293) or *re-persist a count* (294), and not *select a clean
+      epoch* (295) — because there is no clean epoch left to select. The repair
+      is to stop, the terminal state §13 item 4 calls legitimate. It is
+      deliberately **not** a face of feature 295's `EpochSelectionError`: that
+      class reports *one epoch's budget is spent*, with a repair of *select a
+      clean epoch*; this one reports *every epoch is spent*, with no clean epoch
+      left to select — conflating them would send an operator looking for a
+      clean epoch that does not exist. Every message opens with
+      `no_clean_epoch_remains` and names the exhausted ledger. Update the module
+      docstring of `errors.py` to place the new class in the tree (the "tree is
+      open" paragraph already names 296 as a seam that lands on this module),
+      and add the class and code to `__all__`.
+    </step>
+    <step>
+      Phase 2 — the verdict. Add one new module,
+      `packages/promotion/src/promotion/terminal.py`: the whole-table verdict.
+      (1) `blocks_when_no_clean_epoch_remains(rows, *,
+      budget=SEQUESTERED_EPOCH_BUDGET)`: the pure half of the pair — the
+      feature's whole sentence as one comparison, and the seam for the caller
+      that **already holds the figure**. It validates each row's served count
+      (a non-negative integer, `bool` refused first — `True` is `1` and a flag
+      where a count belongs would silently answer one decision nobody recorded;
+      negative refused, because no honest count of rows is negative and no
+      writer in this member could have landed one) and judges whether every
+      sequestered epoch has served `budget` (`served >= budget`, the spelling
+      0110's own docstring gives feature 295): when every epoch has, or the
+      ledger is empty, it raises `PromotionBlockedError` (message opening with
+      `no_clean_epoch_remains`, stating how many epochs were judged, how many
+      were spent, the terminal state §13 item 4 calls legitimate, and the
+      repair — stop, there is no clean epoch to select); otherwise it returns
+      the count of clean epochs remaining (the figure feature 297's depleting
+      count reports and this verdict agrees with, so the caller that wants to
+      log or carry it does not read the table a second time). The rows are
+      duck-read (`epoch_id` and `promotion_decisions_served`), so the composed
+      listing and a test's stand-ins judge identically. It takes no `clock`, no
+      `node_id`, and reads neither `retired` nor `sealed_at`. (2) A
+      `TerminalStates` gate class constructed **over** an `EpochCharges` (or
+      anything with its `epochs` seam — the whole-table read feature 294 adds),
+      duck-typed rather than `isinstance`-guarded for the reason
+      `EpochSelections` states: the factory's scan imports this member under a
+      synthetic module name, so the composed store and the directly imported one
+      are different class objects with the same seam. Its `blocks()` method
+      performs the whole-table read through the seam and delegates to the pure
+      judgment, so there is one comparison in the member and this act cannot
+      disagree with the pure judgment a caller may use directly. It holds no
+      cache, owns no connection, runs no bootstrap, authors no DDL and spells no
+      statement — the one table the read needs is brought up by the charge
+      store's own connect, and `promotion.schema` gains no fifth order because
+      the set a bootstrap runs is the set an act's own statements name and this
+      act's statements name nothing at all. It is `from_env`-constructible,
+      returning `None` when nothing names a relational store. (3) A module-level
+      `block_when_no_clean_epoch_remains(epoch_id_unused_or_rows, *,
+      database_url=None, env=None)` spelling that resolves the charge store from
+      `database_url`, else `DATABASE_URL`, exactly as `select_epoch` resolves its
+      gate, and performs the whole-table read then delegates — the feature's
+      sentence as one call for the caller that wants the verdict without holding
+      stores. A `PromotionBlockedError` from the judgment propagates unwrapped.
+    </step>
+    <step>
+      Phase 3 — the whole-table read on the charge store. Add an `epochs()`
+      method to `EpochCharges` in `packages/promotion/src/promotion/epoch.py` —
+      the whole-table listing this verdict reads through, the mirror of feature
+      293's `decisions()` listing. It reads every `epoch_ledger` row (the four
+      columns, validated, with the doubled-row case unreachable through the
+      owner's DDL and refused anyway — a second row for one epoch would split
+      its served count and let the verdict read a spent epoch as clean), ordered
+      by the table's key so two reads of one store are comparable, and returns
+      them as `ServingEpoch` values. It is the read the verdict is a function
+      of, and it is added to the charge store rather than spelled here, so the
+      count this verdict judges and the counts the charge answered with cannot
+      be two readings of one table — the discipline `promotion.epoch` states for
+      its count and `promotion.selection` states for its gate. Re-export nothing
+      new from `__init__.py` for it (it is reached through the charge store the
+      verdict is constructed over, the same way `decisions()` is reached through
+      the decision store), and add no schema order. Update the module docstring
+      of `epoch.py` to note the listing as a read the exhaustion machinery's
+      whole-table verdict reaches.
+    </step>
+    <step>
+      Phase 4 — the re-export. Re-export `PromotionBlockedError`,
+      `NO_CLEAN_EPOCH_REMAINS_CODE`, `blocks_when_no_clean_epoch_remains`,
+      `TerminalStates` and `block_when_no_clean_epoch_remains` from the member's
+      existing `__init__.py` (`packages/promotion/src/promotion/__init__.py`)
+      alongside feature 295's existing names, and add them to `__all__`. No new
+      component, no new `@register` builder, no new seat export — the member's
+      single `"promotion"` component (feature 291's registry store) is
+      untouched, and `[name for name in dir(member) if name.startswith("build_")]`
+      must still equal `["build_promotion_registry"]`.
+    </step>
+    <step>
+      Phase 5 — the tests. Add one test module,
+      `packages/promotion/tests/test_promotion_terminal.py`, asserting: the pure
+      judgment answers the count of clean epochs remaining when at least one
+      epoch is under budget (and does not refuse), and raises
+      `PromotionBlockedError` opening `no_clean_epoch_remains` when every epoch
+      has served the budget — through the real acts of features 291, 293 and 294
+      rather than a hand-written row (book and decide three promotions against
+      each of two epochs, charge each, then the verdict refuses); an empty
+      ledger is refused as a distinct terminal fact, not read as "all clean";
+      the verdict does **not** refuse when one epoch is spent and another is
+      clean (the per-epoch refusal is 295's, at selection time) — the difference
+      between a whole-table verdict and the conjunction of per-epoch refusals;
+      the verdict reads the whole ledger through feature 294's `epochs()` seam
+      (pinned: no `FROM epoch_ledger` spelled in the module, the gate drives the
+      `epochs` verb, and `promotion.schema` gains no fifth order — a fresh
+      database gets only the ledger table, created by the charge store's own
+      connect); the verdict judges neither the `retired` flag nor `sealed_at`
+      (pinned on `.retired`, `RETIRED_COLUMN`, `.sealed_at`, `SEALED_AT_COLUMN`
+      absent from the module's code) and reads no merit or evidence (`regime_coverage`,
+      `campaign`, `ir_oos`, `score`, `calibration` absent) and never spells
+      `criteria_mismatch`; the verdict writes nothing (a permitted and a refused
+      verdict leave the raw ledger byte-identical, read before and after on the
+      raw row); the budget is the PRD's own number spelled once (3 in
+      `selection`, absent from `epoch` and `terminal`); the verdict holds no
+      cache (a charge landing behind its back moves the answer); the served
+      count is validated (a `bool`, a negative, a fraction, text refused in the
+      verdict's own vocabulary); `PromotionBlockedError` is a `PromotionError`
+      and a sibling of `EpochSelectionError` (not a subclass of it, of
+      `EpochChargeError`, or of `PromotionDecisionError`), with a distinct code
+      (`no_clean_epoch_remains != epoch_budget_spent != epoch_charge_unpersisted`);
+      every refusal the verdict drives opens with `no_clean_epoch_remains` (the
+      gathered-class argument, one face); the module-level spelling resolves the
+      URL it is handed and the ambient `DATABASE_URL`, and refuses a deployment
+      naming no database by name; `from_env` answers `None` without a database;
+      the vocabulary is reachable from the member's surface; the member still
+      exports exactly one builder; the seat is untouched (`set(seat.__all__) ==
+      {"COMPONENT_NAME", "promotion_registry_component"}`, and the seat does not
+      re-export `TerminalStates` or `PromotionBlockedError`); and the spec's
+      sentence is what the module implements (the suite reads
+      `System blocks promotion when no clean sequestered epoch remains, which
+      returns a terminal state rather than reusing a retired epoch` from
+      app_spec.xml).
+    </step>
+    <step>
+      Phase 6 — verify. Run the promotion member's own suite
+      (`uv run pytest packages/promotion/tests`) and the repository-level suite
+      (`uv run pytest tests/`) — both, since the member suite is not graded by
+      the bare gate — and confirm all pass. Lint only the changed files against
+      a sibling (the repo lint is red on main). Confirm feature 291-295's and
+      300's behaviour and tests are untouched, that no new component is
+      registered (`scan_components` still reports exactly one `promotion`
+      component), that the member still exports exactly one `build_` builder,
+      that the seat still exports exactly `{"COMPONENT_NAME",
+      "promotion_registry_component"}` and does not re-export the terminal
+      vocabulary, and that no order-sensitive shared file was edited.
+    </step>
+  </implementation_steps>
+</project_specification>
