@@ -9,7 +9,7 @@ and hashed before the evaluation that decides them"*, and against the
 (``migrations/versions/0108_forward_and_universe_tables.py``) already
 declares.
 
-The member's surface is seven modules.  :mod:`promotion.criteria` is *what* a
+The member's surface is eight modules.  :mod:`promotion.criteria` is *what* a
 promotion is judged against and *how it is hashed*:
 :class:`~promotion.criteria.PromotionCriteria`, the six terms §13.7's
 "criteria" enumerates — the paired ΔIR advantage, the significance level, the
@@ -55,7 +55,20 @@ cannot touch — with :func:`~promotion.decision.record_decision` as the act and
 nothing: the verdict is the deciding evaluation's and the mismatch refusal is
 292's; what it persists is the decision's timestamp beside the standing hash,
 the two facts §13 item 4's epoch count and feature 360's invariant read off
-the row.  :mod:`promotion.errors` is the member's error
+the row.  :mod:`promotion.forward` is feature 300's *window*:
+:class:`~promotion.forward.PromotionWindow`, the derived forward measurement
+window a promotion opened — the feature's sentence, *"timestamps every promoted
+signal at promotion, which creates its forward measurement window"*, answered as
+the half-open interval running from feature 293's stamp for the horizon the
+caller registered — with
+:class:`~promotion.forward.PromotionWindows` as the store that reads it through
+:mod:`promotion.decision`'s own seam rather than a second ``SELECT``,
+:func:`~promotion.forward.promotion_window` and
+:func:`~promotion.forward.promotion_windows` as the acts, and
+:func:`~promotion.forward.window_closes_at` as the arithmetic on its own.  It is
+a **read**: it writes nothing, spells no DDL, and leaves the ``forward`` plugin's
+``forward_record`` (feature 332's writer) entirely alone — what it answers is the
+interval that record is opened against.  :mod:`promotion.errors` is the member's error
 vocabulary: :class:`~promotion.errors.PromotionError` (the *ask* face: a
 malformed body, a criterion that is not a number, a re-registration with
 different criteria), :class:`~promotion.errors.PromotionStoreError` (the
@@ -70,7 +83,15 @@ feature 293's :class:`~promotion.errors.PromotionDecisionError` (the
 *recording* face, opening
 :data:`~promotion.errors.PROMOTION_DECISION_ERROR_CODE` — a decision that
 happened and was not recorded, gathered across its ask, address, absence,
-ordering and write faces because a gate's one failure mode is silence), split
+ordering and write faces because a gate's one failure mode is silence), and
+feature 300's :class:`~promotion.errors.PromotionWindowError` (the *reading*
+face, opening
+:data:`~promotion.errors.PROMOTION_WINDOW_ERROR_CODE` — a window that could not
+be opened, gathered across the same ask, address, absence and row faces for the
+same caller-position reason, and spelled beside the decision's word but not in
+its letter because the two are two *acts* over one row: an operator greps one for
+*a stamp did not land* and the other for *a window could not be opened*, and
+landing on the wrong one sends them debugging a write that never happened), split
 by the repair rather than by the code path except where a gate's caller
 position overrides the split — the argument that module states.  This module re-exports
 all of it and registers the one component; it carries no logic of its own, which
@@ -148,8 +169,9 @@ column in ``epoch_ledger``, 295's threshold reads that column, 296's terminal
 state is what remains when every epoch is retired, 297's depleting count is a
 read of the same table, 298's ``VOID`` refusal is a judgement over the
 campaign row (and is constructed from a URL by the caller that has one, like
-299's block store beside it), and 300's promotion timestamp is a fact placed by
-293's write.
+299's block store beside it), and 300's forward window is a pair of figures
+*derived* from the stamp 293's write placed — a read through that store rather
+than a second thing to persist.
 A builder takes no arguments and is built on every ``create_app()`` call,
 while each of those acts is a function of evidence the factory does not hold —
 a decision, a count, a calibration status — so registering one would be a
@@ -209,12 +231,26 @@ from .errors import (
     PROMOTION_BLOCK_ERROR_CODE,
     PROMOTION_DECISION_ERROR_CODE,
     PROMOTION_REGISTRY_ERROR_CODE,
+    PROMOTION_WINDOW_ERROR_CODE,
     VOID_CALIBRATION_ERROR_CODE,
     PromotionBlockError,
     PromotionDecisionError,
     PromotionError,
     PromotionStoreError,
+    PromotionWindowError,
     VoidCalibrationError,
+)
+from .forward import (
+    CLOSES_AT_COLUMN,
+    FORWARD_WINDOW_TABLE,
+    OPENS_AT_COLUMN,
+    PROMOTED_AT_COLUMN,
+    WINDOW_DAYS_COLUMN,
+    PromotionWindow,
+    PromotionWindows,
+    promotion_window,
+    promotion_windows,
+    window_closes_at,
 )
 from .pre_register import (
     CRITERIA_HASH_COLUMN,
@@ -250,6 +286,7 @@ __all__ = [
     "CALIBRATION_STATUS_VOID",
     "CAMPAIGN_ID_COLUMN",
     "CAMPAIGN_TABLE",
+    "CLOSES_AT_COLUMN",
     "COMPONENT_NAME",
     "COVERAGE_THRESHOLD_COLUMN",
     "CRITERIA_FIELDS",
@@ -258,17 +295,22 @@ __all__ = [
     "DECIDED_AT_COLUMN",
     "DECISION_MIGRATION_ORDER",
     "EPOCH_ID_COLUMN",
+    "FORWARD_WINDOW_TABLE",
     "MIGRATION_ORDER",
     "NODE_ID_COLUMN",
+    "OPENS_AT_COLUMN",
     "PRE_REGISTERED_AT_COLUMN",
     "PRE_REGISTER_ROUTE",
+    "PROMOTED_AT_COLUMN",
     "PROMOTION_BLOCK_ERROR_CODE",
     "PROMOTION_BLOCK_TABLE",
     "PROMOTION_DECISION_ERROR_CODE",
     "PROMOTION_REGISTRY_ERROR_CODE",
     "PROMOTION_REGISTRY_TABLE",
+    "PROMOTION_WINDOW_ERROR_CODE",
     "REGIME_COLUMN",
     "VOID_CALIBRATION_ERROR_CODE",
+    "WINDOW_DAYS_COLUMN",
     "WORLD_COUNT_COLUMN",
     "PreRegisterEndpoint",
     "PreRegistrationRequest",
@@ -284,6 +326,9 @@ __all__ = [
     "PromotionError",
     "PromotionRecord",
     "PromotionStoreError",
+    "PromotionWindow",
+    "PromotionWindowError",
+    "PromotionWindows",
     "VoidCalibrationError",
     "blocked_promotion",
     "blocking_reason",
@@ -295,10 +340,13 @@ __all__ = [
     "criteria_hash",
     "migrations_dir",
     "promotion_decision",
+    "promotion_window",
+    "promotion_windows",
     "record_decision",
     "rejects_void_calibration",
     "rejects_void_promotion",
     "utc_now",
+    "window_closes_at",
 ]
 
 #: The name the promotion member registers its registry under.  Unprefixed,

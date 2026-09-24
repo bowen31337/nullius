@@ -122,6 +122,39 @@ address, the absence (no pre-registration to close), the ordering (a stamp
 that would precede the criteria it was judged against) and the write all open
 with :data:`PROMOTION_DECISION_ERROR_CODE` and all name what they are about.
 
+**Feature 300 adds the tree's sixth class, and it is a reader's refusal.**  It
+carries *"System timestamps every promoted signal at promotion, which creates
+its forward measurement window"* — the act of answering *what window did this
+promotion open, and when does it close?* from the row feature 293 closed.  It is
+deliberately **not** a face of :class:`PromotionDecisionError`, and the argument
+is the split's own:
+
+* 293's class reports a **write that did not land** — *a decision happened and
+  was not recorded* — and its repair is to the database.  Nothing here writes
+  anything: the row is 293's, and this feature only reads it.
+* This class reports a **state that cannot answer the question**: a node nobody
+  pre-registered, or one whose deciding evaluation has not run.  The repair is
+  not to a write and not to a deployment — it is to the *registration state*
+  (pre-register the promotion, or wait for the decision), which is 293's act or
+  291's, in that order.
+* Its caller is a different one.  The class above guards the promotion path's
+  last line; this one guards the window's opener — the forward-model writer
+  (feature 332's ``POST /forward/promote``), a report, or an operator asking
+  when a promotion stops being out of sample.  A caller that gathered the two
+  would read *the decision was not recorded* where the truth is *there is no
+  window to open yet*, and would go looking for a failed write that never
+  happened.
+
+Its faces stay **gathered** in one class, the argument the three gathered classes
+above make: this feature's caller is also a gate, and a gate's one failure mode
+is silence.  A window that quietly did not open leaves the forward record's
+writer with no start instant at all, which is exactly the state ``0108`` names
+when it says why the table exists — *"a row that lost its promotion timestamp
+would be an observation with no vintage."*  So the ask (a malformed node, a
+window length that is not a positive count), the address, the absence (no
+registry row, or a row still open) and the row read back corrupt all open with
+:data:`PROMOTION_WINDOW_ERROR_CODE` and all name what they are about.
+
 **The tree is open, and that is the seam 292-296 land on.**  The category's
 next features extend this module with siblings — feature 292's
 ``criteria_mismatch`` verdict, 295's retirement refusal, 296's terminal state —
@@ -136,11 +169,13 @@ __all__ = [
     "PROMOTION_BLOCK_ERROR_CODE",
     "PROMOTION_DECISION_ERROR_CODE",
     "PROMOTION_REGISTRY_ERROR_CODE",
+    "PROMOTION_WINDOW_ERROR_CODE",
     "VOID_CALIBRATION_ERROR_CODE",
     "PromotionBlockError",
     "PromotionDecisionError",
     "PromotionError",
     "PromotionStoreError",
+    "PromotionWindowError",
     "VoidCalibrationError",
 ]
 
@@ -380,4 +415,81 @@ class PromotionDecisionError(PromotionError):
     Every message opens with :data:`PROMOTION_DECISION_ERROR_CODE` and names
     the node the decision was about, so an operator's log line says which
     promotion went unrecorded and in which of the five ways.
+    """
+
+
+#: The greppable word that opens every :class:`PromotionWindowError` message:
+#: the promotion was asked about and the window it opened could not be
+#: answered.  Spelled after the decision's own word
+#: (``promotion_decision_unrecorded``) and beside it in meaning but not in
+#: letter, because the two are two *acts* over one row: an operator greps the
+#: decision's word for *a stamp did not land* and this one for *a window could
+#: not be opened*, and landing on the wrong one sends them debugging a write
+#: that never happened.
+PROMOTION_WINDOW_ERROR_CODE = "promotion_window_unopened"
+
+
+class PromotionWindowError(PromotionError):
+    """A promoted signal's forward measurement window could not be answered.
+
+    app_spec.xml feature 300: *"System timestamps every promoted signal at
+    promotion, which creates its forward measurement window."*  Raised by
+    :func:`promotion.forward.promotion_window` and
+    :meth:`promotion.forward.PromotionWindows.window` when the window a node's
+    promotion opened cannot be read off its registry row — because the node was
+    never pre-registered, because its deciding evaluation has not run yet, or
+    because the row could not be read as a decision at all.
+
+    **Its noun is a reader's question, not a writer's failure, and that is why
+    it is its own class.**  The member's tree splits by *the repair the caller
+    must make*, and this refusal's repair is unlike any of the five beside it:
+
+    * not :class:`PromotionError` — that class carries the pre-registration's
+      *ask* face, and a caller whose single ``except`` guards the window read
+      would read *the body was malformed* where the truth is *there is no window
+      to open for this node*;
+    * not :class:`PromotionStoreError` — nothing was written and no
+      pre-registration row failed to land.  The store's word sends an operator
+      to feature 291's write, which is a different act entirely;
+    * not :class:`PromotionDecisionError` — that class reports a decision that
+      *happened and was not recorded*, and its repair is to the write.  This
+      feature writes nothing: the row is feature 293's, ``decided_at`` is
+      already on it, and what failed is the *reading* of a window off it.  The
+      two repairs are different acts performed by different operators — restore
+      a record, versus pre-register a promotion or wait for its evaluation;
+    * not :class:`PromotionBlockError` nor :class:`VoidCalibrationError` — those
+      are the member's two *merit* refusals, findings about the pool and the
+      campaign.  This feature judges nothing: whether a promotion *stands* is
+      the deciding evaluation's verdict and the mismatch check is feature 292's.
+
+    Four faces, **gathered** rather than split, because the caller is a gate and
+    a gate's one failure mode is silence — the argument
+    :class:`PromotionDecisionError` states and :class:`PromotionBlockError`
+    states before it:
+
+    * **the ask** — a malformed node identity, or a window length that is not a
+      positive count of days.  Nothing was read; the repair is to re-send the
+      ask.
+    * **the address** — a ``DATABASE_URL`` this member cannot speak, or a
+      database that cannot be brought to the revision the row needs.  The
+      repair is to the deployment.
+    * **the absence** — no ``promotion_registry`` row for the node, so there is
+      no promotion whose window this is; or a row that is still **open**, so the
+      deciding evaluation has not run and there is no promotion timestamp yet.
+      The repair is to pre-register first (feature 291) or to record the
+      decision (feature 293) — §13 item 7's ordering, not an incidental
+      precondition.
+    * **the row** — a registry row that cannot be read back as a decision.  The
+      repair is to the database.
+
+    In every one of them the window is unopened, and that is the state the class
+    exists to make loud: the row this feature reads is the one feature 332's
+    ``POST /forward/promote`` starts a signal's forward record from, and a
+    forward record whose start instant was silently defaulted is precisely the
+    *"observation with no vintage"* ``0108``'s own docstring says forward
+    testing exists to prevent.
+
+    Every message opens with :data:`PROMOTION_WINDOW_ERROR_CODE` and names the
+    node the window was asked about, so an operator's log line says which
+    promotion's window could not be opened and in which of the four ways.
     """
