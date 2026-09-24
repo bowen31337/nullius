@@ -215,6 +215,80 @@ def test_the_cap_never_respells_the_quarter_as_a_parameter() -> None:
     assert not parameters
 
 
+# -- The volatility target's composition story (feature 303) ---------------------
+#
+# Feature 303 arrives as a free function beside the combiner too, in the same
+# shape the cap did: its whole input is a value and two figures the caller
+# already holds (the combined book, its volatility, the configured target), so
+# there is nothing for the factory to compose.  The one thing that must never
+# appear here is a *configured* risk level: the factory's registration protocol
+# takes no arguments, so a target that crossed composition would be a risk
+# level no deployment could set — and a module-chosen fallback would be one no
+# document states.  The target reaches the call, not the composition.
+
+
+def test_the_volatility_target_registers_no_second_component() -> None:
+    # The single-registration assertion above is the strong form; this is the
+    # same fact read through a fresh scan, so a component added by any route
+    # (not just this module's own ``__init__``) is caught — a second name here
+    # would silently rebuild composition for every feature in the workspace.
+    src_root = Path(member.__file__).resolve().parent.parent
+    registry = Registration()
+    scan_components(src_root, registry=registry)
+    names = [component.name for component in registry.components()]
+    assert names.count("book") == 1
+    assert len(names) == 1
+
+
+def test_the_volatility_target_is_reachable_without_the_factory() -> None:
+    # A free function, reached the way the cap's and guard's verbs are:
+    # imported from the member, not asked of the composed application.  There
+    # is no ``volatility`` component to ``app.get`` — and there could not be
+    # one that carried the configured target, because the factory's builders
+    # take no arguments.
+    assert callable(member.apply_volatility_target)
+    assert callable(member.TargetWeights)
+    assert member.FLAT_BOOK_CODE == "flat_book"
+    app = create_app()
+    assert "volatility" not in app
+    assert "book-volatility" not in app
+
+
+def test_the_volatility_target_costs_the_scan_nothing() -> None:
+    # The layering promise: the factory imports this package to fire its
+    # ``@register``, so anything at module scope is paid on every
+    # ``create_app()``.  The act is answered from the same import that was
+    # already being paid for — no new top-level import beyond the stdlib's
+    # ``collections``, ``dataclasses``, ``types`` and ``typing``, no
+    # environment read, no third party — and it reads a value the caller holds
+    # rather than measuring one.  The configured volatility is handed to the
+    # *call*, so a composed application cannot carry one and this test cannot
+    # configure one: the composition is exercised, not the deployment.
+    target = member.apply_volatility_target(
+        combine(_signals()), volatility=0.5, target_volatility=0.2
+    )
+    assert target.scale == 0.4
+    assert member.TargetWeights is not None
+
+
+def test_the_volatility_target_never_crosses_composition() -> None:
+    # The builder takes no arguments — the property that makes a *configured*
+    # risk level unreachable from composition.  A builder that had grown a
+    # ``target_volatility`` keyword would be a deployment knob on the one
+    # component whose whole configuration is supposed to be the arithmetic, and
+    # the factory would apply one risk level to every book it composed.  Pinned
+    # here rather than in the act's own suite because it is the composition
+    # story's claim: the target belongs to the call.
+    import inspect
+
+    parameters = inspect.signature(member.build_book_combiner).parameters
+    assert not parameters
+    # And the act's own signature is where the figure lives — required, with
+    # no default, so no composition and no module has one to fall back on.
+    parameters = inspect.signature(member.apply_volatility_target).parameters
+    assert parameters["target_volatility"].default is inspect.Parameter.empty
+
+
 # -- The authorship guard's composition story (feature 306) -----------------------
 #
 # Feature 306 arrives as free functions beside the combiner too, in the same
@@ -344,21 +418,23 @@ def test_the_changelog_companion_takes_no_content_parameter() -> None:
         assert set(inspect.signature(call).parameters) == {"change", "entry"}
 
 
-def test_the_members_public_surface_carries_the_four_features() -> None:
-    # The exported surface is the four features' own names and nothing
-    # else: 301's combiner, its value types and its one base error; 306's
-    # record, its five constants, its predicate, its verdict and its two
-    # sibling classes; 307's record, its one code constant, its predicate,
-    # its verdict and its two sibling classes; 308's three verbs, its two
-    # constants and its two sibling classes.  Pinned because the seat
-    # deliberately re-exports none of it — a caller who wants these reaches
-    # the member's namespace, so the namespace *is* the contract and a name
-    # that drifted off it would leave a caller with no way in.
+def test_the_members_public_surface_carries_the_five_features() -> None:
+    # The exported surface is the five features' own names and nothing
+    # else: 301's combiner, its value types and its one base error; 303's
+    # act, its record, its one code constant and its two sibling classes;
+    # 306's record, its five constants, its predicate, its verdict and its
+    # two sibling classes; 307's record, its one code constant, its
+    # predicate, its verdict and its two sibling classes; 308's three verbs,
+    # its two constants and its two sibling classes.  Pinned because the
+    # seat deliberately re-exports none of it — a caller who wants these
+    # reaches the member's namespace, so the namespace *is* the contract and
+    # a name that drifted off it would leave a caller with no way in.
     assert set(member.__all__) == {
         "AGENT_AUTHOR_KINDS",
         "AGENT_MODIFICATION_CODE",
         "AUTHOR_KINDS",
         "COMPONENT_NAME",
+        "FLAT_BOOK_CODE",
         "HUMAN_AUTHOR_KIND",
         "KELLY_FRACTION",
         "MISSING_CHANGELOG_ENTRY_CODE",
@@ -375,6 +451,10 @@ def test_the_members_public_surface_carries_the_four_features() -> None:
         "LeverageTargetError",
         "MissingChangelogEntryError",
         "PromotedSignal",
+        "TargetWeights",
+        "VolatilityTargetError",
+        "VolatilityTargetRequestError",
+        "apply_volatility_target",
         "build_book_combiner",
         "combine",
         "is_agent_authored",

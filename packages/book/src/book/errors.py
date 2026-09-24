@@ -1,4 +1,4 @@
-"""The book combiner's refusal vocabulary — features 301, 306 and 308.
+"""The book member's refusal vocabulary — features 301, 303, 306, 307 and 308.
 
 app_spec.xml, "Portfolio Book Construction", feature 301: *System combines
 promoted signals by information-ratio weighting, which returns a single
@@ -72,6 +72,32 @@ deployment log for on feature 308's path:
   *sizing* a position, and sizing is the order layer's act rather than a
   bound's).
 
+app_spec.xml, feature 303 — this category's second act — is a further face:
+*System applies volatility targeting to the combined book, which returns
+weights scaled to a configured annualized volatility.*  Its refusals join the
+others here for the reason the cap's did: the base stays one, and the
+sentence's two failures are different facts about a different subject — the
+*combined book* that cannot be normalized into a book at all (303's judgment)
+and the *figures* the act is asked for (303's ask), where 301's subject was a
+signal and 308's a leverage target.  The act adds the third code an operator
+greps a deployment log for:
+
+* ``flat_book`` — the combined book's composite target scores are all zero, so
+  its gross score is exactly nothing and the normalization the act's first
+  step performs is a division by nothing: there is no book of weights to
+  scale, and answering an all-zero weight set would counterfeit a book from no
+  view (refused rather than zero-filled, the stance feature 301 takes on a
+  signal that misses a symbol, read on this act's own divisor).
+
+The act's two faces are the same pair of shapes the cap's and the guard's are —
+the ask's own facts (:class:`VolatilityTargetRequestError`, no code, because a
+malformed ask names its subject in its first words) and the one judgment the
+sentence mints (:class:`VolatilityTargetError`, carrying the code above).  Both
+are subclasses of the base with the same consequence, and the same reason to be
+siblings rather than aliases: a flat composite is refusable though both figures
+were perfectly well stated, and a mis-stated figure is refusable though the
+book expresses a perfectly good view, so the two facts are genuinely different.
+
 The authorship guard adds the second, and it is the one an operator greps
 a deployment log for on feature 306's path — the refusal that says the
 search reached for the construction:
@@ -118,42 +144,51 @@ __all__ = [
     "LeverageRequestError",
     "LeverageTargetError",
     "MissingChangelogEntryError",
+    "VolatilityTargetError",
+    "VolatilityTargetRequestError",
 ]
 
 
 class BookConstructionError(Exception):
     """The book member's base refusal — a signal could not be weighted into a
-    book, or a leverage target the resulting book may not carry.
+    book, a combined book could not be sized, or a leverage target the
+    resulting book may not carry.
 
     Raised directly by :func:`book.combine` (and by the construction of a
     :class:`book.PromotedSignal` or :class:`book.CompositeBook` that the
     combiner would not itself produce) when the promoted signals cannot be
-    weighted into a composite.  Every message opens with a greppable
-    one-word code — ``empty_book``, ``unnamed_signal``, ``duplicate_signal``,
-    ``non_positive_ir``, ``non_finite_ir``, ``signal_without_scores``,
-    ``non_finite_score`` or ``uncovered_symbol`` — and names the signal and,
-    where relevant, the symbol.
+    weighted into a composite, and by
+    :meth:`book.TargetWeights.weight` when a symbol the book does not cover is
+    asked for under the same ``uncovered_symbol`` word.  Every message opens
+    with a greppable one-word code — ``empty_book``, ``unnamed_signal``,
+    ``duplicate_signal``, ``non_positive_ir``, ``non_finite_ir``,
+    ``signal_without_scores``, ``non_finite_score`` or ``uncovered_symbol`` —
+    and names the signal and, where relevant, the symbol.
 
     It is also the **base of the member's whole refusal surface**, which is
     the one-base-per-member shape the dreaming and regime members state for
     their own vocabularies: :class:`LeverageRequestError` (feature 308's ask)
     and :class:`LeverageTargetError` (feature 308's verdict) descend from it,
+    :class:`VolatilityTargetRequestError` (feature 303's ask) and
+    :class:`VolatilityTargetError` (feature 303's verdict) join them,
     :class:`BookChangeRequestError` (feature 306's ask) and
     :class:`AgentAuthoredModificationError` (feature 306's verdict) join them,
     and :class:`ChangelogEntryRequestError` (feature 307's ask) and
     :class:`MissingChangelogEntryError` (feature 307's verdict) join them too,
     so a caller that must refuse rather than rank catches this one class and
-    catches the cap's, the guard's and the companion's failures with it.  A
-    caller that has to *react* differently to *your signals cannot be
-    combined*, *this book may not carry that leverage*, *an agent authored this
-    change to the construction* and *this change had no changelog entry*
-    catches the specific siblings instead — see each for why the distinction is
-    worth a class.  The classes are siblings rather than aliases because the
-    facts are genuinely different: a leverage target is refusable for a book
-    whose signals weighted up perfectly, an agent-authored change is refusable
-    though perfectly well stated, and a change whose entry is absent is
-    refusable though the entry field was perfectly well formed — it was simply
-    not handed.
+    catches the act's, the cap's, the guard's and the companion's failures with
+    it.  A caller that has to *react* differently to *your signals cannot be
+    combined*, *this book expresses no view to size*, *this book may not carry
+    that leverage*, *an agent authored this change to the construction* and
+    *this change had no changelog entry* catches the specific siblings instead
+    — see each for why the distinction is worth a class.  The classes are
+    siblings rather than aliases because the facts are genuinely different: a
+    leverage target is refusable for a book whose signals weighted up
+    perfectly, a flat composite is refusable though both volatility figures
+    were perfectly well stated, an agent-authored change is refusable though
+    perfectly well stated, and a change whose entry is absent is refusable
+    though the entry field was perfectly well formed — it was simply not
+    handed.
     """
 
 
@@ -239,6 +274,110 @@ class LeverageTargetError(BookConstructionError):
     **The edge is the sentence's own word.**  A target *at* the cap is
     admitted — Appendix B's *"use ≤ ¼ Kelly"* is inclusive on the admitted
     side — so this class is raised strictly above it.
+    """
+
+
+class VolatilityTargetRequestError(BookConstructionError):
+    """The volatility target could not be asked for as the caller asked for it.
+
+    app_spec.xml, "Portfolio Book Construction", feature 303: *System applies
+    volatility targeting to the combined book, which returns weights scaled to
+    a configured annualized volatility.*  This class is the *ask* face of that
+    sentence and never the judgment: it refuses a book that carries no
+    ``scores`` mapping of symbol to composite target score, a book covering no
+    symbols, a symbol or score that cannot be part of such a book, a book
+    volatility that is not a finite **strictly positive** real, and a
+    configured target that is not a finite real of **zero or more** —
+    **before** any book is normalized or scaled, the ordering every verdict
+    and act in this workspace states.
+
+    It is raised by :func:`book.apply_volatility_target` and by the
+    construction of a :class:`book.TargetWeights` that the act would not
+    itself produce, because that record's own self-check states the same facts
+    about the same fields.
+
+    **What it deliberately does not refuse: a well-formed but awkward
+    figure.**  A *zero* target — a deployment asking for no risk — is a
+    perfectly well-formed configuration whose honest answer is a flat book
+    (``scale == 0.0``, every weight ``0.0``), the reading feature 308 gives a
+    zero Sharpe; a target *above* the book's volatility is a book levered up
+    to its configured risk, which is what targeting is for; and a book whose
+    composite scores are all zero is a *judgment* about the book rather than a
+    malformed ask, so it is :class:`VolatilityTargetError`'s alone.  Refusing
+    any of these here would report a deployment's own decision, or its
+    book's own view, as a validation failure.
+
+    **No code word, and deliberately.**  Feature 303's sentence mandates no
+    token (it names its subject in prose), and every message here opens with
+    its subject — the field, its type and what it is for — the shape
+    :class:`LeverageRequestError` and :class:`BookChangeRequestError` state for
+    their own pairs, so a reader is told *what to fix* rather than handed a
+    token to grep for.  The one code the sentence's path carries is
+    :class:`VolatilityTargetError`'s, on the judgment alone.
+
+    **Why it is its own class rather than the base alone.**  The repair
+    differs.  A bare :class:`BookConstructionError` means *your signals cannot
+    be combined — fix the signals*; this one means *your ask named no book or
+    no figure the act can scale — fix the ask*, and the two are not the same
+    instruction.  A caller that must react differently to them can tell them
+    apart by class; a caller that refuses book work wholesale still catches
+    one class, the base this descends from.
+
+    **Why the ask's two figures are validated here rather than shared with
+    feature 308's.**  Feature 308 states *the same kind of fact* about the
+    book's volatility for its Kelly fraction, and the temptation is one
+    validator serving both.  It is refused deliberately: a shared helper
+    raising the other feature's error type would defeat a caller's ``except``
+    — the error-vocabulary trap this workspace states at its member seams —
+    so each feature spells its own validator over its own class, and the two
+    cannot start reporting each other's subjects.
+    """
+
+
+class VolatilityTargetError(BookConstructionError):
+    """The combined book expresses no view to scale — feature 303's judgment.
+
+    app_spec.xml, "Portfolio Book Construction", feature 303: *System applies
+    volatility targeting to the combined book, which returns weights scaled to
+    a configured annualized volatility.*  This class is the judgment that
+    sentence mints — the one refusal on the act's path that is a *verdict*
+    rather than a validation — and it is raised by
+    :func:`book.apply_volatility_target` when a wholly well-stated book's
+    composite target scores are **all zero**.  Its message opens with the
+    greppable code :data:`book.FLAT_BOOK_CODE` (``flat_book``).
+
+    **Why the boundary is there, stated where the refusal is caught.**  The
+    act's first step turns the combined book into a book by normalizing it to
+    one unit of gross exposure — ``w_raw = score_s / Σ_t |score_t|`` — which
+    is what makes the composite's free *sign and scale* (PRD §3) into an
+    exposure the order layer can hold.  A composite scored at zero everywhere
+    has a gross score of exactly ``0.0``, so that normalization is a division
+    by exactly nothing: the weights are undefined, not flat.  Answering an
+    all-zero weight set instead would counterfeit a book from no view — the
+    same perpetration feature 301 refuses when it declines to zero-fill a
+    signal that carries no score for a symbol — and it would hand the order
+    layer a *decision to hold nothing* that no signal made.
+
+    **Its repair is its own, which is why it is its own class.**  *Hand a
+    composite that expresses a view* — this act fabricates none and holds no
+    weight to fall back on.  The two classes a caller could otherwise catch
+    this as both name repairs that are wrong here:
+    :class:`VolatilityTargetRequestError` means *your ask named no book or no
+    figure* (the book is perfectly well stated and the figures perfectly well
+    formed — the composite simply has no direction), and the bare
+    :class:`BookConstructionError` means *your signals cannot be combined*
+    (they combined; the composite is real and it is flat).  Folding these
+    together would make a caller that must react differently to *this book
+    expresses no view* and *your ask was malformed* catch one class and
+    re-inspect something it cannot tell apart, which is the failure this
+    vocabulary is split to prevent.
+
+    **A configured target of zero is not this refusal.**  That is a deployment
+    asking for no risk, and it is answered — a scale of ``0.0`` and a book of
+    zero weights — because the flat book there is the *configuration's* own
+    consequence rather than a view this act invented.  The difference is the
+    whole reason the two zeros are separate codes' worth of meaning: one is a
+    divisor that is nothing, the other a level the caller chose.
     """
 
 

@@ -1,5 +1,6 @@
-"""The book combiner, its authorship guard, its changelog companion and its
-leverage cap — four features: 301, 306, 307 and 308.
+"""The book combiner, its volatility target, its authorship guard, its
+changelog companion and its leverage cap — five features: 301, 303, 306, 307
+and 308.
 
 app_spec.xml, "Portfolio Book Construction", feature 301: *System combines
 promoted signals by information-ratio weighting, which returns a single
@@ -9,6 +10,23 @@ out-of-sample information ratio and one target score per symbol — weights
 signal *i* by ``w_i = IR_i`` and returns a single :class:`CompositeBook`
 holding one composite target score per symbol, the weighted average of that
 symbol's scores across the signals.
+
+app_spec.xml, feature 303 is the category's second act and the one this
+package carries beside the combiner: *System applies volatility targeting to
+the combined book, which returns weights scaled to a configured annualized
+volatility.*  :func:`apply_volatility_target` is its verb: it takes the
+composite 301 answers and the book's own annualized volatility, normalizes the
+composite into a book at one unit of gross exposure (a target *score* carries
+free sign and scale — PRD §3 — and a weight does not), scales it by the one
+factor ``target_volatility / volatility``, and answers a frozen
+:class:`TargetWeights` whose construction re-checks that every weight is its
+own gross weight times that factor.  It arrives as a free function beside the
+combiner, in the same shape the guard and the cap do, because its whole input
+is a value and two figures the caller already holds.  Its one knob — the
+configured annualized volatility — is a **required** keyword with no default:
+§C8's chain names the step and docs/alpha-engine-prd.md states no figure for
+it, so a module-chosen fallback would be a risk level no document states,
+silently applied to every deployment that never configured one.
 
 app_spec.xml, feature 306 is the category's boundary sentence:
 *System keeps book construction human-authored and version-controlled,
@@ -96,22 +114,34 @@ the component the way the scoring member's objective is.
 The information-ratio weighting is a convention, not a knob: a weight is a
 portfolio decision the combiner applies rather than accepts, so two
 deployments report the same composite for the same signals.  Downstream
-features — covariance shrinkage, volatility targeting, position limits —
-take this composite and rescale it; they do not re-open this weight.  Feature
-308's cap is the same stance on the sizing step's own figure: the quarter is
-the document's, not a deployment's, because it is the discount against a
-Sharpe the document itself calls a noisy estimate (their one knob, the
-configured volatility target, is feature 303's).
+features — covariance shrinkage, position limits — take this composite and
+rescale it; they do not re-open this weight.  Feature 303 is the rescaling
+that does happen here, and it rescales the *composite's exposure* without
+touching the weighting: the normalized weights it derives are IR_i / Σ_j IR_j
+read through one factor, so the ranking 301 fixed is exactly the ranking the
+target weights carry.  Feature 308's cap is the same stance on the sizing
+step's own figure: the quarter is the document's, not a deployment's, because
+it is the discount against a Sharpe the document itself calls a noisy
+estimate (their one knob, the configured volatility target, is feature 303's
+— and this package is where that figure arrives, as a required keyword of
+:func:`apply_volatility_target`).
 
-Absence is not zero, twice over: a signal with a non-positive or
+Absence is not zero, three times over: a signal with a non-positive or
 non-finite information ratio is refused (its standing to weight the book is
-undefined, not zero), and a signal that carries no score for a symbol the
-book covers is refused (it expresses no view — zero-filling would
-counterfeit one).  Neither is defaulted; a refused combine forms no value.
-The cap draws the same line where it applies and not where it does not: a
-non-positive Sharpe is answered (a losing book's fraction is a measured fact
-whose consequence is *no admissible leverage*, not an error), while a
+undefined, not zero); a signal that carries no score for a symbol the book
+covers is refused (it expresses no view — zero-filling would counterfeit
+one); and a composite whose scores are *all* zero is refused by feature 303's
+act (its gross score is exactly nothing, so the normalization to a book is a
+division by nothing — answering an all-zero weight set would counterfeit a
+book from no view).  None is defaulted; a refused combine or scaling forms no
+value.  The cap draws the same line where it applies and not where it does
+not: a non-positive Sharpe is answered (a losing book's fraction is a measured
+fact whose consequence is *no admissible leverage*, not an error), while a
 volatility of zero is refused (a book with no scale has no fraction at all).
+Feature 303 draws it in the same place for the same reason: a *zero
+configured target* is answered — *take no risk* is a level, whose honest
+consequence is a flat book — while a book volatility of zero is refused, the
+divisor being exactly nothing there.
 
 This module is stdlib-only — dataclasses, mappings and square-free
 arithmetic; no polars, no pyarrow, no lake, no environment, no HTTP, and no
@@ -122,7 +152,13 @@ member's own error vocabulary and nothing else, so the cap costs the
 factory's scan no more than the combiner does.  Neither does the guard:
 :mod:`book._authorship` imports ``dataclasses``, ``typing`` and the same
 error vocabulary, and judges records it is handed rather than state it
-would have to go looking for.
+would have to go looking for.  Nor the volatility target:
+:mod:`book._volatility` imports ``math``, ``dataclasses``, ``collections``,
+``types``, ``typing`` and that same vocabulary, and reads a value the caller
+holds rather than measuring one — a configured volatility target is handed to
+the *call* and never to the composition, so the factory's registration
+protocol, which takes no arguments, cannot express one and no component
+reasons about it.
 """
 
 from __future__ import annotations
@@ -155,6 +191,11 @@ from ._leverage import (
     leverage_cap,
     rejects_overleveraged_target,
 )
+from ._volatility import (
+    FLAT_BOOK_CODE,
+    TargetWeights,
+    apply_volatility_target,
+)
 from .errors import (
     AgentAuthoredModificationError,
     BookChangeRequestError,
@@ -163,6 +204,8 @@ from .errors import (
     LeverageRequestError,
     LeverageTargetError,
     MissingChangelogEntryError,
+    VolatilityTargetError,
+    VolatilityTargetRequestError,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a dependency
@@ -173,6 +216,7 @@ __all__ = [
     "AGENT_MODIFICATION_CODE",
     "AUTHOR_KINDS",
     "COMPONENT_NAME",
+    "FLAT_BOOK_CODE",
     "HUMAN_AUTHOR_KIND",
     "KELLY_FRACTION",
     "MISSING_CHANGELOG_ENTRY_CODE",
@@ -189,6 +233,10 @@ __all__ = [
     "LeverageTargetError",
     "MissingChangelogEntryError",
     "PromotedSignal",
+    "TargetWeights",
+    "VolatilityTargetError",
+    "VolatilityTargetRequestError",
+    "apply_volatility_target",
     "build_book_combiner",
     "combine",
     "is_agent_authored",

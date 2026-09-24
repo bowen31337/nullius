@@ -1,0 +1,430 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 303 (System applies volatility targeting to the combined book, which returns weights scaled to a configured annualized volatility)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 303 in the existing `book` plugin
+    (packages/book, import name book; seat src/app/modules/book): the
+    volatility target. The sentence's verb is
+    `apply_volatility_target(book, *, volatility, target_volatility)`. It
+    takes the combined book feature 301 answers — the composite target score
+    per symbol — and the book's own annualized volatility, and returns the
+    book's target weights. The act is two steps in one order, and the order
+    is load-bearing. **First normalize**: a target *score* carries free sign
+    and scale — docs/alpha-engine-prd.md §3 states it of the searched object
+    itself (*"Returns: index=symbol, value=cross-sectional score. Sign and
+    scale are free; the evaluator ranks and normalizes."*) and feature 301's
+    composite is the weighted average of such scores — so its absolute
+    magnitude is an artifact of the signals' own units rather than an
+    exposure, and the order layer cannot hold `0.1875` of a symbol. The
+    composite is therefore normalized into a book at **one unit of gross
+    exposure**, `w_raw = score_s / Σ_t |score_t|`. Gross rather than net
+    because a cross-sectional composite is long *and* short, so a net divisor
+    (`score_s / Σ_t score_t`) would be whatever the signals happened to net
+    out to — zero for the market-neutral book the cross-section usually
+    produces. Gross normalization preserves every sign, keeps the book's own
+    direction (the sign *is* the view, and re-centering a book here would be
+    re-ranking what feature 301 ranked), and is what makes the caller's
+    volatility figure interpretable at all: the figure describes *that* book.
+    **Then scale**, by the act's one factor, `scale = target_volatility /
+    volatility`, so `w_s = w_raw · scale`. Gross exposure enters a book's
+    volatility linearly, so the scaled book's annualized volatility is
+    `scale · volatility`, which is `target_volatility` by construction —
+    which is the sentence's own claim, and the identity the record enforces
+    on itself.
+
+    **The configured annualized volatility is a parameter, and it is the one
+    knob in this category.** §C8's chain — *"Signal book → IR-weighted
+    combination with shrinkage → volatility targeting → position and
+    concentration limits → orders. Version-controlled, human-authored,
+    explicitly outside the search space."* — names the step, and the document
+    states no figure for it: it states a *discount* on a Kelly fraction
+    (Appendix B's *"use ≤ ¼ Kelly"*, feature 308's constant) and the *form* of
+    a bar, but nowhere a risk level. So the target arrives as a **required**
+    keyword, `target_volatility`, and deliberately **with no default**: a
+    module-chosen fallback would be a risk level no document states, silently
+    applied to every deployment that never configured one — and the factory's
+    registration protocol takes no arguments, so no component could carry one
+    either. Feature 308 states the same boundary from the other side (*"the
+    knob in this neighbourhood is feature 303's configured volatility target,
+    and it is a different feature's"*), and its quarter is the contrast: the
+    document's figure arrives as nothing, the deployment's as a parameter.
+
+    **The book's volatility arrives as a figure the caller already holds.**
+    This act is a scaling, not a measurement. It never re-derives the
+    volatility of the book it is handed — a workspace member never re-derives
+    a measurement it was handed, and the measurement of a book's volatility is
+    the evaluator's business — the stance feature 308 takes on the same
+    member's other figure and `dreaming.bar.selection_bar` takes on its own.
+    It also applies **no annualization factor**: the sentence's target is
+    *annualized* and the book's volatility arrives already annualized on
+    whatever basis it was measured (crypto's year is 365 calendar days, the
+    basis feature 55's realized volatility annualizes on at `sqrt(365)`), so a
+    factor applied here would be this module re-deriving a measurement's units
+    and would double-count whenever both figures arrived annualized — which
+    they do. Both figures must be stated on the same annualized basis; the
+    module neither knows nor needs to know which.
+
+    **Absence is not zero, and the flat composite is a division by exactly
+    nothing.** A book whose composite scores are all zero — every symbol
+    scored at no view — has a gross score of exactly zero, so the
+    normalization is a division by nothing: the weights are undefined, not
+    flat. It is refused with `VolatilityTargetError` opening with the
+    greppable code `flat_book`, naming the symbols and the divisor, and
+    stating the one repair that exists (*hand a composite that expresses a
+    view*), because this act fabricates no view to fill the gap and holds no
+    weight to fall back on. Answering an all-zero weight set instead would
+    counterfeit a book from no view — the perpetration feature 301 refuses
+    when it declines to zero-fill a signal that misses a symbol — and would
+    hand the order layer a *decision to hold nothing* that no signal made. A
+    `flat_book` is the **only** judgment the sentence mints; it is the one
+    refusal an operator greps a deployment log for on this path.
+
+    **A configured target of zero is a different fact and is answered.** *Take
+    no risk* is a well-formed configuration whose honest consequence is a flat
+    book — `scale = 0.0` and every weight `0.0` — the reading feature 308
+    gives a zero Sharpe (*"a zero Sharpe answers a zero cap and admits only
+    the flat book"*), applied to the deployment's figure instead of the
+    book's. There the flat book is the *configuration's* consequence; on a
+    flat composite the *divisor* is nothing. Refusing the zero target would
+    report a deployment's risk appetite as a malformed ask, and the two zeros
+    are what the two classes exist to keep apart.
+
+    **This act sets exposure; it does not bound it, and it clamps nothing.**
+    The scale may exceed one — a book quieter than its target is levered *up*
+    to it, which is the whole point of targeting — so no leverage is refused
+    here and no scale is capped. Feature 308's cap is the bound on the book's
+    exposure and feature 304's limits are the bound on a position's size, and
+    both are applied by their own callers to the weights this act answers. The
+    two features meet through `TargetWeights.gross_exposure` — the book's
+    exposure, derived from the weights rather than stored — which is exactly
+    the figure a caller hands feature 308's verdict: neither feature imports
+    the other, and a module that refused leverage here would be a bound
+    wearing a scaling's name.
+
+    **The record is a check rather than a claim.** `TargetWeights` carries the
+    scaled weights, the gross-normalized book they came from, the scale and
+    the two volatility figures, and construction enforces the act's own terms:
+    every weight equals its gross weight times the scale; the scale equals
+    `target_volatility / volatility`; the gross book is at one unit of gross
+    exposure (`Σ_s |w_s| = 1`); and the two mappings cover the same symbols.
+    That is the self-consistency feature 301's `CompositeBook` enforces on its
+    composite and feature 83's `MarginalIR` on its ratios. The identities
+    tying the record's *own* fields together are checked with `==` — the verb
+    computes them with these same operations — while the gross-one law alone
+    carries a stated tolerance, because `Σ_s |score_s / Σ_t |score_t||` is not
+    exactly one in binary arithmetic for an arbitrary composite and an exact
+    test would refuse honest books.
+
+    The vocabulary is this feature's own, as siblings under feature 301's one
+    base: `VolatilityTargetRequestError` for the ask's own facts (a book that
+    carries no `scores` mapping, a book covering no symbols, a symbol or score
+    that cannot be part of a book, a book volatility that is not a finite
+    strictly positive real, a target that is not a finite real of zero or
+    more), refused before anything is normalized or scaled and carrying no
+    code; and `VolatilityTargetError` for the one judgment the sentence mints.
+    Both descend from `BookConstructionError` — the one-base-per-member shape
+    the dreaming and regime members state for their own vocabularies — so a
+    caller that refuses book work wholesale still writes one `except`, while a
+    caller that has to react differently to *this book expresses no view* and
+    *your ask was malformed* catches the siblings. Deliberately **not** shared
+    with feature 308's validator for the same kind of figure: a shared helper
+    raising another feature's error class would defeat the caller's `except`
+    (the error-vocabulary trap this workspace states at its member seams), so
+    each feature spells its own. No central registry, router, app factory,
+    middleware, settings or migration is edited; the member joins by
+    workspace-scan convention, adds no `@register`, no table and no endpoint,
+    and imports no other workspace member.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (the `book` member already exists:
+      packages/book, import name book; seat src/app/modules/book) / pytest
+      (ruff + mypy conventions). The member currently carries features 301,
+      306, 307 and 308 — `_combine.py` (the IR-weighted `combine` verb,
+      `PromotedSignal`, `CompositeBook`), `_authorship.py`, `_changelog.py`,
+      `_leverage.py`, `errors.py` (the one base `BookConstructionError` and its
+      siblings) and `__init__.py` (the public surface plus the one `@register`
+      builder, `build_book_combiner`, returning `combine` unchanged under the
+      component name `book`). Feature 303 adds one module and no
+      registration.</stack>
+    <test_baseline>The book member's own suite under packages/book/tests/
+      (test_combine, test_component, test_authorship, test_changelog,
+      test_leverage, and this feature's test_volatility). The member is
+      stdlib-only at module scope (the factory's scan imports the package to
+      fire its `@register`, so it must pay nothing), and feature 303's module
+      adds only `collections`, `dataclasses`, `types` and `typing` to that
+      bill over what the combiner already paid. The repository-level suite
+      under tests/ is collected by pytest's testpaths and does NOT collect
+      packages/*/tests (see the acceptance-gate memory), so the member's own
+      suite must be run explicitly as well. Lint only the new files and
+      compare to a sibling — the repo is red on main (mypy absent, ~163
+      pre-existing ruff errors), so a baseline via `--stdin-filename`
+      misreports.</test_baseline>
+    <conventions>
+      - One act, one module: `_volatility.py` holds the act's one verb, its
+        record, its two validators, the one spelling of the scale and the
+        refuse-message builder; the two refusal classes are added to the
+        existing `errors.py` beside feature 301's base class (one place per
+        member, as its docstring already states); `__init__.py` widens its
+        re-export and `__all__` and gains no logic — the shape every member in
+        this workspace takes.
+      - The normalization is gross, not net, and it happens before the
+        scaling: `w_raw = score_s / Σ_t |score_t|`, then `w_s = w_raw ·
+        scale`. A net divisor would divide by whatever the cross-sectional
+        composite netted out to — zero for a market-neutral book — and the
+        order of the two steps is the reason the zero target still delivers a
+        normalized book scaled to nothing rather than a refusal.
+      - The act re-ranks nothing: the sign of a composite is the view, and the
+        act preserves it. Re-centering or demeaning the book here would
+        overrule the signals feature 301 weighted — the "downstream features
+        take this composite and rescale it; they do not re-open this weight"
+        stance the combiner's docstring and additions spec already state.
+      - The configured annualized volatility is a **required keyword with no
+        default** — the category's one knob (§C8 names the step; the document
+        states no figure for it), the contrast feature 308's docstring draws
+        against its own constant. No module-level risk level, and no
+        annualization factor: both figures arrive already annualized on a
+        shared basis, so a factor applied here would re-derive a measurement's
+        units and double-count.
+      - The book's volatility arrives as a figure the caller holds, describing
+        the **gross-normalized** book; the act never re-derives it. Gross
+        exposure enters a book's volatility linearly, so the scaled book's
+        volatility is `scale · volatility` — the sentence's claim as an
+        identity, and what makes the figure interpretable.
+      - The record is a check: `TargetWeights` enforces that every weight is
+        its gross weight times the scale, that the scale is the two figures'
+        quotient, that the gross book is at one unit of gross exposure, and
+        that the two mappings cover the same symbols. The self-identities use
+        `==` (the verb computes them with the same operations); the gross-one
+        law alone carries a stated `isclose` tolerance, because the divisions
+        round and an exact test would refuse honest books. The tolerance is
+        stated in the class docstring so the exception is not mistaken for
+        slack.
+      - Absence is not zero: a composite scored at zero *everywhere* is
+        refused as `flat_book` (the divisor is exactly nothing — there is no
+        book to scale), while a *zero configured target* is answered with a
+        flat book by scale (a level the caller chose, whose consequence is its
+        own). The ask's facts settle before the book is judged, so a broken
+        figure is reported as *fix the ask*, never as *your book expresses no
+        view*.
+      - The act sets exposure and does not bound it: a scale above one is
+        answered (a book levered up to its configured risk is what targeting
+        is for), nothing is clamped, and the figure feature 308's cap judges is
+        exposed as `TargetWeights.gross_exposure` — derived from the weights,
+        never stored, so it cannot disagree with them. The two features meet
+        there without either importing the other.
+      - Error vocabulary: two new siblings under `BookConstructionError`
+        (`VolatilityTargetRequestError` for the ask, no code because a
+        malformed ask names its subject in its first words;
+        `VolatilityTargetError` for the judgment, opening with `flat_book`),
+        so a caller that refuses the whole book surface writes one `except`
+        and a caller that must react differently can still tell the two facts
+        apart — the `leverage_above_quarter_kelly` / `pool_too_thin`
+        precedent for the one refusal an operator greps a deployment log for.
+        The validator for the book's volatility is spelled here rather than
+        borrowed from feature 308's, because a shared helper raising the other
+        feature's class would defeat a caller's `except`.
+      - Every refusal message names the figures behind it (the symbol and the
+        divisor for a flat book; the field, its type and what it is for for
+        the ask), so the refusal is actionable without a stack trace.
+      - Deterministic and order-independent: the act is a normalization (a sum
+        over the book) and one factor over it, so symbols are emitted sorted
+        and two calls over the same book and figures answer an identical
+        record; the module holds no state and opens no database, reads no
+        environment and consults no clock.
+      - Stdlib only at module scope (`collections`, `dataclasses`, `math`,
+        `types`, `typing` and the member's own `.errors`), so the factory's
+        scan — which imports this package on every `create_app()` to fire its
+        `@register` — pays nothing beyond the import it already paid for the
+        combiner, and the replay path stays import-cheap.
+      - Do not edit a central registry, router, app factory, middleware,
+        settings or migration (core-task, order-sensitive shared files); no
+        new component is registered, so the composition story is unchanged and
+        `app.order` still carries exactly one `book`.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Portfolio Book Construction">
+      <feature index="303" shape="plugin" plugin="book" depends_on="301">
+        <description>System exposes `apply_volatility_target(book, *, volatility, target_volatility)` — the volatility target — as a free function beside the combiner, and `TargetWeights` (the frozen record it answers) with `FLAT_BOOK_CODE = "flat_book"`. The act is two steps in one order. **Normalize**: read the combined book's composite scores, refusing a value that carries no `scores` mapping, a non-mapping, a book covering no symbols, a blank symbol and a score that is not a finite real (all `VolatilityTargetRequestError`, the ask's own facts, before any figure is read); validate the two figures — `volatility` a finite strictly positive real, `target_volatility` a finite real of zero or more — also as the ask's own facts; then form the gross score `Σ_t |score_t|` and refuse a book whose gross score is exactly `0.0` with `VolatilityTargetError` opening with `flat_book`, naming the symbols, the divisor and the one repair (a composite that expresses a view), because the normalization `w_raw = score_s / Σ_t |score_t|` would divide by exactly nothing. **Scale**: form `scale = target_volatility / volatility` and answer `w_s = w_raw · scale` for every symbol, emitted sorted, holding the scales and figures on the record. A scale above one is answered — the act sets exposure and bounds nothing — and a zero target answers a flat book by scale (`scale == 0.0`, every weight `0.0`), because *take no risk* is a level and not a malformed ask. A refused act forms no value.</description>
+      </feature>
+      <feature index="303" shape="plugin" plugin="book" depends_on="301">
+        <description>System defines `TargetWeights`, the frozen record the act answers: `weights` (the scaled weights — the book held at the configured annualized volatility — keyed by symbol in sorted order, so two calls over the same book and figures answer identical values), `gross_weights` (the combined book normalized to one unit of gross exposure — the book the caller's volatility figure describes, and the value every scaled weight is checked against), `scale` (`target_volatility / volatility`), `volatility` and `target_volatility` (the figures behind it, carried so the record's own check is legible). It exposes `weight(symbol)` — refusing a symbol the book does not cover with the member's base class under the same `uncovered_symbol` word feature 301's `CompositeBook.target_score` answers with, because a fabricated zero would read to the order layer as *hold none of it* — and the property `gross_exposure` (`Σ_s |w_s|`), derived from the weights rather than stored so it cannot disagree with them, exposed because it is exactly the figure a caller hands feature 308's cap: the two features meet there without either importing the other. Frozen, because these are the weights the order layer holds and a value that could move after it was read would be a book that changed beneath the instruction that consumes it. Construction is a check rather than a claim: it enforces that every `weights` entry equals its `gross_weights` entry times `scale`; that `scale` equals `target_volatility / volatility` recomputed from the carried figures; that `gross_weights` is a book at one unit of gross exposure (`math.isclose(Σ_s |w_s|, 1.0)` with a stated tolerance, because the divisions round and an exact test would refuse honest books — the self-identities tying the record's own fields together stay exact, since the verb computes them with these same operations); and that the two mappings cover the same symbols, so a symbol is never weighed without the gross weight its scaling is checked against. Both mappings are read by one helper, refusing a non-mapping, an empty one, a blank symbol and a non-finite weight. The ask's own facts are refused before any identity between fields is checked, the ordering every record and verdict in this workspace states.</description>
+      </feature>
+      <feature index="303" shape="plugin" plugin="book" depends_on="301">
+        <description>System defines the act's two refusal classes in the member's one error module, as siblings under feature 301's `BookConstructionError` — the one-base-per-member shape the dreaming and regime members state for their own vocabularies, so a caller that refuses book work wholesale writes one `except` while a caller that must react differently to *this book expresses no view* and *your ask was malformed* catches the specific siblings (a flat composite is refusable though both figures were perfectly well stated, and a mis-stated figure is refusable though the book expresses a perfectly good view, so the two facts are genuinely different). `VolatilityTargetRequestError` is the ask's face and carries no code word, for the reason `LeverageRequestError` gives — a malformed ask names its subject in its first words and a token there would hand a reader a developer's word for a fact they can simply fix. It refuses, before anything is normalized or scaled: a book that carries no `scores` mapping (a different report from a book covering no symbols, kept apart by the sentinel), a book covering no symbols, a blank symbol name, a score that is not a finite real, a `volatility` that is not a finite *strictly positive* real (zero leaves `target / volatility` a division by exactly nothing — a book with no scale has no target weights at all rather than infinitely many — and a negative one would flip the sign of the scale and turn the book short), and a `target_volatility` that is not a finite real of *zero or more* (a volatility target is a scale, and a negative one is a direction: it would flip every weight's sign through an arithmetic that read a risk level as a view; a `bool` is a flag where a level belongs). It deliberately does **not** refuse a *zero* target — *take no risk* is a well-formed configuration whose honest answer is a flat book, the reading feature 308 gives a zero Sharpe — nor a target above the book's volatility (a book levered up to its configured risk is what targeting is for), nor a flat composite (that is the judgment, not the ask). The validator for the book's volatility is deliberately spelled here rather than shared with feature 308's validator for the same kind of figure: a shared helper raising the other feature's error class would defeat a caller's `except`, which is the error-vocabulary trap this workspace states at its member seams. `VolatilityTargetError` is the judgment and opens every message with `flat_book`; its repair is its own, which is why it is its own class.</description>
+      </feature>
+      <feature index="303" shape="plugin" plugin="book" depends_on="301">
+        <description>System keeps the act a free function beside the combiner rather than a second component: `_volatility.py` is imported by the member's `__init__.py`, which widens its re-export (the verb, `TargetWeights`, `FLAT_BOOK_CODE` and the two error classes join feature 301's names) and gains no `@register`. No new component is composed, `app.order` still carries exactly one `book`, and the seat (`src/app/modules/book`) is unchanged and still re-exports nothing — a caller that wants the act reaches the member's own namespace, the discipline every seat in this workspace states. The configured volatility target reaches the **call** and never the composition, which the factory's protocol makes structural: a builder takes no arguments, so no component could carry a risk level, and no deployment could set one through the registry. The module is stdlib-only at module scope (`collections`, `dataclasses`, `math`, `types`, `typing` and the member's own `.errors`), so the factory's scan — which imports this package on every `create_app()` to fire its `@register` — pays nothing for the act beyond the import it already paid for the combiner, and the replay path stays import-cheap. No table, endpoint, migration, seat edit, central registry, router, app factory, middleware or settings change.</description>
+      </feature>
+      <feature index="303" shape="plugin" plugin="book" depends_on="301">
+        <description>System passes an end-to-end volatility target over the member's own fixtures: the conftest's three signals combine to composites that sum in absolute value to 0.625, so at a book volatility of 0.5 and a configured target of 0.2 the gross weights are 0.3 / 0.35 / 0.35, the scale is exactly 0.4 (dyadic throughout, so every weight is checkable with `==`) and the weights are 0.12 / 0.14 / 0.14 with the ranking feature 301 fixed intact. A re-run over the same book and figures answers an identical record, and symbols are emitted sorted. The act's identity is checked against the record's own fields: every weight is its gross weight times the scale, the scale is the two figures' quotient, `gross_exposure` is the scale (so the figure a caller hands feature 308's cap is the size this act set), and `scale · volatility` reproduces `target_volatility` — the sentence's claim as arithmetic, at several figure pairs. A target above the book's volatility answers a scale above one and is not clamped; a zero target answers a flat book (`scale == 0.0`, every weight `0.0`) with the gross book still normalized. Refusals, each leaving no value: a composite scored at zero everywhere is refused as `flat_book` naming the symbols and the divisor and stating the one repair, at every pair of figures including the zero target (the refusal fires at the normalization, before the scale exists); a malformed figure is refused as `VolatilityTargetRequestError` *before* a flat composite is judged, so the ask's class fires on a book that would otherwise be refused as flat; a negative target is refused as the ask rather than judged; a value carrying no `scores`, a book covering no symbols, a blank symbol and a non-finite score are each refused as the ask's own fact; and `TargetWeights` refuses a hand-built record whose weight is not its gross weight scaled, whose scale is not the figures' quotient, whose gross book is not at unit gross, whose two mappings cover different symbols, and whose weights are non-finite. Both error classes are subclasses of `BookConstructionError` and neither is a subclass of the other; feature 301's `combine([])` and the act's own `weight("DOGE")` both still raise the bare base, so the hierarchy this feature added leaves the old surface reachable.</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Feature 303 sits in the middle of §C8's own chain — *"Signal book →
+    IR-weighted combination with shrinkage → volatility targeting → position
+    and concentration limits → orders"* — and both of its neighbours are
+    value dependencies rather than code imports. It consumes what feature 301
+    produces (the composite target score per symbol) and answers what feature
+    304 bounds and feature 305 publishes: the target weights. `depends_on="301"`
+    is therefore a *value* dependency — the act reads a book exposing
+    `scores` duck-typed, so the loader's synthetic-name copy of
+    `CompositeBook` scales exactly as the canonical one does, and the only
+    import the act takes from the member is the error vocabulary. The member
+    imports no other workspace member: the gross normalization, the scale and
+    the gross-one law are restated here in this member's own terms, never
+    borrowed from the feature-store member's realized volatility, the
+    evaluator's measurements, or the scoring member's own reductions. The
+    configured annualized volatility is a *deployment* figure and arrives as a
+    required keyword of the call; the book's volatility is a *measurement* and
+    arrives as a figure the caller already holds, neither re-derived nor
+    re-annualized here — a verdict and a scaling are not measurements.
+    Feature 308's cap is the bound on the exposure this act sets, and the two
+    meet through `TargetWeights.gross_exposure`, which is exactly the leverage
+    a caller hands the cap's verdict: feature 308 refuses a target above one
+    quarter of the book's Kelly fraction, and the number it judges is this
+    one. No `@register` name collides (no new component is registered), no
+    table, endpoint or migration is added, and no central registry, router,
+    app factory, middleware, settings or migration is edited.
+  </integration_points>
+  <constraints>
+    - No member imports another: the act reads the combined book's `scores`
+      duck-typed and restates the gross normalization, the scale and the
+      gross-one law in this member's own terms, never borrowing them from the
+      feature-store, evaluator or scoring member.
+    - No new component, no `@register`, no seat edit: the act is a free
+      function beside the combiner, the way feature 308's cap and feature
+      306's guard sit. `__init__.py` widens its re-export and carries no
+      logic; the seat still re-exports nothing.
+    - The normalization is gross, not net (`w_raw = score_s / Σ_t |score_t|`)
+      and it precedes the scaling (`w_s = w_raw · scale`): a net divisor would
+      divide by whatever the cross-sectional composite netted out to, and the
+      order of the steps is what makes a zero target deliver a normalized book
+      scaled to nothing rather than a refusal.
+    - The configured annualized volatility is a required keyword with no
+      default — the category's one knob — and the module carries no fallback
+      risk level and no annualization factor. The book's volatility arrives as
+      a figure the caller holds and is never re-derived.
+    - Absence is not zero: a composite scored at zero everywhere is refused as
+      `flat_book` (the divisor is exactly nothing), while a zero configured
+      target is answered with a flat book by scale (a level the caller chose).
+      The ask's own facts settle before any of it is judged.
+    - The act sets exposure and bounds nothing: a scale above one is answered
+      and nothing is clamped; the figure feature 308's cap judges is exposed
+      as `TargetWeights.gross_exposure`, derived from the weights rather than
+      stored.
+    - The record is a check: `TargetWeights` enforces the weight-equals-gross-
+      times-scale identity, the scale-equals-figures'-quotient identity, the
+      gross-one law and the shared-symbol-set law. The self-identities use
+      `==`; the gross-one law alone carries a stated `isclose` tolerance, and
+      the reason is recorded in the class docstring.
+    - Two new error classes, siblings under `BookConstructionError`; the
+      judgment's message opens with the greppable `flat_book` and names the
+      symbols and the divisor; the ask's carries no code. The validator for
+      the book's volatility is spelled in this feature rather than shared with
+      feature 308's, because a shared helper raising another feature's class
+      would defeat a caller's `except`.
+    - Stdlib only (`collections`, `dataclasses`, `math`, `types`, `typing`,
+      the member's own `.errors`), no database, no environment, no clock, no
+      state — import-cheap at module scope so the factory's scan pays nothing.
+    - Deterministic and order-independent: symbols emitted sorted, two calls
+      over the same book and figures answering an identical record.
+    - Do not edit a central registry, router, app factory, middleware,
+      settings or migration (core-task, order-sensitive shared files).
+  </constraints>
+  <implementation_steps>
+    <phase name="Feature 303 — apply volatility targeting to the combined book">
+      <step>1. `packages/book/src/book/_volatility.py`: `FLAT_BOOK_CODE`, the
+        sentinel, the two validators (`_validated_volatility`,
+        `_validated_target_volatility`), the book reader (`_scores_of`, which
+        keeps *not a book* distinct from *covers no symbols*), the one
+        spelling of the scale (`_scale`), the refuse-message builder
+        (`_flat_refusal`), the frozen `TargetWeights` record (its `weight`
+        accessor, its derived `gross_exposure` property and its `__post_init__`
+        self-check), and the act itself (`apply_volatility_target`). Stdlib
+        only.</step>
+      <step>2. `packages/book/src/book/errors.py`: add
+        `VolatilityTargetRequestError` and `VolatilityTargetError` as siblings
+        under `BookConstructionError`, widen `__all__`, widen the module
+        docstring's code list with `flat_book` and its feature list with 303,
+        and update the base class's docstring to state that it is now the
+        member's whole refusal surface's base.</step>
+      <step>3. `packages/book/src/book/__init__.py`: re-export the verb, the
+        record, the one code constant and the two classes; widen `__all__`;
+        state in the package docstring that the member now carries five
+        features, that the act arrives as a free function rather than a second
+        component, and that the configured target reaches the call rather than
+        the composition. Add no `@register`.</step>
+      <step>4. `packages/book/tests/test_volatility.py`: the act
+        (normalization then scaling, the ranking preserved, the scale at equal
+        figures being exactly one, a quieter book levered up and not clamped,
+        the scaled volatility reproducing the target at several figure pairs,
+        the exposure equalling the scale, sorted symbols, determinism), the
+        configured target as the category's one knob (required, keyword-only,
+        no default; no risk level and no annualization factor in the module,
+        checked by parsing the AST), the flat book refused (at every figure
+        pair, with the divisor and the repair named, forming no value), the
+        zero target answered with a flat book, the ask's refusals in their
+        order and their precedence over the judgment, the record's
+        self-check (including a frozen record and read-only mappings), the
+        vocabulary's hierarchy, and the layering claims (duck-typed seam,
+        stdlib-only parsed from the AST, no other member imported, no store or
+        environment or clock, no state between two records).</step>
+      <step>5. `packages/book/tests/test_component.py`: pin that the act
+        registers no second component (the registry still carries exactly one
+        name), that it is reachable without the factory and has no component
+        key, that the configured target never crosses composition (the builder
+        takes no arguments and the verb's target has no default), and that the
+        member's `__all__` is exactly the five features' names.</step>
+      <step>6. Validate and run the member's own suite (the repo-level suite
+        under tests/ does not collect packages/*/tests — run the member suite
+        explicitly), confirm the repository-level acceptance suite is
+        unaffected, and lint only the new and changed files against a sibling
+        baseline.</step>
+    </phase>
+  </implementation_steps>
+  <success_criteria>
+    - `apply_volatility_target` over the member's own fixtures answers weights
+      whose gross book sums in absolute value to one, whose scale is
+      `target_volatility / volatility`, and whose ranking is exactly the
+      composite ranking feature 301 fixed; a re-run answers an identical
+      record.
+    - Every weight equals its gross weight times the scale, the scale equals
+      the two figures' quotient, the gross book is at one unit of gross, and
+      `scale · volatility` reproduces `target_volatility` — the sentence's
+      claim as an identity, at several figure pairs.
+    - The configured annualized volatility is a required keyword-only
+      parameter with no default; the module carries no fallback risk level and
+      applies no annualization factor; the book's volatility is taken as a
+      figure and never re-derived.
+    - A composite scored at zero everywhere is refused with
+      `VolatilityTargetError` opening with `flat_book`, naming the symbols and
+      the divisor and stating the one repair, and forms no value — at every
+      pair of figures. A zero configured target is answered with a flat book
+      (`scale == 0.0`), and a target above the book's volatility is answered
+      with a scale above one and no clamp.
+    - The ask's own facts — a value carrying no `scores`, a non-mapping, a
+      book covering no symbols, a blank symbol, a non-finite score, a
+      non-finite or non-positive book volatility, a negative or non-finite
+      target — are refused as `VolatilityTargetRequestError` before any book
+      is judged, and carry no code word.
+    - `TargetWeights` refuses a hand-built record that disagrees with itself
+      (a weight not its gross weight scaled, a scale not the figures'
+      quotient, a gross book not at unit gross, mappings covering different
+      symbols, a non-finite weight), is frozen, and its mappings are read-only.
+    - `VolatilityTargetRequestError` and `VolatilityTargetError` are both
+      subclasses of `BookConstructionError` and neither of the other;
+      `combine([])` and `TargetWeights.weight` on an uncovered symbol still
+      raise the bare base.
+    - `TargetWeights.gross_exposure` is derived from the weights and is the
+      figure feature 308's cap judges — exercised end to end: a book levered
+      to 2.0 is refused by the cap at a Sharpe of 0.5 and a volatility of 0.2,
+      and a book within the cap runs.
+    - No new component is registered (`app.order` carries exactly one `book`),
+      the seat is unchanged, no table, endpoint or migration is added, and no
+      central registry, router, app factory, middleware or settings is edited.
+    - The module is stdlib-only and import-cheap; the member's own suite is
+      green and the repository-level acceptance suite is unaffected.
+  </success_criteria>
+</project_specification>
