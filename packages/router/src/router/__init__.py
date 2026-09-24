@@ -26,6 +26,19 @@ Two pieces:
   filters_for` is the order path's fast, symbol-keyed read of the current
   version.
 
+Feature 320 adds a third: :mod:`router.submission_health` — the router's
+*own* liveness, persisted independently of the market-data feed, so a
+router that is wedged or dead is still visible to a reader in another
+process (docs §13.2's *"separate process for the order router"*, §14's
+separate live host).  It is a second table in the same relational store and
+**not** a second component: the member registers one component (below), and
+a store addressed by ``DATABASE_URL`` is never composed, exactly as
+feature 310's own store is reached by construction rather than by
+``@register``.  Its reading is three-valued — ``True``, ``False``, or
+``None`` for a window that holds no submissions — and its identity
+(:func:`router.submission_health.process_identity`) is what makes
+*independently* checkable rather than merely asserted.
+
 This package also *is* a component of the composed application: importing
 it registers a builder with the application factory
 (``app.module_loader.register``), so the module loader discovers it by
@@ -46,7 +59,14 @@ from __future__ import annotations
 
 from app.module_loader import register
 
-from .errors import RouterError, RouterFilterError, RouterStoreError
+from ._identity import process_identity
+from .errors import (
+    ORDER_SUBMISSION_UNHEALTHY_CODE,
+    RouterError,
+    RouterFilterError,
+    RouterStoreError,
+    RouterSubmissionHealthError,
+)
 from .exchange_info import RouterSymbolFilters, resolve_router_filters
 from .store import (
     DATABASE_URL_ENV,
@@ -55,18 +75,41 @@ from .store import (
     RouterExchangeInfoStore,
     RouterExchangeInfoVersion,
 )
+from .submission_health import (
+    ORDER_SUBMISSION_ACCEPTED,
+    ORDER_SUBMISSION_HEALTH_TABLE,
+    ORDER_SUBMISSION_OUTCOMES,
+    ORDER_SUBMISSION_REJECTED,
+    SUBMISSION_HEALTH_FAILURE_RATIO,
+    SUBMISSION_HEALTH_WINDOW,
+    RouterSubmissionHealthStore,
+    SubmissionHealth,
+    SubmissionObservation,
+)
 
 __all__ = [
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
+    "ORDER_SUBMISSION_ACCEPTED",
+    "ORDER_SUBMISSION_HEALTH_TABLE",
+    "ORDER_SUBMISSION_OUTCOMES",
+    "ORDER_SUBMISSION_REJECTED",
+    "ORDER_SUBMISSION_UNHEALTHY_CODE",
     "ROUTER_EXCHANGE_INFO_FILTER_TABLE",
     "ROUTER_EXCHANGE_INFO_VERSION_TABLE",
+    "SUBMISSION_HEALTH_FAILURE_RATIO",
+    "SUBMISSION_HEALTH_WINDOW",
     "RouterError",
     "RouterExchangeInfoStore",
     "RouterExchangeInfoVersion",
     "RouterFilterError",
     "RouterStoreError",
+    "RouterSubmissionHealthError",
+    "RouterSubmissionHealthStore",
     "RouterSymbolFilters",
+    "SubmissionHealth",
+    "SubmissionObservation",
+    "process_identity",
     "resolve_router_filters",
 ]
 
@@ -96,3 +139,16 @@ def build_router_exchange_info_store() -> RouterExchangeInfoStore | None:
     never touches a database.
     """
     return RouterExchangeInfoStore.resolve()
+
+
+#: Feature 320's store is deliberately **not** a second component.  A
+#: submission-health log is addressed by ``DATABASE_URL`` and constructed by
+#: whoever reads or writes it — the router process on its own path, an
+#: operator's health sweep, a supervisor in another process entirely — which
+#: is what *"persists ... independently"* requires: a reading a composed
+#: application could hand out would be a reading the application's own
+#: lifetime bounds, and a process that has hung cannot answer through a
+#: component it is no longer running.  The seat in ``app.modules.router``
+#: exposes the accessor this module documents for it, and no second
+#: ``@register`` builder is added here — the member still registers exactly
+#: one component (feature 310's exchangeInfo store).

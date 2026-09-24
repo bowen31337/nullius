@@ -22,9 +22,16 @@ import router as member
 from app.module_loader import Application, Registration, create_app, scan_components
 from app.modules import router as seat
 from app.modules.router import COMPONENT_NAME as SEAT_COMPONENT_NAME
-from app.modules.router import router_exchange_info_component
+from app.modules.router import (
+    router_exchange_info_component,
+    router_submission_health_store,
+)
 
-EXPECTED_EXPORTS = {"COMPONENT_NAME", "router_exchange_info_component"}
+EXPECTED_EXPORTS = {
+    "COMPONENT_NAME",
+    "router_exchange_info_component",
+    "router_submission_health_store",
+}
 
 NOT_THE_SEATS_BUSINESS = (
     "RouterExchangeInfoVersion",
@@ -33,6 +40,15 @@ NOT_THE_SEATS_BUSINESS = (
     "RouterError",
     "RouterFilterError",
     "RouterStoreError",
+    # Feature 320 adds names too, and they are the member's, not the seat's:
+    # the seat hands back the *store* and the *identity*, and a caller holds
+    # ``record()``/``health()``/``latest_for_process()`` on the first without
+    # this module re-spelling any of them.
+    "RouterSubmissionHealthStore",
+    "SubmissionObservation",
+    "SubmissionHealth",
+    "RouterSubmissionHealthError",
+    "ORDER_SUBMISSION_HEALTH_TABLE",
 )
 
 
@@ -204,3 +220,120 @@ def test_a_misspelled_component_key_is_absent_not_a_near_match(
     assert app.get(absent) is None
     assert SEAT_COMPONENT_NAME in app
     assert router_exchange_info_component(app) is not None
+
+
+# -- Feature 320's health accessor -----------------------------------------
+
+
+def test_the_health_store_is_not_a_component(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The distinction the feature turns on: a composed application answers
+    # only for the process that composed it, and that process is the one
+    # whose health is in question.  So the health store is resolved from
+    # DATABASE_URL and the scan still registers exactly one component.
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'health.db'}")
+    app = create_app()
+    assert member.COMPONENT_NAME in app
+    # No second component, under any of the names a health store might have
+    # been registered as -- and the scan still registers exactly one router.
+    for guessed in (
+        "submission_health",
+        "router_submission_health",
+        "router-submission-health",
+        "router-health",
+    ):
+        assert app.get(guessed) is None, guessed
+    registered = [
+        component
+        for component in Registration().components()
+        if component.name == member.COMPONENT_NAME
+    ]
+    assert registered == []  # a fresh registry is empty
+    registry = Registration()
+    scan_components(registry=registry)
+    assert [
+        component.name
+        for component in registry.components()
+        if component.name == member.COMPONENT_NAME
+    ] == [member.COMPONENT_NAME]
+    # The store is reachable without the registry, which is the point.
+    assert router_submission_health_store() is not None
+
+
+def test_the_seat_resolves_the_health_store_from_the_database(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    url = f"sqlite:///{tmp_path / 'seated-health.db'}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    store = router_submission_health_store()
+    assert store is not None
+    assert type(store).__name__ == "RouterSubmissionHealthStore"
+    assert store.database_url == url
+
+
+def test_the_health_accessor_needs_no_application(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # No ``app`` parameter at all, because there is no registry to consult:
+    # accepting one would suggest the answer depended on it.
+    assert list(inspect.signature(router_submission_health_store).parameters) == []
+
+
+def test_a_deployment_without_a_database_resolves_no_health_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    assert router_submission_health_store() is None
+
+
+def test_resolving_the_health_store_opens_no_database(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A health accessor that opened a connection would make *asking about*
+    # the router's liveness a way to fail, which is the one property this
+    # feature cannot afford.
+    database = tmp_path / "unopened.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database}")
+    store = router_submission_health_store()
+    assert store is not None
+    assert not database.exists()
+    assert store.record(outcome="accepted").outcome == "accepted"
+    assert database.exists()  # the demand is what wrote
+
+
+def test_the_health_accessor_reads_what_another_process_wrote(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from datetime import UTC, datetime
+
+    url = f"sqlite:///{tmp_path / 'shared.db'}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    writer = router_submission_health_store()
+    writer.record(
+        outcome="rejected", observed_at=datetime(2026, 9, 24, 12, 0, tzinfo=UTC),
+        process_id="other-host/7",
+    )
+    reader = router_submission_health_store()
+    health = reader.health(
+        now=datetime(2026, 9, 24, 12, 1, tzinfo=UTC), process_id="other-host/7"
+    )
+    assert health.total == 1
+    assert health.unhealthy is True
+    assert health.processes == ("other-host/7",)
+
+
+def test_the_identity_is_the_stores_own_derivation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The seat adds no identity accessor: a caller holding the store already
+    # holds the label its rows are filed under, and a pass-through beside it
+    # would be a second spelling of the one fact "in its own process" is
+    # about -- free to disagree with what the store writes.
+    import os
+    import socket
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'identity.db'}")
+    store = router_submission_health_store()
+    assert store.process_id == f"{socket.gethostname()}/{os.getpid()}"
+    assert store.record(outcome="accepted").process_id == store.process_id
