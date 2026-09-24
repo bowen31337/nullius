@@ -42,10 +42,14 @@ so, stop.
 for the component and answers ``None`` — not an exception — when there
 is none, mirroring the factory's own "degrade, don't break" stance
 toward absent components.  It deliberately does **not** re-export the
-process class, the sidecar seam, or the rate verb: a caller who has the
-process calls ``null_pick_rate(picks)`` on it — the one public verb the
-process carries, the feature's own sentence made structural — and a
-second spelling of it here would be a second thing to keep in sync and a
+process class, the sidecar seam, or either figure verb: a caller who
+has the process calls ``null_pick_rate(picks)`` on it — feature 265's
+rate, the verb that feature's own sentence made structural — or
+``calibration_figures(population, picks=...)`` on it, feature 266's
+sensitivity/specificity pair, the second verb the process's own law
+reserved room for (*their own verbs on this process or beside it*) —
+and a second spelling of either here would be a second thing to keep
+in sync and a
 second surface the barrier would have to hold.  The one question this
 module answers is *what is the composed scorer process?*
 
@@ -101,7 +105,9 @@ def null_pick_scorer_component(
     than as a clean campaign.
 
     The returned object is the process itself — call
-    ``null_pick_rate(picks)`` on it, handing the committed picks — and it
+    ``null_pick_rate(picks)`` on it, handing the committed picks — or
+    ``calibration_figures(population, picks=...)``, handing the plant
+    and the picks together, feature 266's pair — and it
     composes to the same process for the same environment, reading the
     sealed file per ask and never caching a label.  Asking is always
     safe; the labels are touched at the rate, not the composition.

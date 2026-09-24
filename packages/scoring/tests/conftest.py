@@ -61,6 +61,14 @@ and the branch's ``flip_depth``), the shape the oracle's own resolution
 value carries — over the same campaign's four further UUIDs at depths
 1, 2, 3 and 5 against a flip drawn at 3, so the Type-B count is 2
 exactly, the node *at* the flip counted and the two below it not.
+Feature 266's suite adds the calibration figures' vocabulary beside all
+of them: the campaign's plant as a collection — the same four labelled
+addresses the ``sidecar_labels`` fixture holds, handed over as the
+population both figures are fractions over — plus two further
+planted-null addresses (:data:`NULL_THREE` and :data:`NULL_FOUR`) that
+extend the plant without touching either class's within-class
+behaviour, the shape the base-rate independence test measures on: φ
+moves, and the figures must not.
 
 The path bootstrap puts both import roots on ``sys.path`` regardless of
 how pytest was invoked — the workspace's ``src/`` (for
@@ -411,6 +419,31 @@ def committed_picks() -> list[StandInPick]:
         StandInPick(NULL_TWO),
         StandInPick(REAL_TWO),
     ]
+
+
+# -- Feature 266: the calibration figures' vocabulary ---------------------------
+
+#: Two further fixed node addresses, canonical UUID text, continuing the
+#: campaign's series — both planted null, so a plant extended by them
+#: raises the campaign's φ without touching either class's within-class
+#: behaviour: the fixture shape the base-rate independence test measures
+#: on, and the population whose figures cannot move when φ does.
+NULL_THREE = "1a2b3c4d-5e6f-4778-89ab-cdef0000000a"
+NULL_FOUR = "1a2b3c4d-5e6f-4778-89ab-cdef0000000b"
+
+
+@pytest.fixture
+def planted_population() -> list[str]:
+    """The campaign's plant: the four labelled addresses, as handed.
+
+    The whole both figures are fractions over — two nulls and two reals,
+    §4.1.1's floor held exactly, in the fixture campaign's own order so
+    the read log asserts the ask's order.  The addresses are texts (the
+    population's plainest spelling); the value spelling — objects
+    exposing ``node_id`` — is the point of its own test in the suite,
+    where the population is rebuilt in it.
+    """
+    return [NULL_ONE, REAL_ONE, NULL_TWO, REAL_TWO]
 
 
 # -- Feature 269: the error accounting's vocabulary ----------------------------

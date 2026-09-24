@@ -36,6 +36,12 @@ refusal of a null pick rate that cannot be computed — the first class of
 the category's state-bound half, and the one place in this member whose
 refusals can name a *read* that failed rather than only an ask that was
 malformed (see that class's docstring for why those are stated apart).
+Feature 266 adds the calibration figures' own:
+:class:`CalibrationFiguresError`, the refusal of a sensitivity and
+specificity ask that cannot be measured — the population-shaped sibling
+of the rate's ask, spoken in its own vocabulary because its refusals
+name the *planted node* where 265's name the committed pick, and the one
+other place in this member whose refusals can name a read that failed.
 Feature 269 adds the accounting's own: :class:`ErrorAccountingError`,
 the refusal of an error accounting whose two figures cannot be kept
 apart — the Type-A rate's ask and the Type-B depth facts each refused
@@ -122,6 +128,7 @@ from __future__ import annotations
 
 __all__ = [
     "AggregationError",
+    "CalibrationFiguresError",
     "DeflationPenaltyError",
     "DivergencePenaltyError",
     "ErrorAccountingError",
@@ -470,6 +477,64 @@ class NullPickRateError(ScoringError):
     must remember to discard — and no label crosses either way, which is
     the feature's own sentence: the rate is returned while the labels stay
     in.
+    """
+
+
+class CalibrationFiguresError(ScoringError):
+    """A sensitivity and specificity ask that cannot be measured
+    (feature 266).
+
+    The ask was malformed in this seam's own inputs — a ``population``
+    that is not the planted nodes themselves (a mapping's keys are not
+    its nodes, a bare string is one node spelled where the collection
+    belongs), a population with no planted nodes at all, one planted
+    node carried twice (the planted set is a whole, and a duplicate
+    would double-count one denominator), a discovered pick the
+    population does not hold (a claim the figures cover on neither
+    side, and a fraction over a whole nobody chose), a population whose
+    labels hold no real node (sensitivity's class is empty — nothing
+    for a discovery to find, the one-sided plant prd §4.1.1's floor
+    problem exists to keep out of a campaign), or one whose labels hold
+    no null (specificity's class is empty — a population of nothing but
+    reals cannot be wrongly declared against) — and the refusal names
+    which, because the repairs differ: the caller's declaration of the
+    whole against a campaign the oracle planted one-sidedly against a
+    pick collection drawn from another population than the figures
+    were.
+
+    Two refusal families are deliberately *not* this class's.  A pick
+    spelled wrongly arrives as :class:`~scoring.NullPickRateError`,
+    propagated untranslated from the pick law feature 265 states, so
+    the repair stays named where that law lives — the same stance
+    feature 269's seam takes toward the same law.  And a *read* that
+    failed — the sidecar unopenable, undecryptable, or holding no entry
+    for a planted node, or an entry whose ``is_null`` is not a genuine
+    bool — is translated *into* this class with the original chained,
+    because the read's subject here is the population this feature
+    declared and 265's wording names the committed pick; the read's
+    laws are shared and its words are not (see
+    :mod:`scoring._calibration` for the argument).
+
+    Beside :class:`~scoring.NullPickRateError` and
+    :class:`~scoring.ErrorAccountingError`, never under either: 265
+    refuses the *rate* over the picks, 269 refuses the *split
+    accounting* of the two error types, and this class refuses the
+    *class-conditional figures* — the pair prd §4.1.3 reweights into
+    ``FDR_deploy`` and feature 267 will consume exactly as handed.  The
+    three repairs send the operator to different places (a sidecar that
+    never answered a pick against a join that handed the accounting
+    branches with no flips against a population that was empty, doubled,
+    one-sided, or measured over picks it did not hold), and folding any
+    two would send an operator tuning one repair when the thing to fix
+    was another.
+
+    No partial value escapes a refusal: the verb either answers a frozen
+    :class:`~scoring.CalibrationFigures` or raises, so a caller can
+    never hold a half-measured pair it must remember to discard — the
+    guarantee :class:`WorldObjectiveError` makes one feature earlier and
+    the one every figure this member answers inherits — and no label
+    crosses either way, which is feature 265's own sentence held for
+    this answer: the figures are returned while the labels stay in.
     """
 
 

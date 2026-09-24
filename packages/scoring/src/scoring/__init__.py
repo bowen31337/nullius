@@ -316,6 +316,42 @@ namespace.  It prices nothing — β₂ is feature 258's term and β₁ feature
 them — and it persists nothing: the per-campaign Type-B trend docs line
 909 lists is the ops member's (feature 345), which reads this figure.
 
+**The calibration figures are the member's eleventh law (feature 266).**
+*"System computes sensitivity and specificity on planted nulls, which
+returns both as base-rate independent figures"* — prd §4.1.3's pair
+(line 144: *"Sensitivity and specificity are base-rate independent, so
+measure them where you have power for both, then reweight"*) and §11's
+tracked-not-targeted secondary (line 539), the two figures docs §10.3
+lines 509-515 name as the base-rate independent ground the raw rate's
+``FDR_deploy`` reweighting stands on.  It lives in
+:mod:`scoring._calibration` as :class:`~scoring.CalibrationFigures`
+(the value — two fields, one per figure, and deliberately no third) and
+:meth:`~scoring.NullPickScorer.calibration_figures` (the verb — *on
+the process* feature 265 built, the door 265's own docstring reserved:
+the calibration figures that follow it *"will land as their own verbs
+on this process or beside it"*, and this one could only land on the
+process, because its denominators are the planted *classes* and only
+the held labels can count a class — feature 269's seam could ride the
+rate verb unchanged, and this one cannot), with its own refusal
+:class:`~scoring.CalibrationFiguresError`.  The figures classify the
+planted population a caller declares against the picks the campaign
+committed: sensitivity is the fraction of the planted reals the picks
+found, specificity the fraction of the planted nulls left uncommitted
+— both conditional within a ground-truth class, so the campaign's φ
+cancels, and the value makes that structural by carrying no figure
+that divides by the declaration's size and by taking no π₀ (the
+reweighting is 267's, over exactly this pair, and 268's headline
+rejection stands over that figure and not these).  The empty-class
+refusals hold §4.1.1's floor — a plant with no reals has no sensitivity
+to measure and one with no nulls no specificity — while the empty
+*declaration* is answered (``0.0`` and ``1.0``, the corner where
+nothing was found and nothing wrongly declared), and the barrier holds
+for the wider answer exactly as 265 stated it: figures out, counts and
+labels in.  It adds no component and no seat — it rides the process
+265 already registered — and it persists nothing: the per-campaign row
+docs §16 line 909 lists among the research metrics is the ops member's
+(feature 344's), which reads this pair.
+
 **No persistence here, by the same law that keeps the arithmetic pure.**
 The ``replay_score`` row is the replay plugin's (feature 255); this
 member answers the value it is written from, exactly as migration 0109
@@ -340,6 +376,7 @@ from ._aggregate import (
     AggregatedObjective,
     aggregate_objective,
 )
+from ._calibration import CalibrationFigures
 from ._deflation import BETA_THREE_DEFAULT, deflation_penalty
 from ._divergence import BETA_FOUR_DEFAULT, IC_BOUND, divergence_penalty
 from ._nullpicks import BETA_TWO_DEFAULT, RATE_BOUND, null_pick_penalty
@@ -350,6 +387,7 @@ from ._scorer import NullPickScorer
 from ._switches import BETA_FIVE_DEFAULT, switch_penalty
 from .errors import (
     AggregationError,
+    CalibrationFiguresError,
     DeflationPenaltyError,
     DivergencePenaltyError,
     ErrorAccountingError,
@@ -382,6 +420,8 @@ __all__ = [
     "SCORER_COMPONENT_NAME",
     "AggregatedObjective",
     "AggregationError",
+    "CalibrationFigures",
+    "CalibrationFiguresError",
     "DeflationPenaltyError",
     "DivergencePenaltyError",
     "ErrorAccounting",

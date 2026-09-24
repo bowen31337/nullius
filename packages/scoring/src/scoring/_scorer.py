@@ -41,7 +41,11 @@ barrier, not a code review"*, and docs §10.3's line is enforced here the
 only way a type can enforce it: :meth:`NullPickScorer.null_pick_rate`
 answers one bare ``float``.  Not a mapping of picks to labels, not a
 value carrying the count of nulls beside the rate, not an object a caller
-could introspect — a number, the one number §10.3 lets out.  The process
+could introspect — a number, the one number §10.3's first line lets
+out.  Feature 266's verb below lets two more out — sensitivity and
+specificity, the class-conditional pair the same §10.3 paragraph sends
+to the dashboard's reweighting — and holds the same line: figures out,
+counts and labels in.  The process
 exposes no accessor for the sidecar it holds, no ``assignment`` passthrough
 and no label cache (the sidecar's own class states why the labels do not
 live in a cache, and this process does not defeat it), its ``repr`` names
@@ -140,10 +144,16 @@ whole reason to exist, and everything it touches stays inside the call.
 **What this law deliberately does not do.**  It does not reweight the
 rate to a deployment base rate — ``FDR_deploy`` at π₀ ≈ 0.9 is feature
 267's arithmetic over figures feature 266 computes, and the raw rate is
-what β₂ charges on (docs §10.3 lines 509-515).  It does not compute
-sensitivity or specificity (feature 266) or the Type-A/Type-B split
-(feature 269); those are later answers off the same held labels and will
-land as their own verbs on this process or beside it.  It persists
+what β₂ charges on (docs §10.3 lines 509-515).  It does not itself
+compute sensitivity or specificity (feature 266) or the Type-A/Type-B
+split (feature 269); those were the later answers off the same held
+labels this docstring left both doors open for — *their own verbs on
+this process or beside it* — and both have since landed: feature 266's
+verb on this process (:meth:`NullPickScorer.calibration_figures`,
+below — the door that had to be this one, because its denominators are
+the planted classes and only the held labels can count a class), and
+feature 269's beside it (:func:`scoring.account_errors`, riding the
+rate verb unchanged).  It persists
 nothing — the ``replay_score`` row is the replay plugin's (feature 255),
 and it already carries the score and the β the rate moved.  It does not
 void anything: §7.4's ``halt_dreaming()`` belongs to the detectability
@@ -164,7 +174,8 @@ import uuid
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from .errors import NullPickRateError
+from ._calibration import CalibrationFigures
+from .errors import CalibrationFiguresError, NullPickRateError
 
 __all__ = [
     "SCORER_COMPONENT_NAME",
@@ -206,6 +217,14 @@ class NullPickScorer:
     value, and the sidecar it holds is live deployment state whose file
     is read per ask, never cached (the sidecar's own class states the
     law, and this process does not defeat it).
+
+    The class has since grown exactly one more public verb — feature
+    266's :meth:`calibration_figures`, the growth this module's own
+    docstring reserved (*their own verbs on this process or beside it*).
+    It is not a second place the barrier leaks, and the test is the one
+    the paragraph above states: it answers two figures and nothing
+    label-shaped — no count of a class, no node id, no sidecar — so the
+    surface has grown while the barrier's width has not.
     """
 
     __slots__ = ("_sidecar",)
@@ -302,6 +321,128 @@ class NullPickScorer:
             if _label_of(self._sidecar, node):
                 nulls += 1
         return nulls / len(nodes)
+
+    # -- Feature 266's verb ---------------------------------------------------
+
+    def calibration_figures(
+        self, population: object, *, picks: object
+    ) -> CalibrationFigures:
+        """Answer feature 266's pair — sensitivity and specificity over
+        the planted nulls, the base-rate independent figures prd §4.1.3
+        reweights into ``FDR_deploy`` (feature 267's arithmetic, never
+        restated here).
+
+        ``population`` is the planted whole both fractions are taken
+        over — the campaign's planted nodes themselves, each one the
+        address text or any object exposing a ``node_id`` (the two
+        spellings the pick seam accepts, taken here for nodes), and a
+        *set*: a node planted twice is refused, because both
+        denominators are counts over this whole.  Which nodes a
+        campaign planted is the caller's declaration — §4.1.1's floor
+        problem is a fact about that declaration, and this verb refuses
+        a one-sided plant rather than defaulting a figure about an
+        empty class.  ``picks`` is the campaign's committed picks — the
+        declaration of discoveries, in the same two spellings
+        :meth:`null_pick_rate` takes, and a set for these figures
+        where it is a multiset for the rate: two replays committing to
+        one node are two picks there and one discovery here, because a
+        node is either found or not.  An ask that committed to nothing
+        is *answered* — sensitivity ``0.0``, specificity ``1.0``, the
+        corner where nothing was found and nothing wrongly declared —
+        where the rate's empty ask is refused, because a class over a
+        planted population is not ``0/0``.
+
+        The labels are read inside, once per planted node, through the
+        held sidecar's ``assignment`` seam; the picks are never read at
+        all — every one is inside the population, so its label is the
+        population's own — and the answer is two figures with nothing
+        label-shaped crossing the boundary in either direction.
+        Refuses, with :class:`~scoring.CalibrationFiguresError` for its
+        own laws and nothing partial, in this order — each refusal a
+        different fact with a different repair, which is why the order
+        is stated:
+
+        1. a ``population`` that is not the planted nodes themselves
+           (a mapping, a bare string, or nothing iterable at all), a
+           plant with no nodes at all, a node that names no node, whose
+           id is not a UUID, or one planted twice — wiring faults at
+           the caller, and fractions over a whole nobody measured;
+        2. a pick that names no node, whose node id is not a UUID, or
+           a collection that is not the picks themselves — the pick
+           law is feature 265's, and its refusals arrive in its
+           vocabulary (:class:`~scoring.NullPickRateError`),
+           propagated untranslated so the repair stays named where the
+           law lives;
+        3. a pick the population does not hold — a discovery claimed
+           outside the measured whole counts on neither side of either
+           fraction, and the figures would be fractions over a whole
+           nobody chose;
+        4. the sidecar's own failure while being read, an entry it
+           holds for no planted node, or an ``is_null`` that is not a
+           genuine bool — the read's laws are feature 265's, but its
+           subject here is the population this verb declared, so the
+           translation lands in this feature's vocabulary with the
+           original chained;
+        5. a population whose labels hold no real node (sensitivity's
+           class is empty — nothing for a discovery to find) or no
+           null one (specificity's is — a plant that cannot be wrongly
+           declared against): §4.1.1's floor, refused rather than
+           defaulted either way.
+
+        Deterministic and pure in everything but the one read per
+        planted node: the same sidecar, population and picks answer the
+        same pair to the bit — four counts, two divisions — and the
+        reads touch nothing but the population it was asked about.
+        """
+        planted = _the_planted_population(population)
+        claimed = _the_claimed_discoveries(picks, planted)
+        true_positives = false_positives = 0
+        true_negatives = false_negatives = 0
+        for node in planted:
+            # The null class first, the rate's own side of the matrix:
+            # declared is the false discovery β₂ charges for, undeclared
+            # the true negative specificity counts.  The read is one per
+            # planted node, in the order the population was handed — the
+            # only order the ask carries, and counts are order-free.
+            if _planted_label_of(self._sidecar, node):
+                if node in claimed:
+                    false_positives += 1
+                else:
+                    true_negatives += 1
+            elif node in claimed:
+                true_positives += 1
+            else:
+                false_negatives += 1
+        found = true_positives + false_negatives
+        if found == 0:
+            raise CalibrationFiguresError(
+                f"sensitivity is undefined against a plant that holds no "
+                f"real node (true positives={true_positives}, false "
+                f"negatives={false_negatives} over {len(planted)} "
+                f"planted): prd §4.1.1's floor problem exists to keep "
+                f"this campaign out of the pool — a tree needs at least "
+                f"two null roots and two real roots or it contributes "
+                f"almost nothing to either figure — and a figure about "
+                f"an empty class would be a stand-in where §4.1.3 asks "
+                f"for a measurement (feature 266, prd §4.1.1)"
+            )
+        clean = true_negatives + false_positives
+        if clean == 0:
+            raise CalibrationFiguresError(
+                f"specificity is undefined against a plant that holds no "
+                f"null node (true negatives={true_negatives}, false "
+                f"positives={false_positives} over {len(planted)} "
+                f"planted): a population of nothing but reals cannot be "
+                f"wrongly declared against — the campaign §4.1.1's floor "
+                f"problem refuses for the other figure's sake — and a "
+                f"figure about an empty class would be a stand-in where "
+                f"§4.1.3 asks for a measurement (feature 266, "
+                f"prd §4.1.1)"
+            )
+        return CalibrationFigures(
+            sensitivity=true_positives / found,
+            specificity=true_negatives / clean,
+        )
 
     # -- Composition --------------------------------------------------------
 
@@ -551,6 +692,277 @@ def _label_of(sidecar: object, node: str) -> bool:
             f"bit decides which side of the fraction the pick counts on, "
             f"and a value that merely looks true or false would count it "
             f"without saying so (feature 265, docs §7.1)"
+        )
+    return is_null
+
+
+# -- feature 266's private vocabulary (the calibration ask) --------------------
+
+
+def _the_planted_population(population: object) -> tuple[str, ...]:
+    """The ask's whole, as canonical node ids in handed order, refusing
+    the shapes that are not the planted nodes themselves.
+
+    A mapping is refused because iterating one yields its keys, and a
+    caller's mapping is keyed by worlds or by campaigns — either way,
+    the keys are not the plant, and fractions silently taken over them
+    would be fractions over a whole nobody declared.  A bare string
+    (and bytes, its encoding-shaped sibling) is refused because it is
+    *one node* spelled where the collection belongs — the same refusal
+    the pick seam makes in its own direction.  Everything else must
+    simply be iterable; a generator is consumed exactly once, here, into
+    the tuple the count shares.  The population is kept in handed order
+    (the read pass follows it, and the ask's order is a fact the caller
+    can debug against) while duplicates are refused, not collapsed:
+    both denominators are counts over this whole, and a node planted
+    twice would double-count whichever class it fell in — the one
+    direction neither figure can afford.
+    """
+    if isinstance(population, (str, bytes, Mapping)):
+        raise CalibrationFiguresError(
+            f"sensitivity and specificity are fractions over the planted "
+            f"population itself, and this ask carried "
+            f"{_shape_of(population)}: hand the campaign's planted nodes "
+            f"as a collection — addresses or objects exposing node_id — "
+            f"not a mapping (whose keys are not its nodes) and not a "
+            f"bare string (one node spelled where the collection "
+            f"belongs) (feature 266, prd §4.1.3)"
+        )
+    if not isinstance(population, Iterable):
+        raise CalibrationFiguresError(
+            f"sensitivity and specificity are fractions over the planted "
+            f"population itself, and this ask carried "
+            f"{_shape_of(population)}, which is not a collection of "
+            f"nodes: hand the campaign's planted nodes as a collection, "
+            f"each one its address or an object exposing node_id "
+            f"(feature 266, prd §4.1.3)"
+        )
+    planted: list[str] = []
+    seen: set[str] = set()
+    for node in tuple(population):
+        node_id = _canonical_planted_id(_planted_node_id(node), node)
+        if node_id in seen:
+            # The plant is a set — §4.1.1 counts its roots, and one root
+            # twice would double-count one class — so the second spelling
+            # is refused rather than collapsed, naming the node both
+            # spellings name.
+            raise CalibrationFiguresError(
+                f"the planted population carries node {node_id!r} twice: "
+                f"the plant is a set, and both denominators are counts "
+                f"over it — one node planted twice would double-count "
+                f"whichever class it conditions on, the one direction "
+                f"neither figure can afford. Hand each planted node "
+                f"once, in either of its address spellings (feature "
+                f"266, prd §4.1.1)"
+            )
+        seen.add(node_id)
+        planted.append(node_id)
+    if not planted:
+        # Not the empty declaration's refusal — that one is answered
+        # (sensitivity 0.0, specificity 1.0) — but the empty *plant*:
+        # no nodes, no classes, no figure with a denominator at all.
+        raise CalibrationFiguresError(
+            "sensitivity and specificity are fractions over a planted "
+            "population, and this ask carried none: a plant with no "
+            "nodes holds neither class, and both denominators are "
+            "counts over it — an ask that committed to no picks is a "
+            "measurement this verb answers (0.0 and 1.0), but an ask "
+            "that planted nothing is not (feature 266, prd §4.1.1)"
+        )
+    return tuple(planted)
+
+
+def _planted_node_id(node: object) -> str:
+    """One planted node's id, from either of the two spellings.
+
+    The same acceptance the pick seam states, in this ask's own
+    vocabulary because the refusals differ in what they repair: a
+    non-empty string is the address itself; anything else must expose a
+    ``node_id`` that is one — the tree's own node values being the
+    intended objects, duck-typed for the reason every seam here states
+    (the loader's synthetic-name re-execution means an ``isinstance``
+    would refuse the very objects composition produces).  ``bool`` is
+    refused before the string check, and ``None`` is refused rather
+    than skipped: a node the population cannot name cannot be planted
+    on either side of either fraction, and silently dropping it would
+    measure the fractions over a whole smaller than the one declared.
+    """
+    if isinstance(node, bool):
+        raise CalibrationFiguresError(
+            _not_a_planted_node_message(node, "a bool")
+        )
+    if isinstance(node, str):
+        if not node.strip():
+            raise CalibrationFiguresError(
+                _not_a_planted_node_message(node, "the empty string")
+            )
+        return node
+    node_id = getattr(node, "node_id", None)
+    if (
+        isinstance(node_id, bool)
+        or not isinstance(node_id, str)
+        or not node_id.strip()
+    ):
+        raise CalibrationFiguresError(_not_a_planted_node_message(node))
+    return node_id
+
+
+def _not_a_planted_node_message(node: object, carried: str | None = None) -> str:
+    """The refusal for a planted node that names no node.
+
+    Both accepted spellings are named because the repair is at the
+    caller's seam, not this one — and the empty plant is named too,
+    because the likeliest wrong population arriving one element at a
+    time is the one whose caller will need the whole refusal below.
+    """
+    described = (
+        f"carried {carried}"
+        if carried is not None
+        else "exposes no node_id a planted node could be read from"
+    )
+    return (
+        f"sensitivity and specificity are measured over the planted "
+        f"population, and this element of it {described}: got {node!r} "
+        f"({type(node).__name__}). Name each planted node either by its "
+        f"address (a non-empty node-id string) or by a node object "
+        f"exposing node_id — a node that cannot be named cannot be "
+        f"counted in either class, and skipping it would measure the "
+        f"fractions over a whole nobody declared (feature 266, "
+        f"prd §4.1.3)"
+    )
+
+
+def _canonical_planted_id(node_id: str, node: object) -> str:
+    """The planted node's address in the sidecar's key spelling:
+    canonical UUID text.
+
+    The join is :mod:`uuid`'s law — the same words
+    :func:`_canonical_node_id` spells for the pick, spelled again here
+    because the refusal names what was handed, and a planted node is
+    not a committed pick: the words differ so the repair stays aimed at
+    the population and not at the picks.  The cross-member suite pins
+    both spellings against the oracle's own normalizer.  Mixed case,
+    braces and the ``urn:`` form all join; an id that will not parse is
+    refused rather than skipped, because a sidecar entry for it cannot
+    exist and a population silently shrunk by one node would tilt both
+    denominators.
+    """
+    try:
+        return str(uuid.UUID(node_id))
+    except (ValueError, AttributeError, TypeError):
+        raise CalibrationFiguresError(
+            f"the planted node {node!r} names node {node_id!r}, which is "
+            f"not a UUID: the sidecar's entries are keyed by canonical "
+            f"node-id text (docs §7.1), and an address that cannot join "
+            f"the tree store's node.id cannot join the labels either — "
+            f"skipping it would measure the fractions over a whole "
+            f"nobody declared (feature 266, docs §7.1)"
+        ) from None
+
+
+def _the_claimed_discoveries(
+    picks: object, planted: tuple[str, ...]
+) -> frozenset[str]:
+    """The picks as the set of discovered nodes — canonical, deduplicated
+    and inside the population, in that order.
+
+    The pick spellings are validated by feature 265's own helpers, so
+    their refusals arrive in 265's vocabulary (:class:`NullPickRateError`)
+    and name the pick — the law is 265's and so is its repair, the same
+    stance the error accounting takes toward the same seam.  The
+    deduplication is deliberate and is this figure's own law, not the
+    rate's: the picks are a *declaration* of discoveries — the set of
+    nodes the campaign claimed — so two replays committing to one node
+    are two picks for the rate and one discovery here, and the collapse
+    is stated rather than silent.  The subset check comes after every
+    pick is validated, so the caller learns the first malformed pick
+    before any fact about coverage; it names the pick because the
+    repair is one of two collections, and only the caller knows which.
+    """
+    asked = _the_committed_picks(picks)
+    whole = set(planted)
+    claimed: list[str] = []
+    seen: set[str] = set()
+    for pick in asked:
+        node = _canonical_node_id(_pick_node_id(pick), pick)
+        if node not in seen:
+            seen.add(node)
+            claimed.append(node)
+    for node in claimed:
+        if node not in whole:
+            raise CalibrationFiguresError(
+                f"the committed pick names node {node!r}, which the "
+                f"population does not hold: a discovery claimed outside "
+                f"the measured whole counts on neither side of either "
+                f"fraction — a real one would leave sensitivity's "
+                f"numerator empty and a null one specificity's "
+                f"denominator short — and the figures would be "
+                f"fractions over a whole nobody chose. Hand the "
+                f"population the picks were drawn from, or the picks "
+                f"the population covers (feature 266, prd §4.1.3)"
+            )
+    return frozenset(claimed)
+
+
+def _planted_label_of(sidecar: object, node: str) -> bool:
+    """One planted node's null status, read inside and validated.
+
+    The read's *laws* are feature 265's — :func:`_label_of` states them
+    for the pick, and this helper holds every one of them: the ask goes
+    through the held sidecar's one per-node seam, a foreign failure is
+    translated with the original chained so no vocabulary but this
+    member's escapes, an unheld entry is refused as unknown rather than
+    read as real (here because either reading would tilt a class count,
+    where 265's stake was the fraction's numerator), and the ``is_null``
+    bit must be a genuine bool because ``bool("false")`` is ``True``.
+    The *words* are this feature's, because the subject is the planted
+    node — the population this verb declared — and 265's messages name
+    the committed pick; one law, two vocabularies, and the cross-member
+    suite pins the laws against the same real sealed file from both
+    verbs.  Nothing but the one bit is read, and nothing about any
+    other node is asked.
+    """
+    try:
+        entry = sidecar.assignment(node)
+    except CalibrationFiguresError:
+        raise
+    except Exception as exc:
+        # Whatever the carrier raised (a sealed file that will not open,
+        # a key that does not decrypt, permissions that admit a second
+        # account, a stand-in's assertion), the fact for the caller is
+        # one thing — the label could not be read — and the repair is
+        # in the deployment's sidecar, not in this arithmetic. Chained,
+        # so the operator keeps the original; translated, so the
+        # caller's single except keeps working.
+        raise CalibrationFiguresError(
+            f"the sidecar could not be read for the planted node "
+            f"{node!r}: {exc!r} ({type(exc).__name__}). The labels live "
+            f"in the null oracle's sealed file and the scorer process "
+            f"only holds the key that opens it — a read that failed "
+            f"there is a fact about the sidecar, not about the "
+            f"population, and no figure is invented over labels nobody "
+            f"could read (feature 266, docs §10.3)"
+        ) from exc
+    if entry is None:
+        raise CalibrationFiguresError(
+            f"the sidecar holds no entry for the planted node {node!r}: "
+            f"its null status is unknown, and a node no label answers "
+            f"cannot be counted in either class — reading it as real "
+            f"would inflate the sensitivity denominator and reading it "
+            f"as null the specificity's, either way a fraction over a "
+            f"class nobody measured. Hand a population the held sidecar "
+            f"labels in full — a node that needs the tree walked to be "
+            f"labelled is the null oracle's verb, not this member's "
+            f"(feature 266, prd §4.1.3)"
+        )
+    is_null = getattr(entry, "is_null", None)
+    if not isinstance(is_null, bool):
+        raise CalibrationFiguresError(
+            f"the sidecar's entry for the planted node {node!r} carries "
+            f"an is_null of {is_null!r} ({type(is_null).__name__}): the "
+            f"bit decides which class the node conditions on, and a "
+            f"value that merely looks true or false would count it "
+            f"without saying so (feature 266, docs §7.1)"
         )
     return is_null
 

@@ -135,17 +135,22 @@ def test_a_carrier_without_the_seam_is_refused() -> None:
 def test_the_process_exposes_no_label_surface(
     scorer: NullPickScorer, sidecar: StandInSidecar
 ) -> None:
-    """The barrier is structural: no public attribute beside the verb, no
-    ``__dict__`` for shadow state, and a ``repr`` that names the process
-    and nothing it holds.
+    """The barrier is structural: no public attribute beside the two
+    figure verbs, no ``__dict__`` for shadow state, and a ``repr`` that
+    names the process and nothing it holds.
 
     ``labels stay in`` is not a promise this class asks the caller to
     believe — it is the absence of a surface the labels could leave
     through.  The sidecar stays reachable only as the private slot the
-    verb reads.
+    verbs read.  The surface has grown exactly one verb since the
+    process landed — feature 266's ``calibration_figures``, the growth
+    265's own docstring reserved (*their own verbs on this process or
+    beside it*) — and the exact-set assertion is amended rather than
+    relaxed: two verbs that answer figures and nothing else, and still
+    no accessor, no cache, no third surface of any kind.
     """
     public = [name for name in dir(scorer) if not name.startswith("_")]
-    assert public == ["null_pick_rate", "resolve"]
+    assert public == ["calibration_figures", "null_pick_rate", "resolve"]
     assert not hasattr(scorer, "__dict__")
     assert sidecar is not getattr(scorer, "sidecar", None)
     rendered = repr(scorer)

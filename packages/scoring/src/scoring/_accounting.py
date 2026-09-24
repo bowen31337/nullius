@@ -44,7 +44,13 @@ come after *"are further answers off the same held labels"* — but the
 process's own class law is that it carries *"no other public surface"*
 than :meth:`~scoring.NullPickScorer.null_pick_rate`, because *"a second
 method that handed back a label, a count of nulls, or the sidecar itself
-would be a second place the barrier leaks."*  So the accounting does not
+would be a second place the barrier leaks."*  (The process has since
+grown exactly one more verb — feature 266's
+:meth:`~scoring.NullPickScorer.calibration_figures`, which answers two
+figures and nothing label-shaped, the growth that same reservation
+named — and nothing here changes: the accounting asks the process for
+one number, the rate, and 266's figures are a sibling answer this
+module does not consume.)  So the accounting does not
 ask for a count of nulls and does not read a label: it asks the process
 for the one number §10.3 lets out (docs line 507: *"the number flows
 out; the labels do not"*), handing the picks over verbatim, and takes
