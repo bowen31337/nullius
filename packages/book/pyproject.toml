@@ -1,0 +1,37 @@
+# nullius workspace member: the book plugin
+# (app_spec.xml, "Portfolio Book Construction", feature 301:
+# System combines promoted signals by information-ratio weighting, which
+# returns a single composite target score per symbol).
+#
+# Joins the uv workspace by convention — packages/book with this file —
+# so the module loader (src/app/module_loader.py) discovers it by scanning
+# the members the root pyproject.toml declares.  No edit to any central
+# registry, router table or app factory is needed or wanted to wire this
+# package in.
+#
+# Dependencies: the workspace root, and nothing else.  The combiner is
+# arithmetic over the promoted signals the caller already holds — each
+# signal's out-of-sample information ratio and one target score per
+# symbol — so the member adds no third-party dependency and no numerics
+# beyond the standard library's :mod:`math`.  The information-ratio
+# weighting's one spelling (weight signal i by IR_i, composite the
+# weighted average) is restated here rather than imported from the
+# evaluator or scoring member, because a workspace member never imports
+# another workspace member and reaches shared shapes through ``app.*``.
+
+[project]
+name = "book"
+version = "0.1.0"
+description = "Combines promoted signals by information-ratio weighting, which returns a single composite target score per symbol."
+requires-python = ">=3.12"
+dependencies = ["nullius"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/book"]

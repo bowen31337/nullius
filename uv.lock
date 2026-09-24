@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 [manifest]
 members = [
     "artifacts",
+    "book",
     "bootstrap",
     "canary",
     "cost-model",
@@ -43,6 +44,17 @@ requires-dist = [
     { name = "nullius", editable = "." },
     { name = "pyarrow", specifier = ">=14.0" },
 ]
+
+[[package]]
+name = "book"
+version = "0.1.0"
+source = { editable = "packages/book" }
+dependencies = [
+    { name = "nullius" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "nullius", editable = "." }]
 
 [[package]]
 name = "bootstrap"

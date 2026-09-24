@@ -1,0 +1,299 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 301 (System combines promoted signals by information-ratio weighting, which returns a single composite target score per symbol)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 301 in a new `book` plugin
+    (packages/book, import name book; seat src/app/modules/book): a pure
+    combiner that takes the promoted signals — each carrying its
+    out-of-sample information ratio and one target score per symbol — and
+    returns a single composite target score per symbol, weighted by each
+    signal's information ratio. The sentence's verb is `combine(signals)`:
+    it reads each promoted signal's information ratio and its per-symbol
+    target scores, weights signal i by w_i = IR_i (the information-ratio
+    weighting the sentence names), and answers a composite score per symbol
+    equal to the weighted average of that symbol's scores across the
+    signals that carry it — `composite[s] = Σ_i w_i · score_i[s] / Σ_i w_i`.
+    The information ratio is a signal's standing to weight the book, so a
+    signal presenting a non-positive or non-finite ratio is refused rather
+    than zero-weighted or dropped (silently discarding a losing signal
+    would hide a portfolio decision); a signal that expresses no score for
+    a symbol the book covers is refused rather than zero-filled (absence is
+    not a view, the stance the marginal-IR step takes on a book signal that
+    misses a priced date); and an empty set of signals is refused because a
+    book of zero signals has no composite. The answer is a frozen
+    `CompositeBook` that carries the composite target score per symbol
+    beside the weight and information ratio each signal carried, so the
+    composite is checkable against its own terms — the record discipline
+    feature 83's MarginalIR and feature 256's WorldScore both keep. It is a
+    pure function of evidence the factory does not hold (the promoted
+    signals), so it registers as a callable component named `book` — the
+    combiner itself, contributed once and consumed by whoever composes,
+    exactly the shape scoring's `world_objective` takes — and the seat
+    (src/app/modules/book) answers *what is the composed book combiner?*
+    for a caller that holds the app namespace. No central registry, router,
+    app factory, middleware, settings or migration is edited; the member
+    joins by workspace-scan convention and does not import another
+    workspace member — the promoted signals arrive as this member's own
+    `PromotedSignal` value, validated field by field, across the same
+    "no member imports another" seam the scoring and regime members take.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (new `book` member,
+      packages/book, import name book; seat src/app/modules/book) / pytest
+      (ruff + mypy conventions). The module loader (src/app/module_loader.py)
+      discovers members from the root pyproject.toml `[tool.uv.workspace]
+      members = ["packages/*"]`, imports each package so its module-level
+      `@register` fires, and composes what each `@register` builder
+      contributes under a component name. `app` (src/app) is a namespace
+      package; the book seat (src/app/modules/book) answers *what is the
+      composed book combiner?* for a caller that holds the app namespace,
+      the way the scoring seat answers *what is the composed per-world
+      objective?*.</stack>
+    <test_baseline>The book member's own suite under
+      packages/book/tests/ (test_combine for the act and value,
+      test_component for the builder and seat). The member is stdlib-only
+      at module scope (the factory's scan imports the package to fire its
+      `@register`, so it must pay nothing). The repository-level suite
+      under tests/ is collected by pytest's testpaths and does NOT collect
+      packages/*/tests (see the acceptance-gate memory), so the member's
+      own suite must be run explicitly as well. Lint only the new files
+      and compare to a sibling — the repo is red on main (mypy absent,
+      ~163 pre-existing ruff errors), so a baseline via `--stdin-filename`
+      misreports.</test_baseline>
+    <conventions>
+      - One act, one module: `_combine.py` holds the combiner verb, the
+        `PromotedSignal` input value, the `CompositeBook` answer and the
+        refusal vocabulary; `errors.py` carries the base error class;
+        `__init__.py` re-exports the public names, registers the `book`
+        callable component, and carries no logic — the shape every member
+        in this workspace takes.
+      - A callable component, the scoring precedent: the `book` component
+        is the combiner itself (`combine`), not a store or a service. It
+        has no `DATABASE_URL` to be absent and no environment to read; its
+        whole configuration is the arithmetic (the information-ratio
+        weighting, restated here rather than imported from the evaluator
+        or scoring member — a member never imports a member). The builder
+        `build_book_combiner()` takes no arguments and returns `combine`
+        unchanged, never raising; a composed application therefore carries
+        the one callable the order layer reaches through the app package to
+        turn the promoted signals into a composite ranking.
+      - The seat answers one question and no more: *what is the composed
+        book combiner?* It asks the factory for the `book` component and
+        returns the `combine` callable (or `None` when the member was not
+        scanned — a statement about composition, not an error, and a caller
+        that finds `None` must refuse to rank rather than re-derive the
+        arithmetic beside it). It does not re-export `PromotedSignal`,
+        `CompositeBook` or the error vocabulary: a caller who has the
+        callable calls it and gets the value, and a second spelling of the
+        member's surface here would be a second thing to keep in sync — the
+        discipline the scoring seat states, and the reason the member's
+        suite pins this module to exactly the names it carries.
+      - The promoted signal is this member's own frozen value:
+        `PromotedSignal(signal_id, information_ratio, target_scores)`, with
+        `signal_id` a non-empty name, `information_ratio` a finite real,
+        and `target_scores` a non-empty mapping of symbol to a finite
+        score. `combine` validates each field it reads (a member that
+        constructs the value the caller hands it still checks what it
+        receives — the "validate what you read" rule); the value is frozen
+        because a promoted signal is a recorded fact a later edit must not
+        be able to re-weight without re-deciding the promotion.
+      - Information-ratio weighting is the sentence's one mechanism and is
+        a convention, not a knob: signal i's weight is `IR_i`, and the
+        composite is the weighted average `Σ_i IR_i · score_i[s] / Σ_i IR_i`.
+        It is not a caller's parameter — a weight is a portfolio decision,
+        and the combiner's job is to apply the one weighting the spec
+        names, so two deployments report the same composite for the same
+        signals. (Downstream features — 302's covariance shrinkage, 303's
+        volatility targeting — take this composite and rescale it; they do
+        not re-open this weight.)
+      - Absence is not zero, twice over: a signal with a non-positive or
+        non-finite information ratio is refused (its standing to weight the
+        book is undefined, not zero); a signal that carries no score for a
+        symbol the book covers is refused (it expresses no view on that
+        symbol — zero-filling would counterfeit one). Neither is defaulted.
+      - Full coverage: every signal must carry a score for every symbol the
+        book covers (the union of the signals' symbol sets), so the
+        composite over a symbol is the weighted average across *all* the
+        signals — the stance feature 83's marginal IR takes on a book
+        signal that misses a priced date (refused, not zero-filled). A
+        signal missing a symbol is refused naming the signal and the
+        symbol, before any composite is formed.
+      - The composite is checkable against its own terms: `CompositeBook`
+        carries the composite score per symbol, the normalized weight each
+        signal carried (summing to one), and each signal's information
+        ratio, and construction enforces that every composite score equals
+        the weighted average of the contributing scores under the carried
+        weights — the self-consistency MarginalIR enforces on its ratios
+        and the node-metrics store on its `ic_mean`.
+      - Error vocabulary opens with a greppable code: `BookConstructionError`
+        is the base, and every refusal message opens with a one-word code
+        (`empty_book`, `unnamed_signal`, `duplicate_signal`,
+        `non_positive_ir`, `non_finite_ir`, `signal_without_scores`,
+        `non_finite_score`, `uncovered_symbol`), the `pool_frozen` /
+        `unwalkable_tree` precedent, so an operator greps one word for the
+        refusal.
+      - Deterministic and order-independent: the composite is a sum over
+        signals and so does not depend on the order they arrive; symbols
+        are emitted in sorted order so two calls over the same signals
+        answer identical `CompositeBook` values. No clock, no environment,
+        no store, no third-party import at module scope — stdlib only
+        (`dataclasses`, `math`, `collections`), so the factory's scan pays
+        nothing and the combiner is import-cheap on the replay path.
+      - Do not edit a central registry, router, app factory, middleware,
+        settings or migration (core-task, order-sensitive shared files);
+        the member joins by workspace-scan convention and registers its
+        `book` component with `@register` from its own `__init__.py`.
+    </conventions>
+  </existing_context>
+  <features_to_add>
+    <category name="Portfolio Book Construction">
+      <feature index="301">
+        <description>System exposes `combine(signals)`, the book combiner: it takes the promoted signals — each a `PromotedSignal` carrying its out-of-sample information ratio and one target score per symbol — weights signal i by `w_i = IR_i` (the information-ratio weighting the sentence names), and returns a single composite target score per symbol, the weighted average of that symbol's scores across the signals, `composite[s] = Σ_i w_i · score_i[s] / Σ_i w_i`. The information ratio is a signal's standing to weight the book, so a signal presenting a non-positive or non-finite ratio is refused rather than zero-weighted or dropped; a signal that expresses no score for a symbol the book covers is refused rather than zero-filled (absence is not a view); and a set of zero signals is refused, because a book of zero signals has no composite. The steps, in the order they must happen: (1) collect the signals into a list, refusing an empty set (`empty_book`) and a signal with no `signal_id` (`unnamed_signal`) or a `signal_id` already seen (`duplicate_signal`); (2) validate each signal's `information_ratio` is a finite real and strictly positive, refusing `non_finite_ir` and `non_positive_ir` naming the signal; (3) validate each signal's `target_scores` is a non-empty mapping of symbol to finite real, refusing `signal_without_scores` and `non_finite_score` naming the signal (and the symbol, for the latter); (4) resolve the symbol set as the union of the signals' symbols and require every signal to carry a score for every symbol in it, refusing `uncovered_symbol` naming the signal and the symbol before any composite is formed; (5) form the total weight `W = Σ_i IR_i` and each normalized weight `w_i = IR_i / W`; (6) form each symbol's composite as the weighted average of its scores under the normalized weights; (7) answer a frozen `CompositeBook` carrying the composite score per symbol, the normalized weight per signal and each signal's information ratio, with construction enforcing that every composite equals the weighted average of its contributing scores. A refused combine forms no value.</description>
+      </feature>
+      <feature index="301">
+        <description>System defines `PromotedSignal`, the frozen input value the combiner takes — a promoted signal's recorded fact. It carries three fields: `signal_id` (the signal's non-empty name — the promotion record's identity for it, stripped non-empty text, never normalised away, so a signal that names nothing is refused as `unnamed_signal`); `information_ratio` (the signal's out-of-sample information ratio, the scalar the promotion gate admitted it on — a finite real, and the weight it will carry; carried as given and validated strictly positive at combine time, not here, so the value is a plain record and the policy lives in the verb); and `target_scores` (a non-empty mapping of symbol to the signal's target score for that symbol — the signal's per-symbol view, each a finite real). Frozen, for the same reason `MarginalIR` and `WorldScore` are: a promoted signal is the record of a decision, and a caller who could edit its ratio or its scores in memory could re-weight the book without re-running the promotion that earned the signal its place. A symbol that is not text, or a score that is not a finite real, is refused at construction — the value admits only what the combiner can score, so a malformed signal is caught where it is built, not where it is combined. Construction is observable: a `PromotedSignal` built with a blank `signal_id`, a NaN ratio, or a non-finite score raises `BookConstructionError` (the value rejects what the combiner could not score), and the member's suite asserts the frozen value carries the three fields unchanged for a well-formed signal.
+</description>
+      </feature>
+      <feature index="301">
+        <description>System answers `CompositeBook`, the frozen composite — the single ranking the combine verb returns. It carries the composite target score per symbol (`scores`, a mapping of symbol to the weighted-average score, emitted in sorted-symbol order so two calls over the same signals answer identical values), the normalized weight each signal carried (`weights`, a mapping of `signal_id` to `w_i = IR_i / Σ_j IR_j`, summing to one), and each signal's information ratio (`information_ratios`, a mapping of `signal_id` to `IR_i`, the raw standing the normalized weight reduces from), and it exposes `target_score(symbol)` returning the composite score for one symbol. Frozen, because the composite is the order layer's ranking and a value that could move after it was read would be a ranking that changed beneath the instruction that consumes it — the same guarantee `WorldScore` makes for a world's score. Construction enforces self-consistency: every `scores[s]` must equal `Σ_i weights[i] · score_i[s]` recomputed from the carried weights and the contributing per-symbol scores, and every weight must equal `IR_i / Σ_j IR_j` recomputed from the carried ratios — the defence MarginalIR applies to its ratios and the node-metrics store to its `ic_mean`, so a `CompositeBook` is a check rather than a claim and a hand-built one whose composite is not its own weighted average is refused. All scalars are finite reals — NaN and ±inf are refused on both the scores and the weights, so no fabricated infinity ranks above an honest score.</description>
+      </feature>
+      <feature index="301">
+        <description>System exposes `BookConstructionError`, the combiner's refusal vocabulary — one base class, every message opening with a greppable one-word code (the `pool_frozen` / `unwalkable_tree` precedent), so an operator greps one word for the refusal. Its faces, each naming the signal (by `signal_id`) and, where relevant, the symbol: `empty_book` — `combine` was handed no signals, so there is nothing to weight into a composite; `unnamed_signal` — a signal carries no `signal_id` (a blank or absent name), so it has no identity a weight could be attributed to; `duplicate_signal` — two signals carry the same `signal_id`, so a weight could not be attributed to one signal; `non_positive_ir` — a signal's information ratio is zero or negative, so its standing to weight the book is undefined (refused rather than zero-weighted, because silently dropping a losing signal would hide a portfolio decision); `non_finite_ir` — a signal's information ratio is NaN or ±inf, which would reach the composite dressed as a standing; `signal_without_scores` — a signal carries an empty `target_scores`, so it expresses no view to contribute; `non_finite_score` — a signal's score for a named symbol is NaN or ±inf; and `uncovered_symbol` — a signal carries no score for a symbol the book covers, so it expresses no view on that symbol (refused rather than zero-filled, absence not being a view). The code is the first token of every message, and the signal and symbol are named so the refusal is actionable without a stack trace; a `combine` handed any of these raises `BookConstructionError` with the coded message and returns no `CompositeBook`, which the member's suite asserts by checking the raised message begins with the code.</description>
+      </feature>
+      <feature index="301">
+        <description>System registers the combiner as the callable component `book` and seats it in the app package. The `book` member's `__init__.py` declares `COMPONENT_NAME = "book"` and a builder `build_book_combiner()` — decorated `@register(COMPONENT_NAME)`, taking no arguments, reading no environment and never raising — that returns `combine` unchanged, so a composed application carries the one callable the order layer reaches through the app package to turn the promoted signals into a composite ranking; the combiner's whole configuration is the arithmetic, so it cannot misconfigure or degrade, exactly the property scoring's `build_world_objective` states for the objective. The seat (src/app/modules/book) answers *what is the composed book combiner?*: it asks the factory for the `book` component and returns the `combine` callable, or `None` when the member was not scanned — a statement about composition, not an error, and a caller that finds `None` must refuse to rank rather than re-derive the arithmetic beside it. The seat does not re-export `PromotedSignal`, `CompositeBook` or `BookConstructionError`: a caller who has the callable calls it and gets the value, and a second spelling of the member's surface here would be a second thing to keep in sync — the discipline the scoring seat states. The member's suite asserts the component name and the seat's accessor agree, so the two spellings of one name cannot drift.</description>
+      </feature>
+      <feature index="301">
+        <description>System passes an end-to-end combine: three promoted signals, each with a strictly positive information ratio and a target score for each of a shared symbol set {BTC, ETH, SOL}, combine to a `CompositeBook` whose `scores` hold one composite target score per symbol, whose `weights` sum to one and rank the signals by information ratio, and whose `target_score(symbol)` returns the weighted average of the three signals' scores for that symbol — and a re-run over the same signals in a different order answers an identical `CompositeBook` (the composite is a sum and so is order-independent, and symbols are emitted sorted). Refusals, each leaving no value: a signal with `information_ratio = 0.0` is refused as `non_positive_ir` naming the signal (not silently dropped); a signal with `information_ratio = float("nan")` is refused as `non_finite_ir`; a signal whose `target_scores` omits SOL is refused as `uncovered_symbol` naming the signal and SOL (not zero-filled); a signal with an empty `target_scores` is refused as `signal_without_scores`; two signals sharing a `signal_id` are refused as `duplicate_signal`; and an empty signal set is refused as `empty_book`. The composite is checkable: each `scores[s]` equals `Σ_i weights[i] · score_i[s]` recomputed from the carried weights, so the record is a check rather than a claim.</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    The combiner is a pure function of evidence the factory does not hold
+    (the promoted signals), so it registers as the callable component
+    `book` — the combiner itself, contributed once and consumed by whoever
+    composes, exactly the shape scoring's `world_objective` takes
+    (`build_world_objective` returns `world_objective` unchanged under the
+    component name `scoring`). The seat (src/app/modules/book) reaches that
+    component through the factory, the way the scoring seat reaches the
+    objective. The member imports no other workspace member: the promoted
+    signals arrive as this member's own `PromotedSignal` value, and the
+    information-ratio weighting is restated here rather than imported from
+    the evaluator member (feature 83's `compute_marginal_ir`) or the
+    scoring member (feature 80's `_information_ratio`) — a member never
+    imports a member, and the one spelling of the information ratio this
+    combiner uses (mean over population standard deviation) is pinned here
+    in its own terms. Downstream features take this composite as their
+    input: feature 302's covariance shrinkage stabilizes the weight vector,
+    feature 303's volatility targeting rescales it, and feature 305 returns
+    the final target weights the order layer consumes — but none of them
+    re-opens the information-ratio weighting this feature fixes. No
+    `@register` name collides (the component is `book`, distinct from every
+    existing member), no table, endpoint or migration is added, and no
+    central registry, router, app factory, middleware, settings or
+    migration is edited.
+  </integration_points>
+  <constraints>
+    - No member imports another: the promoted signals are this member's own
+      `PromotedSignal` value; validate `signal_id`, `information_ratio` and
+      `target_scores` field by field, and the information-ratio weighting is
+      restated here, never borrowed from the evaluator or scoring member.
+    - One callable component named `book`, registered with `@register` from
+      the member's own `__init__.py`; the builder takes no arguments, reads
+      no environment and never raises, and returns `combine` unchanged.
+    - The seat answers exactly one question — *what is the composed book
+      combiner?* — returns the `combine` callable or `None`, and re-exports
+      nothing else from the member.
+    - Do not edit a central registry, router, app factory, middleware,
+      settings or migration (core-task, order-sensitive shared files).
+    - Information-ratio weighting is the sentence's one mechanism and is a
+      convention, not a knob: `w_i = IR_i`, composite the weighted average;
+      not a caller's parameter.
+    - Absence is not zero: a non-positive or non-finite information ratio is
+      refused (not zero-weighted), and a signal missing a symbol is refused
+      (not zero-filled); full coverage is required — every signal must
+      carry a score for every symbol the book covers.
+    - Validation is total before any composite is formed: an empty set, an
+      unnamed or duplicate signal, a non-positive or non-finite ratio, an
+      empty or non-finite score map and an uncovered symbol are all refused
+      before the total weight is summed, so a refused combine forms no value.
+    - The composite is checkable: `CompositeBook` carries the composite
+      score per symbol, the normalized weight per signal and each signal's
+      information ratio, and construction enforces that every composite
+      equals the weighted average of its contributing scores under the
+      carried weights.
+    - Deterministic and order-independent: the composite is a sum over
+      signals; symbols are emitted sorted; stdlib only (`dataclasses`,
+      `math`, `collections`) and import-cheap at module scope.
+    - Every refusal message opens with its greppable code, and names the
+      signal (and the symbol, where relevant), so the refusal is actionable.
+  </constraints>
+  <implementation_steps>
+    <phase name="Feature 301 — combine promoted signals by information-ratio weight">
+      <step>1. Create the `book` member: `packages/book/pyproject.toml`
+        (a uv-workspace member, stdlib-only, src layout with import name
+        `book`), and declare it in the root pyproject.toml
+        `[tool.uv.workspace] members` alongside the existing members so the
+        module loader's scan discovers it.</step>
+      <step>2. `packages/book/src/book/errors.py`: the base
+        `BookConstructionError(Exception)`, documented to open every message
+        with a greppable one-word code and to name the signal (and symbol,
+        where relevant).</step>
+      <step>3. `packages/book/src/book/_combine.py`: `PromotedSignal`
+        (frozen dataclass: `signal_id`, `information_ratio`, `target_scores`,
+        with `__post_init__` validating non-empty text id, finite-real ratio
+        and a non-empty symbol→finite-real mapping); `CompositeBook` (frozen
+        dataclass: `scores`, `weights`, `information_ratios`, with
+        `target_score(symbol)` and a `__post_init__` that enforces each
+        composite equals the weighted average of its contributing scores and
+        each weight equals `IR_i / Σ_j IR_j`, refusing a self-inconsistent or
+        non-finite record); and `combine(signals)`, which runs the seven
+        ordered steps in the act bullet and answers the `CompositeBook`.
+        Stdlib only.</step>
+      <step>4. `packages/book/src/book/__init__.py`: re-export the public
+        names (`combine`, `PromotedSignal`, `CompositeBook`,
+        `BookConstructionError`), declare `COMPONENT_NAME = "book"`, and
+        register `build_book_combiner()` under `@register(COMPONENT_NAME)`
+        returning `combine` unchanged. `py.typed` marker. Assert in the
+        member's suite that the exported surface is exactly these names.</step>
+      <step>5. `src/app/modules/book/__init__.py`: the seat — ask the factory
+        for the `book` component and return the `combine` callable (or
+        `None`), answering *what is the composed book combiner?* and
+        re-exporting nothing else. Document the `None`-means-not-scanned
+        semantics and the refuse-don't-re-derive stance.</step>
+      <step>6. Tests: `packages/book/tests/test_combine.py` (the act — the
+        three-signal happy path, order-independence, the checkable composite,
+        and every refusal face — `empty_book`, `unnamed_signal`,
+        `duplicate_signal`, `non_positive_ir`, `non_finite_ir`,
+        `signal_without_scores`, `non_finite_score`, `uncovered_symbol`);
+        `packages/book/tests/test_component.py` (the `build_book_combiner`
+        builder returns `combine` and never raises, the `book` component
+        composes through `create_app`, and the seat returns the callable).
+        `packages/book/tests/conftest.py` bootstraps the member onto
+        `sys.path` the way the sibling members' conftests do.</step>
+      <step>7. Validate and run the member's own suite (the repo-level suite
+        under tests/ does not collect packages/*/tests — run the member suite
+        explicitly), and lint only the new files against a sibling baseline.</step>
+    </phase>
+  </implementation_steps>
+  <success_criteria>
+    - `combine` over three promoted signals (positive IR, shared symbol set)
+      returns a `CompositeBook` with one composite target score per symbol,
+      weights summing to one and ranking by information ratio, and a
+      re-run in a different signal order answers an identical value.
+    - Every composite score equals the weighted average of the contributing
+      per-symbol scores under the carried weights (the record is a check).
+    - Each refusal — `empty_book`, `unnamed_signal`, `duplicate_signal`,
+      `non_positive_ir`, `non_finite_ir`, `signal_without_scores`,
+      `non_finite_score`, `uncovered_symbol` — fires on its face, opens its
+      message with the greppable code, names the signal (and symbol), and
+      forms no value.
+    - A non-positive or non-finite information ratio is refused, not
+      zero-weighted; a signal missing a symbol is refused, not zero-filled.
+    - The `book` component composes through `create_app()` and the seat
+      returns the `combine` callable (or `None` when the member is absent).
+    - The member is stdlib-only at module scope and import-cheap; the
+      factory's scan pays nothing. No central registry, router, app factory,
+      middleware, settings or migration is edited; no table, endpoint or
+      migration is added.
+  </success_criteria>
+</project_specification>
