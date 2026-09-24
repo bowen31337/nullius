@@ -167,9 +167,15 @@ environment — so it adds no component and no seat: the composed
 ``scoring`` component stays the per-world objective, and the term is
 reached through this namespace, landing its visible, signed, arguable
 delta through :meth:`~scoring.WorldScore.adjusted` exactly as the
-objective's own docstring promised the six β-terms would — and the
-remaining penalty (feature 257) will find the seam already shaped when
-it lands its own term through it.
+objective's own docstring promised the six β-terms would — and feature
+257's β₁ has since taken the same path: one charge per unit of the
+statistical budget the search consumed, ``− β₁ · trials_charged`` (prd
+§7.1's first line, the paper's ``β₁ N`` rewritten by §7.1's Change B to
+count degrees of freedom rather than agent calls), reached as
+:func:`~scoring.trials_penalty` from the member's own namespace with no
+component and no second seat either — the penalties' first by feature
+number, and the one whose count is the raw spend, not feature 259's
+honest ``K_effective`` derivation.
 
 **The β₄ divergence penalty is the member's sixth law (feature 260).**
 *"System subtracts a beta-four term proportional to absolute divergence
@@ -227,9 +233,11 @@ so it adds no component and no seat: the composed ``scoring`` component
 stays the per-world objective, and the term is reached through this
 namespace, landing its visible, signed, arguable delta through
 :meth:`~scoring.WorldScore.adjusted` exactly as the objective's own
-docstring promised the six β-terms would — and the remaining penalty
-(feature 257) will find the seam already shaped when it lands its own
-term through it.
+docstring promised the six β-terms would — and feature 257's β₁ has since
+taken the same path: one charge per unit of the statistical budget the
+search consumed, reached as :func:`~scoring.trials_penalty` from the
+member's own namespace, the raw spend rather than feature 259's honest
+count, with no component and no second seat either.
 
 **The β₂ null-pick penalty is the member's eighth law (feature 258).**
 *"System subtracts a beta-two term proportional to null pick rate, which
@@ -260,9 +268,40 @@ component and no seat: the composed ``scoring`` component stays the
 per-world objective, and the term is reached through this namespace,
 landing its visible, signed, arguable delta through
 :meth:`~scoring.WorldScore.adjusted` exactly as the objective's own
-docstring promised the six β-terms would — and the last of them (feature
-257's β₁) will find the seam already shaped when it lands its own term
-through it.
+docstring promised the six β-terms would — and feature 257's β₁ has since
+taken the same path: one charge per unit of the statistical budget the
+search consumed, reached as :func:`~scoring.trials_penalty` from the
+member's own namespace, the raw spend rather than feature 259's honest
+count, with no component and no second seat either.
+
+**The β₁ trials penalty is the member's thirteenth law (feature 257).**
+*"System subtracts a beta-one term proportional to trials charged, which
+returns a score penalized for consumed statistical budget"* — prd §7.1's
+first line and the paper's original ``β₁ N``, rewritten by §7.1's Change
+B (docs §10.3, prd §705: ``β₁ N (agent calls)`` → ``β₁ · trials charged
+(statistical budget)``) to count the binding resource rather than the
+embarrassingly-parallel compute the paper priced.  It lives in
+:mod:`scoring._trials` as :func:`~scoring.trials_penalty` (the verb) and
+:data:`~scoring.BETA_ONE_DEFAULT` (the coefficient's stated default —
+neither document sizes it, the base quarter its β₃, β₅ and β₆ siblings
+set), with its own refusal :class:`~scoring.TrialsPenaltyError`.  The
+charge is one product of two non-negative factors — the coefficient, and
+the raw count of budget-charging trials, the statistical spend feature
+221's ``BudgetAccount.charged`` answers and §6.1's ``trials_charged``
+column holds, taken **directly, not derived**: this is the term's whole
+shape, one ``β₁`` per unit with no square root and no logarithm to soften
+it.  It is deliberately **not** feature 259's ``K_effective``: β₁ and β₃
+are two terms over the *same* resource, priced two different ways — β₁
+the raw spend, β₃ the multiple-testing bar over the honest count — and
+conflating them would either double-count the charge or drop it, so the
+seam reads the one figure its own term names and never reaches for a
+``total`` or a ``by_epoch`` breakdown.  Like every other term of the
+formula it is pure arithmetic — no store, no clock, no environment — so
+it adds no component and no seat: the composed ``scoring`` component
+stays the per-world objective, and the term is reached through this
+namespace, landing its visible, signed, arguable delta through
+:meth:`~scoring.WorldScore.adjusted` exactly as the objective's own
+docstring promised the six β-terms would.
 
 **The scorer process is the member's ninth law and its first component
 beside the objective (feature 265).**  *"System computes null pick rate
@@ -436,6 +475,7 @@ from ._orthogonality import BETA_SIX_DEFAULT, orthogonality_bonus
 from ._regime_index import PLAIN_MEAN_CODE, regime_aggregate, regime_strata
 from ._scorer import NullPickScorer
 from ._switches import BETA_FIVE_DEFAULT, switch_penalty
+from ._trials import BETA_ONE_DEFAULT, trials_penalty
 from .errors import (
     AggregationError,
     CalibrationFiguresError,
@@ -449,6 +489,7 @@ from .errors import (
     RegimeIndexError,
     ScoringError,
     SwitchPenaltyError,
+    TrialsPenaltyError,
     WorldObjectiveError,
 )
 
@@ -458,6 +499,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the annotation is lazy
 __all__ = [
     "BETA_FIVE_DEFAULT",
     "BETA_FOUR_DEFAULT",
+    "BETA_ONE_DEFAULT",
     "BETA_SIX_DEFAULT",
     "BETA_THREE_DEFAULT",
     "BETA_TWO_DEFAULT",
@@ -491,6 +533,7 @@ __all__ = [
     "RegimeIndexError",
     "ScoringError",
     "SwitchPenaltyError",
+    "TrialsPenaltyError",
     "WorldObjectiveError",
     "WorldScore",
     "account_errors",
@@ -503,6 +546,7 @@ __all__ = [
     "regime_aggregate",
     "regime_strata",
     "switch_penalty",
+    "trials_penalty",
     "world_objective",
 ]
 

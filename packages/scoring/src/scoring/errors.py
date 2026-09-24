@@ -29,8 +29,10 @@ charge that cannot be counted; feature 260 adds
 that cannot be read; feature 259 adds :class:`DeflationPenaltyError`,
 the refusal of a multiple-testing haircut that cannot be trusted; feature
 258 adds :class:`NullPickPenaltyError`, the refusal of a planted-null
-penalty that cannot be charged — the five β-terms this member has so far,
-and the place the last one (257) will add its own when it lands.  Feature
+penalty that cannot be charged, and feature 257 adds the penalties' first
+by feature number: :class:`TrialsPenaltyError`, the refusal of a
+statistical-budget charge that cannot be counted — the six β-terms this
+member now holds, each with its own refusal.  Feature
 265 adds the scorer process's own: :class:`NullPickRateError`, the
 refusal of a null pick rate that cannot be computed — the first class of
 the category's state-bound half, and the one place in this member whose
@@ -144,6 +146,7 @@ __all__ = [
     "RegimeIndexError",
     "ScoringError",
     "SwitchPenaltyError",
+    "TrialsPenaltyError",
     "WorldObjectiveError",
 ]
 
@@ -358,6 +361,59 @@ class DeflationPenaltyError(ScoringError):
     """
 
 
+class TrialsPenaltyError(ScoringError):
+    """A beta-one trials charge that cannot be counted (feature 257).
+
+    The ask was malformed in this term's own inputs — a coefficient that
+    is not a finite non-negative real (the spec's verb is *subtracts*, and
+    a negative one would counterfeit a bonus through the penalty seam,
+    teaching the loop that spending statistical budget pays), a score
+    carrier exposing no ``adjusted`` seam to ride, or a ``trials_charged``
+    that is not a non-negative integer count (a ``bool`` wearing an int's
+    type, a negative count that would pay the policy for having searched,
+    or a float — a measurement where a count of hypotheses belongs) — and
+    the refusal names which, because the repairs differ: a mis-set knob
+    against a carrier that is not a world score against a caller that
+    reached for the wrong count.
+
+    The *count-for-a-derivation* substitution is this class's sharpest
+    edge and the feature's own boundary.  ``trials_charged`` is the **raw**
+    statistical spend — feature 221's ``BudgetAccount.charged``, §6.1's
+    ``trials_charged`` column, the plain number of budget-charging trials —
+    and this term charges one ``β₁`` per unit of it, linearly.  It is
+    deliberately **not** feature 259's ``K_effective``: β₁ and β₃ are two
+    terms over the same resource, priced two different ways (β₁ the raw
+    spend, β₃ the multiple-testing bar over the honest count), and handing
+    the same derivation to both would charge β₁ on a filtered count and β₃
+    on a raw one.  The seam therefore takes the count directly — it reads
+    the one figure its own term names and never reaches for a ``total`` or
+    a ``by_epoch`` breakdown — and a caller that hands a ``K_effective``
+    derivation where a count belongs is refused: the honest counter is a
+    count of trials, and this term wants the spend, not the derivation.
+
+    Beside :class:`WorldObjectiveError`, :class:`OrthogonalityError`,
+    :class:`SwitchPenaltyError`, :class:`DivergencePenaltyError`,
+    :class:`DeflationPenaltyError` and :class:`NullPickPenaltyError`, never
+    under any of them: 256 refuses an ask that cannot be *scored*, 262 one
+    whose *bonus* cannot be measured, 261 one whose *charge* cannot be
+    counted, 260 one whose *divergence* cannot be read, 259 one whose
+    *haircut* cannot be trusted, 258 one whose *false discovery* cannot be
+    charged, and this class one whose *statistical spend* cannot be counted —
+    the seven repairs sending the operator to different members
+    (sequestration, the resident array, the regime labeler, the
+    forward-test record, the trial ledger, the scorer process, the budget
+    account).  It is the penalties' first by feature number, and the six
+    β-terms' refusals are deliberately *not* one class: each prices a
+    different fact, and prd §7.1's formula keeps them as separate lines.
+
+    No partial value escapes a refusal: the penalty either answers the
+    moved :class:`~scoring.WorldScore` or raises, so a caller can never
+    hold a half-charged score it must remember to discard — the guarantee
+    :class:`WorldObjectiveError` makes one feature earlier and every
+    β-term landing through the same frozen seam inherits.
+    """
+
+
 class NullPickPenaltyError(ScoringError):
     """A beta-two null-pick charge that cannot be charged (feature 258).
 
@@ -403,6 +459,18 @@ class NullPickPenaltyError(ScoringError):
     hold a half-charged score it must remember to discard — the guarantee
     :class:`WorldObjectiveError` makes one feature earlier and every
     β-term landing through the same frozen seam inherits.
+
+    And 257's refusal sits beside all six for the member's own version of
+    that reason: the trials penalty refuses an ask whose *statistical
+    spend* cannot be counted (a coefficient that flips the term's sign, a
+    ``trials_charged`` that is not a non-negative integer count, a raw
+    spend handed over as the ``K_effective`` derivation β₃ consumes
+    instead), and its repair lands on the budget account — feature 221's
+    ``BudgetAccount.charged`` and the ``trials_charged`` column, a data
+    path none of the other six refusals names — so folding it would send
+    the operator hunting for a sequestration, resident-array, labelling,
+    forward-record, ledger, scorer or null-pick fault in a data path this
+    term never reads.
     """
 
 
