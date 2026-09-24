@@ -122,7 +122,49 @@ address, the absence (no pre-registration to close), the ordering (a stamp
 that would precede the criteria it was judged against) and the write all open
 with :data:`PROMOTION_DECISION_ERROR_CODE` and all name what they are about.
 
-**Feature 300 adds the tree's sixth class, and it is a reader's refusal.**  It
+**Feature 294 adds the tree's sixth class, and it is a counting act over a
+row another feature owns.**  :class:`EpochChargeError` carries *"System
+persists the running promotion decision count against the serving epoch in
+the epoch_ledger"* — §13 item 4's ledger column advanced, a *write about a
+decision* and not a *judgement of one*.  It is deliberately **none** of the
+five beside it:
+
+* not :class:`PromotionError` — that class carries the pre-registration's
+  *ask* face, and a caller whose single ``except`` guards the charge path
+  would read *the body was malformed* where the truth is *the epoch stands
+  uncharged*;
+* not :class:`PromotionStoreError` — every message in that class is about
+  a *pre-registration row* that did not land, and the two code words keep
+  feature 291's insert and this feature's advance greppable apart;
+* not :class:`PromotionBlockError` nor :class:`VoidCalibrationError` —
+  those are the member's two *merit* refusals, findings about the pool and
+  the campaign, and this feature judges nothing: whether the promotion
+  stands is the deciding evaluation's verdict, and whether the epoch is
+  spent is features 295-296's machinery reading the figure this act
+  persists;
+* not :class:`PromotionDecisionError` — the closest of the five, and the
+  one the split is for.  That class reports *a decision happened and was
+  not recorded*, and its repair is to a write against the registry.  This
+  feature's registry reads all succeed — the decision is recorded, closed
+  and stamped — and what did not land is a figure in a *different* table.
+  An operator who greps ``promotion_decision_unrecorded`` lands on
+  feature 293's write; ``epoch_charge_unpersisted`` is a different write
+  to a different table, and conflating the two sends them debugging the
+  wrong column.
+
+Its faces stay **gathered** in one class, the same gate argument the
+gathered classes before it make: a caller whose single ``except
+EpochChargeError`` guards its epoch-governance path must not be able to
+walk through a hole because a malformed node arrived in a different class
+from an unreachable database or a missing ledger row — in every case the
+epoch's count stands unpersisted, which is the state features 295-297
+budget the system's whole continuation on.  So the ask (a malformed node
+or epoch), the address, the two absences (no registry row to bill, or no
+ledger row for the epoch it books), the shrinking count and the write all
+open with :data:`EPOCH_CHARGE_ERROR_CODE` and all name what they are
+about.
+
+**Feature 300 adds the tree's seventh class, and it is a reader's refusal.**  It
 carries *"System timestamps every promoted signal at promotion, which creates
 its forward measurement window"* — the act of answering *what window did this
 promotion open, and when does it close?* from the row feature 293 closed.  It is
@@ -166,11 +208,13 @@ the same.  Nothing here presumes which of the two any later feature is.
 from __future__ import annotations
 
 __all__ = [
+    "EPOCH_CHARGE_ERROR_CODE",
     "PROMOTION_BLOCK_ERROR_CODE",
     "PROMOTION_DECISION_ERROR_CODE",
     "PROMOTION_REGISTRY_ERROR_CODE",
     "PROMOTION_WINDOW_ERROR_CODE",
     "VOID_CALIBRATION_ERROR_CODE",
+    "EpochChargeError",
     "PromotionBlockError",
     "PromotionDecisionError",
     "PromotionError",
@@ -418,6 +462,92 @@ class PromotionDecisionError(PromotionError):
     """
 
 
+#: The greppable word that opens every :class:`EpochChargeError` message:
+#: an epoch served a promotion decision and the count §13 item 4 budgets it
+#: by did not land in the ledger.  Spelled beside the decision's own word
+#: (``promotion_decision_unrecorded``) but not in its letter, because the
+#: two are two *writes* to two tables one decision apart: an operator greps
+#: the decision's word for *a stamp did not land* and this one for *a count
+#: did not land*, and landing on the wrong one sends them debugging the
+#: wrong column of the wrong table.
+EPOCH_CHARGE_ERROR_CODE = "epoch_charge_unpersisted"
+
+
+class EpochChargeError(PromotionError):
+    """An epoch's running promotion decision count could not be persisted.
+
+    Feature 294's class: *"System persists the running promotion decision
+    count against the serving epoch in the epoch_ledger."*  Raised by
+    :func:`promotion.epoch.charge_epoch` and
+    :meth:`promotion.epoch.EpochCharges.charge` when the count of decided
+    ``promotion_registry`` rows an epoch has served could not be re-supplied
+    to its ``promotion_decisions_served`` column — and by the module's
+    reads, for the malformed asks and the corrupt rows they share with the
+    act.
+
+    **Its noun is a count derived from another feature's rows, and that is
+    why it is its own class.**  The member's tree splits by *the repair the
+    caller must make*, and this refusal's repair is unlike any of the five
+    beside it:
+
+    * not :class:`PromotionError` — that class carries the pre-registration's
+      *ask* face, and a caller that gathered the two would read *the body was
+      malformed* where the truth is *the epoch stands uncharged*;
+    * not :class:`PromotionStoreError` — the store's word sends an operator
+      to feature 291's insert, and this feature's registry reads are not the
+      write that failed;
+    * not :class:`PromotionBlockError` nor :class:`VoidCalibrationError` —
+      those are the member's two *merit* refusals, findings about the pool
+      and the campaign.  This feature judges nothing: the verdict is the
+      deciding evaluation's, and the threshold and the retirement are
+      features 295-296's machinery reading the figure this act persists;
+    * not :class:`PromotionDecisionError` — the closest, and the one the
+      split is for.  That class reports *a decision happened and was not
+      recorded*, and its repair is to a write against ``promotion_registry``.
+      Here the decision *is* recorded, closed and stamped; what did not land
+      is a figure in ``epoch_ledger`` — a different write to a different
+      table, debugged through a different word.
+
+    Six faces, **gathered** rather than split, because the caller is a gate
+    and a gate's one failure mode is silence — the argument the decision's
+    and the window's gathered classes state beside it:
+
+    * **the ask** — a malformed node or epoch identity.  Nothing was read and
+      nothing was written; the repair is to re-send the ask.
+    * **the address** — a ``DATABASE_URL`` this member cannot speak, or a
+      database that cannot be brought to the revision the ledger needs.  The
+      repair is to the deployment.
+    * **the registration absence** — no ``promotion_registry`` row for the
+      node, or a row still **open**, so the epoch has served no decision for
+      it yet.  The repair is to pre-register first (feature 291) and record
+      the decision (feature 293) — the load in this feature's
+      ``depends_on="293"``, not an incidental precondition.
+    * **the ledger absence** — a decided row booking an epoch whose ledger
+      row is gone, reachable only by a write that bypassed this member's
+      pragma.  Refused rather than repaired, because recreating the row
+      would mean minting a ``sealed_at`` this act must never author.
+    * **the shrinking count** — a derivation below the standing figure,
+      which only decided rows vanishing can produce; persisting it would
+      let feature 295's threshold read a spent epoch as clean.  The repair
+      is to the database.
+    * **the write** — the count did not land, or could not be read back as
+      the derived figure.  The repair is to the database.
+
+    In every one of them the count stands unpersisted, and that is the state
+    the class exists to make loud: §13 item 4 retires sequestered epochs
+    after *"3 promotion decisions. Track in a ledger. When clean epochs run
+    out, the system stops."*  Features 295-297 read exactly this column to
+    refuse selection, to declare the terminal state and to deplete the
+    remainder — an epoch whose charge quietly did not land reads cleaner
+    than it is, which is the reuse the ledger exists to prevent, arrived at
+    by silence.
+
+    Every message opens with :data:`EPOCH_CHARGE_ERROR_CODE` and names the
+    epoch or the node the charge was about, so an operator's log line says
+    which epoch stands uncounted and in which of the six ways.
+    """
+
+
 #: The greppable word that opens every :class:`PromotionWindowError` message:
 #: the promotion was asked about and the window it opened could not be
 #: answered.  Spelled after the decision's own word
@@ -442,7 +572,7 @@ class PromotionWindowError(PromotionError):
 
     **Its noun is a reader's question, not a writer's failure, and that is why
     it is its own class.**  The member's tree splits by *the repair the caller
-    must make*, and this refusal's repair is unlike any of the five beside it:
+    must make*, and this refusal's repair is unlike any of the six beside it:
 
     * not :class:`PromotionError` — that class carries the pre-registration's
       *ask* face, and a caller whose single ``except`` guards the window read
@@ -457,6 +587,11 @@ class PromotionWindowError(PromotionError):
       already on it, and what failed is the *reading* of a window off it.  The
       two repairs are different acts performed by different operators — restore
       a record, versus pre-register a promotion or wait for its evaluation;
+    * not :class:`EpochChargeError` — that class too reports a write that did
+      not land (the ledger's count), while this one reads no ledger and writes
+      nowhere: the window is derived entirely from the registry row's own
+      stamps, and an operator greps the charge's word for *a count did not
+      land* against this one for *a window could not be opened*;
     * not :class:`PromotionBlockError` nor :class:`VoidCalibrationError` — those
       are the member's two *merit* refusals, findings about the pool and the
       campaign.  This feature judges nothing: whether a promotion *stands* is

@@ -9,7 +9,7 @@ and hashed before the evaluation that decides them"*, and against the
 (``migrations/versions/0108_forward_and_universe_tables.py``) already
 declares.
 
-The member's surface is eight modules.  :mod:`promotion.criteria` is *what* a
+The member's surface is nine modules.  :mod:`promotion.criteria` is *what* a
 promotion is judged against and *how it is hashed*:
 :class:`~promotion.criteria.PromotionCriteria`, the six terms §13.7's
 "criteria" enumerates — the paired ΔIR advantage, the significance level, the
@@ -29,8 +29,9 @@ and :class:`~promotion.pre_register.PromotionRecord`, the row as the table
 holds it.  :mod:`promotion.schema` is the DDL adapter: it runs the *owning
 migrations'* own ``statements("sqlite")`` for the tables this member's
 statements need — feature 291's three (``node``, ``epoch_ledger`` and
-``promotion_registry``), feature 298's two (``node`` and ``campaign``) and
-feature 293's one (``promotion_registry`` alone), one set per act — so this
+``promotion_registry``), feature 298's two (``node`` and ``campaign``),
+feature 293's one (``promotion_registry`` alone) and feature 294's one
+(``epoch_ledger`` alone), one set per act — so this
 member authors no DDL and cannot drift from the schema's owners.  :mod:`promotion.blocking` is feature 299's *reason*:
 :class:`~promotion.blocking.PromotionBlocks`, the store that records why a
 promotion was blocked on §C7's regime coverage, with
@@ -55,7 +56,21 @@ cannot touch — with :func:`~promotion.decision.record_decision` as the act and
 nothing: the verdict is the deciding evaluation's and the mismatch refusal is
 292's; what it persists is the decision's timestamp beside the standing hash,
 the two facts §13 item 4's epoch count and feature 360's invariant read off
-the row.  :mod:`promotion.forward` is feature 300's *window*:
+the row.  :mod:`promotion.epoch` is feature 294's *charge*:
+:class:`~promotion.epoch.EpochCharges`, the store that persists the running
+promotion decision count against the serving epoch in the ``epoch_ledger``
+— one ``UPDATE`` whose ``SET`` clause names ``promotion_decisions_served``
+and nothing else, re-supplying the figure derived from the closed rows
+feature 293's listing holds against the epoch the node's row booked rather
+than incrementing it, so the count stays a function of the registry and a
+retried charge recomputes the same number — with
+:class:`~promotion.epoch.ServingEpoch` as the row as the charge reads it,
+:func:`~promotion.epoch.decisions_served` as the derivation on its own,
+and :func:`~promotion.epoch.charge_epoch` /
+:func:`~promotion.epoch.epoch_charge` as the write and the read.  It
+judges nothing and it takes no ``epoch_id``: the epoch billed is read off
+the row the pre-registration booked, the mirror of the decision's own
+refusal, and the threshold the count feeds is features 295-297's.  :mod:`promotion.forward` is feature 300's *window*:
 :class:`~promotion.forward.PromotionWindow`, the derived forward measurement
 window a promotion opened — the feature's sentence, *"timestamps every promoted
 signal at promotion, which creates its forward measurement window"*, answered as
@@ -83,7 +98,13 @@ feature 293's :class:`~promotion.errors.PromotionDecisionError` (the
 *recording* face, opening
 :data:`~promotion.errors.PROMOTION_DECISION_ERROR_CODE` — a decision that
 happened and was not recorded, gathered across its ask, address, absence,
-ordering and write faces because a gate's one failure mode is silence), and
+ordering and write faces because a gate's one failure mode is silence),
+feature 294's :class:`~promotion.errors.EpochChargeError` (the *counting*
+face, opening :data:`~promotion.errors.EPOCH_CHARGE_ERROR_CODE` — an
+epoch's running decision count that did not land in the ledger, gathered
+across the same gate's faces for the same caller-position reason, and
+spelled beside the decision's word but not in its letter because the two
+are two writes to two tables one decision apart), and
 feature 300's :class:`~promotion.errors.PromotionWindowError` (the *reading*
 face, opening
 :data:`~promotion.errors.PROMOTION_WINDOW_ERROR_CODE` — a window that could not
@@ -227,12 +248,24 @@ from .calibration import (
 )
 from .criteria import CRITERIA_FIELDS, PromotionCriteria, criteria_hash
 from .decision import PromotionDecisions, promotion_decision, record_decision
+from .epoch import (
+    PROMOTION_DECISIONS_SERVED_COLUMN,
+    RETIRED_COLUMN,
+    SEALED_AT_COLUMN,
+    EpochCharges,
+    ServingEpoch,
+    charge_epoch,
+    decisions_served,
+    epoch_charge,
+)
 from .errors import (
+    EPOCH_CHARGE_ERROR_CODE,
     PROMOTION_BLOCK_ERROR_CODE,
     PROMOTION_DECISION_ERROR_CODE,
     PROMOTION_REGISTRY_ERROR_CODE,
     PROMOTION_WINDOW_ERROR_CODE,
     VOID_CALIBRATION_ERROR_CODE,
+    EpochChargeError,
     PromotionBlockError,
     PromotionDecisionError,
     PromotionError,
@@ -269,10 +302,13 @@ from .pre_register import (
 )
 from .schema import (
     CALIBRATION_MIGRATION_ORDER,
+    CHARGE_MIGRATION_ORDER,
     DECISION_MIGRATION_ORDER,
+    EPOCH_LEDGER_TABLE,
     MIGRATION_ORDER,
     PROMOTION_REGISTRY_TABLE,
     bootstrap_calibration_schema,
+    bootstrap_charge_schema,
     bootstrap_decision_schema,
     bootstrap_schema,
     migrations_dir,
@@ -286,6 +322,7 @@ __all__ = [
     "CALIBRATION_STATUS_VOID",
     "CAMPAIGN_ID_COLUMN",
     "CAMPAIGN_TABLE",
+    "CHARGE_MIGRATION_ORDER",
     "CLOSES_AT_COLUMN",
     "COMPONENT_NAME",
     "COVERAGE_THRESHOLD_COLUMN",
@@ -294,7 +331,9 @@ __all__ = [
     "DATABASE_URL_ENV",
     "DECIDED_AT_COLUMN",
     "DECISION_MIGRATION_ORDER",
+    "EPOCH_CHARGE_ERROR_CODE",
     "EPOCH_ID_COLUMN",
+    "EPOCH_LEDGER_TABLE",
     "FORWARD_WINDOW_TABLE",
     "MIGRATION_ORDER",
     "NODE_ID_COLUMN",
@@ -304,14 +343,19 @@ __all__ = [
     "PROMOTED_AT_COLUMN",
     "PROMOTION_BLOCK_ERROR_CODE",
     "PROMOTION_BLOCK_TABLE",
+    "PROMOTION_DECISIONS_SERVED_COLUMN",
     "PROMOTION_DECISION_ERROR_CODE",
     "PROMOTION_REGISTRY_ERROR_CODE",
     "PROMOTION_REGISTRY_TABLE",
     "PROMOTION_WINDOW_ERROR_CODE",
     "REGIME_COLUMN",
+    "RETIRED_COLUMN",
+    "SEALED_AT_COLUMN",
     "VOID_CALIBRATION_ERROR_CODE",
     "WINDOW_DAYS_COLUMN",
     "WORLD_COUNT_COLUMN",
+    "EpochChargeError",
+    "EpochCharges",
     "PreRegisterEndpoint",
     "PreRegistrationRequest",
     "PreRegistrationResponse",
@@ -329,15 +373,20 @@ __all__ = [
     "PromotionWindow",
     "PromotionWindowError",
     "PromotionWindows",
+    "ServingEpoch",
     "VoidCalibrationError",
     "blocked_promotion",
     "blocking_reason",
     "bootstrap_calibration_schema",
+    "bootstrap_charge_schema",
     "bootstrap_decision_schema",
     "bootstrap_schema",
     "build_promotion_registry",
     "campaign_calibration",
+    "charge_epoch",
     "criteria_hash",
+    "decisions_served",
+    "epoch_charge",
     "migrations_dir",
     "promotion_decision",
     "promotion_window",

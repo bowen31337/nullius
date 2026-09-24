@@ -29,7 +29,7 @@ member has no business creating.  So the bootstrap completes the **set**: the
 three tables the one ``INSERT`` genuinely needs, in the migration tree's own
 dependency order, and nothing more.
 
-**One set per act, and there are three of them.**  Feature 298's calibration
+**One set per act, and there are four of them.**  Feature 298's calibration
 gate reads two tables — ``node`` and the ``campaign`` row its ``campaign_id``
 names — so it needs a bootstrap of its own, for the same structural reason
 from the other direction: this member's acts do not all lean on the same
@@ -60,6 +60,20 @@ store that ran the three-table set would be creating ``node`` and
 exists to keep distinguishable from a dependency.  Three orders, three
 bootstraps, one runner (:func:`_run_statements`) and one rule — *the set is
 the tables this act's own statements name*.
+
+Feature 294's charge takes the same end of the rule and adds a seam to it.
+Its two statements — the ledger read and the one-column ``UPDATE`` that
+re-supplies ``promotion_decisions_served`` — name ``epoch_ledger`` and
+nothing else, so :data:`CHARGE_MIGRATION_ORDER` is one owner again, the
+ledger's own ``0110``.  The registry facts the count is derived from are
+*read*, through :mod:`promotion.decision`'s own seam rather than a second
+``SELECT`` spelled in the charge — and a read is not a ``REFERENCES``
+clause: the decision store's bootstrap brings ``promotion_registry`` up,
+never this one's.  The ``UPDATE`` writes through no child key either
+(``epoch_ledger`` references nothing; ``0110`` declares
+``REQUIRES_TABLES = ()``), so no dialect resolves a parent for it.  Four
+orders, four bootstraps, one runner, one rule — and the fourth set is the
+rule's smallest illustration yet.
 
 **Why that is not a schema this member invents.**  Not one statement here is
 authored.  Every one comes from ``statements("sqlite")`` on a migration this
@@ -121,10 +135,13 @@ from .errors import PromotionError
 
 __all__ = [
     "CALIBRATION_MIGRATION_ORDER",
+    "CHARGE_MIGRATION_ORDER",
     "DECISION_MIGRATION_ORDER",
+    "EPOCH_LEDGER_TABLE",
     "MIGRATION_ORDER",
     "PROMOTION_REGISTRY_TABLE",
     "bootstrap_calibration_schema",
+    "bootstrap_charge_schema",
     "bootstrap_decision_schema",
     "bootstrap_schema",
     "migrations_dir",
@@ -133,6 +150,15 @@ __all__ = [
 #: The table feature 291's ``INSERT`` names, spelled once here as on
 #: ``0108``'s side — the value both creators agree on.
 PROMOTION_REGISTRY_TABLE = "promotion_registry"
+
+#: The sequestered epochs' ledger — the table feature 294's ``UPDATE``
+#: names, spelled once here as on ``0110``'s side.  Named as a constant now
+#: that a second act of this member leans on it: the pre-registration
+#: reaches it through a ``REFERENCES`` clause (as a parent, in
+#: :data:`MIGRATION_ORDER`) and the charge through a plain ``WHERE`` (as
+#: the table it counts against, in :data:`CHARGE_MIGRATION_ORDER`) — two
+#: acts, one spelling, so the two cannot name different tables.
+EPOCH_LEDGER_TABLE = "epoch_ledger"
 
 #: The tables ``promotion_registry``'s ``INSERT`` needs, and the migrations
 #: that create them, in the order they must run.
@@ -190,6 +216,31 @@ CALIBRATION_MIGRATION_ORDER: tuple[tuple[str, str], ...] = (
 #: statement is ``IF NOT EXISTS`` so nothing is over-created.
 DECISION_MIGRATION_ORDER: tuple[tuple[str, str], ...] = (
     (PROMOTION_REGISTRY_TABLE, "0108_forward_and_universe_tables"),
+)
+
+#: The one table feature 294's two statements name — the ledger read and
+#: the one-column ``UPDATE`` that re-supplies the running count — beside
+#: the migration that owns it.
+#:
+#: Deliberately **one** owner, for the decision's reason taken one table
+#: further: the charge's ``UPDATE`` writes ``promotion_decisions_served``,
+#: a non-key column of a table that references nothing (``0110`` declares
+#: ``REQUIRES_TABLES = ()`` — epochs are named by the sealing process, not
+#: looked up from a parent), so no dialect resolves a parent for the
+#: write.  The count is *derived* from ``promotion_registry``'s closed
+#: rows, but derived through :mod:`promotion.decision`'s own seam — a
+#: read, not a ``REFERENCES`` clause — and that store's own bootstrap
+#: brings the registry up.  A charge store that ran the registry's owner
+#: too would be creating ``promotion_registry`` and ``0108``'s five
+#: neighbours for statements that name none of them — the habit this
+#: module exists to keep distinguishable from a dependency.
+#:
+#: ``0110``'s whole statement tuple runs, as for every other order: the
+#: file's ``statements("sqlite")`` is the exact ``CREATE TABLE IF NOT
+#: EXISTS`` the sealing process's own chain runs, and taking a statement
+#: out would be this member editing another's schema.
+CHARGE_MIGRATION_ORDER: tuple[tuple[str, str], ...] = (
+    (EPOCH_LEDGER_TABLE, "0110_epoch_ledger"),
 )
 
 
@@ -302,6 +353,15 @@ def _decision_statements(dialect: str = "sqlite") -> tuple[str, ...]:
     return _statements_for(DECISION_MIGRATION_ORDER, dialect)
 
 
+def _charge_statements(dialect: str = "sqlite") -> tuple[str, ...]:
+    """Every statement feature 294's act needs, in order.
+
+    :data:`CHARGE_MIGRATION_ORDER` — ``epoch_ledger`` alone, the one table
+    the ledger read and the one-column ``UPDATE`` name.
+    """
+    return _statements_for(CHARGE_MIGRATION_ORDER, dialect)
+
+
 def _run_statements(
     connection: sqlite3.Connection, ddl: tuple[str, ...]
 ) -> tuple[str, ...]:
@@ -407,3 +467,34 @@ def bootstrap_decision_schema(
     dependency from a habit.
     """
     return _run_statements(connection, _decision_statements(dialect))
+
+
+def bootstrap_charge_schema(
+    connection: sqlite3.Connection, *, dialect: str = "sqlite"
+) -> tuple[str, ...]:
+    """Create the one table feature 294's act names; returns the DDL run.
+
+    The charge's half of the contract the other three bootstraps state,
+    over the smallest shape a set can take: ``epoch_ledger`` (``0110``) is
+    the only table the ledger read and the one-column ``UPDATE`` name.
+    Same discipline in every other respect — no statement is authored
+    here, each comes from ``statements(dialect)`` on the migration that
+    owns the table, loaded by file path and run whole — and the same
+    idempotence: every statement is ``IF NOT EXISTS``, so a database the
+    chain has already migrated is left exactly as it was.
+
+    **Why one owner and not the registry's.**  The count this act
+    re-supplies is *derived* from ``promotion_registry``'s closed rows, but
+    derived through :mod:`promotion.decision`'s own seam rather than a
+    second ``SELECT`` spelled in the charge — a read, not a
+    ``REFERENCES`` clause — so the registry is the decision store's
+    dependency and never this act's.  And the ``UPDATE`` itself writes
+    through no child key: ``epoch_ledger`` references nothing (``0110``
+    declares ``REQUIRES_TABLES = ()``), so no dialect resolves a parent
+    for it.  Handing this caller the registry's owner would work — every
+    statement is ``IF NOT EXISTS`` — and is deliberately not offered, for
+    the reason every other bootstrap here refuses the same offer: the set
+    a store runs should be the set its own statements name, or a reader
+    cannot tell a dependency from a habit.
+    """
+    return _run_statements(connection, _charge_statements(dialect))
