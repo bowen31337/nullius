@@ -186,6 +186,52 @@ nothing.  No code word, for the reason :class:`RevisionCeilingError` gives:
 feature 279's sentence mandates none, so every refusal opens with its subject
 — the cycle, the pool or the row that was wrong.
 
+**Feature 272 sweeps the candidate set over the pool, and its two classes take
+the ask/store split the cap, the split, the transfer, the bar and the rotation
+state.**  app_spec.xml, feature 272: *System evaluates every candidate revision
+against every stored world, persisting one score per pair.*  The sentence has
+an ask and a store, and it fails in the two places the member's other store
+seams fail — but it is the first of them whose *act* meets feature 270's
+freeze, so its vocabulary carries one extra fact: :class:`SweepRequestError` is
+the *ask* face — a candidate that is not a candidate module carrying a
+``module_id`` and a ``code_hash``, an identity that is not non-empty text, a
+revision index that is not a genuine positive integer, the same revision twice
+under one version, an empty candidate set or a bare candidate where a sequence
+belongs, worlds that are not a non-empty sequence of distinct non-empty ids, a
+beta that is not a finite number, a split without the ``is_holdout`` predicate
+the marking reads, a world the split does not hold, an evaluator that is not
+callable, or no database named at all — and :class:`SweepStoreError` is the
+*store* face: a database that holds no pool tables (no pool to sweep over), or
+a pair whose evidence measured and never landed.  Every one of those is a
+refusal this module **mints**, and it is deliberately none of the classes it
+translates at the sweep's seam: a malformed ask that meets feature 278's
+``SplitRequestError`` (a world the split does not hold) or feature 270's
+``FreezeRequestError`` (a URL that names no database) is *re-raised in the
+sweep's word*, so a caller that swept worlds never meets the split's or the
+freeze's vocabulary for an act that split nothing and held nothing.
+
+One refusal the sweep makes is deliberately **not** this feature's class at
+all: a pool held fixed while the sweep writes its evidence.  Feature 270's
+guards refuse every insert on ``replay_score`` while an iteration holds it, and
+the sweep raises :class:`PoolFrozenError` in feature 270's own word — the class
+a caller of this member catches to learn *the pool is fixed and my evidence
+cannot land*, whose repair (*close the iteration*) is feature 270's rather than
+the sweep's.  A pool below the ladder floor is likewise feature 275's refusal,
+delegated in the floor's own word, the delegation the cap, the ceiling, the
+split, the transfer, the bar and the rotation all perform.  And the sweep mints
+no *verdict* at all: it reports the evidence, so unlike
+:class:`SelectionBarError` there is no third class here — a completed sweep is
+not a judgment about its winner, which is feature 280's act and feature 280's
+word.  Both classes carry a code — the ask opens with
+:data:`dreaming.sweep.SWEEP_CODE` (``sweep_malformed``) and the store with
+:data:`dreaming.sweep.SWEEP_STORE_CODE` (``sweep_ungrounded``) — because a
+sweep's asks are ``M × n`` of them and an operator reading a deployment log has
+to know *which axis* was malformed before re-sending, the greppability the
+``pool_frozen`` convention exists for — and because the two repairs differ
+exactly as the member's other pairs' do (*re-send a well-formed ask* against
+*point at the pool, or repair the store*), while *the pool is held* is neither
+and has feature 270's word.
+
 **Why :class:`PoolFrozenError` is its own class and not a borrowed one.**
 Three members already read this pool and each has its own vocabulary for its
 own act — :class:`~tripwires.errors.TripwireExcisionError`,
@@ -229,6 +275,8 @@ __all__ = [
     "SelectionBarError",
     "SplitRequestError",
     "SplitStoreError",
+    "SweepRequestError",
+    "SweepStoreError",
     "TransferRequestError",
     "TransferStoreError",
 ]
@@ -565,6 +613,87 @@ class SplitStoreError(DreamingError):
     278).  A caller that caught one and read it as another would wait for a
     cycle that does not exist, or close one that was never open, or re-send a
     split against a database that still holds nothing to split.
+    """
+
+
+class SweepRequestError(DreamingError):
+    """The sweep could not be asked for as the caller asked for it.
+
+    app_spec.xml, "Dreaming Loop & Meta-Selection", feature 272: *System
+    evaluates every candidate revision against every stored world, persisting
+    one score per pair.*  This is the *ask* face of that sentence: a candidate
+    that is not a candidate module carrying a ``module_id`` and a
+    ``code_hash``, an identity that is not non-empty text, a revision index
+    that is not a genuine positive integer, the same revision twice under one
+    version, an empty candidate set or a bare candidate where a sequence
+    belongs, worlds that are not a non-empty sequence of distinct non-empty
+    ids, a beta that is not a finite number, a split without the
+    ``is_holdout`` predicate the marking reads, a world the split does not
+    hold, an evaluator that is not callable, or no database named for the pool
+    to be read from.  Every one is a fact about the **request**, refused before
+    any pair is planned or any row written, and the repair is to re-consider
+    what was asked for — the stance :class:`SplitRequestError` takes for
+    feature 278's asks and :class:`FreezeRequestError` for feature 270's.
+
+    Every message opens with :data:`dreaming.sweep.SWEEP_CODE`
+    (``sweep_malformed``) and names the fact that was wrong — the candidate,
+    the world, the beta or the split — because a sweep's asks are *many*
+    (``M × n`` of them) and an operator reading a refusal has to know which
+    axis was malformed before re-sending it.
+
+    Deliberately **not** a :class:`PoolFrozenError`, though the sweep
+    translates feature 270's hold into that class at its own seam: a caller
+    that caught the two together would read *your ask was malformed* as *the
+    pool is under a cycle right now*, which waits for a cycle that is not
+    running (or blocks one that is).  Deliberately not a
+    :class:`SplitRequestError` either, though two of its refusals are
+    translated from that class at the sweep's seam: a caller that swept worlds
+    and caught the split's class would read *your split was malformed* about
+    an act that split nothing — the seam discipline the whole workspace states
+    for error vocabularies, applied inside the member exactly as
+    ``dreaming.cap`` and ``dreaming.rotation`` apply it.
+    """
+
+
+class SweepStoreError(DreamingError):
+    """The store could not ground feature 272's sweep, or could not take its evidence.
+
+    The store-side face of feature 272's sentence, with the **two failures one
+    coverage law produces** — the shape
+    :class:`~discovery.errors.CampaignStoreError` documents for its own:
+
+    * **There is no pool here to sweep over.**  ``DATABASE_URL`` names a
+      database holding no ``replay_score`` and no ``bootstrap_world`` table.
+      §C5 evaluates every candidate against every *stored* world, so a sweep
+      over a database without the pool would cross the candidates with worlds
+      that do not exist and file rows nowhere.  Raised before any pair is
+      planned, so a refused sweep leaves not even a plan behind.
+    * **A pair's evidence measured but never landed.**  The evaluator answered
+      a score and the replay member's writer refused the row.  This is a
+      refusal rather than a skipped pair on purpose: §C5's coverage law is one
+      score per pair, and a run that continued past a lost row would answer a
+      report whose pairs outnumber its rows while every figure in the result
+      still looked like a score.  The store's own refusal is chained, so the
+      operator still reads the database's words.
+
+    Both are facts about the **store** rather than the ask (the URL was well
+    formed and the candidates were sweepable), so the repair is to point
+    ``DATABASE_URL`` at the database the replay pool lives in, migrate it, or
+    repair whatever the chained refusal names — never to re-send the same ask,
+    which would fail identically.
+
+    A sibling of :class:`SplitStoreError` and :class:`CapRecordError` rather
+    than a face of either, because the three name different worlds: *there is
+    no pool here to split* (feature 278), *there is no pool here to cap*
+    (feature 277) and *there is no pool here to sweep* (feature 272).
+    Deliberately **not** a :class:`PoolFrozenError`: a hold is not a store
+    fault, it is a cycle working correctly, and the sweep raises that class in
+    feature 270's own word for it while this one covers everything else the
+    store can say no with.
+
+    Every message opens with :data:`dreaming.sweep.SWEEP_STORE_CODE`
+    (``sweep_ungrounded``), which is the one fact both failures share: the
+    sweep was planned or begun and the store could not ground it.
     """
 
 

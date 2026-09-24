@@ -309,16 +309,41 @@ nothing from :mod:`dreaming.cycle`, so ``depends_on="270"`` is the loop-ordering
 fact, not a code dependency.  A pluggable ``reviser`` lets a deployment
 substitute its own policy-development strategy without moving the contract.
 
-**It is not the evaluator or the selector.**  Evaluating every candidate
-against every stored world (feature 272), including the incumbent in the
-candidate set (feature 273) and persisting the argmax to ``policy_revision``
-(feature 274) are all their own features depending on this one.  This member
-holds the pool, splits it, rotates the split per cycle and persists which
-worlds each iteration held out, compares arms over it and bars a winner that
-does not survive the noise its own tournament earned; it produces the candidate
-set but never runs a policy, never scores a world and never picks a winner —
-the bar *refuses* one, and the act of refusing a winner is not the act of
-crowning it.
+**It carries the sweep as its middle clause.**  §C5's loop continues *"evaluate
+each on every stored tree"*, and feature 272's sentence is that act:
+:mod:`dreaming.sweep` runs the candidate set feature 271 produced against the
+pool's worlds and persists one ``replay_score`` row per ``(candidate, world)``
+pair.  It is the member's one **act** rather than one more judgment: the
+evaluator that replays a candidate over a world's stored tree is the replay
+path, which lives in the ``replay`` member and arrives as a callable — no
+member imports another — while the row itself is feature 255's and migration
+``0109``'s, written through the replay member's own ``persist_replay_score``
+reached through the composed application's seat, so ``0109``'s shape keeps one
+writer in this workspace rather than two.  The coverage law is the feature:
+``M`` candidates and ``n`` worlds is exactly ``M × n`` rows, no pair skipped
+and none taken twice, which :func:`dreaming.sweep.plan_sweep` answers as a pure
+plan before a single replay is paid for.  Each row's ``is_holdout`` is read
+from feature 278's own predicate — the seam ``0109``'s column exists to carry
+— and a split is passed in, never taken here.  Where §C5's first clause meets
+its middle one, the sweep is **refused**: feature 270's guards refuse every
+write to the pool's tables while an iteration holds them, and a sweep attempted
+under an open hold translates the replay member's wrapper into this member's
+:class:`~dreaming.errors.PoolFrozenError` in feature 270's own word, because
+the repair is *close the iteration* and not a second sweep.  Nothing bends that
+rule: no guard is dropped, no second connection opened, no hold re-taken to
+slip a row underneath one.
+
+**It is not the incumbent's return or the selector.**  Putting ``π^0 = π_t``
+back into the candidate set so a selection can never fall below the current
+policy (feature 273) and taking the argmax under §7's aggregated objective,
+persisting the winner to ``policy_revision`` (feature 274), are each their own
+features depending on the sweep.  This member holds the pool, splits it,
+rotates the split per cycle and persists which worlds each iteration held out,
+runs the sweep that produces the evidence, compares arms over it and bars a
+winner that does not survive the noise its own tournament earned; it produces
+the candidate set and writes the evidence but never runs a policy, never scores
+a world and never picks a winner — the bar *refuses* one, the sweep *reports*
+one, and the act of refusing a winner is not the act of crowning it.
 
 **It never writes the pool's tables.**  Feature 270's whole subject is not
 writing them.  ``pool_freeze`` is this member's own table and the only table it
@@ -430,6 +455,8 @@ from .errors import (
     SelectionBarError,
     SplitRequestError,
     SplitStoreError,
+    SweepRequestError,
+    SweepStoreError,
     TransferRequestError,
     TransferStoreError,
 )
@@ -480,6 +507,14 @@ from .split import (
     split_pool,
     split_replay_pool,
 )
+from .sweep import (
+    SWEEP_CODE,
+    SWEEP_STORE_CODE,
+    SweepPair,
+    SweepReport,
+    plan_sweep,
+    sweep_candidates,
+)
 from .transfer import (
     FamilyPartition,
     FamilyTransfer,
@@ -511,6 +546,8 @@ __all__ = [
     "REPLAY_SCORE_TABLE",
     "REVISION_BAND",
     "SELECTION_BAR_CODE",
+    "SWEEP_CODE",
+    "SWEEP_STORE_CODE",
     "TRAIN_FRACTION",
     "UNGUARDED_CODE",
     "WORLD_COLUMNS",
@@ -542,6 +579,10 @@ __all__ = [
     "SelectionBarError",
     "SplitRequestError",
     "SplitStoreError",
+    "SweepPair",
+    "SweepReport",
+    "SweepRequestError",
+    "SweepStoreError",
     "TransferRequestError",
     "TransferStoreError",
     "build_cycle_freeze",
@@ -562,6 +603,7 @@ __all__ = [
     "open_cycle_freeze",
     "paired_ir_difference",
     "paired_pool_difference",
+    "plan_sweep",
     "pool_bootstrap_schema",
     "pool_commitment",
     "pool_tables_present",
@@ -580,6 +622,7 @@ __all__ = [
     "split_pool",
     "split_replay_pool",
     "sqlite_path",
+    "sweep_candidates",
     "validated_floor",
 ]
 
