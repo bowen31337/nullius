@@ -27,9 +27,10 @@ penalties' first, :class:`SwitchPenaltyError`, the refusal of a switch
 charge that cannot be counted; feature 260 adds
 :class:`DivergencePenaltyError`, the refusal of a sim-reality divergence
 that cannot be read; feature 259 adds :class:`DeflationPenaltyError`,
-the refusal of a multiple-testing haircut that cannot be trusted — the
-four β-terms this member has so far, and the place the rest (257 and
-258) will each add their own when they land.
+the refusal of a multiple-testing haircut that cannot be trusted; feature
+258 adds :class:`NullPickPenaltyError`, the refusal of a planted-null
+penalty that cannot be charged — the five β-terms this member has so far,
+and the place the last one (257) will add its own when it lands.
 263 refuses an ask it cannot *blend*: a λ outside the band, a
 stratum handed over with no worlds, a carrier it cannot read.  264 refuses
 an ask it cannot *partition*: scores with no labels, a scored world the
@@ -71,13 +72,22 @@ deflation input handed over as a bare number rather than the
 its repair lands on the trial ledger — a member none of the other four
 refusals names — so folding it would send the operator hunting for a
 sequestration, resident-array, labelling or forward-record fault in a
-data path this term never reads.  Every refusal the seven classes
-carry is a fact about the *ask* — a world that is not a name, a pick that
-names no node, a sequestered panel that cannot define a ratio, a stratum
-that holds no worlds, a λ outside the band prd §7.2 states, a pool whose
-labels and scores are not one set — and nothing was read from any store
-and nothing is written when one raises, so the repair is always to
-re-consider what was handed in.  That is a smaller taxonomy than the
+data path this term never reads.  And 258's refusal sits beside all five
+for the member's own version of that reason: the null-pick penalty
+refuses an ask whose *false discovery* cannot be charged (a coefficient
+that flips the term's sign, a rate that is not a fraction of committed
+picks — a count of null picks being the likeliest thing handed over under
+that field name), and its repair lands on the scorer process §4.2 gives
+the sidecar key to — feature 265's component, which no other refusal on
+this list names — so folding it would send the operator hunting for a
+sequestration, resident-array, labelling, forward-record or ledger fault
+in a data path this term never reads either.  Every refusal the eight
+classes carry is a fact about the *ask* — a world that is not a name, a
+pick that names no node, a sequestered panel that cannot define a ratio,
+a stratum that holds no worlds, a λ outside the band prd §7.2 states, a
+pool whose labels and scores are not one set — and nothing was read from
+any store and nothing is written when one raises, so the repair is always
+to re-consider what was handed in.  That is a smaller taxonomy than the
 store-owning members need because the objective is pure arithmetic: it has
 no ordering laws to contradict and no deployment state to be absent.  The
 division of labour that keeps it small is stated in
@@ -104,6 +114,7 @@ __all__ = [
     "AggregationError",
     "DeflationPenaltyError",
     "DivergencePenaltyError",
+    "NullPickPenaltyError",
     "OrthogonalityError",
     "RegimeIndexError",
     "ScoringError",
@@ -313,6 +324,54 @@ class DeflationPenaltyError(ScoringError):
     sending the operator to different members (sequestration, the
     resident array, the regime labeler, the forward-test record, the
     trial ledger).
+
+    No partial value escapes a refusal: the penalty either answers the
+    moved :class:`~scoring.WorldScore` or raises, so a caller can never
+    hold a half-charged score it must remember to discard — the guarantee
+    :class:`WorldObjectiveError` makes one feature earlier and every
+    β-term landing through the same frozen seam inherits.
+    """
+
+
+class NullPickPenaltyError(ScoringError):
+    """A beta-two null-pick charge that cannot be charged (feature 258).
+
+    The ask was malformed in this term's own inputs — a coefficient that
+    is not a finite non-negative real (the spec's verb is *subtracts*, and
+    a negative one would counterfeit a bonus through the penalty seam,
+    teaching the loop that landing on the nulls §4 planted is profitable),
+    a score carrier exposing no ``adjusted`` seam to ride, or a
+    ``null_pick_rate`` that is not a finite real in ``[0, 1]`` — and the
+    refusal names which, because the repairs differ: a mis-set knob
+    against a rate the scorer process never computed against a *count* of
+    null picks handed over where a fraction of committed picks belongs.
+
+    The *count-for-a-rate* substitution is this class's sharpest edge.  The
+    rate is prd §4.4's *"fraction of committed picks that are planted
+    nulls"* (line 173), so it is a fraction of a whole and bounded in
+    ``[0, 1]`` by construction — the same way an information coefficient
+    is bounded because it is a correlation, which is why
+    :class:`~scoring.DivergencePenaltyError` refuses an out-of-bound IC for
+    its own term.  A figure outside the interval is not a high rate; it is
+    a number that has stopped being one, and the likeliest thing wearing
+    its name is the numerator alone.  Clamping it to an endpoint would
+    charge a maximum penalty nobody measured, in either direction, so the
+    figure is refused instead.
+
+    Beside :class:`WorldObjectiveError`, :class:`OrthogonalityError`,
+    :class:`SwitchPenaltyError`, :class:`DivergencePenaltyError` and
+    :class:`DeflationPenaltyError`, never under any of them: 256 refuses an
+    ask that cannot be *scored*, 262 one whose *bonus* cannot be measured,
+    261 one whose *charge* cannot be counted, 260 one whose *divergence*
+    cannot be read, 259 one whose *haircut* cannot be trusted, and this
+    class one whose *false discovery* cannot be charged — the six repairs
+    sending the operator to different members (sequestration, the resident
+    array, the regime labeler, the forward-test record, the trial ledger,
+    the scorer process §4.2 gives the sidecar key to).  It is
+    :class:`SwitchPenaltyError`'s opposite number one feature over, and the
+    two are deliberately *not* one class: β₅ charges a horizon's churn and
+    β₂ charges the nulls the policy committed to, which prd §4.1.2's
+    *"separate the error accounting"* (line 140) keeps apart.
 
     No partial value escapes a refusal: the penalty either answers the
     moved :class:`~scoring.WorldScore` or raises, so a caller can never

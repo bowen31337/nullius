@@ -140,8 +140,11 @@ the index it is pure arithmetic — no store, no clock, no environment —
 so it adds no component and no seat: the bonus rides
 :meth:`~scoring.WorldScore.adjusted` exactly as :mod:`scoring._objective`
 promised the six β-terms would, visible, signed and arguable, and the
-penalties (features 257 and 258) will find the seam already shaped
-when they land their own terms through it.
+penalties (features 257 and 258) were promised it — and feature 258's β₂
+null-pick penalty has since landed there, charging for the planted nulls
+the policy committed to, computed from the rate feature 265's scorer
+process answers (:func:`scoring.null_pick_penalty`, reached from the
+member's own namespace), with no component and no second seat either.
 
 **The β₅ switch penalty is the member's fifth law (feature 261).**
 *"System subtracts a beta-five term proportional to switch cost times
@@ -165,8 +168,8 @@ environment — so it adds no component and no seat: the composed
 reached through this namespace, landing its visible, signed, arguable
 delta through :meth:`~scoring.WorldScore.adjusted` exactly as the
 objective's own docstring promised the six β-terms would — and the
-remaining penalties (features 257 and 258) will find the seam
-already shaped when they land their own terms through it.
+remaining penalty (feature 257) will find the seam already shaped when
+it lands its own term through it.
 
 **The β₄ divergence penalty is the member's sixth law (feature 260).**
 *"System subtracts a beta-four term proportional to absolute divergence
@@ -224,9 +227,42 @@ so it adds no component and no seat: the composed ``scoring`` component
 stays the per-world objective, and the term is reached through this
 namespace, landing its visible, signed, arguable delta through
 :meth:`~scoring.WorldScore.adjusted` exactly as the objective's own
-docstring promised the six β-terms would — and the remaining penalties
-(features 257 and 258) will find the seam already shaped when they land
-their own terms through it.
+docstring promised the six β-terms would — and the remaining penalty
+(feature 257) will find the seam already shaped when it lands its own
+term through it.
+
+**The β₂ null-pick penalty is the member's eighth law (feature 258).**
+*"System subtracts a beta-two term proportional to null pick rate, which
+returns the planted-null penalty that calibration depends on"* — prd
+§7.1's second line, ``− β₂ · null_pick_rate`` (docs §10.3 agrees, line
+496), and the term the PRD singles out as *"the term that does not exist
+in the paper and without which none of this works"* (line 327).  It lives
+in :mod:`scoring._nullpicks` as :func:`~scoring.null_pick_penalty` (the
+verb), :data:`~scoring.BETA_TWO_DEFAULT` (the coefficient's stated
+default — neither document sizes it) and :data:`~scoring.RATE_BOUND` (the
+``[0, 1]`` a fraction of committed picks lives in, the fact feature 260's
+:data:`~scoring.IC_BOUND` spells for its own input), with its own refusal
+:class:`~scoring.NullPickPenaltyError`.  The charge is one product of two
+non-negative factors — the coefficient, and the campaign's own realized
+false discovery rate, prd §4.4's *"fraction of committed picks that are
+planted nulls"*.  The rate is **handed over, never derived here**: app_spec
+gives feature 265 ``depends_on="258"``, and 265's own sentence is that a
+scorer process holding the sidecar key computes it *"while labels stay
+in"* — so the dependency arrow runs from the computation to this term and
+never back, because deriving the rate means reading ``is_null``, the bit
+§4.2 grants to exactly one component.  It deliberately does **not**
+reweight to a deployment base rate: ``FDR_deploy`` at π₀ ≈ 0.9 is feature
+267's arithmetic over the same pair of figures and feature 268's headline,
+and folding it in would make β₂ a projection of what the policy *would*
+do rather than the error it made.  Like every other term of the formula it
+is pure arithmetic — no store, no clock, no environment — so it adds no
+component and no seat: the composed ``scoring`` component stays the
+per-world objective, and the term is reached through this namespace,
+landing its visible, signed, arguable delta through
+:meth:`~scoring.WorldScore.adjusted` exactly as the objective's own
+docstring promised the six β-terms would — and the last of them (feature
+257's β₁) will find the seam already shaped when it lands its own term
+through it.
 
 **No persistence here, by the same law that keeps the arithmetic pure.**
 The ``replay_score`` row is the replay plugin's (feature 255); this
@@ -254,6 +290,7 @@ from ._aggregate import (
 )
 from ._deflation import BETA_THREE_DEFAULT, deflation_penalty
 from ._divergence import BETA_FOUR_DEFAULT, IC_BOUND, divergence_penalty
+from ._nullpicks import BETA_TWO_DEFAULT, RATE_BOUND, null_pick_penalty
 from ._objective import IR_DATES_MINIMUM, WorldScore, world_objective
 from ._orthogonality import BETA_SIX_DEFAULT, orthogonality_bonus
 from ._regime_index import PLAIN_MEAN_CODE, regime_aggregate, regime_strata
@@ -262,6 +299,7 @@ from .errors import (
     AggregationError,
     DeflationPenaltyError,
     DivergencePenaltyError,
+    NullPickPenaltyError,
     OrthogonalityError,
     RegimeIndexError,
     ScoringError,
@@ -277,6 +315,7 @@ __all__ = [
     "BETA_FOUR_DEFAULT",
     "BETA_SIX_DEFAULT",
     "BETA_THREE_DEFAULT",
+    "BETA_TWO_DEFAULT",
     "COMPONENT_NAME",
     "IC_BOUND",
     "IR_DATES_MINIMUM",
@@ -284,10 +323,12 @@ __all__ = [
     "LAMBDA_DEFAULT",
     "LAMBDA_FLOOR",
     "PLAIN_MEAN_CODE",
+    "RATE_BOUND",
     "AggregatedObjective",
     "AggregationError",
     "DeflationPenaltyError",
     "DivergencePenaltyError",
+    "NullPickPenaltyError",
     "OrthogonalityError",
     "RegimeIndexError",
     "ScoringError",
@@ -297,6 +338,7 @@ __all__ = [
     "aggregate_objective",
     "deflation_penalty",
     "divergence_penalty",
+    "null_pick_penalty",
     "orthogonality_bonus",
     "regime_aggregate",
     "regime_strata",

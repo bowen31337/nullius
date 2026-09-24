@@ -83,6 +83,12 @@ haircut prd §7.3's growth law states, computed from the ledger
 member's ``K_effective`` derivation handed over as a view rather than
 a count — the one β-term whose feature sentence is itself a rejection
 (:func:`scoring.deflation_penalty`, reached from the member's own
+namespace), with no component and no second seat either.  Feature
+258's β₂ null-pick penalty has taken the same path since: the charge
+for the planted nulls the policy committed to, computed from the rate
+feature 265's scorer process answers rather than from any label — the
+term prd §7.1 line 327 makes the one without which the calibration
+works (:func:`scoring.null_pick_penalty`, reached from the member's own
 namespace), with no component and no second seat either.  Feature 263's aggregation has since taken exactly
 that path: the blend of the stratum mean and the stratum minimum is pure
 arithmetic like the objective, so it lives as the member's second law
