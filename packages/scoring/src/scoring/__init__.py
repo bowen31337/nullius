@@ -264,15 +264,41 @@ docstring promised the six β-terms would — and the last of them (feature
 257's β₁) will find the seam already shaped when it lands its own term
 through it.
 
+**The scorer process is the member's ninth law and its first component
+beside the objective (feature 265).**  *"System computes null pick rate
+inside a scorer process holding the sidecar key, which returns the rate
+while labels stay in"* — docs §10.3's own line (507): the number flows
+out, the labels do not.  It lives in :mod:`scoring._scorer` as
+:class:`~scoring.NullPickScorer` (the process — it holds the sidecar,
+duck-read by the one ``assignment(node_id)`` seam the null oracle's own
+target route documents) and :meth:`~scoring.NullPickScorer.null_pick_rate`
+(the verb, answering prd §4.4's *"fraction of committed picks that are
+planted nulls"* as one bare ``float``), with its own refusal
+:class:`~scoring.NullPickRateError`.  Unlike the eight laws before it
+this one is *not* pure arithmetic: the labels it counts live in the
+oracle's sealed sidecar, so the verb reads, and the reading is why the
+feature exists — the rate the β₂ term charges on (feature 258) cannot be
+derived anywhere else, because deriving it means reading ``is_null``, the
+bit prd §4.2 grants to exactly one component.  It therefore takes the
+component the eight β-laws never needed: :data:`~scoring.SCORER_COMPONENT_NAME`
+(``scoring-null-pick-rate``), composing to the process or ``None``
+(deployment state — where no sidecar is configured there is no rate to
+compute, and the caller that needs one refuses to proceed rather than
+scoring rateless), reached from the app package through the sibling seat
+:mod:`app.modules.scoring.scorer`.  The barrier is the answer's type, not
+a promise: no accessor for the held sidecar, no label cache, a ``repr``
+that names the class and nothing it holds, and refusals that name the
+*pick* and never the *branch* — which nodes are null is the one fact this
+process exists to keep inside.
+
 **No persistence here, by the same law that keeps the arithmetic pure.**
 The ``replay_score`` row is the replay plugin's (feature 255); this
 member answers the value it is written from, exactly as migration 0109
-shapes it.  The features of this category that *do* own state — feature
-265's scorer process holding the sidecar key, feature 267's per-campaign
-``FDR_deploy`` — will take their own components beside this one when
-they land, the growth pattern ``app.modules.bootstrap`` took for its
-pool: a second component name, a sibling seat, this module's surface
-untouched.
+shapes it.  The one feature of this category that still owns state after
+265 — feature 267's per-campaign ``FDR_deploy`` — will take its own
+component beside these two when it lands, the growth pattern
+``app.modules.bootstrap`` took for its pool: another component name,
+another sibling seat, this module's surface untouched.
 """
 
 from __future__ import annotations
@@ -294,12 +320,14 @@ from ._nullpicks import BETA_TWO_DEFAULT, RATE_BOUND, null_pick_penalty
 from ._objective import IR_DATES_MINIMUM, WorldScore, world_objective
 from ._orthogonality import BETA_SIX_DEFAULT, orthogonality_bonus
 from ._regime_index import PLAIN_MEAN_CODE, regime_aggregate, regime_strata
+from ._scorer import NullPickScorer
 from ._switches import BETA_FIVE_DEFAULT, switch_penalty
 from .errors import (
     AggregationError,
     DeflationPenaltyError,
     DivergencePenaltyError,
     NullPickPenaltyError,
+    NullPickRateError,
     OrthogonalityError,
     RegimeIndexError,
     ScoringError,
@@ -324,11 +352,14 @@ __all__ = [
     "LAMBDA_FLOOR",
     "PLAIN_MEAN_CODE",
     "RATE_BOUND",
+    "SCORER_COMPONENT_NAME",
     "AggregatedObjective",
     "AggregationError",
     "DeflationPenaltyError",
     "DivergencePenaltyError",
     "NullPickPenaltyError",
+    "NullPickRateError",
+    "NullPickScorer",
     "OrthogonalityError",
     "RegimeIndexError",
     "ScoringError",
@@ -351,10 +382,10 @@ __version__ = "0.1.0"
 #: The component name this member registers under — the plugin name the
 #: spec's features carry (``plugin="scoring"``), so the component key, this
 #: member's seat (:mod:`app.modules.scoring`) and the spec cannot drift
-#: apart.  A later feature of this category that owns its own deployment
-#: state (265's scorer process, 267's FDR store) registers its own name
-#: beside this one rather than widening this one, the way
-#: ``bootstrap-pool`` sits beside ``bootstrap``.
+#: apart.  The features of this category that own their own deployment
+#: state (265's scorer process, below; 267's FDR store when it lands)
+#: register their own names beside this one rather than widening this one,
+#: the way ``bootstrap-pool`` sits beside ``bootstrap``.
 COMPONENT_NAME = "scoring"
 
 
@@ -384,3 +415,51 @@ def build_world_objective() -> Callable[..., WorldScore]:
     reached from this member's own namespace.
     """
     return world_objective
+
+
+#: The component name the scorer process registers under — feature 265's
+#: own, beside :data:`COMPONENT_NAME` the way ``bootstrap-pool`` sits
+#: beside ``bootstrap``.  Spelled here, in the law module
+#: (:data:`scoring._scorer.SCORER_COMPONENT_NAME`, for a caller importing
+#: the process without the package surface) and in the sibling seat
+#: (:data:`app.modules.scoring.scorer.COMPONENT_NAME`, for a caller
+#: reaching through the app package) — three spellings of one name, and
+#: the member's suite asserts they agree so they cannot drift apart
+#: silently.  Prefixed with the member's own name because a composed
+#: application's ``order`` is name-sorted and the process must sort
+#: beside — never inside — the member's other component.
+SCORER_COMPONENT_NAME = "scoring-null-pick-rate"
+
+
+@register(SCORER_COMPONENT_NAME)
+def build_null_pick_scorer() -> NullPickScorer | None:
+    """Component builder: the scorer process this environment composes
+    (feature 265).
+
+    Takes no arguments — the factory's protocol — and contributes the
+    :class:`~scoring.NullPickScorer` the deployment's environment names,
+    by delegating the whole question to the null oracle's own sidecar
+    resolution (see :meth:`NullPickScorer.resolve` for the seam's laws:
+    reached through ``importlib`` at call time because a member never
+    imports another member, trusted never to raise because the factory
+    builds this component in every process, sidecar or not).
+
+    Answers ``None`` — contributing no process, never failing composition
+    — where no sidecar is configured: a deployment that names no location
+    and key has no labels to hold, and the "degrade, don't break" stance
+    every store-bound builder here takes is the only honest answer.  The
+    consequence is the one :meth:`bootstrap.BootstrapPool.resolve`-shaped
+    builders all state: *no sidecar is configured* and *the sidecar is
+    broken* are different facts, and only the second may ever be quiet.
+    A caller that reaches the app package for the process and finds
+    ``None`` must refuse to proceed rather than score rateless — the rate
+    is the term prd §7.1 line 327 calls *"without which none of this
+    works"*, and a loop that charged β₂ on an invented ``0.0`` would be
+    a calibration that never ran.
+
+    Composing an application never opens the sidecar: construction holds
+    the carrier, the sealed file is read per ask, so asking is always
+    safe — the same promise the objective's builder above makes for the
+    arithmetic and the pool's makes for its database.
+    """
+    return NullPickScorer.resolve()

@@ -35,6 +35,15 @@ arithmetic.  :func:`test_the_builder_needs_no_environment` pins that,
 because a component that could fail to compose would take composition
 down for every unrelated feature, and a scoring component that silently
 absented itself would leave the ranking it feeds computed over nothing.
+
+Feature 265 grew the member a second registration — the scorer process
+under ``scoring-null-pick-rate``, its own builder in the same
+``__init__.py`` — and this suite's fresh-registry test now asserts both
+names, because the growth pattern is the same convention: no central
+table says either component exists.  The scorer's own composition laws
+(needing an environment to compose to a process, degrading to ``None``
+without one, its seat) are pinned in ``test_scorer_component.py``, not
+duplicated here.
 """
 
 from __future__ import annotations
@@ -143,4 +152,10 @@ def test_a_fresh_registry_scans_the_member_in() -> None:
     src_root = Path(member.__file__).resolve().parent.parent
     registry = Registration()
     scan_components(src_root, registry=registry)
-    assert [component.name for component in registry.components()] == ["scoring"]
+    # Both of the member's registrations — the objective (256) and the
+    # scorer process (265) — fire from the one ``__init__.py``, sorted by
+    # name as the registry orders them.
+    assert [component.name for component in registry.components()] == [
+        "scoring",
+        "scoring-null-pick-rate",
+    ]

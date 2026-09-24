@@ -8,17 +8,26 @@ discovery members take for the same reason: same-basename files collide
 under one pytest run, so each member's suite is collected under its own
 conftest.
 
-There is nothing to isolate, and that is a fact about the feature rather
-than an omission.  The per-world objective is pure arithmetic over the
-panel it is handed: it writes no file, opens no database, reads no
-environment variable and consults no clock — the same ambient-free
-profile the bootstrap member's suite states for its worlds, and the
-reason there is no autouse fixture guarding anything here.  The
-sibling suites that do need isolation are the ones bound to a deployment
-(``ARTIFACT_ROOT``, ``NULL_SIDECAR_PATH``, ``DATABASE_URL``), and none of
-those seams exists in this member yet: the store-bound features of the
-category (265's scorer process, 267's FDR store) will grow their own
-fixtures when they land, the way bootstrap's conftest grew the pool's.
+The objective's half of this suite has nothing to isolate, and that is a
+fact about the feature rather than an omission.  The per-world objective
+is pure arithmetic over the panel it is handed: it writes no file, opens
+no database, reads no environment variable and consults no clock — the
+same ambient-free profile the bootstrap member's suite states for its
+worlds, and the reason no autouse fixture guards any of its tests.  The
+member grew its first deployment-bound seam when feature 265's scorer
+process landed, and with it the one autouse guard this conftest now
+carries: :func:`scrub_sidecar_env` deletes the null oracle's four
+environment variables (``NULL_SIDECAR_PATH``, ``LAKE_ROOT``,
+``NULL_SIDECAR_KEY_REF``, ``NULL_SIDECAR_SERVICE_ACCOUNT``) from every
+test in the suite, because under ``uv run`` the sibling member *is*
+importable and :meth:`scoring.NullPickScorer.resolve` composes through
+its resolution — an inherited ``NULL_SIDECAR_KEY_REF`` from the
+operator's shell would make the composition tests answer for a deployment
+this suite never configured.  The scrub keeps the member's own tests
+deterministic the way the null oracle's conftest keeps its own: what the
+composition tests *do* configure, they configure explicitly per test
+(the cross-member suite builds a real sealed sidecar in a tmp directory);
+what they leave unset is unset on purpose.
 
 What the fixtures below are, then, is the *vocabulary* the tests are
 written in: a sequestered panel with a hand-computed information ratio
@@ -38,6 +47,14 @@ blend of 0.375 — every number in the chain exact in binary.  Feature
 262's suite adds the committed book's panel beside those: a series
 orthogonal to the pick's by construction, dyadic throughout, so the β₆
 bonus it earns is the coefficient exactly and is checkable with ``==``.
+Feature 265's suite adds the scorer process's own vocabulary beside all
+of them: a stand-in sidecar — a plain object exposing exactly the one
+``assignment(node_id)`` seam the duck-typed contract names, recording
+every ask so the barrier tests can prove *which* nodes were read — and a
+four-pick committed campaign over fixed UUIDs (two null, two real), so
+the rate is 0.5 exactly and every subset's quotient is dyadic: ``k/4``
+to the bit, the same hand-computable discipline the strata fixture
+states for the blend.
 
 The path bootstrap puts both import roots on ``sys.path`` regardless of
 how pytest was invoked — the workspace's ``src/`` (for
@@ -262,4 +279,129 @@ def labels() -> list[StandInLabel]:
         StandInLabel("crash-a", CRASH),
         StandInLabel("crash-b", CRASH),
         StandInLabel("crash-c", CRASH),
+    ]
+
+
+# -- Feature 265: the scorer process's vocabulary -----------------------------
+
+#: The null oracle's four environment variables, restated by name here
+#: (not imported — a member never imports another member, even in its
+#: tests) so the autouse scrub below deletes exactly what
+#: :meth:`scoring.NullPickScorer.resolve` composes through.  The names are
+#: the sibling's own constants' values: ``SIDECAR_PATH_ENV``,
+#: ``KEY_REF_ENV``, ``SERVICE_ACCOUNT_ENV`` and the lake root its path
+#: fallback reads.
+SIDECAR_ENV_VARS = (
+    "NULL_SIDECAR_PATH",
+    "LAKE_ROOT",
+    "NULL_SIDECAR_KEY_REF",
+    "NULL_SIDECAR_SERVICE_ACCOUNT",
+)
+
+
+@pytest.fixture(autouse=True)
+def scrub_sidecar_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Delete the null oracle's environment from every test in this suite.
+
+    Under ``uv run`` the sibling member is importable and the scorer
+    process's ``resolve()`` composes through its resolution, so an
+    inherited ``NULL_SIDECAR_KEY_REF`` (or a ``NULL_SIDECAR_PATH`` left in
+    the operator's shell) would make the composition tests answer for a
+    deployment this suite never configured — the same leak the null
+    oracle's own conftest scrubs for its sidecar tests.  What a test
+    *does* configure, it configures explicitly; what it leaves unset is
+    unset on purpose.
+    """
+    for name in SIDECAR_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+
+@dataclass(frozen=True)
+class StandInAssignment:
+    """A stand-in for the oracle's per-node assignment value.
+
+    The real :class:`~nulloracle.NullAssignment` carries the permuted seed
+    and the block length beside the bit; this carries exactly ``is_null``,
+    because that is the whole of what the scorer process reads — the
+    fixture's narrowness is the assertion that the process never reaches
+    for the rest.
+    """
+
+    is_null: bool
+
+
+class StandInSidecar:
+    """A stand-in for the oracle's sidecar, behind its one seam.
+
+    Exposes exactly ``assignment(node_id)`` — the contract the oracle's
+    own target route documents — over a plain dict of canonical node-id
+    text to bits, answering ``None`` for an unheld node the way the
+    sealed file's reader does.  Records every ask in ``reads`` so the
+    barrier tests can prove three things at once: that the asks were the
+    *canonical* spellings (the join normalized before the read), that
+    only the handed picks were read (never a branch walk), and how many
+    reads happened (one per pick, no caching pass, no pre-read).
+    """
+
+    def __init__(self, labels: dict[str, bool]) -> None:
+        self._labels = dict(labels)
+        self.reads: list[str] = []
+
+    def assignment(self, node_id: str) -> StandInAssignment | None:
+        self.reads.append(node_id)
+        bit = self._labels.get(node_id)
+        if bit is None:
+            return None
+        return StandInAssignment(bit)
+
+
+#: Five fixed node addresses, canonical UUID text, planted once here so
+#: every test in the scorer's suite names the same campaign: two planted
+#: nulls, two planted reals, and one the sidecar holds no entry for — the
+#: shape whose refusal is the fixture's own point (see ``sidecar_labels``).
+NULL_ONE = "1a2b3c4d-5e6f-4778-89ab-cdef00000001"
+REAL_ONE = "1a2b3c4d-5e6f-4778-89ab-cdef00000002"
+NULL_TWO = "1a2b3c4d-5e6f-4778-89ab-cdef00000003"
+REAL_TWO = "1a2b3c4d-5e6f-4778-89ab-cdef00000004"
+UNHELD = "1a2b3c4d-5e6f-4778-89ab-cdef00000005"
+
+
+@pytest.fixture
+def sidecar_labels() -> dict[str, bool]:
+    """The campaign's plant: two nulls, two reals, keyed by canonical id.
+
+    The one shape every rate in this suite is a fraction over — and the
+    shape whose *absence* (``UNHELD``) is deliberately outside it, so the
+    refusal of an unlabelled pick is tested against a fixture that names
+    it rather than against a typo.
+    """
+    return {
+        NULL_ONE: True,
+        REAL_ONE: False,
+        NULL_TWO: True,
+        REAL_TWO: False,
+    }
+
+
+@pytest.fixture
+def sidecar(sidecar_labels: dict[str, bool]) -> StandInSidecar:
+    """The stand-in sidecar — the held carrier, with its read log empty."""
+    return StandInSidecar(sidecar_labels)
+
+
+@pytest.fixture
+def committed_picks() -> list[StandInPick]:
+    """The campaign's four committed picks: two onto nulls, two onto reals.
+
+    The values, not the addresses — the shape the runtime hands across a
+    seam — with the rate therefore 0.5 exactly (2/4, dyadic, checkable
+    with ``==``) and every subset's quotient ``k/4`` to the bit, the same
+    hand-computable discipline the ``strata`` fixture states for the
+    blend.
+    """
+    return [
+        StandInPick(NULL_ONE),
+        StandInPick(REAL_ONE),
+        StandInPick(NULL_TWO),
+        StandInPick(REAL_TWO),
     ]

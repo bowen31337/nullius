@@ -103,12 +103,17 @@ lives as the member's third law (:func:`scoring.regime_strata`,
 :func:`scoring.regime_aggregate`, reached from the member's own
 namespace) with no component and no second seat either.  The first
 feature of the category that owns deployment state — feature 265's
-scorer process holding the sidecar key, then 267's per-campaign
-``FDR_deploy`` store — takes its own component name beside ``scoring``
-and its own sibling seat module beside this one, exactly the growth
-``app.modules.bootstrap`` took when feature 188's pool arrived: a second
-module answering *what is the composed scorer process?*, this one going
-on answering *what is the composed objective?*
+scorer process holding the sidecar key — has since taken its own
+component name beside ``scoring`` (``scoring-null-pick-rate``) and its
+own sibling seat module beside this one (:mod:`app.modules.scoring.scorer`),
+exactly the growth ``app.modules.bootstrap`` took when feature 188's
+pool arrived: a second module answering *what is the composed scorer
+process?*, this one going on answering *what is the composed objective?*
+— and the two seats' ``None``s mean different things, as each one's
+docstring states.  The next state-bound feature of the category (267's
+per-campaign ``FDR_deploy`` store) will take the same growth again:
+another component name, another sibling seat, this module's surface
+untouched.
 """
 
 from __future__ import annotations

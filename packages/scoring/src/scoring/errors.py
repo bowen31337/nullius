@@ -30,7 +30,12 @@ that cannot be read; feature 259 adds :class:`DeflationPenaltyError`,
 the refusal of a multiple-testing haircut that cannot be trusted; feature
 258 adds :class:`NullPickPenaltyError`, the refusal of a planted-null
 penalty that cannot be charged — the five β-terms this member has so far,
-and the place the last one (257) will add its own when it lands.
+and the place the last one (257) will add its own when it lands.  Feature
+265 adds the scorer process's own: :class:`NullPickRateError`, the
+refusal of a null pick rate that cannot be computed — the first class of
+the category's state-bound half, and the one place in this member whose
+refusals can name a *read* that failed rather than only an ask that was
+malformed (see that class's docstring for why those are stated apart).
 263 refuses an ask it cannot *blend*: a λ outside the band, a
 stratum handed over with no worlds, a carrier it cannot read.  264 refuses
 an ask it cannot *partition*: scores with no labels, a scored world the
@@ -115,6 +120,7 @@ __all__ = [
     "DeflationPenaltyError",
     "DivergencePenaltyError",
     "NullPickPenaltyError",
+    "NullPickRateError",
     "OrthogonalityError",
     "RegimeIndexError",
     "ScoringError",
@@ -408,4 +414,54 @@ class RegimeIndexError(ScoringError):
     that cannot be *blended*, this class refuses an ask that cannot be
     *partitioned*, and the module docstring above states why the two
     repairs must stay distinguishable behind separate ``except``s.
+    """
+
+
+class NullPickRateError(ScoringError):
+    """A null pick rate that cannot be computed (feature 265).
+
+    Two kinds of refusal share this class because both mean *the rate is
+    not a measurement anyone made*, and the seam must never answer one
+    anyway:
+
+    * **a malformed ask** — ``picks`` that is not the committed picks
+      themselves (a mapping's keys are not its picks, a bare string is
+      one pick spelled where the collection belongs), an ask with no
+      picks at all (a rate over an empty denominator is undefined, not
+      ``0.0``), a pick that names no node or whose node id cannot join
+      the sidecar's UUID keys, or a sidecar-holding object that exposes
+      no callable ``assignment(node_id)`` seam — and the refusal names
+      which, because the repairs differ: the caller's wiring against the
+      deployment's sidecar configuration;
+    * **a label that is not an answer** — a committed pick the sidecar
+      holds no entry for (its null status is *unknown*, and reading it as
+      real would deflate exactly the figure prd §4.4 defines and §7.1
+      line 327 makes the term without which none of this works), an entry
+      whose ``is_null`` is not a genuine bool, or the sidecar's own
+      failure while being read — a file that will not open, a key that
+      does not decrypt, permissions that admit a second account —
+      translated into this class at the seam, with the original chained,
+      because the sidecar is another member's and a caller catching this
+      member's vocabulary must not also catch the oracle's.
+
+    The refusals name the *pick* and never the *branch*, the discipline
+    :mod:`nulloracle.target` states for the oracle's own messages: which
+    node was committed is the caller's fact, which nodes are null is the
+    one fact this class exists to keep inside the process.
+
+    Beside :class:`~scoring.NullPickPenaltyError`, never under it and
+    never over it: 258 refuses a *charge* that cannot be made on a rate
+    the caller already holds, this class refuses the *rate* itself — the
+    computation 258's docstring names as this feature's contribution —
+    and the two repairs send the operator to different places (a mis-set
+    coefficient against a sidecar that is absent, unopenable, or holds
+    no entry for a committed pick).  Folding them would send an operator
+    tuning β₂ when the thing to fix is that the scorer process never
+    computed a number at all.
+
+    No partial value escapes a refusal: the verb either answers one bare
+    ``float`` or raises, so a caller can never hold a half-counted rate it
+    must remember to discard — and no label crosses either way, which is
+    the feature's own sentence: the rate is returned while the labels stay
+    in.
     """
