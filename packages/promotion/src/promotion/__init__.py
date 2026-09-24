@@ -324,6 +324,11 @@ from .pre_register import (
     PromotionRecord,
     utc_now,
 )
+from .remaining import (
+    RemainingCleanEpochs,
+    clean_epochs_remaining,
+    remaining_clean_epochs,
+)
 from .schema import (
     CALIBRATION_MIGRATION_ORDER,
     CHARGE_MIGRATION_ORDER,
@@ -415,6 +420,7 @@ __all__ = [
     "PromotionWindow",
     "PromotionWindowError",
     "PromotionWindows",
+    "RemainingCleanEpochs",
     "ServingEpoch",
     "TerminalStates",
     "VoidCalibrationError",
@@ -440,6 +446,7 @@ __all__ = [
     "rejects_further_selection",
     "rejects_void_calibration",
     "rejects_void_promotion",
+    "remaining_clean_epochs",
     "select_epoch",
     "utc_now",
     "window_closes_at",
