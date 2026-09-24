@@ -1,0 +1,305 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 274 (System selects the argmax candidate under the aggregated objective, persisting the winner into the policy_revision table)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 274 in the existing dreaming member
+    (packages/dreaming, import name dreaming; seat src/app/modules/dreaming):
+    the last act of docs/alpha-engine-prd.md §C5's dreaming loop and the
+    answer to §12.1's *"select the argmax under §7"* — *"System selects the
+    argmax candidate under the aggregated objective, persisting the winner
+    into the policy_revision table"*. Two halves in one new module,
+    dreaming/select.py. (1) The verdict — :func:`select_argmax(candidates,
+    objectives)`: the candidates feature 271 produced and each one's
+    aggregated objective (feature 263's scoring.AggregatedObjective, read
+    duck-typed by its finite ``score`` and ``world_count``) in, and the
+    winning candidate out — the one carrying the maximum aggregated score,
+    **refused** (not silently defaulted) on a tie, an empty set, an
+    objective the candidate set does not name, a candidate the objectives do
+    not cover, or an objective carrying no finite score. It is **pure**: no
+    store, no clock, no environment, no @register component — the argmax is
+    a judgment over figures the caller already holds, the shape the ladder's
+    other verdicts take, and a caller that only wants to know *which
+    candidate won* asks this and pays for nothing. (2) The act —
+    :func:`commit_selection(...)` : resolve the database the deployment
+    names, read the sweep's evidence back from the pool's own
+    ``replay_score`` table directly — a ``sqlite3`` connection opened against
+    the resolved path, the same read-time seam :func:`dreaming.paired._pool_arm`
+    takes, because the composed replay component exposes only the writer
+    ``persist_replay_score`` and no reader of the score rows — aggregate each
+    candidate over its worlds under §7 (feature 263's ``aggregate_objective``,
+    reached the way the policy-runtime member's free seams reach a sibling —
+    through the scoring member's own namespace, ``importlib.import_module("scoring")``,
+    **not** the composed ``app.modules.scoring`` seat, which answers only the
+    per-world objective), take :func:`select_argmax`'s winner, and persist one
+    row into ``policy_revision`` (migration 0109) directly: feature 274 is the
+    table's **sole writer**, because the replay member's
+    ``persist_replay_score`` writes ``replay_score``, not ``policy_revision``,
+    and writing this row through it would land in the wrong table. The
+    aggregation groups each candidate's rows by the regime strata the caller
+    hands in — the same strata-keyed mapping feature 263's
+    ``aggregate_objective`` takes — so the selector's score is the §7 blend of
+    the stratum mean and the stratum minimum, not a raw average; a candidate
+    with a world the caller's strata do not cover is refused rather than
+    dropped, the way plan_sweep refuses a world the split does not hold. The
+    row carries the winner's ``module_id`` as ``policy_version``, its
+    ``code_hash``, its ``parent_version`` from the candidate, and its
+    aggregated ``score`` as ``aggregate_score``, with ``selected`` TRUE. The
+    module is the **selector** feature 280's bar deliberately is not — it
+    takes the argmax and writes the winner, and the act of crowning one is not
+    the act of refusing one — but it is **not** the sweep, the aggregate or
+    the bar: it runs no replay, scores no world, blends no strata and judges
+    no winner against §12.1's noise bar (feature 280 refuses one; this module
+    crowns the max the sweep earned and the bar has already let through). Two
+    new error siblings under DreamingError: :class:`SelectionRequestError`
+    (the ask's own facts — malformed candidate set, objective mapping or
+    identity — refused before anything is read) and :class:`SelectionStoreError`
+    (the store's face — no database, no pool, or a winner that measured but
+    would not land). No central registry, router, app factory, middleware,
+    settings or migration is edited; no new table is created
+    (``policy_revision`` is migration 0109's, already present); the member's
+    single "dreaming" component is untouched and the seat is not edited —
+    feature 275's floor names that precedent and feature 271 followed it.
+  </addition_summary>
+  <existing_context>
+    The dreaming member (packages/dreaming) already implements the §C5 loop's
+    other acts as free functions beside feature 270's single "dreaming"
+    component, and the member's own docstring names features 271-274 as the
+    chain that "depends on this one" (feature 270): feature 271
+    (dreaming.reviser) produces M candidate modules, each a frozen
+    CandidateModule carrying source, code_hash, module_id, parent_version and
+    revision_index; feature 272 (dreaming.sweep) evaluates each candidate
+    against every stored world and persists one replay_score row per pair
+    through the replay member's persist_replay_score, reached through the
+    composed application's seat; feature 273 puts the incumbent back into the
+    candidate set; feature 280 (dreaming.bar) refuses a winner that does not
+    survive §12.1's selection-noise bar. The sweep's SweepReport already
+    carries scores_for(module_id) — "the read feature 274 takes before it
+    aggregates" — and names feature 274 as the consumer that "persists the
+    winner into policy_revision". The scoring member (packages/scoring)
+    already owns §7's aggregated objective: scoring.aggregate_objective
+    (feature 263) blends each stratum's world scores into an
+    AggregatedObjective carrying score, lam, stratum_mean, stratum_minimum,
+    worst_stratum, stratum_means and world_count — "the scalar the dreaming
+    loop's argmax ranks candidates on (feature 274)" — and the workspace's
+    oldest rule is that no member imports another, so a member reaches a
+    sibling through app.* and never through its import name. The
+    policy_revision table (migration 0109) already exists with columns id,
+    policy_version (TEXT NOT NULL UNIQUE), parent_version (TEXT, nullable),
+    code_hash (CHAR(64) NOT NULL), aggregate_score (REAL, nullable) and
+    selected (BOOLEAN NOT NULL DEFAULT FALSE). The member's conventions this
+    feature follows: verdict-over-counts free functions beside the store;
+    duck-typed seams read by getattr rather than isinstance (the module
+    loader's synthetic-name re-execution means an isinstance would refuse the
+    very objects composition produces); error vocabularies translated at the
+    seam, never borrowed from a sibling's class; the freeze's FreezeRecord
+    stance — frozen, hand-written __slots__ values so two callers holding one
+    cannot move each other's figure; resolve the store by an explicit URL
+    then DATABASE_URL, refused when neither names one; the composed component
+    resolved through the app-namespace seat at call time, None a refusal not
+    a silent success; and @register only in __init__.py, so a submodule's
+    registration fires only on the first create_app() of a process.
+    <conventions>
+      - No member imports another; a member reaches a sibling through the
+        app.* seat at call time, never through its import name.
+      - Verdicts are pure functions over figures the caller already holds;
+        the act is the store seam, and the two never share a module's job.
+      - Error vocabularies are translated at the seam: a caller asking the
+        selector must not meet a sibling member's class.
+      - Values are frozen with hand-written __slots__, validated at
+        construction, the member's FreezeRecord stance.
+      - The store is resolved by an explicit URL then DATABASE_URL_ENV,
+        refused when neither names one this member can speak.
+      - @register lives only in __init__.py; no new component, no seat edit,
+        no migration, no table — feature 275's floor names that precedent.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Dreaming Loop &amp; Meta-Selection">
+      <feature index="274" shape="plugin" plugin="dreaming" depends_on="272">
+        System selects the argmax candidate under the aggregated objective,
+        persisting the winner into the policy_revision table.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Feature 274 is the last act of the §C5 sweep and the terminal link of the
+    271-274 chain the dreaming member's own docstring names as "depending on
+    this one" (feature 270): the sweep runs inside the outer iteration whose
+    pool feature 270 holds fixed, so ``depends_on="272"`` is the
+    loop-ordering fact — feature 274 reads the evidence feature 272 wrote and
+    is reached after the sweep ran — **not** a code import. It is the
+    selector feature 280's bar deliberately is not: feature 280 (dreaming.bar)
+    *refuses* a winner whose advantage does not survive §12.1's selection
+    noise, and its docstring states that "Feature 274 selects the argmax and
+    writes the winner into policy_revision; this module refuses a winner, and
+    the act of refusing one is not the act of crowning it" — so the loop
+    drives the sweep, takes feature 274's argmax, and only then judges it at
+    feature 280's bar before feature 274's row is committed; the two share
+    the pool and the winner's identity and nothing else. Feature 274 is not
+    the aggregate either: the §7 blend is feature 263's scoring.aggregate_objective
+    (in the scoring member), and feature 274 reaches it the way the
+    policy-runtime member's free seams reach a sibling — through the scoring
+    member's own namespace, ``importlib.import_module("scoring")``, **not**
+    the composed ``app.modules.scoring`` seat, which answers only the per-world
+    objective (:func:`scoring.world_objective_component`) and not the blend —
+    so the selector is a *consumer* of the aggregate, not a second spelling of
+    it, and never by import, which the workspace's no-member-imports-another
+    rule forbids. The candidate set feature 274 ranks over is the
+    value feature 271 produces (each CandidateModule's module_id, code_hash
+    and parent_version read duck-typed, the way dreaming.sweep reads them),
+    and the objectives it ranks them by are feature 263's AggregatedObjective
+    values, one per candidate — the same score the sweep's evidence funds
+    when aggregated under §7. The winner it persists is written as one
+    policy_revision row (migration 0109) whose policy_version is the winner's
+    module_id, whose code_hash is the winner's code_hash, whose parent_version
+    is the winner's parent_version and whose aggregate_score is the winner's
+    aggregated score, with selected TRUE — the row the sweep's own docstring
+    and reviser.py both name as feature 274's act. Feature 274 is **not**
+    feature 273: 273 puts the incumbent back into the candidate set so the
+    argmax never falls below the current policy, and 274 takes the argmax
+    over whatever candidate set it is handed — if the loop has run 273 first,
+    the incumbent is simply one candidate among the set, and 274's argmax is
+    over the enlarged set; if it has not, 274 ranks the revisions alone. The
+    module is reached directly from the member (`from dreaming import
+    select_argmax, commit_selection, SelectionRequestError, SelectionStoreError`)
+    and re-exported by the member __init__, the way feature 275's floor names
+    and features 271-283 all are. The argmax is deterministic — a tie on the
+    maximum is refused rather than broken by iteration order, so the same
+    candidate set and objectives answer the same winner (or the same refusal)
+    in any process, the determinism law the aggregate holds one transform
+    over.
+  </integration_points>
+  <constraints>
+    - The verdict :func:`select_argmax(candidates, objectives)` is **pure**:
+      no store, no clock, no environment, no @register component. It takes
+      the candidate set (a non-empty sequence of candidate modules — the
+      value feature 271 produces, read duck-typed by module_id and code_hash)
+      and the objectives (a mapping of module_id to feature 263's
+      AggregatedObjective, read duck-typed by a finite ``score`` and a
+      ``world_count`` of one or more — the two figures the argmax needs, and
+      the same figures feature 280's bar judges), and answers the single
+      winning candidate: the one whose objective carries the maximum
+      ``score``. Duck-typed rather than isinstance-checked for the workspace's
+      reason — a member never imports another, and the module loader's
+      synthetic-name re-execution means an isinstance would refuse the very
+      objects composition produces — so an objective is read for its
+      ``score`` and ``world_count``, never asserted to be an AggregatedObjective.
+    - The verdict **refuses rather than silently defaults**, each with
+      :class:`SelectionRequestError` and naming what it is about: an empty
+      candidate set (an argmax over nothing is a tournament nobody entered,
+      not a null selection); an empty objective mapping; a candidate whose
+      module_id is not non-empty text; an objective that is not a value
+      carrying a finite ``score`` and a ``world_count`` of one or more (a
+      −∞ miss's number may not be counterfeited — the aggregate's own −∞
+      argument, one level up); a candidate the objectives do not cover (a
+      candidate with no objective names no score to rank it by); an objective
+      keyed to a module_id no candidate carries (an objective for a revision
+      that did not run); and a **tie** on the maximum score (two candidates
+      sharing the top score — the argmax is undefined over them, and picking
+      one by iteration order would be a selection that changed with nothing,
+      so the refusal names both and states the repair: the loop must break the
+      tie by a fact outside the aggregate, or keep the incumbent). The
+      maximum is taken over the objectives' own ``score`` field — never a
+      re-derived figure — so the verdict and the number cannot disagree.
+    - The verdict is **deterministic and order-independent**: the winner is
+      the candidate whose objective score is strictly greater than every
+      other, so the same candidate set and objectives answer the same winner
+      (or the same refusal) regardless of mapping iteration order or candidate
+      order — the determinism law feature 263 holds for the aggregate, held
+      one judgment over. A tie is refused identically in any process.
+    - The act :func:`commit_selection(candidates, *, strata, beta,
+      iteration_id=None, database_url=None, env=None, lam=LAMBDA_DEFAULT)` is
+      the store seam and the feature's only act: resolve the database the
+      deployment names (an explicit URL first, then DATABASE_URL, refused when
+      neither names one this member can speak), read the sweep's evidence back
+      from the pool's own ``replay_score`` table directly — a ``sqlite3``
+      connection opened against the resolved path, the same read-time seam
+      :func:`dreaming.paired._pool_arm` takes, because the composed replay
+      component exposes only the writer ``persist_replay_score`` and no reader
+      of the score rows (so there is no ``replay=`` carrier to hand in, and no
+      ``app.modules.replay`` seat to resolve it through — the read is a read,
+      and the member that owns the rows owns no reader of them) — group each
+      candidate's rows into the regime strata the caller hands in (a mapping of
+      stratum name to the world ids that belong to it, the same strata-keyed
+      mapping feature 263's ``aggregate_objective`` takes), aggregate each
+      candidate over its worlds under §7 with feature 263's
+      ``aggregate_objective`` (reached the way the policy-runtime member's free
+      seams reach a sibling — through the scoring member's own namespace,
+      ``importlib.import_module("scoring")``, **not** the composed
+      ``app.modules.scoring`` seat, which answers only the per-world objective
+      — so there is no ``scoring=`` carrier either), take
+      :func:`select_argmax`'s winner, and persist one row into
+      ``policy_revision`` directly: feature 274 is the table's **sole writer**,
+      because the replay member's ``persist_replay_score`` writes
+      ``replay_score`` and not this table, so writing the winner's row through
+      it would land in the wrong table. The selector's score is the §7 blend of
+      the stratum mean and the stratum minimum, not a raw average; a candidate
+      with a world the caller's strata do not cover is refused rather than
+      dropped, the way plan_sweep refuses a world the split does not hold,
+      because a dropped world silently changes which tournament the argmax is
+      taken over. The persisted row carries the winner's module_id as
+      policy_version, its code_hash, its parent_version and its aggregated
+      score as aggregate_score, with selected TRUE. The row is **not** rolled
+      back on a refusal: a refusal is raised before any write (a malformed ask,
+      no database, no pool) or on a write that would not land, and the selector
+      never drops a guard, opens a second connection, or re-holds the pool to
+      slip a row underneath feature 270's hold — a sweep written while the pool
+      is held is refused in feature 270's word by the replay member's writer,
+      and the selector's evidence read is a read, permitted under the hold.
+    - The persisted winner is feature 274's own act and **not** feature 280's
+      bar: commit_selection selects and writes the argmax, and judges nothing
+      against §12.1's selection-noise bar — that is feature 280's verdict, and
+      the loop drives it between the sweep and the commit. The module states
+      this in its docstring and in the commit's refusal vocabulary: a caller
+      that wants the bar met calls dreaming.bar.cycle_bar (feature 280) and
+      lets it raise before calling commit_selection, the way the sweep's
+      docstring orders the loop — hold, produce, sweep, select, then bar.
+    - Two new error siblings under DreamingError, each its own class and its
+      own code word: :class:`SelectionRequestError` (the ask's own facts —
+      malformed candidate set, objective mapping or identity, a tie, a
+      candidate the objectives do not cover — refused before anything is
+      read, opening with ``selection_malformed``) and :class:`SelectionStoreError`
+      (the store's face — no database named or one this member cannot speak, a
+      database holding no pool tables, or a winner that measured but would not
+      land — opening with ``selection_ungrounded``). The two are told apart by
+      whether anything has been read: an ask fault is a SelectionRequestError
+      and a store fault is a SelectionStoreError, the split every pair of
+      classes in this member's vocabulary makes. The code words are the member's convention — a greppable word
+      naming what was refused — and deliberately not feature 272's
+      ``sweep_malformed`` / ``sweep_ungrounded`` nor feature 280's
+      ``advantage_below_bar``, because a caller that caught the selector's
+      refusal as the sweep's or the bar's would act on the wrong fact.
+    - The module is import-cheap and reads the pool's tables only by name,
+      restated in dreaming.layout's style (pinned against 0109 and against
+      the replay member by test_cross_member.py) rather than importing the
+      members that own them — a member that imported another would couple a
+      database's history to a package's import graph. Stdlib only at module
+      scope (sqlite3 for the read of the pool's own ``replay_score`` rows and
+      the one ``sqlite_master`` probe the store refusal makes — the reads go
+      through this module's own connection, not a composed component — os for
+      DATABASE_URL, importlib for the one scoring-member namespace the
+      aggregate is reached through), so the factory's scan — which imports
+      this package to fire its @register — pays nothing for a module it never
+      composes. The winner's identity is the candidate's own module_id and
+      code_hash, read not recomputed — the selector persists the candidate the
+      loop handed it, so a row's policy_version and code_hash are the produced
+      value's, and a selector that re-hashed the source would be a second
+      spelling of what a candidate is. No new component — feature 270's single
+      "dreaming" component is the member's whole composition, and
+      select_argmax is reached the way the floor, the cap, the ceiling, the
+      split, the rotation, the bar, the comparison and the transfer are: as
+      free functions beside the store.
+    - The module adds two functions and two classes to the member __init__
+      exports (select_argmax, commit_selection, SelectionRequestError,
+      SelectionStoreError), re-exported the way feature 275's floor names and
+      features 271-283 all are, and the member's __all__ is widened to carry
+      them — the same seat-adjacency discipline the cap and the ceiling keep,
+      so every name-sorted app.order adjacency in the existing suite is
+      untouched (the member's one component name is unchanged). The winner's
+      identity is the candidate's own module_id and code_hash, read not
+      recomputed — the selector persists the candidate the loop handed it, so
+      a row's policy_version and code_hash are the produced value's, and a
+      selector that re-hashed the source would be a second spelling of what a
+      candidate is.
+  </constraints>
+</project_specification>

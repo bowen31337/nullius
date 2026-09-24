@@ -273,6 +273,8 @@ __all__ = [
     "RevisionError",
     "RevisionRequestError",
     "SelectionBarError",
+    "SelectionRequestError",
+    "SelectionStoreError",
     "SplitRequestError",
     "SplitStoreError",
     "SweepRequestError",
@@ -993,6 +995,95 @@ class SelectionBarError(DreamingError):
     figures behind it, and names the repair — so an operator reading a
     deployment log sees both ends of the judgement: *what the winner
     earned* and *what surviving selection noise costs*.
+    """
+
+
+class SelectionRequestError(DreamingError):
+    """The argmax could not be asked for as the caller asked for it.
+
+    app_spec.xml, "Dreaming Loop & Meta-Selection", feature 274: *System
+    selects the argmax candidate under the aggregated objective, persisting
+    the winner into the ``policy_revision`` table.*  This is the *ask* face of
+    that sentence: an empty candidate set (an argmax over nothing is a
+    tournament nobody entered, not a null selection), an empty objective
+    mapping, a candidate whose ``module_id`` is not non-empty text, an
+    objective that is not a value carrying a finite ``score`` and a
+    ``world_count`` of one or more (a −∞ miss's number may not be
+    counterfeited — the aggregate's own −∞ argument, one level up), a
+    candidate the objectives do not cover, an objective keyed to a module id
+    no candidate carries, a ``strata`` that is not a mapping of non-empty
+    stratum names to iterables of non-empty world ids, a ``beta`` that is not
+    a finite number, a ``lam`` outside feature 263's band, or a tie on the
+    maximum score (two candidates sharing the top score — the argmax is
+    undefined over them, and picking one by iteration order would be a
+    selection that changed with nothing, so the refusal names both and states
+    the repair: break the tie by a fact outside the aggregate, or keep the
+    incumbent).  Every one is a fact about the **request**, refused before
+    anything is read, and the repair is to re-consider what was asked for —
+    the stance :class:`BarRequestError` takes for feature 280's asks and
+    :class:`FreezeRequestError` for feature 270's.
+
+    Deliberately **not** a :class:`SelectionStoreError`: nothing has been read
+    while this is raised, so a caller that caught the two together would read
+    *your ask was malformed* as *the store could not ground the selection* —
+    two failures a developer repairs differently, one by fixing the call and
+    the other by pointing at the pool.  It is likewise not feature 272's
+    :class:`SweepRequestError` nor feature 280's bar: the selector is reached
+    after the sweep landed and before the bar judges, and a malformed selection
+    ask is the selector's own fact, not the sweep's or the bar's.
+
+    Every message opens with :data:`dreaming.select.SELECT_REQUEST_CODE`
+    (``selection_malformed``) and names the fact that was wrong — the
+    candidate, the objective, the strata, the beta, the lam or the tie —
+    because a selection's asks are the loop's terminal ones and an operator
+    reading a refusal has to know which axis was malformed before re-sending.
+    """
+
+
+class SelectionStoreError(DreamingError):
+    """The store could not ground feature 274's selection, or could not take its winner.
+
+    The store-side face of feature 274's sentence, with the **two failures the
+    selector's one act produces** — the shape :class:`SweepStoreError`
+    documents for its own:
+
+    * **there is no pool here to select over.**  ``DATABASE_URL`` names a
+      database holding no ``replay_score`` table, so the sweep's evidence is
+      not here and there is no score to aggregate and no winner to crown.
+      Raised before any candidate is aggregated, so a refused selection leaves
+      no row behind.
+    * **the winner measured but its row would not land.**  The selector is the
+      ``policy_revision`` table's sole writer — the replay member's
+      ``persist_replay_score`` lands in ``replay_score``, not here — and a row
+      that cannot land (a duplicate ``policy_version``, a hand on the table) is
+      refused rather than retried over a winner that would silently re-crown
+      another.  A candidate with a world the caller's strata do not cover, or
+      an objective that would not aggregate under §7, is the same refusal: the
+      winner is crowned over a candidate set every member of which aggregated
+      cleanly.
+
+    Both are facts about the **store** rather than the ask (the URL was well
+    formed and the candidates were selectable), so the repair is to point
+    ``DATABASE_URL`` at the database the replay pool lives in, or migrate it,
+    or repair whatever the chained refusal names — never to re-send the same
+    ask, which would fail identically.  A refusal from the aggregate is
+    translated at this seam into this class, never raised in feature 263's own
+    word, because a caller that crowned a winner must not meet the aggregate's
+    class for an aggregate this selector asked for.
+
+    A sibling of :class:`SweepStoreError`, :class:`SplitStoreError` and
+    :class:`CapRecordError` rather than a face of any of them, because they
+    name different worlds: *there is no pool here to sweep* (feature 272),
+    *there is no pool here to split* (feature 278), *there is no pool here to
+    cap* (feature 277) and *there is no pool here — or no cleanly-aggregable
+    winner — to crown* (feature 274).  Deliberately **not** a
+    :class:`PoolFrozenError`: a hold is not a store fault, it is a cycle
+    working correctly; the selector's evidence read is a read, permitted under
+    the hold, and its write is to a table feature 270's triggers do not guard.
+
+    Every message opens with :data:`dreaming.select.SELECT_STORE_CODE`
+    (``selection_ungrounded``), which is the one fact both failures share: the
+    selection was asked for and the store could not ground it.
     """
 
 

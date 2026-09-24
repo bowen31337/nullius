@@ -500,6 +500,14 @@ from .rotation import (
     cycle_rotation,
     record_cycle_holdout,
 )
+from .select import (
+    SELECT_REQUEST_CODE,
+    SELECT_STORE_CODE,
+    SelectionRequestError,
+    SelectionStoreError,
+    commit_selection,
+    select_argmax,
+)
 from .split import (
     TRAIN_FRACTION,
     PoolSplit,
@@ -546,6 +554,8 @@ __all__ = [
     "REPLAY_SCORE_TABLE",
     "REVISION_BAND",
     "SELECTION_BAR_CODE",
+    "SELECT_REQUEST_CODE",
+    "SELECT_STORE_CODE",
     "SWEEP_CODE",
     "SWEEP_STORE_CODE",
     "TRAIN_FRACTION",
@@ -577,6 +587,8 @@ __all__ = [
     "RevisionError",
     "RevisionRequestError",
     "SelectionBarError",
+    "SelectionRequestError",
+    "SelectionStoreError",
     "SplitRequestError",
     "SplitStoreError",
     "SweepPair",
@@ -587,6 +599,7 @@ __all__ = [
     "TransferStoreError",
     "build_cycle_freeze",
     "candidate_module",
+    "commit_selection",
     "cycle_bar",
     "cycle_cap_schema",
     "cycle_caps",
@@ -618,6 +631,7 @@ __all__ = [
     "rejects_uncapped_sweep",
     "revise_policy",
     "revision_cap",
+    "select_argmax",
     "selection_bar",
     "split_pool",
     "split_replay_pool",
