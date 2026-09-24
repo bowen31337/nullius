@@ -42,6 +42,11 @@ specificity ask that cannot be measured — the population-shaped sibling
 of the rate's ask, spoken in its own vocabulary because its refusals
 name the *planted node* where 265's name the committed pick, and the one
 other place in this member whose refusals can name a read that failed.
+Feature 267 adds the deployed FDR's own: :class:`FdrDeployError`, the
+refusal of a deployment false discovery rate that cannot be reweighted
+— the projection of feature 266's pair at the deployment base rate, and
+the per-campaign row it persists in, each refused in a vocabulary that
+names the campaign and the corner rather than the pick and the plant.
 Feature 269 adds the accounting's own: :class:`ErrorAccountingError`,
 the refusal of an error accounting whose two figures cannot be kept
 apart — the Type-A rate's ask and the Type-B depth facts each refused
@@ -132,6 +137,7 @@ __all__ = [
     "DeflationPenaltyError",
     "DivergencePenaltyError",
     "ErrorAccountingError",
+    "FdrDeployError",
     "NullPickPenaltyError",
     "NullPickRateError",
     "OrthogonalityError",
@@ -535,6 +541,59 @@ class CalibrationFiguresError(ScoringError):
     the one every figure this member answers inherits — and no label
     crosses either way, which is feature 265's own sentence held for
     this answer: the figures are returned while the labels stay in.
+    """
+
+
+class FdrDeployError(ScoringError):
+    """A deployment false discovery rate that cannot be reweighted or
+    persisted (feature 267).
+
+    The ask was malformed in this seam's own inputs — a ``campaign`` id
+    that is not a UUID (the row's key joins ``node.campaign_id`` and the
+    discovery member's campaign record, and an id that cannot join them
+    names no campaign a figure could be persisted for), a figures
+    carrier that exposes no readable ``sensitivity``/``specificity``
+    pair (a bare number being the likeliest wrong carrier, and the raw
+    in-campaign rate the likeliest bare number — the one figure prd
+    §4.1.3 forbids the dashboard and this seam refuses as an input), a
+    figure that is not a finite real in ``[0, 1]`` (a duck-typed carrier
+    owes the proof a constructor no longer stands behind), or the pair
+    ``sensitivity 0.0, specificity 1.0`` — feature 266's honest answer
+    for a campaign that committed to nothing, and the one pair whose
+    reweighting is ``0/0`` at every base rate: no declaration was ever
+    made, so no fraction of declarations is defined, and unknown is not
+    zero — and the refusal names which, because the repairs differ: the
+    caller's key against the carrier's wiring against a campaign this
+    arithmetic must refuse rather than default.
+
+    The store's own failures surface here too, translated with the
+    original chained — no configured ``DATABASE_URL``, a scheme the
+    store cannot speak, a locked or unwritable database, and a persisted
+    row that does not read back as the projection of the pair it carries
+    (a stored figure that disagrees with its own ``sensitivity`` and
+    ``specificity``, or a base rate that is not the deployment's) —
+    because the caller's single ``except ScoringError`` must catch a
+    figure that measured but never landed, the same law
+    :class:`~scoring.NullPickRateError` states for the read and the
+    replay member states for its latency row.
+
+    Beside :class:`~scoring.CalibrationFiguresError` and
+    :class:`~scoring.NullPickRateError`, never under either: 265 refuses
+    the *rate* over the picks, 266 refuses the *pair* over the plant,
+    and this class refuses the *projection* of that pair to a deployment
+    base rate and the per-campaign row it persists in — three repairs
+    that send the operator to different places (a sidecar that never
+    answered a pick, a population that was empty or one-sided, a corner
+    the reweighting has no answer for and a store that would not take
+    the write), and folding any two would send an operator tuning one
+    repair when the thing to fix was another.
+
+    No partial value escapes a refusal: the verb either answers one bare
+    ``float`` or raises, so a caller can never hold a half-reweighted
+    figure it must remember to discard — the guarantee every figure this
+    member answers inherits — and no label is any the closer for the
+    widening: the pair is handed over already measured, and the store
+    this error guards never holds a sidecar key.
     """
 
 

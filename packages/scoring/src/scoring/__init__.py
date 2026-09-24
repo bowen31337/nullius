@@ -352,14 +352,57 @@ labels in.  It adds no component and no seat — it rides the process
 docs §16 line 909 lists among the research metrics is the ops member's
 (feature 344's), which reads this pair.
 
-**No persistence here, by the same law that keeps the arithmetic pure.**
-The ``replay_score`` row is the replay plugin's (feature 255); this
-member answers the value it is written from, exactly as migration 0109
-shapes it.  The one feature of this category that still owns state after
-265 — feature 267's per-campaign ``FDR_deploy`` — will take its own
-component beside these two when it lands, the growth pattern
-``app.modules.bootstrap`` took for its pool: another component name,
-another sibling seat, this module's surface untouched.
+**The deployed false discovery rate is the member's twelfth law and its
+second state-bound component (feature 267).**  *"System persists
+FDR_deploy per campaign, computed by reweighting sensitivity and
+specificity to a deployment base rate of 0.9"* — prd §4.1.3's own
+arithmetic (line 147): ``FDR_deploy = π₀(1 − specificity) /
+[π₀(1 − specificity) + (1 − π₀)·sensitivity]`` at π₀ ≈ 0.9, the
+projection of feature 266's pair onto the population the policy deploys
+into — *"roughly 90-95%"* zero-edge, §4.1.3 line 141, against the ~0.25
+the campaign plants at — and the figure the PRD makes the system's
+primary metric (§11 line 536, target *"< 25% at π₀ = 0.9"*) and docs
+§16's first research metric (line 909, *"per campaign: FDR_deploy at
+π₀ = 0.9"*).  It lives in :mod:`scoring._fdr` as
+:func:`~scoring.fdr_deploy` (the free verb — pure, deterministic, no
+store), :data:`~scoring.DEPLOYMENT_BASE_RATE` (π₀, spelled once: a
+constant, not a parameter, because a caller able to pick the base rate
+could pick the figure the target is judged on) and
+:class:`~scoring.FdrDeployStore` (the per-campaign rows, in the
+relational store ``DATABASE_URL`` names, keyed by the campaign id and
+refreshed-not-appended on a re-run with the first ``computed_at`` kept),
+with its own refusal :class:`~scoring.FdrDeployError`.  The pair is
+**handed over, never derived** — the barrier the β₂ term states for the
+rate and 266 for its population, held here at the store: nothing in the
+law holds a sidecar key or reads a label; the campaign's close-out asks
+266's verb on the process for the pair and hands it here.  The one
+corner refused is the pair 266 answers for *a campaign that committed
+to nothing* (sensitivity ``0.0``, specificity ``1.0``), whose projection
+is ``0/0`` at every base rate: a fraction of declarations is undefined
+for a campaign that made none, and unknown is not zero.  Unlike the
+eleven laws before it this one owns state — one row per campaign — so
+it takes the component the objective never needed:
+:data:`~scoring.FDR_COMPONENT_NAME` (``scoring-fdr-deploy``), composing
+to the store or ``None`` (no ``DATABASE_URL`` named), reached from the
+app package through the sibling seat :mod:`app.modules.scoring.fdr`.
+It charges nothing — no β-term reads a base-rate projection, for the
+reason 258's docstring states: a term over a projection would steer the
+loop on what the policy *would* do rather than the error it made — and
+it renders no verdict and no dashboard: M3's *"`FDR_deploy` improves"*
+is a reader's comparison across the rows
+:meth:`~scoring.FdrDeployStore.history` answers, and feature 268's
+rejection (*"the raw in-campaign rate must never be the figure on the
+dashboard"*) stands over the figure this store persists.
+
+**What persists and what does not, closed out.**  The ``replay_score``
+row is the replay plugin's (feature 255); the research-metrics row that
+carries 266's pair is the ops member's (feature 344); the eleven free
+laws persist nothing and never will — that is the law that keeps the
+arithmetic pure.  The category's two state-bound features have each
+landed their own component beside :data:`COMPONENT_NAME` — 265's scorer
+process, 267's FDR store — the growth pattern ``app.modules.bootstrap``
+took for its pool: another component name, another sibling seat, this
+module's surface otherwise untouched.
 """
 
 from __future__ import annotations
@@ -379,6 +422,14 @@ from ._aggregate import (
 from ._calibration import CalibrationFigures
 from ._deflation import BETA_THREE_DEFAULT, deflation_penalty
 from ._divergence import BETA_FOUR_DEFAULT, IC_BOUND, divergence_penalty
+from ._fdr import (
+    DATABASE_URL_ENV,
+    DEPLOYMENT_BASE_RATE,
+    FDR_COMPONENT_NAME,
+    FDR_DEPLOY_TABLE,
+    FdrDeployStore,
+    fdr_deploy,
+)
 from ._nullpicks import BETA_TWO_DEFAULT, RATE_BOUND, null_pick_penalty
 from ._objective import IR_DATES_MINIMUM, WorldScore, world_objective
 from ._orthogonality import BETA_SIX_DEFAULT, orthogonality_bonus
@@ -391,6 +442,7 @@ from .errors import (
     DeflationPenaltyError,
     DivergencePenaltyError,
     ErrorAccountingError,
+    FdrDeployError,
     NullPickPenaltyError,
     NullPickRateError,
     OrthogonalityError,
@@ -410,6 +462,10 @@ __all__ = [
     "BETA_THREE_DEFAULT",
     "BETA_TWO_DEFAULT",
     "COMPONENT_NAME",
+    "DATABASE_URL_ENV",
+    "DEPLOYMENT_BASE_RATE",
+    "FDR_COMPONENT_NAME",
+    "FDR_DEPLOY_TABLE",
     "IC_BOUND",
     "IR_DATES_MINIMUM",
     "LAMBDA_CEILING",
@@ -426,6 +482,8 @@ __all__ = [
     "DivergencePenaltyError",
     "ErrorAccounting",
     "ErrorAccountingError",
+    "FdrDeployError",
+    "FdrDeployStore",
     "NullPickPenaltyError",
     "NullPickRateError",
     "NullPickScorer",
@@ -439,6 +497,7 @@ __all__ = [
     "aggregate_objective",
     "deflation_penalty",
     "divergence_penalty",
+    "fdr_deploy",
     "null_pick_penalty",
     "orthogonality_bonus",
     "regime_aggregate",
@@ -453,9 +512,9 @@ __version__ = "0.1.0"
 #: spec's features carry (``plugin="scoring"``), so the component key, this
 #: member's seat (:mod:`app.modules.scoring`) and the spec cannot drift
 #: apart.  The features of this category that own their own deployment
-#: state (265's scorer process, below; 267's FDR store when it lands)
-#: register their own names beside this one rather than widening this one,
-#: the way ``bootstrap-pool`` sits beside ``bootstrap``.
+#: state (265's scorer process and 267's FDR store, below) register their
+#: own names beside this one rather than widening this one, the way
+#: ``bootstrap-pool`` sits beside ``bootstrap``.
 COMPONENT_NAME = "scoring"
 
 
@@ -533,3 +592,51 @@ def build_null_pick_scorer() -> NullPickScorer | None:
     arithmetic and the pool's makes for its database.
     """
     return NullPickScorer.resolve()
+
+
+# The component name the FDR_deploy store registers under — feature
+# 267's own, beside :data:`COMPONENT_NAME` and
+# :data:`SCORER_COMPONENT_NAME` the way ``bootstrap-pool`` sits beside
+# ``bootstrap``.  Spelled once, in the law module and imported above
+# (:data:`scoring._fdr.FDR_COMPONENT_NAME`) rather than restated here,
+# so the member's surface and its law cannot drift apart the way two
+# literals could — and spelled a second time, independently, in the
+# sibling seat (:data:`app.modules.scoring.fdr.COMPONENT_NAME`, for a
+# caller reaching through the app package), which the member's suite
+# asserts agrees.  Prefixed with the member's own name because a
+# composed application's ``order`` is name-sorted and the store must
+# sort beside — never inside — the member's other components.
+@register(FDR_COMPONENT_NAME)
+def build_fdr_deploy_store() -> FdrDeployStore | None:
+    """Component builder: the FDR_deploy store this environment composes
+    (feature 267).
+
+    Takes no arguments — the factory's protocol — and contributes the
+    :class:`~scoring.FdrDeployStore` the deployment's ``DATABASE_URL``
+    names, by delegating the whole question to the store's own
+    resolution (:meth:`FdrDeployStore.resolve`: an absent, empty or
+    whitespace-only value is unset).
+
+    Answers ``None`` — contributing no store, never failing composition
+    — where no ``DATABASE_URL`` is configured: a deployment that names
+    no relational store has no per-campaign FDR_deploy rows to hold, and
+    the "degrade, don't break" stance every store-bound builder here
+    takes is the only honest answer.  The consequence is the one
+    :meth:`bootstrap.BootstrapPool.resolve`-shaped builders all state:
+    *no store is configured* and *the store is broken* are different
+    facts, and only the second may ever be quiet.  A caller that reaches
+    the app package for the store and finds ``None`` must refuse to
+    proceed rather than persist nowhere — the figure is prd §11's
+    primary target, read across campaigns, and a trend with a hole in it
+    where a campaign's row should be is exactly the quietly-defaulted
+    number this feature exists to rule out.
+
+    Composing an application never opens the database: construction
+    holds the URL and the schema is created on the first connect, so
+    asking is always safe — the same promise the objective's builder
+    above makes for the arithmetic and the scorer's makes for its
+    sidecar.  A URL the store cannot speak is refused at first use, not
+    at composition, because the repair (a misrouted ``DATABASE_URL``)
+    is an operator's fact, not a composition fact.
+    """
+    return FdrDeployStore.resolve()

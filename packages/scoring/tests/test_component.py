@@ -38,12 +38,14 @@ absented itself would leave the ranking it feeds computed over nothing.
 
 Feature 265 grew the member a second registration — the scorer process
 under ``scoring-null-pick-rate``, its own builder in the same
-``__init__.py`` — and this suite's fresh-registry test now asserts both
-names, because the growth pattern is the same convention: no central
-table says either component exists.  The scorer's own composition laws
-(needing an environment to compose to a process, degrading to ``None``
-without one, its seat) are pinned in ``test_scorer_component.py``, not
-duplicated here.
+``__init__.py`` — and feature 267 grew it a third, the FDR_deploy store
+under ``scoring-fdr-deploy``; this suite's fresh-registry test now
+asserts all three names, because the growth pattern is the same
+convention each time: no central table says any of the components
+exists.  The two state-bound components' own composition laws (needing
+an environment to compose to a thing, degrading to ``None`` without
+one, their seats) are pinned in ``test_scorer_component.py`` and
+``test_fdr_component.py``, not duplicated here.
 """
 
 from __future__ import annotations
@@ -152,10 +154,12 @@ def test_a_fresh_registry_scans_the_member_in() -> None:
     src_root = Path(member.__file__).resolve().parent.parent
     registry = Registration()
     scan_components(src_root, registry=registry)
-    # Both of the member's registrations — the objective (256) and the
-    # scorer process (265) — fire from the one ``__init__.py``, sorted by
-    # name as the registry orders them.
+    # All of the member's registrations — the objective (256), the
+    # scorer process (265) and the FDR_deploy store (267) — fire from
+    # the one ``__init__.py``, sorted by name as the registry orders
+    # them.
     assert [component.name for component in registry.components()] == [
         "scoring",
+        "scoring-fdr-deploy",
         "scoring-null-pick-rate",
     ]

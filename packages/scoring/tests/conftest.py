@@ -15,7 +15,7 @@ no database, reads no environment variable and consults no clock — the
 same ambient-free profile the bootstrap member's suite states for its
 worlds, and the reason no autouse fixture guards any of its tests.  The
 member grew its first deployment-bound seam when feature 265's scorer
-process landed, and with it the one autouse guard this conftest now
+process landed, and with it the first autouse guard this conftest now
 carries: :func:`scrub_sidecar_env` deletes the null oracle's four
 environment variables (``NULL_SIDECAR_PATH``, ``LAKE_ROOT``,
 ``NULL_SIDECAR_KEY_REF``, ``NULL_SIDECAR_SERVICE_ACCOUNT``) from every
@@ -68,7 +68,21 @@ population both figures are fractions over — plus two further
 planted-null addresses (:data:`NULL_THREE` and :data:`NULL_FOUR`) that
 extend the plant without touching either class's within-class
 behaviour, the shape the base-rate independence test measures on: φ
-moves, and the figures must not.
+moves, and the figures must not.  Feature 267's suite adds the deployed
+FDR's vocabulary beside all of them: two campaign ids (fixed UUIDs
+continuing the fixture series, the row's key), a stand-in pair carrier
+exposing exactly the two attributes the reweighting reads
+(``sensitivity`` and ``specificity`` — and nothing else, which is what
+proves the seam validates what it reads rather than the type it was
+handed), and the campaign's measured pair as feature 266's own value —
+the four-pick campaign that committed to everything, sensitivity 1.0
+and specificity 0.0, whose reweighted figure at π₀ = 0.9 is 0.9 exactly
+(nine parts null, one part real, every declaration made: nine of ten
+false), checkable with ``==`` — plus the second autouse guard
+:func:`scrub_store_env`, deleting ``DATABASE_URL`` for the same reason
+the sidecar's four variables are scrubbed: the store's ``resolve()``
+composes through the environment, and an inherited value would make the
+composition tests answer for a database this suite never configured.
 
 The path bootstrap puts both import roots on ``sys.path`` regardless of
 how pytest was invoked — the workspace's ``src/`` (for
@@ -98,7 +112,7 @@ for _root in (APP_SRC, PACKAGE_SRC):
     if _root_str not in sys.path:
         sys.path.insert(0, _root_str)
 
-from scoring import WorldScore, world_objective
+from scoring import CalibrationFigures, WorldScore, world_objective
 
 
 @dataclass(frozen=True)
@@ -504,3 +518,70 @@ def type_d_explorations() -> list[StandInExploration]:
         StandInExploration(AT_FLIP, FLIP_DEPTH, FLIP_DEPTH),
         StandInExploration(BEYOND_FLIP, 5, FLIP_DEPTH),
     ]
+
+
+# -- Feature 267: the deployed FDR's vocabulary ---------------------------------
+
+#: The relational store's environment variable, restated by name here
+#: (not imported — the same law the sidecar's four follow) so the autouse
+#: scrub below deletes exactly what :meth:`scoring.FdrDeployStore.resolve`
+#: composes through.  One variable, in the tuple shape the sidecar's take
+#: so the two guards read as one discipline.
+STORE_ENV_VARS = ("DATABASE_URL",)
+
+
+@pytest.fixture(autouse=True)
+def scrub_store_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Delete the relational store's environment from every test in this
+    suite.
+
+    The FDR_deploy store's ``resolve()`` composes through
+    ``DATABASE_URL``, so an inherited value from the operator's shell
+    would make the composition tests answer for a database this suite
+    never configured — the same leak :func:`scrub_sidecar_env` scrubs
+    for the sidecar's four variables.  What a test *does* configure, it
+    configures explicitly (the store tests build a real SQLite file in a
+    tmp directory); what it leaves unset is unset on purpose.
+    """
+    for name in STORE_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+
+#: Two campaign ids, canonical UUID text, continuing the fixture series —
+#: the row's key, named once here so every store test in the suite keys
+#: the same two campaigns and the per-campaign keying has two of them to
+#: key by.
+CAMPAIGN_ONE = "1a2b3c4d-5e6f-4778-89ab-cdef00000010"
+CAMPAIGN_TWO = "1a2b3c4d-5e6f-4778-89ab-cdef00000011"
+
+
+@dataclass(frozen=True)
+class StandInFigures:
+    """A stand-in carrier for the reweighting's duck-typed pair seam.
+
+    Feature 266's :class:`~scoring.CalibrationFigures` is the intended
+    carrier, but the free verb and the store read the pair duck-typed —
+    the loader imports members under synthetic names and re-executes
+    them, so the pair a process composed may be a second class object —
+    and this is the shape that proves it: exactly ``sensitivity`` and
+    ``specificity``, nothing else, so a test reweighting these exercises
+    the seam the composed close-out actually depends on.
+    """
+
+    sensitivity: float
+    specificity: float
+
+
+@pytest.fixture
+def figures() -> CalibrationFigures:
+    """The campaign's measured pair — the four-pick campaign that
+    committed to everything.
+
+    Feature 266's own value, as the close-out hands it to feature 267's
+    store: both reals found (sensitivity 1.0), both nulls committed
+    (specificity 0.0) — and the reweighting at π₀ = 0.9 is 0.9 exactly
+    (false alarms 0.9·(1 − 0.0) = 0.9, true alarms 0.1·1.0 = 0.1,
+    denominator 1.0), checkable with ``==``: nine parts null, one part
+    real, every declaration made, nine of ten false.
+    """
+    return CalibrationFigures(sensitivity=1.0, specificity=0.0)

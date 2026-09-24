@@ -110,9 +110,10 @@ exactly the growth ``app.modules.bootstrap`` took when feature 188's
 pool arrived: a second module answering *what is the composed scorer
 process?*, this one going on answering *what is the composed objective?*
 — and the two seats' ``None``s mean different things, as each one's
-docstring states.  The next state-bound feature of the category (267's
-per-campaign ``FDR_deploy`` store) will take the same growth again:
-another component name, another sibling seat, this module's surface
+docstring states.  The second state-bound feature of the category
+(feature 267's per-campaign ``FDR_deploy`` store) has since taken the
+same growth: another component name (``scoring-fdr-deploy``), another
+sibling seat (:mod:`app.modules.scoring.fdr`), this module's surface
 untouched.
 """
 
