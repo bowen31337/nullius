@@ -53,6 +53,17 @@ violated, not by which line of code failed:
   this module that carries a value (see its own docstring on why: the reading
   the feature returns is what a caller must act on).
 
+* :class:`RouterRetryError` — feature 319's fault, and the fourth class under
+  :class:`RouterRateLimitError`: a retry this module cannot pace.  Its noun is
+  the *waiting* the refusal asked for — a budget that is not a count, a
+  backoff that is not exponential, a jitter that is not a bound, a request
+  that cannot be called, a sink that cannot receive.  It sits under the
+  rate-limit base because the retry is the limiter's own answer to its own
+  refusal, so a caller asking *"is the rate-limited path unhappy?"* catches
+  one base — and it is deliberately **not** a
+  :class:`RouterRateLimitedError`, because the bucket refused nothing: the
+  *ask to wait on it* was the malformed thing.
+
 Every message names the offending value and the contract it broke, because
 these are operational signals for a pipeline the order path trusts for its
 step size and tick size, not debugging aids.
@@ -68,11 +79,13 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, and limiter imports this
 __all__ = [
     "ORDER_SUBMISSION_UNHEALTHY_CODE",
     "RATE_LIMITED_CODE",
+    "RETRY_BACKOFF_CODE",
     "WEIGHT_BUCKET_CODE",
     "WEIGHT_SCHEDULE_CODE",
     "RouterError",
     "RouterFilterError",
     "RouterRateLimitedError",
+    "RouterRetryError",
     "RouterStoreError",
     "RouterSubmissionHealthError",
     "RouterWeightBucketError",
@@ -105,6 +118,16 @@ WEIGHT_SCHEDULE_CODE = "weight_schedule"
 #: refilled: a scope that names nothing, a moment that is naive or is not a
 #: moment, or a stored bucket whose state is not one a bucket can be in.
 WEIGHT_BUCKET_CODE = "weight_bucket"
+
+#: Feature 319's greppable token for a *retry* this module cannot pace: a
+#: budget that is not a count, a backoff that is not exponential, a jitter
+#: that is not a bound, a request that cannot be called, or a sink that
+#: cannot receive the retry event.  Every
+#: :class:`RouterRetryError` message opens with it, so a malformed retry ask
+#: is one grep apart from the refusal that prompted it — which is
+#: :data:`RATE_LIMITED_CODE`, feature 318's, and a different fault with a
+#: different repair.
+RETRY_BACKOFF_CODE = "retry_backoff"
 
 
 class RouterError(Exception):
@@ -272,3 +295,34 @@ class RouterRateLimitedError(RouterRateLimitError):
         *not* a second spelling of the number, and nothing here waits on it.
         """
         return self.headroom.retry_after
+
+
+class RouterRetryError(RouterRateLimitError):
+    """A retry this module cannot pace — the ask, not the bucket.
+
+    app_spec.xml, "Order Routing & Venue Filters", feature 319: *"System
+    retries a rate-limited request with exponential backoff plus jitter."*
+    This is the failure of that sentence's ask rather than of its request: a
+    ``retries`` budget that is not a genuine count, a backoff schedule that
+    is not exponential (a multiplier of one) or not bounded (a jitter that is
+    no fraction at all), a request that cannot be called, an event sink that
+    cannot receive, or a refusal that names no wait a backoff could read a
+    floor from.  All of them are refused **eagerly** — before the request is
+    sent even once — because a retry that began sleeping before its ask was
+    checked would have a caller believe a malformed retry was accepted.
+
+    A child of :class:`RouterRateLimitError` and of nothing else: the retry
+    is the limiter's own answer to its own refusal, so a caller catching the
+    rate-limit base catches this along with the three faults above.  It is
+    deliberately **not** a :class:`RouterRateLimitedError`, because nothing
+    was refused — the bucket did its job, the schedule did its job, and the
+    thing that came in wrong is the *waiting* the caller asked this module
+    to do about them.  A caller that catches only
+    :class:`RouterRateLimitedError` (the refusal) must not have a malformed
+    retry ask land in that ``except`` — the two repairs are unrelated: one
+    is *wait or shed load*, the other is *fix the retry you asked for*.
+
+    Every message opens with :data:`RETRY_BACKOFF_CODE`, so an operator
+    greps one token for retry faults — a token that is not
+    :data:`RATE_LIMITED_CODE`, whose grep the refusal itself owns.
+    """

@@ -28,7 +28,7 @@
 [project]
 name = "router"
 version = "0.1.0"
-description = "Order routing & venue filters: persists the fetched exchangeInfo version the order path reads lot size, notional, price filter, step size and tick size from, never hardcoded; records the router's own submission health; and applies a token-bucket rate limiter matched to the venue's weight schedule."
+description = "Order routing & venue filters: persists the fetched exchangeInfo version the order path reads lot size, notional, price filter, step size and tick size from, never hardcoded; records the router's own submission health; applies a token-bucket rate limiter matched to the venue's weight schedule; and retries a rate-limited request with exponential backoff plus jitter."
 requires-python = ">=3.12"
 dependencies = ["nullius", "nullius-ingest"]
 

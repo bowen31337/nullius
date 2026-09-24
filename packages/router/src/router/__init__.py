@@ -54,6 +54,18 @@ exactly the double-spend a shared budget must not have.  So
 :class:`~router.limiter.RouterRateLimiter` arrives by construction from
 ``DATABASE_URL``, and the member still registers exactly one component.
 
+Feature 319 adds a fifth: :mod:`router.retry` — the clause after the comma
+in that §13.2 line, *"with exponential backoff and jitter"*, answering the
+limiter's refusal by waiting and re-sending, and emitting one
+:class:`~router.retry.RateLimitRetryEvent` per attempt it makes.  It holds
+no table (a pacing is not a fact the next process must agree on — the
+bucket it paces against already is), and no component either, for the
+reason :func:`discovery.retry.retry_interrupted` states for its own retry:
+it exists for the length of one call and takes its whole policy from the
+caller on each ask, so a builder would have to bake a budget no deployment
+stated.  The member still registers exactly one component, and the order
+path reaches the verb by calling it.
+
 This package also *is* a component of the composed application: importing
 it registers a builder with the application factory
 (``app.module_loader.register``), so the module loader discovers it by
@@ -78,12 +90,14 @@ from ._identity import process_identity
 from .errors import (
     ORDER_SUBMISSION_UNHEALTHY_CODE,
     RATE_LIMITED_CODE,
+    RETRY_BACKOFF_CODE,
     WEIGHT_BUCKET_CODE,
     WEIGHT_SCHEDULE_CODE,
     RouterError,
     RouterFilterError,
     RouterRateLimitedError,
     RouterRateLimitError,
+    RouterRetryError,
     RouterStoreError,
     RouterSubmissionHealthError,
     RouterWeightBucketError,
@@ -108,6 +122,14 @@ from .limiter import (
     RouterRateLimiter,
     VenueWeightSchedule,
 )
+from .retry import (
+    DEFAULT_BACKOFF_SCHEDULE,
+    RATE_LIMIT_RETRY_EVENT,
+    BackoffSchedule,
+    RateLimitRetryEvent,
+    RetryEventLog,
+    retry_rate_limited,
+)
 from .store import (
     DATABASE_URL_ENV,
     ROUTER_EXCHANGE_INFO_FILTER_TABLE,
@@ -130,6 +152,7 @@ from .submission_health import (
 __all__ = [
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
+    "DEFAULT_BACKOFF_SCHEDULE",
     "DEFAULT_VENUE_WEIGHT_SCHEDULE",
     "DEFAULT_WEIGHT_SCOPE",
     "OPERATION_ACCOUNT",
@@ -145,6 +168,8 @@ __all__ = [
     "ORDER_SUBMISSION_REJECTED",
     "ORDER_SUBMISSION_UNHEALTHY_CODE",
     "RATE_LIMITED_CODE",
+    "RATE_LIMIT_RETRY_EVENT",
+    "RETRY_BACKOFF_CODE",
     "ROUTER_EXCHANGE_INFO_FILTER_TABLE",
     "ROUTER_EXCHANGE_INFO_VERSION_TABLE",
     "SUBMISSION_HEALTH_FAILURE_RATIO",
@@ -155,7 +180,10 @@ __all__ = [
     "WEIGHT_BUCKET_CODE",
     "WEIGHT_LIMIT_TYPE",
     "WEIGHT_SCHEDULE_CODE",
+    "BackoffSchedule",
     "RateLimitHeadroom",
+    "RateLimitRetryEvent",
+    "RetryEventLog",
     "RouterError",
     "RouterExchangeInfoStore",
     "RouterExchangeInfoVersion",
@@ -163,6 +191,7 @@ __all__ = [
     "RouterRateLimitError",
     "RouterRateLimitedError",
     "RouterRateLimiter",
+    "RouterRetryError",
     "RouterStoreError",
     "RouterSubmissionHealthError",
     "RouterSubmissionHealthStore",
@@ -174,6 +203,7 @@ __all__ = [
     "VenueWeightSchedule",
     "process_identity",
     "resolve_router_filters",
+    "retry_rate_limited",
 ]
 
 __version__ = "0.1.0"
