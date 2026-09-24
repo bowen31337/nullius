@@ -445,6 +445,7 @@ from .errors import (
     FreezeRequestError,
     HoldoutRecordError,
     HoldoutRequestError,
+    IncumbentRequestError,
     PairedComparisonError,
     PoolFrozenError,
     PoolTooThinError,
@@ -459,6 +460,11 @@ from .errors import (
     SweepStoreError,
     TransferRequestError,
     TransferStoreError,
+)
+from .incumbent import (
+    IncumbentCandidate,
+    include_incumbent,
+    incumbent_candidate,
 )
 from .ladder import (
     LADDER_FLOOR_WORLDS,
@@ -577,6 +583,8 @@ __all__ = [
     "HoldoutRecord",
     "HoldoutRecordError",
     "HoldoutRequestError",
+    "IncumbentCandidate",
+    "IncumbentRequestError",
     "PairedComparisonError",
     "PairedDifference",
     "PoolFrozenError",
@@ -610,6 +618,8 @@ __all__ = [
     "default_reviser",
     "expected_triggers",
     "family_transfer",
+    "include_incumbent",
+    "incumbent_candidate",
     "ladder_floor",
     "leave_one_family_out",
     "missing_guards",

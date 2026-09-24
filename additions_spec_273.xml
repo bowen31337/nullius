@@ -1,0 +1,391 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 273 (System includes the incumbent policy in the candidate set, which returns a selected policy never worse on the fixed history)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 273 in the existing dreaming member
+    (packages/dreaming, import name dreaming; seat src/app/modules/dreaming):
+    the clause that makes §C5's selection *safe*, and the clause three
+    siblings already cite by number without implementing —
+    docs/alpha-engine-prd.md §C5 states it as the qualifier on the whole
+    dreaming loop — *"The paper's selection guarantee carries over unchanged:
+    because the candidate set includes ``π^0 = π_t``, the selected policy is
+    no worse than the current one *on the fixed replay history*. Note the
+    qualifier. It is a guarantee about replay score, not about future P&amp;L."* —
+    and §12.1 leans on it as the reason a refused winner is not a lost cycle:
+    *"The paper's guarantee ``V^{m★} ≥ V^0`` holds on the *fixed history*"*.
+    Two spellings in one new module, dreaming/incumbent.py, beside feature
+    270's single "dreaming" component. (1) The value —
+    :func:`incumbent_candidate(source, *, version=None, parent_version=None)`:
+    the incumbent policy's own source in, and ``π^0`` out as a candidate-shaped
+    entry, *through the member's one spelling of a candidate's identity*
+    (feature 271's :func:`~dreaming.reviser._code_hash_of`, the sha256 the
+    reviser hashes with, imported rather than respelled for the reason that
+    function's own docstring gives — *"the one spelling of a candidate's
+    identity … so the two cannot disagree on what makes two revisions the same
+    candidate"*). It answers a frozen, hand-written-``__slots__``
+    :class:`IncumbentCandidate` carrying the three facts a candidate is read
+    for — ``module_id``, ``code_hash``, ``parent_version`` — and its
+    ``source``, and **deliberately no ``revision_index``**: the incumbent is
+    not one of the ``M`` revisions feature 271 produced, and feature 272's own
+    candidate reader was written to admit exactly this (*"a genuine positive
+    integer **or absent**"*, and its docstring names the case — *"273's
+    incumbent — put back into the candidate set by a **sibling** feature — may
+    well arrive as a different class carrying the same facts"*). An incumbent
+    whose caller names no ``version`` is given the version the loop itself
+    would have written for it: ``cand-`` prefixed digest of its code hash, the
+    same default :func:`dreaming.reviser.candidate_module` derives, so a
+    previous cycle's ``policy_revision.policy_version`` is reconstructible from
+    the policy source alone. (2) The act of *including* —
+    :func:`include_incumbent(candidates, source, *, version=None,
+    parent_version=None)` — the candidate set feature 271 produced and the
+    incumbent in, and the **widened** set out, with ``π^0`` **first**: the
+    incumbent is the set's opening member because it is the policy in force,
+    and appending it would make the loop's own report read as though a revision
+    had been added rather than the incumbent restored. Both are **pure**: no
+    store, no clock, no environment, no ``@register`` component — the shape
+    :func:`dreaming.ladder.rejects_thin_pool`, feature 276's ceiling, feature
+    278's split, feature 279's rotation and feature 274's argmax all take, and
+    a caller that only wants *the widened set* asks this and pays for nothing.
+    What the second clause of the sentence — *"which returns a selected policy
+    never worse on the fixed history"* — means here is stated and pinned rather
+    than assumed: with ``π^0`` in the set, feature 274's argmax is taken over a
+    tournament one of whose entrants is the current policy, so **every path of
+    the loop either selects a candidate whose §7 objective is at least the
+    incumbent's, or refuses** (a tie at the top is feature 274's refusal, and a
+    missing objective is feature 274's refusal) — ``V^{m★} ≥ V^0`` by
+    construction, exactly as §12.1's own words claim, and never by a check this
+    module performs. Refusals are **rather than silently defaulting**, each
+    naming what it is about: a source that is not non-empty text, a
+    ``version`` or ``parent_version`` that is not ``None`` or non-empty text,
+    candidates that are not a sequence of candidate modules (a bare string
+    refused where many candidates belong, because Python would iterate its
+    characters), a candidate whose ``module_id`` or ``code_hash`` is not
+    non-empty text, and — the load-bearing one — an incumbent **already in the
+    set**, by its ``module_id`` or by its ``code_hash``, so a loop that ran
+    feature 273 twice, or a reviser that returned the incumbent's source
+    verbatim, is refused rather than handing feature 274 an argmax over two
+    entrants that are one policy. An **empty** candidate set is **admitted**,
+    not refused: the whole of this feature is *adding one*, and a set that
+    holds only ``π^0`` is §C5's guarantee at its most literal — the selected
+    policy *is* the incumbent — the admission feature 276's ceiling already
+    states for a zero revision count (*"do not run any revision is a caller's
+    own business"*). One new error sibling under DreamingError,
+    :class:`IncumbentRequestError`, and no code word: feature 273's verb is
+    *includes* and its sentence mandates none, so every message opens with its
+    subject, the stance :class:`~dreaming.errors.CapRequestError`,
+    :class:`~dreaming.errors.RevisionCeilingError` and
+    :class:`~dreaming.errors.HoldoutRequestError` state. The module mints no
+    store face and no verdict of its own, because the sentence has no store act
+    and its second clause is a theorem about feature 274's argmax rather than a
+    judgment this module makes. No central registry, router, app factory,
+    middleware, settings or migration is edited; no new table; the member's
+    single "dreaming" component is untouched and the seat is not edited —
+    feature 275's floor names that precedent and features 271, 274 and 279
+    followed it.
+  </addition_summary>
+  <existing_context>
+    The dreaming member (packages/dreaming) already implements the §C5 loop's
+    acts as free functions beside feature 270's single "dreaming" component,
+    and the chain this feature completes is already spelled by its neighbours.
+    Feature 271 (dreaming.reviser) produces M candidate modules through
+    revise_policy, each a frozen CandidateModule carrying source, code_hash,
+    module_id, parent_version and revision_index (1..M — the class refuses a
+    non-positive index, which is why the incumbent enters as a value of its own
+    rather than as a CandidateModule); its _code_hash_of is the member's one
+    spelling of a candidate's identity and its candidate_module defaults
+    module_id to f"cand-{code_hash[:32]}". Its docstring states this feature's
+    contract — *"with the incumbent recorded as each candidate's
+    ``parent_version`` so feature 273 can add ``π^0 = π_t`` back into the
+    candidate set"* — and its _validated_parent says the same of the parent
+    field (*"it is the incumbent feature 273 adds back to the candidate
+    set"*). Feature 272 (dreaming.sweep) evaluates each candidate against every
+    stored world and persists one replay_score row per pair through the replay
+    member's persist_replay_score; its _candidate_of reads module_id, code_hash
+    and an **optional** revision_index — *"a genuine positive integer or
+    absent"* — and its docstring names this feature as the reason: *"273's
+    incumbent — put back into the candidate set by a sibling feature — may well
+    arrive as a different class carrying the same facts."* Its own docstring
+    disclaims this feature's clause three times over: *"It is not the
+    production, the incumbent's return, the argmax or the bar. … putting
+    ``π^0 = π_t`` back into the candidate set so the selection can never fall
+    below the current policy is feature 273's."* Feature 274 (dreaming.select)
+    takes the argmax over whatever candidate set it is handed and its docstring
+    draws the boundary verbatim — *"It is not feature 273 either: 273 puts the
+    incumbent back into the candidate set so the argmax never falls below the
+    current policy, and this module takes the argmax over whatever candidate
+    set it is handed — if the loop has run 273 first, the incumbent is one
+    candidate among the set"* — while its tie refusal names this feature's
+    guarantee as the repair (*"or keep the incumbent, which the paper's
+    ``V^m★ ≥ V^0`` holding by construction (feature 273)"*). Feature 280
+    (dreaming.bar) states the same reading of the guarantee for its own
+    refusal (*"The repair is the incumbent … when nothing clears the bar, the
+    incumbent is the argmax"*), and feature 276's ceiling and feature 271's
+    parent rule both spell ``V^{m★} ≥ V^0`` in their prose. The member's
+    conventions this feature follows: verdict-over-counts free functions beside
+    the store; duck-typed seams read by getattr rather than isinstance (the
+    module loader's synthetic-name re-execution means an isinstance would
+    refuse the very objects composition produces); error vocabularies
+    translated at the seam, never borrowed from a sibling's class; frozen,
+    hand-written __slots__ values so two callers holding one cannot move each
+    other's figure, the FreezeRecord stance CandidateModule and SweepPair take;
+    one error base per member with subclasses split by the repair the caller
+    must make; a code word mandated only where the feature's own sentence names
+    one; and @register only in __init__.py, so a submodule's registration fires
+    only on the first create_app() of a process.
+    <conventions>
+      - No member imports another; a member reaches a sibling through the
+        app.* seat at call time, never through its import name. Inside the
+        member, a shared private spelling is imported rather than respelled:
+        cap.py imports _parsed_instant and _stamp from .cycle, and this module
+        imports _code_hash_of from .reviser for the same reason.
+      - Verdicts are pure functions over figures the caller already holds; the
+        act is the store seam, and the two never share a module's job.
+      - Error vocabularies are translated at the seam: a caller asking this
+        feature must not meet a sibling member's class, nor feature 271's.
+      - Values are frozen with hand-written __slots__, validated at
+        construction, the member's FreezeRecord stance.
+      - A restatement of another feature's rule is pinned against its owner by
+        a test — test_cross_member.py's discipline, applied inside the member
+        (this feature's default derived version against candidate_module's).
+      - @register lives only in __init__.py; no new component, no seat edit,
+        no migration, no table — feature 275's floor names that precedent.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Dreaming Loop &amp; Meta-Selection">
+      <feature index="273" shape="plugin" plugin="dreaming" depends_on="272">
+        System includes the incumbent policy in the candidate set, which
+        returns a selected policy never worse on the fixed history.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Feature 273 is the clause that makes the 271-274 chain safe, and it is the
+    only one of the four that three of its neighbours already cite by number
+    while expressly disclaiming: feature 272's docstring says *"putting
+    ``π^0 = π_t`` back into the candidate set so the selection can never fall
+    below the current policy is feature 273's"*, feature 274's says *"It is not
+    feature 273 either"* and draws the boundary line by line, and feature 280
+    (dreaming.bar) grounds its whole refusal on it — *"The repair is the
+    incumbent, and that is what makes the refusal safe. The paper's guarantee
+    ``V^{m★} ≥ V^0`` holds *by construction* once the incumbent is in the
+    candidate set (feature 273's sentence): when nothing clears the bar, the
+    incumbent *is* the argmax."* Feature 271's parent rule completes the
+    handshake from the other direction: a candidate's ``parent_version`` is
+    ``π_t``'s version, which is exactly the identity this feature reconstructs.
+    ``depends_on="272"`` is the loop-ordering fact and **not** a code import —
+    feature 272 runs the sweep whose evidence the sentence's second clause is a
+    claim *about* (*"on the fixed history"* is the pool feature 270 holds and
+    feature 272 crosses), and this module neither reads nor imports the sweep,
+    the split or the store. The order the loop drives is the order the
+    siblings' prose states: feature 275's floor refuses a thin pool, feature
+    276's ceiling bounds the sweep, feature 277's schedule answers ``M``,
+    feature 271 produces the ``M`` revisions, **feature 273 includes ``π^0``**,
+    feature 278's split marks the worlds, feature 272 sweeps the widened set
+    and persists one row per pair, feature 274 takes the argmax under §7 and
+    writes the winner, and feature 280 judges that winner against §12.1's bar.
+    Where in that order the incumbent's own readings come from is deliberately
+    *not* this feature's to fix, and both honest answers are the caller's: the
+    widened set is what feature 272 sweeps, so the incumbent's evidence is
+    measured on the fixed history fresh, **or** the incumbent was itself a
+    candidate of an earlier cycle whose rows already sit in the pool under its
+    own ``policy_version`` — and because the pool is held fixed for the
+    iteration the two readings are the same reading. What this feature fixes is
+    the one thing both orders need: that the candidate set feature 274's argmax
+    ranges over contains ``π^0``. The guarantee is then a theorem about feature
+    274's own verdict rather than a check this module performs — the argmax is
+    the maximum over a set containing the incumbent, so it is at least the
+    incumbent's objective, and where it is not (a tie at the top, a candidate
+    the objectives do not cover) feature 274 refuses rather than returning
+    anything lower; §12.1's qualifier is honoured in this module's prose and
+    not softened: the guarantee is about **replay score on the fixed history**,
+    never about forward P&amp;L. The entry this module answers is read by the
+    producers and consumers exactly as any candidate is — feature 272 by
+    ``module_id``, ``code_hash`` and an absent ``revision_index``; feature 274
+    by ``module_id`` in its argmax, by ``code_hash`` and ``parent_version``
+    when it writes the winner into ``policy_revision`` — and it is
+    **duck-typed in both directions**: this module never imports
+    :class:`~dreaming.reviser.CandidateModule` and reads a produced candidate
+    by ``getattr``, the stance feature 272's reader states for the same reason.
+    The module is reached directly from the member
+    (``from dreaming import incumbent_candidate, include_incumbent,
+    IncumbentCandidate, IncumbentRequestError``) and re-exported by the member
+    __init__, the way feature 275's floor names and features 271-283 all are.
+    Its one outbound coupling inside the member is
+    :func:`~dreaming.reviser._code_hash_of`, and it is pinned: the member suite
+    asserts this feature's default derived version equals
+    :func:`~dreaming.reviser.candidate_module`'s default ``module_id`` for the
+    same source, so the two derivations cannot drift into two spellings of what
+    a candidate is — the same discipline ``test_cross_member.py`` applies
+    across the member boundary, applied here to the one rule this feature
+    restates.
+  </integration_points>
+  <constraints>
+    - Both functions are **pure**: no store, no clock, no environment, no
+      ``@register`` component. :func:`incumbent_candidate` takes the
+      incumbent's source and answers ``π^0`` as a candidate-shaped value;
+      :func:`include_incumbent` takes the candidate set feature 271 produced
+      and answers the widened set with ``π^0`` **first**. Neither opens a
+      database, reads a row, takes a path, consults the pool or touches the
+      loop's state — the shape :func:`dreaming.ladder.rejects_thin_pool`,
+      feature 276's ceiling, feature 278's split, feature 279's rotation and
+      feature 274's argmax take, and a caller that only wants the widened set
+      asks this and pays for nothing.
+    - :class:`IncumbentCandidate` is a **frozen value with hand-written
+      ``__slots__``**, validated at construction, the stance
+      :class:`~dreaming.cycle.FreezeRecord`,
+      :class:`~dreaming.reviser.CandidateModule`,
+      :class:`~dreaming.sweep.SweepPair` and :class:`~dreaming.cap.CapRecord`
+      take: two callers holding one entry cannot move each other's source or
+      identity, because the entry a caller holds is the entry the argmax ranks.
+      Its four fields are ``source`` (the incumbent's complete policy source,
+      non-empty text — the only thing feature 272's replay engine reads),
+      ``code_hash`` (the sha of the source, computed by the factory, never
+      handed in — the same rule feature 271 states for its own candidates, and
+      the value feature 274 persists to ``policy_revision.code_hash``),
+      ``module_id`` (the version string feature 274 writes as
+      ``policy_revision.policy_version``) and ``parent_version`` (``None`` for
+      an incumbent with no parent recorded in this iteration, otherwise a
+      non-empty name). It carries **no ``revision_index``** and that absence is
+      load-bearing, not an omission: the incumbent is not one of the ``M``
+      revisions feature 271 produced, feature 272's reader admits a candidate
+      whose index is absent precisely so a sibling feature's incumbent can
+      enter, and a fabricated index — feature 271 refuses any index below
+      one — would mislabel the incumbent as one of the sweep's own revisions
+      in the plan feature 272's report orders. ``__eq__`` and ``__hash__`` are
+      the four fields, so two entries for one incumbent are one value. The
+      class validates what it is handed and raises
+      :class:`~dreaming.errors.IncumbentRequestError` — the ask's own
+      vocabulary — never feature 271's :class:`~dreaming.reviser.
+      RevisionRequestError`: the *rule* that a candidate's source and identity
+      are non-empty text is the member's one rule, and the *vocabulary* splits
+      by who was asked, the discipline feature 276's ceiling states for its own
+      figures.
+    - **One spelling of a candidate's identity.** The code hash is
+      :func:`~dreaming.reviser._code_hash_of` imported from the member's own
+      reviser — the private spelling feature 271's ``candidate_module`` and its
+      deduplication share — rather than a second ``hashlib.sha256`` call here,
+      which is the failure that function's docstring names. The **default**
+      derived version is ``f"cand-{code_hash[:32]}"``, the same default
+      :func:`~dreaming.reviser.candidate_module` derives for a produced
+      revision, and it is not a coincidence worth avoiding but a property worth
+      having: a candidate's ``module_id`` is a function of its source, so an
+      incumbent whose caller names no ``version`` is given the very string the
+      loop would have written for it when it *was* a candidate — a previous
+      cycle's ``policy_revision.policy_version`` is reconstructible from the
+      policy source alone. The restatement is pinned by a test against its
+      owner (the same source through both derivations answers one ``module_id``)
+      so the two cannot drift, the discipline ``test_cross_member.py`` applies
+      across the member boundary.
+    - :func:`include_incumbent(candidates, source, *, version=None,
+      parent_version=None)` is the **act of including** and it answers a
+      **tuple** with the incumbent **first** and the produced candidates in
+      their own order after it. First, because the incumbent is the policy in
+      force and appending it would make the loop's own report read as though a
+      revision had been added rather than the incumbent restored; and a tuple,
+      so the answer is a value a caller can hold and compare rather than a
+      generator that pays again each time it is read. It **never mutates its
+      argument**: the produced sequence is read, not consumed in place, so a
+      caller that still needs the ``M`` revisions it produced holds them.
+    - Both functions **refuse rather than silently defaulting**, each with
+      :class:`~dreaming.errors.IncumbentRequestError` and naming what it is
+      about: a source that is not non-empty text; a ``version`` that is not
+      ``None`` or non-empty text; a ``parent_version`` that is not ``None`` or
+      non-empty text; a candidate set that is a bare string or bytes (Python
+      would iterate its characters and one policy source would silently become
+      one candidate per character) or is not iterable at all; a candidate whose
+      ``module_id`` is not non-empty text (it is how feature 274's argmax names
+      its entrants and how the winner is written as
+      ``policy_revision.policy_version``); a candidate whose ``code_hash`` is
+      not non-empty text (feature 272 files one pair's evidence under it and
+      feature 274 persists it); and — the load-bearing refusal — an incumbent
+      that is **already in the set**, caught by its ``module_id`` or by its
+      ``code_hash``, naming the candidate that carries it. That refusal is what
+      makes the sentence's verb meaningful: *includes* is not *may include*, a
+      loop that ran this feature twice has not enlarged its tournament, and a
+      reviser that returned the incumbent's source verbatim — which feature
+      271's deduplication cannot catch, because it compares the revisions to
+      *each other* and not to the incumbent they descend from — would otherwise
+      hand feature 274 an argmax over two entrants that are one policy, or a
+      guaranteed tie on the maximum.
+    - An **empty** candidate set is **admitted**, and that is a decision rather
+      than an oversight. Feature 271 refuses a production shortfall, so an
+      empty set is a caller's own construction rather than a policy that could
+      not fund ``M``; and the whole of this feature is *adding one*, so
+      ``include_incumbent((), source)`` answers the one-member set ``(π^0,)``
+      — §C5's guarantee at its most literal, the selected policy *being* the
+      incumbent, which is exactly what §12.1's *"when nothing clears the bar,
+      the incumbent is the argmax"* describes from the other side. Feature
+      274 takes the argmax over one candidate without a tie, so the widened set
+      is a set a selection can be taken over. This is the admission feature
+      276's ceiling already states for a zero revision count — *"do not run any
+      revision is a caller's own business"* — applied one step earlier in the
+      same loop. The refusals above still fire on an empty set: a malformed
+      source, a malformed version or a malformed candidate set is refused
+      whatever the set holds.
+    - The second clause of the sentence — *"which returns a selected policy
+      never worse on the fixed history"* — is **stated and not re-implemented**.
+      With ``π^0`` in the set, feature 274's argmax is the maximum over a
+      tournament one of whose entrants is the current policy, so the selected
+      policy's §7 objective is at least the incumbent's whenever a selection is
+      returned at all, and every path that could return something lower is
+      feature 274's own refusal (a tie on the maximum, or a candidate the
+      objectives do not cover). The guarantee is therefore a theorem about
+      feature 274's verdict and this module performs **no check of it**: a
+      function here that compared the winner's aggregate to the incumbent's
+      would be a second spelling of the argmax's own law, and would need the
+      objective figures feature 274 and feature 280 already rank and judge
+      (the bar's refusal, not this one, is the case where a winner *above* the
+      incumbent is still refused). The module's docstring states the theorem,
+      §12.1's qualifier with it — *"a guarantee about replay score, not about
+      future P&amp;L"* — and the member suite pins it by running feature 274's real
+      :func:`~dreaming.select.select_argmax` over the widened set and asserting
+      the winner's score is at least the incumbent's, over the pool a caller
+      actually holds.
+    - One new error sibling under :class:`~dreaming.errors.DreamingError`,
+      :class:`~dreaming.errors.IncumbentRequestError`, and **no code word**.
+      Feature 275's ``pool_too_thin`` is mandated by its own sentence and this
+      feature's sentence mandates none — its verb is *includes* — so every
+      message opens with its subject, the stance
+      :class:`~dreaming.errors.CapRequestError`,
+      :class:`~dreaming.errors.RevisionCeilingError`,
+      :class:`~dreaming.errors.HoldoutRequestError` and
+      :class:`~dreaming.errors.TransferRequestError` state for their own pairs.
+      The class is its own rather than a face of feature 271's
+      :class:`~dreaming.errors.RevisionRequestError` (its repair is *re-consider
+      the source and the version you handed the inclusion*, against *re-consider
+      the revision sweep you asked for*), rather than feature 276's
+      :class:`~dreaming.errors.RevisionCeilingError` (this feature refuses no
+      count), and never feature 275's or feature 270's word: a caller that
+      caught this refusal as any of those would act on the wrong fact. It sits
+      beside them under the one base, so a caller that wants every failure of
+      the dreaming path still catches one class. This feature has **no store
+      face** — its sentence has no store act — and mints no second class.
+    - The module is stdlib-only and import-cheap: ``typing`` and the member's
+      own ``.reviser`` (for the one shared hash) and ``.errors``, and nothing
+      else at module scope — no ``sqlite3``, no third-party import — so the
+      factory's scan, which imports this package to fire its ``@register``,
+      pays nothing for a feature it never composes. Its candidate reads are
+      duck-typed by ``getattr``, never ``isinstance``, for the workspace's
+      reason. **No new component** — feature 270's single ``"dreaming"``
+      component is the member's whole composition, and both functions are
+      reached the way the floor, the cap, the ceiling, the split, the rotation,
+      the bar, the comparison and the transfer are: as free functions beside
+      the store.
+    - The module adds four names to the member __init__ exports
+      (:class:`IncumbentCandidate`, :class:`~dreaming.errors.
+      IncumbentRequestError`, :func:`incumbent_candidate`,
+      :func:`include_incumbent`), re-exported the way feature 275's floor names
+      and features 271-283 all are, and the member's ``__all__`` is widened to
+      carry them in its own sort order (SCREAMING_CASE, then CamelCase, then
+      snake_case — RUF022) — the same seat-adjacency discipline the cap and the
+      ceiling keep, so every name-sorted ``app.order`` adjacency in the existing
+      suite is untouched (the member's one component name is unchanged, and the
+      seat ``src/app/modules/dreaming`` still exports exactly
+      ``{"COMPONENT_NAME", "cycle_freeze_component"}``). The sibling matrices in
+      ``packages/dreaming/tests/test_errors.py`` widen by one method in their
+      existing style, asserting the new class is a sibling of every class that
+      preceded it and that neither the thin pool's nor the freeze's word is ever
+      minted here.
+  </constraints>
+</project_specification>

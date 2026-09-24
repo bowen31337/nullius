@@ -265,6 +265,7 @@ __all__ = [
     "FreezeRequestError",
     "HoldoutRecordError",
     "HoldoutRequestError",
+    "IncumbentRequestError",
     "PairedComparisonError",
     "PoolFrozenError",
     "PoolTooThinError",
@@ -354,6 +355,62 @@ class PoolFrozenError(DreamingError):
     first face — the table and the operation that was refused, so an operator
     reading a refusal can identify both ends of the collision: *which* cycle
     was walking the pool and *what* was reaching into it.
+    """
+
+
+class IncumbentRequestError(DreamingError):
+    """The incumbent could not be put back into the candidate set as asked.
+
+    app_spec.xml, "Dreaming Loop & Meta-Selection", feature 273: *System
+    includes the incumbent policy in the candidate set, which returns a
+    selected policy never worse on the fixed history.*  This is the **ask**
+    face of that sentence, and the feature's only class, because the sentence
+    has exactly one face: *includes* has no store act.  docs/alpha-engine-prd.md
+    §C5 states the clause as the qualifier on the whole dreaming loop —
+    *"because the candidate set includes ``π^0 = π_t``, the selected policy is
+    no worse than the current one *on the fixed replay history*.  Note the
+    qualifier.  It is a guarantee about replay score, not about future P&L."*
+    — and the second clause of the sentence is a *theorem about feature 274's
+    argmax* rather than a judgment some module makes, so no verdict class is
+    raised for it anywhere in the member.
+
+    Two subjects, both facts about the **request** and both refused before
+    anything is read (nothing here reads anything at all):
+
+    * **the entry cannot be built** — a ``source`` that is not non-empty text,
+      or a ``version`` or ``parent_version`` that is not ``None`` or non-empty
+      text.  The repair is to re-consider the source and the name handed to
+      the inclusion;
+    * **the incumbent is already in the set** — matched by its ``module_id``
+      (the loop ran the inclusion twice, or handed in a set that already
+      carries the policy in force) or by its ``code_hash`` (a production
+      returned a source byte-identical to the incumbent, which feature 271's
+      deduplication cannot catch because it compares the revisions to *each
+      other* and never to the incumbent they descend from).  The repair is to
+      stop including it, or to re-run the production: including either would
+      hand §C5's argmax two entrants under one identity, which is a guaranteed
+      tie on the maximum and a tournament that looks larger while selecting
+      nothing new.
+
+    Deliberately **not** feature 271's :class:`RevisionRequestError`, though
+    the rule that a candidate's source and identity are non-empty text is the
+    member's one rule: the *vocabulary* splits by who was asked, so a caller
+    that included an incumbent never meets the reviser's word for an act that
+    revised nothing — the seam discipline the whole workspace states for error
+    vocabularies, applied inside the member the way :class:`RevisionCeilingError`
+    applies it to :func:`dreaming.cap.revision_cap`'s figures.  Deliberately
+    not :class:`RevisionCeilingError` either (this feature refuses no count),
+    and never :class:`PoolTooThinError` or :class:`PoolFrozenError`: a caller
+    that caught this refusal as any of those would act on the wrong fact, and
+    a thin or held pool is feature 275's and feature 270's to say.
+
+    No code word, for the reason :class:`CapRequestError` gives: feature 273's
+    sentence mandates none — its verb is *includes* — so every message opens
+    with its subject (the source or version that was wrong, or the candidate
+    the incumbent collided with) and a reader is told *what to fix* rather
+    than handed a token to grep for.  A sibling of every class above under the
+    one :class:`DreamingError` base, so a caller that wants every failure of
+    the dreaming path still catches one class.
     """
 
 

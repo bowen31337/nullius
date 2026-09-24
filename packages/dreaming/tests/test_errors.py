@@ -27,6 +27,7 @@ dream on* catch one class and re-inspect something it cannot tell apart.
 from __future__ import annotations
 
 import datetime as dt
+from types import SimpleNamespace
 
 import pytest
 from dreaming import (
@@ -513,6 +514,88 @@ class TestTheVocabulary:
         for message in (str(verdict.value), str(ask.value)):
             assert POOL_TOO_THIN_CODE not in message
             assert FREEZE_CODE not in message
+
+    def test_the_member_carries_the_incumbent_inclusion_as_its_own_one(self):
+        """Feature 273 has one face, not a pair, and that is the sentence's shape.
+
+        *"System includes the incumbent policy in the candidate set, which
+        returns a selected policy never worse on the fixed history."*  The
+        sentence has no store act — *includes* reads nothing and writes nothing
+        — and its second clause is a theorem about feature 274's argmax rather
+        than a judgment some module makes, so this feature mints exactly one
+        class, :class:`IncumbentRequestError`, the **ask** face, where the cap,
+        the split, the transfer, the rotation and the selection each mint a
+        pair.  A member that split it in two would be inventing a store face
+        for a store the sentence never mentions.
+
+        It is its own class rather than a face of feature 271's
+        :class:`RevisionRequestError`, though the rule that a candidate's
+        source and identity are non-empty text is the member's one rule: the
+        *vocabulary* splits by who was asked, so a caller that included an
+        incumbent must not meet the reviser's word for an act that revised
+        nothing.  It is not feature 276's
+        :class:`RevisionCeilingError` either — this feature refuses no count —
+        and never feature 275's or feature 270's word.
+        """
+        import dreaming
+
+        assert issubclass(dreaming.IncumbentRequestError, dreaming.DreamingError)
+        for sibling in (
+            FreezeRequestError,
+            PoolFrozenError,
+            PoolTooThinError,
+            dreaming.CapRequestError,
+            dreaming.CapRecordError,
+            dreaming.RevisionCeilingError,
+            dreaming.RevisionRequestError,
+            dreaming.RevisionError,
+            dreaming.SplitRequestError,
+            dreaming.SplitStoreError,
+            dreaming.ProportionComparisonError,
+            dreaming.PairedComparisonError,
+            dreaming.TransferRequestError,
+            dreaming.TransferStoreError,
+            dreaming.HoldoutRequestError,
+            dreaming.HoldoutRecordError,
+            dreaming.BarRequestError,
+            dreaming.BarRecordError,
+            dreaming.SelectionBarError,
+            dreaming.SelectionRequestError,
+            dreaming.SelectionStoreError,
+        ):
+            assert not issubclass(dreaming.IncumbentRequestError, sibling)
+            assert not issubclass(sibling, dreaming.IncumbentRequestError)
+
+        # No code word, like features 271/276/278/279': feature 273's verb is
+        # *includes* and mandates none, so each refusal opens with its subject —
+        # the source that was wrong, or the candidate the incumbent collided
+        # with — and the message never mints the thin pool's, the freeze's, the
+        # sweep's or the selector's word.
+        with pytest.raises(dreaming.IncumbentRequestError) as ask:
+            dreaming.incumbent_candidate("")
+        with pytest.raises(dreaming.IncumbentRequestError) as malformed_set:
+            dreaming.include_incumbent("a policy source", "a policy source")
+
+        for refusal in (ask.value, malformed_set.value):
+            message = str(refusal)
+            assert POOL_TOO_THIN_CODE not in message
+            assert FREEZE_CODE not in message
+            assert "sweep_malformed" not in message
+            assert "selection_malformed" not in message
+        assert "policy source" in str(ask.value)
+        assert "sequence" in str(malformed_set.value)
+
+        # The collision the sentence's verb turns on: *includes* is not *may
+        # include*, and it is refused in this feature's own class rather than
+        # silently widening a set that already carries the policy in force.
+        entry = dreaming.incumbent_candidate("a policy source")
+        with pytest.raises(dreaming.IncumbentRequestError) as collision:
+            dreaming.include_incumbent(
+                [SimpleNamespace(module_id=entry.module_id, code_hash="f" * 64)],
+                "a policy source",
+            )
+
+        assert entry.module_id in str(collision.value)
 
 
 class TestTheMessages:
