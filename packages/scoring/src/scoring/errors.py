@@ -36,6 +36,11 @@ refusal of a null pick rate that cannot be computed — the first class of
 the category's state-bound half, and the one place in this member whose
 refusals can name a *read* that failed rather than only an ask that was
 malformed (see that class's docstring for why those are stated apart).
+Feature 269 adds the accounting's own: :class:`ErrorAccountingError`,
+the refusal of an error accounting whose two figures cannot be kept
+apart — the Type-A rate's ask and the Type-B depth facts each refused
+in their own vocabulary, so prd §4.1.2's *"separate the error
+accounting"* is held by the taxonomy and not only by the value's shape.
 263 refuses an ask it cannot *blend*: a λ outside the band, a
 stratum handed over with no worlds, a carrier it cannot read.  264 refuses
 an ask it cannot *partition*: scores with no labels, a scored world the
@@ -119,6 +124,7 @@ __all__ = [
     "AggregationError",
     "DeflationPenaltyError",
     "DivergencePenaltyError",
+    "ErrorAccountingError",
     "NullPickPenaltyError",
     "NullPickRateError",
     "OrthogonalityError",
@@ -464,4 +470,52 @@ class NullPickRateError(ScoringError):
     must remember to discard — and no label crosses either way, which is
     the feature's own sentence: the rate is returned while the labels stay
     in.
+    """
+
+
+class ErrorAccountingError(ScoringError):
+    """An error accounting whose two figures cannot be kept apart
+    (feature 269).
+
+    The ask was malformed in this seam's own inputs — a scorer that
+    exposes no callable ``null_pick_rate`` (the wiring fault, named
+    before anything is read), an ``explored`` collection that is not the
+    revealed prefix's facts (a mapping's keys are not its nodes, a bare
+    string is one node spelled where the collection belongs), a node
+    that names no node, carries a depth that is not a non-negative
+    integer or a flip depth that is not an integer at least 1 (the
+    geometric's support, below which a root would flip), a node whose
+    branch carries no drawn flip (its position past it is *unknown*, and
+    reading it as below would deflate the one figure the count exists
+    to charge), a node carried twice (the revealed prefix is a set, and
+    a duplicate would double-count one error), a process that fails
+    while being asked (translated, with the original chained), or a
+    process that answers a figure outside ``[0, 1]`` — a count of null
+    picks being the likeliest thing wearing the rate's name, which the
+    process's own law refuses to let out and the value refuses to
+    receive — and the refusal names which, because the repairs differ:
+    the caller's wiring against the join that resolved the branches
+    against the deployment's sidecar against a process that answered a
+    number nobody measured.
+
+    Beside :class:`~scoring.NullPickRateError` and
+    :class:`~scoring.NullPickPenaltyError`, never under either: 258
+    refuses a *charge* that cannot be made on a rate the caller already
+    holds, 265 refuses the *rate* itself, and this class refuses the
+    *split accounting* — the two-figure answer prd §4.1.2 mandates and
+    docs §7.3.1 says conflating *"was the original design's blind
+    spot"*.  The three repairs send the operator to different places (a
+    mis-set coefficient against a sidecar that is absent, unopenable or
+    holds no entry for a pick, against a join that handed the accounting
+    branches it had no flips for), and folding them would send an
+    operator tuning β₂ when the thing to fix is that the Type-B facts
+    never arrived.  A process that refuses the picks themselves refuses
+    in 265's vocabulary, propagated untranslated through this seam —
+    the pick law is 265's and so is its repair.
+
+    No partial value escapes a refusal: the verb either answers a frozen
+    :class:`~scoring.ErrorAccounting` or raises, so a caller can never
+    hold a half-counted accounting it must remember to discard — the
+    guarantee :class:`WorldObjectiveError` makes one feature earlier and
+    the one every figure this member answers inherits.
     """

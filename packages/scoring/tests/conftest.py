@@ -54,7 +54,13 @@ every ask so the barrier tests can prove *which* nodes were read — and a
 four-pick committed campaign over fixed UUIDs (two null, two real), so
 the rate is 0.5 exactly and every subset's quotient is dyadic: ``k/4``
 to the bit, the same hand-computable discipline the strata fixture
-states for the blend.
+states for the blend.  Feature 269's suite adds the error accounting's
+vocabulary beside those: a stand-in exploration — an object exposing
+exactly the three Type-D facts the count reads (``node_id``, ``depth``
+and the branch's ``flip_depth``), the shape the oracle's own resolution
+value carries — over the same campaign's four further UUIDs at depths
+1, 2, 3 and 5 against a flip drawn at 3, so the Type-B count is 2
+exactly, the node *at* the flip counted and the two below it not.
 
 The path bootstrap puts both import roots on ``sys.path`` regardless of
 how pytest was invoked — the workspace's ``src/`` (for
@@ -404,4 +410,64 @@ def committed_picks() -> list[StandInPick]:
         StandInPick(REAL_ONE),
         StandInPick(NULL_TWO),
         StandInPick(REAL_TWO),
+    ]
+
+
+# -- Feature 269: the error accounting's vocabulary ----------------------------
+
+#: The flip every branch of the fixture's Type-D campaign drew — one
+#: depth, held constant so the boundary is hand-checkable on both of its
+#: sides: depths 1 and 2 sit below it (real explorations), depth 3 sits
+#: *at* it (§7.2: the first null node of the branch, not the last real
+#: one) and depth 5 sits beyond it.  The count over the fixture campaign
+#: is therefore 2 exactly.
+FLIP_DEPTH = 3
+
+#: Four more fixed node addresses, canonical UUID text, continuing the
+#: scorer's own series so the two fixtures name one campaign: two nodes
+#: below the fixture's flip, one at it, one beyond it.
+BELOW_ONE = "1a2b3c4d-5e6f-4778-89ab-cdef00000006"
+BELOW_TWO = "1a2b3c4d-5e6f-4778-89ab-cdef00000007"
+AT_FLIP = "1a2b3c4d-5e6f-4778-89ab-cdef00000008"
+BEYOND_FLIP = "1a2b3c4d-5e6f-4778-89ab-cdef00000009"
+
+
+@dataclass(frozen=True)
+class StandInExploration:
+    """A stand-in for one explored node's Type-D facts.
+
+    The real value this shape stands for is the oracle's own
+    :class:`~nulloracle.TypeDResolution` — the oracle-side record of a
+    resolved Type-D request, which carries ``node_id``, ``depth`` and
+    ``flip_depth`` beside the branch and the series it served — and this
+    carries exactly those three facts, because that is the whole of what
+    the accounting's Type-B side reads: the fixture's narrowness is the
+    assertion that the accounting never reaches for the branch, the
+    series, or any label.  ``flip_depth`` is ``Optional`` so the same
+    stand-in can spell the *undrawn branch* (``None``), the shape whose
+    refusal is one of the seam's own laws — unknown is not below.
+    """
+
+    node_id: str
+    depth: int
+    flip_depth: int | None
+
+
+@pytest.fixture
+def type_d_explorations() -> list[StandInExploration]:
+    """The campaign's four Type-D explorations: two below the flip, one
+    at it, one beyond it.
+
+    Depths 1 and 2 below :data:`FLIP_DEPTH` (real refinement, counted
+    nowhere), depth 3 at it (the first null node, §7.2's inclusive
+    boundary) and depth 5 beyond it — so the Type-B count over the
+    fixture campaign is 2 exactly, and every sub-collection's count is
+    checkable with ``==``, the same hand-computable discipline the
+    ``committed_picks`` fixture states for the rate.
+    """
+    return [
+        StandInExploration(BELOW_ONE, 1, FLIP_DEPTH),
+        StandInExploration(BELOW_TWO, 2, FLIP_DEPTH),
+        StandInExploration(AT_FLIP, FLIP_DEPTH, FLIP_DEPTH),
+        StandInExploration(BEYOND_FLIP, 5, FLIP_DEPTH),
     ]

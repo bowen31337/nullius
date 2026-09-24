@@ -291,6 +291,31 @@ that names the class and nothing it holds, and refusals that name the
 *pick* and never the *branch* — which nodes are null is the one fact this
 process exists to keep inside.
 
+**The error accounting is the member's tenth law (feature 269).**
+*"System accounts Type-A commitment errors separately from Type-B
+depth-past-flip errors, which returns each as its own metric"* — prd
+§4.1.2's instruction (line 140: *"Separate the error accounting"*) and
+docs §7.3.1's table, which names conflating the two *"the original
+design's blind spot."*  It lives in :mod:`scoring._accounting` as
+:func:`~scoring.account_errors` (the verb) and
+:class:`~scoring.ErrorAccounting` (the value — one field per metric, no
+total, no blend), with its own refusal
+:class:`~scoring.ErrorAccountingError`.  Type-A's metric is the rate
+feature 265's process answers, asked through its one public verb — the
+process hands back no count of nulls and this member does not ask for
+one — and Type-B's metric is a count of the explored nodes sitting at
+or beyond their branch's flip (§7.2's inclusive boundary), over depth
+facts the caller hands over already joined, because the ancestor walk
+that joins them is the null oracle's verb and 265's docstring already
+declines to restate it.  Like the eight free laws it is arithmetic
+over figures another law owns plus the one composed ask, so it adds no
+component and no seat: the composed ``scoring`` component stays the
+per-world objective, and the accounting is reached through this
+namespace.  It prices nothing — β₂ is feature 258's term and β₁ feature
+257's; the accounting measures the two errors, the terms charge for
+them — and it persists nothing: the per-campaign Type-B trend docs line
+909 lists is the ops member's (feature 345), which reads this figure.
+
 **No persistence here, by the same law that keeps the arithmetic pure.**
 The ``replay_score`` row is the replay plugin's (feature 255); this
 member answers the value it is written from, exactly as migration 0109
@@ -307,6 +332,7 @@ from typing import TYPE_CHECKING
 
 from app.module_loader import register
 
+from ._accounting import ErrorAccounting, account_errors
 from ._aggregate import (
     LAMBDA_CEILING,
     LAMBDA_DEFAULT,
@@ -326,6 +352,7 @@ from .errors import (
     AggregationError,
     DeflationPenaltyError,
     DivergencePenaltyError,
+    ErrorAccountingError,
     NullPickPenaltyError,
     NullPickRateError,
     OrthogonalityError,
@@ -357,6 +384,8 @@ __all__ = [
     "AggregationError",
     "DeflationPenaltyError",
     "DivergencePenaltyError",
+    "ErrorAccounting",
+    "ErrorAccountingError",
     "NullPickPenaltyError",
     "NullPickRateError",
     "NullPickScorer",
@@ -366,6 +395,7 @@ __all__ = [
     "SwitchPenaltyError",
     "WorldObjectiveError",
     "WorldScore",
+    "account_errors",
     "aggregate_objective",
     "deflation_penalty",
     "divergence_penalty",
