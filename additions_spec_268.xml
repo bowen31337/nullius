@@ -1,0 +1,231 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 268 (System rejects publishing the raw in-campaign rate as a dashboard number, reporting FDR_deploy as the headline figure)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 268 in the existing scoring plugin
+    (packages/scoring, import name scoring; the app-package seat is
+    src/app/modules/scoring): the *publication seam* that closes the
+    calibration chain and is the reason the FDR_deploy store (feature 267)
+    exists. The sentence is docs/alpha-engine-prd.md §4.1.3 line 151:
+    "`FDR_deploy` is the headline number. The raw in-campaign rate is an
+    artifact of a design choice and must never be the figure on the
+    dashboard." The act is a single verb, `headline(campaign, *, figures,
+    store=None)`, that answers the one figure a dashboard's headline slot
+    may show for a closed campaign — the base-rate-reweighted `FDR_deploy`
+    — and refuses to answer the raw in-campaign rate in that role. It takes
+    the campaign id and feature 266's calibration `CalibrationFigures` (the
+    base-rate-independent pair), reweights the pair to the deployment base
+    rate via feature 267's pure `fdr_deploy` (π₀ = 0.9, spelled once as a
+    constant), and answers the one bare float. It is a pure function of
+    evidence the factory does not hold (the campaign id and the figures),
+    so it adds no new `@register` component and is reached directly from
+    the member (`from scoring import headline`), the way feature 263's
+    `regime_aggregate` and feature 264's `regime_strata` are. Its refusal
+    is the whole point: a caller that reaches for the raw in-campaign rate
+    — the figure prd §4.1.3 bars from the dashboard — is refused by name,
+    and a caller that hands the pair but no store is refused rather than
+    silently publishing nowhere. No central registry, router, app factory,
+    middleware, settings or migration is edited; the member joins by
+    workspace-scan convention and does not import another workspace member
+    — the figures and the store arrive duck-typed across the same "no
+    member imports another" seam the calibration and FDR modules already
+    take.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/scoring member, import
+      name scoring; the FDR store is `scoring._fdr`, the calibration
+      figures are `scoring._calibration.CalibrationFigures`, the scorer
+      process is `scoring._scorer.NullPickScorer`, the app-package seat is
+      src/app/modules/scoring with its sibling seats scorer.py and fdr.py).
+      pytest (ruff conventions; mypy absent). The module loader
+      (src/app/module_loader.py) discovers members from the root
+      pyproject.toml `[tool.uv.workspace] members = ["packages/*"]`,
+      imports each package so its module-level `@register` fires, and
+      composes what each `@register` builder contributes under a component
+      name. `app` (src/app) is a namespace package; the scoring seat
+      (src/app/modules/scoring) answers *what is the composed per-world
+      objective?* and the sibling seats answer the same shape of question
+      for 265's process and 267's store. A member never imports another
+      member — it reaches shared shapes through `app.*` or restates them,
+      never through a sibling package's import name.</stack>
+    <test_baseline>The scoring member's own suite under
+      packages/scoring/tests/ (test_fdr, test_fdr_store, test_fdr_component,
+      test_calibration, test_scorer, test_accounting, test_nullpicks,
+      test_component, test_cross_member, …) plus the seat suite at
+      src/app/modules/scoring (test_app_module). The member is stdlib-only
+      at module scope (the factory's scan imports the package to fire its
+      `@register` builders, so it must pay nothing). The repository-level
+      suite under tests/ is collected by pytest's testpaths and does NOT
+      collect packages/*/tests (see the acceptance-gate memory), so the
+      member's own suite must be run explicitly as well. Lint only the new
+      files and compare to a sibling — the repo is red on main (~163
+      pre-existing ruff errors), so a baseline via `--stdin-filename`
+      misreports.</test_baseline>
+    <conventions>
+      - One act, one module: `headline.py` holds the `headline` verb and
+        the refusal; `__init__.py` re-exports the new name and carries no
+        logic, the shape every member in this workspace takes.
+      - No `@register` component and no seat: the publication verb is a
+        pure function of evidence the factory does not hold (the campaign
+        id and the figures), exactly the argument the scoring member's own
+        docstring makes for every free law in this category past the two
+        state-bound components (265's process, 267's store). Reached
+        directly from the member.
+      - The pair is handed over, never derived: `headline` takes feature
+        266's `CalibrationFigures` (the two base-rate-independent figures)
+        and reweights them; it never reads a label, never touches a
+        sidecar, never computes sensitivity or specificity. The store is
+        duck-typed (a carrier exposing `fdr(campaign)` and `persist`),
+        never `isinstance` — the module loader imports a member under a
+        synthetic name and re-executes it, so a composed application
+        serves a *second* class object of the same shape; a type gate would
+        refuse the very value the composition seam hands out.
+      - One bare float out, and it is the reweighted figure: `headline`
+        answers `fdr_deploy(figures)` — feature 267's one formula over the
+        pair at the one constant π₀ = 0.9 — never the raw in-campaign rate,
+        never a count, never a third figure. The refusal is the act: the
+        raw rate is refused by name as prd §4.1.3's artifact of φ.
+      - The store is duck-typed and optional: `store` arrives as a carrier
+        exposing the store's own verbs (`persist(campaign, figures)`,
+        `fdr(campaign)`, `history()`); when the caller names no store, the
+        verb is refused rather than silently publishing nowhere, because
+        the figure is prd §11's primary target read across campaigns and a
+        headline with no backing row is exactly the quietly-defaulted
+        number this seam exists to rule out.
+      - Error vocabulary splits by *what the caller must do about it*: the
+        publication refusal is a sibling of `FdrDeployError` (the
+        projection/persist) and `CalibrationFiguresError` (the pair), never
+        a child — a caller catching them together would read the wrong
+        repair (a headline-role refusal is not a malformed pair and not a
+        corrupt row). It opens with a greppable code (`raw_rate_as_headline`),
+        the `pool_frozen` / `unwalkable_tree` precedent.
+      - Validation is total before the answer: a non-UUID campaign id, a
+        carrier that is not the pair, a figure that is not a finite real in
+        [0, 1], the 0/0 corner (sensitivity 0.0, specificity 1.0), and the
+        raw-rate-as-headline refusal all fire before the float is answered,
+        so a refused headline answers nothing.
+      - Stdlib only, import-cheap: the member's own `fdr_deploy` and
+        `DEPLOYMENT_BASE_RATE` (reached through the member namespace, never
+        re-spelled), the member's own `RATE_BOUND` and `ScoringError`, and
+        the member's own error — no third-party import at module scope.
+    </conventions>
+  </existing_context>
+  <features_to_add>
+    <category name="Objective Scoring &amp; CVaR Aggregation">
+      <feature index="268">
+        <description>System rejects publishing the raw in-campaign rate as a dashboard number, reporting FDR_deploy as the headline figure. The publication seam is a single verb `headline(campaign, *, figures, store=None)` that answers the one figure a dashboard's headline slot may show for a closed campaign — the base-rate-reweighted `FDR_deploy` — and refuses to answer the raw in-campaign rate in that role. It takes the campaign id (a UUID — the row's key joins `node.campaign_id` and the discovery member's campaign record, so an id that cannot join names no campaign) and feature 266's calibration `CalibrationFigures` (the base-rate-independent sensitivity/specificity pair), reweights the pair to the deployment base rate via feature 267's pure `fdr_deploy` (π₀ = 0.9, spelled once as a constant, never a parameter), and answers the one bare float. It is a pure function of evidence the factory does not hold, so it adds no new `@register` component and is reached directly from the member (`from scoring import headline`), the way feature 263's `regime_aggregate` and feature 264's `regime_strata` are. The steps, in the order they must happen: (1) validate the campaign id is a UUID and the store surface (when a store is named) — a non-UUID id names no campaign a figure could be published for, and a store that exposes no readable `fdr`/`persist` names no backing row; (2) validate the figures are feature 266's pair — a bare number is refused by name as the raw in-campaign rate, prd §4.1.3's artifact of φ and the figure barred from the dashboard; (3) reweight the pair via `fdr_deploy` — the 0/0 corner (sensitivity 0.0, specificity 1.0) is refused as feature 266's honest answer for a campaign that committed to nothing; (4) answer the one bare float, the reweighted figure, never the raw rate, never a count, never a third figure. A refused headline answers nothing.</description>
+      </feature>
+      <feature index="268">
+        <description>System exposes `HeadlineError(ScoringError)`, the publication seam's refusal vocabulary — a sibling of `FdrDeployError` (the projection/persist) and `CalibrationFiguresError` (the pair), never a child, for the reason the errors module states for every later refusal in this category: a caller catching them together would read the wrong repair (a headline-role refusal is not a malformed pair and not a corrupt row). It opens every message with the greppable code `raw_rate_as_headline` (the `pool_frozen` / `unwalkable_tree` precedent), so an operator greps one word for the refusal. Its faces: the **campaign** — an id that is not a UUID, naming the id (it names no campaign a figure could be published for); the **store** — a named store that exposes no readable `fdr`/`persist`, or no store at all when one is required, naming the absence (the figure is prd §11's primary target read across campaigns, and a headline with no backing row is the quietly-defaulted number this seam exists to rule out); the **figures** — a bare number, refused by name as the raw in-campaign rate (prd §4.1.3's artifact of φ, the figure barred from the dashboard — no arithmetic on one number recovers the two the reweighting needs), or a carrier that exposes no readable `sensitivity`/`specificity`, or a figure that is not a finite real in [0, 1]; and the **corner** — the pair sensitivity 0.0, specificity 1.0 (feature 266's honest answer for a campaign that committed to nothing, whose projection is 0/0 at every base rate — no declaration was ever made, so no fraction of declarations is defined, and unknown is not zero). No partial value escapes a refusal: the verb either answers one bare float or raises.</description>
+      </feature>
+      <feature index="268">
+        <description>System reweights the calibration pair to the deployment base rate through feature 267's `fdr_deploy` — the publication seam's one formula, never re-spelled. `headline` delegates the arithmetic to `fdr_deploy(figures)` (the free verb, pure and deterministic, reached through the member namespace rather than imported as a second spelling), handing feature 266's `CalibrationFigures` — or any carrier exposing its two figures — so the pair this seam publishes is exactly the pair feature 266 measured and feature 267 persists, reweighted at the one constant `DEPLOYMENT_BASE_RATE` (π₀ = 0.9). A bare number handed where the pair belongs is refused before the reweighting (feature 267's own `FdrDeployError` names it as the raw in-campaign rate; this seam's `HeadlineError` names it as the figure barred from the dashboard — the same refusal, at the publication role). The 0/0 corner (sensitivity 0.0, specificity 1.0) is refused by feature 267's own law and propagates as `HeadlineError`, because a headline the dashboard shows cannot be the projection of a campaign that made no declaration. The constant is never a parameter: a caller able to pick π₀ could pick the figure the dashboard shows and the M3 gate judges, so the projection this seam publishes is *the* deployment projection, reweighted once, at the end, in one place.</description>
+      </feature>
+      <feature index="268">
+        <description>System reaches the FDR_deploy store duck-typed and optionally — the publication seam's store half. `store` arrives as a carrier exposing the store's own verbs — `persist(campaign, figures)` (the per-campaign write) and `fdr(campaign)` (the one-campaign read) — read by what the carrier *is*, never by `isinstance`, because the module loader imports a member under a synthetic name and re-executes it, so a composed application serves a *second* class object of the same shape and a type gate would refuse the very value composition handed out. When a store is named, `headline` writes the campaign's figure through `persist(campaign, figures)` (refreshed-not-appended, the first `computed_at` kept — feature 267's upsert law) and reads it back through `fdr(campaign)` to answer, so the published float is the row the store holds, rebuilt from the pair, not a recomputed value that could drift. When no store is named (`store=None`), the verb is refused as `HeadlineError` rather than answering a float with no backing row — the figure is prd §11's primary target read across campaigns, and a headline with a hole where the campaign's row should be is exactly the quietly-defaulted number this seam exists to rule out. The store is never imported: it arrives across the "no member imports another" seam, the same stance feature 267's seat and the FDR store's own resolution take.</description>
+      </feature>
+      <feature index="268">
+        <description>System passes an end-to-end publication: a closed campaign's `CalibrationFigures` (e.g. sensitivity 0.9, specificity 0.9, over a planted population the caller declares) publishes as the reweighted `FDR_deploy` (≈0.5 at π₀ = 0.9), the store ends holding one row for the campaign (read back through `fdr`, rebuilt from the stored pair), and the published float equals the store's figure; a bare number handed as the figures is refused as `raw_rate_as_headline` (prd §4.1.3's artifact of φ) with nothing published; a non-UUID campaign id is refused naming the id; the 0/0 corner (sensitivity 0.0, specificity 1.0) is refused as the projection of a campaign that committed to nothing; and a named store that exposes no readable `fdr`/`persist` is refused. A re-run over the same campaign and pair is idempotent by the store's own law (refresh keeps the first `computed_at`), and a re-measured pair lands the new projection — feature 267's refresh-not-append, restated at the publication seam. The published figure is always the reweighted one: exact anchors hold (a pair that projects to 0.9 publishes 0.9; a pair that projects to 0.0 publishes 0.0), and the raw in-campaign rate is never the published float at any value.</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Reaches feature 267's pure `fdr_deploy` (the reweighting) and
+    `DEPLOYMENT_BASE_RATE` (π₀ = 0.9) through the member namespace
+    (`scoring.fdr_deploy`), never re-spelled — the pair this seam publishes
+    is exactly the pair feature 266 measured and feature 267 reweights.
+    Reaches feature 266's `CalibrationFigures` as the figures carrier — the
+    base-rate-independent sensitivity/specificity pair — and feature 267's
+    `FdrDeployStore` duck-typed (its `persist`/`fdr` verbs) for the backing
+    row. Reuses the member's own `RATE_BOUND`, `ScoringError` and the
+    FDR-store refusal path (`FdrDeployError`), translated into the
+    publication vocabulary (`HeadlineError`) at the seam. No `@register`
+    component is added (the publication verb is a pure function of evidence
+    the factory does not hold; the scoring member's three components — the
+    objective, 265's process, 267's store — are untouched), no seat is
+    widened (reached directly from the member), and no endpoint, table or
+    migration is added. Does not import another workspace member: the
+    figures and the store arrive duck-typed across the same "no member
+    imports another" seam the calibration, FDR and accounting modules
+    already take.
+  </integration_points>
+  <constraints>
+    - No member imports another: the figures (`CalibrationFigures`) and the
+      store (`FdrDeployStore`) are duck-typed; validate `sensitivity`/
+      `specificity` off the figures and `persist`/`fdr` off the store, and
+      translate every refusal into this seam's own vocabulary.
+    - No new `@register` component and no seat edit: `headline` is a pure
+      function of evidence the factory does not hold, reached directly from
+      the member (`from scoring import headline`).
+    - No new table, endpoint or migration: the published figure lands in
+      feature 267's `scoring_fdr_deploy` through feature 267's store.
+    - Do not edit a central registry, router, app factory, middleware,
+      settings or migration (core-task, order-sensitive shared files).
+    - One bare float out, and it is the reweighted figure: `headline`
+      answers `fdr_deploy(figures)` at the one constant π₀ = 0.9, never the
+      raw in-campaign rate, never a count, never a third figure.
+    - The raw in-campaign rate is refused by name (`raw_rate_as_headline`)
+      as prd §4.1.3's artifact of φ — the figure barred from the dashboard.
+    - Validation is total before the answer: a non-UUID campaign id, a
+      carrier that is not the pair, a figure not a finite real in [0, 1],
+      the 0/0 corner, and the raw-rate-as-headline refusal all fire before
+      the float is answered, so a refused headline answers nothing.
+    - The store is optional but not silently skippable: `store=None` is
+      refused, not defaulted, because the figure is prd §11's primary
+      target read across campaigns.
+    - Stdlib only and import-cheap at module scope; the factory's scan pays
+      nothing for the publication verb.
+  </constraints>
+  <implementation_steps>
+    <phase name="Feature 268 — the headline publication seam">
+      1. Create `packages/scoring/src/scoring/headline.py`. Import stdlib
+         only at module scope (`uuid`, `typing`); reach `fdr_deploy`,
+         `DEPLOYMENT_BASE_RATE`, `RATE_BOUND` and `ScoringError` through the
+         member namespace, never re-spell them.
+      2. Define `HeadlineError(ScoringError)` and the `RAW_RATE_AS_HEADLINE`
+         code constant; write the four-faced messages (campaign, store,
+         figures, corner), each opening with the code and naming what it is
+         about.
+      3. Write the campaign-id validation (a UUID — refuse a non-UUID
+         naming the id) and the store-surface validation (a carrier
+         exposing callable `persist` and `fdr`; refuse one that does not,
+         and refuse the absence when `store=None`).
+      4. Write the figures validation (feature 266's pair — refuse a bare
+         number as `raw_rate_as_headline`, refuse a carrier with no
+         readable `sensitivity`/`specificity`, refuse a figure not a finite
+         real in [0, 1]).
+      5. Write `headline(campaign, *, figures, store=None)`: validate id +
+         store + figures, reweight the pair via `fdr_deploy`, persist
+         through the store (when named) and read the figure back, and
+         answer the one bare float. A refused headline answers nothing.
+      6. Re-export `headline` and `HeadlineError` from
+         `packages/scoring/src/scoring/__init__.py` (`__all__` widened),
+         carrying no logic.
+      7. Write `packages/scoring/tests/test_headline.py` (the verb, the
+         reweighted figure, the four refusal faces, the exact anchors, the
+         store round-trip read back through raw SQL) and extend
+         `test_cross_member.py` to pin that the published figure equals the
+         store's row and the raw rate is never the published float, driven
+         through the real `fdr_deploy`.
+      8. Lint the new files only, comparing to a sibling; run both the
+         member suite and the seat suite.
+    </phase>
+  </implementation_steps>
+  <success_criteria>
+    - `claw-forge validate-spec additions_spec_268.xml` reports `clean`
+      with zero errors (INFO advisories and the known brownfield warnings
+      that also appear in `skipped_layers` are not blockers).
+    - `headline` answers the reweighted `FDR_deploy` (the one bare float)
+      for a closed campaign's `CalibrationFigures`, and the published
+      figure equals the store's row, read back through the store.
+    - The raw in-campaign rate is refused by name (`raw_rate_as_headline`)
+      as prd §4.1.3's artifact of φ, at any value, and is never the
+      published float.
+    - A non-UUID campaign id, a carrier that is not the pair, a figure not
+      a finite real in [0, 1], the 0/0 corner, and a missing store are all
+      refused as `HeadlineError` with nothing published.
+    - No new `@register` component, no seat edit, no table, endpoint or
+      migration; the member suite (packages/scoring/tests) and the seat
+      suite (src/app/modules/scoring) both pass, stdlib-only at module
+      scope, and lint is clean on the new files.
+  </success_criteria>
+</project_specification>
