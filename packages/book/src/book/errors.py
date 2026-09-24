@@ -1,4 +1,5 @@
-"""The book member's refusal vocabulary — features 301, 303, 306, 307 and 308.
+"""The book member's refusal vocabulary — features 301, 303, 304, 306, 307 and
+308.
 
 app_spec.xml, "Portfolio Book Construction", feature 301: *System combines
 promoted signals by information-ratio weighting, which returns a single
@@ -98,6 +99,41 @@ siblings rather than aliases: a flat composite is refusable though both figures
 were perfectly well stated, and a mis-stated figure is refusable though the
 book expresses a perfectly good view, so the two facts are genuinely different.
 
+app_spec.xml, feature 304 — §C8's next link, *"position and concentration
+limits"* — is a further face: *System applies per-position and concentration
+limits, which rejects a target weight breaching either bound.*  Its refusals
+join the others here for the reason the act's did: the base stays one, and the
+sentence's two failures are different facts about a different subject — the
+*target weights* that sit outside the deployment's bounds (304's judgment) and
+the *figures* the act is asked for (304's ask), where 303's subject was the
+book being normalized and 308's a leverage target.  The act adds the fourth and
+fifth codes an operator greps a deployment log for:
+
+* ``position_above_limit`` — a target weight's magnitude is above the
+  per-position limit: one position is larger than the deployment configured it
+  may be (refused rather than scaled down, because lowering a target the caller
+  asked for would be this member *sizing* a position, and sizing is the order
+  layer's act rather than a bound's);
+* ``concentration_above_limit`` — the book's largest position is a larger share
+  of its gross exposure than the concentration limit admits: the book's *shape*
+  is outside the bound (refused rather than re-weighted, because re-weighting
+  would be answering a question about feature 301's combiner from inside a
+  bound).
+
+Two codes rather than one shared token, for the reason the router's limiter
+carries two: the repairs differ — *shrink that position* against *spread the
+book* — and a reader greps the word for the one they have to fix.
+
+The act's two faces are the same pair of shapes the others are — the ask's own
+facts (:class:`LimitRequestError`, no code, because a malformed ask names its
+subject in its first words) and the one judgment the sentence mints
+(:class:`LimitBreachError`, carrying whichever of the two codes the breached
+bound names).  Both are subclasses of the base with the same consequence, and
+the same reason to be siblings rather than aliases: a breaching book is
+refusable though both limits were perfectly well stated, and a mis-stated limit
+is refusable though the book sits inside a perfectly good bound, so the two
+facts are genuinely different.
+
 The authorship guard adds the second, and it is the one an operator greps
 a deployment log for on feature 306's path — the refusal that says the
 search reached for the construction:
@@ -143,6 +179,8 @@ __all__ = [
     "ChangelogEntryRequestError",
     "LeverageRequestError",
     "LeverageTargetError",
+    "LimitBreachError",
+    "LimitRequestError",
     "MissingChangelogEntryError",
     "VolatilityTargetError",
     "VolatilityTargetRequestError",
@@ -171,24 +209,27 @@ class BookConstructionError(Exception):
     and :class:`LeverageTargetError` (feature 308's verdict) descend from it,
     :class:`VolatilityTargetRequestError` (feature 303's ask) and
     :class:`VolatilityTargetError` (feature 303's verdict) join them,
+    :class:`LimitRequestError` (feature 304's ask) and
+    :class:`LimitBreachError` (feature 304's verdict) join them too,
     :class:`BookChangeRequestError` (feature 306's ask) and
     :class:`AgentAuthoredModificationError` (feature 306's verdict) join them,
     and :class:`ChangelogEntryRequestError` (feature 307's ask) and
-    :class:`MissingChangelogEntryError` (feature 307's verdict) join them too,
-    so a caller that must refuse rather than rank catches this one class and
-    catches the act's, the cap's, the guard's and the companion's failures with
-    it.  A caller that has to *react* differently to *your signals cannot be
-    combined*, *this book expresses no view to size*, *this book may not carry
-    that leverage*, *an agent authored this change to the construction* and
-    *this change had no changelog entry* catches the specific siblings instead
-    — see each for why the distinction is worth a class.  The classes are
-    siblings rather than aliases because the facts are genuinely different: a
-    leverage target is refusable for a book whose signals weighted up
-    perfectly, a flat composite is refusable though both volatility figures
-    were perfectly well stated, an agent-authored change is refusable though
-    perfectly well stated, and a change whose entry is absent is refusable
-    though the entry field was perfectly well formed — it was simply not
-    handed.
+    :class:`MissingChangelogEntryError` (feature 307's verdict) join them as
+    well, so a caller that must refuse rather than rank catches this one class
+    and catches the act's, the cap's, the guard's, the limits' and the
+    companion's failures with it.  A caller that has to *react* differently to
+    *your signals cannot be combined*, *this book expresses no view to size*,
+    *this book may not carry that leverage*, *these weights breach a limit*,
+    *an agent authored this change to the construction* and *this change had no
+    changelog entry* catches the specific siblings instead — see each for why
+    the distinction is worth a class.  The classes are siblings rather than
+    aliases because the facts are genuinely different: a leverage target is
+    refusable for a book whose signals weighted up perfectly, a flat composite
+    is refusable though both volatility figures were perfectly well stated, a
+    breaching book is refusable though both limits were perfectly well stated,
+    an agent-authored change is refusable though perfectly well stated, and a
+    change whose entry is absent is refusable though the entry field was
+    perfectly well formed — it was simply not handed.
     """
 
 
@@ -552,4 +593,122 @@ class MissingChangelogEntryError(BookConstructionError):
     entry was meant to accompany — its subject, its author, its kind, its
     revision — so the operator can see *which change* meant to land without its
     record.
+    """
+
+
+class LimitRequestError(BookConstructionError):
+    """The position and concentration limits could not be asked for as asked.
+
+    app_spec.xml, "Portfolio Book Construction", feature 304: *System applies
+    per-position and concentration limits, which rejects a target weight
+    breaching either bound.*  This class is the *ask* face of that sentence and
+    never the judgment: it refuses a value that carries no ``weights`` mapping
+    of symbol to weight, target weights covering no symbols, a symbol or weight
+    that cannot be part of such a book, and a limit that is not a finite real
+    of **zero or more** — **before** either bound is read, the ordering every
+    verdict and act in this workspace states.
+
+    It is raised by :func:`book.is_breaching_limits` and
+    :func:`book.rejects_breaching_target_weights` alike, because the predicate
+    and the verdict settle the ask identically — the discipline feature 307's
+    pair states for its own two spellings.
+
+    **What it deliberately does not refuse: a zero limit, and a flat book.**  A
+    limit of ``0`` — a deployment asking for no position, or for a book
+    concentrated in nothing — is a perfectly well-formed risk appetite whose
+    honest consequence is the flat book, the reading feature 308 gives a zero
+    Sharpe and feature 303 gives a zero configured target: on a zero
+    per-position limit only the flat book is admitted, and on a zero
+    concentration limit only the flat book is admitted too (every book that
+    holds something is strictly concentrated).  Refusing them here would report
+    a deployment's own risk decision as a validation failure.  A book that
+    breaches a bound is a *judgment* about the book rather than a malformed
+    ask, so it is :class:`LimitBreachError`'s alone.
+
+    **No code word, and deliberately.**  Feature 304's sentence mandates no
+    token (it names its subject in prose), and every message here opens with
+    its subject — the field, its type and what it is for — the shape
+    :class:`LeverageRequestError` and :class:`VolatilityTargetRequestError`
+    state for their own pairs, so a reader is told *what to fix* rather than
+    handed a token to grep for.  The codes the sentence's path carries are
+    :class:`LimitBreachError`'s, on the judgment alone.
+
+    **Why it is its own class rather than the base alone.**  The repair
+    differs.  A bare :class:`BookConstructionError` means *your signals cannot
+    be combined — fix the signals*; this one means *your ask named no book or
+    no limit the bounds can be read against — fix the ask*, and the two are not
+    the same instruction.  A caller that must react differently to them can
+    tell them apart by class; a caller that refuses book work wholesale still
+    catches one class, the base this descends from.
+
+    **Why the limits are validated here rather than shared with feature 303's
+    or feature 308's.**  All three features validate *a finite real* for
+    figures of their own, and the temptation is one shared validator.  It is
+    refused deliberately: a shared helper raising another feature's error type
+    would defeat a caller's ``except`` — the error-vocabulary trap this
+    workspace states at its member seams — and the policies are not even the
+    same (that act's volatility is strictly positive, that cap's Sharpe is
+    free-signed, these limits are zero-or-more), so each feature spells its own
+    validator over its own class and the three cannot start reporting each
+    other's subjects.
+    """
+
+
+class LimitBreachError(BookConstructionError):
+    """A target weight breaches a position or concentration bound — 304's judgment.
+
+    app_spec.xml, "Portfolio Book Construction", feature 304: *System applies
+    per-position and concentration limits, which rejects a target weight
+    breaching either bound.*  This class is the judgment that sentence mints —
+    the one refusal on the limits' path that is a *verdict* rather than a
+    validation — and it is raised by
+    :func:`book.rejects_breaching_target_weights` when a wholly well-stated
+    book's target weights breach either bound.  Its message opens with the
+    greppable code of the bound that was breached:
+    :data:`book.PER_POSITION_LIMIT_CODE` (``position_above_limit``) or
+    :data:`book.CONCENTRATION_LIMIT_CODE` (``concentration_above_limit``).
+
+    **Two codes on one class, and deliberately.**  The two bounds are two
+    repairs — *shrink that position* against *spread the book* — and each is
+    greppable, so an operator's log line lands on the bound they have to fix;
+    but the *caller's position* is the same either way (the weights it was
+    about to hand the order layer are outside the deployment's limits, and the
+    repair is always to hand weights inside them), which is the test the
+    router's limiter states for gathering two faults under one class.  A
+    caller that must react differently to the two catches one class and greps
+    the code; a caller that refuses book work wholesale catches the base.
+
+    **Why the bounds are there, stated where the refusal is caught.**
+    docs/alpha-engine-prd.md §C8 puts the step in the construction's own chain
+    — *"Signal book → IR-weighted combination with shrinkage → volatility
+    targeting → position and concentration limits → orders"* — and
+    docs/nullius-tech-architecture.md §13.1 states it as the live path's book
+    manager.  §C8 names the step and states no figure for either bound: the
+    documents state the *form* of the chain, a discount on a Kelly fraction and
+    the form of a bar, but nowhere how large a position may be or how
+    concentrated a book may get.  Those are a deployment's own risk decisions,
+    so they arrive as required keywords of the call, and this class is the
+    refusal that enforces them.
+
+    **Its repair is its own, which is why it is its own class.**  *Hand target
+    weights inside the bounds* — this module scales nothing down, re-weights
+    nothing and clamps nothing, because reshaping a caller's book would be this
+    member *sizing* it rather than bounding it (feature 308's stance on the
+    same member's other bound).  The two classes a caller could otherwise catch
+    this as both name repairs that are wrong here:
+    :class:`LimitRequestError` means *your ask named no book or no limit* (the
+    weights are perfectly well stated and the limits perfectly well formed —
+    the book is simply outside them), and the bare
+    :class:`BookConstructionError` means *your signals cannot be combined*
+    (they combined, feature 303 sized them, and the resulting book is real and
+    breaching).  Folding these together would make a caller that must react
+    differently to *these weights breach a limit* and *your ask was malformed*
+    catch one class and re-inspect something it cannot tell apart, which is the
+    failure this vocabulary is split to prevent.
+
+    **The edge is the sentence's own word.**  A target weight exactly *at* a
+    limit is admitted — the bound is a budget, and spending it exactly is
+    spending within it — so this class is raised strictly above it, the edge
+    feature 308 states for its cap and Appendix B's *"use ≤ ¼ Kelly"* states
+    for the quarter.
     """

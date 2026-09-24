@@ -289,6 +289,100 @@ def test_the_volatility_target_never_crosses_composition() -> None:
     assert parameters["target_volatility"].default is inspect.Parameter.empty
 
 
+# -- The limits' composition story (feature 304) ----------------------------------
+#
+# Feature 304 arrives in exactly the shape the volatility target did: free
+# functions beside the combiner, judging a value the caller already holds, so
+# there is nothing for the factory to compose and nothing for a deployment to
+# configure.  What it must never grow is a parameter carrying a *limit*,
+# because §C8 states the step and states no figure for either bound — the
+# figures are the deployment's and reach the call, never a component.  These
+# four tests are the composition story's own claim, in the form the cap's,
+# the target's, the guard's and the companion's own stories take.
+
+
+def test_the_limits_register_no_second_component() -> None:
+    # The single-registration assertion above is the strong form; this is the
+    # same fact read through a fresh scan, so a component added by any route
+    # (not just this module's own ``__init__``) is caught — a second name here
+    # would silently rebuild composition for every feature in the workspace.
+    src_root = Path(member.__file__).resolve().parent.parent
+    registry = Registration()
+    scan_components(src_root, registry=registry)
+    names = [component.name for component in registry.components()]
+    assert names.count("book") == 1
+    assert len(names) == 1
+
+
+def test_the_limits_are_reachable_without_the_factory() -> None:
+    # Free functions, reached the way the cap's, the target's and the guard's
+    # verbs are: imported from the member, not asked of the composed
+    # application.  There is no ``limits`` component to ``app.get`` — and
+    # there could not be one that carried the configured bounds, because the
+    # factory's builders take no arguments.
+    assert callable(member.rejects_breaching_target_weights)
+    assert callable(member.is_breaching_limits)
+    assert callable(member.concentration)
+    assert member.PER_POSITION_LIMIT_CODE == "position_above_limit"
+    assert member.CONCENTRATION_LIMIT_CODE == "concentration_above_limit"
+    app = create_app()
+    assert "limits" not in app
+    assert "book-limits" not in app
+
+
+def test_the_limits_cost_the_scan_nothing() -> None:
+    # The layering promise: the factory imports this package to fire its
+    # ``@register``, so anything at module scope is paid on every
+    # ``create_app()``.  The act is answered from the same import that was
+    # already being paid for — no new top-level import beyond the stdlib's
+    # ``collections``, ``dataclasses``, ``math`` and ``typing``, no environment
+    # read, no third party — and it reads a value the caller holds rather than
+    # measuring one.  Both limits are handed to the *call*, so a composed
+    # application cannot carry one and this test cannot configure one: the
+    # composition is exercised, not the deployment.
+    target = member.apply_volatility_target(
+        combine(_signals()), volatility=0.5, target_volatility=0.2
+    )
+    assert (
+        member.rejects_breaching_target_weights(
+            target, per_position_limit=1.0, concentration_limit=1.0
+        )
+        is None
+    )
+    assert member.is_breaching_limits(
+        target, per_position_limit=0.01, concentration_limit=1.0
+    )
+
+
+def test_the_limits_never_cross_composition() -> None:
+    # The builder takes no arguments — the property that makes a *configured*
+    # bound unreachable from composition.  A builder that had grown a
+    # ``per_position_limit`` or ``concentration_limit`` keyword would be a
+    # deployment knob on the one component whose whole configuration is
+    # supposed to be the arithmetic, and the factory would apply one risk
+    # appetite to every book it composed.  Pinned here rather than in the
+    # act's own suite because it is the composition story's claim: both
+    # limits belong to the call.
+    import inspect
+
+    parameters = inspect.signature(member.build_book_combiner).parameters
+    assert not parameters
+    # And both live on the act's own signatures — required, with no default,
+    # so no composition and no module has one to fall back on.
+    for call in (
+        member.is_breaching_limits,
+        member.rejects_breaching_target_weights,
+    ):
+        parameters = inspect.signature(call).parameters
+        assert set(parameters) == {
+            "target_weights",
+            "per_position_limit",
+            "concentration_limit",
+        }
+        for name in ("per_position_limit", "concentration_limit"):
+            assert parameters[name].default is inspect.Parameter.empty
+
+
 # -- The authorship guard's composition story (feature 306) -----------------------
 #
 # Feature 306 arrives as free functions beside the combiner too, in the same
@@ -418,10 +512,11 @@ def test_the_changelog_companion_takes_no_content_parameter() -> None:
         assert set(inspect.signature(call).parameters) == {"change", "entry"}
 
 
-def test_the_members_public_surface_carries_the_five_features() -> None:
-    # The exported surface is the five features' own names and nothing
+def test_the_members_public_surface_carries_the_six_features() -> None:
+    # The exported surface is the six features' own names and nothing
     # else: 301's combiner, its value types and its one base error; 303's
     # act, its record, its one code constant and its two sibling classes;
+    # 304's three verbs, its two code constants and its two sibling classes;
     # 306's record, its five constants, its predicate, its verdict and its
     # two sibling classes; 307's record, its one code constant, its
     # predicate, its verdict and its two sibling classes; 308's three verbs,
@@ -434,11 +529,13 @@ def test_the_members_public_surface_carries_the_five_features() -> None:
         "AGENT_MODIFICATION_CODE",
         "AUTHOR_KINDS",
         "COMPONENT_NAME",
+        "CONCENTRATION_LIMIT_CODE",
         "FLAT_BOOK_CODE",
         "HUMAN_AUTHOR_KIND",
         "KELLY_FRACTION",
         "MISSING_CHANGELOG_ENTRY_CODE",
         "OVERLEVERAGE_CODE",
+        "PER_POSITION_LIMIT_CODE",
         "REVISION_HEX_LENGTH",
         "AgentAuthoredModificationError",
         "BookChangeRequestError",
@@ -449,6 +546,8 @@ def test_the_members_public_surface_carries_the_five_features() -> None:
         "CompositeBook",
         "LeverageRequestError",
         "LeverageTargetError",
+        "LimitBreachError",
+        "LimitRequestError",
         "MissingChangelogEntryError",
         "PromotedSignal",
         "TargetWeights",
@@ -457,11 +556,14 @@ def test_the_members_public_surface_carries_the_five_features() -> None:
         "apply_volatility_target",
         "build_book_combiner",
         "combine",
+        "concentration",
         "is_agent_authored",
+        "is_breaching_limits",
         "is_missing_changelog_entry",
         "kelly_fraction",
         "leverage_cap",
         "rejects_agent_authored_modification",
+        "rejects_breaching_target_weights",
         "rejects_overleveraged_target",
         "requires_changelog_entry",
     }

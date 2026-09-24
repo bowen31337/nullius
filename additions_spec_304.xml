@@ -1,0 +1,432 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 304 (System applies per-position and concentration limits, which rejects a target weight breaching either bound)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 304 in the existing `book` plugin
+    (packages/book, import name book; seat src/app/modules/book): the
+    position and concentration limits. The sentence's verb is a judgment —
+    `rejects_breaching_target_weights(target_weights, *,
+    per_position_limit, concentration_limit)` — over the weights feature 303
+    answers and the deployment's two limits. It **raises** `LimitBreachError`
+    when a target weight breaches either bound and returns None when it does
+    not, so a caller that runs it on its last line before handing a book to
+    the order layer is stopped at the bound rather than at the exchange.
+    docs/alpha-engine-prd.md §C8 puts the step in the construction's own
+    chain — *"Signal book → IR-weighted combination with shrinkage →
+    volatility targeting → position and concentration limits → orders.
+    Version-controlled, human-authored, explicitly outside the search
+    space."* — one step after feature 303's act and one step before the
+    orders; docs/nullius-tech-architecture.md §13.1 states the same chain as
+    the live path's book manager (*"promoted signals → IR-weighted combine
+    (Ledoit-Wolf shrinkage) → volatility targeting → position &amp; concentration
+    limits → target weights"*). **No document states a figure for either
+    bound**, so both figures are a deployment's: like feature 303's
+    `target_volatility`, each is a **required keyword with no default**, and
+    neither can cross composition, because the factory's builders take no
+    arguments.
+
+    **Two bounds, because they bound two different things.** A book's *size
+    at a symbol* (`|w_s| ≤ per_position_limit`) and a book's *shape across
+    symbols* (`max_s |w_s| / Σ_t |w_t| ≤ concentration_limit`) are different
+    facts, and each is free of the other — which is what the sentence's
+    *"either bound"* states. Feature 303's act sets the first (its scale is
+    exactly the gross exposure it holds the book at) and cannot see the
+    second at all: scaling multiplies every weight by one factor, so it
+    leaves the book's internal proportions exactly where feature 301's
+    ranking put them. The concentration figure is therefore **scale-free**,
+    and that invariance is the load-bearing half of the claim that neither
+    bound subsumes the other. A book inside the per-position limit can breach
+    the concentration limit (every position at `0.3` of a two-name book is
+    `0.5` of its gross), and a book inside the concentration limit can breach
+    the per-position one (`0.4` of a four-name book is `0.4` of its gross and
+    above a `0.3` limit). A book that breaches both is refused over its
+    positions, in the sentence's own order — *"per-position and
+    concentration"* — because that is the local repair.
+
+    **The whole-book reading of "concentration", and why.** The everyday
+    meaning of a concentration limit is a bound on a *group* of correlated
+    names, and this system has that axis (`theme_root`, §11.1) — but no
+    feature of this category hands a target weight set a symbol's theme:
+    feature 301's `CompositeBook` and feature 303's `TargetWeights` are keyed
+    by symbol and carry nothing else. So the bound is stated over the book as
+    a whole, where the figure is computable from the weights themselves, and
+    the reasoning is recorded in the module docstring; a per-theme bound
+    belongs one layer downstream, where the grouping exists. The figure lives
+    in `(0, 1]` for every book that holds anything — exactly `1.0` when the
+    whole book is one name, falling toward `0` as the book spreads — so a
+    configured figure is legible rather than an arbitrary index, and `1.0`
+    admits every book.
+
+    **The bounds reject; they never reshape.** Nothing is scaled down,
+    re-weighted or clamped: a refusal leaves the caller's value untouched and
+    forms no value of its own. Reshaping a caller's book would be this member
+    *sizing* it rather than *bounding* it — sizing is the order layer's act
+    (§C8 places this step before the orders, not in them) — and a caller told
+    its book passed would otherwise be handed a book nobody chose. The repair
+    the messages state is the caller's: *hand target weights whose positions
+    sit at or below the limit*, and for a concentrated book *hold more names*.
+    The concentration refusal says what this module will not do about it — it
+    neither re-weights the book (the information-ratio weighting is feature
+    301's, and a bound that re-ranked would be answering a question about the
+    combiner from inside a verdict) nor scales it (feature 303's act).
+
+    **Absence is not zero, and the two zeros are different facts.** A *zero
+    limit* is answered rather than refused — a well-formed risk appetite whose
+    consequence is the flat book, the reading feature 308 gives a zero Sharpe
+    and feature 303 a zero configured target — and on a zero limit the
+    admissible set is exactly the flat book, because every book that holds
+    something has a strictly positive position size and a strictly positive
+    concentration. A *negative* limit is refused as the ask's own fact (a
+    limit is a magnitude; a negative one is a direction, which would admit
+    nothing on either side of the book), as is a `bool` (a flag where a figure
+    belongs, and `True` would read as one hundred percent) and a `nan`/`±inf`
+    (a `nan` compares false against everything, so a verdict against it would
+    refuse every book while looking like it had judged one, and an infinite
+    limit is one no book can breach). The **flat book's concentration is
+    answered as `0.0`** rather than refused: a book that holds nothing is
+    genuinely not concentrated, and `0.0` is the true floor of a figure
+    bounded above by `1.0` — deliberately *not* feature 303's `flat_book`
+    refusal, which fires on a divisor standing in for a book nobody built
+    (a composite scored at zero everywhere), while here the target weights
+    exist (feature 303 answers exactly this set for a zero configured target)
+    and are merely flat. Every book that holds something answers a strictly
+    positive concentration, so `0.0` means exactly one thing.
+
+    **The edge is inclusive on the admitted side.** The sentence's word is
+    *breaching*, so a weight exactly at a limit is admitted and one float
+    above it is refused — the edge feature 308 states for its cap, read on a
+    different bound, and `Appendix B`'s *"use ≤ ¼ Kelly"* reading of a limit
+    as a budget: spending it exactly is spending within it. The per-position
+    bound is a **magnitude**, so a short at `-0.30` breaches a `0.20` limit
+    exactly as a long at `0.30` does — a book could otherwise hold arbitrary
+    exposure by flipping signs, and §C8's chain applies the bound to the
+    weights feature 303 returned rather than to the views behind them.
+
+    Three spellings of one act, all free functions beside the combiner:
+    `concentration(target_weights)` answers the figure the second bound is
+    stated over (the shape `book.leverage_cap` takes for feature 308's own
+    figure — the number a bound turns on, answered as a pure function of a
+    value the caller already holds); `is_breaching_limits(target_weights, *,
+    per_position_limit, concentration_limit)` answers the fact alone, the
+    shape `book.is_agent_authored` and `book.is_missing_changelog_entry` take
+    for their own facts; and `rejects_breaching_target_weights(...)` is the
+    sentence's *rejects*. The predicate and the verdict cannot disagree
+    because both read the bounds once, in one `_judge`, and the ask once, in
+    one `_ask` — the discipline `book._changelog._presence` and
+    `book._leverage._cap` state for their own pairs.
+
+    The vocabulary is this feature's own, as siblings under feature 301's one
+    base: `LimitRequestError` for the ask's own facts (a value that is not a
+    target-weight set, a non-mapping, a book covering no symbols, a blank
+    symbol name, a non-finite or non-numeric weight, and a limit that is not a
+    finite real of zero or more), refused before any bound is read and
+    carrying no code; and `LimitBreachError` for the one judgment the sentence
+    mints, carrying whichever of the two greppable codes names the bound that
+    was breached (`position_above_limit`, `concentration_above_limit`). Two
+    codes on one class rather than two classes, because the repairs differ
+    (*shrink that position* against *spread the book*) but the caller's
+    position is the same — the router's limiter's two-faults/one-class
+    precedent — and a reader greps the word for the one they have to fix. The
+    ask settles before the judgment: a malformed limit is refused *before* any
+    book is judged, however breaching that book meant to be, and a limit
+    validator is spelled here rather than shared with feature 303's or 308's,
+    because a shared helper raising another feature's class would defeat a
+    caller's `except` (the error-vocabulary trap this workspace states at its
+    member seams).
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (the `book` member already exists:
+      packages/book, import name book; seat src/app/modules/book) / pytest
+      (ruff + mypy conventions). The member currently carries features 301,
+      303, 306, 307 and 308 — `_combine.py` (the IR-weighted `combine` verb,
+      `PromotedSignal`, `CompositeBook`), `_volatility.py` (the volatility
+      target's act and its `TargetWeights` record), `_authorship.py`,
+      `_changelog.py`, `_leverage.py`, `errors.py` (the one base
+      `BookConstructionError` and its siblings) and `__init__.py` (the public
+      surface plus the one `@register` builder, `build_book_combiner`,
+      returning `combine` unchanged under the component name `book`). Feature
+      304 adds one module and no registration.</stack>
+    <test_baseline>The book member's own suite under packages/book/tests/
+      (test_combine, test_component, test_authorship, test_changelog,
+      test_leverage, test_volatility, and this feature's test_limits). The
+      member is stdlib-only at module scope (the factory's scan imports the
+      package to fire its `@register`, so it must pay nothing), and feature
+      304's module adds only `math` and the member's own `.errors` to that
+      bill — the same two feature 308's module added. The repository-level
+      suite under tests/ is collected by pytest's testpaths and does NOT
+      collect packages/*/tests (see the acceptance-gate memory), so the
+      member's own suite must be run explicitly as well. Lint only the new
+      files and compare to a sibling — the repo is red on main (mypy absent,
+      ~163 pre-existing ruff errors), so a baseline via `--stdin-filename`
+      misreports.</test_baseline>
+    <conventions>
+      - One act, one module: `_limits.py` holds the three verbs, the sentinel,
+        the one ask reader (`_ask`), the one validator (`_validated_limit`),
+        the one book reader (`_weights_of`), the one spelling of the two
+        figures (`_share`), the one judgment (`_judge`) and the two
+        refuse-message builders; the two refusal classes are added to the
+        existing `errors.py` beside feature 301's base class (one place per
+        member, as its docstring already states); `__init__.py` widens its
+        re-export and `__all__` and gains no logic — the shape every member in
+        this workspace takes.
+      - A verdict, not a measurement: the act takes the target weights and the
+        two limits as values the caller already holds. It opens no database,
+        reads no environment, consults no clock, counts nothing and re-derives
+        no figure — the shape `book.rejects_overleveraged_target` and
+        `book.rejects_agent_authored_modification` take for their own
+        verdicts, and the reason a member never imports another member (the
+        gross exposure and the share are restated here in this member's own
+        terms rather than borrowed from feature 303's record or the
+        feature-store member).
+      - Both limits are **required keywords with no default** — the category's
+        knob, read on feature 303's own boundary, because §C8 names the step
+        and states no figure for either bound. No module-level risk bound, and
+        the builder gains no keyword: a limit that could cross composition
+        would apply one risk appetite to every book the factory composed.
+      - Two bounds, and neither subsumes the other: the per-position bound is
+        a magnitude over one position, the concentration bound is
+        `max_s |w_s| / Σ_t |w_t|` over the whole book, and the concentration
+        is scale-free, so feature 303's scaling moves the first and leaves the
+        second exactly where feature 301's ranking put it. The judgment fires
+        in the sentence's own order and the two codes name the two bounds.
+      - The whole-book reading of the concentration bound, with the reason
+        recorded: no feature of this category hands this seam a symbol→theme
+        map, so the bound is computed from the weights themselves; a per-theme
+        bound belongs one layer downstream where the grouping exists.
+      - The edge is `>` on both bounds: a weight exactly at a limit is
+        admitted, for the batch of reasons above. The per-position bound reads
+        magnitudes, so a large short breaches exactly as a large long does.
+      - Absence is not zero, and the two zeros are different facts: a zero
+        limit is answered (it admits exactly the flat book), a negative /
+        non-finite / non-numeric / `bool` limit is refused as the ask's own
+        fact, and the flat book's concentration is answered as `0.0` rather
+        than refused — a *description* of a book that holds nothing, not
+        feature 303's `flat_book` refusal read on a second divisor.
+      - The bounds reject and never reshape: nothing is clamped, re-weighted
+        or scaled down, a refusal forms no value, and the caller's own value
+        is untouched — so a caller can trust that a book that returned is the
+        book it handed over, and the repairs the messages state are the
+        caller's own.
+      - Error vocabulary: two new siblings under `BookConstructionError`
+        (`LimitRequestError` for the ask, no code because a malformed ask
+        names its subject in its first words; `LimitBreachError` for the
+        judgment, carrying whichever of `position_above_limit` /
+        `concentration_above_limit` names the bound that was breached), so a
+        caller that refuses the whole book surface writes one `except` and a
+        caller that must react differently can still tell the two facts apart
+        — the `leverage_above_quarter_kelly` / `flat_book` precedent for the
+        one refusal an operator greps a deployment log for. Two codes on one
+        class because the caller's position is the same and the *repair* is
+        what differs; the codes are module constants, so a message cannot
+        drift from the word a reader greps.
+      - Every refusal message names the figures behind it (the symbols and
+        weights above the per-position limit, and the largest position, the
+        gross exposure, the share, the limit and the number of symbols covered
+        for a concentrated book) and cites §C8's chain, so the refusal is
+        actionable without a stack trace. The ask's own facts carry no code
+        and name their subject in their first words.
+      - Deterministic and order-independent: pure arithmetic over its three
+        arguments, so the same value and figures answer identically and the
+        module holds no state; the predicate and the verdict are swept against
+        each other over the edge, so they cannot disagree.
+      - Stdlib only at module scope (`collections.abc`'s `Mapping`,
+        `dataclasses`, `math`, `typing` and the member's own `.errors`), so the
+        factory's scan — which imports this package on every `create_app()` to
+        fire its `@register` — pays nothing beyond the import it already paid
+        for the combiner, and the replay path stays import-cheap.
+      - Do not edit a central registry, router, app factory, middleware,
+        settings or migration (core-task, order-sensitive shared files); no
+        new component is registered, so the composition story is unchanged and
+        `app.order` still carries exactly one `book`.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Portfolio Book Construction">
+      <feature index="304" shape="plugin" plugin="book" depends_on="303">
+        <description>System exposes `rejects_breaching_target_weights(target_weights, *, per_position_limit, concentration_limit)` — the sentence's *rejects* — beside `is_breaching_limits(...)` (the same judgment as a read-only predicate) and `concentration(target_weights)` (the figure the second bound is stated over), with `PER_POSITION_LIMIT_CODE = "position_above_limit"` and `CONCENTRATION_LIMIT_CODE = "concentration_above_limit"` between them. The verdict reads the target weights' `weights` mapping duck-typed (a `book.TargetWeights`, or any value exposing the same mapping of symbol to weight), then the two limits, both a finite real of **zero or more**, then reads the bounds: every position's magnitude against `per_position_limit` — a magnitude, so a short at `-0.30` breaches a `0.20` limit exactly as a long at `0.30` does — and `max_s |w_s| / Σ_t |w_t|` against `concentration_limit`, refused with `LimitBreachError` opening with `PER_POSITION_LIMIT_CODE` naming **every** position above the limit (they share one repair) or opening with `CONCENTRATION_LIMIT_CODE` naming the largest position(s), the gross exposure, the share, the limit and how many symbols the book covers. A book inside both bounds returns None. The judgments fire in the sentence's own order — *"per-position and concentration"* — so a book that breaches both is refused over its positions, the local repair; the edge is `>` on both bounds, so a weight exactly at a limit is admitted. Nothing is reshaped: no clamp, no re-weighting, no scaling down, no value formed, and the caller's own value is untouched. `concentration` answers the flat book's figure as `0.0` (a book that holds nothing is not concentrated) and a strictly positive figure in `(0, 1]` for every other book, so `0.0` means exactly one thing; it is scale-free, which is what makes the second bound a different bound from the first.</description>
+      </feature>
+      <feature index="304" shape="plugin" plugin="book" depends_on="303">
+        <description>System makes both limits **required keywords with no default** on both the predicate and the verdict, in the deployment's hands and unreachable from composition: docs/alpha-engine-prd.md §C8 and docs/nullius-tech-architecture.md §13.1 both name the step and neither states a figure for either bound, so a module-chosen fallback would be a risk bound no document states — the boundary feature 303 states for `target_volatility`, read on the two bounds one step after it. A zero limit is answered rather than refused (*take no position* is a level, not a malformed ask) and admits exactly the flat book, because every book that holds something has a strictly positive position size and a strictly positive concentration; a limit that is not a finite real of zero or more — a negative one, a `bool`, a `nan`/`±inf`, a string, a `None` — is refused as the ask's own fact. The same figures on the same book are therefore judged differently at different deployments, which is the feature's whole point and is exercised in the suite.</description>
+      </feature>
+      <feature index="304" shape="plugin" plugin="book" depends_on="303">
+        <description>System defines the act's two refusal classes in the member's one error module, as siblings under feature 301's `BookConstructionError` — the one-base-per-member shape the dreaming and regime members state for their own vocabularies, so a caller that refuses book work wholesale writes one `except` while a caller that must react differently to *this book breaches a limit you configured* and *your ask was malformed* catches the specific siblings (a breaching book is refusable though both limits were perfectly well stated, and a mis-stated limit is refusable though the book sits inside a perfectly good bound, so the two facts are genuinely different). `LimitRequestError` is the ask's face and carries no code word, for the reason `LeverageRequestError` gives — a malformed ask names its subject in its first words. It refuses, before any bound is read: a value carrying no `weights` mapping (a different report from a book covering no symbols, kept apart by the sentinel), a non-mapping, a book covering no symbols, a blank symbol name, a weight that is not a finite real, and either limit that is not a finite real of zero or more. It deliberately does **not** refuse a zero limit: *take no position* is a well-formed appetite. The book is read before either limit and the per-position limit before the concentration limit — the sentence's own order — so an ask that malformed both is reported on the first, and a caller fixing one at a time is told the bound the sentence names first. The validator is spelled here rather than shared with feature 303's or 308's validator for the same kind of figure: a shared helper raising another feature's error class would defeat a caller's `except`, which is the error-vocabulary trap this workspace states at its member seams — and unlike feature 303's two validators, these two limits *do* share one, because their policy is one policy (zero or more) and feature 303's two differ. `LimitBreachError` is the judgment and carries whichever of the two codes names the bound that was breached; two codes on one class rather than two classes, because the repairs differ (*shrink that position* against *spread the book*) but the caller's position is the same — the router's limiter's two-faults/one-class precedent.</description>
+      </feature>
+      <feature index="304" shape="plugin" plugin="book" depends_on="303">
+        <description>System keeps the act a free function beside the combiner rather than a second component: `_limits.py` is imported by the member's `__init__.py`, which widens its re-export (the three verbs, the two code constants and the two error classes join feature 301's names) and gains no `@register`. No new component is composed, `app.order` still carries exactly one `book`, and the seat (`src/app/modules/book`) is unchanged and still re-exports nothing — a caller that wants the bound reaches the member's own namespace, the discipline every seat in this workspace states. Both limits reach the **call** and never the composition, which the factory's protocol makes structural: `build_book_combiner` takes no arguments, so no component could carry a risk bound and no deployment could set one through the registry. The module is stdlib-only at module scope (`collections.abc`, `dataclasses`, `math`, `typing` and the member's own `.errors`), so the factory's scan — which imports this package on every `create_app()` to fire its `@register` — pays nothing for the act beyond the import it already paid for the combiner, and the replay path stays import-cheap. No table, endpoint, migration, seat edit, central registry, router, app factory, middleware or settings change.</description>
+      </feature>
+      <feature index="304" shape="plugin" plugin="book" depends_on="303">
+        <description>System passes an end-to-end pair of bounds over the member's own fixtures: the conftest's three signals combine and volatility-target at a book volatility of 0.5 and a configured target of 0.2 to weights 0.12 / 0.14 / 0.14 (dyadic throughout, so every weight is checkable with `==`), whose concentration is exactly 0.35 — one division of one `math.fsum` by another, the same operations feature 303 performed, so the edges are pinnable with `==` and `math.nextafter` even though the chain's own gross exposure is `0.39999999999999997`. A per-position limit of 0.14 admits the book (the edge is inclusive) and the same book at 0.13 is refused naming all three positions; a concentration limit of 0.35 admits it and `math.nextafter(0.35, 0)` refuses it naming the tied largest positions, the gross, the share and the limit. The two bounds are shown orthogonal both ways: every position at `0.3` of a two-name book is `0.5` of its gross and breaches a `0.25` concentration limit with the per-position bound unable to fire, and `0.4` of a four-name book is `0.4` of its gross and breaches a `0.3` per-position limit. Scaling is shown to leave the concentration where feature 301's ranking put it while moving the size bound, which is why the two bounds are two. The flat book (feature 303's zero-target answer) answers a concentration of `0.0` and is admitted at both limits of zero; a zero limit admits nothing else, at every book that holds something. Every malformed ask — a value that is not a target-weight set, a non-mapping, a book covering no symbols, a blank symbol, a non-finite weight, a negative / non-finite / `bool` / non-numeric limit — is refused as `LimitRequestError` before any book is judged, even when the book breaches both bounds at well-formed figures. A refusal leaves the caller's weights untouched and forms no value. Both error classes are subclasses of `BookConstructionError` and neither is a subclass of the other; `combine([])` and `TargetWeights.weight("DOGE")` both still raise the bare base, so the hierarchy this feature added leaves the old surface reachable. The predicate and the verdict are swept against each other across both edges of both bounds, so they cannot disagree.</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Feature 304 sits in the middle of §C8's own chain — *"Signal book →
+    IR-weighted combination with shrinkage → volatility targeting → position
+    and concentration limits → orders"* — and both of its neighbours are value
+    dependencies rather than code imports. It consumes what feature 303
+    answers (the scaled target weights) and answers what feature 305
+    publishes: the target weights, refused or passed. `depends_on="303"` is
+    therefore a *value* dependency — the act reads a value exposing `weights`
+    duck-typed, so the loader's synthetic-name copy of `TargetWeights` is
+    bound exactly as the canonical one is, and the only import the act takes
+    from the member is the error vocabulary. The member imports no other
+    workspace member: the gross exposure and the concentration are restated
+    here in this member's own terms, never borrowed from feature 303's record
+    or the feature-store member. Both limits are a *deployment* figure and
+    arrive as required keywords of the call. Feature 308's cap is the bound on
+    the book's *exposure* where this is the bound on a position's *size* and
+    the book's *shape*: the two meet at `TargetWeights.gross_exposure` — the
+    figure a caller hands the cap is the figure the concentration bound
+    divides over — without either feature importing the other, and neither
+    subsumes the other. Feature 303's zero-target flat book is admitted here
+    at every limit, so the appetite's own consequence crosses the step
+    unchanged. No `@register` name collides (no new component is registered),
+    no table, endpoint or migration is added, and no central registry, router,
+    app factory, middleware, settings or migration is edited.
+  </integration_points>
+  <constraints>
+    - No member imports another: the act reads the target weights' `weights`
+      duck-typed and restates the gross exposure and the concentration in this
+      member's own terms, never borrowing feature 303's record or another
+      member's figures.
+    - No new component, no `@register`, no seat edit: the act is a free
+      function beside the combiner, the way feature 303's target, feature 308's
+      cap and feature 306's guard sit. `__init__.py` widens its re-export and
+      carries no logic; the seat still re-exports nothing.
+    - Both limits are required keyword-only parameters with no default on both
+      verbs, and the module carries no fallback risk bound; `build_book_combiner`
+      still takes no arguments, so no limit can cross composition.
+    - Two bounds and neither subsumes the other: `|w_s| ≤ per_position_limit`
+      is a magnitude over one position; `max_s |w_s| / Σ_t |w_t| ≤
+      concentration_limit` is the book's shape and is scale-free. The judgment
+      fires per-position first (the sentence's own order) and the two codes
+      name the two bounds.
+    - The concentration is stated over the whole book, and the reason is
+      recorded: no feature of this category hands this seam a symbol→theme
+      map, so the figure is computed from the weights themselves; a per-theme
+      bound belongs one layer downstream.
+    - The edge is `>` on both bounds — a weight exactly at a limit is admitted
+      — and the per-position bound reads magnitudes, so a large short breaches
+      exactly as a large long does.
+    - Absence is not zero: a zero limit is answered and admits exactly the flat
+      book; a negative / non-finite / `bool` / non-numeric limit is refused as
+      the ask's own fact; the flat book's concentration is answered as `0.0`
+      and is deliberately not feature 303's `flat_book` refusal. The ask's own
+      facts settle before any bound is read, and the ask is read in one place
+      so the predicate and the verdict refuse identically.
+    - The bounds reject and never reshape: no clamp, no re-weighting, no
+      scaling down, no value formed, and the caller's value untouched. The
+      refusals state the repair that exists (*hand weights at or below the
+      limit*, *hold more names*) and the concentration refusal states what this
+      module will not do about it.
+    - Two new error classes, siblings under `BookConstructionError`; the
+      judgment carries whichever of the two greppable codes names the bound,
+      the ask's carries none. A limit validator is spelled in this feature
+      rather than shared with feature 303's or 308's, because a shared helper
+      raising another feature's class would defeat a caller's `except`.
+    - Stdlib only (`collections.abc`, `dataclasses`, `math`, `typing`, the
+      member's own `.errors`), no database, no environment, no clock, no state
+      — import-cheap at module scope so the factory's scan pays nothing beyond
+      feature 303's bill.
+    - Deterministic and order-independent: pure arithmetic over its three
+      arguments, the same value and figures answering identically, and the
+      predicate and the verdict swept against each other across both edges.
+    - Do not edit a central registry, router, app factory, middleware,
+      settings or migration (core-task, order-sensitive shared files).
+  </constraints>
+  <implementation_steps>
+    <phase name="Feature 304 — apply per-position and concentration limits">
+      <step>1. `packages/book/src/book/_limits.py`: `PER_POSITION_LIMIT_CODE`,
+        `CONCENTRATION_LIMIT_CODE`, the sentinel, the one ask reader (`_ask`),
+        the one validator (`_validated_limit`), the book reader
+        (`_weights_of`, keeping *not a target-weight set* distinct from
+        *covers no symbols*), the one spelling of the two figures (`_share`,
+        with the flat book answered as `0.0`), the frozen `_Breach` record, the
+        one judgment (`_judge`), the two refuse-message builders and the three
+        verbs (`concentration`, `is_breaching_limits`,
+        `rejects_breaching_target_weights`). Stdlib only.</step>
+      <step>2. `packages/book/src/book/errors.py`: add `LimitRequestError` and
+        `LimitBreachError` as siblings under `BookConstructionError`, widen
+        `__all__`, widen the module docstring's code list with the two codes
+        and its feature list with 304, and update the base class's docstring to
+        state that it is now the member's whole refusal surface's base.</step>
+      <step>3. `packages/book/src/book/__init__.py`: re-export the three verbs,
+        the two code constants and the two classes; widen `__all__`; state in
+        the package docstring that the member now carries six features, that
+        the act arrives as a free function rather than a second component, that
+        both limits reach the call rather than the composition, and that the
+        standard-library layering bill widens by `book._limits`. Add no
+        `@register`.</step>
+      <step>4. `packages/book/tests/test_limits.py`: the two bounds' semantics
+        (a magnitude against a share), the orthogonality both ways, the
+        scale-invariance of the concentration and the size bound feature 303's
+        scaling moves, the inclusive edge on both bounds, the two codes, the
+        flat book's `0.0` and its admission at zero limits, the two zeros
+        distinguished, the ask's refusals in their order and their precedence
+        over the judgment, the refusal naming its figures and its repair and
+        leaving the caller's value untouched, the predicate swept against the
+        verdict, the vocabulary's hierarchy against the member's other
+        features, the composition's own story (no second component, reachable
+        without the factory, no limit crossing the builder's signature), and
+        the layering claims (duck-typed seam, stdlib-only parsed from the AST,
+        no other member imported, no store or environment or clock, no state
+        between two calls).</step>
+      <step>5. `packages/book/tests/test_component.py`: extend the public
+        surface pin to the six features' names and add the act's composition
+        story in the shape the other four features' stories take — the fresh
+        scan still carrying exactly one component, the verbs reachable without
+        the factory and no `limits` component key anywhere, the scan paying
+        nothing beyond feature 303's bill, and both limits living on the call
+        rather than on the builder.</step>
+      <step>6. Validate and run the member's own suite (the repo-level suite
+        under tests/ does not collect packages/*/tests — run the member suite
+        explicitly), confirm the repository-level acceptance suite is
+        unaffected, and lint only the new and changed files against a sibling
+        baseline.</step>
+    </phase>
+  </implementation_steps>
+  <success_criteria>
+    - `rejects_breaching_target_weights` over the member's own fixtures
+      returns None at a per-position limit of 0.14 and a concentration limit of
+      0.35 (both edges exactly reached and admitted), raises
+      `LimitBreachError` opening with `position_above_limit` naming every
+      position above a 0.13 limit, and raises the same class opening with
+      `concentration_above_limit` naming the tied largest positions, the gross
+      exposure, the share and the limit at `math.nextafter(0.35, 0)`.
+    - The two bounds are exercised as independent: a book inside the
+      per-position limit breaches the concentration limit and a book inside the
+      concentration limit breaches the per-position bound, and the
+      concentration is invariant under feature 303's scaling while the size
+      bound is exactly what the scaling moves.
+    - Both limits are required keyword-only parameters with no default on both
+      the predicate and the verdict; `build_book_combiner` takes no arguments,
+      so no limit can cross composition, and the same book is judged
+      differently at different limits.
+    - A zero limit is answered and admits exactly the flat book; a negative,
+      non-finite, `bool` or non-numeric limit is refused as
+      `LimitRequestError`; the flat book's concentration is `0.0` and the flat
+      book passes both bounds at every limit of zero or more; every book that
+      holds something answers a strictly positive concentration and is refused
+      at a zero concentration limit.
+    - The ask's own facts — a value carrying no `weights`, a non-mapping, a
+      book covering no symbols, a blank symbol, a non-finite weight, and
+      either malformed limit — are refused as `LimitRequestError` **before**
+      any bound is read, even when the book breaches both bounds at
+      well-formed figures, and carry no code word; the book is read before
+      either limit and the per-position limit before the concentration limit.
+    - A refusal leaves the caller's weights untouched, forms no value, and
+      states the figures behind it and the repair that exists; a book inside
+      both bounds returns None; the predicate and the verdict answer
+      consistently across a sweep of both edges of both bounds; two identical
+      calls answer identically.
+    - `LimitRequestError` and `LimitBreachError` are both subclasses of
+      `BookConstructionError` and neither of the other; `combine([])` and
+      `TargetWeights.weight` on an uncovered symbol still raise the bare base;
+      `LimitBreachError` is not feature 303's `VolatilityTargetError`.
+    - No new component is registered (`app.order` carries exactly one `book`),
+      the seat is unchanged, no table, endpoint or migration is added, and no
+      central registry, router, app factory, middleware or settings is edited.
+    - The module is stdlib-only and import-cheap; the member's own suite is
+      green and the repository-level acceptance suite is unaffected.
+  </success_criteria>
+</project_specification>

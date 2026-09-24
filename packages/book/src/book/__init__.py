@@ -1,6 +1,6 @@
-"""The book combiner, its volatility target, its authorship guard, its
-changelog companion and its leverage cap — five features: 301, 303, 306, 307
-and 308.
+"""The book combiner, its volatility target, its position and concentration
+limits, its authorship guard, its changelog companion and its leverage cap —
+six features: 301, 303, 304, 306, 307 and 308.
 
 app_spec.xml, "Portfolio Book Construction", feature 301: *System combines
 promoted signals by information-ratio weighting, which returns a single
@@ -27,6 +27,26 @@ configured annualized volatility — is a **required** keyword with no default:
 §C8's chain names the step and docs/alpha-engine-prd.md states no figure for
 it, so a module-chosen fallback would be a risk level no document states,
 silently applied to every deployment that never configured one.
+
+app_spec.xml, feature 304 is §C8's next link, one step after the target and
+one step before the orders: *System applies per-position and concentration
+limits, which rejects a target weight breaching either bound.*
+:func:`rejects_breaching_target_weights` is its verb: it takes the target
+weights feature 303 answers and the deployment's two limits, and raises when a
+target weight breaches either bound.  The two bounds are genuinely different
+facts about the same book — a *position's size* (``|w_s| ≤
+per_position_limit``) and the book's *shape* (``max_s |w_s| / Σ_t |w_t| ≤
+concentration_limit``, the largest position's share of gross exposure) — and
+neither subsumes the other: feature 303's scaling multiplies every weight by
+one factor, so it sets the first and leaves the second exactly where feature
+301's ranking put it.  Both figures are the deployment's (the documents name
+the step and state no figure for either) and arrive as **required** keywords
+with no default, feature 303's own boundary read one step later.
+:func:`concentration` is the figure the second bound is stated over, answered
+as a pure function of the weights; :func:`is_breaching_limits` is the fact
+without the refusal.  The act arrives beside the combiner in the same shape the
+cap and the guard do — free functions, no second component — because its whole
+input is a value and two figures the caller already holds.
 
 app_spec.xml, feature 306 is the category's boundary sentence:
 *System keeps book construction human-authored and version-controlled,
@@ -119,12 +139,18 @@ rescale it; they do not re-open this weight.  Feature 303 is the rescaling
 that does happen here, and it rescales the *composite's exposure* without
 touching the weighting: the normalized weights it derives are IR_i / Σ_j IR_j
 read through one factor, so the ranking 301 fixed is exactly the ranking the
-target weights carry.  Feature 308's cap is the same stance on the sizing
+target weights carry.  Feature 304's limits are the same stance one step
+further on: they read the weights feature 303 answered and bound them, and
+they re-weight nothing — a breaching book is refused rather than scaled down
+or spread out, because reshaping a caller's book would be this member sizing
+it rather than bounding it.  Feature 308's cap is the same stance on the sizing
 step's own figure: the quarter is the document's, not a deployment's, because
 it is the discount against a Sharpe the document itself calls a noisy
 estimate (their one knob, the configured volatility target, is feature 303's
 — and this package is where that figure arrives, as a required keyword of
-:func:`apply_volatility_target`).
+:func:`apply_volatility_target`; the two figures feature 304's bounds are
+stated over arrive the same way, as required keywords of
+:func:`rejects_breaching_target_weights`).
 
 Absence is not zero, three times over: a signal with a non-positive or
 non-finite information ratio is refused (its standing to weight the book is
@@ -141,7 +167,14 @@ volatility of zero is refused (a book with no scale has no fraction at all).
 Feature 303 draws it in the same place for the same reason: a *zero
 configured target* is answered — *take no risk* is a level, whose honest
 consequence is a flat book — while a book volatility of zero is refused, the
-divisor being exactly nothing there.
+divisor being exactly nothing there.  Feature 304 draws it in the same place
+once more: a *zero limit* is answered (it admits exactly the flat book, which
+is the appetite's own consequence), while a target weight that is not a finite
+real is refused — and the flat book's *concentration* is answered as ``0.0``
+rather than refused, because a book that holds nothing is genuinely not
+concentrated: that figure is a description of a book already decided, where
+feature 303's ``flat_book`` is a division by exactly nothing standing in for a
+book nobody built.
 
 This module is stdlib-only — dataclasses, mappings and square-free
 arithmetic; no polars, no pyarrow, no lake, no environment, no HTTP, and no
@@ -158,7 +191,10 @@ would have to go looking for.  Nor the volatility target:
 holds rather than measuring one — a configured volatility target is handed to
 the *call* and never to the composition, so the factory's registration
 protocol, which takes no arguments, cannot express one and no component
-reasons about it.
+reasons about it.  Nor the limits: :mod:`book._limits` imports ``math``,
+``collections``, ``dataclasses``, ``typing`` and that same vocabulary, and its
+two figures reach the call the same way the target does — the same structural
+argument, read on the two bounds one step after it.
 """
 
 from __future__ import annotations
@@ -191,6 +227,13 @@ from ._leverage import (
     leverage_cap,
     rejects_overleveraged_target,
 )
+from ._limits import (
+    CONCENTRATION_LIMIT_CODE,
+    PER_POSITION_LIMIT_CODE,
+    concentration,
+    is_breaching_limits,
+    rejects_breaching_target_weights,
+)
 from ._volatility import (
     FLAT_BOOK_CODE,
     TargetWeights,
@@ -203,6 +246,8 @@ from .errors import (
     ChangelogEntryRequestError,
     LeverageRequestError,
     LeverageTargetError,
+    LimitBreachError,
+    LimitRequestError,
     MissingChangelogEntryError,
     VolatilityTargetError,
     VolatilityTargetRequestError,
@@ -216,11 +261,13 @@ __all__ = [
     "AGENT_MODIFICATION_CODE",
     "AUTHOR_KINDS",
     "COMPONENT_NAME",
+    "CONCENTRATION_LIMIT_CODE",
     "FLAT_BOOK_CODE",
     "HUMAN_AUTHOR_KIND",
     "KELLY_FRACTION",
     "MISSING_CHANGELOG_ENTRY_CODE",
     "OVERLEVERAGE_CODE",
+    "PER_POSITION_LIMIT_CODE",
     "REVISION_HEX_LENGTH",
     "AgentAuthoredModificationError",
     "BookChangeRequestError",
@@ -231,6 +278,8 @@ __all__ = [
     "CompositeBook",
     "LeverageRequestError",
     "LeverageTargetError",
+    "LimitBreachError",
+    "LimitRequestError",
     "MissingChangelogEntryError",
     "PromotedSignal",
     "TargetWeights",
@@ -239,11 +288,14 @@ __all__ = [
     "apply_volatility_target",
     "build_book_combiner",
     "combine",
+    "concentration",
     "is_agent_authored",
+    "is_breaching_limits",
     "is_missing_changelog_entry",
     "kelly_fraction",
     "leverage_cap",
     "rejects_agent_authored_modification",
+    "rejects_breaching_target_weights",
     "rejects_overleveraged_target",
     "requires_changelog_entry",
 ]
