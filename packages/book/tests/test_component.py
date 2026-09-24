@@ -202,32 +202,6 @@ def test_the_cap_costs_the_scan_nothing() -> None:
     assert member.leverage_cap(1.0, volatility=0.2) == 1.25
 
 
-def test_the_members_public_surface_carries_both_features() -> None:
-    # The exported surface is the two features' own names and nothing else:
-    # 301's combiner, its value types and its one base error; 308's three
-    # verbs, its two constants and its two sibling classes.  Pinned because
-    # the seat deliberately re-exports none of it — a caller who wants these
-    # reaches the member's namespace, so the namespace *is* the contract and a
-    # name that drifted off it would leave a caller with no way in.
-    assert set(member.__all__) == {
-        "COMPONENT_NAME",
-        "KELLY_FRACTION",
-        "OVERLEVERAGE_CODE",
-        "BookConstructionError",
-        "CompositeBook",
-        "LeverageRequestError",
-        "LeverageTargetError",
-        "PromotedSignal",
-        "build_book_combiner",
-        "combine",
-        "kelly_fraction",
-        "leverage_cap",
-        "rejects_overleveraged_target",
-    }
-    for name in member.__all__:
-        assert hasattr(member, name), name
-
-
 def test_the_cap_never_respells_the_quarter_as_a_parameter() -> None:
     # ``build_book_combiner`` takes no arguments because the combiner's whole
     # configuration is its arithmetic; the cap's whole configuration is
@@ -239,3 +213,96 @@ def test_the_cap_never_respells_the_quarter_as_a_parameter() -> None:
 
     parameters = inspect.signature(member.build_book_combiner).parameters
     assert not parameters
+
+
+# -- The authorship guard's composition story (feature 306) -----------------------
+#
+# Feature 306 arrives as free functions beside the combiner too, in the same
+# shape the cap did: its whole input is a change record the caller already
+# holds, so there is nothing for the factory to compose and nothing for a
+# deployment to configure — and the one thing it must never grow is a
+# parameter that widens the admitted author set, because a guard whose
+# boundary its caller could move is not one.
+
+
+def test_the_authorship_guard_registers_no_second_component() -> None:
+    # The single-registration assertion above is the strong form; this is
+    # the same fact read through a fresh scan, so a component added by any
+    # route (not just this module's own ``__init__``) is caught — a second
+    # name here would silently rebuild composition for every feature in
+    # the workspace.
+    src_root = Path(member.__file__).resolve().parent.parent
+    registry = Registration()
+    scan_components(src_root, registry=registry)
+    names = [component.name for component in registry.components()]
+    assert names.count("book") == 1
+    assert len(names) == 1
+
+
+def test_the_authorship_guard_is_reachable_without_the_factory() -> None:
+    # A free function, reached the way the cap's verdicts are: imported
+    # from the member, not asked of the composed application.  There is no
+    # ``authorship`` component to ``app.get``, and a deployment cannot
+    # configure the admitted author kinds — which is the design decision,
+    # not an omission: the boundary is §C8's, not a deployment's.
+    assert callable(member.rejects_agent_authored_modification)
+    assert callable(member.is_agent_authored)
+    assert member.HUMAN_AUTHOR_KIND == "human"
+    app = create_app()
+    assert "authorship" not in app
+    assert "book-authorship" not in app
+
+
+def test_the_guard_costs_the_scan_nothing() -> None:
+    # The layering promise: the factory imports this package to fire its
+    # ``@register``, so anything at module scope is paid on every
+    # ``create_app()``.  The guard is answered from the same import that
+    # was already being paid for — no new top-level import beyond the
+    # stdlib's ``dataclasses`` and ``typing``, no environment read, no
+    # third party — and it judges a record it is handed rather than state
+    # it would have to go looking for.
+    change = member.BookConstructionChange(
+        "the information-ratio weighting",
+        "Ada Lovelace",
+        "human",
+        "0123456789abcdef0123456789abcdef01234567",
+    )
+    assert member.rejects_agent_authored_modification(change) is None
+
+
+def test_the_members_public_surface_carries_the_three_features() -> None:
+    # The exported surface is the three features' own names and nothing
+    # else: 301's combiner, its value types and its one base error; 306's
+    # record, its five constants, its predicate, its verdict and its two
+    # sibling classes; 308's three verbs, its two constants and its two
+    # sibling classes.  Pinned because the seat deliberately re-exports
+    # none of it — a caller who wants these reaches the member's
+    # namespace, so the namespace *is* the contract and a name that
+    # drifted off it would leave a caller with no way in.
+    assert set(member.__all__) == {
+        "AGENT_AUTHOR_KINDS",
+        "AGENT_MODIFICATION_CODE",
+        "AUTHOR_KINDS",
+        "COMPONENT_NAME",
+        "HUMAN_AUTHOR_KIND",
+        "KELLY_FRACTION",
+        "OVERLEVERAGE_CODE",
+        "REVISION_HEX_LENGTH",
+        "AgentAuthoredModificationError",
+        "BookChangeRequestError",
+        "BookConstructionChange",
+        "BookConstructionError",
+        "CompositeBook",
+        "LeverageRequestError",
+        "LeverageTargetError",
+        "PromotedSignal",
+        "build_book_combiner",
+        "combine",
+        "is_agent_authored",
+        "kelly_fraction",
+        "leverage_cap",
+        "rejects_agent_authored_modification",
+        "rejects_overleveraged_target",
+    }
+    for name in member.__all__:
+        assert hasattr(member, name), name

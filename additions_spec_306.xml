@@ -1,0 +1,337 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 306 (System keeps book construction human-authored and version-controlled, which rejects any agent-authored modification to it)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 306 in the existing `book` plugin
+    (packages/book, import name book; seat src/app/modules/book): the
+    authorship guard. The sentence is docs/alpha-engine-prd.md §C8's own
+    closing rule — *"Signal book → IR-weighted combination with shrinkage →
+    volatility targeting → position and concentration limits → orders.
+    Version-controlled, human-authored, explicitly outside the search space.
+    Changing it is a human decision with a changelog entry, not a
+    discovery"* — and §2.2 NG1 says it from the other side (*"Not a strategy
+    optimizer. Entries, exits, sizing, and portfolio construction are fixed,
+    hand-built, version-controlled, and explicitly outside the search
+    space"*). This system already contains an automated author: the dreaming
+    reviser lawfully revises *policy* source (feature 271), and the sweep
+    commits selections to `policy_revision` (feature 274). Feature 306 is
+    the boundary that machinery may never cross: a modification to the book
+    *construction* — the weighting, the shrinkage, the targets, the caps
+    this member carries — is admitted only when a human authored it under
+    version control, and refused when an agent authored it, whatever the
+    agent's confidence.
+
+    Three spellings of one act, all free functions beside the combiner (the
+    shape feature 308's cap takes, and feature 276's ceiling beside 270's
+    freeze before it — the sentence's whole input is facts the change's
+    carrier already holds, so there is nothing for the factory to compose
+    and nothing for a deployment to configure). `BookConstructionChange` is
+    the modification as its carrier states it: a frozen record of exactly
+    four fields — `subject` (the construction asset being changed), `author`
+    (who authored the change), `author_kind` (which of the declared
+    vocabulary authored it) and `revision` (the commit the change arrives
+    under). The record *is* the sentence's version-controlled half: a change
+    that names no commit cannot even be stated, because construction
+    validates the revision to the full commit id — `REVISION_HEX_LENGTH = 40`
+    lowercase hexadecimal characters, the spelling `git rev-parse HEAD`
+    answers in this repository — and refuses a branch, a tag, `HEAD`, a
+    short id and an uncommitted marker for the reason the canary lockfile
+    refuses the same spellings (a branch/tag is a mutable pointer, a short
+    id an ambiguous one, and an absent revision is a working-tree edit,
+    which is precisely the un-version-controlled thing this feature exists
+    to refuse). `is_agent_authored(change)` is the read-only spelling — the
+    fact without the refusal. `rejects_agent_authored_modification(change)`
+    is the sentence's *rejects*: it raises `AgentAuthoredModificationError`
+    (opening with the greppable code `agent_authored_modification`) when the
+    change's author kind is not the human one and returns None when it is,
+    so a caller that routes construction changes through it on the write
+    path is stopped before an agent's edit lands.
+
+    Authorship is judged on a closed vocabulary, and the vocabulary is a
+    prohibition rather than an allowlist: `HUMAN_AUTHOR_KIND = "human"` is
+    the one admitted kind, `AGENT_AUTHOR_KINDS` is the declared set of the
+    system's own automated authors — `agent` (policy_runtime's own phrase
+    for the authoring process), `discovery` (§C8: *"not a discovery"*),
+    `dreaming` (the reviser that authors code revisions, feature 271),
+    `optimizer` (NG1: *"Not a strategy optimizer"*), `worker` (feature 238's
+    batch pool) — and `AUTHOR_KINDS` is their union with the human one. A
+    kind not in the vocabulary (`"Human"`, `"human "`, `"ci-bot"`) is
+    refused at construction as the ask's own fact — feature 241's stance
+    that a near-miss is refused rather than mapped — so a caller that
+    misnames its author is told what to fix rather than told its change was
+    refused as an agent's; and nothing outside the one admitted kind is
+    ever admitted, declared or not, which is the fail-closed property the
+    sentence's *"any"* demands. The kinds are a constant, not a knob: no
+    verb accepts an `admitted_kinds=` or `allow=` parameter, because a
+    deployment that could widen the admitted set would be a deployment that
+    could opt an agent in — the whole guard gone by configuration.
+
+    The vocabulary is this feature's own, as siblings under feature 301's
+    one base: `BookChangeRequestError` for the ask's own facts (a subject,
+    author, author_kind or revision that cannot be part of a stated change),
+    refused before any authorship is judged and carrying no code, for the
+    reason `dreaming.errors.CapRequestError` and feature 308's
+    `LeverageRequestError` give — a malformed ask names its subject in its
+    first words; and `AgentAuthoredModificationError` for the one judgment
+    the sentence mints, opening with `agent_authored_modification`, naming
+    the subject, the author, the kind and the revision, citing §C8 and NG1,
+    and stating the one repair that exists — a human makes the change, the
+    same subject decided by a person and committed under version control.
+    Both descend from `BookConstructionError` — the one-base-per-member
+    shape the dreaming and regime members state — so a caller that refuses
+    book work wholesale still writes one `except`, while a caller that must
+    react differently to *an agent authored this change* and *your change
+    could not be stated* catches the siblings. No central registry, router,
+    app factory, middleware, settings or migration is edited; the member
+    joins by workspace-scan convention, adds no `@register`, no table and no
+    endpoint, and imports no other workspace member — the change arrives as
+    a record because a member never re-derives a fact it was handed.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (the `book` member already exists:
+      packages/book, import name book; seat src/app/modules/book). The member
+      currently carries features 301 and 308 — `_combine.py` (the IR-weighted
+      `combine` verb, `PromotedSignal`, `CompositeBook`), `_leverage.py`
+      (the quarter-Kelly cap's three verbs and two validators) and `errors.py`
+      (the base `BookConstructionError` plus the cap's two siblings), with
+      `__init__.py` holding the one `@register` builder, `build_book_combiner`,
+      under the component name `book`. Feature 306 adds one module and no
+      registration.</stack>
+    <test_baseline>The book member's own suite under packages/book/tests/
+      (test_combine, test_leverage, test_component, and this feature's
+      test_authorship). The member is stdlib-only at module scope (the
+      factory's scan imports the package to fire its `@register`, so it must
+      pay nothing), and feature 306's module adds only `dataclasses`,
+      `typing` and the member's own `.errors` to that bill. The
+      repository-level suite under tests/ is collected by pytest's testpaths
+      and does NOT collect packages/*/tests (see the acceptance-gate memory),
+      so the member's own suite must be run explicitly as well. Lint only the
+      new files and compare to a sibling — the repo is red on main (mypy
+      absent, ~163 pre-existing ruff errors), so a baseline via
+      `--stdin-filename` misreports.</test_baseline>
+    <conventions>
+      - One act, one module: `_authorship.py` holds the record, the four
+        validators, the predicate and the verdict; the two refusal classes
+        are added to the existing `errors.py` beside features 301's and
+        308's (one place per member, as its docstring already states);
+        `__init__.py` widens its re-export and `__all__` and gains no
+        logic — the shape every member in this workspace takes.
+      - A verdict, not a measurement: the guard judges a change record the
+        caller already holds. It opens no database, reads no environment,
+        consults no clock (the commit the revision names is the change's
+        timestamp — a record carrying its own clock would re-derive what
+        version control already states), touches no filesystem and
+        re-derives neither the authorship nor the commit — the shape
+        `dreaming.bar.rejects_unbarred_winner` and feature 308's
+        `rejects_overleveraged_target` take for their own verdicts, and the
+        reason a member never imports another member.
+      - The admitted set is a constant, not a knob: `HUMAN_AUTHOR_KIND`,
+        `AGENT_AUTHOR_KINDS` and `AUTHOR_KINDS` are module constants, and no
+        verb accepts a kinds parameter. A deployment that could widen the
+        admitted set could opt an agent in, which is the guard's whole
+        subject — the same stance feature 301 takes on the weighting and
+        308 on the quarter.
+      - The vocabulary is closed and near-misses are refused at the ask
+        (feature 241's stance): `"Human"`, `"human "`, `"HUMAN"` and
+        `"ci-bot"` are refused as `BookChangeRequestError`, not judged
+        agent-authored, so a misnamed author is a repairable ask; and the
+        judgment refuses every declared agent kind, so nothing outside
+        `"human"` is admitted by any route — fail closed, the prohibition
+        shape features 246/247 state for their wall.
+      - The version-controlled half is the record's own law: construction
+        refuses a revision that is not the full commit id (40 lowercase
+        hex), because a mutable pointer, an ambiguous short id or a
+        working-tree marker names no version-controlled state — the canary
+        lockfile's reason for refusing versions and tags, restated for a
+        commit.
+      - Validation is total before any judgment is formed: the four fields
+        are refused in declaration order (subject, author, author_kind,
+        revision) as `BookChangeRequestError` before authorship is judged,
+        so an agent-authored change with a broken revision is told what to
+        fix rather than judged first — the ordering every verdict in this
+        workspace states.
+      - Error vocabulary: two new siblings under `BookConstructionError`
+        (`BookChangeRequestError` for the ask, no code because a malformed
+        ask names its subject in its first words;
+        `AgentAuthoredModificationError` for the judgment, opening with
+        `agent_authored_modification`), so a caller that refuses the whole
+        book surface writes one `except` and a caller that must react
+        differently can still tell the two facts apart — the
+        `LeverageRequestError` / `LeverageTargetError` precedent one feature
+        over.
+      - Every refusal message names the facts behind it (the subject, the
+        author, the kind, the revision) and cites §C8's rule and NG1's
+        non-goal, so the refusal is actionable without a stack trace; the
+        judgment's message states the one repair that exists (a human makes
+        the change) and does not offer relabelling, because an author
+        vocabulary the module could be talked out of would be the whole
+        guard.
+      - Deterministic: pure functions over the record's four fields, so the
+        same change answers identical verdicts and the module holds no
+        state.
+      - Do not edit a central registry, router, app factory, middleware,
+        settings or migration (core-task, order-sensitive shared files); no
+        new component is registered, so the composition story is unchanged
+        and `app.order` still carries exactly one `book`.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Portfolio Book Construction">
+      <feature index="306" shape="plugin" plugin="book" depends_on="301">
+        <description>System exposes `BookConstructionChange` — the modification to the book construction as its carrier states it — as a frozen record of exactly four fields: `subject` (the construction asset being changed, a non-empty string), `author` (who authored the change, a non-empty string), `author_kind` (one of the declared vocabulary) and `revision` (the commit the change arrives under). Construction validates each field in declaration order and refuses with `BookChangeRequestError` what cannot be part of a stated change: a blank or non-string subject or author; an `author_kind` not in `AUTHOR_KINDS` (the closed vocabulary — near-misses like `"Human"` and unknowns like `"ci-bot"` are refused here, at the ask, rather than judged agent-authored); and a `revision` that is not the full commit id, `REVISION_HEX_LENGTH = 40` lowercase hexadecimal characters — a branch, a tag, `HEAD`, a short id, an uppercase spelling or a working-tree marker (`"dirty"`, `"uncommitted"`) names no version-controlled state, and an absent one is a working-tree edit, which is the un-version-controlled thing the sentence exists to refuse. The record is the sentence's version-controlled half made structural: a change that names no commit cannot be stated at all, and the record carries no clock because the commit it names is the change's timestamp.</description>
+      </feature>
+      <feature index="306" shape="plugin" plugin="book" depends_on="301">
+        <description>System exposes the authorship vocabulary as constants, not parameters: `HUMAN_AUTHOR_KIND = "human"` (the one admitted kind), `AGENT_AUTHOR_KINDS = frozenset({"agent", "discovery", "dreaming", "optimizer", "worker"})` (the system's own automated authors — `agent` is policy_runtime's own phrase for the authoring process, `discovery` is §C8's *"not a discovery"*, `dreaming` is the reviser that lawfully revises policy source (feature 271), `optimizer` is NG1's *"Not a strategy optimizer"*, `worker` is feature 238's batch pool) and `AUTHOR_KINDS` their union with the human one. No verb accepts an `admitted_kinds=`, `allow=` or kinds parameter of any spelling — the admitted set is the document's rule, and a deployment that could widen it could opt an agent in. The judgment is a prohibition rather than an allowlist: `is_agent_authored(change)` answers True exactly when the change's author kind is not the human one (the read-only spelling, validating the ask first the way `kelly_fraction` validates its figures), and nothing outside `"human"` is admitted by any route — declared, near-missed or novel.</description>
+      </feature>
+      <feature index="306" shape="plugin" plugin="book" depends_on="301">
+        <description>System exposes `rejects_agent_authored_modification(change)` — the sentence's *rejects*. It reads the change's four-field surface duck-typed (`subject`, `author`, `author_kind`, `revision` — an absent attribute distinguished from a present-`None` one by sentinel, the combiner's own discipline, so the loader's synthetic-name copies are judged as well as canonical records), settles the ask whole in declaration order first (`BookChangeRequestError`, no code word, before any authorship is judged), and raises `AgentAuthoredModificationError` when the author kind is not the human one, returning None when it is. The judgment's message opens with `AGENT_MODIFICATION_CODE` (`agent_authored_modification`), names the subject, the author, the kind and the revision, cites §C8 (*"Version-controlled, human-authored, explicitly outside the search space. Changing it is a human decision with a changelog entry, not a discovery"*) and NG1, states that the search's business is signals — a finding it believes in enters the book through the promotion path as a promoted signal, where feature 301's weighting decides what it is worth, never as an edit to the construction that weights it — and states the one repair that exists: a human makes the change, the same subject decided by a person and committed under version control (with the changelog entry feature 307 requires). A refused change forms no value.</description>
+      </feature>
+      <feature index="306" shape="plugin" plugin="book" depends_on="301">
+        <description>System defines the guard's two refusal classes in the member's one error module, as siblings under feature 301's `BookConstructionError` — the one-base-per-member shape the dreaming and regime members state, so a caller that refuses book work wholesale writes one `except` while a caller that must react differently to *an agent authored this change* and *your change could not be stated* catches the specific siblings. `BookChangeRequestError` is the ask's face and carries no code word (a malformed ask names its subject in its first words, the `CapRequestError` / `LeverageRequestError` precedent); it refuses the four fields' own facts before any authorship is judged. `AgentAuthoredModificationError` is the judgment and opens every message with `agent_authored_modification`; its repair is its own — a human authors the change — which is why it is its own class and not the base (whose repair is *fix the signals*) or the ask (whose repair is *fix the change's spelling*). Both are subclasses of the base and neither of the other; `combine([])` still raises the bare base, so the hierarchy the guard added leaves the old surface reachable.</description>
+      </feature>
+      <feature index="306" shape="plugin" plugin="book" depends_on="301">
+        <description>System keeps the guard a free function beside the combiner rather than a second component: `_authorship.py` is imported by the member's `__init__.py`, which widens its re-export (the record, the five constants, the predicate, the verdict and the two error classes join features 301's and 308's names) and gains no `@register`. No new component is composed, `app.order` still carries exactly one `book`, and the seat (src/app/modules/book) is unchanged and still re-exports nothing — a caller that wants the guard reaches the member's own namespace, the discipline every seat in this workspace states. The module is stdlib-only at module scope (`dataclasses`, `typing` and the member's own `.errors`), so the factory's scan — which imports this package on every `create_app()` to fire its `@register` — pays nothing for the guard beyond the import it already paid for the combiner. No table, endpoint, migration, seat edit, central registry, router, app factory, middleware or settings change. The guard judges changes the caller hands it; it installs no filesystem hook and sweeps no state — the deployment's wiring delivers construction changes through the verdict the way policy_runtime's commit verb is wired, and the changelog-entry validation that accompanies a change is feature 307's sentence, built on this record.</description>
+      </feature>
+      <feature index="306" shape="plugin" plugin="book" depends_on="301">
+        <description>System passes the guard over the member's own fixtures: a human-authored change under a full commit id runs (the verdict answers None, the path §C8 names — a human decision, version-controlled); every declared agent kind is refused with `AgentAuthoredModificationError` opening with `agent_authored_modification` and naming the subject, the author, the kind and the revision; a near-miss or unknown kind is refused at the ask with no code word, and so is a change whose revision is a branch, a tag, `HEAD`, a short id, uppercase, the wrong length, or absent; the ask settles before the judgment (an agent-authored change with a broken revision meets the ask's class first); a duck-typed stand-in carrying the four attributes is judged identically to the member's own record (the loader's synthetic-copy trap); both error classes are subclasses of `BookConstructionError` and neither of the other; the module is stdlib-only parsed from the AST, imports no other member, opens no store, reads no environment and consults no clock; no verb accepts a kinds parameter (pinned through `inspect.signature`); and a re-run over the same change answers the identical verdict.</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Feature 306 is an interior node of the Portfolio Book Construction
+    category: `depends_on="301"` is category membership and narrative order
+    (the construction the guard protects is the one feature 301 began — the
+    weighting, and the caps and targets 302–305 add to it), not a code
+    import — the guard never touches `combine`, `CompositeBook` or
+    `PromotedSignal`, and the only import it takes from the member is the
+    error vocabulary, because the facts it judges (the subject, the author,
+    the kind, the revision) arrive in the record. Feature 307 — *System
+    requires a changelog entry accompanying every book construction change*
+    — is this feature's declared dependant and builds on exactly this
+    record: its validation accompanies a `BookConstructionChange` the way
+    this feature's verdict admits it, and nothing here pre-empts it (the
+    judgment's message may name the changelog entry as part of the human
+    path but this module validates none). The guard is the boundary the
+    dreaming member's lawful machinery runs against: feature 271's reviser
+    revises policy source and feature 274's `commit_selection` writes
+    `policy_revision`, and both stay lawful because the book construction
+    is not policy — a revision of the construction is refused here whoever
+    proposes it, which is §C8's *"explicitly outside the search space"*
+    made into a refusal. The member imports no other workspace member, and
+    the agent kinds are spelled here in this member's own terms rather than
+    imported, because a member never imports a member. No `@register` name
+    collides (no new component is registered), no table, endpoint or
+    migration is added, and no central registry, router, app factory,
+    middleware, settings or migration is edited.
+  </integration_points>
+  <constraints>
+    - No member imports another: the guard takes the change as a record the
+      caller holds; the vocabulary and the revision spelling are restated in
+      this member's own terms, never borrowed from dreaming, canary or
+      policy_runtime.
+    - No new component, no `@register`, no seat edit: the guard is a free
+      function beside the combiner, the way feature 308's cap sits. The
+      member's `__init__.py` widens its re-export and carries no logic; the
+      seat still re-exports nothing.
+    - The admitted set is a constant, not a knob: `HUMAN_AUTHOR_KIND`,
+      `AGENT_AUTHOR_KINDS`, `AUTHOR_KINDS` and `REVISION_HEX_LENGTH` are
+      module constants, and no verb accepts a kinds or revision-format
+      parameter. A deployment that could widen the admitted set could opt
+      an agent in.
+    - The vocabulary is closed: near-misses and unknown kinds are refused
+      at the ask (`BookChangeRequestError`), never mapped and never judged;
+      the judgment refuses every declared agent kind; nothing outside
+      `"human"` is admitted by any route — fail closed.
+    - The revision is the full commit id — 40 lowercase hex — and a branch,
+      tag, `HEAD`, short id, uppercase spelling or working-tree marker is
+      refused at the ask; a change that names no commit cannot be stated.
+    - Validation is total before any judgment is formed: subject, author,
+      author_kind, revision, in that order, as the ask's own class; only a
+      wholly well-stated change is judged.
+    - The verdict reads the four-field surface duck-typed with an
+      absent-versus-None sentinel, so the loader's synthetic-name copies and
+      any stand-in carrying the surface are judged identically.
+    - Two new error classes, siblings under `BookConstructionError`; the
+      judgment's message opens with the greppable
+      `agent_authored_modification` and names every fact behind it; the
+      ask's carries no code.
+    - Stdlib only (`dataclasses`, `typing`, the member's own `.errors`), no
+      database, no environment, no clock, no filesystem, no state —
+      import-cheap at module scope so the factory's scan pays nothing.
+    - Do not edit a central registry, router, app factory, middleware,
+      settings or migration (core-task, order-sensitive shared files).
+  </constraints>
+  <implementation_steps>
+    <phase name="Feature 306 — keep book construction human-authored and version-controlled">
+      <step>1. `packages/book/src/book/_authorship.py`: the constants
+        (`HUMAN_AUTHOR_KIND`, `AGENT_AUTHOR_KINDS`, `AUTHOR_KINDS`,
+        `REVISION_HEX_LENGTH`, `AGENT_MODIFICATION_CODE`, the hex alphabet),
+        the four validators (`_validated_subject`, `_validated_author`,
+        `_validated_kind`, `_validated_revision`), the record
+        (`BookConstructionChange`, frozen, normalising subject and author,
+        exact-spelling on kind and revision), the one comparison
+        (`_is_agent_kind`), the duck-typed read (`_judged_change`, sentinel
+        for absence), the refuse-message builder (`_refusal`), and the two
+        public spellings (`is_agent_authored`,
+        `rejects_agent_authored_modification`). Stdlib only.</step>
+      <step>2. `packages/book/src/book/errors.py`: add
+        `BookChangeRequestError` and `AgentAuthoredModificationError` as
+        siblings under `BookConstructionError`, widen `__all__`, and widen
+        the module docstring with the `agent_authored_modification` code;
+        update the base class's docstring to name the two new members of the
+        member's refusal surface.</step>
+      <step>3. `packages/book/src/book/__init__.py`: re-export the record,
+        the five constants, the predicate, the verdict and the two classes;
+        widen `__all__` (SCREAMING, then Camel, then snake); state in the
+        package docstring that the member now carries features 301, 306 and
+        308 and that the guard arrives as free functions rather than a
+        second component. Add no `@register`.</step>
+      <step>4. `packages/book/tests/test_authorship.py`: the admitted path
+        (a human decision under a full commit id runs), the vocabulary
+        (every declared agent kind refused with the code; near-misses and
+        unknowns refused at the ask; the predicate), the version-controlled
+        half (the revision law, every refused spelling), the judgment's
+        message (the facts, §C8 and NG1 cited, the one repair), the
+        ask-before-judgment ordering, the duck-typed surface, the error
+        hierarchy, and the layering claims (stdlib-only parsed from the AST,
+        no other member imported, no store or environment or clock, no kinds
+        parameter in any signature, determinism).</step>
+      <step>5. `packages/book/tests/test_component.py`: widen the member's
+        `__all__` pin to the three features' names; pin that the guard
+        registers no second component, is reachable without the factory and
+        has no component key, and costs the scan nothing.</step>
+      <step>6. Validate and run the member's own suite (the repo-level suite
+        under tests/ does not collect packages/*/tests — run the member suite
+        explicitly), confirm the repository-level acceptance suite is
+        unaffected, and lint only the new and changed files against a sibling
+        baseline.</step>
+    </phase>
+  </implementation_steps>
+  <success_criteria>
+    - A human-authored `BookConstructionChange` under a full commit id is
+      admitted: `rejects_agent_authored_modification` returns None and
+      `is_agent_authored` answers False — the path §C8 names, where changing
+      the construction is a human decision.
+    - Every declared agent kind is refused with `AgentAuthoredModificationError`
+      opening with `agent_authored_modification` and naming the subject, the
+      author, the kind and the revision; the message cites §C8's rule and
+      NG1's non-goal and states the one repair — a human makes the change.
+    - A kind not in the closed vocabulary is refused at the ask as
+      `BookChangeRequestError` with no code word, and so is a change whose
+      revision is absent, mutable, ambiguous or wrongly spelled; the ask
+      settles before the judgment even for an agent-authored change.
+    - `BookChangeRequestError` and `AgentAuthoredModificationError` are both
+      subclasses of `BookConstructionError` and neither of the other;
+      `combine([])` still raises the bare base.
+    - The verdict reads the four-field surface duck-typed (an absent
+      attribute refused as absent, not read as `None`), so stand-ins and the
+      loader's synthetic copies are judged identically.
+    - No new component is registered (`app.order` carries exactly one
+      `book`), the seat is unchanged, no table, endpoint or migration is
+      added, and no central registry, router, app factory, middleware or
+      settings is edited.
+    - The module is stdlib-only and import-cheap; no verb accepts a kinds
+      parameter; the member's own suite is green and the repository-level
+      acceptance suite is unaffected.
+  </success_criteria>
+</project_specification>

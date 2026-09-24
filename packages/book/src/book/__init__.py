@@ -1,4 +1,5 @@
-"""The book combiner and its leverage cap — features 301 and 308.
+"""The book combiner, its authorship guard and its leverage cap — three
+features: 301, 306 and 308.
 
 app_spec.xml, "Portfolio Book Construction", feature 301: *System combines
 promoted signals by information-ratio weighting, which returns a single
@@ -9,7 +10,27 @@ signal *i* by ``w_i = IR_i`` and returns a single :class:`CompositeBook`
 holding one composite target score per symbol, the weighted average of that
 symbol's scores across the signals.
 
-app_spec.xml, feature 308 is this category's second sentence and the second
+app_spec.xml, feature 306 is the category's boundary sentence:
+*System keeps book construction human-authored and version-controlled,
+which rejects any agent-authored modification to it.*  It is
+docs/alpha-engine-prd.md §C8's own closing rule — *"Version-controlled,
+human-authored, explicitly outside the search space.  Changing it is a
+human decision with a changelog entry, not a discovery"* — and this
+package is the construction that rule protects.  :class:`BookConstructionChange`
+is a modification to it as its carrier states it (the subject, the
+author, the author kind, the commit — and a change that names no commit
+cannot be stated at all, which is the sentence's *version-controlled*
+half made structural); :func:`is_agent_authored` is the fact without the
+refusal; :func:`rejects_agent_authored_modification` is the sentence's
+*rejects*, the verdict a caller runs on the write path so an agent's edit
+to the construction never lands.  The guard arrives beside the combiner
+in the same shape the cap does — free functions, no second component —
+because its whole input is a record the caller already holds, and the
+one human kind (:data:`HUMAN_AUTHOR_KIND`) is a constant rather than a
+parameter for the same reason the weighting and the quarter are: a
+deployment that could widen the admitted set could opt an agent in.
+
+app_spec.xml, feature 308 is this category's third sentence and a further
 act this package carries: *System rejects a leverage target above one quarter
 of the Kelly fraction implied by the book Sharpe and volatility.*
 :func:`leverage_cap` is the figure the sentence turns on — one quarter of
@@ -80,7 +101,10 @@ import of any other member — so importing this member costs composition
 nothing and the combiner is import-cheap on the replay path.  The leverage
 cap adds nothing to that bill: :mod:`book._leverage` imports ``math`` and the
 member's own error vocabulary and nothing else, so the cap costs the
-factory's scan no more than the combiner does.
+factory's scan no more than the combiner does.  Neither does the guard:
+:mod:`book._authorship` imports ``dataclasses``, ``typing`` and the same
+error vocabulary, and judges records it is handed rather than state it
+would have to go looking for.
 """
 
 from __future__ import annotations
@@ -89,6 +113,16 @@ from typing import TYPE_CHECKING
 
 from app.module_loader import register
 
+from ._authorship import (
+    AGENT_AUTHOR_KINDS,
+    AGENT_MODIFICATION_CODE,
+    AUTHOR_KINDS,
+    HUMAN_AUTHOR_KIND,
+    REVISION_HEX_LENGTH,
+    BookConstructionChange,
+    is_agent_authored,
+    rejects_agent_authored_modification,
+)
 from ._combine import CompositeBook, PromotedSignal, combine
 from ._leverage import (
     KELLY_FRACTION,
@@ -98,6 +132,8 @@ from ._leverage import (
     rejects_overleveraged_target,
 )
 from .errors import (
+    AgentAuthoredModificationError,
+    BookChangeRequestError,
     BookConstructionError,
     LeverageRequestError,
     LeverageTargetError,
@@ -107,9 +143,17 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a depende
     from collections.abc import Callable, Iterable
 
 __all__ = [
+    "AGENT_AUTHOR_KINDS",
+    "AGENT_MODIFICATION_CODE",
+    "AUTHOR_KINDS",
     "COMPONENT_NAME",
+    "HUMAN_AUTHOR_KIND",
     "KELLY_FRACTION",
     "OVERLEVERAGE_CODE",
+    "REVISION_HEX_LENGTH",
+    "AgentAuthoredModificationError",
+    "BookChangeRequestError",
+    "BookConstructionChange",
     "BookConstructionError",
     "CompositeBook",
     "LeverageRequestError",
@@ -117,8 +161,10 @@ __all__ = [
     "PromotedSignal",
     "build_book_combiner",
     "combine",
+    "is_agent_authored",
     "kelly_fraction",
     "leverage_cap",
+    "rejects_agent_authored_modification",
     "rejects_overleveraged_target",
 ]
 

@@ -1,4 +1,4 @@
-"""The book combiner's refusal vocabulary — features 301 and 308.
+"""The book combiner's refusal vocabulary — features 301, 306 and 308.
 
 app_spec.xml, "Portfolio Book Construction", feature 301: *System combines
 promoted signals by information-ratio weighting, which returns a single
@@ -20,6 +20,19 @@ a caller that must react differently to *your signals cannot be combined* and
 caller that refuses book work wholesale goes on catching the one base — the
 one-base-per-member shape the dreaming and regime members state for their own
 vocabularies.
+
+app_spec.xml, feature 306 — the category's boundary sentence — is the third
+face: *System keeps book construction human-authored and version-controlled,
+which rejects any agent-authored modification to it.*  Its refusals join the
+other two here for the same reason they did: the base stays one, and the
+sentence's two failures are different facts about a different subject — a
+*change record* that cannot be stated (306's ask) and a *change* that was
+authored by an agent (306's judgment), where 301's subject was a signal and
+308's a leverage target.  The guard's classes are siblings under the base
+exactly as the cap's are, and for the same reason: a caller that must react
+differently to *an agent authored this change to the construction* and *your
+change could not be stated* distinguishes them by class, while a caller that
+refuses book work wholesale still writes one ``except``.
 
 One base class, :class:`BookConstructionError`, so a caller — the order
 layer, a seat, a test — can refuse the whole refusal surface with a single
@@ -59,6 +72,28 @@ deployment log for on feature 308's path:
   *sizing* a position, and sizing is the order layer's act rather than a
   bound's).
 
+The authorship guard adds the second, and it is the one an operator greps
+a deployment log for on feature 306's path — the refusal that says the
+search reached for the construction:
+
+* ``agent_authored_modification`` — the change handed to the guard was
+  authored by an agent: an automated author — the discovery loop, the
+  dreaming reviser, a worker, the system's own cast of authors — proposed
+  a modification to the book construction, and the construction is the one
+  thing docs/alpha-engine-prd.md §C8 holds *"explicitly outside the search
+  space"* (refused rather than relabelled, because an author vocabulary the
+  module could be talked out of would be the whole guard).
+
+The guard's two faces are the same pair of shapes the cap's are — the
+ask's own facts (:class:`BookChangeRequestError`, no code, because a
+malformed change names its subject in its first words) and the one
+judgment the sentence mints
+(:class:`AgentAuthoredModificationError`, carrying the code above).  Both
+are subclasses of the base with the same consequence, and the same reason
+to be siblings rather than aliases: an agent-authored change is refusable
+though perfectly well stated, and a mis-stated change is refusable though
+a human authored it, so the two facts are genuinely different.
+
 The cap's two faces are the pair of classes below — the ask's own facts
 (:class:`LeverageRequestError`, no code, because a malformed ask names its
 subject in its first words) and the one judgment the sentence mints
@@ -76,6 +111,8 @@ cannot tell apart.
 from __future__ import annotations
 
 __all__ = [
+    "AgentAuthoredModificationError",
+    "BookChangeRequestError",
     "BookConstructionError",
     "LeverageRequestError",
     "LeverageTargetError",
@@ -99,13 +136,17 @@ class BookConstructionError(Exception):
     the one-base-per-member shape the dreaming and regime members state for
     their own vocabularies: :class:`LeverageRequestError` (feature 308's ask)
     and :class:`LeverageTargetError` (feature 308's verdict) descend from it,
+    and :class:`BookChangeRequestError` (feature 306's ask) and
+    :class:`AgentAuthoredModificationError` (feature 306's verdict) join them,
     so a caller that must refuse rather than rank catches this one class and
-    catches the cap's failures with it.  A caller that has to *react*
-    differently to *your signals cannot be combined* and *this book may not
-    carry that leverage* catches the specific siblings instead — see each for
-    why the distinction is worth a class.  The classes are siblings rather
-    than aliases because the facts are genuinely different: a leverage target
-    is refusable for a book whose signals weighted up perfectly.
+    catches the cap's and the guard's failures with it.  A caller that has to
+    *react* differently to *your signals cannot be combined*, *this book may
+    not carry that leverage* and *an agent authored this change to the
+    construction* catches the specific siblings instead — see each for why
+    the distinction is worth a class.  The classes are siblings rather than
+    aliases because the facts are genuinely different: a leverage target is
+    refusable for a book whose signals weighted up perfectly, and an
+    agent-authored change is refusable though perfectly well stated.
     """
 
 
@@ -191,4 +232,97 @@ class LeverageTargetError(BookConstructionError):
     **The edge is the sentence's own word.**  A target *at* the cap is
     admitted — Appendix B's *"use ≤ ¼ Kelly"* is inclusive on the admitted
     side — so this class is raised strictly above it.
+    """
+
+
+class BookChangeRequestError(BookConstructionError):
+    """The authorship guard could not be asked for as the caller asked for it.
+
+    app_spec.xml, "Portfolio Book Construction", feature 306: *System keeps
+    book construction human-authored and version-controlled, which rejects
+    any agent-authored modification to it.*  This class is the *ask* face of
+    that sentence and never the judgment: it refuses a change record that
+    cannot be stated at all — a subject or author that is not a non-empty
+    string, an ``author_kind`` outside the declared vocabulary
+    (near-misses like ``"Human"`` and unknowns like ``"ci-bot"``, refused
+    here rather than judged agent-authored), or a revision that is not the
+    full commit id (a branch, a tag, ``HEAD``, a short id, an uppercase
+    spelling, or no commit at all) — **before** any authorship is judged,
+    the ordering every verdict and store in this workspace states.
+
+    **What it deliberately does not refuse: a declared agent kind.**  A
+    change authored by the discovery loop or the dreaming reviser is
+    perfectly well *stated* — its subject, author, kind and commit are all
+    real facts — and refusing it here would hide the sentence's own
+    judgment behind a validation, leaving a caller unable to tell *the
+    search reached for the construction* (the refusal the operator greps
+    for) from *your change record named no commit*.  The judgment is
+    :class:`AgentAuthoredModificationError`'s alone.
+
+    **No code word, and deliberately.**  Feature 306's sentence mandates no
+    token (it names its subject in prose), and every message here opens
+    with its subject — the field, its type and what it is for — the shape
+    :class:`LeverageRequestError` states for its own pair and
+    :class:`dreaming.errors.CapRequestError` for its own, so a reader is
+    told *what to fix* rather than handed a token to grep for.  The one
+    code the
+    sentence's path carries is
+    :class:`AgentAuthoredModificationError`'s, on the judgment alone.
+
+    **Why it is its own class rather than the base alone.**  The repair
+    differs.  A bare :class:`BookConstructionError` means *your signals
+    cannot be combined — fix the signals*; this one means *your change
+    record could not be stated — fix the record*, and the two are not the
+    same instruction.  A caller that must react differently to them can
+    tell them apart by class; a caller that refuses book work wholesale
+    still catches one class, the base this descends from.
+    """
+
+
+class AgentAuthoredModificationError(BookConstructionError):
+    """The change was authored by an agent — feature 306's judgment.
+
+    app_spec.xml, "Portfolio Book Construction", feature 306: *System keeps
+    book construction human-authored and version-controlled, which rejects
+    any agent-authored modification to it.*  This class is the judgment
+    that sentence mints — the one refusal on the guard's path that is a
+    *verdict* rather than a validation — and it is raised by
+    :func:`book.rejects_agent_authored_modification` when a wholly
+    well-stated change's author kind is not the human one.  Its message
+    opens with the greppable code
+    :data:`book.AGENT_MODIFICATION_CODE` (``agent_authored_modification``).
+
+    **Why the boundary is there, stated where the refusal is caught.**
+    docs/alpha-engine-prd.md §C8 closes the construction's own section
+    with it: *"Version-controlled, human-authored, explicitly outside the
+    search space.  Changing it is a human decision with a changelog entry,
+    not a discovery."*  This system already contains a lawful automated
+    author — the dreaming reviser revises *policy* source, and the sweep
+    commits its selections — and the one thing that machinery may never
+    touch is the construction that weights what it finds: a search allowed
+    to improve its own weighting function has stopped being measured by
+    it.  This class is the refusal that enforces §C8's line.
+
+    **Its repair is its own, which is why it is its own class.**  *A human
+    makes the change* — the same subject, decided by a person, committed
+    under version control (with the changelog entry feature 307 requires).
+    There is no other repair, and deliberately no relabelling one: the
+    author kind is not a parameter to talk the module out of, because an
+    author vocabulary that could be widened by its caller would be the
+    whole guard gone by configuration.  The other classes a caller could
+    catch this as both name repairs that are wrong here:
+    :class:`BookChangeRequestError` means *your change record could not be
+    stated* (it was stated perfectly — it was just authored by an agent),
+    and the bare :class:`BookConstructionError` means *your signals cannot
+    be combined* (no signals are involved).  Folding these together would
+    make a caller that must react differently to *the search reached for
+    the construction* and *your record named no commit* catch one class
+    and re-inspect something it cannot tell apart, which is the failure
+    this vocabulary is split to prevent.
+
+    **The refusal is over any agent-authored modification.**  Every
+    declared agent kind lands here — ``agent``, ``discovery``,
+    ``dreaming``, ``optimizer``, ``worker`` — and nothing outside the one
+    human kind is admitted by any route, so the refusal is complete in the
+    sentence's own word: *any*.
     """
