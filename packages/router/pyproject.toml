@@ -1,0 +1,44 @@
+# The "router" workspace member — Order Routing & Venue Filters
+# (app_spec.xml feature 310; docs/nullius-tech-architecture.md §4.1, §13.2;
+# docs/alpha-engine-prd.md C9 "Execution").
+#
+# Per the root pyproject.toml workspace contract, this directory joins the
+# uv workspace (and uv.lock) automatically by existing with this file; no
+# edit to any other file registers it.  The module loader discovers it by
+# scanning the declared members, so nothing outside this directory ever
+# needs to know this package's name.
+#
+# Dependencies: the workspace root, for the factory's registration protocol
+# (`import app.module_loader`), and the `nullius-ingest` member, whose
+# exchangeInfo document model (`nullius_ingest.exchange_info`) this member
+# parses fetched documents through rather than growing a second parser of
+# the same venue response — the same "single shared library" reasoning
+# `docs/nullius-tech-architecture.md` §6.2 states for the cost model.  Both
+# are workspace members, so neither needs a registry fetch and the lockfile
+# gains no third-party edge from this package.
+#
+# The ingest import is deferred to first use even though the dependency is
+# declared (see `router.exchange_info.require_ingest`), for the reason
+# `signal_agent._authoring.require_contract` gives for its own `contract`
+# import: the factory's workspace scan imports this package to fire its
+# `@register`, and the scan puts one member's `src/` on `sys.path` at a
+# time, so a module-scope import here would make this component's presence
+# in the composed application depend on scan order.
+
+[project]
+name = "router"
+version = "0.1.0"
+description = "Order routing & venue filters: persists the fetched exchangeInfo version the order path reads lot size, notional, price filter, step size and tick size from, never hardcoded."
+requires-python = ">=3.12"
+dependencies = ["nullius", "nullius-ingest"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+nullius-ingest = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/router"]

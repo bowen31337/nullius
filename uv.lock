@@ -22,6 +22,7 @@ members = [
     "providers",
     "regime",
     "replay",
+    "router",
     "sandbox",
     "scoring",
     "signal-agent",
@@ -542,6 +543,21 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "nullius", editable = "." }]
+
+[[package]]
+name = "router"
+version = "0.1.0"
+source = { editable = "packages/router" }
+dependencies = [
+    { name = "nullius" },
+    { name = "nullius-ingest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "nullius", editable = "." },
+    { name = "nullius-ingest", editable = "packages/ingest" },
+]
 
 [[package]]
 name = "sandbox"
