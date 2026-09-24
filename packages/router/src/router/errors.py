@@ -41,6 +41,18 @@ violated, not by which line of code failed:
   repair — point the deployment at a database this store can open — are one
   fact the member already names once.
 
+* :class:`RouterWeightScheduleError` and :class:`RouterWeightBucketError` —
+  feature 318's two faults, which share the intermediate base
+  :class:`RouterRateLimitError` because they are two repairs to one system:
+  *fix the weights you stated* and *fix the bucket you wrote*.  They are
+  separate classes rather than one because a caller told the wrong one would
+  edit the wrong file, and a base rather than two more siblings because *"did
+  the limiter refuse me?"* is a question a caller asks as one thing.  A
+  *refusal* — the bucket could not serve the request — is the third class
+  under that base, :class:`RouterRateLimitedError`, and it is the one class in
+  this module that carries a value (see its own docstring on why: the reading
+  the feature returns is what a caller must act on).
+
 Every message names the offending value and the contract it broke, because
 these are operational signals for a pipeline the order path trusts for its
 step size and tick size, not debugging aids.
@@ -48,12 +60,23 @@ step size and tick size, not debugging aids.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, and limiter imports this
+    from .limiter import RateLimitHeadroom
+
 __all__ = [
     "ORDER_SUBMISSION_UNHEALTHY_CODE",
+    "RATE_LIMITED_CODE",
+    "WEIGHT_BUCKET_CODE",
+    "WEIGHT_SCHEDULE_CODE",
     "RouterError",
     "RouterFilterError",
+    "RouterRateLimitedError",
     "RouterStoreError",
     "RouterSubmissionHealthError",
+    "RouterWeightBucketError",
+    "RouterWeightScheduleError",
 ]
 
 #: The greppable one word every :class:`RouterSubmissionHealthError` message
@@ -65,6 +88,23 @@ __all__ = [
 #: does not spell ``live``, which is feature 321's authority vocabulary and a
 #: different refusal with a different repair.
 ORDER_SUBMISSION_UNHEALTHY_CODE = "order_submission_unhealthy"
+
+#: Feature 318's greppable token, for the refusal a *spent budget* produces.
+#: Every :class:`RouterRateLimitedError` message opens with it, so a rate
+#: limiter's refusals are one grep apart from the venue's own rejections —
+#: which feature 320 records and which this module never writes.
+RATE_LIMITED_CODE = "rate_limited"
+
+#: Feature 318's greppable token for a *schedule* this limiter cannot be
+#: matched to: an allowance that is not a positive whole number of weight
+#: units, a window over which no allowance is a rate, a limit type that is
+#: not the venue's weight limit, or a request priced outside the schedule.
+WEIGHT_SCHEDULE_CODE = "weight_schedule"
+
+#: Feature 318's greppable token for a *bucket* that cannot be read or
+#: refilled: a scope that names nothing, a moment that is naive or is not a
+#: moment, or a stored bucket whose state is not one a bucket can be in.
+WEIGHT_BUCKET_CODE = "weight_bucket"
 
 
 class RouterError(Exception):
@@ -131,3 +171,104 @@ class RouterSubmissionHealthError(RouterError):
     an instant is not a health record — which is the whole subject of this
     feature.
     """
+
+
+class RouterRateLimitError(RouterError):
+    """Base class for feature 318's two weight-metering faults.
+
+    Not raised directly — it exists so a caller that cares only about *"did
+    the limiter refuse me?"* catches one class, whatever the reason, while a
+    caller that must repair the *cause* catches the subclass that names it.
+    That is the split :class:`~nullius_ingest.ExchangeInfoParseError` and its
+    own siblings keep, and the reason the two subclasses below share a base
+    rather than being siblings of each other.
+
+    A child of :class:`RouterError` and of nothing else in this package: a
+    spent weight budget and an unmatchable schedule are both faults of the
+    router's *own* metering, so a caller catching the fetch fault
+    (:class:`RouterFilterError`) or the submission-health fault
+    (:class:`RouterSubmissionHealthError`) must not be told either is theirs.
+    """
+
+
+class RouterWeightScheduleError(RouterRateLimitError):
+    """A weight schedule this limiter cannot be matched to.
+
+    app_spec.xml, "Order Routing & Venue Filters", feature 318: *"System
+    applies a token-bucket rate limiter matched to the venue weight
+    schedule."*  A schedule is the sentence's noun, so a schedule that cannot
+    be one — an allowance that is not a positive whole number of weight units,
+    a window over which no allowance is a rate, a limit type that is the
+    venue's *count* limit rather than its weight budget, or a request priced
+    outside the schedule — is the failure of its *match*.
+
+    Raised when a schedule is constructed and when a request is priced against
+    one; every message opens with :data:`WEIGHT_SCHEDULE_CODE` and names the
+    offending value, because a deployment editing its venue weights is the
+    audience and it needs the line, not a stack.
+    """
+
+
+class RouterWeightBucketError(RouterRateLimitError):
+    """The weight bucket could not be refilled, read or banked.
+
+    The fault whose noun is the *bucket* rather than the schedule: a scope
+    that names no budget, a moment that is naive or is not a moment, or a
+    stored bucket holding a state no bucket can be in (a negative fill, an
+    unparseable accrual moment).  Split from
+    :class:`RouterWeightScheduleError` because the repairs differ — one is
+    *fix the table you wrote*, the other *fix the weights you stated* — and a
+    caller told the wrong one would edit the wrong file.
+
+    Every message opens with :data:`WEIGHT_BUCKET_CODE`.  An *address* fault
+    (a ``DATABASE_URL`` this member cannot speak) is deliberately **not** this
+    error: it stays :class:`RouterStoreError`, the member's existing
+    vocabulary for that fault, exactly as :mod:`router.submission_health`
+    states for its own table.
+    """
+
+
+class RouterRateLimitedError(RouterRateLimitError):
+    """The venue's weight budget cannot serve the request that asked.
+
+    Feature 318: *"System applies a token-bucket rate limiter matched to the
+    venue weight schedule, which returns remaining headroom per request."*
+    This is the sentence's *applying* — the bucket held less than the request
+    is priced at, so the request was not allowed through.  It is an error
+    rather than a ``False`` because the feature's verb is *applies*: a record
+    saying "not allowed" would put enforcement at every call site, and the
+    one place the venue's budget is known is here.
+
+    **It carries the headroom.**  :attr:`headroom` is the
+    :class:`~router.limiter.RateLimitHeadroom` the refused request read off
+    the bucket — so *"returns remaining headroom per request"* is true of a
+    refused request too, and feature 319's backoff reads how far short the
+    bucket fell (``.headroom.deficit``, ``.headroom.shortfall``,
+    ``.headroom.retry_after``) without a second query.  That is why this
+    class carries a value at all, where every other class in this module
+    carries only a message: the reading is the feature's own output and a
+    caller that must act on the refusal is its audience.
+
+    Every message opens with :data:`RATE_LIMITED_CODE` and names the scope,
+    the operation and the weight that was asked for, because a router pacing
+    itself against a shared budget needs to know *which* budget refused it —
+    two credentials read as one scope being exactly the misconfiguration
+    :data:`~router.limiter.DEFAULT_WEIGHT_SCOPE` warns about.
+    """
+
+    def __init__(self, message: str, *, headroom: RateLimitHeadroom) -> None:
+        super().__init__(message)
+        self.headroom = headroom
+
+    @property
+    def retry_after(self) -> object:
+        """The wait feature 319 needs, read off the carried headroom.
+
+        A straight pass-through, deliberately: the arithmetic belongs to
+        :attr:`~router.limiter.RateLimitHeadroom.retry_after` — which is
+        exact and derived from the schedule — and this property exists only
+        so a caller catching the refusal can ask the exception the one
+        question a refusal raises without reaching through it first.  It is
+        *not* a second spelling of the number, and nothing here waits on it.
+        """
+        return self.headroom.retry_after
