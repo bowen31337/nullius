@@ -87,6 +87,41 @@ argument.
 It shares feature 243's **code word** (``void_campaign``), deliberately, and the
 class docstring argues why: one finding, two doors, one word an operator greps.
 
+**Feature 293 adds the tree's fifth class, and it is a recording act rather
+than a merit refusal.**  :class:`PromotionDecisionError` carries *"System
+persists each promotion decision into the promotion_registry with its
+timestamp and criteria hash"* — the closing stamp on the row feature 291
+opened, which is a *write about a promotion* and not a *judgement of one*.
+It is deliberately **none** of the four beside it:
+
+* not :class:`PromotionError` — that class carries the pre-registration's
+  *ask* face, and a caller whose single ``except`` guards the decision path
+  would read *the body was malformed* where the truth is *the decision was
+  not recorded*;
+* not :class:`PromotionStoreError` — every message in that class is about a
+  *pre-registration row* that did not land, and the two acts must stay
+  greppable apart: an operator who lands on ``promotion_registry_unwritable``
+  is debugging feature 291's write, not this one;
+* not :class:`PromotionBlockError` nor :class:`VoidCalibrationError` — those
+  are the member's two *merit* refusals (§C7's coverage finding, §7.4's
+  calibration verdict), and this feature judges nothing: the verdict on the
+  evidence is the deciding evaluation's, the mismatch refusal is feature
+  292's, and this class exists because a decision that happened and was not
+  recorded is a failure nobody downstream can see.
+
+Its faces stay **gathered** in one class, the argument the block's and the
+calibration's gathered classes make one feature over each: this feature's
+caller is the same **gate**, and a gate's one failure mode is silence.  A
+caller whose single ``except PromotionDecisionError`` guards its promotion
+path must not be able to walk through a hole because a malformed node arrived
+in a different class from an unreachable database or a node nobody
+pre-registered — in every case the decision stands unrecorded, which is the
+state §13 item 4's epoch ledger and feature 300's forward window are built to
+never have to guess about.  So the ask (a malformed node, a naive stamp), the
+address, the absence (no pre-registration to close), the ordering (a stamp
+that would precede the criteria it was judged against) and the write all open
+with :data:`PROMOTION_DECISION_ERROR_CODE` and all name what they are about.
+
 **The tree is open, and that is the seam 292-296 land on.**  The category's
 next features extend this module with siblings — feature 292's
 ``criteria_mismatch`` verdict, 295's retirement refusal, 296's terminal state —
@@ -99,9 +134,11 @@ from __future__ import annotations
 
 __all__ = [
     "PROMOTION_BLOCK_ERROR_CODE",
+    "PROMOTION_DECISION_ERROR_CODE",
     "PROMOTION_REGISTRY_ERROR_CODE",
     "VOID_CALIBRATION_ERROR_CODE",
     "PromotionBlockError",
+    "PromotionDecisionError",
     "PromotionError",
     "PromotionStoreError",
     "VoidCalibrationError",
@@ -264,4 +301,83 @@ class VoidCalibrationError(PromotionError):
     That the two classes carry *different* code words is what makes each
     greppable; that feature 243 and this class carry the *same* one is the
     finding's identity, and no licence to collapse the classes.
+    """
+
+
+#: The greppable word that opens every :class:`PromotionDecisionError` message:
+#: the promotion was decided and the decision was not recorded — the row
+#: feature 291 opened is still open.  Spelled after the store's own word
+#: (``promotion_registry_unwritable``) and beside it in meaning but not in
+#: letter, because the two are two *acts* over one table: an operator greps
+#: the registry's word for *a pre-registration did not land* and this one for
+#: *a decision did not land*, and landing on the wrong one sends them
+#: debugging the wrong write.
+PROMOTION_DECISION_ERROR_CODE = "promotion_decision_unrecorded"
+
+
+class PromotionDecisionError(PromotionError):
+    """A promotion decision could not be persisted as asked.
+
+    Feature 293's class: *"System persists each promotion decision into the
+    promotion_registry with its timestamp and criteria hash."*  Raised by
+    :func:`promotion.decision.record_decision` and
+    :meth:`promotion.decision.PromotionDecisions.record_decision` when the
+    closing stamp could not be placed on the row feature 291's pre-registration
+    opened — and by the module's reads, for the malformed asks and the
+    unreachable store they share with the act.
+
+    **Its noun is a record, not a judgement, and that is why it is its own
+    class.**  The member's tree splits by *the repair the caller must make*,
+    and this refusal's repair is unlike any of the four beside it:
+
+    * not :class:`PromotionError` — that class carries the pre-registration's
+      ask face, and gathering the two would put one ``except`` behind two
+      acts whose callers are different processes entirely (§13 item 7's whole
+      shape: the feature that writes the first timestamp is not the feature
+      that writes the second);
+    * not :class:`PromotionStoreError` — the store class's every message is
+      about a *pre-registration row* that did not land, and the code word is
+      the operator's way between the two writes: collapsing the classes would
+      make the member's two halves of §13 item 7's record indistinguishable
+      exactly where distinguishing them is the point;
+    * not the block's class nor the calibration's — those are the member's
+      two *merit* refusals, findings about the pool and the campaign, and
+      this feature judges nothing: whether the promotion *stands* is the
+      deciding evaluation's verdict, and feature 292's mismatch refusal is
+      the only one that compares a promotion against its hash.
+
+    Five faces, **gathered** rather than split, because the caller is a gate
+    and a gate's one failure mode is silence — the argument
+    :class:`PromotionBlockError` states one feature over and
+    :class:`VoidCalibrationError` states one feature over that:
+
+    * **the ask** — a malformed node identity, or a stamp that is not an
+      aware instant.  Nothing was opened and nothing was written; the repair
+      is to re-send the ask.
+    * **the address** — a ``DATABASE_URL`` this member cannot speak, or a
+      database that cannot be brought to the revision the row needs.  The
+      repair is to the deployment.
+    * **the absence** — no ``promotion_registry`` row for the node, so there
+      is no open promotion for this decision to close.  The repair is to
+      pre-register first (feature 291), which is §13 item 7's ordering and
+      not an incidental precondition.
+    * **the ordering** — a decision stamped before the criteria were fixed,
+      which would write a row whose own two columns state the reverse of
+      §13 item 7; feature 360's CI finding, refused at the write instead of
+      at the merge.
+    * **the write** — the row did not close, or could not be read back as
+      closed.  The repair is to the database.
+
+    In every one of them the decision stands unrecorded, and that is the
+    state the class exists to make loud: §13 item 4 charges sequestered
+    epochs by *"3 promotion decisions"* — events recorded in this table, in
+    ``0110``'s own words — feature 300 opens the forward measurement window
+    at this stamp, and feature 360's invariant reads the two timestamps off
+    the row.  A caller whose single ``except PromotionDecisionError`` guards
+    its promotion path must not be able to walk through a hole because a
+    malformed node arrived in a different class from an unreachable database.
+
+    Every message opens with :data:`PROMOTION_DECISION_ERROR_CODE` and names
+    the node the decision was about, so an operator's log line says which
+    promotion went unrecorded and in which of the five ways.
     """

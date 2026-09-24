@@ -29,21 +29,37 @@ member has no business creating.  So the bootstrap completes the **set**: the
 three tables the one ``INSERT`` genuinely needs, in the migration tree's own
 dependency order, and nothing more.
 
-**One set per act, and there are two of them.**  Feature 298's calibration gate
-reads two tables — ``node`` and the ``campaign`` row its ``campaign_id`` names —
-so it needs a bootstrap of its own, for the same structural reason from the other
-direction: this member's acts do not all lean on the same tables, and a bootstrap
-is a claim about *what one act's statements name*.  :data:`MIGRATION_ORDER`
-therefore stays exactly what it always was — feature 291's three, and the
-member's suite pins it as that claim — and :data:`CALIBRATION_MIGRATION_ORDER` is
-added beside it rather than widened into it.  The alternative (one four-table set
-both callers run) would work, since every statement is ``IF NOT EXISTS``, and is
-deliberately not taken: it would make the pre-registration write create
-``campaign`` for an ``INSERT`` that never reads it, and the calibration read
-create ``epoch_ledger`` and ``promotion_registry`` for two ``SELECT``s that never
-name them, so a reader could no longer tell a dependency from a habit.  Two
-orders, two bootstraps, one runner (:func:`_run_statements`) and one rule — *the
-set is the tables this act's own statements name*.
+**One set per act, and there are three of them.**  Feature 298's calibration
+gate reads two tables — ``node`` and the ``campaign`` row its ``campaign_id``
+names — so it needs a bootstrap of its own, for the same structural reason
+from the other direction: this member's acts do not all lean on the same
+tables, and a bootstrap is a claim about *what one act's statements name*.
+:data:`MIGRATION_ORDER` therefore stays exactly what it always was — feature
+291's three, and the member's suite pins it as that claim — and
+:data:`CALIBRATION_MIGRATION_ORDER` is added beside it rather than widened
+into it.  The alternative (one four-table set both callers run) would work,
+since every statement is ``IF NOT EXISTS``, and is deliberately not taken: it
+would make the pre-registration write create ``campaign`` for an ``INSERT``
+that never reads it, and the calibration read create ``epoch_ledger`` and
+``promotion_registry`` for two ``SELECT``s that never name them, so a reader
+could no longer tell a dependency from a habit.
+
+Feature 293's decision act takes the rule to its other end: its two
+statements — the read and the one-column ``UPDATE`` — name
+``promotion_registry`` and **nothing else**, so :data:
+`DECISION_MIGRATION_ORDER` is *one* owner where the insert's set was three.
+The difference is not tidiness; it is the SQLite fact this module's other
+order states from the insert's side.  The pre-registration needs the two
+parents because SQLite resolves a foreign key's parent **when a row is
+written through the child table**; the decision never writes one — its
+``UPDATE`` touches ``decided_at``, a non-key column, and SQLite does not
+resolve a parent for that (verified against SQLite 3.45.1, the workspace's
+own, on a database holding the registry and neither parent).  A decision
+store that ran the three-table set would be creating ``node`` and
+``epoch_ledger`` for statements that name neither — the habit this module
+exists to keep distinguishable from a dependency.  Three orders, three
+bootstraps, one runner (:func:`_run_statements`) and one rule — *the set is
+the tables this act's own statements name*.
 
 **Why that is not a schema this member invents.**  Not one statement here is
 authored.  Every one comes from ``statements("sqlite")`` on a migration this
@@ -105,9 +121,11 @@ from .errors import PromotionError
 
 __all__ = [
     "CALIBRATION_MIGRATION_ORDER",
+    "DECISION_MIGRATION_ORDER",
     "MIGRATION_ORDER",
     "PROMOTION_REGISTRY_TABLE",
     "bootstrap_calibration_schema",
+    "bootstrap_decision_schema",
     "bootstrap_schema",
     "migrations_dir",
 ]
@@ -150,6 +168,28 @@ MIGRATION_ORDER: tuple[tuple[str, str], ...] = (
 CALIBRATION_MIGRATION_ORDER: tuple[tuple[str, str], ...] = (
     ("node", "0118_node_table"),
     ("campaign", "0111_campaign_table"),
+)
+
+#: The one table feature 293's two statements name — the read and the
+#: one-column ``UPDATE`` — beside the migration that owns it.
+#:
+#: Deliberately **one** owner where :data:`MIGRATION_ORDER` is three, and the
+#: reason is the SQLite fact that makes the insert's set three: SQLite
+#: resolves a foreign key's parent **when a row is written through the child
+#: table**, so the pre-registration's ``INSERT`` needs ``node`` and
+#: ``epoch_ledger`` to exist — while the decision's ``UPDATE`` sets
+#: ``decided_at``, a non-key column, and SQLite resolves no parent for it
+#: (verified against SQLite 3.45.1, the workspace's own, on a registry-only
+#: database).  A decision store that ran the three-table set would create two
+#: tables no statement of its act names, which is the habit this module's
+#: whole law exists to keep distinguishable from a dependency.
+#:
+#: ``0108``'s whole statement tuple runs, as it does inside the insert's set:
+#: the file creates five tables besides ``promotion_registry``, taking one
+#: statement out would be this member editing another's schema, and every
+#: statement is ``IF NOT EXISTS`` so nothing is over-created.
+DECISION_MIGRATION_ORDER: tuple[tuple[str, str], ...] = (
+    (PROMOTION_REGISTRY_TABLE, "0108_forward_and_universe_tables"),
 )
 
 
@@ -253,6 +293,15 @@ def _calibration_statements(dialect: str = "sqlite") -> tuple[str, ...]:
     return _statements_for(CALIBRATION_MIGRATION_ORDER, dialect)
 
 
+def _decision_statements(dialect: str = "sqlite") -> tuple[str, ...]:
+    """Every statement feature 293's act needs, in order.
+
+    :data:`DECISION_MIGRATION_ORDER` — ``promotion_registry`` alone, the one
+    table the read and the one-column ``UPDATE`` name.
+    """
+    return _statements_for(DECISION_MIGRATION_ORDER, dialect)
+
+
 def _run_statements(
     connection: sqlite3.Connection, ddl: tuple[str, ...]
 ) -> tuple[str, ...]:
@@ -328,3 +377,33 @@ def bootstrap_calibration_schema(
     them probing a table nobody writes.
     """
     return _run_statements(connection, _calibration_statements(dialect))
+
+
+def bootstrap_decision_schema(
+    connection: sqlite3.Connection, *, dialect: str = "sqlite"
+) -> tuple[str, ...]:
+    """Create the one table feature 293's act names; returns the DDL run.
+
+    The decision's half of the contract :func:`bootstrap_schema` and
+    :func:`bootstrap_calibration_schema` state, over the smallest set of the
+    three: ``promotion_registry`` (``0108``) is the only table the act's read
+    and one-column ``UPDATE`` name.  Same discipline in every other respect —
+    no statement is authored here, each comes from ``statements(dialect)`` on
+    the migration that owns the table, loaded by file path and run whole —
+    and the same idempotence: every statement is ``IF NOT EXISTS``, so a
+    database the chain has already migrated is left exactly as it was.
+
+    **Why one owner and not the pre-registration's three.**  The insert's set
+    is three because SQLite resolves a foreign key's parent when a row is
+    written through the child table — the failure this module's order argues
+    about.  The decision's ``UPDATE`` sets ``decided_at`` and writes through
+    no child key, so SQLite resolves no parent for it (verified against
+    SQLite 3.45.1 on a database holding the registry and neither parent),
+    which makes ``node`` and ``epoch_ledger`` tables no statement of this act
+    names.  Handing this caller the wider set would work — every statement is
+    ``IF NOT EXISTS`` — and is deliberately not offered, for the reason the
+    calibration's bootstrap refuses the same offer: the set a store runs
+    should be the set its own statements name, or a reader cannot tell a
+    dependency from a habit.
+    """
+    return _run_statements(connection, _decision_statements(dialect))

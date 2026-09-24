@@ -9,7 +9,7 @@ and hashed before the evaluation that decides them"*, and against the
 (``migrations/versions/0108_forward_and_universe_tables.py``) already
 declares.
 
-The member's surface is six modules.  :mod:`promotion.criteria` is *what* a
+The member's surface is seven modules.  :mod:`promotion.criteria` is *what* a
 promotion is judged against and *how it is hashed*:
 :class:`~promotion.criteria.PromotionCriteria`, the six terms §13.7's
 "criteria" enumerates — the paired ΔIR advantage, the significance level, the
@@ -29,9 +29,9 @@ and :class:`~promotion.pre_register.PromotionRecord`, the row as the table
 holds it.  :mod:`promotion.schema` is the DDL adapter: it runs the *owning
 migrations'* own ``statements("sqlite")`` for the tables this member's
 statements need — feature 291's three (``node``, ``epoch_ledger`` and
-``promotion_registry``) and feature 298's two (``node`` and ``campaign``), one
-set per act — so this member authors no DDL and cannot drift from the schema's
-owners.  :mod:`promotion.blocking` is feature 299's *reason*:
+``promotion_registry``), feature 298's two (``node`` and ``campaign``) and
+feature 293's one (``promotion_registry`` alone), one set per act — so this
+member authors no DDL and cannot drift from the schema's owners.  :mod:`promotion.blocking` is feature 299's *reason*:
 :class:`~promotion.blocking.PromotionBlocks`, the store that records why a
 promotion was blocked on §C7's regime coverage, with
 :class:`~promotion.blocking.PromotionBlock` as the row and
@@ -45,19 +45,34 @@ promotion when that campaign's §7.4 verdict is ``VOID``, with
 the category's two merit refusals and are deliberately **not** one thing: they
 read different tables, they answer different questions, and their repairs differ
 — grow the pool's coverage (§C7) versus re-plan a campaign whose control is gone
-(§7.4).  :mod:`promotion.errors` is the member's error
+(§7.4).  :mod:`promotion.decision` is feature 293's *stamp*:
+:class:`~promotion.decision.PromotionDecisions`, the store that persists each
+promotion decision by closing the row the pre-registration opened — one
+``UPDATE`` whose ``SET`` clause names ``decided_at`` and nothing else, so the
+criteria hash the decision is checked against is a column the closing write
+cannot touch — with :func:`~promotion.decision.record_decision` as the act and
+:func:`~promotion.decision.promotion_decision` as the read.  It judges
+nothing: the verdict is the deciding evaluation's and the mismatch refusal is
+292's; what it persists is the decision's timestamp beside the standing hash,
+the two facts §13 item 4's epoch count and feature 360's invariant read off
+the row.  :mod:`promotion.errors` is the member's error
 vocabulary: :class:`~promotion.errors.PromotionError` (the *ask* face: a
 malformed body, a criterion that is not a number, a re-registration with
 different criteria), :class:`~promotion.errors.PromotionStoreError` (the
 *address, parent and write* face, every message opening
 :data:`~promotion.errors.PROMOTION_REGISTRY_ERROR_CODE`), feature 299's
 :class:`~promotion.errors.PromotionBlockError` (the *§C7 coverage* merit face —
-a promotion refused on the pool's coverage rather than on form), and feature
+a promotion refused on the pool's coverage rather than on form), feature
 298's :class:`~promotion.errors.VoidCalibrationError` (the *§7.4 calibration*
 merit face, opening :data:`~promotion.errors.VOID_CALIBRATION_ERROR_CODE`, the
-literal it shares with feature 243's own gate in the discovery member), split by
-the repair rather than by the code path except where a gate's caller position
-overrides the split — the argument that module states.  This module re-exports
+literal it shares with feature 243's own gate in the discovery member), and
+feature 293's :class:`~promotion.errors.PromotionDecisionError` (the
+*recording* face, opening
+:data:`~promotion.errors.PROMOTION_DECISION_ERROR_CODE` — a decision that
+happened and was not recorded, gathered across its ask, address, absence,
+ordering and write faces because a gate's one failure mode is silence), split
+by the repair rather than by the code path except where a gate's caller
+position overrides the split — the argument that module states.  This module re-exports
 all of it and registers the one component; it carries no logic of its own, which
 is the same shape every member in this workspace takes.
 
@@ -65,15 +80,22 @@ is the same shape every member in this workspace takes.
 declares ``pre_registered_at TIMESTAMPTZ NOT NULL`` and ``decided_at
 TIMESTAMPTZ`` nullable, and its own comment says why: *"``decided_at`` is
 nullable because the row is written while the decision is still open, which
-is the only ordering under which pre-registration means anything."*  This
-member writes the first timestamp and never the second — the insert's column
+is the only ordering under which pre-registration means anything."*  The
+member writes the first timestamp in a statement that cannot write the second,
+and the second in a statement that cannot write the first: the insert's column
 list has four columns and ``decided_at`` is not among them, so a
 pre-registration row is born open by the *shape* of the statement rather than
-by a check the writer remembers to make.  Feature 293's decision closes it;
-feature 292 judges a promotion against the recorded hash; feature 360 is the
-CI invariant that refuses a merge when criteria were recorded after the
-deciding evaluation.  This member's job is to make the ordering *possible* to
-enforce, which means making it true in the table rather than in a docstring.
+by a check the writer remembers to make — and :mod:`promotion.decision`'s
+update names ``decided_at`` in its ``SET`` clause and nothing else, so the
+closing write cannot touch the hash, the epoch or the first stamp either.
+Each half of §13 item 7's ordering is enforced by the *other* statement's
+shape, and neither by a check the writer remembers to make.  Feature 292
+judges a promotion against the recorded hash; feature 360 is the CI invariant
+that refuses a merge when criteria were recorded after the deciding
+evaluation, and the decision store refuses that finding's write-side face — a
+stamp that would precede the criteria it was judged against.  This member's
+job is to make the ordering *possible* to enforce, which means making it true
+in the table rather than in a docstring.
 
 **Registration is the entire wiring story.**  The module loader
 (``app.module_loader``) scans the members the root ``pyproject.toml``
@@ -182,11 +204,14 @@ from .calibration import (
     rejects_void_promotion,
 )
 from .criteria import CRITERIA_FIELDS, PromotionCriteria, criteria_hash
+from .decision import PromotionDecisions, promotion_decision, record_decision
 from .errors import (
     PROMOTION_BLOCK_ERROR_CODE,
+    PROMOTION_DECISION_ERROR_CODE,
     PROMOTION_REGISTRY_ERROR_CODE,
     VOID_CALIBRATION_ERROR_CODE,
     PromotionBlockError,
+    PromotionDecisionError,
     PromotionError,
     PromotionStoreError,
     VoidCalibrationError,
@@ -208,9 +233,11 @@ from .pre_register import (
 )
 from .schema import (
     CALIBRATION_MIGRATION_ORDER,
+    DECISION_MIGRATION_ORDER,
     MIGRATION_ORDER,
     PROMOTION_REGISTRY_TABLE,
     bootstrap_calibration_schema,
+    bootstrap_decision_schema,
     bootstrap_schema,
     migrations_dir,
 )
@@ -229,6 +256,7 @@ __all__ = [
     "CRITERIA_HASH_COLUMN",
     "DATABASE_URL_ENV",
     "DECIDED_AT_COLUMN",
+    "DECISION_MIGRATION_ORDER",
     "EPOCH_ID_COLUMN",
     "MIGRATION_ORDER",
     "NODE_ID_COLUMN",
@@ -236,6 +264,7 @@ __all__ = [
     "PRE_REGISTER_ROUTE",
     "PROMOTION_BLOCK_ERROR_CODE",
     "PROMOTION_BLOCK_TABLE",
+    "PROMOTION_DECISION_ERROR_CODE",
     "PROMOTION_REGISTRY_ERROR_CODE",
     "PROMOTION_REGISTRY_TABLE",
     "REGIME_COLUMN",
@@ -250,6 +279,8 @@ __all__ = [
     "PromotionBlocks",
     "PromotionCalibrations",
     "PromotionCriteria",
+    "PromotionDecisionError",
+    "PromotionDecisions",
     "PromotionError",
     "PromotionRecord",
     "PromotionStoreError",
@@ -257,11 +288,14 @@ __all__ = [
     "blocked_promotion",
     "blocking_reason",
     "bootstrap_calibration_schema",
+    "bootstrap_decision_schema",
     "bootstrap_schema",
     "build_promotion_registry",
     "campaign_calibration",
     "criteria_hash",
     "migrations_dir",
+    "promotion_decision",
+    "record_decision",
     "rejects_void_calibration",
     "rejects_void_promotion",
     "utc_now",
