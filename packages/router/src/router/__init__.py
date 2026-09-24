@@ -81,6 +81,22 @@ on ``(book_id, rebalance_ts)`` so the order path would hash from the
 record's own key), and the third is the leg — one order per symbol per
 rebalance per book.
 
+Feature 317 adds a seventh: :mod:`router.submission_result` — the
+*idempotent* half of §13.2's one line, *"Idempotent order submission keyed
+by* ``client_order_id = hash(book_id, rebalance_ts, symbol)``*.  Feature
+316 derives the key; this module is what the key is *for*.  It is a fourth
+table in the same relational store, keyed by feature 316's identifier
+itself, holding one row per order the router placed — so a re-sending
+process (a reclaimed spot instance, a restart, feature 319's backoff) is
+answered by the first send's record instead of reaching the venue again.
+The check, the venue call and the insert happen inside one transaction, so
+a venue refusal leaves no row behind and a concurrent duplicate is answered
+from the committed row rather than racing the venue; and because a
+*rejection* placed nothing, this table's vocabulary admits only a
+placement.  Like features 310's, 320's and 318's stores it is addressed by
+``DATABASE_URL`` and never composed — the member still registers exactly
+one component — and the member's suite pins that.
+
 This package also *is* a component of the composed application: importing
 it registers a builder with the application factory
 (``app.module_loader.register``), so the module loader discovers it by
@@ -114,6 +130,7 @@ from .errors import (
     ORDER_SUBMISSION_UNHEALTHY_CODE,
     RATE_LIMITED_CODE,
     RETRY_BACKOFF_CODE,
+    SUBMISSION_RESULT_CODE,
     WEIGHT_BUCKET_CODE,
     WEIGHT_SCHEDULE_CODE,
     RouterClientOrderIdError,
@@ -124,6 +141,7 @@ from .errors import (
     RouterRetryError,
     RouterStoreError,
     RouterSubmissionHealthError,
+    RouterSubmissionResultError,
     RouterWeightBucketError,
     RouterWeightScheduleError,
 )
@@ -172,6 +190,14 @@ from .submission_health import (
     SubmissionHealth,
     SubmissionObservation,
 )
+from .submission_result import (
+    ORDER_PLACEMENT_OUTCOMES,
+    ORDER_PLACEMENT_TABLE,
+    OrderPlacement,
+    PlacementOrder,
+    PlacementResult,
+    RouterOrderPlacementStore,
+)
 
 __all__ = [
     "CLIENT_ORDER_ID_CODE",
@@ -188,6 +214,8 @@ __all__ = [
     "OPERATION_OPEN_ORDERS",
     "OPERATION_PLACE_ORDER",
     "OPERATION_QUERY_ORDER",
+    "ORDER_PLACEMENT_OUTCOMES",
+    "ORDER_PLACEMENT_TABLE",
     "ORDER_SUBMISSION_ACCEPTED",
     "ORDER_SUBMISSION_HEALTH_TABLE",
     "ORDER_SUBMISSION_OUTCOMES",
@@ -200,6 +228,7 @@ __all__ = [
     "ROUTER_EXCHANGE_INFO_VERSION_TABLE",
     "SUBMISSION_HEALTH_FAILURE_RATIO",
     "SUBMISSION_HEALTH_WINDOW",
+    "SUBMISSION_RESULT_CODE",
     "VENUE_WEIGHT_ALLOWANCE",
     "VENUE_WEIGHT_BUCKET_TABLE",
     "VENUE_WEIGHT_WINDOW",
@@ -208,6 +237,9 @@ __all__ = [
     "WEIGHT_SCHEDULE_CODE",
     "BackoffSchedule",
     "ClientOrderId",
+    "OrderPlacement",
+    "PlacementOrder",
+    "PlacementResult",
     "RateLimitHeadroom",
     "RateLimitRetryEvent",
     "RetryEventLog",
@@ -216,6 +248,7 @@ __all__ = [
     "RouterExchangeInfoStore",
     "RouterExchangeInfoVersion",
     "RouterFilterError",
+    "RouterOrderPlacementStore",
     "RouterRateLimitError",
     "RouterRateLimitedError",
     "RouterRateLimiter",
@@ -223,6 +256,7 @@ __all__ = [
     "RouterStoreError",
     "RouterSubmissionHealthError",
     "RouterSubmissionHealthStore",
+    "RouterSubmissionResultError",
     "RouterSymbolFilters",
     "RouterWeightBucketError",
     "RouterWeightScheduleError",
@@ -289,3 +323,15 @@ def build_router_exchange_info_store() -> RouterExchangeInfoStore | None:
 #: one component (feature 310's exchangeInfo store).  Feature 318's limiter is
 #: the third table reached the same way, and the note above it states why its
 #: case is stronger still.
+
+#: Feature 317's placement store is the fourth table and takes the same road,
+#: with an argument that is 316's rather than 320's: the duplicate this
+#: feature answers arrives *from another process* — a reclaimed spot instance,
+#: a restarted router — and that process derives feature 316's key for itself
+#: without speaking to the first.  A store composed into one application would
+#: be a record only that application could consult, which is exactly the state
+#: "returns the prior result ... rather than placing a second order" has to be
+#: true *across* processes to mean anything.  So it is resolved from
+#: ``DATABASE_URL`` for whoever is asking, and no second ``@register`` builder
+#: is added here — the member still registers exactly one component (feature
+#: 310's exchangeInfo store).

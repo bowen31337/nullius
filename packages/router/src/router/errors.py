@@ -77,6 +77,23 @@ violated, not by which line of code failed:
   :class:`RouterRateLimitedError`, because the bucket refused nothing: the
   *ask to wait on it* was the malformed thing.
 
+* :class:`RouterSubmissionResultError` — feature 317's fault, and a *sibling*
+  of every class above rather than a child of any of them.  Its noun is the
+  order the sentence is *about*: a duplicate test reads one key and one
+  placement record, and a value that cannot be either — a ``place`` the store
+  cannot call, an order that is not named by feature 316's key, a stored row
+  whose outcome is not a placement or whose moment no parser accepts — leaves
+  the sentence with nothing to compare, so a caller told it was a bad fetch
+  (:class:`RouterFilterError`), a filter version that did not land
+  (:class:`RouterStoreError`), the router's liveness
+  (:class:`RouterSubmissionHealthError`) or a pacing fault
+  (:class:`RouterRateLimitError`) would repair the wrong thing.  It is
+  deliberately **not** :class:`RouterClientOrderIdError`: a key that is not 64
+  hex characters is refused in that class by feature 316's own function, and
+  this class is for the faults one step further along — the *ask to place* and
+  the *stored result* — whose repair is to fix the call or the row rather than
+  to fix the derivation.
+
 Every message names the offending value and the contract it broke, because
 these are operational signals for a pipeline the order path trusts for its
 step size and tick size, not debugging aids.
@@ -94,6 +111,7 @@ __all__ = [
     "ORDER_SUBMISSION_UNHEALTHY_CODE",
     "RATE_LIMITED_CODE",
     "RETRY_BACKOFF_CODE",
+    "SUBMISSION_RESULT_CODE",
     "WEIGHT_BUCKET_CODE",
     "WEIGHT_SCHEDULE_CODE",
     "RouterClientOrderIdError",
@@ -103,6 +121,7 @@ __all__ = [
     "RouterRetryError",
     "RouterStoreError",
     "RouterSubmissionHealthError",
+    "RouterSubmissionResultError",
     "RouterWeightBucketError",
     "RouterWeightScheduleError",
 ]
@@ -153,6 +172,19 @@ WEIGHT_BUCKET_CODE = "weight_bucket"
 #: :data:`RATE_LIMITED_CODE`, feature 318's, and a different fault with a
 #: different repair.
 RETRY_BACKOFF_CODE = "retry_backoff"
+
+#: Feature 317's greppable token, for the derivation of the order path's
+#: duplicate answer.  Every :class:`RouterSubmissionResultError` message opens
+#: with it, so a malformed place ask — and a stored placement row this store
+#: cannot report — is one grep apart from the *identifier* faults feature 316
+#: names (:data:`CLIENT_ORDER_ID_CODE`, whose derivation this feature reads
+#: but never owns) and from the submission outcomes feature 320 records
+#: (whose ``client_order_id`` column *joins* on the same key and is never
+#: this module's to interpret).  It deliberately does not spell ``duplicate``:
+#: a duplicate is this feature's *success* — the sentence's answer, not a
+#: fault — and a token that named it would send an operator grepping for
+#: faults to the rows that are working.
+SUBMISSION_RESULT_CODE = "submission_result"
 
 
 class RouterError(Exception):
@@ -379,4 +411,39 @@ class RouterRetryError(RouterRateLimitError):
     Every message opens with :data:`RETRY_BACKOFF_CODE`, so an operator
     greps one token for retry faults — a token that is not
     :data:`RATE_LIMITED_CODE`, whose grep the refusal itself owns.
+    """
+
+
+class RouterSubmissionResultError(RouterError):
+    """A duplicate-submission ask this store cannot answer or record.
+
+    app_spec.xml, "Order Routing & Venue Filters", feature 317: *System
+    returns the prior result for a duplicate client order identifier rather
+    than placing a second order.*  This is the failure of that sentence's
+    *judgment*: a placement the store cannot call, an order it cannot name by
+    feature 316's key, an outcome that is not a placement (a venue rejection
+    in particular — that placed nothing, and a second attempt at it is the
+    *retry* the order path is entitled to make rather than a duplicate), or a
+    stored row whose outcome or moment is not one a placement can have.  In
+    every one of those the sentence has nothing to compare, so this is raised
+    rather than shrugged into a near-miss answer that would report an order
+    as placed — or as a duplicate — on evidence that cannot support either.
+
+    A sibling of the fetch fault (:class:`RouterFilterError`), the record
+    fault (:class:`RouterStoreError`), the health fault
+    (:class:`RouterSubmissionHealthError`), the derived-identity fault
+    (:class:`RouterClientOrderIdError`) and the rate-limit tree
+    (:class:`RouterRateLimitError`) rather than a child of any of them: the
+    noun is *the placement being asked about*, and none of those repairs
+    repairs it.  The split from :class:`RouterClientOrderIdError` is the fine
+    one and is deliberate — a key that is not 64 hex characters is refused in
+    *that* class by feature 316's own validation, which this module reads
+    rather than re-implements, so a caller catching the identifier's fault
+    still catches it by name; this class is for the ask and the row one step
+    further along.
+
+    Every message opens with :data:`SUBMISSION_RESULT_CODE` and names the
+    offending value — the key, the symbol, the outcome — because a store that
+    cannot name the order it refused cannot be repaired by anyone but its
+    author.
     """
