@@ -66,6 +66,21 @@ caller on each ask, so a builder would have to bake a budget no deployment
 stated.  The member still registers exactly one component, and the order
 path reaches the verb by calling it.
 
+Feature 316 adds a sixth: :mod:`router.client_order_id` — the order's own
+name, hashed out of the book, the rebalance and the symbol exactly as
+§13.2's one line fixes it (``client_order_id = hash(book_id, rebalance_ts,
+symbol)``).  It is the category's purest verb: no table (the key is a
+function of the order, not a fact to store — feature 317's store will key
+its rows *on* this value), no component, no clock read (a key that depended
+on when it was computed would be the generated name it exists to replace),
+and the same three terms in any process answer the same key — which is the
+"idempotent resubmission key" the sentence returns and the property 317's
+duplicate answer and 320's health join are built on.  Two of the three
+terms are the rebalance record's own identity (feature 309 keyed its table
+on ``(book_id, rebalance_ts)`` so the order path would hash from the
+record's own key), and the third is the leg — one order per symbol per
+rebalance per book.
+
 This package also *is* a component of the composed application: importing
 it registers a builder with the application factory
 (``app.module_loader.register``), so the module loader discovers it by
@@ -87,12 +102,21 @@ from __future__ import annotations
 from app.module_loader import register
 
 from ._identity import process_identity
+from .client_order_id import (
+    CLIENT_ORDER_ID_LENGTH,
+    ClientOrderId,
+    client_order_digest,
+    derive_client_order_id,
+    normalize_client_order_id,
+)
 from .errors import (
+    CLIENT_ORDER_ID_CODE,
     ORDER_SUBMISSION_UNHEALTHY_CODE,
     RATE_LIMITED_CODE,
     RETRY_BACKOFF_CODE,
     WEIGHT_BUCKET_CODE,
     WEIGHT_SCHEDULE_CODE,
+    RouterClientOrderIdError,
     RouterError,
     RouterFilterError,
     RouterRateLimitedError,
@@ -150,6 +174,8 @@ from .submission_health import (
 )
 
 __all__ = [
+    "CLIENT_ORDER_ID_CODE",
+    "CLIENT_ORDER_ID_LENGTH",
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
     "DEFAULT_BACKOFF_SCHEDULE",
@@ -181,9 +207,11 @@ __all__ = [
     "WEIGHT_LIMIT_TYPE",
     "WEIGHT_SCHEDULE_CODE",
     "BackoffSchedule",
+    "ClientOrderId",
     "RateLimitHeadroom",
     "RateLimitRetryEvent",
     "RetryEventLog",
+    "RouterClientOrderIdError",
     "RouterError",
     "RouterExchangeInfoStore",
     "RouterExchangeInfoVersion",
@@ -201,6 +229,9 @@ __all__ = [
     "SubmissionHealth",
     "SubmissionObservation",
     "VenueWeightSchedule",
+    "client_order_digest",
+    "derive_client_order_id",
+    "normalize_client_order_id",
     "process_identity",
     "resolve_router_filters",
     "retry_rate_limited",

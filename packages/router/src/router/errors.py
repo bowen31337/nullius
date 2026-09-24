@@ -41,6 +41,19 @@ violated, not by which line of code failed:
   repair — point the deployment at a database this store can open — are one
   fact the member already names once.
 
+* :class:`RouterClientOrderIdError` — feature 316's derived-identity
+  contract, and a *sibling* of the four classes above rather than a child
+  of any of them.  Its noun is the order's own name — the idempotent
+  resubmission key hashed out of a book, a rebalance and a symbol — which
+  is not a fetched document (:class:`RouterFilterError`), not a persisted
+  filter version (:class:`RouterStoreError`) and not the router's liveness
+  (:class:`RouterSubmissionHealthError`): a ``book_id`` or ``symbol`` that
+  states no name, a ``rebalance_ts`` that is naive or not a moment, a
+  presented key that is not the 64 hex characters a derived one is, or a
+  value whose stated key disagrees with its own terms, are none of those
+  repairs — and every one of them is a way to derive *two* keys for one
+  order, which is the one state the feature exists to make impossible.
+
 * :class:`RouterWeightScheduleError` and :class:`RouterWeightBucketError` —
   feature 318's two faults, which share the intermediate base
   :class:`RouterRateLimitError` because they are two repairs to one system:
@@ -77,11 +90,13 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, and limiter imports this
     from .limiter import RateLimitHeadroom
 
 __all__ = [
+    "CLIENT_ORDER_ID_CODE",
     "ORDER_SUBMISSION_UNHEALTHY_CODE",
     "RATE_LIMITED_CODE",
     "RETRY_BACKOFF_CODE",
     "WEIGHT_BUCKET_CODE",
     "WEIGHT_SCHEDULE_CODE",
+    "RouterClientOrderIdError",
     "RouterError",
     "RouterFilterError",
     "RouterRateLimitedError",
@@ -101,6 +116,16 @@ __all__ = [
 #: does not spell ``live``, which is feature 321's authority vocabulary and a
 #: different refusal with a different repair.
 ORDER_SUBMISSION_UNHEALTHY_CODE = "order_submission_unhealthy"
+
+#: Feature 316's greppable token, for the derivation of the order path's
+#: idempotent resubmission key.  Every
+#: :class:`RouterClientOrderIdError` message opens with it, so a malformed
+#: derive ask — and a presented key that is not one — is one grep apart
+#: from the submission outcomes feature 320 records (whose
+#: ``client_order_id`` column *joins* on this key but is never this
+#: module's to interpret) and from the rejections the venue itself sends,
+#: which feature 320 writes down and this module never does.
+CLIENT_ORDER_ID_CODE = "client_order_id"
 
 #: Feature 318's greppable token, for the refusal a *spent budget* produces.
 #: Every :class:`RouterRateLimitedError` message opens with it, so a rate
@@ -193,6 +218,35 @@ class RouterSubmissionHealthError(RouterError):
     about, because a health record that cannot be attributed to a process and
     an instant is not a health record — which is the whole subject of this
     feature.
+    """
+
+
+class RouterClientOrderIdError(RouterError):
+    """A client order identifier this module cannot derive or recognize.
+
+    app_spec.xml, "Order Routing & Venue Filters", feature 316: *System
+    derives a client order identifier by hashing book id, rebalance
+    timestamp and symbol, which returns an idempotent resubmission key.*
+    This is the failure of that sentence's *derives*: a ``book_id`` or a
+    ``symbol`` that states no name, a ``rebalance_ts`` that is naive or not
+    a moment at all, a presented key that is not the 64 hex characters a
+    derived one is, or a value whose stated key disagrees with the terms it
+    carries.  Idempotence is the feature's whole output, and every one of
+    those faults is a way to end up with *two* keys for one order — the
+    exact state the feature exists to make impossible, so it is raised
+    rather than shrugged into a near-miss identity.
+
+    A sibling of the fetch fault (:class:`RouterFilterError`), the record
+    fault (:class:`RouterStoreError`) and the health fault
+    (:class:`RouterSubmissionHealthError`) rather than a child of any of
+    them, because the noun is the order's own name — none of those three
+    repairs repairs it, and a caller told the wrong one would edit the
+    wrong file.
+
+    Every message opens with :data:`CLIENT_ORDER_ID_CODE` and names the
+    offending value, because an order path that cannot name its order
+    cannot resubmit it, and the operator's grep is the first place that
+    fact has to reach.
     """
 
 
