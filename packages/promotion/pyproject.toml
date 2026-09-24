@@ -1,0 +1,40 @@
+# nullius workspace member: the promotion plugin
+# (app_spec.xml, "Promotion & Epoch Governance", feature 291;
+# docs/alpha-engine-prd.md §13 item 7 for the pre-registration law this
+# member's first feature serves).
+#
+# Joins the uv workspace by convention — packages/promotion with this file
+# — so the module loader (src/app/module_loader.py) discovers it by scanning
+# the members the root pyproject.toml declares.  No edit to any central
+# registry, router table or app factory is needed or wanted to wire this
+# package in.
+#
+# Dependencies: the workspace root, and nothing else.  The factory's
+# registration protocol (`import app.module_loader`) is the whole of it —
+# the same one-dependency shape the regime, discovery and replay members
+# ship, and for the same reason: this member's first feature is a
+# persistence act (one pre-registration row, hashed before the deciding
+# evaluation) over a table the spec's own migration already declares
+# (``migrations/versions/0108_forward_and_universe_tables.py``), so there
+# is no data file to ship, no download to declare and no third-party
+# numerics to trust.  ``hashlib``, ``json``, ``sqlite3`` and
+# ``urllib.parse`` are the whole of the work, and the criteria themselves
+# arrive as the caller's — the evaluation that decides the promotion is
+# another feature's, and this member judges nothing on its own.
+
+[project]
+name = "promotion"
+version = "0.1.0"
+description = "Pre-registers promotion criteria before the deciding evaluation: POST /promotion/pre-register."
+requires-python = ">=3.12"
+dependencies = ["nullius"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/promotion"]

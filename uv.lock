@@ -19,6 +19,7 @@ members = [
     "nullius-ingest",
     "nulloracle",
     "policy-runtime",
+    "promotion",
     "providers",
     "regime",
     "replay",
@@ -394,6 +395,17 @@ wheels = [
 name = "policy-runtime"
 version = "0.1.0"
 source = { editable = "packages/policy-runtime" }
+dependencies = [
+    { name = "nullius" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "nullius", editable = "." }]
+
+[[package]]
+name = "promotion"
+version = "0.1.0"
+source = { editable = "packages/promotion" }
 dependencies = [
     { name = "nullius" },
 ]
