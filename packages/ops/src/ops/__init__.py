@@ -70,12 +70,13 @@ metrics store feature 267's own docstring already reserves
 (*"the research-metrics row is the ops member's (feature 344 ...)"*):
 347's train-versus-holdout world score gap (the whole row
 *"train-vs-holdout world score gap (meta-overfit)"* of §16, landed as
-:mod:`ops.meta_overfit`) and 350's four live metrics (landed as
-:mod:`ops.live_metrics`) are the two that have; 344-346's arrive as
-their own tables under the same allowance, each with its own refusal
-vocabulary and its own ``@register`` here beside the route, the
-dashboard and the two stores' — 348's evaluation record and 349's
-replay record landed as
+:mod:`ops.meta_overfit`), 350's four live metrics (landed as
+:mod:`ops.live_metrics`) and 346's discoveries per 1000 budget-charging
+trials (landed as :mod:`ops.discovery_rate`) are the three that have;
+344's and 345's arrive as their own tables under the same allowance,
+each with its own refusal vocabulary and its own ``@register`` here
+beside the route, the dashboard and the three stores' — 348's
+evaluation record and 349's replay record landed as
 :mod:`ops.evaluation_log` and :mod:`ops.replay_log` — the emission
 seams the reserved clause named: one structured stdlib log record per
 evaluation, carrying §16's provenance triple plus ``node_id`` and
@@ -157,10 +158,28 @@ member already says:
   caller-stated difference would let the system persist two levels and
   a third number that disagrees with both, and §15's remedy (*cap ``M``
   per §10.3.1*) is read off these rows.
+* :class:`~ops.discovery_rate.DiscoveryRates` with
+  :class:`~ops.discovery_rate.DiscoveryRate` — feature 346's store:
+  discoveries per 1000 *budget-charging* trials per campaign, §16's
+  research metric (*"discoveries per 1000 budget-charging trials"*) and
+  prd §11's secondary scorecard row (*"Discoveries per 1,000 trials
+  charged (nulls excluded from the denominator) | trending up"*),
+  persisted into the member's own table in the store ``DATABASE_URL``
+  names.  The denominator's identity *is* the sentence's second clause:
+  it is feature 93's ``K_effective`` count — the trials whose
+  ``charges_budget`` is true (§8: a null node consumed agent calls and
+  CPU but *no statistical degrees of freedom*) — and **not** the
+  ledger's plain row count, which the row carries beside it as
+  ``ledger_trials`` so the exclusion is checkable by subtraction rather
+  than trusted from a label.  The quotient — ``discoveries ÷
+  budget_charging_trials × 1000`` — is the store's own arithmetic, with
+  no parameter for it at any spelling, the stance feature 347 takes
+  toward its gap and 340 toward its difference.
 * :class:`~ops.errors.OpsError` with
   :class:`~ops.errors.FdrDeployMetricError`,
   :class:`~ops.errors.LiveMetricError`,
   :class:`~ops.errors.MetaOverfitGapError`,
+  :class:`~ops.errors.DiscoveryRateError`,
   :class:`~ops.errors.ReplayLogError`,
   :class:`~ops.errors.EvaluationLogError` and
   :class:`~ops.errors.DashboardRenderError` — the member's refusal
@@ -178,6 +197,12 @@ from .chrome import (
     EpochCountGauge,
     require_promotion,
 )
+from .discovery_rate import (
+    DISCOVERY_RATE_TABLE,
+    OPS_DISCOVERY_RATE_COMPONENT_NAME,
+    DiscoveryRate,
+    DiscoveryRates,
+)
 from .dashboard import (
     DASHBOARD_PAGE_TITLE,
     DASHBOARD_TITLE,
@@ -190,6 +215,7 @@ from .dashboard import (
 )
 from .errors import (
     DashboardRenderError,
+    DiscoveryRateError,
     EvaluationLogError,
     FdrDeployMetricError,
     LiveMetricError,
@@ -234,6 +260,7 @@ __all__ = [
     "DASHBOARD_PAGE_TITLE",
     "DASHBOARD_TITLE",
     "DATABASE_URL_ENV",
+    "DISCOVERY_RATE_TABLE",
     "EPOCH_COUNT_LABEL",
     "EVALUATION_LOG_LEVEL",
     "EVALUATION_LOG_LOGGER_NAME",
@@ -244,12 +271,16 @@ __all__ = [
     "META_OVERFIT_TABLE",
     "OPS_COMPONENT_NAME",
     "OPS_DASHBOARD_COMPONENT_NAME",
+    "OPS_DISCOVERY_RATE_COMPONENT_NAME",
     "OPS_LIVE_METRIC_COMPONENT_NAME",
     "OPS_META_OVERFIT_COMPONENT_NAME",
     "REPLAY_LOG_LEVEL",
     "REPLAY_LOG_LOGGER_NAME",
     "DashboardPage",
     "DashboardRenderError",
+    "DiscoveryRate",
+    "DiscoveryRateError",
+    "DiscoveryRates",
     "EpochCountChrome",
     "EpochCountGauge",
     "EvaluationLogError",
@@ -420,3 +451,43 @@ def build_meta_overfit_store() -> MetaOverfitGaps | None:
     both constructed and asked.
     """
     return MetaOverfitGaps.resolve()
+
+
+#: The component name the member registers its discovery-rate store under —
+#: the route, dashboard, live-metrics store and meta-overfit gap store's peer
+#: under the same member-first prefix (:data:`OPS_COMPONENT_NAME`,
+#: :data:`OPS_DASHBOARD_COMPONENT_NAME`,
+#: :data:`OPS_LIVE_METRIC_COMPONENT_NAME`,
+#: :data:`OPS_META_OVERFIT_COMPONENT_NAME`), so a composed application's
+#: ``order`` sorts this member's components *beside* — never inside — another
+#: member's.  Spelled in the app package seat (:mod:`app.modules.ops`) as
+#: well, and the member's suite asserts the two agree.  The growth was
+#: reserved by the member's own registration when feature 341 landed and the
+#: app-package seat reserved beside it (*"344-346's arrive as their own tables
+#: under the same allowance"*).  It is *defined* in
+#: :mod:`ops.discovery_rate` and imported above — the same placement the
+#: live-metrics store's and the meta-overfit gap store's names take, so the
+#: constant lives beside the module whose component it names.
+@register(OPS_DISCOVERY_RATE_COMPONENT_NAME)
+def build_discovery_rate_store() -> DiscoveryRates | None:
+    """Component builder: feature 346's discovery-rate store, bound to the
+    store ``DATABASE_URL`` names.
+
+    Takes no arguments — the factory's registration protocol — and decides at
+    build time only what the meta-overfit gap store's builder beside it
+    decides: whether ``DATABASE_URL`` names a store.  It resolves the URL
+    itself rather than importing any sibling, so whole-workspace composition
+    never depends on a member that is not promised to be on ``sys.path`` at
+    build time — the store is stdlib-only by design, and the URL is the one
+    composition fact the route, the dashboard and the member's other three
+    stores all share.
+
+    Returns ``None`` when no ``DATABASE_URL`` is configured — an unconfigured
+    store is a discoverable deployment state, not an exception, the same
+    stance the route, dashboard, live-metrics and meta-overfit builders take —
+    so a deployment without a relational store still composes.  Building
+    performs no I/O: no store is constructed, no database opened, no schema
+    created — the first :meth:`~ops.discovery_rate.DiscoveryRates.record` is
+    where the store is both constructed and asked.
+    """
+    return DiscoveryRates.resolve()

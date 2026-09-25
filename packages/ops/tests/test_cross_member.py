@@ -37,10 +37,11 @@ seam validates what it reads.
 
 from __future__ import annotations
 
+import sqlite3
 import uuid
 
 import pytest
-from ops import FdrDeployEndpoint, require_scoring
+from ops import DiscoveryRateError, DiscoveryRates, FdrDeployEndpoint, require_scoring
 from scoring import FdrDeployError, FdrDeployStore, fdr_deploy
 
 CAMPAIGN_A = "11111111-1111-1111-1111-111111111111"
@@ -214,3 +215,100 @@ def test_the_committed_to_nothing_corner_never_reaches_the_surface(
     response = FdrDeployEndpoint(store).get()
     assert response.history == ()
     assert response.fdr_deploy is None
+
+
+def test_the_discovery_rate_answers_the_ledgers_own_filter_law(
+    test_database_url: str,
+) -> None:
+    # Feature 346's denominator against feature 93's derivation, pinned as
+    # arithmetic.  This member reads no ledger — the counts are handed over
+    # already measured — so the seam that must not drift is the *law*: the
+    # denominator is the count of the trials whose charges_budget is true
+    # (§8: a null node "consumed agent calls and CPU but NO statistical
+    # degrees of freedom"), and the ledger's plain row count is a different
+    # number that this store carries only so the exclusion is checkable.
+    rate = DiscoveryRates(test_database_url)
+    row = rate.record(
+        CAMPAIGN_A,
+        discoveries=8,
+        budget_charging_trials=3200,
+        ledger_trials=4000,
+    )
+    assert row.rate == pytest.approx(2.5)
+    # The excluded nulls, visible by subtraction — the number feature 93's
+    # K_effective and TrialLedger.count diverge by.
+    assert row.ledger_trials - row.budget_charging_trials == 800
+    # And the flattering reading is demonstrably not what was stored.
+    assert row.rate != pytest.approx(8 / 4000 * 1000.0)
+
+
+def test_the_discovery_rate_joins_the_fdr_deploy_row_on_the_campaign_id(
+    test_database_url: str,
+) -> None:
+    # §16's research metrics are per campaign, and the two figures are keyed
+    # by the same canonical id — so a reader holding one campaign's row can
+    # join its yield to its base-rate-reweighted false discovery rate
+    # (feature 267's row, feature 341's surface) without a second spelling of
+    # the campaign's identity.
+    FdrDeployStore(test_database_url).persist(
+        uuid.UUID(CAMPAIGN_A), _Pair(0.75, 0.25), computed_at="2026-01-01T00:00:00"
+    )
+    rate = DiscoveryRates(test_database_url)
+    row = rate.record(
+        CAMPAIGN_A,
+        discoveries=8,
+        budget_charging_trials=3200,
+        ledger_trials=4000,
+    )
+    # The row is readable by the same canonical spelling the scoring store
+    # used, in any form uuid.UUID parses.
+    assert rate.rate(uuid.UUID(CAMPAIGN_A)) == row
+    assert rate.rate(CAMPAIGN_A.upper()) == row
+    assert row.campaign_id == CAMPAIGN_A
+
+
+def test_the_discovery_rate_refuses_a_denominator_the_ledger_cannot_hold(
+    test_database_url: str,
+) -> None:
+    # The one cross-member fact this store does check structurally: the
+    # ledger is append-only with no UPDATE and no DELETE (§8, enforced by
+    # role grants), so the budget-charging subset can never exceed the rows
+    # that exist — and a row claiming otherwise would put a flattering
+    # denominator into prd §11's trend.
+    rate = DiscoveryRates(test_database_url)
+    with pytest.raises(DiscoveryRateError):
+        rate.record(
+            CAMPAIGN_A,
+            discoveries=8,
+            budget_charging_trials=4000,
+            ledger_trials=3200,
+        )
+    assert rate.history() == ()
+
+
+def test_the_two_ops_tables_share_the_one_database(
+    test_database_url: str,
+) -> None:
+    # §16's "single Postgres metrics table" allowance: the scoring member's
+    # FDR_deploy rows and this member's research rows live in the one database
+    # DATABASE_URL names, so an operator joins them in one query rather than
+    # reconciling two stores.
+    from pathlib import Path
+    from urllib.parse import urlparse
+
+    FdrDeployStore(test_database_url).persist(
+        uuid.UUID(CAMPAIGN_A), _Pair(0.75, 0.25), computed_at="2026-01-01T00:00:00"
+    )
+    DiscoveryRates(test_database_url).record(
+        CAMPAIGN_A, discoveries=8, budget_charging_trials=3200, ledger_trials=4000
+    )
+    database_path = Path(urlparse(test_database_url).path.removeprefix("/"))
+    with sqlite3.connect(database_path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert "scoring_fdr_deploy" in tables
+    assert "ops_discovery_rate" in tables

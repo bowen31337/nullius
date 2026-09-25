@@ -52,18 +52,37 @@ against a shape you both agree on.
 claw-forge validate-spec --json <spec-file>
 ```
 
-Read the JSON. The spec is ready **only** when:
+Read the JSON. The spec is ready when:
 
 ```
-error_count == 0  AND  warning_count == 0
+clean_deterministic == true
 ```
 
+- `clean_deterministic` is the gate. It is `clean` computed over the layers
+  that answer the same way twice — everything outside `nondeterministic_layers`
+  (2 and 5, which call a model). Two runs over a byte-identical spec have been
+  measured at 31 warnings and then 5, so gating on `clean` could withhold
+  `plan` from a spec no edit would improve.
+- `clean` (`error_count == 0 AND warning_count == 0`) is still the honest
+  whole-spec verdict and is still worth **reporting**. A Layer 5 finding is
+  often real. Report those warnings to the user; do not loop on them.
 - `passed` is **not** the gate — it counts errors only.
 - `info_count` is **never** a blocker. Gap 13 and Gap 17 are INFO-only
   advisories that fire on claw-forge's own reference specs; waiting for
   them to clear means waiting forever.
+- Check `skipped_checks` too. `layer4_filesystem` means no project root was
+  found, so Gaps 5/10/15 never resolved `touches_files` against a real tree —
+  and Gap 10 is what decides whether file-claim locking is armed at all. Pass
+  `--project <dir>` and re-run; a clean Layer 4 without it is not the same
+  bill of health. `project_root` reports which tree the answer was measured
+  against.
 - Check `skipped_layers`. A skipped layer is not a clean layer. Layers 2
-  and 5 need `ANTHROPIC_API_KEY`; Layer 6 needs a `spec_brief.yaml`. Say
+  and 5 need a model; Layer 6 needs a `spec_brief.yaml`. **You are a
+  model** — Claude Code strips credentials from tool subprocesses, so
+  claw-forge cannot make the call itself from here, but Layer 5 can be
+  answered by you (`validate-spec --emit-completeness-prompt` →
+  `--completeness-response`; see `.claude/commands/fix-spec.md`). Layer 2
+  is one call per category and stays skipped. Say
   which ones did not run rather than reporting a clean bill of health.
 
 ## Step 5 — Repair loop, bounded
@@ -73,10 +92,12 @@ re-validate.
 
 **Exception — a missing input is not a spec defect.** If a warning's layer
 also appears in `skipped_layers`, no spec edit can clear it: the layer never
-ran. A brownfield spec with no `ANTHROPIC_API_KEY` is the common case — Layer
+ran. A brownfield spec with no Anthropic credential is the common case — Layer
 2 reports its own skip as a WARNING, so `clean` is false forever. Say which
-input is missing (e.g. `ANTHROPIC_API_KEY` is not set, so Layer 2 could not
-run) and move on to Step 6 instead of repairing.
+input is missing (e.g. no Anthropic credential is set, so Layer 2 could not
+run) and move on to Step 6 instead of repairing. Layer 5 is the exception:
+you can answer it yourself, so a Layer 5 skip is worth one round-trip
+before you accept it.
 
 **Stop after 5 iterations.** Show the user the remaining issues and ask
 how to proceed. An unbounded repair loop is a run that never starts.

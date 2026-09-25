@@ -65,12 +65,31 @@ indicator is a discoverable state answered as an absence (no cycle has
 closed a gap out yet), while a *broken* one is refused, because a
 divergence that is quietly defaulted is exactly the overfitting this
 category exists to make visible.
+
+Feature 346 adds the discovery-rate store's own:
+:class:`DiscoveryRateError`, the refusal of a figure that cannot be the
+quotient it claims — a campaign id that joins no campaign, a count that
+is not a whole number, a denominator that is zero (a rate over no
+budget-charging trials is undefined), a denominator above the ledger's
+own row count (feature 93's ``K_effective`` is a *subset* count and the
+ledger is append-only), a stored rate that disagrees with the counts
+beside it, a store that cannot be asked.  It is the third of the
+store-surface siblings (:class:`LiveMetricError` and
+:class:`MetaOverfitGapError` are the other two) and it carries the same
+asymmetry, with one addition the other two do not need: an *absent*
+rate is a discoverable state answered as an absence, a *zero* rate is a
+measurement the store persists happily (a campaign that found nothing
+measured exactly that, and prd §11 grades the metric by its direction),
+and only a rate that could not have been divided is refused — because a
+flattering denominator is precisely the failure the sentence's second
+clause exists to prevent.
 """
 
 from __future__ import annotations
 
 __all__ = [
     "DashboardRenderError",
+    "DiscoveryRateError",
     "EvaluationLogError",
     "FdrDeployMetricError",
     "LiveMetricError",
@@ -327,4 +346,61 @@ class MetaOverfitGapError(OpsError):
     rule out — §12.1's *"dreaming overfits its own replay pool"*
     arriving as a number nobody measured — is refused rather than
     served.
+    """
+
+
+class DiscoveryRateError(OpsError):
+    """Feature 346's refusals: the discovery-rate store's own error
+    states.
+
+    Raised in exactly the places :mod:`ops.discovery_rate` states the
+    store's contract, and the split between them is the member-seam law
+    the whole workspace states for error vocabulary: a helper that
+    raised another module's error would escape through this member's
+    call path, and a caller who wrote ``except DiscoveryRateError`` —
+    the whole point of the store owning a class — would be taken down
+    by an error from a module it never imported.  So:
+
+    * an id that is not a UUID is refused, because §16's research
+      metrics are *per campaign* and an id that cannot join the tree's
+      campaign key names no campaign a rate could be persisted for;
+    * a count that is not a whole number is refused, because the figure
+      is a quotient of three counts and a fractional or flag-valued one
+      would be this store inventing a figure the caller never stated;
+    * a **denominator** of zero or less is refused *by name*, because
+      the sentence says *budget-charging* trials and a campaign that
+      spent no statistical degrees of freedom at all leaves the
+      quotient undefined — answering ``0.0`` for it would persist the
+      quietest possible claim about a research yield nobody measured;
+    * a **denominator above the ledger's own row count** is refused,
+      because feature 93's ``K_effective`` is the count of the ledger's
+      rows whose ``charges_budget`` is true — *"excluding null nodes"* —
+      so it is a *subset* count and can never exceed the size of the
+      table it filters, and the ledger is append-only with no UPDATE
+      and no DELETE (§8, enforced by role grants), so the pair cannot be
+      produced honestly by any pruning either;
+    * a stored row whose ``rate`` disagrees with the counts beside it is
+      refused on the read, for the same reason feature 347 refuses a
+      disagreeing gap: prd §11's grade is read off this column, and the
+      two counts are the row's truth; and
+    * a read or write that failed against the store is *translated*
+      here from :class:`sqlite3.Error` (chained, never swallowed),
+      because the table is this member's and the caller's single
+      ``except DiscoveryRateError`` must catch a rate that measured but
+      never landed rather than be taken down by the database's own
+      error.
+
+    **Never raised for an absent rate.**  A deployment that has closed
+    no campaign out answers ``None`` from the point read and an empty
+    sequence from the sweep — a discoverable state, not a refusal,
+    exactly as an unclosed campaign is for feature 267's trend, an
+    unclosed cycle for feature 347's gap and an unrecorded metric for
+    feature 350's four tiles.  **Never raised for a zero, either**: a
+    campaign that made no discoveries measured exactly that, and prd
+    §11's *"trending up"* is a direction a flat zero is the honest
+    bottom of — the zero is a figure the store persists, not a refusal
+    it makes.  What is refused is a rate that could not be the figure it
+    claims, and the failure mode this feature exists to rule out — a
+    flattering denominator, or a quotient nobody divided — is refused
+    rather than served.
     """

@@ -47,9 +47,10 @@ spelling of any of those here would be a second thing to keep in sync.
 This module answers exactly the composition questions — *what is the
 composed fdr-deploy route?*, *what is the composed dashboard?*, *what
 is the composed live-metrics store?*, *what is the composed
-meta-overfit gap store?* — so the observability features that follow
-(342's lamps, 343's coverage, 352's chrome) can ask them without
-importing the member directly.
+meta-overfit gap store?*, *what is the composed discovery-rate store?*
+— so the observability features that follow (342's lamps, 343's
+coverage, 352's chrome) can ask them without importing the member
+directly.
 """
 
 from __future__ import annotations
@@ -60,6 +61,7 @@ from app.module_loader import Application, create_app
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a dependency
     from ops import (
+        DiscoveryRates,
         FdrDeployEndpoint,
         LiveMetricsStore,
         MetaOverfitGaps,
@@ -69,9 +71,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a depende
 __all__ = [
     "COMPONENT_NAME",
     "DASHBOARD_COMPONENT_NAME",
+    "OPS_DISCOVERY_RATE_COMPONENT_NAME",
     "OPS_LIVE_METRIC_COMPONENT_NAME",
     "OPS_META_OVERFIT_COMPONENT_NAME",
     "dashboard_component",
+    "discovery_rate_component",
     "fdr_deploy_component",
     "live_metric_component",
     "meta_overfit_component",
@@ -112,6 +116,17 @@ OPS_LIVE_METRIC_COMPONENT_NAME = "ops-live-metric"
 #: prefix.  The member's suite asserts this seat and the member's own
 #: :data:`~ops.OPS_META_OVERFIT_COMPONENT_NAME` cannot drift apart.
 OPS_META_OVERFIT_COMPONENT_NAME = "ops-meta-overfit"
+
+#: The component name the ops member registers its discovery-rate store
+#: under (feature 346: persists discoveries per 1000 budget-charging trials,
+#: excluding null nodes from the denominator — docs §16's research metric
+#: *"discoveries per 1000 budget-charging trials"* and prd §11's secondary
+#: scorecard row *"Discoveries per 1,000 trials charged (nulls excluded from
+#: the denominator) | trending up"*), the route, dashboard, live-metrics
+#: store and meta-overfit gap store's peer under the same member-first
+#: prefix.  The member's suite asserts this seat and the member's own
+#: :data:`~ops.OPS_DISCOVERY_RATE_COMPONENT_NAME` cannot drift apart.
+OPS_DISCOVERY_RATE_COMPONENT_NAME = "ops-discovery-rate"
 
 
 def fdr_deploy_component(app: Application | None = None) -> "FdrDeployEndpoint | Any":
@@ -190,3 +205,22 @@ def meta_overfit_component(app: Application | None = None) -> "MetaOverfitGaps |
     """
     application = app if app is not None else create_app()
     return application.get(OPS_META_OVERFIT_COMPONENT_NAME)
+
+
+def discovery_rate_component(app: Application | None = None) -> "DiscoveryRates | Any":
+    """Return the composed discovery-rate store (feature 346's store).
+
+    The same composition accessor as :func:`fdr_deploy_component`, for the
+    member's fifth component: reads from ``app`` when handed one, composes
+    the declared workspace otherwise, and answers ``None`` when no
+    ``ops-discovery-rate`` component is registered — the same discoverable
+    state, for the same reasons (the member was not scanned, or nothing
+    named a database).  A caller that resolves ``None`` here and needs to
+    persist a campaign's figure is pointed at the member's own store, which
+    refuses to proceed rather than silently persisting nowhere — a rate that
+    measured but never landed is exactly the state feature 346 exists to
+    rule out, because prd §11 grades this metric by the direction its trend
+    reads across these rows, and a missing row reads as a quiet campaign.
+    """
+    application = app if app is not None else create_app()
+    return application.get(OPS_DISCOVERY_RATE_COMPONENT_NAME)

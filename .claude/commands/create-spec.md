@@ -348,6 +348,42 @@ test -f spec_brief.yaml || claw-forge brief init
 sed -n '/^stack:/,/^competency/p' spec_brief.yaml
 ```
 
+### Raising the brief from documents — you answer the prompts
+
+> **You are the model. There is no credential to inherit.**
+> Claude Code holds its credential in the session process and strips it from
+> the environment of every tool subprocess, so a `claw-forge` command you run
+> from here sees no `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` however the
+> session itself is authenticated. A layer that needs a model will report
+> that it was skipped. That is not a spec defect and not something to work
+> around by hunting for a key — answer the prompt yourself, using the
+> `--emit-prompts` / `--responses` seam below. claw-forge keeps the
+> deterministic half: prompt rendering, span verification, provenance,
+> merging. You supply only the reply.
+
+When the user has PRDs, architecture notes or transcripts, extraction can
+raise the brief's confidence before you ask anything. Emit the prompts,
+answer them, feed them back:
+
+```bash
+mkdir -p .claw-forge
+claw-forge brief extract <docs...> --emit-prompts > .claw-forge/bx-prompts.json
+```
+
+That file holds a `system` string and four passes, each with a `name` and a
+rendered `prompt`. Answer each one using `system` as your instructions, add
+your reply as a `"response"` field on that pass, save the whole object, and:
+
+```bash
+claw-forge brief extract <docs...> --responses .claw-forge/bx-answers.json
+```
+
+Pass the **same documents** both times — span verification re-reads them to
+check every extracted value against a verbatim quote, and that is what
+separates a 0.9-confidence fact from a 0.3 `needs_review` guess. A pass you
+leave unanswered costs only its own fields. `.claw-forge/` is gitignored;
+delete both files when you are done.
+
 Read `stack.layout_profile` and its `_provenance`, then take **one** of
 three branches:
 
@@ -1037,6 +1073,11 @@ attributes:
 Multiple dependencies are comma-separated: `depends_on="14,15,16"`. Features without edges
 may continue using the legacy bullet form; both coexist within the same `<category>`.
 
+`depends_on=""` (empty) is a **third, distinct** declaration: it means "this feature is a
+root". Omitting the attribute leaves the feature open to phase-keyword inference; writing it
+empty freezes it with no predecessors. Use the empty form for anything that must start in
+wave 1.
+
 When Phase 3.25 classification was accepted, combine `shape`/`plugin` with `index` and
 `depends_on` in the same element:
 
@@ -1230,6 +1271,15 @@ Scanning" and trip the whole category. **Derive phase titles from your category 
 each category maps onto a phase: name the phase after the category (or include the category's
 key noun). This clears Gap 9 for every feature in the category at once — no `depends_on`
 surgery required.
+
+**But a matching phase title also *enables* inference for that category**, and inference
+makes every feature in phase N depend on every feature in phase N-1. If a feature in that
+category is genuinely a root — foundation work, a shared contract, anything that should start
+in wave 1 — give it `depends_on=""`. An empty declaration is honoured as "runs first" and is
+never overwritten by inference; an *absent* one is not a declaration at all. Skip this and a
+spec that declares three roots plans as a graph one task wide at level 0, and the run opens at
+an effective concurrency of 1 no matter what `--concurrency` says. `claw-forge plan` prints
+tasks-per-wave — check that the first number is not 1.
 
 ```xml
 <implementation_steps>

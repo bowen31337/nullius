@@ -101,6 +101,64 @@ If none found, ask the user: "Which spec file should I fix?"
 claw-forge validate-spec <spec-file> 2>&1
 ```
 
+> **You are the model. There is no credential to inherit.**
+> Claude Code holds its credential in the session process and strips it from
+> the environment of every tool subprocess, so a `claw-forge` command you run
+> from here sees no `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` however the
+> session itself is authenticated. A layer that needs a model will report
+> that it was skipped. That is not a spec defect and not something to work
+> around by hunting for a key — answer the prompt yourself, using the
+> `--emit-prompts` / `--responses` seam below. claw-forge keeps the
+> deterministic half: prompt rendering, span verification, provenance,
+> merging. You supply only the reply.
+
+**Layer 5 (completeness) is the one worth delegating**, because it is the
+only layer that can name a capability the spec omits — everything else
+compares the spec against itself. It is a single whole-spec call, so
+answering it costs you one round-trip:
+
+```bash
+mkdir -p .claw-forge
+claw-forge validate-spec <spec-file> --emit-completeness-prompt \
+  > .claw-forge/l5-prompt.json
+```
+
+Read that file. Treat `system` as your instructions and `prompt` as the user
+turn, and answer it **exactly in the format the prompt asks for** — one
+`MISSING: <capability> | <why>` per line, and *nothing at all* if the spec is
+complete. Write your reply to `.claw-forge/l5-reply.txt`, then:
+
+```bash
+claw-forge validate-spec <spec-file> --completeness-response .claw-forge/l5-reply.txt 2>&1
+```
+
+Layer 5 then renders as `GAPS` or `PASS` rather than `SKIPPED`, and its
+findings are ordinary warnings you fix like any other. Layer 2 has no such
+seam — it is one call per category, so it stays skipped here and that skip is
+not a defect to repair.
+
+> **Re-emit and re-answer on every pass. A reply is a snapshot, not a
+> verdict.** `--completeness-response` replays the file you hand it; it does
+> not re-evaluate the spec. Reuse a reply after a repair pass and every gap
+> you just closed is reported again, identically — eight phantom warnings
+> that no amount of further editing will clear, because the spec is no longer
+> what the reply describes. So each time you return to Step 2, regenerate
+> `l5-prompt.json` from the **current** spec and answer it afresh.
+>
+> **An empty reply means "nothing is missing", and it is a verdict you are
+> making.** Do not write an empty file to move on: read the regenerated
+> prompt and decide. (A missing or unreadable file is a different fact and
+> exits 1 naming the path — that one is a mistake, not an answer.)
+>
+> Answer the question actually asked: *what is absent*. Layer 5 is explicitly
+> not grading what is present, so a contradiction between two features — two
+> bullets defining the same endpoint differently, say — is not a Layer 5
+> finding. Nothing else catches it either; fix it when you see it, but do not
+> report it as MISSING.
+
+`.claw-forge/` is gitignored, so neither file lands in the repo. Delete them
+when you are done.
+
 Strict shape validation is **on by default** (since v0.8.46), so Layer 4
 shape gaps (3, 5, 9) and the migration-shape gap (8) surface as ERRORs and
 get fixed in this same iteration — no flag needed. Add `--soft-shape` only
@@ -189,7 +247,7 @@ Re-read the full category after rewrites to confirm it now clearly covers all fo
 | Gap 1: `shape="plugin"` missing `plugin=` and `touches_files=` | ERROR | Add `plugin="<category-slug>"` to the `<feature>` element. Slug: lowercase, replace non-alphanumerics with dashes, collapse repeats, strip leading/trailing dashes. |
 | Gap 6: vertical category, no shape declared | WARNING / ERROR strict | Convert each unannotated bullet in the flagged category to `<feature shape="plugin" plugin="<category-slug>">…<description>{bullet text}</description></feature>`. Preserve the original bullet text verbatim inside `<description>`. |
 | Gap 8: feature description suggests migration / DB-schema work, not declared `shape="core"` | WARNING / ERROR strict | Replace the existing `shape=`/`plugin=`/`touches_files=` attributes with `shape="core" touches_files="migrations/versions/**"`. Migration-touching features mutate alembic's revision tree (a global shared resource) — `shape="core"` makes the dispatcher single-flight them, preventing parallel agents from writing duplicate `revision="N"` migrations. |
-| Gap 9: feature has no explicit `depends_on=` and category doesn't match any phase title | WARNING / ERROR strict | If the feature is **not** first in its category: add `depends_on="<index-of-prev-feature-in-same-category>"` to the `<feature>` element. If the feature **is** first in its category (no predecessor in same category): route to the Manual Review block — the user must confirm it's a foundation feature with no predecessors. |
+| Gap 9: feature declares no `depends_on=` at all and category doesn't match any phase title | WARNING / ERROR strict | If the feature is **not** first in its category: add `depends_on="<index-of-prev-feature-in-same-category>"` to the `<feature>` element. If the feature **is** first in its category (no predecessor in same category): route to the Manual Review block — the user must confirm it's a root. Note the fix for a confirmed root is `depends_on=""` (an **empty** declaration), not leaving the attribute off: an absent attribute is what Gap 9 is reporting, so removing nothing changes nothing and the ERROR keeps blocking `plan`. |
 | Gap 4 (typo): handled in Step 0 | (parse-time) | See Step 0. |
 | Gap 13 (mix): plugin mixes footprint granularity — one feature's `dir/**` glob contains a sibling's footprint | INFO | Structural overlap means the mix *serializes* rather than colliding — advisory, never blocks. **Repair direction is `policies.gap13_repair`** (default `widen`) — see below the table. |
 | Gap 13 (sharing): 4+ features in one plugin share the identical footprint | INFO | Advisory only — never blocks validation. Do NOT auto-fix: partitioning is a design choice. Route to Manual Review with a proposed sub-directory split (routes/models/services) and let the user pick "partition as proposed" or "keep serialized". |
@@ -336,6 +394,11 @@ gaps introduced during the rewrite get caught immediately.
 claw-forge validate-spec <spec-file> 2>&1
 ```
 
+**If you delegated Layer 5, "the same command" means the whole Step 2
+sequence, prompt included** — regenerate it from the edited spec and answer
+it again. A replayed reply describes the spec you started with, so the gaps
+you just closed come back verbatim and the loop cannot converge.
+
 Read the summary line (same as Step 2):
 - `✅ Spec passed validation — no issues` → fully clean. Report success (see output format below).
 
@@ -365,7 +428,7 @@ Issue types that go here:
 | Gap 7: long core-on-core dependency chain | Requires architectural decomposition |
 | Step 0: `shape="core"` missing `touches_files` | File list is domain knowledge |
 | Step 0: `shape` typo with Levenshtein distance > 2 | Cannot guess intent |
-| Gap 9: feature is first in its category with no explicit depends_on= | Foundation feature vs cross-category predecessor is domain knowledge |
+| Gap 9: feature is first in its category with no explicit depends_on= | Root (`depends_on=""`) vs cross-category predecessor is domain knowledge |
 
 **Example block (appended to output):**
 
@@ -397,10 +460,11 @@ Manual review needed (3 items):
      Feature: "System Repository abstract base classes define one interface per resource..."
      Question: should this depend on any prior-category foundation feature, or is it a true foundation?
      Candidate fixes:
-       a) Declare it a foundation feature — leave depends_on absent (the cycle-safe default
-          gives it no predecessors)
+       a) Declare it a root — set depends_on="" (an EMPTY declaration, not an absent one:
+          absent is what Gap 9 is reporting, and it leaves the feature open to inference)
        b) Rename a phase title to include a category keyword like "storage" or "repository"
-          so phase inference picks it up
+          so phase inference picks it up — but then give any genuine root in that category
+          depends_on="" as well, or inference will make it wait on the previous phase
        c) Add cross-category depends_on= pointing at an appropriate predecessor
           (e.g. a config-loader feature index)
 ```
