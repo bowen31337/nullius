@@ -18,7 +18,7 @@ ledger, the member's second feature — and feature 330 — the flatten
 that survives a hung strategy process, the member's third — build on it
 too, and on nothing else: the ledger is the record of the halts the
 channel and the doors after it produce, and the flatten is the drainage
-of the authority the channel holds.  Nine pieces:
+of the authority the channel holds.  Ten pieces:
 
 * :mod:`risk.kill` — the channel.  One row in the workspace's relational
   store (``DATABASE_URL``), held to one row by the table's own
@@ -146,8 +146,32 @@ of the authority the channel holds.  Nine pieces:
   that owns the flatten, and the retention of measured staleness is
   feature 350's row in the :mod:`ops` member — handed the figure by
   whoever measured it.
+* :mod:`risk.daily_loss` — the limit-keeper, feature 325: *System rejects
+  new orders until a manual reset once the configured daily loss limit is
+  breached.*  A fifth table (``risk_daily_loss_halt``), one row per
+  breach, written by :meth:`~risk.daily_loss.RiskDailyLossHaltStore.
+  halt_on_loss`, guarded by :meth:`~risk.daily_loss.
+  RiskDailyLossHaltStore.require_orders_allowed`, and closed — the
+  member's first *liftable* standing state — by
+  :meth:`~risk.daily_loss.RiskDailyLossHaltStore.reset`.  The breach is
+  strict (``daily_loss > daily_loss_limit``, pinned at equality), the
+  limit is a required keyword with no default (the sentence's own word
+  for it is *configured*), and the day's loss is handed over, never
+  derived.  Deliberately not the channel: the kill is monotone and this
+  halt must lift, so it owns its standing state, its guard and its
+  reset door, and neither kill nor flatten rides the breach — §13.3's
+  *flatten* is this trigger's composed response, the act feature 323's
+  door owns, driven from a breach by the end-to-end story that composes
+  them.  The module-level spellings —
+  :func:`~risk.daily_loss.halt_on_daily_loss` for the supervisor,
+  :func:`~risk.daily_loss.require_within_daily_loss_limit` for the
+  order layer, :func:`~risk.daily_loss.manual_reset` for the operator,
+  :func:`~risk.daily_loss.recorded_daily_loss_halts` for the reconciler
+  — open it from the environment and split four ways on its absence:
+  the guard passes vacuously and the sweep answers empty, while the
+  halt and the reset refuse by name.
 * :mod:`risk.errors` — the refusal vocabulary.  One base so a single
-  ``except`` catches the member, and ten nouns apart: the tables'
+  ``except`` catches the member, and twelve nouns apart: the tables'
   shared address and persistence (:class:`~risk.errors.RiskStoreError`),
   the instruction's own terms (:class:`~risk.errors.
   RiskKillSwitchError`), the event's own terms
@@ -173,7 +197,14 @@ of the authority the channel holds.  Nine pieces:
   :class:`~risk.errors.RiskOrdersStaleError` for the order path's receipt,
   a *sibling* of the killed receipt rather than a child of it: the kill is
   a state that stands until a door resets it, the staleness is a live
-  reading that stops being true by itself).
+  reading that stops being true by itself), and the limit-keeper's own
+  terms (:class:`~risk.errors.RiskDailyLossError` — a loss that is not a
+  loss, a limit nobody configured, a row no halt can be reconstructed as,
+  more than one halt standing where the law allows one, and the two
+  no-store refusals the feature cannot fail softly in — plus
+  :class:`~risk.errors.RiskOrdersHaltedError` for the order path's third
+  receipt, carrying the standing halt: a state that does not lift by
+  itself but *does* lift, at the reset door, by an operator's act).
 * :mod:`risk._identity` — the ``<host>/<pid>`` label that makes *"a
   separate process"* a checkable fact: a kill row names the process that
   sent it, read from the kernel and never accepted from the caller.
@@ -290,6 +321,16 @@ from .clock_skew import (
     measure_clock_skew,
     measured_clock_skews,
 )
+from .daily_loss import (
+    RISK_DAILY_LOSS_HALT_TABLE,
+    DailyLossHalt,
+    RiskDailyLossHaltStore,
+    halt_on_daily_loss,
+    manual_reset,
+    orders_halted_error,
+    recorded_daily_loss_halts,
+    require_within_daily_loss_limit,
+)
 from .demotion import (
     DEMOTION_BOUND,
     NODE_ID_COLUMN,
@@ -305,21 +346,25 @@ from .demotion_window import (
 )
 from .errors import (
     CLOCK_SKEW_CODE,
+    DAILY_LOSS_CODE,
     DEMOTION_WINDOW_CODE,
     FEED_STALENESS_CODE,
     FLATTEN_CODE,
     HALT_EVENT_CODE,
     KILL_INSTRUCTION_CODE,
+    ORDERS_HALTED_CODE,
     ORDERS_KILLED_CODE,
     ORDERS_STALE_CODE,
     SIGNAL_DEMOTION_CODE,
     RiskClockSkewError,
+    RiskDailyLossError,
     RiskDemotionWindowError,
     RiskError,
     RiskFeedStalenessError,
     RiskFlattenError,
     RiskHaltEventError,
     RiskKillSwitchError,
+    RiskOrdersHaltedError,
     RiskOrdersKilledError,
     RiskOrdersStaleError,
     RiskSignalDemotionError,
@@ -369,6 +414,7 @@ from .kill import (
 __all__ = [
     "CLOCK_SKEW_CODE",
     "COMPONENT_NAME",
+    "DAILY_LOSS_CODE",
     "DATABASE_URL_ENV",
     "DEMOTION_BOUND",
     "DEMOTION_WINDOW_CODE",
@@ -383,16 +429,19 @@ __all__ = [
     "KILL_INSTRUCTION",
     "KILL_INSTRUCTION_CODE",
     "NODE_ID_COLUMN",
+    "ORDERS_HALTED_CODE",
     "ORDERS_KILLED_CODE",
     "ORDERS_STALE_CODE",
     "PROCESS_ID_SEPARATOR",
     "RISK_CLOCK_SKEW_TABLE",
+    "RISK_DAILY_LOSS_HALT_TABLE",
     "RISK_HALT_EVENT_TABLE",
     "RISK_HALT_ROUTE",
     "RISK_ORDER_KILL_TABLE",
     "RISK_SIGNAL_DEMOTION_TABLE",
     "SIGNAL_DEMOTION_CODE",
     "ClockSkewHalt",
+    "DailyLossHalt",
     "DemotionWindow",
     "FeedStaleness",
     "FeedStalenessGuard",
@@ -405,6 +454,8 @@ __all__ = [
     "KillInstruction",
     "RiskClockSkewError",
     "RiskClockSkewStore",
+    "RiskDailyLossError",
+    "RiskDailyLossHaltStore",
     "RiskDemotionWindowError",
     "RiskError",
     "RiskFeedStalenessError",
@@ -415,6 +466,7 @@ __all__ = [
     "RiskHaltEventStore",
     "RiskKillSwitch",
     "RiskKillSwitchError",
+    "RiskOrdersHaltedError",
     "RiskOrdersKilledError",
     "RiskOrdersStaleError",
     "RiskSignalDemotionError",
@@ -425,18 +477,23 @@ __all__ = [
     "demote_over_meaningful_window",
     "flatten_positions",
     "halt_on_clock_skew",
+    "halt_on_daily_loss",
+    "manual_reset",
     "measure_clock_skew",
     "measure_feed_staleness",
     "measured_clock_skews",
+    "orders_halted_error",
     "orders_killed_error",
     "orders_stale_error",
     "process_identity",
     "read_feed_staleness",
     "record_halt",
+    "recorded_daily_loss_halts",
     "recorded_demotions",
     "recorded_halt_events",
     "require_feed_fresh",
     "require_orders_allowed",
+    "require_within_daily_loss_limit",
     "send_kill",
 ]
 

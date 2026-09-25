@@ -117,13 +117,44 @@ contract* was violated, not by which line of code failed:
   the evidence behind the ratio — and a caller sent from one to the other
   would wait for days that are never coming, or edit a ratio that was
   fine.
+* :class:`RiskDailyLossError` — feature 325's own noun, the *daily loss
+  halt*: a day's loss figure that is not one (not a real, not finite, or
+  negative — a negative loss is a gain wearing the loss's name, and the
+  sign error would silently disable the halt exactly when the day went
+  badly), a configured limit that states no band (not real, not finite,
+  not strictly positive — the sentence's own word for it is
+  *configured*, so a number nobody chose is refused rather than
+  defaulted), a stored row no halt can be reconstructed as (a breach the
+  row's own two figures deny is a refusal nobody justified), more than
+  one un-reset halt standing where the schema's law allows one, and a
+  module-level halt or reset that names no store to act through while
+  the day stands breached — the two directions whose soft failure is
+  the one this feature cannot afford: a halt that went nowhere leaves
+  an order layer believing itself stopped while it trades, and a reset
+  that went nowhere leaves an operator believing the order layer open
+  while every submission path still refuses.
+* :class:`RiskOrdersHaltedError` — the order layer's receipt of feature
+  325's refusal: the configured daily loss limit was breached and the
+  halt stands, so new order submission is refused *until a manual
+  reset*, and it carries the :class:`~risk.daily_loss.DailyLossHalt`
+  the guard read.  The sibling :class:`RiskOrdersKilledError` is to
+  feature 322's forever-kill and :class:`RiskOrdersStaleError` to
+  feature 328's live reading what this is to feature 325's
+  operator-liftable halt: the same kind of object — a refusal the order
+  path catches by type — over the third kind of condition (a standing
+  state that does not lift by itself but *does* lift, at one door, by
+  one act), which is why the three are told apart by class rather than
+  by a flag: an operator paging on each performs a different repair —
+  wait out the kill's process, watch the feed recover, or reach for the
+  reset door.
 
 Every message names the offending value and the contract it broke, and
 the feature classes open with their greppable tokens
 (:data:`KILL_INSTRUCTION_CODE`, :data:`ORDERS_KILLED_CODE`,
 :data:`HALT_EVENT_CODE`, :data:`FLATTEN_CODE`, :data:`CLOCK_SKEW_CODE`,
 :data:`FEED_STALENESS_CODE`, :data:`ORDERS_STALE_CODE`,
-:data:`SIGNAL_DEMOTION_CODE`, :data:`DEMOTION_WINDOW_CODE`)
+:data:`SIGNAL_DEMOTION_CODE`, :data:`DEMOTION_WINDOW_CODE`,
+:data:`DAILY_LOSS_CODE`, :data:`ORDERS_HALTED_CODE`)
 so an operator scanning a log for the member's refusals greps one word
 rather than a sentence — the same discipline the
 ``order_submission_unhealthy`` (feature 320) and ``determinism_broken``
@@ -135,27 +166,32 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; both are one-way imports
+    from .daily_loss import DailyLossHalt
     from .demotion_window import DemotionWindow
     from .feed_staleness import FeedStaleness
     from .kill import KillInstruction
 
 __all__ = [
     "CLOCK_SKEW_CODE",
+    "DAILY_LOSS_CODE",
     "DEMOTION_WINDOW_CODE",
     "FEED_STALENESS_CODE",
     "FLATTEN_CODE",
     "HALT_EVENT_CODE",
     "KILL_INSTRUCTION_CODE",
+    "ORDERS_HALTED_CODE",
     "ORDERS_KILLED_CODE",
     "ORDERS_STALE_CODE",
     "SIGNAL_DEMOTION_CODE",
     "RiskClockSkewError",
+    "RiskDailyLossError",
     "RiskDemotionWindowError",
     "RiskError",
     "RiskFeedStalenessError",
     "RiskFlattenError",
     "RiskHaltEventError",
     "RiskKillSwitchError",
+    "RiskOrdersHaltedError",
     "RiskOrdersKilledError",
     "RiskOrdersStaleError",
     "RiskSignalDemotionError",
@@ -280,6 +316,34 @@ SIGNAL_DEMOTION_CODE = "signal_demotion"
 #: demotion is not a demotion that failed to record — it is a demotion the
 #: window refused to let fire, and the repair is days, not a row.
 DEMOTION_WINDOW_CODE = "demotion_window"
+
+#: The greppable token every :class:`RiskDailyLossError` message opens
+#: with — the spec's own noun, app_spec.xml feature 325: *"System rejects
+#: new orders until a manual reset once the configured daily loss limit is
+#: breached."*  An operator scanning a log for the limit's faults greps
+#: ``daily_loss`` and finds the loss figures that were not figures, the
+#: limits that nobody configured, the rows no halt can be reconstructed
+#: as, and the two deployment directions that must not fail softly — a
+#: halt that names no store to stand in, and a reset that names no store
+#: to close anything — a grep apart from the order layer's receipt
+#: (:data:`ORDERS_HALTED_CODE`, which names the *consequence*, not the
+#: limit), the same split :data:`KILL_INSTRUCTION_CODE` states against
+#: :data:`ORDERS_KILLED_CODE`.
+DAILY_LOSS_CODE = "daily_loss"
+
+#: The greppable token every :class:`RiskOrdersHaltedError` message opens
+#: with.  It names the state the order layer is refusing under — *orders
+#: halted* — rather than the limit that set it, the split
+#: :data:`ORDERS_KILLED_CODE` and :data:`ORDERS_STALE_CODE` state for
+#: their own conditions, so a caller grepping its own order path's
+#: refusals finds the daily-loss receipt without also finding the
+#: limit-keeper's bookkeeping faults.  It deliberately spells ``halted``
+#: where the kill's receipt spells ``killed`` and the feed's ``stale``:
+#: three refusals the order path catches by type, told apart because
+#: their repairs differ — the kill's process, the feed's recovery, and
+#: this one's manual reset — and a token that borrowed another's word
+#: would send an operator looking for the wrong door.
+ORDERS_HALTED_CODE = "orders_halted"
 
 
 class RiskError(Exception):
@@ -701,3 +765,115 @@ class RiskDemotionWindowError(RiskError):
     def __init__(self, message: str, window: DemotionWindow | None = None) -> None:
         super().__init__(message)
         self.window = window
+
+
+class RiskDailyLossError(RiskError):
+    """A daily loss halt this module cannot judge, stand behind, or act on.
+
+    app_spec.xml feature 325's noun is the *daily loss halt* — the standing
+    refusal new orders face once the configured daily loss limit is
+    breached, held until a manual reset — and this is the failure of that
+    noun's own terms: a day's ``daily_loss`` figure that is not one — not
+    a real number, not finite (``NaN`` compares false against every
+    limit, so a non-finite figure would sit *inside* the limit for any
+    number configured, the one direction this feature must never fail
+    in), or negative (a negative loss is a gain wearing the loss's name,
+    and the sign error it would carry into the comparison is the one
+    that silently disables the halt exactly when the day went badly) —
+    a ``daily_loss_limit`` that states no band (not real, not finite, or
+    not strictly positive, the last of which is a deployment that would
+    refuse the day's first trade before any loss existed; the sentence's
+    own word for the figure is *configured*, and a number nobody chose
+    is refused rather than defaulted), a stored row no halt can be
+    reconstructed as (a breach the row's own two figures deny is a
+    refusal nobody justified, and a reset wearing half its facts is a
+    halt an operator cannot read), a table holding more than one
+    un-reset halt where the standing law allows one (the belt another
+    tool unbuckled, refused rather than arbitrated), and the two
+    module-level acts that name no store to act through: a halt while
+    the day stands breached (a halt that silently went nowhere would
+    leave an order layer believing itself stopped while it traded) and
+    a reset with nothing named to close (a reset that silently went
+    nowhere would leave an operator believing the order layer open
+    while every submission path still refused).  The one refusal the
+    store's own face adds — resetting when nothing stands — belongs to
+    the same noun: a caller that believed it had re-opened the order
+    layer must not be told it did.
+
+    A sibling of :class:`RiskStoreError` rather than a child of it, and
+    a sibling of :class:`RiskKillSwitchError`,
+    :class:`RiskHaltEventError` and :class:`RiskClockSkewError` for the
+    same reason they are siblings of each other: the noun is the
+    *halt*, not the channel, not the ledger, not the measurement and
+    not the store's address.  A caller sent from a malformed loss
+    figure to a bad ``DATABASE_URL`` would go and edit the deployment
+    while the figure stayed malformed, and the next judgement would
+    fail the same way, on a channel and a table that were both fine.
+
+    Every message opens with :data:`DAILY_LOSS_CODE` and names the
+    offending value, because the audience is whichever process is
+    holding the wrong end of the halt — the supervisor that could not
+    judge the day, the order layer that could not read what stands, or
+    the operator whose reset closed nothing — and the repair is a
+    figure, a configuration or a deployment, not a stack trace.
+    """
+
+
+class RiskOrdersHaltedError(RiskError):
+    """The daily loss limit was breached; the order path refuses until a
+    manual reset.
+
+    app_spec.xml feature 325: *"System rejects new orders until a manual
+    reset once the configured daily loss limit is breached."*
+    ``docs/nullius-tech-architecture.md`` §13.3's trigger table fixes the
+    action — *"Flatten, halt until manual reset"* — and this class is
+    the halt's second half arriving: the guard
+    (:func:`risk.require_within_daily_loss_limit`) raises it while a
+    daily loss halt stands, and every submission path that consults the
+    guard refuses through it rather than through a boolean it would
+    have to enforce at each call site.
+
+    **It carries the halt.**  :attr:`halt` is the standing
+    :class:`~risk.daily_loss.DailyLossHalt` the guard read — the day's
+    loss, the limit it broke, the breach moment, and the process that
+    judged the day — so the caller that must act on the refusal learns
+    *which day, which line, when* without a second query, the same
+    stance :class:`RiskOrdersKilledError` takes toward the instruction
+    it carries and :class:`RiskOrdersStaleError` toward the reading.
+    That is why this class carries a value where its bookkeeping
+    siblings carry only messages: the halt's own figures are the
+    feature's output, and the operator triaging a refused order path
+    needs them in the log line the refusal produces.
+
+    A sibling of :class:`RiskOrdersKilledError` and
+    :class:`RiskOrdersStaleError` rather than a child or a special case
+    of either, because the three refusals are answers to different
+    questions and need different repairs.  The kill is a *state that
+    stands forever* in this member — monotone by its own pinned law,
+    lifted by nobody, and the repair is whatever external process owns
+    the deployment.  The staleness is a *live reading of another
+    process's liveness*, and it stops being true by itself: the moment
+    the feed speaks again the very next guard call passes.  The daily
+    loss halt is the third kind — a *standing state that does not lift
+    by itself but does lift, at one door, by one act* — and collapsing
+    it into either sibling would break exactly one half: an operator
+    who waited for it to recover the way a stale feed does would wait
+    forever, and an operator who treated it as unkillable forever would
+    never reach for the manual reset the sentence's own second half
+    names.  The message closes by naming that door, because *"how do I
+    re-open the order layer?"* is the operator's next question and the
+    answer is the feature's own second half.
+
+    Every message opens with :data:`ORDERS_HALTED_CODE` and names the
+    loss, the limit and the breach moment, because the operator paging
+    on a refused order path asks those three questions first.
+    """
+
+    #: The standing halt the guard read.  Present on every error the
+    #: guard raises; ``None`` only on a hand-built error with no halt
+    #: behind it.
+    halt: DailyLossHalt | None
+
+    def __init__(self, message: str, halt: DailyLossHalt | None = None) -> None:
+        super().__init__(message)
+        self.halt = halt
