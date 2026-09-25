@@ -43,14 +43,25 @@ contract* was violated, not by which line of code failed:
   ``instruction`` attribute, because *"which process killed us, and
   when?"* is the first question the operator of a killed order layer asks
   and the refusal is where they will look for it.
+* :class:`RiskFlattenError` — feature 330's own noun, the *flatten*: an
+  execution engine face missing the verbs the flatten drives, a flatten
+  attempted under no standing kill, an engine whose own re-reading
+  reports something still standing after the flatten drove it, and a
+  module-level flatten that names no store to read the authority from.
+  A sibling of the others rather than a child of any, for the reason the
+  others are siblings: the noun is the flatten, not the instruction, not
+  the event and not the store's address — and a caller sent from a
+  residue to a bad ``DATABASE_URL`` would go and edit the deployment
+  while the engine still reported the very exposure the refusal named.
 
 Every message names the offending value and the contract it broke, and
 the feature classes open with their greppable tokens
 (:data:`KILL_INSTRUCTION_CODE`, :data:`ORDERS_KILLED_CODE`,
-:data:`HALT_EVENT_CODE`) so an operator scanning a log for the member's
-refusals greps one word rather than a sentence — the same discipline the
-``order_submission_unhealthy`` (feature 320) and ``determinism_broken``
-(feature 143) tokens state for their own features.
+:data:`HALT_EVENT_CODE`, :data:`FLATTEN_CODE`) so an operator scanning a
+log for the member's refusals greps one word rather than a sentence —
+the same discipline the ``order_submission_unhealthy`` (feature 320) and
+``determinism_broken`` (feature 143) tokens state for their own
+features.
 """
 
 from __future__ import annotations
@@ -61,10 +72,12 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; kill.py imports this
     from .kill import KillInstruction
 
 __all__ = [
+    "FLATTEN_CODE",
     "HALT_EVENT_CODE",
     "KILL_INSTRUCTION_CODE",
     "ORDERS_KILLED_CODE",
     "RiskError",
+    "RiskFlattenError",
     "RiskHaltEventError",
     "RiskKillSwitchError",
     "RiskOrdersKilledError",
@@ -103,6 +116,19 @@ ORDERS_KILLED_CODE = "orders_killed"
 #: receipt (:data:`ORDERS_KILLED_CODE`), because the ledger's faults are
 #: neither the send's nor the refusal's: they are the record's own.
 HALT_EVENT_CODE = "halt_event"
+
+#: The greppable token every :class:`RiskFlattenError` message opens with
+#: — the spec's own noun, app_spec.xml feature 330: *"System flattens
+#: successfully even when the strategy process is hung, which returns a
+#: completed flatten result."*  An operator scanning a log for the
+#: flatten's faults greps ``flatten`` and finds the faces that were
+#: missing verbs, the flattens attempted under no standing kill, and the
+#: residues the engine still reported — a grep apart from the channel's
+#: (:data:`KILL_INSTRUCTION_CODE`), the ledger's (:data:`HALT_EVENT_CODE`)
+#: and the order layer's receipt (:data:`ORDERS_KILLED_CODE`), because
+#: the flatten's faults are the *act's*: the authority was read, the
+#: channel worked, and the engine is the thing still holding exposure.
+FLATTEN_CODE = "flatten"
 
 
 class RiskError(Exception):
@@ -241,3 +267,45 @@ class RiskOrdersKilledError(RiskError):
     def __init__(self, message: str, instruction: KillInstruction | None = None) -> None:
         super().__init__(message)
         self.instruction = instruction
+
+
+class RiskFlattenError(RiskError):
+    """A flatten this module cannot drive to completion — or cannot start.
+
+    app_spec.xml feature 330's noun is the *flatten result*, and this is
+    the failure of that noun's own terms: an execution engine face
+    missing one of the four verbs the flatten drives (a face the
+    supervisor cannot talk to cannot be ordered flat), a flatten
+    attempted while no kill instruction stands on the channel (the
+    flatten is the drainage of feature 322's authority, and acting
+    without it would race the very submissions that authority exists to
+    stop), an engine fault or a residue — the engine's own re-reading
+    still reporting an order standing or a position open after the
+    flatten drove everything it was shown (a completed result returned
+    over a residue would be the one lie this feature exists to make
+    impossible), and a module-level :func:`risk.flatten_positions` that
+    names no store to read the authority from (the one refusal this
+    class makes that is about the *deployment* rather than the terms,
+    and the one direction of the flatten's absence that must not fail
+    softly — there is no other direction, because the order layer is who
+    the flatten acts *on*, not a caller of it).
+
+    A sibling of :class:`RiskKillSwitchError`,
+    :class:`RiskHaltEventError` and :class:`RiskOrdersKilledError`
+    rather than a child of any: the noun is the flatten.  A caller sent
+    from a missing verb to a bad address would go and edit
+    ``DATABASE_URL`` while the face stayed verbless — and the next
+    flatten would fail the same way, over a channel that was fine.
+
+    It carries no value, where :class:`RiskOrdersKilledError` carries
+    the instruction: the operator's recovery from a flatten refusal is
+    not held in the refusal — it is to flatten again, and the next
+    sweep's own enumeration of the engine is the truthful picture of
+    what remains (see :mod:`risk.flatten` for the recovery protocol the
+    refusal message states).
+
+    Every message opens with :data:`FLATTEN_CODE` and names the
+    offending value, because the audience is the supervisor process
+    holding a book that is still open, and the repair is an act, not a
+    stack trace.
+    """

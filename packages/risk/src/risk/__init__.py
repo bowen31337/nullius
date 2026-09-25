@@ -11,12 +11,14 @@ triggers (equity floor, daily loss, IC decay, staleness watchdog) that the
 category's later features own, one each.
 
 This member is the category's first feature, and everything after it
-(323's halt door, 325's manual reset, 330's flatten-while-hung) builds
-on the one thing it delivers: **a channel through which a supervisor in
-its own process stops an order layer in another one.**  Feature 331 —
-the halt event ledger, the member's second feature — builds on it too,
-and on nothing else: it is the record of the halts the channel and the
-doors after it produce.  Four pieces:
+(323's halt door, 325's manual reset) builds on the one thing it
+delivers: **a channel through which a supervisor in its own process
+stops an order layer in another one.**  Feature 331 — the halt event
+ledger, the member's second feature — and feature 330 — the flatten
+that survives a hung strategy process, the member's third — build on it
+too, and on nothing else: the ledger is the record of the halts the
+channel and the doors after it produce, and the flatten is the drainage
+of the authority the channel holds.  Five pieces:
 
 * :mod:`risk.kill` — the channel.  One row in the workspace's relational
   store (``DATABASE_URL``), held to one row by the table's own
@@ -29,6 +31,26 @@ doors after it produce.  Four pieces:
   :func:`~risk.kill.require_orders_allowed` for the order layer's — open
   the switch from the environment so neither process composes anything
   to use it.
+* :mod:`risk.flatten` — the act, feature 330: *System flattens
+  successfully even when the strategy process is hung, which returns a
+  completed flatten result.*  No table of its own, and that absence is
+  the feature: the one thing a hung strategy process can wedge from
+  outside this module is the shared store's write lock — it died
+  holding it — and a flatten that had to write before answering would
+  be a flatten a hung strategy process could prevent, which §13.3
+  separates the processes to rule out.  So
+  :meth:`~risk.flatten.RiskFlattener.flatten` reads the channel's
+  standing kill through its own switch (a flatten under no kill is
+  refused — the kill stops the source, the flatten drains the sink),
+  drives the execution engine face's own verbs — cancel every order
+  standing, then close every position open — and returns a
+  :class:`~risk.flatten.FlattenResult` only when the engine's own
+  re-reading reports nothing standing: *completed* is the one status
+  the value layer will construct.  The module-level spelling —
+  :func:`~risk.flatten.flatten_positions` — opens the flattener from
+  the environment for the same reason the channel's spellings do, and
+  refuses on the store's absence, because the flatten has one caller —
+  the supervisor — and no direction that may fail softly.
 * :mod:`risk.halt_events` — the ledger, feature 331: *System persists
   every halt event with its trigger reason and timestamp for later
   reconciliation.*  A second table in the same store
@@ -49,13 +71,16 @@ doors after it produce.  Four pieces:
   the channel's spellings do, and split the same way on its absence:
   recording refuses, reading answers the empty truth.
 * :mod:`risk.errors` — the refusal vocabulary.  One base so a single
-  ``except`` catches the member, and four nouns apart: the tables'
+  ``except`` catches the member, and five nouns apart: the tables'
   shared address and persistence (:class:`~risk.errors.RiskStoreError`),
   the instruction's own terms (:class:`~risk.errors.
   RiskKillSwitchError`), the event's own terms
-  (:class:`~risk.errors.RiskHaltEventError`), and the order layer's
+  (:class:`~risk.errors.RiskHaltEventError`), the order layer's
   receipt (:class:`~risk.errors.RiskOrdersKilledError`, which carries
-  the standing instruction).
+  the standing instruction), and the flatten's own terms
+  (:class:`~risk.errors.RiskFlattenError` — a face missing its verbs, a
+  flatten under no standing kill, an engine whose re-reading still
+  reports something standing).
 * :mod:`risk._identity` — the ``<host>/<pid>`` label that makes *"a
   separate process"* a checkable fact: a kill row names the process that
   sent it, read from the kernel and never accepted from the caller.
@@ -121,6 +146,22 @@ process and the reconciler reach the ledger without composing, exactly
 as the channel's two processes do and for the same reason, and the two
 doors cannot disagree for the same reason: one class, one URL, one
 table.
+
+**The flattener's component is the same reflection, under a third
+name.**  :data:`FLATTENER_COMPONENT_NAME` registers
+:func:`build_risk_flattener` beside the switch and the ledger — the
+same convention :mod:`canary` states for its own third component.  The
+reflection carries less here than its siblings do, and that is
+instructive: the flattener owns no table, so what the composed object
+reflects is the *authority* — the URL the standing kill is read
+through — and the engine face still has to be handed to
+:meth:`~risk.flatten.RiskFlattener.flatten` by the caller that holds
+it, because no composition can supply the supervisor's own hold on the
+execution engine (§13.3's *"kill authority"* is a process's fact, not
+an application's).  The supervisor process itself reaches the
+flattener without composing, exactly as it reaches the switch, and the
+two doors cannot disagree for the same reason: one class, one URL, one
+channel.
 """
 
 from __future__ import annotations
@@ -129,14 +170,22 @@ from app.module_loader import register
 
 from ._identity import PROCESS_ID_SEPARATOR, process_identity
 from .errors import (
+    FLATTEN_CODE,
     HALT_EVENT_CODE,
     KILL_INSTRUCTION_CODE,
     ORDERS_KILLED_CODE,
     RiskError,
+    RiskFlattenError,
     RiskHaltEventError,
     RiskKillSwitchError,
     RiskOrdersKilledError,
     RiskStoreError,
+)
+from .flatten import (
+    FLATTEN_STATUS_COMPLETED,
+    FlattenResult,
+    RiskFlattener,
+    flatten_positions,
 )
 from .halt_events import (
     RISK_HALT_EVENT_TABLE,
@@ -159,6 +208,9 @@ from .kill import (
 __all__ = [
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
+    "FLATTENER_COMPONENT_NAME",
+    "FLATTEN_CODE",
+    "FLATTEN_STATUS_COMPLETED",
     "HALT_EVENTS_COMPONENT_NAME",
     "HALT_EVENT_CODE",
     "KILL_INSTRUCTION",
@@ -167,15 +219,19 @@ __all__ = [
     "PROCESS_ID_SEPARATOR",
     "RISK_HALT_EVENT_TABLE",
     "RISK_ORDER_KILL_TABLE",
+    "FlattenResult",
     "HaltEvent",
     "KillInstruction",
     "RiskError",
+    "RiskFlattenError",
+    "RiskFlattener",
     "RiskHaltEventError",
     "RiskHaltEventStore",
     "RiskKillSwitch",
     "RiskKillSwitchError",
     "RiskOrdersKilledError",
     "RiskStoreError",
+    "flatten_positions",
     "orders_killed_error",
     "process_identity",
     "record_halt",
@@ -202,6 +258,15 @@ COMPONENT_NAME = "risk"
 #: different lifecycles, and a caller asking a composed application for
 #: one must not be handed the other.
 HALT_EVENTS_COMPONENT_NAME = "risk-halt-events"
+
+#: The component name the flattener registers under — a third name
+#: beside the switch and the ledger, the convention :mod:`canary` states
+#: for its own second and third components: the switch answers *is the
+#: order layer killed?*, the ledger answers *what halted, when, and
+#: why?*, and the flattener answers *flatten now* — three different
+#: questions, and a caller asking a composed application for one must
+#: not be handed another's verb.
+FLATTENER_COMPONENT_NAME = "risk-flattener"
 
 
 @register(COMPONENT_NAME)
@@ -249,3 +314,29 @@ def build_halt_event_store() -> RiskHaltEventStore | None:
     module-level spellings they use instead.
     """
     return RiskHaltEventStore.resolve()
+
+
+@register(FLATTENER_COMPONENT_NAME)
+def build_risk_flattener() -> RiskFlattener | None:
+    """Component builder: the flattener bound to ``DATABASE_URL``.
+
+    The same reflection, under the flattener's own name (see
+    :data:`FLATTENER_COMPONENT_NAME`): takes no arguments, resolves
+    ``DATABASE_URL`` at build time, and returns ``None`` when nothing
+    names a store — the same stance the switch's and the ledger's
+    builders take, for the same reason.  Construction performs no I/O
+    and creates nothing: the flattener owns no table, so there is no
+    schema to bring into being, and the first
+    :meth:`~risk.flatten.RiskFlattener.flatten` is where the channel's
+    row is read through the switch the flattener holds.
+
+    What the composed flattener is *for* is stated in this module's
+    docstring: a reflection of the authority, for callers that ask a
+    composed application for the flatten verb by name.  The supervisor
+    process reaches the same flattener without composing — see
+    :mod:`risk.flatten` for the module-level spelling it uses instead —
+    and still hands :meth:`~risk.flatten.RiskFlattener.flatten` the
+    execution engine face itself, because no composition can supply the
+    supervisor's own hold on the engine.
+    """
+    return RiskFlattener.resolve()

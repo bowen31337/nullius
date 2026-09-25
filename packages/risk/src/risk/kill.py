@@ -70,7 +70,7 @@ kill: the triggers are features 323–329's, each with its own module and
 its own repair, and a switch that also judged equity or staleness would
 be five features wearing one verb.  It does not *flatten*: cancelling
 open positions while the strategy process is hung is feature 330's act,
-which will read this channel's standing instruction and act on it.  It
+which reads this channel's standing instruction and acts on it.  It
 does not *log events*: one row is the standing state, not the halt ledger
 — feature 331 persists every halt event for reconciliation, and
 duplicating that log here would be a second writer of a record whose
