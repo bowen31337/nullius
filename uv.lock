@@ -24,6 +24,7 @@ members = [
     "providers",
     "regime",
     "replay",
+    "risk",
     "router",
     "sandbox",
     "scoring",
@@ -565,6 +566,17 @@ requires-dist = [{ name = "nullius", editable = "." }]
 name = "replay"
 version = "0.1.0"
 source = { editable = "packages/replay" }
+dependencies = [
+    { name = "nullius" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "nullius", editable = "." }]
+
+[[package]]
+name = "risk"
+version = "0.1.0"
+source = { editable = "packages/risk" }
 dependencies = [
     { name = "nullius" },
 ]

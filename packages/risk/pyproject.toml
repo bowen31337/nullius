@@ -1,0 +1,35 @@
+# The "risk" workspace member — Risk Supervisor & Kill Switches
+# (app_spec.xml feature 322; docs/nullius-tech-architecture.md §13.3;
+# docs/alpha-engine-prd.md C10 "Risk and kill switches").
+#
+# Per the root pyproject.toml workspace contract, this directory joins the
+# uv workspace (and uv.lock) automatically by existing with this file; no
+# edit to any other file registers it.  The module loader discovers it by
+# scanning the declared members, so nothing outside this directory ever
+# needs to know this package's name.
+#
+# Dependencies: the workspace root only, for the factory's registration
+# protocol (`import app.module_loader`).  The kill channel is the shared
+# relational store addressed by DATABASE_URL — stdlib sqlite3, the spec's
+# "SQLite acceptable single-machine" allowance (§18) — and §17's "no
+# inbound ports on the live trading host" is precisely why the member owns
+# no socket, no server and no third-party client: there is no port for the
+# supervisor's kill instruction to travel on, so the lockfile gains no edge
+# from this package.
+
+[project]
+name = "risk"
+version = "0.1.0"
+description = "Risk supervisor & kill switches: runs the risk supervisor as a separate process, which sends a kill instruction to the order layer through the shared relational store — one row, first-write-wins, standing until the features that own a reset add one."
+requires-python = ">=3.12"
+dependencies = ["nullius"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/risk"]
