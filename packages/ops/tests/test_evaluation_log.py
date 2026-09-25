@@ -663,14 +663,16 @@ def test_the_sentence_demands_no_state_so_nothing_composes() -> None:
     # and an emission demands none — the scan still registers exactly
     # the stateful components (the route, the dashboard, the
     # live-metrics store, feature 347's meta-overfit gap store, feature
-    # 346's discovery-rate store and feature 345's Type-B depth store)
-    # and no ``evaluation-log`` seventh.
+    # 346's discovery-rate store, feature 345's Type-B depth store and
+    # feature 344's calibration store)
+    # and no ``evaluation-log`` eighth.
     from ops import (
         OPS_COMPONENT_NAME,
         OPS_DASHBOARD_COMPONENT_NAME,
         OPS_DISCOVERY_RATE_COMPONENT_NAME,
         OPS_LIVE_METRIC_COMPONENT_NAME,
         OPS_META_OVERFIT_COMPONENT_NAME,
+        OPS_NULL_CALIBRATION_COMPONENT_NAME,
         OPS_TYPE_B_DEPTH_COMPONENT_NAME,
     )
 
@@ -684,6 +686,7 @@ def test_the_sentence_demands_no_state_so_nothing_composes() -> None:
             OPS_META_OVERFIT_COMPONENT_NAME,
             OPS_DISCOVERY_RATE_COMPONENT_NAME,
             OPS_TYPE_B_DEPTH_COMPONENT_NAME,
+            OPS_NULL_CALIBRATION_COMPONENT_NAME,
         }
     )
     assert "ops-evaluation-log" not in registry.names()

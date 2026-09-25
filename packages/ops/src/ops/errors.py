@@ -100,6 +100,27 @@ campaigns"* is driving toward), and what is refused is a figure that
 could not have been accounted — because the count is feature 269's own
 answer, an integer of events the store hands back unchanged, and a
 number that is not one is nobody's measurement.
+
+Feature 344 adds the planted-null calibration store's own:
+:class:`NullCalibrationError`, the refusal of a pair that cannot be the
+calibration it claims — a campaign id that joins no campaign, a figure
+that is not a fraction of a planted class, a label that orders no trend, a
+store that cannot be asked.  It is the fifth of the store-surface siblings
+(:class:`LiveMetricError`, :class:`MetaOverfitGapError`,
+:class:`DiscoveryRateError` and :class:`TypeBDepthError` are the other
+four) and it carries the family's asymmetry: an *absent* pair is a
+discoverable state answered as an absence (no campaign has closed a
+calibration out yet), **the endpoints are measurements the store
+persists happily** — a sensitivity of ``0.0`` is a campaign that found
+none of its reals, a specificity of ``1.0`` one that wrongly declared
+nothing, both of them the honest corners feature 266 answers — and what
+is refused is a pair that could not have been measured, because the
+figures are feature 266's own answer over the campaign's planted
+population and a number that is not a fraction of a class is nobody's
+measurement.  The store derives nothing beyond them: no blend, no rate
+over the two and no interval around either, so there is no derived-column
+reconciliation to refuse here as there is at the sibling that computes its
+own gap.
 """
 
 from __future__ import annotations
@@ -111,6 +132,7 @@ __all__ = [
     "FdrDeployMetricError",
     "LiveMetricError",
     "MetaOverfitGapError",
+    "NullCalibrationError",
     "OpsError",
     "ReplayLogError",
     "TypeBDepthError",
@@ -470,5 +492,56 @@ class TypeBDepthError(OpsError):
     store persists, not a refusal it makes.  What is refused is a figure
     that could not have been accounted, and the failure mode this
     feature exists to rule out — a count nobody measured, quietly
+    defaulted into the trend — is refused rather than served.
+    """
+
+
+class NullCalibrationError(OpsError):
+    """Feature 344's refusals: the planted-null calibration store's own
+    error states.
+
+    Raised in exactly the places :mod:`ops.null_calibration` states the
+    store's contract, and the split between them is the member-seam law
+    the whole workspace states for error vocabulary: a helper that raised
+    another module's error would escape through this member's call path,
+    and a caller who wrote ``except NullCalibrationError`` — the whole
+    point of the store owning a class — would be taken down by an error
+    from a module it never imported.  So:
+
+    * an id that is not a UUID is refused, because §16's research metrics
+      are *per campaign* and an id that cannot join the tree's campaign
+      key — and the member's other research rows, keyed the same way —
+      names no campaign a calibration pair could be persisted for;
+    * a figure that is not a finite real in ``[0, 1]`` is refused —
+      ``bool`` before real, NaN and ±inf, and an out-of-bound value —
+      because the pair is feature 266's own answer over the planted
+      classes and a figure that is not a fraction of one is not a
+      calibration; the likeliest thing wearing either name being a
+      *count* of found reals or clean nulls, which clamped to an
+      endpoint would persist a calibration nobody measured;
+    * a stored row whose figure is not a finite real in ``[0, 1]`` — or
+      whose id is not a campaign — is refused on the read, because
+      SQLite will accept anything another tool inserts and a row this
+      store could not have written would reach prd §11's trend as a
+      calibration nobody measured; and
+    * a read or write that failed against the store is *translated* here
+      from :class:`sqlite3.Error` (chained, never swallowed), because
+      the table is this member's and the caller's single ``except
+      NullCalibrationError`` must catch a pair that measured but never
+      landed rather than be taken down by the database's own error.
+
+    **Never raised for an absent pair.**  A deployment that has closed no
+    campaign out answers ``None`` from the point read and an empty
+    sequence from the sweep — a discoverable state, not a refusal,
+    exactly as an unclosed campaign is for feature 267's trend and
+    feature 346's rate, an unclosed cycle for feature 347's gap and an
+    unrecorded metric for feature 350's four tiles.  **Never raised for
+    an endpoint, either**: a sensitivity of ``0.0`` is a campaign that
+    found none of its reals and a specificity of ``1.0`` one that
+    wrongly declared nothing — both are honest measurements feature 266
+    answers deliberately, prd §11 tracks the pair without a target, and
+    the store persists them as the figures they are.  What is refused is
+    a pair that could not have been measured, and the failure mode this
+    feature exists to rule out — a calibration nobody took, quietly
     defaulted into the trend — is refused rather than served.
     """

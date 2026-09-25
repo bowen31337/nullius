@@ -48,7 +48,8 @@ This module answers exactly the composition questions — *what is the
 composed fdr-deploy route?*, *what is the composed dashboard?*, *what
 is the composed live-metrics store?*, *what is the composed
 meta-overfit gap store?*, *what is the composed discovery-rate store?*,
-*what is the composed Type-B depth store?*
+*what is the composed Type-B depth store?*, *what is the composed
+planted-null calibration store?*
 — so the observability features that follow (342's lamps, 343's
 coverage, 352's chrome) can ask them without importing the member
 directly.
@@ -66,6 +67,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a depende
         FdrDeployEndpoint,
         LiveMetricsStore,
         MetaOverfitGaps,
+        NullCalibrations,
         OperatorDashboard,
         TypeBDepths,
     )
@@ -76,12 +78,14 @@ __all__ = [
     "OPS_DISCOVERY_RATE_COMPONENT_NAME",
     "OPS_LIVE_METRIC_COMPONENT_NAME",
     "OPS_META_OVERFIT_COMPONENT_NAME",
+    "OPS_NULL_CALIBRATION_COMPONENT_NAME",
     "OPS_TYPE_B_DEPTH_COMPONENT_NAME",
     "dashboard_component",
     "discovery_rate_component",
     "fdr_deploy_component",
     "live_metric_component",
     "meta_overfit_component",
+    "null_calibration_component",
     "type_b_depth_component",
 ]
 
@@ -142,6 +146,18 @@ OPS_DISCOVERY_RATE_COMPONENT_NAME = "ops-discovery-rate"
 #: prefix.  The member's suite asserts this seat and the member's own
 #: :data:`~ops.OPS_TYPE_B_DEPTH_COMPONENT_NAME` cannot drift apart.
 OPS_TYPE_B_DEPTH_COMPONENT_NAME = "ops-type-b-depth"
+
+#: The component name the ops member registers its planted-null calibration
+#: store under (feature 344: persists sensitivity and specificity on planted
+#: nulls per campaign — docs §16's research metric
+#: *"sensitivity/specificity on planted nulls"* and prd §11's secondary
+#: scorecard row *"Sensitivity / specificity on planted nulls (base-rate
+#: independent) | tracked, not targeted"*), the route, dashboard, live-metrics
+#: store, meta-overfit gap store, discovery-rate store and Type-B depth
+#: store's peer under the same member-first prefix.  The member's suite
+#: asserts this seat and the member's own
+#: :data:`~ops.OPS_NULL_CALIBRATION_COMPONENT_NAME` cannot drift apart.
+OPS_NULL_CALIBRATION_COMPONENT_NAME = "ops-null-calibration"
 
 
 def fdr_deploy_component(app: Application | None = None) -> "FdrDeployEndpoint | Any":
@@ -259,3 +275,25 @@ def type_b_depth_component(app: Application | None = None) -> "TypeBDepths | Any
     """
     application = app if app is not None else create_app()
     return application.get(OPS_TYPE_B_DEPTH_COMPONENT_NAME)
+
+
+def null_calibration_component(
+    app: Application | None = None,
+) -> "NullCalibrations | Any":
+    """Return the composed planted-null calibration store (feature 344's
+    store).
+
+    The same composition accessor as :func:`fdr_deploy_component`, for the
+    member's seventh component: reads from ``app`` when handed one, composes
+    the declared workspace otherwise, and answers ``None`` when no
+    ``ops-null-calibration`` component is registered — the same discoverable
+    state, for the same reasons (the member was not scanned, or nothing named
+    a database).  A caller that resolves ``None`` here and needs to persist a
+    campaign's pair is pointed at the member's own store, which refuses to
+    proceed rather than silently persisting nowhere — a calibration that
+    measured but never landed is exactly the state feature 344 exists to rule
+    out, because prd §11's secondary scorecard row is *"tracked"* across these
+    rows, and a missing row reads as a campaign nobody calibrated.
+    """
+    application = app if app is not None else create_app()
+    return application.get(OPS_NULL_CALIBRATION_COMPONENT_NAME)

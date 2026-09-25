@@ -72,13 +72,15 @@ metrics store feature 267's own docstring already reserves
 *"train-vs-holdout world score gap (meta-overfit)"* of §16, landed as
 :mod:`ops.meta_overfit`), 350's four live metrics (landed as
 :mod:`ops.live_metrics`), 346's discoveries per 1000 budget-charging
-trials (landed as :mod:`ops.discovery_rate`) and 345's Type-B depth
+trials (landed as :mod:`ops.discovery_rate`), 345's Type-B depth
 past the flip (§16's *"Type-B depth past the flip in Type-D worlds"*,
-landed as :mod:`ops.type_b_depth`) are the four that have; 344's
-sensitivity/specificity row arrives as its own table under the same
-allowance, each with its own refusal vocabulary and its own
-``@register`` here
-beside the route, the dashboard and the four stores' — 348's
+landed as :mod:`ops.type_b_depth`) and 344's sensitivity/specificity
+pair on planted nulls (§16's *"sensitivity/specificity on planted
+nulls"*, the row feature 266's docstring reserved for this member and
+landed as :mod:`ops.null_calibration`) are the five that have — each
+as its own table under the same allowance, each with its own refusal
+vocabulary and its own ``@register`` here
+beside the route, the dashboard and the other stores' — 348's
 evaluation record and 349's replay record landed as
 :mod:`ops.evaluation_log` and :mod:`ops.replay_log` — the emission
 seams the reserved clause named: one structured stdlib log record per
@@ -190,6 +192,23 @@ member already says:
   and the store, alone among its store siblings, computes **nothing**:
   no quotient, no difference, no denominator, because the count is an
   integer of events and prd §11's *"falling"* is read over it unchanged.
+* :class:`~ops.null_calibration.NullCalibrations` with
+  :class:`~ops.null_calibration.NullCalibration` — feature 344's store:
+  the planted-null calibration pair per campaign, §16's research metric
+  (*"sensitivity/specificity on planted nulls"*) and prd §11's secondary
+  scorecard row (*"Sensitivity / specificity on planted nulls
+  (base-rate independent) | tracked, not targeted"*), persisted into the
+  member's own table in the store ``DATABASE_URL`` names.  The two
+  figures are feature 266's own — ``TP/(TP+FN)`` and ``TN/(TN+FP)`` over
+  the campaign's planted population, handed over already measured — and
+  the store computes **neither**, exactly as feature 345 computes
+  nothing: no quotient, no blend, no average over the pair, no interval
+  around either, and in particular no base rate and no ``FDR_deploy``,
+  because that projection is feature 267's arithmetic at π₀ = 0.9 (a
+  constant, not a parameter).  The row is the campaign's key, the two
+  figures feature 266 measured and the instant it was written — what the
+  sentence asks this store to persist, and nothing this store would have
+  had to invent.
 * :class:`~ops.errors.OpsError` with
   :class:`~ops.errors.FdrDeployMetricError`,
   :class:`~ops.errors.LiveMetricError`,
@@ -197,7 +216,8 @@ member already says:
   :class:`~ops.errors.DiscoveryRateError`,
   :class:`~ops.errors.ReplayLogError`,
   :class:`~ops.errors.EvaluationLogError`,
-  :class:`~ops.errors.TypeBDepthError` and
+  :class:`~ops.errors.TypeBDepthError`,
+  :class:`~ops.errors.NullCalibrationError` and
   :class:`~ops.errors.DashboardRenderError` — the member's refusal
   vocabulary: one base so a caller catches the member as a whole, one
   subclass per surface so a refusal names where it happened.
@@ -236,6 +256,7 @@ from .errors import (
     FdrDeployMetricError,
     LiveMetricError,
     MetaOverfitGapError,
+    NullCalibrationError,
     OpsError,
     ReplayLogError,
     TypeBDepthError,
@@ -266,6 +287,12 @@ from .meta_overfit import (
     MetaOverfitGap,
     MetaOverfitGaps,
 )
+from .null_calibration import (
+    NULL_CALIBRATION_TABLE,
+    OPS_NULL_CALIBRATION_COMPONENT_NAME,
+    NullCalibration,
+    NullCalibrations,
+)
 from .replay_log import (
     REPLAY_LOG_LEVEL,
     REPLAY_LOG_LOGGER_NAME,
@@ -292,11 +319,13 @@ __all__ = [
     "LIVE_METRICS",
     "LIVE_METRIC_TABLE",
     "META_OVERFIT_TABLE",
+    "NULL_CALIBRATION_TABLE",
     "OPS_COMPONENT_NAME",
     "OPS_DASHBOARD_COMPONENT_NAME",
     "OPS_DISCOVERY_RATE_COMPONENT_NAME",
     "OPS_LIVE_METRIC_COMPONENT_NAME",
     "OPS_META_OVERFIT_COMPONENT_NAME",
+    "OPS_NULL_CALIBRATION_COMPONENT_NAME",
     "OPS_TYPE_B_DEPTH_COMPONENT_NAME",
     "REPLAY_LOG_LEVEL",
     "REPLAY_LOG_LOGGER_NAME",
@@ -320,6 +349,9 @@ __all__ = [
     "MetaOverfitGap",
     "MetaOverfitGapError",
     "MetaOverfitGaps",
+    "NullCalibration",
+    "NullCalibrationError",
+    "NullCalibrations",
     "OperatorDashboard",
     "OpsError",
     "ReplayLogError",
@@ -561,3 +593,52 @@ def build_type_b_depth_store() -> TypeBDepths | None:
     is both constructed and asked.
     """
     return TypeBDepths.resolve()
+
+
+#: The component name the member registers its planted-null calibration store
+#: under — the route, dashboard, live-metrics store, meta-overfit gap store,
+#: discovery-rate store and Type-B depth store's peer under the same
+#: member-first prefix (:data:`OPS_COMPONENT_NAME`,
+#: :data:`OPS_DASHBOARD_COMPONENT_NAME`,
+#: :data:`OPS_LIVE_METRIC_COMPONENT_NAME`,
+#: :data:`OPS_META_OVERFIT_COMPONENT_NAME`,
+#: :data:`OPS_DISCOVERY_RATE_COMPONENT_NAME`,
+#: :data:`OPS_TYPE_B_DEPTH_COMPONENT_NAME`), so a composed application's
+#: ``order`` sorts this member's components *beside* — never inside — another
+#: member's.  Spelled in the app package seat (:mod:`app.modules.ops`) as
+#: well, and the member's suite asserts the two agree.  The growth was reserved
+#: by the member's own registration when feature 341 landed and the app-package
+#: seat reserved beside it (*"344's and 345's arrive as their own tables under
+#: the same allowance"*), and features 266's and 267's own docstrings reserved
+#: the row itself (*"the research-metrics row that carries 266's pair is the
+#: ops member's (feature 344)"*).  It is *defined* in
+#: :mod:`ops.null_calibration` and imported above — the same placement the
+#: other five stores' names take, so the constant lives beside the module whose
+#: component it names.
+@register(OPS_NULL_CALIBRATION_COMPONENT_NAME)
+def build_null_calibration_store() -> NullCalibrations | None:
+    """Component builder: feature 344's calibration store, bound to the store
+    ``DATABASE_URL`` names.
+
+    Takes no arguments — the factory's registration protocol — and decides at
+    build time only what the Type-B depth store's builder beside it decides:
+    whether ``DATABASE_URL`` names a store.  It resolves the URL itself rather
+    than importing any sibling, so whole-workspace composition never depends on
+    a member that is not promised to be on ``sys.path`` at build time — the
+    store is stdlib-only by design, and the URL is the one composition fact the
+    route, the dashboard and the member's other five stores all share.  In
+    particular it imports no *scoring* member, and no *nulloracle* one: the
+    pair is handed over already measured, and the process that measures it
+    (feature 265's scorer, feature 266's verb on it) is never reached from
+    composition.
+
+    Returns ``None`` when no ``DATABASE_URL`` is configured — an unconfigured
+    store is a discoverable deployment state, not an exception, the same stance
+    the route, dashboard, live-metrics, meta-overfit, discovery-rate and
+    Type-B depth builders take — so a deployment without a relational store
+    still composes.  Building performs no I/O: no store is constructed, no
+    database opened, no schema created — the first
+    :meth:`~ops.null_calibration.NullCalibrations.record` is where the store is
+    both constructed and asked.
+    """
+    return NullCalibrations.resolve()
