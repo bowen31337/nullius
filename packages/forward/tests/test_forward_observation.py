@@ -29,7 +29,7 @@ import uuid
 
 import forward.observation
 import pytest
-from conftest import DECIDED_AT, NODE_ID, code_of
+from conftest import DECIDED_AT, FORWARD_DAYS, NODE_ID, code_of
 from forward import (
     DATABASE_URL_ENV,
     ForwardIdentityError,
@@ -84,7 +84,8 @@ def test_the_observation_lands_as_its_own_row(
     # not annotated in place, because the table's whole value is that each
     # day's measurement is its own row with its own minted identity.
     record, created = observations.append_observation(
-        NODE_ID, observed_on=FIRST_DAY, live_ic=0.12
+        NODE_ID, observed_on=FIRST_DAY, live_ic=0.12,
+    forward_days=FORWARD_DAYS,
     )
     assert created is True
     rows = forward_rows()
@@ -109,7 +110,8 @@ def test_the_appended_row_carries_the_instant_the_registry_stamped(
     # the raw ``promotion_registry.decided_at`` feature 293 wrote, not against
     # anything this member (or this suite) computed on the way past.
     record, _ = observations.append_observation(
-        NODE_ID, observed_on=FIRST_DAY, live_ic=0.12
+        NODE_ID, observed_on=FIRST_DAY, live_ic=0.12,
+    forward_days=FORWARD_DAYS,
     )
     decided = {row["node_id"]: row["decided_at"] for row in promotion_rows()}
     assert record.promoted_at == dt.datetime.fromisoformat(decided[NODE_ID])
@@ -124,7 +126,7 @@ def test_the_two_columns_this_feature_does_not_own_stay_null(
     # 337's ``backtest_ic`` and feature 340's ``realized_cost_bps`` — arrive
     # NULL exactly as they stood on the opening row.  A writer that guessed
     # a zero into either would be answering for a feature that has not run.
-    observations.append_observation(NODE_ID, observed_on=FIRST_DAY, live_ic=0.12)
+    observations.append_observation(NODE_ID, observed_on=FIRST_DAY, live_ic=0.12, forward_days=FORWARD_DAYS)
     appended = forward_rows()[1]
     assert appended["backtest_ic"] is None
     assert appended["realized_cost_bps"] is None
@@ -136,7 +138,8 @@ def test_an_appended_row_reports_itself_observed(
     # The readable name for the state 0108's comment describes: the opening
     # row has measured nothing, the observation row has.
     record, _ = observations.append_observation(
-        NODE_ID, observed_on=FIRST_DAY, live_ic=-0.25
+        NODE_ID, observed_on=FIRST_DAY, live_ic=-0.25,
+    forward_days=FORWARD_DAYS,
     )
     assert record.observed is True
     assert opened_record.observed is False
@@ -148,7 +151,8 @@ def test_the_identity_is_canonicalized_on_the_way_in(
     # A :class:`uuid.UUID` in hand is accepted and stored in the table's one
     # spelling, so the appended row joins the opening row's node exactly.
     record, _ = observations.append_observation(
-        uuid.UUID(NODE_ID), observed_on=FIRST_DAY, live_ic=0.12
+        uuid.UUID(NODE_ID), observed_on=FIRST_DAY, live_ic=0.12,
+    forward_days=FORWARD_DAYS,
     )
     assert record.node_id == NODE_ID
     assert forward_rows()[1]["node_id"] == NODE_ID
@@ -166,12 +170,14 @@ def test_observations_accumulate_whatever_order_they_arrive_in(
     # (rowid order: 03-02, then 03-05, then 03-03), and the member's own read
     # orders them chronologically, which is what keeps feature 334's curve
     # and feature 337's ratio reading one record however it was written.
-    observations.append_observation(NODE_ID, observed_on=FIRST_DAY, live_ic=0.12)
+    observations.append_observation(NODE_ID, observed_on=FIRST_DAY, live_ic=0.12, forward_days=FORWARD_DAYS)
     observations.append_observation(
-        NODE_ID, observed_on=dt.date(2026, 3, 5), live_ic=0.40
+        NODE_ID, observed_on=dt.date(2026, 3, 5), live_ic=0.40,
+    forward_days=FORWARD_DAYS,
     )
     observations.append_observation(
-        NODE_ID, observed_on=dt.date(2026, 3, 3), live_ic=-0.05
+        NODE_ID, observed_on=dt.date(2026, 3, 3), live_ic=-0.05,
+    forward_days=FORWARD_DAYS,
     )
     assert [row["observed_on"] for row in forward_rows()] == [
         "2026-03-01",
@@ -205,10 +211,12 @@ def test_a_retry_is_answered_by_the_standing_observation(
     # ``created=False`` — the same semantics the opening write gives a
     # retried promote.
     first, created = observations.append_observation(
-        NODE_ID, observed_on=FIRST_DAY, live_ic=0.12
+        NODE_ID, observed_on=FIRST_DAY, live_ic=0.12,
+    forward_days=FORWARD_DAYS,
     )
     second, again = observations.append_observation(
-        NODE_ID, observed_on="2026-03-02", live_ic=0.12
+        NODE_ID, observed_on="2026-03-02", live_ic=0.12,
+    forward_days=FORWARD_DAYS,
     )
     assert created is True and again is False
     assert second == first
@@ -224,12 +232,14 @@ def test_a_whole_number_coefficient_and_its_float_are_one_observation(
     # observation rather than a disagreement — the reason the narrowing lives
     # in the validator rather than at the comparison.
     first, created = observations.append_observation(
-        NODE_ID, observed_on=FIRST_DAY, live_ic=0
+        NODE_ID, observed_on=FIRST_DAY, live_ic=0,
+    forward_days=FORWARD_DAYS,
     )
     assert created is True
     assert first.live_ic == 0.0
     second, again = observations.append_observation(
-        NODE_ID, observed_on=FIRST_DAY, live_ic=0.0
+        NODE_ID, observed_on=FIRST_DAY, live_ic=0.0,
+    forward_days=FORWARD_DAYS,
     )
     assert again is False
     assert second == first
@@ -242,10 +252,11 @@ def test_a_second_coefficient_for_a_measured_day_is_refused(
     # feature 334's curve and feature 337's ratio may already have read — the
     # track record editing itself — so the store refuses to choose, naming
     # both figures and leaving the row exactly as it stands.
-    observations.append_observation(NODE_ID, observed_on=FIRST_DAY, live_ic=0.12)
+    observations.append_observation(NODE_ID, observed_on=FIRST_DAY, live_ic=0.12, forward_days=FORWARD_DAYS)
     with pytest.raises(ForwardIdentityError) as raised:
         observations.append_observation(
-            NODE_ID, observed_on=FIRST_DAY, live_ic=0.4
+            NODE_ID, observed_on=FIRST_DAY, live_ic=0.4,
+        forward_days=FORWARD_DAYS,
         )
     message = str(raised.value)
     assert "forward_record_already_open" in message
@@ -265,7 +276,8 @@ def test_the_boundary_day_is_the_opening_rows_own(
     # would be an observation wearing a vintage it does not have.
     with pytest.raises(ForwardIdentityError) as raised:
         observations.append_observation(
-            NODE_ID, observed_on=BOUNDARY_DAY, live_ic=0.12
+            NODE_ID, observed_on=BOUNDARY_DAY, live_ic=0.12,
+        forward_days=FORWARD_DAYS,
         )
     message = str(raised.value)
     assert "forward_record_already_open" in message
@@ -282,7 +294,8 @@ def test_a_day_before_the_boundary_is_refused(
     # when its signal went out of sample.
     with pytest.raises(ForwardIdentityError) as raised:
         observations.append_observation(
-            NODE_ID, observed_on=dt.date(2026, 2, 20), live_ic=0.12
+            NODE_ID, observed_on=dt.date(2026, 2, 20), live_ic=0.12,
+        forward_days=FORWARD_DAYS,
         )
     assert "forward_record_already_open" in str(raised.value)
     assert len(forward_rows()) == 1
@@ -299,6 +312,7 @@ def test_a_datetime_is_refused_where_a_date_belongs(
             NODE_ID,
             observed_on=dt.datetime(2026, 3, 2, 12, 0, tzinfo=dt.UTC),
             live_ic=0.12,
+        forward_days=FORWARD_DAYS,
         )
     assert "datetime" in str(raised.value)
     assert len(forward_rows()) == 1
@@ -318,7 +332,8 @@ def test_a_signal_with_no_record_is_refused_naming_the_repair(
     observations = ForwardObservations.over(promoted_signal)
     with pytest.raises(ForwardStoreError) as raised:
         observations.append_observation(
-            NODE_ID, observed_on=FIRST_DAY, live_ic=0.12
+            NODE_ID, observed_on=FIRST_DAY, live_ic=0.12,
+        forward_days=FORWARD_DAYS,
         )
     message = str(raised.value)
     assert "forward_record_unwritable" in message
@@ -335,7 +350,7 @@ def test_a_record_holding_two_instants_is_refused_rather_than_extended(
     # onto them would compound a fault every later reader inherits, and the
     # boundary they leave is one nobody can state — the refusal names both
     # instants so the repair starts from the rows.
-    observations.append_observation(NODE_ID, observed_on=FIRST_DAY, live_ic=0.12)
+    observations.append_observation(NODE_ID, observed_on=FIRST_DAY, live_ic=0.12, forward_days=FORWARD_DAYS)
     connection = promoted_signal._connect()
     try:
         with connection:
@@ -348,7 +363,8 @@ def test_a_record_holding_two_instants_is_refused_rather_than_extended(
         connection.close()
     with pytest.raises(ForwardStoreError) as raised:
         observations.append_observation(
-            NODE_ID, observed_on=dt.date(2026, 3, 4), live_ic=0.2
+            NODE_ID, observed_on=dt.date(2026, 3, 4), live_ic=0.2,
+        forward_days=FORWARD_DAYS,
         )
     message = str(raised.value)
     assert "forward_record_unwritable" in message
@@ -385,7 +401,8 @@ def test_a_coefficient_that_is_not_a_correlation_is_refused(
     # refused before anything is opened, so the table is untouched.
     with pytest.raises(ForwardRecordError) as raised:
         observations.append_observation(
-            NODE_ID, observed_on=FIRST_DAY, live_ic=coefficient
+            NODE_ID, observed_on=FIRST_DAY, live_ic=coefficient,
+        forward_days=FORWARD_DAYS,
         )
     assert "live_ic" in str(raised.value)
     assert len(forward_rows()) == 1
@@ -399,7 +416,8 @@ def test_the_bound_is_inclusive_and_integers_are_narrowed(
     # correlation and a perfect one — and a whole-number coefficient is
     # admitted and narrowed to the float the REAL column holds.
     record, created = observations.append_observation(
-        NODE_ID, observed_on=FIRST_DAY, live_ic=coefficient
+        NODE_ID, observed_on=FIRST_DAY, live_ic=coefficient,
+    forward_days=FORWARD_DAYS,
     )
     assert created is True
     assert record.live_ic == float(coefficient)
@@ -413,7 +431,8 @@ def test_a_malformed_ask_touches_no_disk(database_url: str) -> None:
     observations = ForwardObservations(database_url)
     with pytest.raises(ForwardRecordError):
         observations.append_observation(
-            NODE_ID, observed_on=FIRST_DAY, live_ic=float("nan")
+            NODE_ID, observed_on=FIRST_DAY, live_ic=float("nan"),
+        forward_days=FORWARD_DAYS,
         )
     assert not _sqlite_path(database_url).exists()
 
@@ -440,33 +459,48 @@ def test_the_ask_has_no_default_and_takes_no_clock() -> None:
     # not the day the writer happened to run — so ``observed_on`` is
     # required with no default, and there is no clock parameter to derive
     # one from.  Pinned on the signature, which is where a default would
-    # have to live.
+    # have to live.  ``forward_days`` is required too, and for the reason
+    # feature 335 states: the registry holds the criteria *hash* and sha256
+    # is one-way, so the horizon cannot be recovered from the record and must
+    # arrive from the caller.  None of the three is a clock.
     signature = inspect.signature(ForwardObservations.append_observation)
     assert list(signature.parameters) == [
         "self",
         "node_id",
         "observed_on",
         "live_ic",
+        "forward_days",
     ]
-    for name in ("observed_on", "live_ic"):
+    for name in ("observed_on", "live_ic", "forward_days"):
         parameter = signature.parameters[name]
         assert parameter.default is inspect.Parameter.empty, name
         assert parameter.kind is inspect.Parameter.KEYWORD_ONLY, name
 
 
-def test_the_act_reads_no_promotion_and_declares_no_horizon() -> None:
+def test_the_act_reads_no_promotion_and_stamps_no_clock() -> None:
     # On the module's *code*, docstrings stripped, because the docstring
-    # legitimately names all three while doing none: the observation reads
+    # legitimately names the words while doing none: the observation reads
     # the record's standing rows rather than the registry (no window read,
-    # no ``importlib`` reach), stamps nothing (no clock), and enforces no
-    # horizon (the 90-day track is feature 335's sentence, not this
-    # writer's).
+    # no ``importlib`` reach), and stamps nothing (no clock).  Feature 335
+    # layers the window's far edge onto this same act, but it measures that
+    # edge against the record's *own* ``promoted_at`` — the instant the
+    # standing rows already carry — handed to feature 300's arithmetic
+    # through ``read_window_close``, never re-read from the registry.  So the
+    # one promotion verb this writer must not reach is still
+    # ``read_promotion_window``: a second registry read is the two-vintages
+    # fault the record exists to prevent.
     text = code_of(forward.observation)
-    for token in ("read_promotion_window", "utc_now", "forward_days"):
+    for token in ("read_promotion_window", "utc_now"):
         assert token not in text, (
             f"forward.observation reaches for {token}: the observation joins "
             "the record, not the promotion"
         )
+    # And the window it enforces is the record's own: the close is computed
+    # from the standing row's instant, not from a caller-supplied one, so the
+    # act takes no instant parameter of its own.
+    signature = inspect.signature(ForwardObservations.append_observation)
+    assert "opened_at" not in signature.parameters
+    assert "promoted_at" not in signature.parameters
 
 
 # -- The store's construction ----------------------------------------------------
@@ -539,6 +573,7 @@ def test_the_module_level_spelling_lands_the_row(
         observed_on=FIRST_DAY,
         live_ic=0.12,
         database_url=promoted_signal.database_url,
+    forward_days=FORWARD_DAYS,
     )
     assert isinstance(record, ForwardRecord)
     assert record.observed_on == FIRST_DAY
@@ -556,6 +591,7 @@ def test_the_module_level_spelling_reads_the_environment(
         observed_on="2026-03-02",
         live_ic=-0.25,
         env={DATABASE_URL_ENV: promoted_signal.database_url},
+    forward_days=FORWARD_DAYS,
     )
     assert record.live_ic == -0.25
     assert record.promoted_at == DECIDED
@@ -570,6 +606,7 @@ def test_an_unnamed_database_is_refused_by_name(
     monkeypatch.delenv(DATABASE_URL_ENV, raising=False)
     with pytest.raises(ForwardStoreError) as raised:
         forward_observation(
-            NODE_ID, observed_on=FIRST_DAY, live_ic=0.12, env={}
+            NODE_ID, observed_on=FIRST_DAY, live_ic=0.12, env={},
+        forward_days=FORWARD_DAYS,
         )
     assert DATABASE_URL_ENV in str(raised.value)

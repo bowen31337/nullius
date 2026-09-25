@@ -51,13 +51,39 @@ re-read from the registry.  Three reasons, in decreasing weight:
   :func:`~forward.window.read_promotion_window` is reached exactly once per
   record — at the open — and this module never touches it.
 
-Two consequences follow and both are deliberate: there is **no
-``forward_days`` parameter** (no window question is asked — the 90-day track
-is feature 335's sentence, and enforcing its bound here would answer a
-question that feature owns before it is asked), and there is **no
-:class:`~forward.errors.ForwardPromotionError` path** (the promotion is not
-being read; a signal whose promotion went missing is a signal whose record
-still stands, and the observation joins what stands).
+Two consequences follow and both are deliberate.  There is **no registry
+read** (the promotion is not being re-read; a signal whose promotion went
+missing is a signal whose record still stands, and the observation joins what
+stands), and there is **no ``forward_days`` default** — the horizon is a
+required keyword the caller must supply, because the registry holds the
+criteria *hash* and sha256 is one-way, so the 90-day length cannot be
+recovered from the record and must arrive from the caller, exactly as feature
+300 and feature 332 both demand.
+
+**Feature 335: the window's far edge.**  A forward observation is honest only
+while the window is open, so this module refuses an observation whose day
+falls *at or after* the window's close — the upper bound that complements
+feature 333's lower one, together confining observations to the half-open
+``[opened_at, opened_at + forward_days)``.  The close is computed from the
+record's *own* ``promoted_at`` — the same instant the standing rows already
+carry — handed to feature 300's ``window_closes_at`` arithmetic through the
+seam (:func:`~forward.window.read_window_close`), and **never re-read from the
+registry**: the lower bound (feature 333) and the upper bound (feature 335)
+must both be measured against the one instant the record carries, or a
+registry edit between the two would let them diverge — the two-vintages fault
+this member exists to prevent.  The instant is the record's; only the
+arithmetic is borrowed.  A malformed horizon therefore surfaces as
+:class:`~forward.errors.ForwardRecordError` — the ask face, validated *before*
+anything is opened, exactly as feature 332 validates its own ``forward_days``
+at record.py:952 — so a bad horizon touches no database.  Only a horizon that
+has passed the ask reaches the seam, and there the promotion member's
+``window_closes_at`` arithmetic is the sole remaining authority; should it ever
+refuse the instant it is handed, that refusal is translated to
+:class:`~forward.errors.ForwardPromotionError`, the same translation feature
+332's promote path takes — because the repair is one repair from where this
+member stands: the horizon must be the promotion's pre-registered
+``min_forward_days`` (feature 291's criteria), and the instant must be
+feature 293's stamp (feature 300).
 
 **The observation date is stated, beside the observation it belongs to.**
 Feature 332's own request docstring made the promise this module keeps:
@@ -85,6 +111,23 @@ refused as *disagreements with the standing record*
 (:class:`~forward.errors.ForwardIdentityError`): the record has already
 fixed when its signal went out of sample, and the request asserts a date
 that boundary excludes.
+
+**The window's far edge, and how a day is measured against an instant.**  The
+close the seam returns is an *instant* (the promotion stamp plus the horizon —
+2026-03-01T12:00 plus 90 days is 2026-05-30T12:00, not a day), while an
+observation names a *date*.  The two are compared by reading the observation
+date as the instant at the *start* of its day (its 00:00 UTC), and refusing
+when that instant is at or after the close: a day whose whole span begins at
+or after the window's end carries no honest measurement.  The asymmetry is
+feature 300's half-open interval, read straight off :meth:`~promotion.forward.
+PromotionWindow.open_at` — the closing instant is excluded, so the last honest
+day is the one whose start-of-day still precedes the close.  With the pinned
+fixture boundary (opened 2026-03-01T12:00, 90 days) the close is
+2026-05-30T12:00 and the last admissible day is 2026-05-30; 2026-05-31 begins
+at 2026-05-31T00:00, past the close, and is refused.  The conversion runs the
+date through feature 300's own instant rule rather than inventing a second
+midnight convention, so the day arithmetic and the window arithmetic agree on
+one calendar.
 
 **The coefficient is a correlation, and the bound is a fact.**  A live
 information coefficient is bounded in ``[−1, 1]`` whatever the estimator,
@@ -162,6 +205,7 @@ an observation costs its caller only the store it already held.
 
 from __future__ import annotations
 
+import datetime as dt
 import os
 import sqlite3
 from collections.abc import Mapping
@@ -187,10 +231,12 @@ from .record import (
     _record_from_row,
     _sqlite_path,
     _validated_date,
+    _validated_forward_days,
     _validated_live_ic,
     _validated_uuid,
 )
 from .schema import FORWARD_RECORD_TABLE, bootstrap_schema
+from .window import read_window_close
 
 __all__ = [
     "FORWARD_OBSERVATION_SEAM",
@@ -404,8 +450,9 @@ class ForwardObservations:
         *,
         observed_on: Any,
         live_ic: Any,
+        forward_days: Any,
     ) -> tuple[ForwardRecord, bool]:
-        """Land one live IC observation on a signal's record — 333's act.
+        """Land one live IC observation on a signal's record — 333's act, 335's bound.
 
         The steps, in the order they must happen:
 
@@ -421,12 +468,21 @@ class ForwardObservations:
            not an incidental precondition.  Rows carrying more than one
            ``promoted_at`` are refused too: a record is one vintage, and
            this store will not extend one whose boundary nobody can state.
-        3. **Check the day against the boundary.**  The record's opening row
-           is the earliest (``_READ_SQL`` orders by ``observed_on``), and
-           its ``promoted_at`` is the boundary every observation row carries.
-           A day *on or before* that instant's own UTC date is refused: the
-           boundary day is the opening row's, and an earlier one measures
-           in-sample data under an out-of-sample vintage.
+        3. **Check the day against both edges of the window.**  The record's
+           opening row is the earliest (``_READ_SQL`` orders by
+           ``observed_on``), and its ``promoted_at`` is the boundary every
+           observation row carries.  A day *on or before* that instant's own
+           UTC date is refused (feature 333's lower bound — the boundary day
+           is the opening row's, and an earlier one measures in-sample data
+           under an out-of-sample vintage).  A day *at or after* the window's
+           close is refused (feature 335's upper bound — the window has
+           closed, and the signal's track record is complete).  The close is
+           computed from the record's own ``promoted_at`` through the seam
+           (:func:`~forward.window.read_window_close`), never re-read from the
+           registry, so the two bounds are measured against the one instant
+           the record carries — and the horizon is validated as part of that
+           computation, so a malformed ``forward_days`` is refused as a length
+           rather than surfacing from inside the arithmetic.
         4. **Answer the retry, or refuse the disagreement, or write.**  A
            standing row for *this* date carrying *this* coefficient is the
            same observation arriving twice — returned untouched, with
@@ -446,28 +502,44 @@ class ForwardObservations:
 
         **What this act never does.**  It never opens a record (feature
         332's act, and the one this feature's ``depends_on`` names); it
-        never reads the promotion member (the instant is the record's own,
-        read once at the open); it never fills ``backtest_ic`` or
+        never re-reads the promotion registry (the instant is the record's
+        own, read once at the open, and the close is computed from that
+        instant, not re-read); it never fills ``backtest_ic`` or
         ``realized_cost_bps`` (``backtest_ic`` is feature 337's to read,
         and ``realized_cost_bps`` is nobody's to fill from here — feature
         340 prices *per rebalance*, a grain this table does not name, and
-        the insert cannot name either column); and it never enforces a
-        horizon (the
-        90-day track is feature 335's sentence, and a writer that refused a
-        late observation here would be answering it before it is asked).
+        the insert cannot name either column).
+
+        ``forward_days`` is a **required keyword with no default** — the
+        registry holds the criteria *hash* and sha256 is one-way, so the
+        90-day length cannot be recovered from the record and must arrive
+        from the caller, exactly as feature 300 and feature 332 both demand.
 
         Refuses, in this order, each naming what it is about: a malformed
-        identity, day or coefficient
-        (:class:`~forward.errors.ForwardRecordError`, the ask face); a
-        signal that holds no record, a record whose rows carry two instants,
-        a store this member cannot speak, or a row that could not be read
-        back (:class:`~forward.errors.ForwardStoreError`); and a day the
-        record's boundary excludes, or a date that already holds a different
-        measurement (:class:`~forward.errors.ForwardIdentityError`).
+        identity, day, coefficient or horizon
+        (:class:`~forward.errors.ForwardRecordError`, the ask face — the
+        horizon validated before anything is opened, the same move feature
+        332 makes with its own ``forward_days``); a signal that holds no
+        record, a record whose rows carry two instants, a store this member
+        cannot speak, a horizon that names no computable window, or a row
+        that could not be read back
+        (:class:`~forward.errors.ForwardStoreError`); and a day the record's
+        window excludes — before its boundary or after its close — or a date
+        that already holds a different measurement
+        (:class:`~forward.errors.ForwardIdentityError`).
         """
         node = _validated_uuid(node_id, NODE_ID_COLUMN)
         day = _validated_date(observed_on, OBSERVED_ON_COLUMN)
         coefficient = _validated_live_ic(live_ic)
+        # Feature 335's horizon, validated as part of the ask and before any
+        # I/O — the same move feature 332 makes with its own ``forward_days``
+        # (:meth:`forward.record.ForwardRecords.open_record`): the registry
+        # holds the criteria *hash* and sha256 is one-way, so the length
+        # cannot be recovered from the record and must arrive from the caller
+        # as a positive count of whole days, or the request never opens a
+        # database.  A malformed or non-positive horizon is refused as a
+        # length, naming the repair, before a file is touched.
+        horizon = _validated_forward_days(forward_days)
         with closing(self._connect()) as connection, connection:
             standing = self._record_rows(connection, node)
             if not standing:
@@ -476,6 +548,19 @@ class ForwardObservations:
             boundary = opening.promoted_at.date()
             if day <= boundary:
                 raise _before_the_boundary(node, opening, day)
+            # Feature 335: the window's far edge.  The close is computed from
+            # the record's *own* promoted_at — the same instant the standing
+            # rows already carry — handed to feature 300's arithmetic through
+            # the seam, and never re-read from the registry: the lower bound
+            # (feature 333) and this upper bound must both be measured against
+            # the one instant the record carries, or a registry edit between
+            # the two would let them diverge.  The day is read as the instant
+            # at the start of its day, and refused when that instant is at or
+            # after the close — the half-open interval's excluded closing edge.
+            close = read_window_close(opening.promoted_at, forward_days=horizon)
+            day_start = _instant_of(day)
+            if day_start >= close:
+                raise _after_the_window(node, opening, horizon, day, close)
             for row in standing:
                 if row.observed_on == day:
                     # The retry: the standing row answers, and ``created``
@@ -662,6 +747,23 @@ def _absent_record(node: str) -> ForwardStoreError:
     )
 
 
+def _instant_of(day: dt.date) -> dt.datetime:
+    """The instant at the start of a calendar day — its 00:00 UTC.
+
+    The one conversion between the two calendars an observation spans: the day
+    an observation names is a :class:`~datetime.date`, while the window's close
+    (feature 300's ``opened_at + forward_days``) is an *instant*.  A day is
+    measured against the close by the instant at which it begins, and a day
+    whose whole span starts at or after the close carries no honest
+    measurement — so ``day_start >= close`` is the refusal, and the last
+    admissible day is the one whose midnight still precedes the close.  The
+    day is read at UTC rather than at any local offset, the same choice
+    :func:`~forward.record._validated_date` makes when it refuses to truncate
+    an instant to a day without naming the clock the day is read in.
+    """
+    return dt.datetime(day.year, day.month, day.day, tzinfo=dt.UTC)
+
+
 def _before_the_boundary(
     node: str, opening: ForwardRecord, day: Any
 ) -> ForwardIdentityError:
@@ -697,6 +799,45 @@ def _before_the_boundary(
         "contamination this table exists to exclude. Nothing is wrong with "
         "the store: the repair is to observe only on days after the "
         "boundary (feature 333)"
+    )
+
+
+def _after_the_window(
+    node: str, opening: ForwardRecord, forward_days: Any, day: Any, close: Any
+) -> ForwardIdentityError:
+    """The window-close refusal: a day the window has already closed before.
+
+    The complement of :func:`_before_the_boundary`.  The standing record has
+    already fixed the span over which its signal is measured — ``promoted_at``
+    plus the horizon the caller registered — and this request asserts an
+    observation on a day that span excludes.  The close is the window's
+    excluded edge (feature 300's half-open interval), so a day beginning at or
+    after it is a measurement taken after the signal stopped being out of
+    sample: its 90-day track record is complete, and a further observation
+    would be a measurement the window that produced the record never covered.
+
+    The refusal is the same disagreement :class:`~forward.errors.
+    ForwardIdentityError` states for the lower bound — two claims about one
+    record's window, the store refusing to choose — and it names the close and
+    the last admissible day, so the repair is to stop asking: the days an
+    observation may name are the days the window is open.
+    """
+    last_day = _instant_of(close.date())
+    last_admissible = last_day if last_day < close else last_day - dt.timedelta(days=1)
+    return ForwardIdentityError(
+        f"{FORWARD_IDENTITY_ERROR_CODE}: node {node}'s forward record was "
+        f"open for {forward_days} days from {opening.promoted_at.isoformat()} "
+        f"and closed at {close.isoformat()} (feature 300's half-open window — "
+        "the closing instant is excluded), and this request would observe on "
+        f"{day.isoformat()}, a day whose start ({_instant_of(day).isoformat()}) "
+        f"is at or after the close. A forward observation is a measurement on "
+        "data that did not exist when the hypothesis was formed, taken while "
+        "the window is still open (prd §5's loop): at the close the signal "
+        "*has* its 90-day track record, and a further observation would be a "
+        "measurement the window that produced the record never covered. The "
+        f"last day this record can honestly name is {last_admissible.date().isoformat()}. "
+        "Nothing is wrong with the store: the repair is to observe only on "
+        "days the window is still open (feature 335)"
     )
 
 
@@ -739,6 +880,7 @@ def forward_observation(
     *,
     observed_on: Any,
     live_ic: Any,
+    forward_days: Any,
     database_url: str | None = None,
     env: Mapping[str, str] | None = None,
 ) -> ForwardRecord:
@@ -751,6 +893,12 @@ def forward_observation(
     resolves the opening act's, so a caller reading through one spelling
     and the other is reading and writing the same database.
 
+    ``forward_days`` is a **required keyword with no default**, the way
+    feature 300 and feature 332 both take it: the registry holds the
+    criteria *hash* and sha256 is one-way, so the 90-day length cannot be
+    recovered from the record and must arrive from the caller — the same
+    reason the store's own :meth:`append_observation` demands it.
+
     The answer is the **row the table holds** rather than a ``(record,
     created)`` pair, for the reason the opening act's own module-level
     spelling states: an act asked for as one call has nobody to tell about
@@ -759,5 +907,5 @@ def forward_observation(
     store (:meth:`ForwardObservations.append_observation`).
     """
     return _resolved_store(database_url, env).append_observation(
-        node_id, observed_on=observed_on, live_ic=live_ic
+        node_id, observed_on=observed_on, live_ic=live_ic, forward_days=forward_days
     )[0]

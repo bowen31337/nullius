@@ -67,6 +67,18 @@ is not this module's to run); whether the epoch has budget is feature 294's
 count; and whether the window is still open is feature 300's own arithmetic,
 asked of the value this module returns.  Feature 332's whole act is: read the
 instant, stamp the row.
+
+**Two verbs, and the second reads no row.**  Feature 335 reaches a *second*
+verb off the same member — feature 300's module-level ``window_closes_at``,
+exposed here as :func:`read_window_close` — and it is deliberately **not**
+``promotion_window``.  The observation writer already holds the promotion
+instant (feature 333's lower bound is measured off the record's own standing
+row), and its upper bound has to be measured off that *same* instant, not off
+a fresh registry read that could disagree with the rows beside it.  So
+:func:`read_window_close` hands the instant it is given straight to the
+arithmetic — ``opened_at + days`` and nothing else — rather than re-reading
+the registry the open already read.  Both verbs are reached the same way and
+translated the same way; they answer two different questions of one member.
 """
 
 from __future__ import annotations
@@ -79,7 +91,9 @@ from .errors import FORWARD_PROMOTION_ERROR_CODE, ForwardPromotionError
 __all__ = [
     "PROMOTION_MEMBER",
     "PROMOTION_WINDOW_VERB",
+    "WINDOW_CLOSES_AT_VERB",
     "read_promotion_window",
+    "read_window_close",
 ]
 
 #: The workspace member the promotion instant is read from.  Spelled once so
@@ -95,6 +109,34 @@ PROMOTION_MEMBER = "promotion"
 #: workspace is: a rename on the far side is then one literal to grep for,
 #: and the refusal below names the verb it could not find.
 PROMOTION_WINDOW_VERB = "promotion_window"
+
+#: The second verb this seam reaches: feature 300's module-level
+#: ``window_closes_at``, the *pure arithmetic* ``opened_at + days`` with no
+#: registry read of its own.  It is a different verb from ``promotion_window``
+#: on purpose: the record read (feature 332) and the window close (feature 335)
+#: are two different questions, and the observation writer needs the second
+#: without re-reading the registry the first already read.  Named as a
+#: constant for the same reason as the verb above — a rename on the far side
+#: is one literal to grep for, and the refusal below names the verb it could
+#: not find.
+WINDOW_CLOSES_AT_VERB = "window_closes_at"
+
+
+def _window_closes_at_verb() -> Any:
+    """Feature 300's ``window_closes_at`` off the promotion member, or ``None``.
+
+    The same shape :func:`_promotion_window_verb` reads, for the same reason:
+    a composed sibling is reached as a *callable*, never as a class or a module
+    identity, because the loader imports it under a synthetic name.  Read off
+    the *same* member namespace, so a deployment that composed no promotion
+    member — or one carrying no such verb — has no close to compute, and that
+    is a refusal by name rather than a silent default.
+    """
+    member = _promotion_member()
+    if member is None:
+        return None
+    verb = getattr(member, WINDOW_CLOSES_AT_VERB, None)
+    return verb if callable(verb) else None
 
 
 def _promotion_member() -> Any:
@@ -212,4 +254,80 @@ def read_promotion_window(
             "then open the forward record (feature 332) — a window opened at the "
             "clock this call happened to run at would measure a span that may "
             "begin inside the in-sample data the hypothesis was formed on"
+        ) from refusal
+
+
+def read_window_close(
+    opened_at: Any,
+    *,
+    forward_days: Any,
+) -> Any:
+    """When a window opening at ``opened_at`` for ``forward_days`` closes.
+
+    Feature 335's half of the seam: the *upper* edge of a signal's forward
+    track.  Unlike :func:`read_promotion_window`, this call reads **no
+    registry row** — it takes the promotion instant the caller already holds
+    (the record's own ``promoted_at``, read once at the open) and hands it to
+    feature 300's ``window_closes_at`` for the arithmetic.  That distinction is
+    the whole point: the observation writer's lower bound (feature 333) and
+    upper bound (feature 335) must be measured against the *one* instant the
+    record carries, so the close is computed from the standing row rather than
+    re-read from the registry — a second registry read could disagree with the
+    rows beside it, which is the two-vintages fault this member exists to make
+    impossible.
+
+    The arguments go straight through to feature 300's own spelling — the
+    instant, and the horizon the caller registered — so this seam adds no
+    arithmetic of its own and cannot disagree with the member that owns it.
+    ``forward_days`` is a **required keyword with no default**, the way feature
+    300 and feature 332 both take it: the registry holds the criteria *hash*,
+    and sha256 is one-way, so the horizon cannot be recovered from the record
+    and must arrive from the caller.
+
+    Raises :class:`~forward.errors.ForwardPromotionError` for the seam's
+    absence — no ``promotion`` member, no ``window_closes_at`` verb — and for
+    every refusal the arithmetic raises (a malformed or non-positive horizon,
+    an unreadable instant, a sum past the largest representable instant),
+    translated the same one-way way :func:`read_promotion_window` translates
+    feature 300's refusals: from where this member stands, all of them mean
+    *the horizon this call was given cannot name a computable window close*.
+    """
+    verb = _window_closes_at_verb()
+    if verb is None:
+        raise ForwardPromotionError(
+            f"{FORWARD_PROMOTION_ERROR_CODE}: the window close cannot be "
+            f"computed — the {PROMOTION_MEMBER!r} member exposes no "
+            f"{WINDOW_CLOSES_AT_VERB!r} verb, so there is no arithmetic to turn "
+            "the promotion instant and the horizon into a window end. Feature "
+            "300 spells it, and this member computes no instant of its own "
+            "rather than inventing one (feature 335)"
+        )
+    try:
+        # Feature 300's ``window_closes_at`` takes the horizon positionally as
+        # ``days`` — the one spelling of the arithmetic in this member — so the
+        # caller's ``forward_days`` is handed over under that name, not under a
+        # keyword the verb does not have.
+        return verb(opened_at, forward_days)
+    except ForwardPromotionError:
+        raise
+    except Exception as refusal:
+        # Feature 300's PromotionWindowError for a malformed horizon, an
+        # unreadable instant, or a sum past datetime.max — and anything else
+        # the arithmetic raises.  Translated here rather than caught by name
+        # because this module may not import the promotion member's classes (a
+        # member never imports another, and the loader's synthetic names would
+        # break the identity anyway): the refusal arrives by message and leaves
+        # in this member's word, the same one-way translation read_promotion_window
+        # performs on a sibling's wrapper.
+        raise ForwardPromotionError(
+            f"{FORWARD_PROMOTION_ERROR_CODE}: the window close could not be "
+            f"computed — the promotion member's {WINDOW_CLOSES_AT_VERB!r} "
+            f"refused the instant {opened_at!r} over {forward_days!r} days: "
+            f"{refusal}. The horizon is the promotion's pre-registered "
+            "min_forward_days (feature 291's criteria), read from the criteria "
+            "the promotion was registered under, and the instant is feature "
+            "293's own stamp (feature 300) — a horizon that is a flag or a "
+            "fraction, or a sum past the largest instant the calendar can "
+            "represent, names no window a forward observation could fall inside "
+            "(feature 335)"
         ) from refusal

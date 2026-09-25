@@ -159,9 +159,14 @@ package and every path to a record goes through it.  The observing act mirrors
 the same ladder one feature later — :meth:`~forward.observation.
 ForwardObservations.over` off the composed store,
 :meth:`~forward.observation.ForwardObservations.append_observation` on a held
-one, :func:`~forward.observation.forward_observation` from a bare URL — and
-reads no promotion at all: the instant its rows carry is the record's own,
-read once at the open.  The reconciling act is the same ladder one grain
+one, :func:`~forward.observation.forward_observation` from a bare URL.  It
+never re-reads the promotion registry — the instant its rows carry is the
+record's own, read once at the open — but feature 335 measures the window's
+far edge against that same instant, reaching the promotion member's
+``window_closes_at`` arithmetic through :func:`~forward.window.
+read_window_close` rather than re-reading feature 293's stamp, so the lower
+bound (feature 333) and the upper bound (feature 335) are measured against the
+one instant the record carries.  The reconciling act is the same ladder one grain
 over — :meth:`~forward.reconciliation.ForwardCostReconciliations.over` off
 the composed store,
 :meth:`~forward.reconciliation.ForwardCostReconciliations.reconcile` on a
