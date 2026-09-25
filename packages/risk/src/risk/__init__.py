@@ -88,6 +88,25 @@ of the authority the channel holds.  Seven pieces:
   environment for the same reason the channel's and the ledger's do, and
   split the same way on its absence: a halting probe refuses without a
   store, a read answers the empty truth.
+* :mod:`risk.demotion` — the demotion, feature 326: *System persists an
+  automatic demotion when live information coefficient falls below 40
+  percent of its backtest value.*  A fourth table (``risk_signal_demotion``),
+  one row per *demoted* signal, written by
+  :meth:`~risk.demotion.RiskSignalDemotionStore.record_demotion` — which
+  judges the handed-over retention ratio against ``DEMOTION_BOUND`` (40
+  percent, a constant of the module, not configuration), returns ``None`` at
+  or above the bound, and otherwise persists the demotion with ``demoted_at``
+  read back from the standing row rather than stamped here.  The ratio is
+  *handed over, never derived*: neither coefficient is read by this feature,
+  and the caller — the supervisor, which speaks to the forward member —
+  obtains it through :func:`forward.retention.forward_ic_retention` (feature
+  337) and hands the single number over, the "hand over, never derive"
+  barrier the other risk guards hold toward the figures they are handed.
+  The module-level spelling — :func:`~risk.demotion.demote_on_ic_drop` —
+  opens it from the environment and refuses by name once the ratio has fired
+  and nothing names a store; the reader's spelling,
+  :func:`~risk.demotion.recorded_demotions`, answers the empty truth on the
+  same absence.
 * :mod:`risk.feed_staleness` — the watchdog, feature 328: *System rejects
   new orders while holding positions when data feed staleness exceeds the
   configured threshold.*  No table, and that absence is the feature: the
@@ -243,6 +262,15 @@ from .clock_skew import (
     measure_clock_skew,
     measured_clock_skews,
 )
+from .demotion import (
+    DEMOTION_BOUND,
+    NODE_ID_COLUMN,
+    RISK_SIGNAL_DEMOTION_TABLE,
+    RiskSignalDemotionStore,
+    SignalDemotion,
+    demote_on_ic_drop,
+    recorded_demotions,
+)
 from .errors import (
     CLOCK_SKEW_CODE,
     FEED_STALENESS_CODE,
@@ -251,6 +279,7 @@ from .errors import (
     KILL_INSTRUCTION_CODE,
     ORDERS_KILLED_CODE,
     ORDERS_STALE_CODE,
+    SIGNAL_DEMOTION_CODE,
     RiskClockSkewError,
     RiskError,
     RiskFeedStalenessError,
@@ -259,6 +288,7 @@ from .errors import (
     RiskKillSwitchError,
     RiskOrdersKilledError,
     RiskOrdersStaleError,
+    RiskSignalDemotionError,
     RiskStoreError,
 )
 from .feed_staleness import (
@@ -306,6 +336,7 @@ __all__ = [
     "CLOCK_SKEW_CODE",
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
+    "DEMOTION_BOUND",
     "FALLBACK_FEED_READING_ATTRIBUTES",
     "FEED_STALENESS_CODE",
     "FLATTENER_COMPONENT_NAME",
@@ -316,6 +347,7 @@ __all__ = [
     "HALT_EVENT_CODE",
     "KILL_INSTRUCTION",
     "KILL_INSTRUCTION_CODE",
+    "NODE_ID_COLUMN",
     "ORDERS_KILLED_CODE",
     "ORDERS_STALE_CODE",
     "PROCESS_ID_SEPARATOR",
@@ -323,6 +355,8 @@ __all__ = [
     "RISK_HALT_EVENT_TABLE",
     "RISK_HALT_ROUTE",
     "RISK_ORDER_KILL_TABLE",
+    "RISK_SIGNAL_DEMOTION_TABLE",
+    "SIGNAL_DEMOTION_CODE",
     "ClockSkewHalt",
     "FeedStaleness",
     "FeedStalenessGuard",
@@ -346,7 +380,12 @@ __all__ = [
     "RiskKillSwitchError",
     "RiskOrdersKilledError",
     "RiskOrdersStaleError",
+    "RiskSignalDemotionError",
+    "RiskSignalDemotionStore",
     "RiskStoreError",
+    "SignalDemotion",
+    "demote_on_ic_drop",
+    "recorded_demotions",
     "flatten_positions",
     "halt_on_clock_skew",
     "measure_clock_skew",

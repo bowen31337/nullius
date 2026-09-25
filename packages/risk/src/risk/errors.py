@@ -72,6 +72,19 @@ contract* was violated, not by which line of code failed:
   silence), a threshold that states no band (not real, not finite, not
   strictly positive), and a live reading whose age disagrees with its own
   two instants or never actually exceeded the band it was refused under.
+* :class:`RiskSignalDemotionError` — feature 326's own noun, the *signal
+  demotion* the supervisor persists when a promoted signal's live
+  information coefficient falls below 40 percent of its backtest one: a
+  node that is not a signal identity, a retention ratio that is not a
+  number, a bound that is not a band (not real, not finite, not strictly
+  positive), a stored row no demotion can be reconstructed as (a ratio
+  that is not below the bound it claims to have fallen below), and a
+  module-level demote that names no store to record through while the
+  ratio fired.  A sibling of :class:`RiskStoreError` for the same reason
+  :class:`RiskClockSkewError` is — the noun is the *measurement*, not the
+  channel and not the store's address, and a caller sent from a malformed
+  ratio to a bad ``DATABASE_URL`` would go and edit the deployment while
+  the ratio stayed malformed.
   A sibling of the others, and of :class:`RiskClockSkewError`
   particularly — one duration is measured against a *band* and the other
   against the *venue's clock*, and a caller sent from one to the other
@@ -94,7 +107,8 @@ Every message names the offending value and the contract it broke, and
 the feature classes open with their greppable tokens
 (:data:`KILL_INSTRUCTION_CODE`, :data:`ORDERS_KILLED_CODE`,
 :data:`HALT_EVENT_CODE`, :data:`FLATTEN_CODE`, :data:`CLOCK_SKEW_CODE`,
-:data:`FEED_STALENESS_CODE`, :data:`ORDERS_STALE_CODE`)
+:data:`FEED_STALENESS_CODE`, :data:`ORDERS_STALE_CODE`,
+:data:`SIGNAL_DEMOTION_CODE`)
 so an operator scanning a log for the member's refusals greps one word
 rather than a sentence — the same discipline the
 ``order_submission_unhealthy`` (feature 320) and ``determinism_broken``
@@ -117,6 +131,7 @@ __all__ = [
     "KILL_INSTRUCTION_CODE",
     "ORDERS_KILLED_CODE",
     "ORDERS_STALE_CODE",
+    "SIGNAL_DEMOTION_CODE",
     "RiskClockSkewError",
     "RiskError",
     "RiskFeedStalenessError",
@@ -125,6 +140,7 @@ __all__ = [
     "RiskKillSwitchError",
     "RiskOrdersKilledError",
     "RiskOrdersStaleError",
+    "RiskSignalDemotionError",
     "RiskStoreError",
 ]
 
@@ -216,6 +232,21 @@ FEED_STALENESS_CODE = "feed_staleness"
 #: standing is not that act, and a token that borrowed its word would
 #: send an operator looking for a flatten that never happened.
 ORDERS_STALE_CODE = "orders_stale"
+
+#: The greppable token every :class:`RiskSignalDemotionError` message opens
+#: with — the spec's own noun, app_spec.xml feature 326: *"System persists
+#: an automatic demotion when live information coefficient falls below 40
+#: percent of its backtest value."*  An operator scanning a log for the
+#: demotion's faults greps ``signal_demotion`` and finds the nodes that
+#: were not signal identities, the ratios that were not numbers, the bounds
+#: that were not bands, and the stored rows a demotion could not be
+#: reconstructed as — a grep apart from the clock's
+#: (:data:`CLOCK_SKEW_CODE`), the channel's (:data:`KILL_INSTRUCTION_CODE`)
+#: and the store's address (:class:`~risk.errors.RiskStoreError`), because
+#: the demotion's faults are the *measurement's*: the ratio may well be
+#: below the bound, and what failed is the record of how far the live IC had
+#: fallen below the backtest one.
+SIGNAL_DEMOTION_CODE = "signal_demotion"
 
 
 class RiskError(Exception):
@@ -438,6 +469,45 @@ class RiskClockSkewError(RiskError):
     offending value, because the audience is the supervisor process
     holding a clock it cannot trust, and the repair is a reading, a band
     or a deployment — not a stack trace.
+    """
+
+
+class RiskSignalDemotionError(RiskError):
+    """A signal demotion this module cannot judge, or reconstruct.
+
+    app_spec.xml feature 326's noun is the *signal demotion* — the
+    supervisor's persisted decision that a promoted signal no longer holds
+    its promotion, because its live information coefficient has fallen
+    below 40 percent of the backtest coefficient it was promoted on — and
+    this is the failure of that noun's own terms: a ``node_id`` that is not
+    a signal identity (a demotion about a signal that cannot be named is
+    unattributable), a retention ratio that is not a number — not a real,
+    not finite, or a ``bool`` dressed as one (a ratio that is not one
+    number leaves the 40-percent comparison with no operand), a
+    ``demotion_bound`` that states no band — not real, not finite, or not
+    strictly positive, the last of which is a supervisor that would demote
+    on every signal rather than on a fallen one — a stored row whose ratio
+    did not actually fall below the bound it claims (a signal at or above
+    the bound is not demoted, and a row filed for one reports a demotion
+    that never fired), and a module-level :func:`risk.demote_on_ic_drop`
+    that names no store to record through while the ratio fired (the one
+    refusal this class makes that is about the *deployment* rather than the
+    terms, and the one direction this demotion must not fail softly in — a
+    demotion that left no record is a demotion the next cycle cannot tell
+    from a signal that was never judged).
+
+    A sibling of :class:`RiskStoreError` rather than a child of it, and a
+    sibling of :class:`RiskClockSkewError` for the same reason they are
+    siblings of each other: the noun is the *measurement*, not the channel
+    and not the store's address.  A caller sent from a malformed ratio to a
+    bad ``DATABASE_URL`` would go and edit the deployment while the ratio
+    stayed malformed, and the next demotion would fail the same way, on a
+    channel and a table that were both fine.
+
+    Every message opens with :data:`SIGNAL_DEMOTION_CODE` and names the
+    offending value, because the audience is the supervisor process holding
+    a signal it has just demoted, and the repair is a ratio, a band or a
+    deployment — not a stack trace.
     """
 
 

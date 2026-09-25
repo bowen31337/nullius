@@ -1,0 +1,334 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 326 (System persists an automatic demotion when live information coefficient falls below 40 percent of its backtest value)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 326 in the existing risk member
+    (packages/risk, import name risk; seat src/app/modules/risk), which
+    depends on feature 323: *System persists an automatic demotion when live
+    information coefficient falls below 40 percent of its backtest value.*
+
+    The feature is the risk supervisor's fourth trigger — the row of
+    docs/nullius-tech-architecture.md §13.3's trigger table whose action is
+    *"Auto-demote the signal"*, sitting beside the equity floor, the daily
+    loss, the feed staleness and the clock skew the member already owns. It
+    is the second of the two triggers (the clock skew, feature 329, is the
+    first) whose act is not a halt of the order layer but a *demotion of a
+    signal*: the supervisor measures a promoted signal's live information
+    coefficient against the backtest coefficient it was promoted on, and
+    when the live coefficient falls below 40 percent of the backtest one, it
+    persists a demotion of that signal. The 40 percent line and the
+    "demote automatically" consequence are the spec's own two clauses
+    (docs/alpha-engine-prd.md §475: *"if live IC falls below 40% of backtest
+    IC over a statistically meaningful window, demote automatically"*).
+
+    The two operands are **read**, never stated by this feature, and both
+    live in the forward member's forward_record table: the live information
+    coefficient is feature 333's column (the mean of the observed rows), and
+    the backtest coefficient is feature 337's column (the figure landed once
+    on the record's opening row). Feature 337 already computes the quotient
+    — live IC divided by backtest IC, per signal — and answers IcRetention
+    carrying the ratio; this feature takes that ratio as its single input
+    and judges it against the 40 percent line. So feature 326 does not
+    recompute the retention, does not re-read the forward member's columns
+    and does not name them: it reaches the ratio through the forward
+    member's own public seam, exactly as a risk member that must not import
+    a sibling's tables must — it asks the forward member's module-level
+    function for the figure and judges the figure it is handed.
+
+    **The verb is *persists*, and that is the whole of the act.** A demotion
+    is a durable fact about a signal — the supervisor's decision that the
+    signal no longer holds its promotion — and a demotion that lived only in
+    a process's memory would be undone by the process's restart, which is
+    the failure the demotion exists to survive. So the demotion lands in a
+    table of this feature's own, one row per demotion, in the workspace's
+    relational store (DATABASE_URL), the same store the member's other
+    persisted acts write. The table is this feature's own, not a column on
+    the forward member's record and not a row in the kill channel's table:
+    the demotion is a *signal* event, not a *record* fact and not an *order
+    layer* state, and forcing it into either of those shapes would break the
+    law the other exists to hold.
+
+    **The comparison is strictly `&lt;`, on the ratio the forward member hands
+    over.** The demotion fires when the live IC is *below* 40 percent of the
+    backtest IC — when the retention ratio is strictly less than 0.4 — the
+    workspace's boundary convention beside it (feature 314's strict `&lt;`,
+    feature 312's neighbour rule, feature 329's and feature 328's `>`): a
+    ratio exactly at 40 percent is *at* the line, and the signal is held
+    rather than demoted. The 40 percent is a **constant of this module**,
+    not configuration: the spec names the number ("40 percent") and names no
+    knob to retune it, so it is spelled once as the module's own
+    DEMOTION_BOUND and a supervisor that guessed a bound would demote on a
+    line nobody specified.
+
+    **The demotion carries the signal, the ratio, the bound and the moment,
+    and the moment is read back from the demotion's own row.** One row per
+    demotion carries the node_id of the demoted signal, the retention ratio
+    it was demoted under, the bound it fell below, and the instant the
+    demotion was recorded — read back from the standing row rather than
+    stamped here, so the recorded moment and the row are one fact. The
+    demotion is monotone per signal: a signal that has been demoted stays
+    demoted, and a second demotion of the same signal writes nothing and
+    returns the standing demotion with changed=False, the same first-write-
+    wins law feature 322's kill channel holds — a demotion that a later
+    measurement could move would quietly rewrite the record of when the
+    signal lost its promotion.
+
+    The member already holds every piece the demotion composes — the
+    relational store addressed by DATABASE_URL, the process-identity label
+    (risk._identity), the error taxonomy (risk.errors) and the store-
+    addressing, ISO-rendering and validation helpers every store in the
+    member restates — so feature 326 adds one module, one table, one value,
+    one store and one module-level spelling, and no new error class beyond
+    what the taxonomy already carries: the address and persistence faults
+    are RiskStoreError, and this feature's own terms (a node that is not a
+    signal identity, a ratio that is not a number, a bound that is not a
+    band, a stored row no demotion can be reconstructed as) are refused in
+    the member's base RiskError where the member's watchdogs that persist
+    nothing already refuse, or in a sibling of RiskStoreError whose noun is
+    the demotion. The forward member's behaviour, messages, codes and tests
+    are untouched: this feature reads the ratio through the forward member's
+    public seam and judges it, and nothing this feature does reaches into
+    the forward member's tables.
+  </addition_summary>
+
+  <stack profile="uv-workspace"/>
+
+  <layout profile="uv-workspace">
+    <file>packages/risk/src/risk/demotion.py</file>
+    <file>packages/risk/tests/test_demotion.py</file>
+  </layout>
+
+  <existing_context>
+    The risk member (packages/risk, import name risk) is the category "Risk
+    Supervisor &amp; Kill Switches". It already holds the kill channel
+    (feature 322, risk.kill), the halt door (feature 323, risk.halt), the
+    equity floor (feature 324), the manual reset (feature 325), the feed
+    staleness watchdog (feature 328, risk.feed_staleness), the clock skew
+    measurement (feature 329, risk.clock_skew), the flatten (feature 330,
+    risk.flatten) and the halt event ledger (feature 331, risk.halt_events).
+    The member's tables — risk_order_kill, risk_halt_event, risk_clock_skew —
+    are each one module's own, addressed by DATABASE_URL, schema-created
+    idempotently on connect, never a migration. The member's value layer
+    re-derives every stored figure on the way back from a row, so a row
+    edited outside the package fails to reconstruct rather than loading as a
+    plausible-looking fact. The member's module-level spellings open each
+    store from the environment, refusing on the writer's side and answering
+    the empty truth on the reader's side.
+
+    The forward member (packages/forward, import name forward) holds the
+    forward_record table and the retention criterion (feature 337,
+    forward.retention). Its module-level function forward_ic_retention
+    (node_id, *, database_url=None, env=None) computes one signal's forward
+    IC retention and answers IcRetention carrying .ratio, .node_id,
+    .live_ic, .backtest_ic, .observed_days and the two instants. It refuses
+    (ForwardRetentionError) when the node has no record, has no observation,
+    has no backtest IC, or has a zero backtest IC. A member never imports
+    another member's tables, so feature 326 reaches the ratio through this
+    public function rather than reading forward_record itself.
+
+    The seat (src/app/modules/risk/__init__.py) exposes one accessor per
+    member question, all taking no app argument, resolving from DATABASE_URL.
+    The member's __init__ registers four components (@register) under the
+    names risk, risk-halt-events, risk-flattener and risk-halt — the switch,
+    the ledger, the flattener and the halt door — and the member's suite pins
+    exactly those four build_ builders, so feature 326 adds no fifth. The
+    demotion store is reached through the module-level spellings and
+    RiskSignalDemotionStore.resolve, exactly as clock_skew is; @register lives
+    only in __init__, never a submodule.
+  </existing_context>
+
+  <features_to_add>
+    <category name="Risk Supervisor &amp; Kill Switches">
+      <feature index="326" shape="plugin" plugin="risk" depends_on="323">
+        <description>System persists an automatic demotion when live
+        information coefficient falls below 40 percent of its backtest
+        value.</description>
+
+        A new module packages/risk/src/risk/demotion.py (feature 326)
+        holding: the DEMOTION_BOUND constant (0.4); the
+        RISK_SIGNAL_DEMOTION_TABLE table name and its DDL (one row per
+        demotion: a per-signal singleton primary key keyed by node_id,
+        carrying the retention ratio, the bound, the demoted_at moment read
+        back from the row and the recording process identity, with CHECK
+        constraints on the bound and the ratio being a real number); a frozen
+        value SignalDemotion (node_id, ratio, bound, demoted_at,
+        supervisor_process_id, changed) whose __post_init__ re-derives the
+        ratio-against-bound comparison and validates the node identity, the
+        ratio, the bound and the instant; a store RiskSignalDemotionStore
+        (record_demotion judging the ratio against the bound and persisting
+        when below, demotions reading the standing demotion for a signal,
+        demotion_for checking one signal, all over DATABASE_URL,
+        schema-created idempotently, first-write-wins per signal, the demotion
+        moment read back from the standing row); and the module-level
+        spellings demote_on_ic_drop (refuses when no store is named and the
+        ratio is below the bound) and recorded_demotions (answers the empty
+        tuple when no store is named).
+
+        The demotion reaches the retention ratio through the forward member's
+        public module-level function forward_ic_retention, never importing the
+        forward member's tables or naming its columns. The store's record
+        method takes the node_id and the ratio (the caller having obtained the
+        ratio from the forward member), judges the ratio against DEMOTION_BOUND
+        with a strict `&lt;`, and persists a row only when below.
+
+        The member's __init__ re-exports the new module's public names and the
+        new error class and code, exactly as clock_skew's names are
+        re-exported. The demotion store registers **no component and no
+        builder** — the member's suite pins exactly four build_ builders (the
+        switch, the ledger, the flattener and the halt door), and clock_skew
+        is the precedent this feature follows: it persists a table but is
+        reached through the module-level spellings and
+        RiskSignalDemotionStore.resolve, not through composition. The demotion
+        is the supervisor's own act on its own process over DATABASE_URL, and
+        the process that must survive a restart is the one that must not be
+        required to have composed anything.
+
+        A new suite packages/risk/tests/test_demotion.py organised around the
+        sentence's claims — below the bound demotes and persists one row per
+        signal, at or above the bound demotes nothing, the boundary is pinned
+        exactly at 0.4, the demotion carries the ratio and the bound and the
+        moment read back from the row, the moment and the row are one fact, the
+        second demotion of a signal is first-write-wins, the read refuses a row
+        no demotion can be reconstructed as (including past PRAGMA
+        ignore_check_constraints), the store refuses a node that is not a
+        signal identity and a ratio that is not a number, the module-level
+        spelling refuses when no store is named and the ratio is below the
+        bound and answers the empty tuple when no store is named, and the
+        demotion reaches the ratio through the forward member's public seam
+        (a real second interpreter computing the ratio the demotion judges).
+      </feature>
+    </category>
+  </features_to_add>
+
+  <integration_points>
+    Reads the forward member's public module-level function
+    forward_ic_retention (feature 337) for the retention ratio, never the
+    forward member's tables. Persists in the workspace's relational store
+    (DATABASE_URL) in a table of its own. Uses the member's own process
+    identity (risk._identity.process_identity) and error taxonomy
+    (risk.errors). Registers no component — the member's suite pins exactly
+    four build_ builders, and the demotion is reached through the module-level
+    spelling and RiskSignalDemotionStore.resolve, exactly as clock_skew is. The
+    seat is not extended: the demotion is reached through the member's
+    module-level spelling, not a new
+    seat accessor, because the demotion is the supervisor's own act on its
+    own process, not a per-process resolution the order layer consults.
+  </integration_points>
+
+  <conventions>
+    - Restate DATABASE_URL_ENV, _sqlite_path, _isoformat_utc, _require_aware,
+      _require_real and _require_text in the new module rather than importing
+      them from a sibling, the stance every store in the member takes.
+    - The comparison is strictly `&lt;` (a ratio at the bound is held, not
+      demoted), matching feature 314's strict `&lt;` and the member's
+      boundary convention.
+    - The 40 percent bound is a module constant (DEMOTION_BOUND = 0.4), not
+      configuration.
+    - The demotion moment (demoted_at) is read back from the standing row,
+      never stamped, so the moment and the row are one fact.
+    - First-write-wins per signal: the table's primary key is node_id, so a
+      second demotion of the same signal writes nothing and returns the
+      standing demotion with changed=False.
+    - The value layer re-derives the ratio-against-bound comparison and
+      validates every field on the way back from a row, so a tampered row
+      fails to reconstruct.
+    - @register lives only in the package __init__, never a submodule.
+    - Lint only the changed files (mypy absent, pre-existing ruff errors on
+      main); do not run --stdin-filename.
+  </conventions>
+
+  <constraints>
+    - Feature 326 adds exactly one new module (risk.demotion), one new table
+      (risk_signal_demotion), one new value (SignalDemotion), one new store
+      (RiskSignalDemotionStore) and one new error class
+      (RiskSignalDemotionError, a sibling of RiskStoreError) — and nothing
+      else. It does not add a new kill, a new flatten, a new halt, a new
+      component, a new table column on another member's table, or a new seat
+      accessor.
+    - The demotion reaches the retention ratio through the forward member's
+      public module-level function forward_ic_retention, never importing the
+      forward member's tables, never naming its columns (live_ic, backtest_ic)
+      and never reading forward_record itself. The store's record method takes
+      the node_id and the ratio as arguments; the caller obtains the ratio
+      from the forward member. The forward member's behaviour, messages,
+      codes and tests are untouched.
+    - The demotion is persisted in a table of this feature's own, not a column
+      on forward_record and not a row in risk_order_kill. The table holds one
+      row per signal (primary key node_id), monotone per signal.
+    - The comparison is strictly `&lt;` against DEMOTION_BOUND (0.4); a ratio
+      exactly at 0.4 is held, not demoted.
+    - The demotion moment is read back from the standing row, never stamped.
+    - First-write-wins per signal: a second demotion writes nothing and
+      returns the standing demotion with changed=False.
+    - The forward member's behaviour, messages, codes and tests are untouched;
+      feature 337's existing behaviour is relied upon and not duplicated.
+    - No order-sensitive shared file is edited (src/app/middleware.py,
+      src/app/settings.py, migrations/versions/**, alembic/versions/** are
+      excluded from this feature's file claim). The schema is created
+      idempotently on connect, so no migration is edited.
+  </constraints>
+
+  <test_baseline>
+    - All existing tests in the risk member (packages/risk/tests) and in
+      tests/ continue to pass. Feature 326's new suite is
+      packages/risk/tests/test_demotion.py, added beside them.
+    - The forward member's suite (packages/forward/tests) continues to pass
+      unchanged; feature 326 reads through forward_ic_retention and does not
+      add or alter any forward test.
+    - Run the member's suite (uv run pytest packages/risk/tests) and the
+      repository-level suite, and confirm all pass.
+  </test_baseline>
+
+  <implementation_steps>
+    <step>
+      Phase 1 — the module. Create
+      packages/risk/src/risk/demotion.py with: the DEMOTION_BOUND constant
+      (0.4); RISK_SIGNAL_DEMOTION_TABLE = "risk_signal_demotion"; the DDL
+      (node_id TEXT PRIMARY KEY, retention_ratio REAL NOT NULL, demotion_bound
+      REAL NOT NULL CHECK (demotion_bound > 0), supervisor_process_id TEXT NOT
+      NULL, demoted_at TEXT NOT NULL, plus CHECK that retention_ratio is a
+      finite real); a frozen value SignalDemotion (node_id, ratio, bound,
+      demoted_at, supervisor_process_id, sequence, changed) whose __post_init__
+      validates the node as a signal identity, the ratio as a finite real, the
+      bound as strictly positive, the instant as aware, and re-derives the
+      ratio &lt; bound comparison, refusing a demotion whose ratio is not below
+      its bound; a store RiskSignalDemotionStore with record (judging the ratio
+      against DEMOTION_BOUND, persisting when below, reading demoted_at back
+      from the standing row, first-write-wins per signal) and demotions /
+      demotion_for reads; and the module-level spellings
+      record_signal_demotion and recorded_signal_demotions. The demotion
+      moment is read back from the standing row via a SELECT of the row's own
+      demoted_at after the insert, never stamped. Refusals: node not a signal
+      identity and ratio not a number in RiskSignalDemotionError; address and
+      persistence faults in RiskStoreError.
+    </step>
+    <step>
+      Phase 2 — the error class. Add RiskSignalDemotionError to
+      packages/risk/src/risk/errors.py as a sibling of RiskStoreError, with
+      the greppable token SIGNAL_DEMOTION_CODE = "signal_demotion", and
+      document it in the module docstring's taxonomy. Export it from the
+      member's __init__.
+    </step>
+    <step>
+      Phase 3 — the member surface. In packages/risk/src/risk/__init__.py,
+      import the new module's public names, add them to __all__, and register
+      the demotion store as a component under DEMOTION_COMPONENT_NAME =
+      "risk-signal-demotion" with a build_signal_demotion_store builder that
+      resolves DATABASE_URL and returns None when no store is named.
+    </step>
+    <step>
+      Phase 4 — the suite. Create packages/risk/tests/test_demotion.py
+      asserting every claim in the test_baseline, organised around the
+      sentence's claims, each refusal in its own test named by its grep token.
+      Include the cross-member test: a real second interpreter computes the
+      retention ratio through forward_ic_retention and this feature judges it
+      and persists the demotion, asserting the demotion carries the ratio the
+      forward member computed.
+    </step>
+    <step>
+      Phase 5 — validate and run. Validate the spec (claw-forge
+      validate-spec), then run the member's suite (uv run pytest
+      packages/risk/tests) and the repository-level suite, and lint only the
+      changed files. Confirm all pass.
+    </step>
+  </implementation_steps>
+</project_specification>
