@@ -57,13 +57,15 @@ from typing import TYPE_CHECKING, Any
 from app.module_loader import Application, create_app
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a dependency
-    from ops import FdrDeployEndpoint, OperatorDashboard
+    from ops import FdrDeployEndpoint, LiveMetricsStore, OperatorDashboard
 
 __all__ = [
     "COMPONENT_NAME",
     "DASHBOARD_COMPONENT_NAME",
+    "OPS_LIVE_METRIC_COMPONENT_NAME",
     "dashboard_component",
     "fdr_deploy_component",
+    "live_metric_component",
 ]
 
 #: The component name the ops member registers its fdr-deploy route
@@ -83,6 +85,15 @@ COMPONENT_NAME = "ops-fdr-deploy"
 #: this seat and the member's own
 #: :data:`~ops.OPS_DASHBOARD_COMPONENT_NAME` cannot drift apart.
 DASHBOARD_COMPONENT_NAME = "ops-dashboard"
+
+#: The component name the ops member registers its live-metrics store
+#: under (feature 350: persists the information coefficient ratio, fill
+#: cost in basis points, order reject rate and feed staleness into the
+#: relational store ``DATABASE_URL`` names), the route and dashboard's
+#: peer under the same member-first prefix.  The member's suite asserts
+#: this seat and the member's own
+#: :data:`~ops.OPS_LIVE_METRIC_COMPONENT_NAME` cannot drift apart.
+OPS_LIVE_METRIC_COMPONENT_NAME = "ops-live-metric"
 
 
 def fdr_deploy_component(app: Application | None = None) -> "FdrDeployEndpoint | Any":
@@ -121,3 +132,22 @@ def dashboard_component(app: Application | None = None) -> "OperatorDashboard | 
     """
     application = app if app is not None else create_app()
     return application.get(DASHBOARD_COMPONENT_NAME)
+
+
+def live_metric_component(app: Application | None = None) -> "LiveMetricsStore | Any":
+    """Return the composed live-metrics store (feature 350's store).
+
+    The same composition accessor as :func:`fdr_deploy_component`, for
+    the member's third component: reads from ``app`` when handed one,
+    composes the declared workspace otherwise, and answers ``None``
+    when no ``ops-live-metric`` component is registered — the same
+    discoverable state, for the same reasons (the member was not
+    scanned, or nothing named a database).  A caller that resolves
+    ``None`` here and needs to persist a live reading is pointed at the
+    member's own store, which refuses to proceed rather than silently
+    persisting nowhere — a metrics table with a hole in it where a live
+    reading should be is exactly the quietly-defaulted number feature
+    350 exists to rule out.
+    """
+    application = app if app is not None else create_app()
+    return application.get(OPS_LIVE_METRIC_COMPONENT_NAME)

@@ -50,8 +50,10 @@ SCORING_SRC = Path(scoring.__file__).resolve().parent.parent
 EXPECTED_EXPORTS = {
     "COMPONENT_NAME",
     "DASHBOARD_COMPONENT_NAME",
+    "OPS_LIVE_METRIC_COMPONENT_NAME",
     "dashboard_component",
     "fdr_deploy_component",
+    "live_metric_component",
 }
 
 
@@ -141,6 +143,73 @@ def test_the_seat_names_line_up() -> None:
     # row are one string.  Three spellings of one name is exactly the
     # kind of drift a test is cheaper than.
     assert ops_seat.COMPONENT_NAME == ops.OPS_COMPONENT_NAME == "ops-fdr-deploy"
+
+
+def test_scan_registers_the_live_metric_store() -> None:
+    # The member's third component registers under its own name, beside
+    # the route and the dashboard — the registration-grows-per-feature
+    # shape, and the growth the member's own registration reserved when
+    # feature 341 landed.
+    registry = Registration()
+    components = scan_components(MEMBER_SRC, registry=registry)
+    names = [component.name for component in components]
+    assert ops.OPS_LIVE_METRIC_COMPONENT_NAME in names
+    assert ops.OPS_LIVE_METRIC_COMPONENT_NAME == "ops-live-metric"
+    again = scan_components(MEMBER_SRC, registry=registry)
+    assert [c.name for c in again].count(ops.OPS_LIVE_METRIC_COMPONENT_NAME) == 1
+
+
+def test_composed_app_builds_the_live_metric_store(test_database_url: str) -> None:
+    app = create_app(MEMBER_SRC, registry=Registration())
+    component = app.get(ops.OPS_LIVE_METRIC_COMPONENT_NAME)
+    assert component is not None
+    assert component.database_url == test_database_url
+    assert ops.OPS_LIVE_METRIC_COMPONENT_NAME in app.order
+
+
+def test_composing_the_live_metric_store_touches_no_disk(
+    test_database_url: str,
+) -> None:
+    # Composition-time work must not touch the disk: the store resolves
+    # its path lazily, so building the application creates no database
+    # and no schema.  The first record() is where the store is asked —
+    # the store's own "constructing one performs no I/O" law, pinned
+    # here at the component that holds it.
+    database_path = Path(urlparse(test_database_url).path.removeprefix("/"))
+    create_app(MEMBER_SRC, registry=Registration())
+    assert not database_path.exists()
+
+
+def test_the_live_metric_store_builder_contributes_nothing_without_a_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An unconfigured relational store is a discoverable state, not an
+    # error: the composed application simply carries no live-metric
+    # component, the same degradation the factory applies to an absent
+    # workspace and the member's own route and dashboard builders take.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    app = create_app(MEMBER_SRC, registry=Registration())
+    assert app.get(ops.OPS_LIVE_METRIC_COMPONENT_NAME) is None
+
+
+def test_the_seat_names_line_up_live_metric() -> None:
+    # The seat's constant, the member's constant and the spec's store
+    # name are one string.  Three spellings of one name is exactly the
+    # kind of drift a test is cheaper than.
+    assert (
+        ops_seat.OPS_LIVE_METRIC_COMPONENT_NAME
+        == ops.OPS_LIVE_METRIC_COMPONENT_NAME
+        == "ops-live-metric"
+    )
+
+
+def test_the_seat_exposes_the_composed_live_metric_store(
+    test_database_url: str,
+) -> None:
+    app = create_app(MEMBER_SRC, registry=Registration())
+    component = ops_seat.live_metric_component(app)
+    assert component is app.get(ops.OPS_LIVE_METRIC_COMPONENT_NAME)
+    assert component.database_url == test_database_url
 
 
 def test_the_seat_exposes_nothing_but_the_composition_accessor(

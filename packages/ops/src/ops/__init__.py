@@ -137,20 +137,32 @@ from .dashboard import (
     main,
     require_streamlit,
 )
-from .errors import DashboardRenderError, FdrDeployMetricError, OpsError
+from .errors import DashboardRenderError, FdrDeployMetricError, LiveMetricError, OpsError
 from .fdr_route import (
     FDR_DEPLOY_ROUTE,
     FdrDeployEndpoint,
     FdrDeployResponse,
     require_scoring,
 )
+from .live_metrics import (
+    DATABASE_URL_ENV,
+    OPS_LIVE_METRIC_COMPONENT_NAME,
+    LIVE_METRIC_TABLE,
+    LIVE_METRICS,
+    LiveMetric,
+    LiveMetricsStore,
+)
 
 __all__ = [
+    "DATABASE_URL_ENV",
     "DASHBOARD_PAGE_TITLE",
     "DASHBOARD_TITLE",
     "EPOCH_COUNT_LABEL",
     "FDR_DEPLOY_LABEL",
     "FDR_DEPLOY_ROUTE",
+    "OPS_LIVE_METRIC_COMPONENT_NAME",
+    "LIVE_METRIC_TABLE",
+    "LIVE_METRICS",
     "OPS_COMPONENT_NAME",
     "OPS_DASHBOARD_COMPONENT_NAME",
     "DashboardPage",
@@ -161,6 +173,9 @@ __all__ = [
     "FdrDeployMetricError",
     "FdrDeployPanel",
     "FdrDeployResponse",
+    "LiveMetric",
+    "LiveMetricError",
+    "LiveMetricsStore",
     "OperatorDashboard",
     "OpsError",
     "main",
@@ -254,3 +269,36 @@ def build_operator_dashboard() -> OperatorDashboard | None:
     surface by name.
     """
     return OperatorDashboard.from_env()
+
+
+#: The component name the member registers its live-metrics store under —
+#: the route and dashboard's peer under the same member-first prefix
+#: (:data:`OPS_COMPONENT_NAME`, :data:`OPS_DASHBOARD_COMPONENT_NAME`), so a
+#: composed application's ``order`` sorts this member's components *beside*
+#: — never inside — another member's.  Spelled in the app package seat
+#: (:mod:`app.modules.ops`) as well, and the member's suite asserts the two
+#: agree.  The growth was reserved by the member's own registration when
+#: feature 341 landed and the app-package seat reserved beside it (*"344-347's
+#: and 350's persisted metrics arrive as this member's own tables"*).
+@register(OPS_LIVE_METRIC_COMPONENT_NAME)
+def build_live_metric_store() -> LiveMetricsStore | None:
+    """Component builder: feature 350's live-metrics store, bound to the
+    store ``DATABASE_URL`` names.
+
+    Takes no arguments — the factory's registration protocol — and decides at
+    build time only what the route's own builder decides: whether
+    ``DATABASE_URL`` names a store.  It resolves the URL itself rather than
+    importing any sibling, so whole-workspace composition never depends on a
+    member that is not promised to be on ``sys.path`` at build time — the
+    store is stdlib-only by design, and the URL is the one composition fact
+    the route, the dashboard and this store all share.
+
+    Returns ``None`` when no ``DATABASE_URL`` is configured — an unconfigured
+    store is a discoverable deployment state, not an exception, the same
+    stance the route and dashboard builders beside it take — so a deployment
+    without a relational store still composes.  Building performs no I/O: no
+    store is constructed, no database opened, no schema created — the first
+    :meth:`~ops.live_metrics.LiveMetricsStore.record` is where the store is
+    both constructed and asked.
+    """
+    return LiveMetricsStore.resolve()
