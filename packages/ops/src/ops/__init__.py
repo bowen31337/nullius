@@ -33,16 +33,21 @@ the store's refusals into this member's vocabulary
 that catches the route's error is never taken down by an error from a
 module it never imported.
 
-Importing this package registers one component with the application
+Importing this package registers its components with the application
 factory.  :data:`OPS_COMPONENT_NAME` (``ops-fdr-deploy``) is feature
 341's GET route — :class:`~ops.fdr_route.FdrDeployEndpoint` over the
 FDR_deploy store ``DATABASE_URL`` names, or nothing when it names
 nothing (an unconfigured store is a discoverable state, and the
-composed application simply carries no ops route).  The registration is
-a deliberate import side effect: this is how a member announces itself
-to the factory without the factory knowing its name in advance, and no
-edit to any central registry, router table or app factory is needed or
-wanted to wire this package in.
+composed application simply carries no ops route).  Its peer under the
+same member-first prefix is :data:`OPS_DASHBOARD_COMPONENT_NAME`
+(``ops-dashboard``), feature 351's operator surface — the
+:class:`~ops.dashboard.OperatorDashboard` rendered over that same
+route, composing on the same ``DATABASE_URL`` decision and refusing at
+render time when the figure cannot be had honestly.  The registration
+is a deliberate import side effect: this is how a member announces
+itself to the factory without the factory knowing its name in advance,
+and no edit to any central registry, router table or app factory is
+needed or wanted to wire this package in.
 
 **The ``@register`` decorator lives here, in this ``__init__``, and in
 no submodule.**  The factory's scan re-executes a package's
@@ -60,13 +65,14 @@ route modules over the members that hold those facts; 344-347's and
 relational store (§16's *"single Postgres metrics table"* allowance) —
 the metrics store feature 267's own docstring already reserves
 (*"the research-metrics row is the ops member's (feature 344 ...)"*);
-348-349's structured log records arrive as emission seams; 351-352's
-dashboard reads the routes and the store.  Each is its own module with
-its own refusal vocabulary under :class:`~ops.errors.OpsError`, and
-each composes only if its sentence demands state a deployment holds —
-the registration-grows-per-feature shape the ledger, nulloracle and
-canary members already take, spelled here once so the category's
-growth stays on one pattern.
+348-349's structured log records arrive as emission seams; 351's
+dashboard (:mod:`ops.dashboard`, landed) reads the route; 352's chrome
+hangs off its page model.  Each is its own module with its own refusal
+vocabulary under :class:`~ops.errors.OpsError`, and each composes only
+if its sentence demands state a deployment holds — the
+registration-grows-per-feature shape the ledger, nulloracle and canary
+members already take, spelled here once so the category's growth stays
+on one pattern.
 
 The public API is small on purpose, and each piece is the seam a later
 feature composes rather than a second spelling of something another
@@ -81,17 +87,36 @@ member already says:
 * :data:`~ops.fdr_route.FDR_DEPLOY_ROUTE` — the route's one spelling,
   shared by the endpoint's ``route`` attribute and the spec's API
   summary row.
+* :class:`~ops.dashboard.OperatorDashboard` with
+  :class:`~ops.dashboard.DashboardPage` and
+  :class:`~ops.dashboard.FdrDeployPanel` — feature 351's surface: the
+  Streamlit dashboard whose primary panel displays ``FDR_deploy``
+  (with its provenance visible beside it) rather than an equity
+  curve, rendered over the composed route and refused, by name, when
+  the route is absent or the primary seat is occupied by anything
+  else.
 * :class:`~ops.errors.OpsError` with
-  :class:`~ops.errors.FdrDeployMetricError` — the member's refusal
+  :class:`~ops.errors.FdrDeployMetricError` and
+  :class:`~ops.errors.DashboardRenderError` — the member's refusal
   vocabulary: one base so a caller catches the member as a whole, one
-  subclass per route so a refusal names where it happened.
+  subclass per surface so a refusal names where it happened.
 """
 
 from __future__ import annotations
 
 from app.module_loader import register
 
-from .errors import FdrDeployMetricError, OpsError
+from .dashboard import (
+    DASHBOARD_PAGE_TITLE,
+    DASHBOARD_TITLE,
+    FDR_DEPLOY_LABEL,
+    DashboardPage,
+    FdrDeployPanel,
+    OperatorDashboard,
+    main,
+    require_streamlit,
+)
+from .errors import DashboardRenderError, FdrDeployMetricError, OpsError
 from .fdr_route import (
     FDR_DEPLOY_ROUTE,
     FdrDeployEndpoint,
@@ -100,13 +125,23 @@ from .fdr_route import (
 )
 
 __all__ = [
+    "DASHBOARD_PAGE_TITLE",
+    "DASHBOARD_TITLE",
+    "FDR_DEPLOY_LABEL",
     "FDR_DEPLOY_ROUTE",
+    "OPS_COMPONENT_NAME",
+    "OPS_DASHBOARD_COMPONENT_NAME",
+    "DashboardPage",
+    "DashboardRenderError",
     "FdrDeployEndpoint",
     "FdrDeployMetricError",
+    "FdrDeployPanel",
     "FdrDeployResponse",
-    "OPS_COMPONENT_NAME",
+    "OperatorDashboard",
     "OpsError",
+    "main",
     "require_scoring",
+    "require_streamlit",
 ]
 
 #: The component name the member's fdr-deploy route registers under —
@@ -152,3 +187,45 @@ def build_fdr_deploy_route() -> FdrDeployEndpoint | None:
     constructed and asked.
     """
     return FdrDeployEndpoint.from_env()
+
+
+#: The component name the member registers its dashboard under — the
+#: route component's peer under the same member-first prefix
+#: (:data:`OPS_COMPONENT_NAME` above), so the category's surfaces sort
+#: beside each other in a composed application's ``order``: the route
+#: that answers the top-line figure, then the operator surface that
+#: renders it.  Spelled in the app package seat
+#: (:mod:`app.modules.ops`) as well, and the member's suite asserts the
+#: two agree.
+OPS_DASHBOARD_COMPONENT_NAME = "ops-dashboard"
+
+
+@register(OPS_DASHBOARD_COMPONENT_NAME)
+def build_operator_dashboard() -> OperatorDashboard | None:
+    """Component builder: feature 351's dashboard, over the same store
+    the route composes on.
+
+    Takes no arguments — the factory's registration protocol — and
+    decides at build time only what the route's own builder decides:
+    whether ``DATABASE_URL`` names a store.  The dashboard is built
+    over :meth:`~ops.dashboard.OperatorDashboard.from_env`, which wraps
+    the route's own ``from_env`` door, so the two components compose on
+    exactly the same decision and point at exactly the same database —
+    the agreement the member's suite pins both ways, the composition
+    fact §16's *"single Postgres metrics table"* allowance stands on.
+
+    Returns ``None`` when no ``DATABASE_URL`` is configured — the
+    composed application simply carries no dashboard, mirroring the
+    route builder beside it.  Building performs no I/O and imports no
+    sibling and no UI library: streamlit and the scoring member are
+    both deferred past builder time (the render and the qualifier are
+    where they are first needed), so whole-workspace composition never
+    depends on their being importable at build time.
+
+    What the composed dashboard is *for* is stated in
+    :mod:`ops.dashboard`'s own docstring: the page factory and render
+    seam the operator's ``streamlit run`` lands on, and the reflection
+    a composed application carries for callers that ask for the
+    surface by name.
+    """
+    return OperatorDashboard.from_env()

@@ -6,11 +6,11 @@ lamp reader — can catch every observability refusal in one ``except``
 clause, exactly the way :class:`~regime.errors.RegimeError` and
 :class:`~book.errors.BookConstructionError` serve their members.  The
 subclasses split by *where the refusal happens*, which is what makes
-each one actionable: the split is by route, because a route is the unit
-the category's features name (feature 341's fdr-deploy, 342's
-instrument-status, 343's regime-coverage), and a caller asking one
-route must not have to import another route's error to catch its own
-refusals.
+each one actionable: the split is by surface, because a surface is the
+unit the category's features name (feature 341's fdr-deploy route, 342's
+instrument-status, 343's regime-coverage, 351's dashboard), and a caller
+asking one surface must not have to import another surface's error to
+catch its own refusals.
 
 What the member refuses, and why loudly: every figure this member
 serves is a number an operator steers the system by (§16 makes
@@ -25,7 +25,7 @@ refused, in this vocabulary, with the original chained.
 
 from __future__ import annotations
 
-__all__ = ["FdrDeployMetricError", "OpsError"]
+__all__ = ["DashboardRenderError", "FdrDeployMetricError", "OpsError"]
 
 
 class OpsError(Exception):
@@ -64,4 +64,37 @@ class FdrDeployMetricError(OpsError):
     campaign is a discoverable state the response answers with an
     absence, not a refusal — the stance feature 267's own ``history()``
     takes and prd §11's target is read across.
+    """
+
+
+class DashboardRenderError(OpsError):
+    """Feature 351's refusals: the render path's own error states.
+
+    Raised in :mod:`ops.dashboard`, at the two places the dashboard's
+    sentence draws a line the render must not cross:
+
+    * **a page whose primary panel is not the FDR one is refused at
+      construction.**  docs §16 states the law this member exists to
+      hold — *"If the primary chart is an equity curve, the system's
+      actual purpose has been quietly abandoned"* — and the app spec's
+      design system carries it over as the one binding presentation
+      rule (*"the top-line number is FDR_deploy and never an equity
+      curve; any panel that would promote profit above epistemic state
+      is rejected at review"*).  The page model is that review: the
+      primary seat answers the FDR panel's display contract or the page
+      is refused by name, so the substitution never renders.
+    * **an operator surface that resolves no route refuses to proceed
+      rather than rendering a numeral nobody measured.**  The seat's
+      own docstring names this caller as the one that must take that
+      stance: a dashboard that quietly rendered ``0.0`` over an absent
+      store would answer "a flawless system" for one that never ran —
+      the quietly-defaulted number this whole category exists to rule
+      out.
+
+    Not raised for an *empty* trend — that absence renders honestly
+    (no numeral, the words that say why) — and not raised for a failed
+    store read, which arrives as feature 341's own
+    :class:`FdrDeployMetricError` and propagates untranslated: it is
+    already this member's vocabulary, and re-wrapping it would only
+    bury the route that refused.
     """

@@ -3,10 +3,12 @@ namespace.
 
 The implementation lives in the ``ops`` workspace member
 (``packages/ops``), which self-registers with the application factory
-under ``"ops-fdr-deploy"``.  ``src/app/modules/ops/`` is the member's
-seat in the ``app`` package namespace: it names the component and asks
-the factory for it without the ``app`` package depending on any member
-at import time.  These tests pin that chain — workspace declaration,
+under ``"ops-fdr-deploy"`` and ``"ops-dashboard"`` (feature 351's
+operator surface, pinned in its own suite).  ``src/app/modules/ops/``
+is the member's seat in the app package namespace: it names the
+components and asks the factory for them without the ``app`` package
+depending on any member at import time.  These tests pin that chain —
+workspace declaration,
 scan, registration, composition, seat — so the member cannot silently
 fall out of the composed application, and so a composition without a
 configured ``DATABASE_URL`` degrades to "no ops route" rather than
@@ -28,6 +30,7 @@ from urllib.parse import urlparse
 import ops
 import pytest
 import scoring
+
 from app.module_loader import (
     Application,
     Registration,
@@ -44,7 +47,12 @@ SCORING_SRC = Path(scoring.__file__).resolve().parent.parent
 #: than as a membership check, because the failure this guards against
 #: is the seat *growing* a re-export, and a membership check cannot
 #: see that.
-EXPECTED_EXPORTS = {"COMPONENT_NAME", "fdr_deploy_component"}
+EXPECTED_EXPORTS = {
+    "COMPONENT_NAME",
+    "DASHBOARD_COMPONENT_NAME",
+    "dashboard_component",
+    "fdr_deploy_component",
+}
 
 
 def test_member_is_declared_in_the_scanned_workspace() -> None:
@@ -154,6 +162,10 @@ def test_the_seat_exposes_nothing_but_the_composition_accessor(
         "FDR_DEPLOY_ROUTE",
         "OpsError",
         "FdrDeployMetricError",
+        "OperatorDashboard",
+        "DashboardPage",
+        "FdrDeployPanel",
+        "DashboardRenderError",
     ):
         assert leaked not in ops_seat.__all__
 

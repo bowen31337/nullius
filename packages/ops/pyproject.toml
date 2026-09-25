@@ -34,11 +34,23 @@
 # `DATABASE_URL` itself and constructs the store only at first read;
 # an import at build time would crash every whole-workspace
 # composition in an environment where the members are not installed.
+#
+# Streamlit — feature 351's render target — is deliberately NOT a
+# dependency of this member.  docs §16's stack line names it the way
+# it names Postgres ("a single Postgres metrics table with a Streamlit
+# dashboard"): an environment the operator runs, not a library the
+# research loop links against.  The dashboard's render seam is
+# therefore duck-typed (`ops.dashboard.require_streamlit` defers the
+# import past module scope and past builder time, exactly as the
+# scoring import above does), the member imports and composes without
+# it, and the lockfile gains no third-party edge for a UI the loop
+# never touches.  The deployment that renders the dashboard installs
+# it where the dashboard runs.
 
 [project]
 name = "ops"
 version = "0.1.0"
-description = "Observability surface: GET /metrics/fdr-deploy serving the base-rate reweighted false discovery rate as the top-line figure, read from feature 267's per-campaign rows."
+description = "Observability surface: GET /metrics/fdr-deploy serving the base-rate reweighted false discovery rate as the top-line figure, read from feature 267's per-campaign rows; and the Streamlit dashboard whose primary panel renders that figure rather than an equity curve."
 requires-python = ">=3.12"
 dependencies = ["nullius", "scoring"]
 
