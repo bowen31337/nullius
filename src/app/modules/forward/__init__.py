@@ -80,9 +80,17 @@ from typing import TYPE_CHECKING, Any
 from app.module_loader import Application, create_app
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a dependency
-    from forward import ForwardRecords
+    from forward import DecayCurveEndpoint, ForwardRecords
 
-__all__ = ["COMPONENT_NAME", "forward_records_component"]
+__all__ = ["COMPONENT_NAME", "decay_component", "forward_records_component"]
+
+#: The component name feature 334's endpoint registers under — the hyphenated
+#: satellite spelling the member uses for its derived route, repeated here so
+#: the seat, the factory's registry and the member cannot drift apart.  A
+#: composed deployment reaches the GET /forward/decay route's read as
+#: ``app.get("forward-decay")``, exactly as it reaches the store as
+#: ``app.get("forward")``.
+FORWARD_DECAY_COMPONENT_NAME = "forward-decay"
 
 #: The component name the forward member registers its record store under.
 #: Kept here as well as in the member — every seat in this workspace spells its
@@ -129,3 +137,20 @@ def forward_records_component(app: Application | None = None) -> ForwardRecords 
     """
     application = app if app is not None else create_app()
     return application.get(COMPONENT_NAME)
+
+
+def decay_component(app: Application | None = None) -> "DecayCurveEndpoint | Any":
+    """Return the composed decay endpoint (GET /forward/decay, feature 334).
+
+    Reads the ``forward-decay`` component the member registers — the route that
+    returns the observed decay curve for a signal — with the same composition
+    rules as :func:`forward_records_component`: an explicit application is read
+    as given, an absent one is composed first, and a composition without the
+    component (member not scanned, no ``DATABASE_URL`` configured) returns
+    ``None`` rather than raising.
+
+    The scoring or reporting process that draws a signal's decay curve reaches
+    the route through this accessor, so it never has to import the member.
+    """
+    application = app if app is not None else create_app()
+    return application.get(FORWARD_DECAY_COMPONENT_NAME)

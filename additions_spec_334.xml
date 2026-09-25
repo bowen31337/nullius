@@ -1,0 +1,256 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 334 (System exposes GET /forward/decay which returns the observed decay curve for a promoted signal)</project_name>
+  <addition_summary>
+    Implement app_spec.xml, "Forward-Test Tracking", feature 334: *System
+    exposes GET /forward/decay which returns the observed decay curve for a
+    promoted signal.* The API summary spells the route's one line — ``GET
+    /forward/decay — Return the observed forward decay curve for a signal`` —
+    and the route is already named in the member's own docstrings (the seat
+    ``src/app/modules/forward`` and ``forward.observation``/``forward.record``
+    all refer to *"feature 334's decay endpoint"* and *"feature 334's decay
+    curve"*), but no module, endpoint, value or test exists yet: it is prose
+    waiting for a shape. This feature gives it one.
+
+    The curve is the signal's live information coefficient *trajectory* over
+    its out-of-sample life — the very thing §5 Loop 3 promises to track
+    (*"its live forward IC tracked from the promotion date forward"*). After
+    feature 332 opens the record (one boundary row) and feature 333 appends the
+    observation rows (one ``live_ic`` per measured day), the record holds an
+    ordered series of ``(observed_on, live_ic)`` points. Feature 334 is the
+    *surface* that reads that series back and frames it as a decay curve: each
+    measured point expressed as an offset in days from the boundary the record
+    drew. The decay — the information coefficient falling from its early values
+    toward its later ones — is read off the rows, never re-derived: the curve is
+    one reading of the record drawn one way, exactly as feature 94's route is
+    one reading of the ledger's ``k_effective`` derivation.
+
+    The member's ladder is the shape this feature climbs, one act later than
+    feature 333's observation. ``decay.py`` holds three things and nothing
+    else: the value (:class:`DecayCurve`, a frozen record of the boundary
+    instant and the ordered points, whose ``__post_init__`` re-derives each
+    point's day-offset and vouches every plotted coefficient), the store
+    (:class:`ForwardDecayCurves`, built ``over`` the composed ``forward``
+    component or resolved from ``DATABASE_URL``, which reads the signal's
+    standing rows through feature 332's own ``_READ_SQL`` / ``_record_from_row``
+    and refuses what cannot be framed as a curve), and the endpoint
+    (:class:`DecayCurveEndpoint`, the route — ``get(node_id)`` returns the
+    curve, ``from_env`` resolves it or answers ``None``, ``FORWARD_DECAY_ROUTE``
+    pinned on the class). ``__init__.py`` widens its re-export and registers one
+    satellite component ``forward-decay`` (the hyphenated spelling the
+    feature-store member's derived components established, so a composed
+    deployment reaches the route as ``app.get("forward-decay")``); the seat
+    ``src/app/modules/forward`` gains a ``decay_component`` accessor that reads
+    it back, reaching the member only under ``TYPE_CHECKING``. A module-level
+    ``decay_curve(node_id, database_url=..., env=...)`` spelling closes the
+    ladder for a caller holding a bare URL.
+
+    **The curve is a read, and reads nothing it does not hold.** It opens no
+    record (feature 332's act), re-reads no promotion registry (the instant is
+    the record's own, read once off the opening row), and re-derives no
+    coefficient (each ``live_ic`` is the table's own copy). The one thing it
+    computes is the day-offset of each point from the boundary — the framing
+    that turns a list of rows into a *decay curve* — and that offset is measured
+    against the opening row's ``observed_on``, the same boundary feature 333's
+    lower bound and feature 335's upper bound are measured against, so all three
+    agree on where out-of-sample began.
+
+    **Neither an absent store nor a failed read is ever answered with a
+    curve.** No ``DATABASE_URL`` composes no endpoint (``from_env`` returns
+    ``None``), the same degrade-don't-break stance every store's builder and
+    feature 95's endpoint take — a decay curve that silently fell back to
+    nothing would read as *"this signal has no decay"* rather than *"this signal
+    has no database"*, and the two must not be confused. A configured store
+    whose read finds no curve propagates its refusal rather than answering an
+    empty or fabricated one.
+
+    **The boundary is the record, and the curve is refused by name when the
+    record cannot be framed.** A malformed identity is refused as the ask's own
+    fact (``ForwardRecordError``, before anything is opened); a signal that
+    holds no record is refused naming the promote step (``ForwardStoreError`` —
+    feature 332's route is the declared parent, and the repair is *promote
+    first*); rows carrying two promotion instants are refused as a vintage
+    nobody can state (``ForwardStoreError`` — a curve drawn over two boundaries
+    would double-count a window); and a record with no measured coefficient yet
+    is refused naming the observation job (``ForwardStoreError`` — *observe
+    first*, feature 333), never answered as an empty curve, because an empty
+    chart and a flat one read alike in front of a planner. No new error class is
+    added: these four refusals land in the member's two existing read/ask faces,
+    exactly as feature 333's observation does — the ask in
+    ``ForwardRecordError``, the read in ``ForwardStoreError`` — and a caller that
+    refuses forward work wholesale writes one ``except ForwardError``.
+
+    No central registry, router, app factory, middleware, settings or migration
+    is edited; the member joins by workspace-scan convention and adds one
+    ``@register`` satellite (as the ledger member adds ``ledger-k-effective``
+    beside its store). The module is stdlib-only at module scope
+    (``dataclasses``, ``contextlib``, ``sqlite3``, ``os``, ``datetime``-free —
+    no clock is read; the ``uuid``/``numbers``/``pathlib``/``typing`` imports
+    the sibling stores already pay), so the factory's scan — which imports this
+    package on every ``create_app()`` to fire its ``@register`` — pays nothing
+    for the route beyond the import it already paid.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (the `forward` member already exists:
+      packages/forward, import name forward; seat src/app/modules/forward). The
+      member currently carries features 332, 333, 335, 337, 338, 339 and 340 —
+      `record.py` (feature 332's act `ForwardRecords.open_record`, the
+      `ForwardRecord` row, the request/response, the `PromoteEndpoint`, the
+      `FORWARD_PROMOTE_ROUTE`, the read spelling `_READ_SQL` / `_record_from_row`
+      and the validators `_validated_uuid` / `_validated_instant` /
+      `_validated_date` / `_validated_live_ic`, `LIVE_IC_COLUMN`,
+      `NODE_ID_COLUMN`, `OBSERVED_ON_COLUMN`, `PROMOTED_AT_COLUMN`,
+      `LIVE_IC_BOUND`, `DATABASE_URL_ENV`, `ForwardRecords.resolve`,
+      `_sqlite_path`), `observation.py` (feature 333's
+      `ForwardObservations.append_observation` and `forward_observation`, the
+      `FORWARD_OBSERVATION_SEAM = "database_url"` seam, the `over`/`resolve`
+      ladder and the `_connect` that runs `bootstrap_schema`), `retention.py`
+      (feature 337's `ForwardIcRetentions`, `IcRetention` with its
+      `summary()`-as-JSON precedent, `forward_ic_retention` and the `_one_vintage`
+      refusal), `priors.py` (feature 339's `ForwardDecayPriors` — the closest
+      read precedent: a frozen `ForwardHalfLife` whose `__post_init__`
+      re-derives a day-offset from the boundary, `_rows` reading `forward_record`
+      via `_READ_SQL`/`_record_from_row`, `_one_vintage`/`_absent_record`/
+      `_no_observation` refusals, `FORWARD_PRIOR_SEAM`, and the `over`/`resolve`
+      ladder), `beta_four.py`, `reconciliation.py`, `window.py` (feature 332's
+      and feature 335's promotion seam), `schema.py` (the DDL adapter that runs
+      the owning migrations by path) and `errors.py` (the base `ForwardError`
+      plus `ForwardRecordError`, `ForwardStoreError`, `ForwardPromotionError`,
+      `ForwardIdentityError`, `ForwardReconciliationError`,
+      `ForwardRetentionError`, `ForwardDecayPriorError` and
+      `ForwardBetaFourError`), with `__init__.py` holding the one `@register`
+      builder, `build_forward_records`, under the component name `forward`. The
+      seat `src/app/modules/forward` exposes one accessor,
+      `forward_records_component(app)`. Feature 334 adds one module (`decay.py`),
+      one satellite component (`forward-decay`), one seat accessor and one test
+      file.</stack>
+    <test_baseline>The forward member's own suite under
+      packages/forward/tests/ (test_forward_record, test_forward_observation,
+      test_forward_retention, test_forward_beta_four, test_forward_priors,
+      test_forward_track, test_forward_component, test_forward_reconciliation)
+      plus this feature's new test_forward_decay. The member is stdlib-only at
+      module scope (the factory's scan imports the package to fire its
+      `@register`, so it must pay nothing), and feature 334's module adds only
+      `dataclasses`, `contextlib`, `sqlite3`, `os`, `uuid`, `numbers`,
+      `pathlib`, `typing` and the member's own `.errors`/`.record`/`.schema` to
+      that bill. The repository-level suite under tests/ is collected by
+      pytest's testpaths and does NOT collect packages/*/tests (see the
+      acceptance-gate memory), so the member's own suite must be run explicitly
+      as well. Lint only the new files and compare to a sibling — the repo is
+      red on main (mypy absent, ~163 pre-existing ruff errors), so a baseline
+      via `--stdin-filename` misreports. The component suite
+      (test_forward_component) asserts the member imports no workspace member at
+      module scope and that the seat reaches `forward` only under
+      TYPE_CHECKING — a new `decay.py` must satisfy both, and the seat's new
+      accessor must stay inside its TYPE_CHECKING guard.</test_baseline>
+    <conventions>
+      - One act, one module: `decay.py` holds the value, the store and the
+        endpoint; `__init__.py` widens its re-export and `__all__` and gains one
+        `@register` satellite builder — the shape the ledger member takes for
+        `ledger-k-effective`. The seat gains one accessor and re-exports
+        nothing.
+      - The value is frozen and re-derives itself: `DecayCurve` is a frozen
+        dataclass (`slots=True`) of `node_id`, `promoted_at` (the boundary
+        instant, off the opening row) and `points` (a tuple of `DecayPoint`),
+        and `DecayPoint` is a frozen dataclass of `observed_on` (a date), `days`
+        (the offset from the boundary) and `live_ic` (the coefficient). Its
+        `__post_init__` validates the node as a UUID, the instant as an instant,
+        refuses an empty `points` (a curve with no measured point is not a
+        curve), and re-derives each point's `days == (observed_on -
+        promoted_at.date()).days` exactly and re-validates each `live_ic`
+        through `_validated_live_ic` — the discipline `ForwardHalfLife` applies
+        to its crossing offset and `IcRetention` to its ratio: a derived figure
+        is checked against its derivation, so a caller cannot hand a planner a
+        point whose offset or coefficient nobody measured. A `summary()` returns
+        the JSON-shaped mapping a router would serialize (`node_id`,
+        `promoted_at` as ISO, `observed_days`, and `points` as a list of
+        `{observed_on, days, live_ic}`), mirroring `IcRetention.summary`.
+      - The store climbs the member's one ladder: `ForwardDecayCurves` is built
+        `over` the composed `forward` component (reading its `database_url`
+        seam, duck-checked not `isinstance`-guarded, for the loader's
+        synthetic-name reason every seam states) or `resolve`d from
+        `DATABASE_URL`; it has `database_url`/`path`/`_connect` (the member's
+        one `bootstrap_schema` set, `PRAGMA foreign_keys = ON`, refused in this
+        member's `ForwardStoreError` vocabulary), a `_rows(connection, node)`
+        that reads feature 332's own `_READ_SQL` and builds feature 332's own
+        `_record_from_row` (one reading of the record), and `curve(node_id)` —
+        the route's read. `curve` validates the identity first
+        (`ForwardRecordError`, before any I/O), then reads the standing rows; no
+        rows is a refusal naming the promote step (`_absent_record`,
+        `ForwardStoreError`); rows carrying two `promoted_at` instants are
+        refused as a vintage nobody can state (`_one_vintage`, `ForwardStoreError`,
+        restated in this module's own words as the sibling `_one_vintage`s are);
+        and rows carrying no measured coefficient are refused naming the
+        observation job (`_no_observation`, `ForwardStoreError`) — never
+        answered as an empty curve. The boundary each offset is measured from is
+        the opening row's `observed_on` (the UTC date of its `promoted_at`), the
+        one instant the record carries — the same boundary feature 333's lower
+        bound and feature 335's upper bound are measured against.
+      - The endpoint is a thin seam over the store: `DecayCurveEndpoint` is
+        constructed with a `ForwardDecayCurves`, duck-checks it for a callable
+        `curve` (an object that can only read rows is refused, not answered with
+        a fabricated curve), exposes `route = FORWARD_DECAY_ROUTE` as a class
+        attribute, `get(node_id)` (the route — takes the signal identity a GET
+        *for a signal* must state, delegates the whole read to the store),
+        `from_env(env)` (resolves the store exactly as the member's builder does,
+        returns `None` when no `DATABASE_URL` — an unconfigured store is a
+        discoverable state, not an error), and a `curves` property. It holds no
+        cache: the curve must be the rows' state at the moment it is asked for,
+        on every request, in every process.
+      - The module-level spelling closes the ladder: `decay_curve(node_id, *,
+        database_url=None, env=None)` resolves the store from `database_url`,
+        else `DATABASE_URL` (refused by name when neither is set, as
+        `forward_record`/`forward_observation` do), and returns the store's
+        `DecayCurve` — the one-call form for a pipeline step or an operator
+        backfilling a signal whose curve was never read.
+      - Error vocabulary: **no new class.** The four refusals land in the two
+        faces feature 333 already established — `ForwardRecordError` for the
+        malformed ask (the identity, settled before anything is opened),
+        `ForwardStoreError` for the read (absent record, two-vintage fault, no
+        observation) — so a caller that refuses forward work wholesale writes one
+        `except ForwardError` and the repair each message states is its own
+        (promote first / observe first / repair the rows). The endpoint adds no
+        fallback and catches nothing: a read that fails propagates, because the
+        alternative — answering a decay curve this route did not read — is the
+        error direction.
+      - Deterministic and clock-free: pure reads over the rows; no `utc_now`,
+        `datetime.now` or `dt.now` anywhere in the module (asserted absent from
+        code, docstrings stripped) — every date in the curve is the table's own,
+        never the reader's, for the reason `forward.priors` and
+        `forward.observation` refuse a default day: the vintage of a decay
+        measurement is a fact about the data.
+      - Do not edit a central registry, router, app factory, middleware,
+        settings or migration (core-task, order-sensitive shared files). One new
+        satellite component is registered (`forward-decay`), so `app.order`
+        carries `forward` and `forward-decay` — the existing `forward` adjacency
+        assertion (`fixture-store &lt; forward &lt; ingest`) is about the unprefixed
+        name and is untouched; `forward-decay` sorts after `forward` and is not
+        pinned by any test. The seat is widened with one accessor, not rewired.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Forward-Test Tracking">
+      <feature index="334" shape="plugin" plugin="forward" depends_on="333">
+        <description>System defines `DecayCurve` and `DecayPoint`, the observed decay curve as a frozen value. `DecayPoint` is a frozen dataclass (`slots=True`) of exactly three fields — `observed_on` (the measured day, a `date`), `days` (whole days from the boundary) and `live_ic` (the coefficient, a float) — the table's own row framed as a point on the curve. `DecayCurve` is a frozen dataclass (`slots=True`) of `node_id` (the signal, a UUID string), `promoted_at` (the boundary instant, off the opening row) and `points` (a tuple of `DecayPoint`, day-order). Its `__post_init__` re-derives and compares: it validates the node as a UUID (`_validated_uuid`), the instant as an instant (`_validated_instant`), refuses an empty `points` (a curve with no measured point is refused, not carried — the store refuses the absence by name before building, so an empty value is a hand reaching past it), and for every point re-derives `days == (observed_on - promoted_at.date()).days` exactly (both are dates read off rows, so a disagreement is an offset nobody dated) and re-validates `live_ic` through `_validated_live_ic` (bounded, finite — a stored coefficient that stopped being one is refused). A violation is `ForwardStoreError`: the curve could not be vouched for from its own fields. `promoted_at.date()` is the boundary the offsets are measured from — the opening row's own day, the same line feature 333's lower bound and feature 335's upper bound are measured against. A `summary()` returns the JSON-shaped mapping a router would serialize: `node_id`, `promoted_at` as an ISO string, `observed_days` (the point count), and `points` as a list of `{observed_on: iso, days, live_ic}` in day order — mirroring `IcRetention.summary`, so the route's answer and a job log speak one shape. Frozen, because the curve is the route's testimony about the rows at the moment they were read: re-reading the same record yields an equal value, and nothing here is a knob to adjust.</description>
+      </feature>
+      <feature index="334" shape="plugin" plugin="forward" depends_on="333">
+        <description>System defines `ForwardDecayCurves`, feature 334's store — the read over the composed forward-record store. Constructed with the `database_url` the records live in (validated as a non-empty string before any call, as every store in the member does); resolves its path lazily so construction performs no I/O. `resolve(env)` returns the store `DATABASE_URL` names, or `None` when it names none (absent is a deployment without a relational store, a discoverable state — while the reader that must draw a decay curve is the caller that must not find itself in it). `over(records)` builds the store over anything exposing a `database_url` string (the composed `forward` component, or a `ForwardRecords` a caller built), duck-read as the sibling `over`s are, with no `isinstance` the loader's synthetic name would defeat — one URL, one table, the record's read and the observation's write cannot point at two databases. `database_url` and `path` properties; `_connect` runs the member's one `bootstrap_schema` set (`0118` then `0108`, `PRAGMA foreign_keys = ON`), refused in this member's `ForwardStoreError` vocabulary on an `sqlite3.Error`. `_rows(connection, node)` reads feature 332's own `_READ_SQL` and builds feature 332's own `_record_from_row` — one reading of the record, so the rows this act frames and the rows every other act answered with cannot be two readings of one table. `curve(node_id)` is the route's read: it validates the identity first (`_validated_uuid`, `ForwardRecordError`, before any I/O — a malformed identity is refused without touching a database and leaves no file behind), reads the standing rows, refuses no rows naming the promote step (`_absent_record`, `ForwardStoreError` — the half-life and the ratio are dated on a record, and so is the curve; the repair is POST /forward/promote first), refuses rows carrying two `promoted_at` instants as a vintage nobody can state (`_one_vintage`, `ForwardStoreError`, restated in this module's own words as the sibling `_one_vintage`s are — a curve over two boundaries would double-count a window), refuses rows carrying no measured coefficient naming the observation job (`_no_observation`, `ForwardStoreError` — a curve of no points is refused, not returned empty, and the repair is feature 333's act, on schedule), and otherwise builds the `DecayCurve` from the measured rows in day order, each point's `days` measured from the opening row's `observed_on`. Refuses, each naming what it is about: a malformed identity (`ForwardRecordError`); an absent record, a two-vintage fault or an unobserved record (`ForwardStoreError`).</description>
+      </feature>
+      <feature index="334" shape="plugin" plugin="forward" depends_on="333">
+        <description>System defines `DecayCurveEndpoint`, feature 334's route — `GET /forward/decay` over one `ForwardDecayCurves`. Constructed with the store it reads; `get(node_id)` is the route and `from_env(env)` resolves it or answers `None`. The endpoint holds no state of its own — no cache of a previous curve — because the decay curve must be the rows' state at the moment it is asked for: an observation that lands between two reads must move the second answer, and a cached curve would make the route depend on when the reader happened to start. The rows in the table are the only record of what was measured, so they are the only thing the answer is drawn from, on every request, in every process. `route = FORWARD_DECAY_ROUTE` is pinned on the class (`"/forward/decay"`, app_spec.xml's API summary row for the Forward-Test domain), so a composed deployment states its routes from the components it holds. The constructor duck-checks the store for a callable `curve` — an object that can only read rows is refused here rather than answering the route with a curve the store never stated, exactly as `KEffectiveEndpoint` refuses an object without `k_effective`; the check reads `getattr(curves, "curve", None)` against a sentinel so an absent attribute is distinguished from a present-`None` one, so the loader's synthetic-name copies are judged as well as canonical stores. `get(node_id)` takes the signal identity a GET *for a signal* must state (a path or query parameter in an HTTP adapter) and delegates the whole read — validation, the standing rows, the framing — to the store's `curve`, returning the `DecayCurve` the store answered with; refusals are the store's and propagate untouched, nothing caught, because the alternative is answering a decay curve this route did not read. `from_env(env)` resolves the store exactly as the member's builder does (`ForwardDecayCurves.resolve`), so the endpoint, the composed `forward-decay` component and the module-level spelling always point at the same database; no `DATABASE_URL` composes no endpoint (returns `None`), while a deployment whose reader must draw a curve is the caller that must not find itself in it. A `curves` property exposes the store it reads.</description>
+      </feature>
+      <feature index="334" shape="plugin" plugin="forward" depends_on="333">
+        <description>System exposes `decay_curve(node_id, *, database_url=None, env=None)`, the module-level spelling of feature 334's route — the feature's sentence as one call, for the caller that wants the curve without holding a store (a pipeline step reading a promoted signal's trajectory, an operator backfilling a signal whose curve was never read, a test). The store is resolved from `database_url`, else from `DATABASE_URL` (via the same `_resolved_store` shape `forward.record.forward_record` uses), and a deployment that names neither is refused *by name* rather than silently answering nothing — the silence would be the dangerous failure, leaving a promoted signal with a curve nobody could draw. It returns the store's `DecayCurve`, the same value `DecayCurveEndpoint.get` returns, so a caller reading through one spelling and the other reads the same curve. The identity is validated by the store, the rows read by the store, the framing done by the store — this spelling adds nothing but the resolution.</description>
+      </feature>
+      <feature index="334" shape="plugin" plugin="forward" depends_on="333">
+        <description>System registers feature 334's route as one satellite component and widens the member's re-export. `packages/forward/src/forward/__init__.py` imports `decay.py`'s names (`FORWARD_DECAY_ROUTE`, `DecayCurve`, `DecayPoint`, `ForwardDecayCurves`, `DecayCurveEndpoint`, `decay_curve`), adds them to `__all__` beside features 332's, 333's, 337's, 338's, 339's and 340's, and gains one `@register` builder — `build_forward_decay` under `FORWARD_DECAY_COMPONENT_NAME = "forward-decay"`, the hyphenated satellite spelling the feature-store member's derived components established (so a composed deployment reaches the route as `app.get("forward-decay")`, exactly as `app.get("ledger-k-effective")` reaches feature 94). The builder takes no arguments — the factory's protocol — and resolves the store from the environment exactly as `build_forward_records` does, so the route reads the database the process is actually pointed at and can never serve a curve drawn from a different database than the composed `"forward"` component names; it returns `None` when no `DATABASE_URL` is set (an unconfigured store contributes no route either, a discoverable state), and never raises. `FORWARD_DECAY_ROUTE` and `FORWARD_DECAY_COMPONENT_NAME` are spelled once here so the member, the factory's registry and the seat cannot drift apart. The `@register` lives in `__init__.py` and not in `decay.py`, for the reason the member's docstring gives: `@register` fires at import of the package, and a submodule's registration would fire only on the first `create_app()` of a process that happened to load it. `decay.py` is stdlib-only at module scope (`dataclasses`, `contextlib`, `sqlite3`, `os`, `uuid`, `numbers`, `pathlib`, `typing` and the member's own `.errors`/`.record`/`.schema`), so the factory's scan pays nothing for the route beyond the import it already paid. No shared order-sensitive surface is authored into — no registry, router, app factory, middleware or settings.</description>
+      </feature>
+      <feature index="334" shape="plugin" plugin="forward" depends_on="333">
+        <description>System widens the seat `src/app/modules/forward` with one accessor, `decay_component(app=None)`, that returns the composed `forward-decay` endpoint (GET /forward/decay, feature 334), reading the `forward-decay` component the member registers with the same composition rules as `forward_records_component`: an explicit application is read as given, an absent one is composed first via `create_app`, and a composition without the component (member not scanned, no `DATABASE_URL` configured) returns `None` rather than raising. The scoring or reporting process that draws a signal's decay curve reaches the route through this accessor, so it never has to import the member. `FORWARD_DECAY_COMPONENT_NAME = "forward-decay"` is spelled once here so the seat, the factory's registry and the member agree on the key. The accessor reaches the member's `DecayCurveEndpoint` type only under a `TYPE_CHECKING` guard — a runtime `import forward` is the fault the component suite catches, and the guard is erased at runtime, existing so the docstring's annotations resolve for a reader and a checker without binding a name or making the app package depend on the member's installed layout.</description>
+      </feature>
+      <feature index="334" shape="plugin" plugin="forward" depends_on="333">
+        <description>System passes feature 334 over the member's own fixtures in a new `packages/forward/tests/test_forward_decay.py`, beside the sibling suites (one member suite per pytest invocation — the conftest-collision trap). The curve is built over the `opened_record` fixture with several observations appended (through the real `ForwardObservations.append_observation`, in a non-monotonic arrival order, then asserted in day order): the curve lands as the ordered `(observed_on, live_ic)` points the table holds, each `days` the exact offset from the boundary day (2026-03-01 → first observation 2026-03-02 is `days=1`), drawn from the rows and not re-derived (asserted against a raw `SELECT` of `forward_record`, as `forward_rows` does — a test that asked the store would ask the code under test to confirm itself); `summary()` is JSON-shaped with ISO instants and the points list; a malformed identity is refused with `ForwardRecordError` before any I/O; a signal that holds no record is refused with `ForwardStoreError` naming the promote step; rows carrying two `promoted_at` instants (a hand-edited second opening row) are refused with `ForwardStoreError` naming the two-vintage fault; a record with no observation is refused with `ForwardStoreError` naming the observe step, never answered empty; the endpoint duck-checks its store (a bare object without `curve` is refused with `TypeError`, an absent `curve` attribute distinguished from a present-`None` one by sentinel); `from_env` returns `None` with no `DATABASE_URL` and an endpoint over a named database; the module-level `decay_curve` reads from a bare URL and is refused by name when none is named; both error faces are `ForwardError` subclasses and the refusals name their repair; the module is stdlib-only parsed from the AST (`code_of`, docstrings stripped), imports no other workspace member at module scope, opens no store at import, reads no environment and consults no clock (`utc_now`/`datetime.now`/`dt.now` asserted absent); no verb accepts a content or window parameter beyond the signal identity (pinned through `inspect.signature`); a re-run over the same record answers an equal curve; and the `forward-decay` component composes under that name and the seat's `decay_component` returns it. Test traps from the shared conftest: the fixture database already exists once the record is opened (the "no file left behind" assertion needs a fresh `sqlite:///tmp_path` URL); dates are passed to raw SQL as `.isoformat()` (a bare `date` param trips Python 3.12's adapter DeprecationWarning); and f-string SQL placeholders survive `code_of`, so literal-SQL assertions see them.</description>
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>

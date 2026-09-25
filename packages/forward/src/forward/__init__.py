@@ -9,7 +9,7 @@ that did not exist when the hypothesis was formed"*, and against the
 ``forward_record`` table feature 108's migration
 (``migrations/versions/0108_forward_and_universe_tables.py``) already declares.
 
-The member's surface is eight modules, and each answers one question.
+The member's surface is nine modules, and each answers one question.
 
 :mod:`forward.window` is **where the instant comes from**.  The promotion
 timestamp is not this member's to compute: it is feature 293's
@@ -45,6 +45,28 @@ the same database — and holds the one-row-per-date law in the write path,
 where ``0108`` declined to hold it in a constraint: a retry is answered by
 the standing row, a different coefficient for a standing day is refused, and
 no day on or before the boundary is observed at all.
+
+:mod:`forward.decay` is **the surface** — feature 334, the route that reads
+the observation rows feature 333 landed back as a decay curve.
+:class:`~forward.decay.ForwardDecayCurves` reads the signal's standing rows
+through feature 332's own read spelling and frames each measured coefficient
+as a point offset in days from the boundary the record drew;
+:class:`~forward.decay.DecayCurve` is that framing as a frozen value whose
+``__post_init__`` re-derives each offset and vouches each coefficient, and
+:class:`~forward.decay.DecayCurveEndpoint` is the route itself with
+:data:`~forward.decay.FORWARD_DECAY_ROUTE` pinned on it.  It is a read and
+nothing else: it opens no record, re-reads no promotion registry (the instant
+is the record's own, read once off the opening row), and re-derives no
+coefficient — the one thing it computes is the day-offset of each point,
+measured against the same boundary feature 333's lower bound and feature 335's
+upper bound are measured against, so all three agree on where out-of-sample
+began.  A signal that holds no record, that carries two boundaries, or that has
+not been observed is refused by name, never answered with an empty curve — an
+empty chart and a flat one read alike in front of a planner.  The route is a
+second component beside the store — ``forward-decay`` — registered as a
+hyphenated satellite exactly as the ledger member registers
+``ledger-k-effective`` beside its store, so a composed deployment reaches it as
+``app.get("forward-decay")``.
 
 :mod:`forward.reconciliation` is **the cost half** — feature 340, the loop
 §13.4 closes: *"Those outcomes become the labels that recalibrate ``β₄``
@@ -288,6 +310,16 @@ from .beta_four import (
     revised_beta_four,
     standing_beta_four,
 )
+from .decay import (
+    FORWARD_DECAY_COMPONENT_NAME,
+    FORWARD_DECAY_ROUTE,
+    DecayCurve,
+    DecayCurveEndpoint,
+    DecayPoint,
+    ForwardDecayCurves,
+    build_forward_decay,
+    decay_curve,
+)
 from .errors import (
     FORWARD_BETA_FOUR_ERROR_CODE,
     FORWARD_DECAY_PRIOR_ERROR_CODE,
@@ -368,7 +400,9 @@ __all__ = [
     "FORWARD_BETA_FOUR_SEAM",
     "FORWARD_BETA_FOUR_TABLE",
     "FORWARD_COST_RECONCILIATION_TABLE",
+    "FORWARD_DECAY_COMPONENT_NAME",
     "FORWARD_DECAY_PRIOR_ERROR_CODE",
+    "FORWARD_DECAY_ROUTE",
     "FORWARD_IDENTITY_ERROR_CODE",
     "FORWARD_OBSERVATION_SEAM",
     "FORWARD_PRIOR_SEAM",
@@ -396,10 +430,14 @@ __all__ = [
     "REVISED_HALF_LIFE_KEY",
     "BetaFourRevision",
     "CostReconciliation",
+    "DecayCurve",
+    "DecayCurveEndpoint",
+    "DecayPoint",
     "DecayPriorRevision",
     "ForwardBetaFourError",
     "ForwardBetaFourRevisions",
     "ForwardCostReconciliations",
+    "ForwardDecayCurves",
     "ForwardDecayPriorError",
     "ForwardDecayPriors",
     "ForwardError",
@@ -419,7 +457,9 @@ __all__ = [
     "IcRetention",
     "PromoteEndpoint",
     "bootstrap_schema",
+    "build_forward_decay",
     "build_forward_records",
+    "decay_curve",
     "forward_half_life",
     "forward_ic_retention",
     "forward_observation",
@@ -476,3 +516,35 @@ def build_forward_records() -> ForwardRecords | None:
     record is actually being opened.
     """
     return ForwardRecords.resolve()
+
+
+#: The component name feature 334's endpoint registers under — the hyphenated
+#: satellite spelling the feature-store member's derived components established
+#: (``feature-materialiser``, ``regime-metrics``, …), so a composed deployment
+#: reaches the route's read as ``app.get("forward-decay")`` — exactly as
+#: ``app.get("ledger-k-effective")`` reaches feature 94. Spelled once here so
+#: the member, the factory's registry and the seat cannot drift apart.
+#: ``forward-decay`` sorts after the unprefixed ``forward`` in the composed
+#: application's name-sorted ``order``, clear of the ``fixture-store`` /
+#: ``forward`` / ``ingest`` adjacency the unprefixed name is pinned against.
+FORWARD_DECAY_COMPONENT_NAME = "forward-decay"
+
+
+@register(FORWARD_DECAY_COMPONENT_NAME)
+def build_forward_decay() -> ForwardDecayCurves | None:
+    """Component builder: the GET /forward/decay endpoint over this database.
+
+    Takes no arguments — that is the factory's registration protocol — and
+    resolves the store from the environment exactly as
+    :func:`build_forward_records` does, so the route reads the database the
+    process is actually pointed at and can never serve a curve drawn from a
+    different database than the composed ``"forward"`` component names. Returns
+    ``None`` when no ``DATABASE_URL`` is set: an unconfigured store contributes
+    no route either, a discoverable state — while the reader that must draw a
+    signal's curve is the caller that must not find itself in it. Never raises,
+    and construction performs no I/O: the path is resolved on first use and the
+    schema is brought up on the first read, so composing the application neither
+    opens a database nor creates a table.
+    """
+    store = ForwardDecayCurves.resolve()
+    return None if store is None else DecayCurveEndpoint(store)
