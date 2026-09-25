@@ -135,6 +135,27 @@ violated, not by which line of code failed:
   a key, while this one refuses the durations the crossing choice
   cannot read.
 
+* :class:`RouterOrderRoundingError` — feature 312's fault, and a
+  *sibling* of every class above rather than a child of any of them.
+  Its noun is *the submission's own arithmetic*: whether the quantity
+  sits on the venue's step grid and the price on its tick grid, judged
+  against feature 310's fetched filters — which is not a fetched
+  document (:class:`RouterFilterError` refuses a document that is not
+  one; this class refuses an order against a document that is), not a
+  persisted version (:class:`RouterStoreError`), not the router's
+  liveness (:class:`RouterSubmissionHealthError`), not the order's own
+  name (:class:`RouterClientOrderIdError`), not a pacing fault
+  (:class:`RouterRateLimitError`), not the placement being asked about
+  (:class:`RouterSubmissionResultError` — a submission this class
+  refused never reached the placement ask, so no row ever existed),
+  not the books' margin arrangement (:class:`RouterCrossMarginError`)
+  and not the order's posture (:class:`RouterOrderPostureError`).
+  A value that is not an exact decimal, a grid the venue never stated,
+  a symbol that names no leg or another symbol's filters, and a
+  quantity or price that misses its grid, are all refused here rather
+  than shrugged into a near-miss round — because a submission silently
+  adjusted is a position the book never decided to hold.
+
 Every message names the offending value and the contract it broke, because
 these are operational signals for a pipeline the order path trusts for its
 step size and tick size, not debugging aids.
@@ -151,6 +172,7 @@ __all__ = [
     "CLIENT_ORDER_ID_CODE",
     "CROSS_MARGIN_CODE",
     "ORDER_POSTURE_CODE",
+    "ORDER_ROUNDING_CODE",
     "ORDER_SUBMISSION_UNHEALTHY_CODE",
     "RATE_LIMITED_CODE",
     "RETRY_BACKOFF_CODE",
@@ -162,6 +184,7 @@ __all__ = [
     "RouterError",
     "RouterFilterError",
     "RouterOrderPostureError",
+    "RouterOrderRoundingError",
     "RouterRateLimitedError",
     "RouterRetryError",
     "RouterStoreError",
@@ -259,6 +282,21 @@ CROSS_MARGIN_CODE = "cross_margin"
 #: subject, not the verdict, for the same reason
 #: :data:`SUBMISSION_RESULT_CODE` refuses to spell ``duplicate``.
 ORDER_POSTURE_CODE = "order_posture"
+
+#: Feature 312's greppable token, for a submission the venue's grids
+#: cannot book.  Every :class:`RouterOrderRoundingError` message opens
+#: with it, so a rounding refusal is one grep apart from the fetch
+#: fault (:class:`RouterFilterError` — no token of its own, and a
+#: different noun: it refuses a fetch that is not a well-formed
+#: exchangeInfo at all, while this class refuses an order against one
+#: that is), from the identifier faults feature 316 names
+#: (:data:`CLIENT_ORDER_ID_CODE`, which refuse a name rather than a
+#: value), and from the venue's own rejections of a *well-rounded*
+#: order, which feature 320 records and this module never writes.  It
+#: deliberately does not spell ``step`` or ``tick`` alone: either grid
+#: can be the one missed while the other is hit, so the token names the
+#: judgment rather than half of it.
+ORDER_ROUNDING_CODE = "order_rounding"
 
 
 class RouterError(Exception):
@@ -563,6 +601,57 @@ class RouterOrderPostureError(RouterError):
     Every message opens with :data:`ORDER_POSTURE_CODE` and names the
     offending value, because the audience is whoever measured the edge
     or the queue, and the repair is a unit or a sign, not a stack trace.
+    """
+
+
+class RouterOrderRoundingError(RouterError):
+    """A submission the venue's grids cannot book, offered to a gate that
+    refuses to round it.
+
+    app_spec.xml, "Order Routing & Venue Filters", feature 312: *System
+    rejects an order submission not rounded to the venue step size and
+    tick size.*  This is the failure of that sentence's *rejects*: a
+    quantity that is not a multiple of ``LOT_SIZE.stepSize``, a price
+    that is not a multiple of ``PRICE_FILTER.tickSize``, a value that
+    is not an exact decimal at all (a :class:`float` is a binary
+    approximation of a decimal no venue ever sent), a grid the venue
+    never stated for the symbol, or a symbol that names no leg or
+    another symbol's filters.  In every one of those the submission is
+    refused **rather than rounded**, because a quantity silently
+    adjusted inside the send path is the executed book drifting from
+    the target book by a coercion nobody chose — the position the book
+    never decided to hold — and the repair belongs to the sizing step
+    the refusal names.
+
+    **The noun is the submission's arithmetic, and it is per order.**
+    A sibling of the fetch fault (:class:`RouterFilterError`), the
+    record fault (:class:`RouterStoreError`), the health fault
+    (:class:`RouterSubmissionHealthError`), the derived-identity fault
+    (:class:`RouterClientOrderIdError`), the rate-limit tree
+    (:class:`RouterRateLimitError`), the duplicate-submission fault
+    (:class:`RouterSubmissionResultError`) and the margin fault
+    (:class:`RouterCrossMarginError`) rather than a child of any of
+    them, because none of those repairs repairs an order's own terms.
+    The split from :class:`RouterFilterError` is the one the category's
+    whole shape turns on: that class refuses a *document* that is not a
+    well-formed exchangeInfo, while this one refuses an *order* against
+    a document that is — one bad fetch, many bad orders, and an
+    operator sent from the second to the first would fix the venue's
+    message instead of the sizing step's arithmetic.  The split from
+    :class:`RouterOrderPostureError` is the fine one between two facts
+    about the same order: that class refuses durations the crossing
+    choice cannot read, while this one refuses values the venue's grids
+    cannot book — the order is the same order either way, and a caller
+    sent to fix its urgency instead of its quantity would cross the
+    spread with an order the venue returns unbooked.  And the split
+    from :class:`RouterSubmissionResultError` is chronological: a
+    submission this class refused never reached the placement ask, so
+    no row ever existed and no duplicate was ever answered.
+
+    Every message opens with :data:`ORDER_ROUNDING_CODE` and names the
+    offending value, the grid it missed and the two nearest values on
+    that grid, because the audience is whoever sized the order and the
+    repair is one rounding, not a stack trace.
     """
 
 

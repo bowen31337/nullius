@@ -129,6 +129,33 @@ feature 310's exchangeInfo store), no clock and no I/O — a posture that
 depended on when it was computed would be a second posture for one
 order between the decision and the send.
 
+Feature 312 adds a tenth: :mod:`router.rounding` — the point the order
+path finally *uses* the constants feature 310 fetched, and the category's
+plainest *rejects*.  app_spec.xml, "Order Routing & Venue Filters",
+feature 312: *System rejects an order submission not rounded to the venue
+step size and tick size*, and ``docs/alpha-engine-prd.md`` C9 names the
+law behind it: *"Read ``LOT_SIZE``, ``NOTIONAL``, ``PRICE_FILTER``,
+``stepSize``, ``tickSize`` from ``exchangeInfo`` at startup and daily.
+Never hardcode."*  The verb :func:`router.rounding.require_rounded_order`
+takes the :class:`~router.exchange_info.RouterSymbolFilters` the order
+path just read and refuses a submission whose quantity is not a multiple
+of the step size or whose price is not a multiple of the tick size — it
+never rounds, because a quantity silently adjusted inside the send path
+is the executed book drifting from the target book by a coercion nobody
+chose, and the venue would refuse the unrounded order anyway, after the
+weight budget was already spent.  The judgment is exact
+:class:`decimal.Decimal` modulo (a :class:`float` is refused by name —
+``0.3 % 0.1`` is not zero in binary, and a submission the venue would
+book must not be refused by a representation error), and a grid the
+venue never stated is refused rather than defaulted, which is feature
+311's no-hardcoded-constant law made structural: the grids arrive as
+feature 310's own value or they do not arrive at all.  Like features
+314, 315 and 316 it holds no table and no component — the verdict is a
+pure function of the terms and the fetched filters, so a restarted
+router re-judging an order agrees with the process it replaced — and
+the member still registers exactly one component, feature 310's
+exchangeInfo store.
+
 This package also *is* a component of the composed application: importing
 it registers a builder with the application factory
 (``app.module_loader.register``), so the module loader discovers it by
@@ -161,6 +188,7 @@ from .errors import (
     CLIENT_ORDER_ID_CODE,
     CROSS_MARGIN_CODE,
     ORDER_POSTURE_CODE,
+    ORDER_ROUNDING_CODE,
     ORDER_SUBMISSION_UNHEALTHY_CODE,
     RATE_LIMITED_CODE,
     RETRY_BACKOFF_CODE,
@@ -172,6 +200,7 @@ from .errors import (
     RouterError,
     RouterFilterError,
     RouterOrderPostureError,
+    RouterOrderRoundingError,
     RouterRateLimitedError,
     RouterRateLimitError,
     RouterRetryError,
@@ -223,6 +252,7 @@ from .retry import (
     RetryEventLog,
     retry_rate_limited,
 )
+from .rounding import RoundedOrder, require_rounded_order
 from .store import (
     DATABASE_URL_ENV,
     ROUTER_EXCHANGE_INFO_FILTER_TABLE,
@@ -274,6 +304,7 @@ __all__ = [
     "ORDER_PLACEMENT_TABLE",
     "ORDER_POSTURES",
     "ORDER_POSTURE_CODE",
+    "ORDER_ROUNDING_CODE",
     "ORDER_SUBMISSION_ACCEPTED",
     "ORDER_SUBMISSION_HEALTH_TABLE",
     "ORDER_SUBMISSION_OUTCOMES",
@@ -305,6 +336,7 @@ __all__ = [
     "RateLimitHeadroom",
     "RateLimitRetryEvent",
     "RetryEventLog",
+    "RoundedOrder",
     "RouterClientOrderIdError",
     "RouterCrossMarginError",
     "RouterError",
@@ -313,6 +345,7 @@ __all__ = [
     "RouterFilterError",
     "RouterOrderPlacementStore",
     "RouterOrderPostureError",
+    "RouterOrderRoundingError",
     "RouterRateLimitError",
     "RouterRateLimitedError",
     "RouterRateLimiter",
@@ -332,6 +365,7 @@ __all__ = [
     "normalize_client_order_id",
     "process_identity",
     "require_isolated_margin",
+    "require_rounded_order",
     "resolve_order_posture",
     "resolve_router_filters",
     "retry_rate_limited",
