@@ -77,6 +77,29 @@ violated, not by which line of code failed:
   :class:`RouterRateLimitedError`, because the bucket refused nothing: the
   *ask to wait on it* was the malformed thing.
 
+* :class:`RouterBelowMinNotionalError` — feature 313's fault, and a *sibling*
+  of every class above rather than a child of any of them.  Its noun is the
+  *order's own value*: the quantity times the price the submission states,
+  judged against the floor the venue published — which is not a fetched
+  document (:class:`RouterFilterError`), not a persisted version
+  (:class:`RouterStoreError`), not the router's liveness
+  (:class:`RouterSubmissionHealthError`), not the order's own name
+  (:class:`RouterClientOrderIdError`), not a pacing fault
+  (:class:`RouterRateLimitError`), not the placement being asked about
+  (:class:`RouterSubmissionResultError`), not a book's margin arrangement
+  (:class:`RouterCrossMarginError`) and not how the order crosses
+  (:class:`RouterOrderPostureError`).  The split from
+  :class:`RouterOrderRoundingError` is the fine one between the two grids
+  and the one floor: that class refuses an order the venue's *grids*
+  cannot book, while this one refuses an order whose *value* the venue
+  will not book — a quantity can sit exactly on the step and a price
+  exactly on the tick while the two multiply to less than the venue's
+  minimum, so an operator sent from this refusal to that one would go and
+  re-round an order that is already round.  Its message opens with the
+  token the feature's own sentence spells, :data:`BELOW_MIN_NOTIONAL_CODE`,
+  rather than a name this module invented, because that is the string the
+  app_spec sentence promises and the one an operator greps for.
+
 * :class:`RouterSubmissionResultError` — feature 317's fault, and a *sibling*
   of every class above rather than a child of any of them.  Its noun is the
   order the sentence is *about*: a duplicate test reads one key and one
@@ -169,6 +192,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, and limiter imports this
     from .limiter import RateLimitHeadroom
 
 __all__ = [
+    "BELOW_MIN_NOTIONAL_CODE",
     "CLIENT_ORDER_ID_CODE",
     "CROSS_MARGIN_CODE",
     "ORDER_POSTURE_CODE",
@@ -179,6 +203,7 @@ __all__ = [
     "SUBMISSION_RESULT_CODE",
     "WEIGHT_BUCKET_CODE",
     "WEIGHT_SCHEDULE_CODE",
+    "RouterBelowMinNotionalError",
     "RouterClientOrderIdError",
     "RouterCrossMarginError",
     "RouterError",
@@ -298,6 +323,25 @@ ORDER_POSTURE_CODE = "order_posture"
 #: judgment rather than half of it.
 ORDER_ROUNDING_CODE = "order_rounding"
 
+#: Feature 313's greppable token, for an order whose value falls below the
+#: venue's published minimum.  Every
+#: :class:`RouterBelowMinNotionalError` message opens with it, so a
+#: below-notional refusal is one grep apart from the grid refusal feature
+#: 312 names (:data:`ORDER_ROUNDING_CODE` — the same order can be perfectly
+#: round and still too small), from the fetch fault (a document that is not
+#: a well-formed exchangeInfo at all), and from the venue's own rejection
+#: of an order that *is* above its floor, which feature 320 records and
+#: this module never writes.
+#:
+#: **This token is the sentence's own spelling, not this module's.**
+#: app_spec.xml feature 313 says the refusals *"return a below_min_notional
+#: error message"*, so the constant is that exact string rather than a
+#: name coined in the house style (``order_notional``, ``min_notional``).
+#: The other tokens here were chosen by their authors; this one is quoted
+#: by the feature, and an operator who read the spec and greps for it must
+#: find the refusals — a token renamed for consistency would send them to
+#: nothing.
+BELOW_MIN_NOTIONAL_CODE = "below_min_notional"
 
 class RouterError(Exception):
     """Base class for every failure of the router package."""
@@ -652,6 +696,58 @@ class RouterOrderRoundingError(RouterError):
     offending value, the grid it missed and the two nearest values on
     that grid, because the audience is whoever sized the order and the
     repair is one rounding, not a stack trace.
+    """
+
+
+class RouterBelowMinNotionalError(RouterError):
+    """An order whose value falls below the venue's published minimum.
+
+    app_spec.xml, "Order Routing & Venue Filters", feature 313: *System
+    rejects an order falling below the venue minimum notional, which
+    returns a below_min_notional error message.*  This is the failure of
+    that sentence's *rejects*: the submission's value — its quantity times
+    its price — is less than the ``minNotional`` the venue published for
+    the symbol, so the venue would return the order unbooked.  The gate
+    refuses it before the send, in the one vocabulary the app_spec
+    sentence promises, so the repair reaches the sizing step rather than
+    arriving as a venue rejection after feature 318's weight budget was
+    already spent.
+
+    **The noun is the order's value, not its arithmetic.**
+    ``docs/alpha-engine-prd.md`` C9 names the field beside the two grids —
+    *"Read ``LOT_SIZE``, ``NOTIONAL``, ``PRICE_FILTER``, ``stepSize``,
+    ``tickSize`` from ``exchangeInfo`` at startup and daily. Never
+    hardcode."* — and the split between this class and
+    :class:`RouterOrderRoundingError` is exactly the split between the
+    *grids* and the *floor*.  A quantity can sit perfectly on
+    ``LOT_SIZE.stepSize`` and a price perfectly on
+    ``PRICE_FILTER.tickSize`` while the two multiply to less than the
+    venue's minimum: the order is exactly as round as the venue requires
+    and still too small to book.  So a caller told the grid fault would go
+    and re-round an order that is already round, which is why this is its
+    own class rather than an instance of that one.
+
+    A sibling of every other class here — the fetch fault
+    (:class:`RouterFilterError`), the record fault
+    (:class:`RouterStoreError`), the health fault
+    (:class:`RouterSubmissionHealthError`), the derived-identity fault
+    (:class:`RouterClientOrderIdError`), the rate-limit tree
+    (:class:`RouterRateLimitError`), the placement fault
+    (:class:`RouterSubmissionResultError`), the margin fault
+    (:class:`RouterCrossMarginError`) and the posture fault
+    (:class:`RouterOrderPostureError`) — because none of those repairs
+    repairs an order that is too small: the fetch was fine, the store was
+    fine, the key is well formed, the budget was never touched, and no row
+    exists because the submission never reached the placement ask.
+
+    Every message opens with :data:`BELOW_MIN_NOTIONAL_CODE` — the exact
+    token the sentence spells — and names the value, the floor and the
+    symbol, because the audience is whoever sized the order and the repair
+    is a size, not a stack trace.  This class is **not** the risk
+    supervisor's *"equity < 2 × min_notional"* halt
+    (``docs/alpha-engine-prd.md`` C10, §13.3's trigger table): that is a
+    deployment-level stop belonging to the risk member, and this one
+    refuses a single order the venue's own floor will not book.
     """
 
 

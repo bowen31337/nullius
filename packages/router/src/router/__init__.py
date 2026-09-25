@@ -8,7 +8,9 @@ from ``exchangeInfo`` at startup and daily. Never hardcode."*  This member
 is where those constants live once fetched, so the order-path features that
 follow (311's daily refresh, 312's step/tick rounding, 313's minimum
 notional, and onward through 321's shadow-mode default) have something to
-read instead of a literal in the order path.
+read instead of a literal in the order path.  Feature 313 is the second of
+those, and the field its sentence names — ``NOTIONAL.minNotional`` — is
+carried here verbatim for it.
 
 The category's other features arrive as their own modules rather than as
 fields on this one, and the two below are the shape the rest take.
@@ -156,6 +158,35 @@ router re-judging an order agrees with the process it replaced — and
 the member still registers exactly one component, feature 310's
 exchangeInfo store.
 
+Feature 313 adds an eleventh: :mod:`router.notional` — the *second* way a
+well-rounded submission is still not bookable.  app_spec.xml, "Order
+Routing & Venue Filters", feature 313: *System rejects an order falling
+below the venue minimum notional, which returns a ``below_min_notional``
+error message*, and feature 310 persisted the field this sentence reads
+(:attr:`~router.exchange_info.RouterSymbolFilters.min_notional`, from
+``NOTIONAL.minNotional``) one feature earlier.  The verb
+:func:`router.notional.require_min_notional` takes the
+:class:`~router.rounding.RoundedOrder` feature 312 just answered — so the
+floor is judged on an order whose quantity sits on the step grid and whose
+price sits on the tick grid, and the two gates cannot disagree about what
+the order's terms are — multiplies *those* decimalised fields exactly, and
+refuses a submission worth less than the floor the fetched document
+states.  The refusal is its own class, not feature 312's, because the
+repairs differ: an order can be perfectly round and still too small, and a
+caller sent to re-round it would fix nothing.  The product is computed
+under a widened decimal context rather than at the module's ambient
+28-digit precision, for feature 312's exactness reason applied to the
+multiplication; the floor arrives as feature 310's own value or not at
+all (feature 311's law, restated); a stated floor of zero is admissible
+and vacuous while an absent one is refused; and *below* is strict, so an
+order worth exactly the minimum trades.  The message opens with the exact
+token the sentence spells, ``below_min_notional``, rather than a name this
+member coined.  Like features 312, 314, 315 and 316 it holds no table and
+no component — the verdict is a pure function of the order and the fetched
+floor, so a restarted router re-judging an order agrees with the process
+it replaced — and the member still registers exactly one component,
+feature 310's exchangeInfo store.
+
 This package also *is* a component of the composed application: importing
 it registers a builder with the application factory
 (``app.module_loader.register``), so the module loader discovers it by
@@ -185,6 +216,7 @@ from .client_order_id import (
     normalize_client_order_id,
 )
 from .errors import (
+    BELOW_MIN_NOTIONAL_CODE,
     CLIENT_ORDER_ID_CODE,
     CROSS_MARGIN_CODE,
     ORDER_POSTURE_CODE,
@@ -195,6 +227,7 @@ from .errors import (
     SUBMISSION_RESULT_CODE,
     WEIGHT_BUCKET_CODE,
     WEIGHT_SCHEDULE_CODE,
+    RouterBelowMinNotionalError,
     RouterClientOrderIdError,
     RouterCrossMarginError,
     RouterError,
@@ -237,6 +270,7 @@ from .margin import (
     MarginScope,
     require_isolated_margin,
 )
+from .notional import OrderValue, require_min_notional
 from .posture import (
     AGGRESSIVE_ORDER,
     ORDER_POSTURES,
@@ -282,6 +316,7 @@ from .submission_result import (
 
 __all__ = [
     "AGGRESSIVE_ORDER",
+    "BELOW_MIN_NOTIONAL_CODE",
     "CLIENT_ORDER_ID_CODE",
     "CLIENT_ORDER_ID_LENGTH",
     "COMPONENT_NAME",
@@ -331,12 +366,14 @@ __all__ = [
     "MarginScope",
     "OrderPlacement",
     "OrderPosture",
+    "OrderValue",
     "PlacementOrder",
     "PlacementResult",
     "RateLimitHeadroom",
     "RateLimitRetryEvent",
     "RetryEventLog",
     "RoundedOrder",
+    "RouterBelowMinNotionalError",
     "RouterClientOrderIdError",
     "RouterCrossMarginError",
     "RouterError",
@@ -365,6 +402,7 @@ __all__ = [
     "normalize_client_order_id",
     "process_identity",
     "require_isolated_margin",
+    "require_min_notional",
     "require_rounded_order",
     "resolve_order_posture",
     "resolve_router_filters",
