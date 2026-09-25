@@ -364,14 +364,18 @@ name = "ops"
 version = "0.1.0"
 source = { editable = "packages/ops" }
 dependencies = [
+    { name = "canary" },
     { name = "nullius" },
+    { name = "nulloracle" },
     { name = "regime" },
     { name = "scoring" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "canary", editable = "packages/canary" },
     { name = "nullius", editable = "." },
+    { name = "nulloracle", editable = "packages/nulloracle" },
     { name = "regime", editable = "packages/regime" },
     { name = "scoring", editable = "packages/scoring" },
 ]

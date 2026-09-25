@@ -50,9 +50,10 @@ is the composed live-metrics store?*, *what is the composed
 meta-overfit gap store?*, *what is the composed discovery-rate store?*,
 *what is the composed Type-B depth store?*, *what is the composed
 planted-null calibration store?*, *what is the composed regime-coverage
-route?*
-— so the observability features that follow (342's lamps, 352's
-chrome) can ask them without importing the member directly.
+route?*, *what is the composed instrument-status route?*
+— so the observability features that follow (352's chrome, which renders
+342's lamps beside 341's figure) can ask them without importing the
+member directly.
 """
 
 from __future__ import annotations
@@ -65,6 +66,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a depende
     from ops import (
         DiscoveryRates,
         FdrDeployEndpoint,
+        InstrumentStatusEndpoint,
         LiveMetricsStore,
         MetaOverfitGaps,
         NullCalibrations,
@@ -77,6 +79,7 @@ __all__ = [
     "COMPONENT_NAME",
     "DASHBOARD_COMPONENT_NAME",
     "OPS_DISCOVERY_RATE_COMPONENT_NAME",
+    "OPS_INSTRUMENT_STATUS_COMPONENT_NAME",
     "OPS_LIVE_METRIC_COMPONENT_NAME",
     "OPS_META_OVERFIT_COMPONENT_NAME",
     "OPS_NULL_CALIBRATION_COMPONENT_NAME",
@@ -85,6 +88,7 @@ __all__ = [
     "dashboard_component",
     "discovery_rate_component",
     "fdr_deploy_component",
+    "instrument_status_component",
     "live_metric_component",
     "meta_overfit_component",
     "null_calibration_component",
@@ -171,6 +175,16 @@ OPS_NULL_CALIBRATION_COMPONENT_NAME = "ops-null-calibration"
 #: and the spec's API summary row for the route is the third spelling
 #: that assertion pins.
 OPS_REGIME_COVERAGE_COMPONENT_NAME = "ops-regime-coverage"
+
+#: The component name the ops member registers its instrument-status
+#: route under (feature 342: GET /metrics/instrument-status, canary, KS
+#: guard and ingest lag as three binary lamps — docs §5.4's rail), the
+#: fdr-deploy route's peer under the same member-first prefix.  The
+#: member's suite asserts this seat and the member's own
+#: :data:`~ops.OPS_INSTRUMENT_STATUS_COMPONENT_NAME` cannot drift apart,
+#: and the spec's API summary row for the route is the third spelling
+#: that assertion pins.
+OPS_INSTRUMENT_STATUS_COMPONENT_NAME = "ops-instrument-status"
 
 
 def fdr_deploy_component(app: Application | None = None) -> "FdrDeployEndpoint | Any":
@@ -333,3 +347,27 @@ def regime_coverage_component(
     """
     application = app if app is not None else create_app()
     return application.get(OPS_REGIME_COVERAGE_COMPONENT_NAME)
+
+
+def instrument_status_component(
+    app: Application | None = None,
+) -> "InstrumentStatusEndpoint | Any":
+    """Return the composed instrument-status route (feature 342's route).
+
+    The same composition accessor as :func:`fdr_deploy_component`, for the
+    member's ninth component: reads from ``app`` when handed one, composes
+    the declared workspace otherwise, and answers ``None`` when no
+    ``ops-instrument-status`` component is registered — the same discoverable
+    state, for the same reasons (the member was not scanned, or nothing named
+    a database).  It is deliberately *not* the absent-lamp state: the caller
+    that resolves ``None`` here learns the deployment has nowhere a rail
+    reading could have come from, while an endpoint that answers a response
+    with lamps absent reports a configured database in which a specific
+    instrument was never measured — two different facts, and a caller
+    rendering docs §5.4's rail wants them apart, because the first is nothing
+    to draw and the second is a lamp to draw dark.  Asking the route is
+    ``component.get()``; the accessor returns the component, not its answer,
+    so the read happens where the caller decided it should.
+    """
+    application = app if app is not None else create_app()
+    return application.get(OPS_INSTRUMENT_STATUS_COMPONENT_NAME)

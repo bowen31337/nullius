@@ -70,6 +70,7 @@ EXPECTED_EXPORTS = {
     "COMPONENT_NAME",
     "DASHBOARD_COMPONENT_NAME",
     "OPS_DISCOVERY_RATE_COMPONENT_NAME",
+    "OPS_INSTRUMENT_STATUS_COMPONENT_NAME",
     "OPS_LIVE_METRIC_COMPONENT_NAME",
     "OPS_META_OVERFIT_COMPONENT_NAME",
     "OPS_NULL_CALIBRATION_COMPONENT_NAME",
@@ -78,6 +79,7 @@ EXPECTED_EXPORTS = {
     "dashboard_component",
     "discovery_rate_component",
     "fdr_deploy_component",
+    "instrument_status_component",
     "live_metric_component",
     "meta_overfit_component",
     "null_calibration_component",
@@ -682,6 +684,126 @@ def test_the_seat_exposes_the_composed_regime_coverage_route(
     assert component.route == "/metrics/regime-coverage"
 
 
+def test_scan_registers_the_instrument_status_route() -> None:
+    # The member's ninth component registers under its own name, beside the
+    # three routes, the dashboard and the member's four stores — the
+    # registration-grows-per-feature shape, and the peer the member's own
+    # route registration reserved when feature 341 landed (*"342's lamps"*
+    # named in the note beside 343's coverage).
+    registry = Registration()
+    components = scan_components(MEMBER_SRC, registry=registry)
+    names = [component.name for component in components]
+    assert ops.OPS_INSTRUMENT_STATUS_COMPONENT_NAME in names
+    assert ops.OPS_INSTRUMENT_STATUS_COMPONENT_NAME == "ops-instrument-status"
+    again = scan_components(MEMBER_SRC, registry=registry)
+    assert (
+        [c.name for c in again].count(ops.OPS_INSTRUMENT_STATUS_COMPONENT_NAME) == 1
+    )
+
+
+def test_composed_app_builds_the_instrument_status_route(
+    test_database_url: str,
+) -> None:
+    app = create_app(MEMBER_SRC, registry=Registration())
+    component = app.get(ops.OPS_INSTRUMENT_STATUS_COMPONENT_NAME)
+    assert component is not None
+    assert component.route == "/metrics/instrument-status"
+    assert component.readings.database_url == test_database_url
+    assert ops.OPS_INSTRUMENT_STATUS_COMPONENT_NAME in app.order
+
+
+def test_composing_the_instrument_status_route_touches_no_disk(
+    test_database_url: str,
+) -> None:
+    # Composition-time work must not touch the disk, and for this route that
+    # is the load-bearing contract twice over: two of its three lamps belong
+    # to *other* members (the canary store and the nulloracle guard), reached
+    # through deferred carriers, so a builder that imported either — or
+    # constructed either store — would both touch the disk and make
+    # composition depend on imports that are not promised to work where
+    # builders fire.  Building creates no database and no schema; the first
+    # get() is where each store is constructed and asked.
+    database_path = Path(urlparse(test_database_url).path.removeprefix("/"))
+    create_app(MEMBER_SRC, registry=Registration())
+    assert not database_path.exists()
+
+
+def test_the_instrument_status_builder_contributes_nothing_without_a_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An unconfigured relational store is a discoverable state, not an
+    # error: the composed application simply carries no instrument-status
+    # route, the same degradation the member's other store-bound builders
+    # take.  It is deliberately *not* the all-absent-lamp answer — no route
+    # says there is nowhere a reading could have come from, which is a
+    # different fact from a configured database whose instruments have not
+    # been read yet.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    app = create_app(MEMBER_SRC, registry=Registration())
+    assert app.get(ops.OPS_INSTRUMENT_STATUS_COMPONENT_NAME) is None
+
+
+def test_the_seat_names_line_up_instrument_status() -> None:
+    # The seat's constant, the member's constant and the spec's API summary
+    # row are one name.  Three spellings of one name is exactly the kind of
+    # drift a test is cheaper than.
+    assert (
+        ops_seat.OPS_INSTRUMENT_STATUS_COMPONENT_NAME
+        == ops.OPS_INSTRUMENT_STATUS_COMPONENT_NAME
+        == "ops-instrument-status"
+    )
+
+
+def test_the_instrument_status_route_and_the_route_compose_over_one_database(
+    test_database_url: str,
+) -> None:
+    # §16's "single Postgres metrics table" allowance, held across the
+    # member's own surfaces: the lamp rail, the fdr-deploy route and the
+    # coverage route resolve the one database DATABASE_URL names — never
+    # three databases where the figure an operator reads and the lamps
+    # beside it could drift apart.
+    app = create_app(MEMBER_SRC, registry=Registration())
+    lamps = app.get(ops.OPS_INSTRUMENT_STATUS_COMPONENT_NAME)
+    route = app.get(ops.OPS_COMPONENT_NAME)
+    coverage = app.get(ops.OPS_REGIME_COVERAGE_COMPONENT_NAME)
+    assert lamps is not None and route is not None and coverage is not None
+    assert (
+        lamps.readings.database_url
+        == route.store.database_url
+        == coverage.store.database_url
+        == test_database_url
+    )
+
+
+def test_the_seat_exposes_the_composed_instrument_status_route(
+    test_database_url: str,
+) -> None:
+    app = create_app(MEMBER_SRC, registry=Registration())
+    component = ops_seat.instrument_status_component(app)
+    assert component is app.get(ops.OPS_INSTRUMENT_STATUS_COMPONENT_NAME)
+    assert component.route == "/metrics/instrument-status"
+
+
+def test_the_composed_instrument_status_route_reaches_the_sibling_members(
+    test_database_url: str,
+) -> None:
+    # The deferred doors, through composition: the route's first lamp is the
+    # *canary* member's own halt store read over the composed database, so
+    # the rail an operator sees is the bit that member persists rather than
+    # a second opinion computed here.  Deliberately built through
+    # ``create_app`` — the requirement is that a *composed* route can reach
+    # the sibling at ask time even though the builder must not at
+    # build time.
+    app = create_app(MEMBER_SRC, registry=Registration())
+    component = app.get(ops.OPS_INSTRUMENT_STATUS_COMPONENT_NAME)
+    assert component is not None
+    response = component.get()
+    # Nothing has been recorded, so the halt table is empty and dreaming
+    # runs; the other two lamps are absent rather than lit.
+    assert response.canary is True
+    assert response.absent == ("ks_guard", "ingest")
+
+
 def test_the_seat_exposes_nothing_but_the_composition_accessor(
     test_database_url: str,
 ) -> None:
@@ -735,6 +857,15 @@ def test_the_seat_exposes_nothing_but_the_composition_accessor(
         "RegimeCoverageMetricError",
         "REGIME_COVERAGE_ROUTE",
         "require_regime",
+        "InstrumentStatusEndpoint",
+        "InstrumentStatusResponse",
+        "InstrumentStatusError",
+        "INSTRUMENT_STATUS_ROUTE",
+        "LAMP_NAMES",
+        "FEED_STALENESS_METRIC",
+        "FEED_STALENESS_THRESHOLD_ENV",
+        "require_canary",
+        "require_nulloracle",
     ):
         assert leaked not in ops_seat.__all__
 

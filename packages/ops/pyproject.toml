@@ -35,7 +35,21 @@
 # crash: 0, …}"), and prd §11 reads it across campaigns; a re-derivation
 # here would put a private copy of that ledger in front of the operator.
 #
-# All three dependencies are workspace members, so none needs a registry
+# Dependencies: also the `canary` member and the `nulloracle` member,
+# whose own stores hold two of the three instrument-status lamps
+# (feature 342's GET /metrics/instrument-status, docs/design.md §5.4's
+# rail).  §12's determinism halt is feature 143's monotone bit on the
+# canary member's `canary_dream_halt` row, and §7.4's detectability
+# reading is feature 123's persisted p-value on the nulloracle member's
+# `campaign_ks_guard` row — judged against feature 124's own
+# `VOID_THRESHOLD`, which lives in that member beside the comparison
+# that uses it.  The route reads each lamp through the member that owns
+# it rather than re-spelling either store's read or §7.4's level, the
+# same "never grow a second reader" reasoning the scoring and regime
+# edges above state; and the third lamp (the recorded feed silence) is
+# this member's own feature-350 row, so it needs no edge from here.
+#
+# Five dependencies, all workspace members, so none needs a registry
 # fetch and the lockfile gains no third-party edge from this package.
 #
 # The scoring import is deferred past module scope AND past builder
@@ -55,6 +69,15 @@
 # module-scope-reachable import, and the `_DeferredRegimeStore` carrier
 # beside it defers the store's construction to the first read.
 #
+# The canary and nulloracle imports (feature 342's route) are deferred
+# the same way and for the same reason, twice over:
+# `ops.instrument_status.require_canary` and `.require_nulloracle` each
+# hold their member's one module-scope-reachable import, and the
+# `_DeferredInstrumentReadings` carrier defers all four of that route's
+# store constructions (the canary halt store, the scoring trend store,
+# the nulloracle guard store and this member's own live-metrics store)
+# to the first read.
+#
 # Streamlit — feature 351's render target — is deliberately NOT a
 # dependency of this member.  docs §16's stack line names it the way
 # it names Postgres ("a single Postgres metrics table with a Streamlit
@@ -70,9 +93,9 @@
 [project]
 name = "ops"
 version = "0.1.0"
-description = "Observability surface: GET /metrics/fdr-deploy serving the base-rate reweighted false discovery rate as the top-line figure, read from feature 267's per-campaign rows; GET /metrics/regime-coverage serving the replay pool's stored world counts per stratum, read from feature 284's coverage ledger; and the Streamlit dashboard whose primary panel renders the top-line figure rather than an equity curve."
+description = "Observability surface: GET /metrics/fdr-deploy serving the base-rate reweighted false discovery rate as the top-line figure, read from feature 267's per-campaign rows; GET /metrics/instrument-status serving canary, KS guard and ingest lag as three binary lamps, each read through the member that owns it; GET /metrics/regime-coverage serving the replay pool's stored world counts per stratum, read from feature 284's coverage ledger; and the Streamlit dashboard whose primary panel renders the top-line figure rather than an equity curve."
 requires-python = ">=3.12"
-dependencies = ["nullius", "scoring", "regime"]
+dependencies = ["nullius", "scoring", "regime", "canary", "nulloracle"]
 
 [build-system]
 requires = ["hatchling"]
@@ -82,6 +105,8 @@ build-backend = "hatchling.build"
 nullius = { workspace = true }
 scoring = { workspace = true }
 regime = { workspace = true }
+canary = { workspace = true }
+nulloracle = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ops"]

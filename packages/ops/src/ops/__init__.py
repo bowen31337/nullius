@@ -128,6 +128,20 @@ member already says:
 * :data:`~ops.regime_coverage.REGIME_COVERAGE_ROUTE` — that route's one
   spelling, shared by the endpoint's ``route`` attribute and the spec's
   API summary row.
+* :class:`~ops.instrument_status.InstrumentStatusEndpoint` with
+  :class:`~ops.instrument_status.InstrumentStatusResponse` — feature
+  342's route: GET /metrics/instrument-status, answering docs §5.4's
+  three binary lamps (*canary*, *ks guard*, *ingest*) as three bits
+  with the provenance that makes each reconstructible.  Each lamp is the
+  owning member's own read — §12's halt through feature 143's canary
+  store, §7.4's detectability reading through feature 123's nulloracle
+  journal compared against feature 124's own level, the recorded feed
+  silence through this member's own feature-350 live-metrics row — and a
+  lamp nobody has measured is answered as an absence rather than
+  guessed at.
+* :data:`~ops.instrument_status.INSTRUMENT_STATUS_ROUTE` — that route's
+  one spelling, shared by the endpoint's ``route`` attribute and the
+  spec's API summary row.
 * :class:`~ops.dashboard.OperatorDashboard` with
   :class:`~ops.dashboard.DashboardPage` and
   :class:`~ops.dashboard.FdrDeployPanel` — feature 351's surface: the
@@ -266,6 +280,7 @@ from .errors import (
     DiscoveryRateError,
     EvaluationLogError,
     FdrDeployMetricError,
+    InstrumentStatusError,
     LiveMetricError,
     MetaOverfitGapError,
     NullCalibrationError,
@@ -285,6 +300,17 @@ from .fdr_route import (
     FdrDeployEndpoint,
     FdrDeployResponse,
     require_scoring,
+)
+from .instrument_status import (
+    FEED_STALENESS_METRIC,
+    FEED_STALENESS_THRESHOLD_ENV,
+    INSTRUMENT_STATUS_ROUTE,
+    LAMP_NAMES,
+    OPS_INSTRUMENT_STATUS_COMPONENT_NAME,
+    InstrumentStatusEndpoint,
+    InstrumentStatusResponse,
+    require_canary,
+    require_nulloracle,
 )
 from .live_metrics import (
     DATABASE_URL_ENV,
@@ -336,6 +362,10 @@ __all__ = [
     "EVALUATION_LOG_LOGGER_NAME",
     "FDR_DEPLOY_LABEL",
     "FDR_DEPLOY_ROUTE",
+    "FEED_STALENESS_METRIC",
+    "FEED_STALENESS_THRESHOLD_ENV",
+    "INSTRUMENT_STATUS_ROUTE",
+    "LAMP_NAMES",
     "LIVE_METRICS",
     "LIVE_METRIC_TABLE",
     "META_OVERFIT_TABLE",
@@ -343,6 +373,7 @@ __all__ = [
     "OPS_COMPONENT_NAME",
     "OPS_DASHBOARD_COMPONENT_NAME",
     "OPS_DISCOVERY_RATE_COMPONENT_NAME",
+    "OPS_INSTRUMENT_STATUS_COMPONENT_NAME",
     "OPS_LIVE_METRIC_COMPONENT_NAME",
     "OPS_META_OVERFIT_COMPONENT_NAME",
     "OPS_NULL_CALIBRATION_COMPONENT_NAME",
@@ -365,6 +396,9 @@ __all__ = [
     "FdrDeployMetricError",
     "FdrDeployPanel",
     "FdrDeployResponse",
+    "InstrumentStatusEndpoint",
+    "InstrumentStatusError",
+    "InstrumentStatusResponse",
     "LiveMetric",
     "LiveMetricError",
     "LiveMetricsStore",
@@ -387,6 +421,8 @@ __all__ = [
     "emit_evaluation_log",
     "emit_replay_log",
     "main",
+    "require_canary",
+    "require_nulloracle",
     "require_promotion",
     "require_regime",
     "require_scoring",
@@ -721,3 +757,59 @@ def build_regime_coverage_route() -> RegimeCoverageEndpoint | None:
     and asked.
     """
     return RegimeCoverageEndpoint.from_env()
+
+
+#: The component name the member registers its instrument-status route
+#: under — the fdr-deploy route's peer under the same member-first,
+#: route-second prefix (:data:`OPS_COMPONENT_NAME` above), so a composed
+#: application's ``order`` sorts the category's read-only routes beside
+#: each other: feature 341's top-line figure, feature 342's three lamps,
+#: feature 343's distribution.  *Defined* in
+#: :mod:`ops.instrument_status` and imported above — the placement the
+#: member's other route names take, so the constant lives beside the
+#: module whose component it names — and spelled in the app package seat
+#: (:mod:`app.modules.ops`) as well, with the member's suite asserting
+#: the two agree.  The seat reservation was already made when feature 341
+#: landed (:data:`OPS_COMPONENT_NAME`'s own note names *"342's lamps"*
+#: among the sibling routes that *"land as its peers under the same
+#: prefix"*), and the route the spec's API summary writes at line ``GET
+#: /metrics/instrument-status`` is now that peer.
+@register(OPS_INSTRUMENT_STATUS_COMPONENT_NAME)
+def build_instrument_status_route() -> InstrumentStatusEndpoint | None:
+    """Component builder: the GET /metrics/instrument-status route, bound
+    to the stores ``DATABASE_URL`` names.
+
+    Takes no arguments — the factory's registration protocol — and decides
+    at build time only whether a store is configured: it reads
+    ``DATABASE_URL`` itself (absent, empty and whitespace-only all unset)
+    and, beside it, the ingest lamp's configured band
+    (:data:`~ops.instrument_status.FEED_STALENESS_THRESHOLD_ENV`), holding
+    both in a deferred carrier that constructs each *sibling* member's
+    store on the first read
+    (:meth:`~ops.instrument_status.InstrumentStatusEndpoint.from_env`).
+
+    The deferral here is needed three times over rather than once, and for
+    the same scan-order reason the neighbouring routes state: builders fire
+    after the factory's scan has taken each member's ``src/`` back off
+    ``sys.path``, so importing the canary, nulloracle or scoring members at
+    build time would make this component's presence — and every
+    whole-workspace composition that fires it — depend on imports that are
+    not promised to work at that moment.  This route reads each lamp
+    through the member that owns it (§12's halt through feature 143's
+    store, §7.4's reading through feature 123's journal and feature 124's
+    level, the attribution through feature 267's trend read) and the
+    recorded silence through *this* member's own feature-350 table, so the
+    URL resolved here is the composition fact that keeps the rail and the
+    top-line figure beside it pointing at one database.
+
+    Returns ``None`` when no ``DATABASE_URL`` is configured — an
+    unconfigured store is a discoverable deployment state, not an exception
+    (the stance every builder in this member takes), and it is deliberately
+    not the absent-lamp answer: no route at all says there is nowhere any
+    reading could have been persisted, while a composed route with an
+    absent lamp says which specific instrument was never read.  And
+    building performs no I/O of any kind: no store is constructed, no
+    database opened, no schema created — the first ``get()`` is where each
+    store is both constructed and asked.
+    """
+    return InstrumentStatusEndpoint.from_env()

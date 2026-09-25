@@ -144,6 +144,7 @@ __all__ = [
     "DiscoveryRateError",
     "EvaluationLogError",
     "FdrDeployMetricError",
+    "InstrumentStatusError",
     "LiveMetricError",
     "MetaOverfitGapError",
     "NullCalibrationError",
@@ -600,4 +601,62 @@ class RegimeCoverageMetricError(OpsError):
     names nothing) is answered, while a *broken* one — the store
     refusing, the mapping unreadable — is refused loudly, and neither is
     ever answered with a zeroed distribution nobody counted.
+    """
+
+
+class InstrumentStatusError(OpsError):
+    """Feature 342's refusals: the instrument-status route's own error
+    states.
+
+    Raised in exactly the places :mod:`ops.instrument_status` states the
+    route's contract, and the split between them is the member-seam law
+    the whole workspace states for error vocabulary: a helper that raises
+    *another member's* error escapes through this member's call path, and
+    a caller who wrote ``except InstrumentStatusError`` — the whole point
+    of the route owning a class — would take the process down with an
+    error from a module it never imported.  **This route has three
+    siblings to translate, not one**, because docs §5.4's rail has three
+    lamps and each is the owning member's own read; so:
+
+    * **the canary lamp** — a read that failed is *translated* here from
+      the canary member's :class:`~canary.CanaryError` (chained, never
+      swallowed).  §12's halt is that store's row, and this route is this
+      member's, so the vocabulary must live where the caller catches it.
+      A halt state that cannot be read is refused rather than answered
+      around with a lit lamp — *"everything below them is worthless if
+      any is out"* (docs §5.4) is exactly why a guess here is the worst
+      of the alternatives;
+    * **the KS-guard lamp** — a read that failed is translated from the
+      nulloracle member's :class:`~nulloracle.KsGuardError`, and a trend
+      read that failed from the scoring member's
+      :class:`~scoring.FdrDeployError`, in the two separate places
+      :meth:`~ops.instrument_status.InstrumentStatusEndpoint.get` states
+      (the attribution and the finding).  A *half*-written guard reading
+      — feature 123's own refusal — surfaces through this class rather
+      than being answered with a lamp; and
+    * **the ingest lamp** — a read that failed is translated from this
+      member's own :class:`LiveMetricError` (the live-metrics store,
+      feature 350), because the recorded ``feed_staleness_s`` reading is
+      this member's own table and its refusal is the one the route can
+      still name in its own words; and
+    * **a rail the response cannot hold** — a lamp that is not a genuine
+      bool, a p-value outside ``[0, 1]``, a negative or non-finite
+      silence, a band that is not strictly positive, a lamp carried
+      without the number that decides it, a KS lamp attributed to no
+      campaign, or an ingest lamp whose bit *disagrees with its own
+      reading* — is refused here at construction, because a frozen value
+      that validated nothing would hand a hand-built rail this route's
+      own guarantees, and own guarantees are what §5.4's rail is for.
+
+    **Never raised for an absent lamp.**  A lamp nobody has measured —
+    no campaign closed out, a campaign no job has guarded, no recorded
+    feed reading, no configured band — is a discoverable state the
+    response answers with ``None``, not a refusal: the stance feature
+    267's empty history and feature 284's empty ledger already take, and
+    the stance this route takes for all three lamps at once.  The
+    distinction this class exists to hold apart is the one §5.4 turns
+    on: an *unmeasured* instrument is answered as unmeasured, while a
+    *broken* one — a store that refuses, a rail that contradicts itself
+    — is refused loudly, and neither is ever answered with a lamp nobody
+    read.
     """
