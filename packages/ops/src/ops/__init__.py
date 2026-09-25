@@ -68,13 +68,19 @@ route modules over the members that hold those facts; 344-347's and
 relational store (§16's *"single Postgres metrics table"* allowance) —
 the metrics store feature 267's own docstring already reserves
 (*"the research-metrics row is the ops member's (feature 344 ...)"*);
-348-349's structured log records arrive as emission seams; 351's
-dashboard (:mod:`ops.dashboard`, landed) reads the route; 352's chrome
-(:mod:`ops.chrome`, landed) hangs off its page model — the remaining
-clean epoch count, read through the promotion member's own gauge
-(feature 297's) over the same ``DATABASE_URL`` the route resolved, and
-rendered as one caption beneath the title on every page the dashboard
-draws.  Each is its own module with its own refusal
+348's evaluation record remains to arrive, and 349's replay record
+landed as :mod:`ops.replay_log` — the emission seam that reserved
+clause's first half: one structured stdlib log record per replay,
+carrying §16's tuple ``(policy_version, world_id, beta, score,
+committed_pick)``, with no store and no component because the sentence
+says *emits*, not *persists* (feature 255's row is the persistence
+half, over the same carrier); 351's dashboard (:mod:`ops.dashboard`,
+landed) reads the route; 352's chrome (:mod:`ops.chrome`, landed)
+hangs off its page model — the remaining clean epoch count, read
+through the promotion member's own gauge (feature 297's) over the same
+``DATABASE_URL`` the route resolved, and rendered as one caption
+beneath the title on every page the dashboard draws.  Each is its own
+module with its own refusal
 vocabulary under :class:`~ops.errors.OpsError`, and each composes only
 if its sentence demands state a deployment holds — the
 registration-grows-per-feature shape the ledger, nulloracle and canary
@@ -110,8 +116,19 @@ member already says:
   in permanent chrome on every page, so depletion stays visible —
   refused, by name, when the carrier cannot answer the count, the
   count is not one, or the ledger read fails.
+* :class:`~ops.replay_log.ReplayLogRecord` with
+  :func:`~ops.replay_log.emit_replay_log` — feature 349's emission
+  seam: one structured log record per replay, carrying §16's tuple
+  (policy version, world id, beta, score, committed pick) as named
+  fields on one stdlib log record over the logger
+  :data:`~ops.replay_log.REPLAY_LOG_LOGGER_NAME` names — refused by
+  name when the ask names no replay, with the miss (``-inf``, no pick)
+  emitted, never refused, because the stream is where the miss rate is
+  counted.
 * :class:`~ops.errors.OpsError` with
-  :class:`~ops.errors.FdrDeployMetricError` and
+  :class:`~ops.errors.FdrDeployMetricError`,
+  :class:`~ops.errors.LiveMetricError`,
+  :class:`~ops.errors.ReplayLogError` and
   :class:`~ops.errors.DashboardRenderError` — the member's refusal
   vocabulary: one base so a caller catches the member as a whole, one
   subclass per surface so a refusal names where it happened.
@@ -137,7 +154,13 @@ from .dashboard import (
     main,
     require_streamlit,
 )
-from .errors import DashboardRenderError, FdrDeployMetricError, LiveMetricError, OpsError
+from .errors import (
+    DashboardRenderError,
+    FdrDeployMetricError,
+    LiveMetricError,
+    OpsError,
+    ReplayLogError,
+)
 from .fdr_route import (
     FDR_DEPLOY_ROUTE,
     FdrDeployEndpoint,
@@ -146,25 +169,33 @@ from .fdr_route import (
 )
 from .live_metrics import (
     DATABASE_URL_ENV,
-    OPS_LIVE_METRIC_COMPONENT_NAME,
     LIVE_METRIC_TABLE,
     LIVE_METRICS,
+    OPS_LIVE_METRIC_COMPONENT_NAME,
     LiveMetric,
     LiveMetricsStore,
 )
+from .replay_log import (
+    REPLAY_LOG_LEVEL,
+    REPLAY_LOG_LOGGER_NAME,
+    ReplayLogRecord,
+    emit_replay_log,
+)
 
 __all__ = [
-    "DATABASE_URL_ENV",
     "DASHBOARD_PAGE_TITLE",
     "DASHBOARD_TITLE",
+    "DATABASE_URL_ENV",
     "EPOCH_COUNT_LABEL",
     "FDR_DEPLOY_LABEL",
     "FDR_DEPLOY_ROUTE",
-    "OPS_LIVE_METRIC_COMPONENT_NAME",
-    "LIVE_METRIC_TABLE",
     "LIVE_METRICS",
+    "LIVE_METRIC_TABLE",
     "OPS_COMPONENT_NAME",
     "OPS_DASHBOARD_COMPONENT_NAME",
+    "OPS_LIVE_METRIC_COMPONENT_NAME",
+    "REPLAY_LOG_LEVEL",
+    "REPLAY_LOG_LOGGER_NAME",
     "DashboardPage",
     "DashboardRenderError",
     "EpochCountChrome",
@@ -178,6 +209,9 @@ __all__ = [
     "LiveMetricsStore",
     "OperatorDashboard",
     "OpsError",
+    "ReplayLogError",
+    "ReplayLogRecord",
+    "emit_replay_log",
     "main",
     "require_promotion",
     "require_scoring",

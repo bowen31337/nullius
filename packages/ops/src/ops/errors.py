@@ -8,12 +8,13 @@ clause, exactly the way :class:`~regime.errors.RegimeError` and
 subclasses split by *where the refusal happens*, which is what makes
 each one actionable: the split is by surface, because a surface is the
 unit the category's features name (feature 341's fdr-deploy route, 342's
-instrument-status, 343's regime-coverage, 350's live-metrics store,
-351's dashboard), and a caller asking one surface must not have to
-import another surface's error to catch its own refusals — and a surface
-that renders *within* another (the chrome within the dashboard) shares
-its vocabulary rather than splitting it, so a caller guarding one render
-catches every way the page can refuse to draw.
+instrument-status, 343's regime-coverage, 349's replay log record, 350's
+live-metrics store, 351's dashboard), and a caller asking one surface
+must not have to import another surface's error to catch its own
+refusals — and a surface that renders *within* another (the chrome
+within the dashboard) shares its vocabulary rather than splitting it,
+so a caller guarding one render catches every way the page can refuse
+to draw.
 
 What the member refuses, and why loudly: every figure this member serves
 is a number an operator steers the system by (§16 makes ``FDR_deploy``
@@ -33,6 +34,17 @@ fixes, a store that cannot be asked.  It is the store-surface sibling of
 broke, the other names the top-line figure's own states, and a caller
 that catches :class:`OpsError` catches both without importing a module it
 never reached for.
+
+Feature 349 adds the replay log record's own: :class:`ReplayLogError`,
+the refusal of an ask that names no replay — the emission seam's
+vocabulary, stated where the store-surface features state theirs.  It
+is the first vocabulary this member's *emission* surfaces carry (the
+route, the store and the dashboard are all *answer* surfaces), and its
+law is therefore the ordering one: the ask is refused **before
+anything is emitted**, because a malformed record on a log stream
+would be structured testimony nobody measured — the quietly-defaulted
+figure this category exists to rule out, in its log-shaped form, and
+the one medium where it cannot be corrected by a re-read.
 """
 
 from __future__ import annotations
@@ -42,6 +54,7 @@ __all__ = [
     "FdrDeployMetricError",
     "LiveMetricError",
     "OpsError",
+    "ReplayLogError",
 ]
 
 
@@ -168,4 +181,41 @@ class DashboardRenderError(OpsError):
     :class:`FdrDeployMetricError` and propagates untranslated: it is
     already this member's vocabulary, and re-wrapping it would only bury
     the route that refused.
+    """
+
+
+class ReplayLogError(OpsError):
+    """Feature 349's refusals: the replay log record's own error states.
+
+    Raised in exactly the places :mod:`ops.replay_log` states the
+    emission seam's contract — the carrier reads and the record's own
+    construction — and the split between them is the seam's law: the
+    reader refuses a carrier that is not the terminal answer the replay
+    produced, the record refuses values it could not honestly carry,
+    and nothing else on the path refuses at all.  So:
+
+    * a carrier with no ``score`` — not feature 249's
+      :class:`~replay.TerminalPick` — and a carried pick that names no
+      node are refused at the read, naming what arrived, because the
+      record is shaped around the pair the terminal requirement answers
+      (the pick absent-able, the score always present) and a carrier
+      that answers neither half answers no completed scoring;
+    * an id that is not a non-empty string, a beta that is not finite,
+      a score that is not a real number or ``-inf`` — a NaN is refused,
+      for the reason feature 249 refuses to score one and the row's
+      writer refuses to persist one: it compares false against
+      everything and would read as "no scoring" — and a committed pick
+      that is neither a node id nor ``None`` are refused at
+      construction, so a record built by hand is held to the law the
+      emission path already passed.
+
+    **Never raised for the miss.**  A policy that emitted no pick is
+    scored ``-inf`` — feature 249's floor — and the miss's record is
+    *emitted*, not refused: the log stream is where a dreaming cycle's
+    miss rate is counted, and a seam that refused the miss would hide
+    exactly the replays the rate is about.  What is refused is the ask,
+    and every refusal fires **before anything is emitted** — a refused
+    ask puts nothing on the stream, so the stream carries one record
+    per replay and only records that are testimony of a scoring that
+    completed.
     """
