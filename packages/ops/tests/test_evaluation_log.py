@@ -661,12 +661,14 @@ def test_the_sentence_demands_no_state_so_nothing_composes() -> None:
     # The member's registration-grows-per-feature law: each feature
     # composes only if its sentence demands state a deployment holds,
     # and an emission demands none — the scan still registers exactly
-    # the three stateful components (the route, the dashboard, the
-    # live-metrics store) and no ``evaluation-log`` fourth.
+    # the stateful components (the route, the dashboard, the
+    # live-metrics store, and feature 347's meta-overfit gap store) and
+    # no ``evaluation-log`` fifth.
     from ops import (
         OPS_COMPONENT_NAME,
         OPS_DASHBOARD_COMPONENT_NAME,
         OPS_LIVE_METRIC_COMPONENT_NAME,
+        OPS_META_OVERFIT_COMPONENT_NAME,
     )
 
     registry = Registration()
@@ -676,6 +678,7 @@ def test_the_sentence_demands_no_state_so_nothing_composes() -> None:
             OPS_COMPONENT_NAME,
             OPS_DASHBOARD_COMPONENT_NAME,
             OPS_LIVE_METRIC_COMPONENT_NAME,
+            OPS_META_OVERFIT_COMPONENT_NAME,
         }
     )
     assert "ops-evaluation-log" not in registry.names()

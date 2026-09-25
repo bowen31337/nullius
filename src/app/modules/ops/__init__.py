@@ -45,9 +45,11 @@ constant or the error vocabulary: a caller who has the endpoint calls
 :class:`~ops.fdr_route.FdrDeployResponse` it answers — and a second
 spelling of any of those here would be a second thing to keep in sync.
 This module answers exactly the composition questions — *what is the
-composed fdr-deploy route?* and *what is the composed dashboard?* — so
-the observability features that follow (342's lamps, 343's coverage,
-352's chrome) can ask them without importing the member directly.
+composed fdr-deploy route?*, *what is the composed dashboard?*, *what
+is the composed live-metrics store?*, *what is the composed
+meta-overfit gap store?* — so the observability features that follow
+(342's lamps, 343's coverage, 352's chrome) can ask them without
+importing the member directly.
 """
 
 from __future__ import annotations
@@ -57,15 +59,22 @@ from typing import TYPE_CHECKING, Any
 from app.module_loader import Application, create_app
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a dependency
-    from ops import FdrDeployEndpoint, LiveMetricsStore, OperatorDashboard
+    from ops import (
+        FdrDeployEndpoint,
+        LiveMetricsStore,
+        MetaOverfitGaps,
+        OperatorDashboard,
+    )
 
 __all__ = [
     "COMPONENT_NAME",
     "DASHBOARD_COMPONENT_NAME",
     "OPS_LIVE_METRIC_COMPONENT_NAME",
+    "OPS_META_OVERFIT_COMPONENT_NAME",
     "dashboard_component",
     "fdr_deploy_component",
     "live_metric_component",
+    "meta_overfit_component",
 ]
 
 #: The component name the ops member registers its fdr-deploy route
@@ -94,6 +103,15 @@ DASHBOARD_COMPONENT_NAME = "ops-dashboard"
 #: this seat and the member's own
 #: :data:`~ops.OPS_LIVE_METRIC_COMPONENT_NAME` cannot drift apart.
 OPS_LIVE_METRIC_COMPONENT_NAME = "ops-live-metric"
+
+#: The component name the ops member registers its meta-overfit gap store
+#: under (feature 347: persists the train-versus-holdout world score gap
+#: as the meta-overfitting indicator — docs §16's research metric,
+#: *"train-vs-holdout world score gap (meta-overfit)"*), the route,
+#: dashboard and live-metrics store's peer under the same member-first
+#: prefix.  The member's suite asserts this seat and the member's own
+#: :data:`~ops.OPS_META_OVERFIT_COMPONENT_NAME` cannot drift apart.
+OPS_META_OVERFIT_COMPONENT_NAME = "ops-meta-overfit"
 
 
 def fdr_deploy_component(app: Application | None = None) -> "FdrDeployEndpoint | Any":
@@ -151,3 +169,24 @@ def live_metric_component(app: Application | None = None) -> "LiveMetricsStore |
     """
     application = app if app is not None else create_app()
     return application.get(OPS_LIVE_METRIC_COMPONENT_NAME)
+
+
+def meta_overfit_component(app: Application | None = None) -> "MetaOverfitGaps | Any":
+    """Return the composed meta-overfit gap store (feature 347's store).
+
+    The same composition accessor as :func:`fdr_deploy_component`, for
+    the member's fourth component: reads from ``app`` when handed one,
+    composes the declared workspace otherwise, and answers ``None`` when
+    no ``ops-meta-overfit`` component is registered — the same
+    discoverable state, for the same reasons (the member was not
+    scanned, or nothing named a database).  A caller that resolves
+    ``None`` here and needs to persist a cycle's gap is pointed at the
+    member's own store, which refuses to proceed rather than silently
+    persisting nowhere — a divergence that measured but never landed is
+    exactly the state feature 347 exists to rule out, because docs §15
+    reads its remedy for *"dreaming overfits the pool"* (*cap ``M`` per
+    §10.3.1*) off this store's rows, and a missing row reads as a quiet
+    cycle.
+    """
+    application = app if app is not None else create_app()
+    return application.get(OPS_META_OVERFIT_COMPONENT_NAME)

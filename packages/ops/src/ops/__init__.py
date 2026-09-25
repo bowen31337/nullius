@@ -63,12 +63,19 @@ invariant every other member's registration states.
 
 **What the later features of this category will add, and the shapes
 they will take.**  342's lamps and 343's coverage arrive as their own
-route modules over the members that hold those facts; 344-347's and
-350's persisted metrics arrive as this member's own tables in the same
-relational store (§16's *"single Postgres metrics table"* allowance) —
-the metrics store feature 267's own docstring already reserves
-(*"the research-metrics row is the ops member's (feature 344 ...)"*);
-348's evaluation record and 349's replay record landed as
+route modules over the members that hold those facts; the persisted
+metrics arrive as this member's own tables in the same relational
+store (§16's *"single Postgres metrics table"* allowance) — the
+metrics store feature 267's own docstring already reserves
+(*"the research-metrics row is the ops member's (feature 344 ...)"*):
+347's train-versus-holdout world score gap (the whole row
+*"train-vs-holdout world score gap (meta-overfit)"* of §16, landed as
+:mod:`ops.meta_overfit`) and 350's four live metrics (landed as
+:mod:`ops.live_metrics`) are the two that have; 344-346's arrive as
+their own tables under the same allowance, each with its own refusal
+vocabulary and its own ``@register`` here beside the route, the
+dashboard and the two stores' — 348's evaluation record and 349's
+replay record landed as
 :mod:`ops.evaluation_log` and :mod:`ops.replay_log` — the emission
 seams the reserved clause named: one structured stdlib log record per
 evaluation, carrying §16's provenance triple plus ``node_id`` and
@@ -138,9 +145,22 @@ member already says:
   :data:`~ops.evaluation_log.EVALUATION_LOG_LOGGER_NAME` names beside
   the replay records — refused by name when the ask names no
   evaluation the ledger could join.
+* :class:`~ops.meta_overfit.MetaOverfitGaps` with
+  :class:`~ops.meta_overfit.MetaOverfitGap` — feature 347's store: the
+  train-versus-holdout world score gap per dreaming cycle, §16's
+  research metric (*"train-vs-holdout world score gap (meta-overfit)"*)
+  and the observable half of §15's *"dreaming overfits the pool"* row,
+  persisted into the member's own table in the store
+  ``DATABASE_URL`` names.  The gap itself is the store's own
+  arithmetic — ``train_mean − holdout_mean``, with no parameter for it
+  at any spelling — because feature 340's law holds here too: a
+  caller-stated difference would let the system persist two levels and
+  a third number that disagrees with both, and §15's remedy (*cap ``M``
+  per §10.3.1*) is read off these rows.
 * :class:`~ops.errors.OpsError` with
   :class:`~ops.errors.FdrDeployMetricError`,
   :class:`~ops.errors.LiveMetricError`,
+  :class:`~ops.errors.MetaOverfitGapError`,
   :class:`~ops.errors.ReplayLogError`,
   :class:`~ops.errors.EvaluationLogError` and
   :class:`~ops.errors.DashboardRenderError` — the member's refusal
@@ -173,6 +193,7 @@ from .errors import (
     EvaluationLogError,
     FdrDeployMetricError,
     LiveMetricError,
+    MetaOverfitGapError,
     OpsError,
     ReplayLogError,
 )
@@ -196,6 +217,12 @@ from .live_metrics import (
     LiveMetric,
     LiveMetricsStore,
 )
+from .meta_overfit import (
+    META_OVERFIT_TABLE,
+    OPS_META_OVERFIT_COMPONENT_NAME,
+    MetaOverfitGap,
+    MetaOverfitGaps,
+)
 from .replay_log import (
     REPLAY_LOG_LEVEL,
     REPLAY_LOG_LOGGER_NAME,
@@ -214,9 +241,11 @@ __all__ = [
     "FDR_DEPLOY_ROUTE",
     "LIVE_METRICS",
     "LIVE_METRIC_TABLE",
+    "META_OVERFIT_TABLE",
     "OPS_COMPONENT_NAME",
     "OPS_DASHBOARD_COMPONENT_NAME",
     "OPS_LIVE_METRIC_COMPONENT_NAME",
+    "OPS_META_OVERFIT_COMPONENT_NAME",
     "REPLAY_LOG_LEVEL",
     "REPLAY_LOG_LOGGER_NAME",
     "DashboardPage",
@@ -232,6 +261,9 @@ __all__ = [
     "LiveMetric",
     "LiveMetricError",
     "LiveMetricsStore",
+    "MetaOverfitGap",
+    "MetaOverfitGapError",
+    "MetaOverfitGaps",
     "OperatorDashboard",
     "OpsError",
     "ReplayLogError",
@@ -362,3 +394,29 @@ def build_live_metric_store() -> LiveMetricsStore | None:
     both constructed and asked.
     """
     return LiveMetricsStore.resolve()
+
+
+@register(OPS_META_OVERFIT_COMPONENT_NAME)
+def build_meta_overfit_store() -> MetaOverfitGaps | None:
+    """Component builder: feature 347's meta-overfit gap store, bound to
+    the store ``DATABASE_URL`` names.
+
+    Takes no arguments — the factory's registration protocol — and decides
+    at build time only what the live-metrics store's builder beside it
+    decides: whether ``DATABASE_URL`` names a store.  It resolves the URL
+    itself rather than importing any sibling, so whole-workspace
+    composition never depends on a member that is not promised to be on
+    ``sys.path`` at build time — the store is stdlib-only by design, and
+    the URL is the one composition fact the route, the dashboard and the
+    member's other two stores all share.
+
+    Returns ``None`` when no ``DATABASE_URL`` is configured — an
+    unconfigured store is a discoverable deployment state, not an
+    exception, the same stance the route, dashboard and live-metrics
+    builders take — so a deployment without a relational store still
+    composes.  Building performs no I/O: no store is constructed, no
+    database opened, no schema created — the first
+    :meth:`~ops.meta_overfit.MetaOverfitGaps.record` is where the store is
+    both constructed and asked.
+    """
+    return MetaOverfitGaps.resolve()

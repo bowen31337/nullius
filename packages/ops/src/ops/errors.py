@@ -53,6 +53,18 @@ other record — the refusal of an ask that names no evaluation, stated
 under the same ordering law (before anything is emitted) and for the
 same reason: the pair ships on one parent logger, and one knob must
 not mix testimony nobody booked onto the stream it gates.
+
+Feature 347 adds the meta-overfit gap store's own:
+:class:`MetaOverfitGapError`, the refusal of a gap that cannot be the
+indicator it claims — a train or holdout mean that is not a measurement
+of a half, a size that is not a count of worlds, a stored difference
+that disagrees with the two sides beside it, a store that cannot be
+asked.  It is the store-surface sibling of :class:`LiveMetricError`
+one feature over, and it carries the same asymmetry: an *absent*
+indicator is a discoverable state answered as an absence (no cycle has
+closed a gap out yet), while a *broken* one is refused, because a
+divergence that is quietly defaulted is exactly the overfitting this
+category exists to make visible.
 """
 
 from __future__ import annotations
@@ -62,6 +74,7 @@ __all__ = [
     "EvaluationLogError",
     "FdrDeployMetricError",
     "LiveMetricError",
+    "MetaOverfitGapError",
     "OpsError",
     "ReplayLogError",
 ]
@@ -268,4 +281,50 @@ class EvaluationLogError(OpsError):
     **before anything is emitted** — a refused ask puts nothing on
     the stream, so the stream carries one record per evaluation and
     only records that are testimony of an evaluation that was booked.
+    """
+
+
+class MetaOverfitGapError(OpsError):
+    """Feature 347's refusals: the meta-overfit gap store's own error
+    states.
+
+    Raised in exactly the places :mod:`ops.meta_overfit` states the
+    store's contract, and the split between them is the member-seam law
+    the whole workspace states for error vocabulary: a helper that
+    raised another module's error would escape through this member's
+    call path, and a caller who wrote ``except MetaOverfitGapError`` —
+    the whole point of the store owning a class — would be taken down by
+    an error from a module it never imported.  So:
+
+    * a train or holdout mean that is not a finite real — ``bool``
+      refused before real, ``None`` refused as the unmeasured half it
+      is — is refused at the door, because the gap is the difference of
+      two *measurements* and a half that measured nothing has no gap
+      to be taken from;
+    * a world count that is not a positive integer is refused, because
+      the count is the weight the halves' means are read under and a
+      fractional or non-positive world count names a pool that was
+      never split (``bool`` refused before ``int``, the family's law);
+    * a stored row whose ``gap`` disagrees with the two means beside it
+      — or whose means are not the split's own arithmetic — is refused
+      on the read, because the table's difference must be the one its
+      own columns recompute to and a row that lies about its own
+      subtraction is a trend nobody can audit; and
+    * a read or write that failed against the store is *translated*
+      here from :class:`sqlite3.Error` (chained, never swallowed),
+      because the table is this member's and the caller's single
+      ``except MetaOverfitGapError`` must catch a divergence that
+      measured but never landed rather than be taken down by the
+      database's own error.
+
+    **Never raised for an absent indicator.**  A deployment whose
+    dreaming loop has closed no cycle out answers ``None`` from the
+    point read and an empty sequence from the sweep — a discoverable
+    state, not a refusal, exactly as an unclosed campaign is for
+    feature 267's trend and an unrecorded live metric is for feature
+    350's four tiles.  What is refused is a gap that could not be the
+    indicator it claims, and the failure mode this feature exists to
+    rule out — §12.1's *"dreaming overfits its own replay pool"*
+    arriving as a number nobody measured — is refused rather than
+    served.
     """
