@@ -17,8 +17,11 @@ component — feature 334's ``GET /forward/decay`` reads the curve from the rows
 it holds, feature 337's retention ratio divides two of them, and feature 340's
 reconciliations land in the same database beside them, priced per rebalance
 (a grain the record's own table does not name, in a table the reconciliation
-module authors) — so the one question this module answers is the one every
-reader of §5's Loop 3 record starts from.
+module authors), as do feature 338's beta-four revisions — one row per
+dreaming cycle, the coefficient fed back from the divergence those same
+records hold, in a table the beta-four module authors (a per-cycle grain
+no migration declares) — so the one question this module answers is the one
+every reader of §5's Loop 3 record starts from.
 
 **The route is not a second component, and that is the decision this seat
 records.**  ``POST /forward/promote`` is the member's one endpoint, and it is

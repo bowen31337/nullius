@@ -125,6 +125,24 @@ the caller must do about it*, not by which line of code failed:
   revised* — two repairs, read by the same operator on different days of
   the cycle.
 
+* :class:`ForwardBetaFourError` — feature 338's revision, and the
+  coefficient it is revised from.  The revised β₄ is a pure function of
+  the rows features 332, 333, 337 and 340 already hold plus the chain's
+  own standing row, so this class is raised where the *blend* cannot run
+  or cannot be trusted: a cycle that names no iteration, a coefficient
+  or a strength that is not the arithmetic this member performs, a
+  fleet the read cannot vouch for (a record of two vintages, a backtest
+  that contradicts the promotion that opened it), or a persisted row
+  whose stated figures are not the blend of the evidence stored beside
+  it — the re-derivation law that keeps a fabricated coefficient away
+  from the dreaming loop's next cycle.  Like the decay-prior class it is
+  about the ask and the evidence rather than the store; it sits beside
+  that class for the same reason, and one distinction earns it its own:
+  feature 339's revision *returns* its figure (the planning side's
+  manifests are the memory), while this one *persists* — the chain it
+  writes is the loop's own memory, so a row nobody can re-derive is not
+  a refusal of one call but a broken link every later cycle blends from.
+
 Every message names the offending value and the contract it broke, in the
 same discipline as the promotion and trial-ledger taxonomies: these errors
 are operational signals for a pipeline that runs unattended for months (the
@@ -133,7 +151,7 @@ be speakable, not merely loggable.
 
 The member raises nothing else.  A ``sqlite3.IntegrityError`` on the write,
 an ``OSError`` on the file, a promotion-side refusal from the seam — every
-one of them arrives at a caller as one of these seven, because a caller's
+one of them arrives at a caller as one of these eight, because a caller's
 ``except ForwardError`` guarding a forward record must not be defeated by a
 neighbouring member's vocabulary.
 """
@@ -141,6 +159,7 @@ neighbouring member's vocabulary.
 from __future__ import annotations
 
 __all__ = [
+    "ForwardBetaFourError",
     "ForwardDecayPriorError",
     "ForwardError",
     "ForwardIdentityError",
@@ -206,6 +225,20 @@ FORWARD_RETENTION_ERROR_CODE = "forward_retention_undivided"
 #: ``forward_retention_undivided``'s either (that one is about a quotient;
 #: this one is about a timescale and the evidence it was dated on).
 FORWARD_DECAY_PRIOR_ERROR_CODE = "forward_decay_prior_unrevised"
+
+#: The greppable word that opens every :class:`ForwardBetaFourError`
+#: message: feature 338's revision did not happen, or a row it is read back
+#: from is not the revision this store could have written — a cycle that
+#: names no iteration, a figure that is not the blend of its own evidence,
+#: a fleet the read cannot vouch for.  One word for all of them because
+#: they are one repair: go and look at the *ask* and the rows it reads —
+#: the stance the retention and decay-prior code words take, spelled one
+#: act later again.  Deliberately not ``forward_decay_prior_unrevised``'s
+#: vocabulary: that word is about a timescale and the evidence it was dated
+#: on, this one is about a coefficient and the chain it feeds, and the two
+#: repairs are read on different sides of the loop's cycle (the decay prior
+#: goes to ``plan_grid``; the coefficient goes to the dreaming loop's β).
+FORWARD_BETA_FOUR_ERROR_CODE = "forward_beta_four_unrevised"
 
 
 class ForwardError(Exception):
@@ -499,4 +532,70 @@ class ForwardDecayPriorError(ForwardError):
     with its bound rather than refused — and neither is an empty table: the
     revision over no evidence answers the prior exactly, which is the
     zero-evidence law, not an error.
+    """
+
+
+class ForwardBetaFourError(ForwardError):
+    """Feature 338's revision did not happen, or a row it reads is not one.
+
+    The class of the *ask and the evidence* rather than of the store — the
+    same stance the retention and decay-prior classes take — and that is
+    the whole reason it is not a :class:`ForwardStoreError`: the database
+    answered, the rows are intact, and the caller's repair is to look at
+    the cycle it named and the rows it reads — not to go and fix a table.
+    It is not a :class:`ForwardDecayPriorError` either, though the two
+    land in the same loop-step: that class is about a *timescale* and the
+    evidence it was dated on, this one is about a *coefficient* and the
+    chain that feeds it back.
+
+    **This feature persists where its sibling returns.**  Feature 339's
+    revision is a pure function of rows other members hold, and its figure
+    is *returned* — the planning side's manifests are the memory it feeds.
+    Feature 338's verb is *persists*: the table :mod:`forward.beta_four`
+    authors is the loop's own memory of the coefficient, because the
+    figure's consumer (the dreaming loop's β, recorded per run in
+    ``replay_score.beta``) is an *output* that carries what a run used,
+    not what the next run should.  That is why this class carries the
+    read-back faces the decay-prior class does not need: a persisted row
+    nobody can re-derive is not a refusal of one call but a broken link
+    every later cycle blends from.
+
+    **The faces.**  One word opens every message
+    (:data:`FORWARD_BETA_FOUR_ERROR_CODE`) because they are one repair —
+    look at the ask and the rows — but the faces are distinct and each
+    names its own:
+
+    * A **cycle that names no iteration**: the revision belongs to the
+      dreaming iteration it will feed, and an id that is not non-empty
+      text leaves a revised coefficient no cycle to be revised for.
+    * A **fleet the read cannot vouch for**: a record whose rows carry two
+      promotion instants (a boundary a divergence cannot be measured
+      against), or a backtest that is negative on a signal promotion
+      requires to be positive — a figure wearing the column's name, which
+      the aggregate refuses rather than filters, because a coefficient
+      taught from a fleet it silently filtered is a coefficient nobody
+      calibrated.
+    * A **figure that is not the arithmetic of its own evidence**: a
+      revised coefficient that is not the blend of the prior and the
+      divergences stored beside it, a divergence sum over no observed
+      signals, a cost figure over no swept rebalances, a strength that is
+      not the member's own constant.  The re-derivation law — the same
+      discipline :class:`forward.retention.IcRetention` applies to its
+      quotient and :class:`forward.priors.DecayPriorRevision` to its
+      blend — is what keeps a fabricated coefficient away from the
+      dreaming loop's next cycle.
+    * A **malformed constituent**: a coefficient that is not a finite
+      non-negative real, a count that is not a whole number, a moment no
+      parser accepts.  ``bool`` refused first, as everywhere in this
+      workspace.
+
+    **What is deliberately *not* here.**  An empty fleet is not a fault —
+    a cycle over no measurable signal answers the standing value exactly,
+    and a database with no row at all answers the stated default — the
+    zero-evidence law at every link of the chain, not an error.  And a
+    cycle that already holds a row is not this class either: the same
+    evidence again is a retry (answered by the standing row), and moved
+    evidence is :class:`ForwardIdentityError`'s — the one-row-per-cycle
+    law the record, observation and reconciliation modules hold, one
+    grain over.
     """

@@ -9,7 +9,7 @@ that did not exist when the hypothesis was formed"*, and against the
 ``forward_record`` table feature 108's migration
 (``migrations/versions/0108_forward_and_universe_tables.py``) already declares.
 
-The member's surface is seven modules, and each answers one question.
+The member's surface is eight modules, and each answers one question.
 
 :mod:`forward.window` is **where the instant comes from**.  The promotion
 timestamp is not this member's to compute: it is feature 293's
@@ -100,12 +100,40 @@ counted, never averaged in — and the aggregate counts what it cannot
 measure (young, unbacktested, edgeless signals) where the per-signal ask
 refuses the same states, each naming its one-call repair.
 
+:mod:`forward.beta_four` is **the loop's memory of the coefficient** —
+feature 338, §13.4's other clause: *"They recalibrate ``β₄`` (sim-reality
+divergence)"*.  :class:`~forward.beta_four.ForwardBetaFourRevisions` reads
+the divergence the records hold — prd §7.1's fourth term's own quantity,
+``|IC_forward − IC_backtest|`` per measured signal, over feature 337's
+operands — blends it into the standing value at the pseudo-count strength
+feature 228 established, and **persists** one row per cycle in
+:data:`~forward.beta_four.FORWARD_BETA_FOUR_TABLE`, the member's own
+table beside feature 340's (a per-cycle coefficient is a grain no
+migration declares).  Where feature 339's revision *returns* its figure
+(the planning side's manifests are the memory it feeds), this one
+persists because its consumer — the dreaming loop's ``beta``, recorded
+per run in ``replay_score.beta`` — is an *output* that carries what a
+run used, not what the next run should: the chain this table holds *is*
+the feedback, each row's ``prior_beta_four`` the row before it, so the
+whole ladder of cycles is auditable from the rows alone.  The zero-
+evidence law holds at every link (a cycle over no measurable signal
+answers the standing value exactly; an empty chain answers
+:data:`~forward.beta_four.BETA_FOUR_PRIOR`, feature 260's own default
+spelled here because a member never imports a sibling), feature 340's
+cost ledger is swept and carried as evidence beside the figure it
+qualifies — deliberately not an addend in the blend, because no document
+states a conversion between a basis-point gap and the IC gap the term
+charges on — and the revised value is never a parameter: the store
+computes it, the value layer re-derives it, a caller only names the
+cycle.
+
 :mod:`forward.errors` is **what can go wrong**, split by the repair the caller
 must make: a malformed row, a store that is misrouted or broken, a promotion
 with no instant to open at, a reconciliation whose book, instant or figures
 state nothing measurable, a division whose operands do not support it, a
 revision whose half-lives cannot be dated or whose evidence does not blend,
-and a request that disagrees with a row an identity already holds — a second
+a revision whose coefficient is not the blend of its own evidence, and a
+request that disagrees with a row an identity already holds — a second
 promotion instant, a day the boundary excludes, a second coefficient claiming
 a measured day, or a second reconciliation claiming a rebalance that already
 holds one.
@@ -231,20 +259,44 @@ revising act climbs the same ladder one feature later again —
 :func:`~forward.priors.forward_half_life` and
 :func:`~forward.priors.revised_decay_prior` from a bare URL — and lands
 nothing anywhere: it is the member's one act that only reads, because every
-figure it answers is derived from rows the other acts already hold.
+figure it answers is derived from rows the other acts already hold.  The
+beta-four act climbs the same ladder one feature later still —
+:meth:`~forward.beta_four.ForwardBetaFourRevisions.over` off the composed
+store, :meth:`~forward.beta_four.ForwardBetaFourRevisions.revise` on a
+held one, :func:`~forward.beta_four.revised_beta_four` from a bare URL —
+and is the loop-side mirror of the priors' act: the reader
+(:func:`~forward.beta_four.standing_beta_four`) answers ``None`` without
+a store the way :func:`~forward.reconciliation.reconciled_fill_costs`
+does, while the writer refuses by name, because a revision that silently
+went nowhere would leave the dreaming loop running the standing value
+while the records it should have learned from sat unlearned — two states
+that read identically to every operator downstream.
 """
 
 from __future__ import annotations
 
 from app.module_loader import register
 
+from .beta_four import (
+    BETA_FOUR_PRIOR,
+    BETA_FOUR_WEIGHT,
+    FORWARD_BETA_FOUR_SEAM,
+    FORWARD_BETA_FOUR_TABLE,
+    REVISED_BETA_FOUR_KEY,
+    BetaFourRevision,
+    ForwardBetaFourRevisions,
+    revised_beta_four,
+    standing_beta_four,
+)
 from .errors import (
+    FORWARD_BETA_FOUR_ERROR_CODE,
     FORWARD_DECAY_PRIOR_ERROR_CODE,
     FORWARD_IDENTITY_ERROR_CODE,
     FORWARD_PROMOTION_ERROR_CODE,
     FORWARD_RECONCILIATION_ERROR_CODE,
     FORWARD_RECORD_ERROR_CODE,
     FORWARD_RETENTION_ERROR_CODE,
+    ForwardBetaFourError,
     ForwardDecayPriorError,
     ForwardError,
     ForwardIdentityError,
@@ -308,8 +360,13 @@ from .window import PROMOTION_MEMBER, PROMOTION_WINDOW_VERB, read_promotion_wind
 
 __all__ = [
     "BACKTEST_IC_COLUMN",
+    "BETA_FOUR_PRIOR",
+    "BETA_FOUR_WEIGHT",
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
+    "FORWARD_BETA_FOUR_ERROR_CODE",
+    "FORWARD_BETA_FOUR_SEAM",
+    "FORWARD_BETA_FOUR_TABLE",
     "FORWARD_COST_RECONCILIATION_TABLE",
     "FORWARD_DECAY_PRIOR_ERROR_CODE",
     "FORWARD_IDENTITY_ERROR_CODE",
@@ -335,9 +392,13 @@ __all__ = [
     "PROMOTION_WINDOW_VERB",
     "RETENTION_LINE",
     "RETENTION_RATIO_KEY",
+    "REVISED_BETA_FOUR_KEY",
     "REVISED_HALF_LIFE_KEY",
+    "BetaFourRevision",
     "CostReconciliation",
     "DecayPriorRevision",
+    "ForwardBetaFourError",
+    "ForwardBetaFourRevisions",
     "ForwardCostReconciliations",
     "ForwardDecayPriorError",
     "ForwardDecayPriors",
@@ -366,7 +427,9 @@ __all__ = [
     "read_promotion_window",
     "reconcile_fill_costs",
     "reconciled_fill_costs",
+    "revised_beta_four",
     "revised_decay_prior",
+    "standing_beta_four",
     "utc_now",
 ]
 
