@@ -1,0 +1,97 @@
+<project_specification mode="greenfield">
+  <project_name>NULLIUS — equity floor guard (feature 324)</project_name>
+  <addition_summary>
+    Add feature 324 to the ``risk`` member: a live, table-free guard that
+    refuses new orders once account equity falls below twice the venue
+    minimum notional, rather than degrading into untradeable dust. It is the
+    order path's own act on its own submission path — re-judged on every
+    submission, lifting by itself when equity recovers — and deliberately not
+    a standing state, a kill, a flatten, or a persisted row.
+  </addition_summary>
+  <existing_context>
+    <stack>Python / FastAPI-style app factory / uv-workspace packages / SQLite</stack>
+    <test_baseline>per-member pytest suites under packages/&lt;member&gt;/tests; run with -p no:cacheprovider and a fixed worker count</test_baseline>
+    <conventions>
+      snake_case modules, docstring-as-design (every module opens with a long
+      design docstring citing app_spec.xml + docs), stdlib-only in the risk
+      member, value layer refuses by name before arithmetic, strict boundaries
+      pinned at equality, "hand over, never derive", asymmetric absence (refuse
+      vs pass-vacuously vs answer-empty), no @register for pure guards, no
+      migration (schema created idempotently on connect), error tokens greppable
+      and opening every message.
+    </conventions>
+    <layout profile="uv-workspace"/>
+  </existing_context>
+
+  <features_to_add>
+    <category name="Risk Supervisor &amp; Kill Switches">
+      <feature index="324" shape="plugin" plugin="risk" depends_on="323">
+        <description>System rejects further orders once account equity falls below twice the venue minimum notional rather than degrading into untradeable dust — a LIVE guard re-judged on each submission (like the feed-staleness halt, feature 328), NOT a standing-state-with-manual-reset (like the daily-loss halt, feature 325); it is a table-free pure function of the handed-over equity and the fetched minimum notional, refuses via RiskOrdersDustError, adds no table and no @register component.</description>
+        <sub_features>
+          <sub index="1">Module packages/risk/src/risk/equity_floor.py: opens with a design docstring reading the sentence on its four nouns against docs/alpha-engine-prd.md C10 ("Hard equity floor at 2 × min_notional. Below it, stop rather than degrade into untradeable dust.") and docs/nullius-tech-architecture.md §13.3's trigger table. It is the *middle* row ("halt new orders, hold positions" — same action as feature 328's staleness row, one below the daily-loss row that flattens): a live judgement the order layer re-takes on its own submission path, NOT a standing state. Deliberately not feature 325's liftable halt (own table + reset door), not feature 322's monotone kill channel, not feature 323's composed halt door (kill+flatten), not router feature 313's per-order notional gate (which refuses one order below the floor; this refuses the deployment once the account can no longer size any order). Flattens nothing, closes nothing, sends no kill, records nothing, owns no table — the absence is the design (a per-submission store write on the hot path is exactly the coupling the process separation exists to avoid; equity is a live fact about the account, not a database). Does not derive equity (handed over by whoever owns the book) and does not read the store (caller hands both equity and the filters it already read).</sub>
+          <sub index="2">Comparison and constant: strict equity &lt; 2 × min_notional (below refused, at the floor admitted), matching the workspace boundary convention (feature 312's neighbour rule, feature 314's strict &lt;, feature 328/329's strict &gt;), pinned at equality in tests. "twice" is a MODULE CONSTANT not configuration and not a hardcoded venue filter — C10 says "2 × min_notional" and names no tunable multiplier, so EQUITY_FLOOR_MULTIPLE = 2 is a constant of the module; the only thing handed in is the venue minimum notional (feature 310's value, via feature 313's filters) and the account equity. This is feature 311's no-hardcoded-venue-constant law held on the right side of the line: the multiplier is the system's own policy constant, the floor it scales is the fetched document's own value, never a literal. Floor read exactly as feature 313 reads it (min_notional field of feature 310's RouterSymbolFilters, Decimal string or Decimal, float refused by name); equity is a finite positive real, handed over, never derived.</sub>
+          <sub index="3">Value type EquityFloorReading (frozen, self-describing): carries handed-over equity, venue min_notional (Decimal), floor (2 × min_notional, Decimal), boolean below_floor, and the symbol the floor was read for (feature 312's reason: a value judged against another symbol's floor is a verdict about the wrong instrument). Arithmetic re-derived, never trusted, in __post_init__: floor must equal 2 × min_notional and below_floor must equal equity &lt; floor, so a record reconstructed from a log stating a floor/verdict disagreeing with its own terms is refused — the same defence every value in this member re-derives. Decimal product computed exactly under a widened local context (_exact_multiple, feature 313's exactness argument applied to multiply-by-constant). equity validated finite and strictly positive (non-positive equity is a degenerate account, not a reading); min_notional validated finite non-negative Decimal (zero admissible and vacuous — a venue publishing a zero floor publishes a floor nothing falls below — and NOT the same as an absent floor, which feature 313 already refused upstream); negative floor refused.</sub>
+          <sub index="4">Pure judgement require_equity_above_floor(*, equity, filters): feature 324's verb, the pure function the order layer's submission path consults. Takes account equity (finite positive real, handed over) and feature 310's RouterSymbolFilters (only min_notional read), answers the frozen EquityFloorReading. Refusals in a fixed order: equity first (not a real, not finite, not positive — a negative or zero equity states no account to judge), then filters (None refused — current version carries no symbol or no version fetched, and a deployment that cannot be judged is refused rather than passed as unconstrained; a value that is not feature 310's own class refused; filters filed under a different symbol refused — one symbol, one floor), then the reading, computed exactly. Raises RiskOrdersDustError when equity is below the floor, carrying the reading so the caller learns how much, against what floor, for which symbol without a second query. Deterministic by construction: same equity against same floor answers the same verdict in any process, on any machine, on any day, no clock read and no state consulted — which is what makes it safe for the separate order-router process §13.2 and feature 320 demand.</sub>
+          <sub index="5">Order-path refusal receipt: add RiskOrdersDustError to packages/risk/src/risk/errors.py — the order layer's receipt of feature 324's refusal, a SIBLING of RiskOrdersKilledError, RiskOrdersStaleError and RiskOrdersHaltedError, not a child of any: the four refusals the order path catches by type are told apart by class because their repairs differ (wait out the kill's process / watch the feed recover / reach for the reset door / this one lifts by itself when equity recovers), and collapsing this into any of them would break exactly one half. Carries the EquityFloorReading the guard read on its reading attribute — the same stance the other three take toward the instruction, the staleness and the halt — and opens its message with greppable token ORDERS_DUST_CODE = "orders_dust", one grep apart from orders_killed, orders_stale and orders_halted. Message names the equity, the floor and the symbol, states the account has fallen below the point where any order could be sized, and names the repair — the refusal lifts by itself when equity recovers above the floor; no operator action, no reset, no door — so an operator paged on it does not go looking for the halt door (feature 323) or the reset door (feature 325). Wire the new token, class and TYPE_CHECKING import into errors.py's existing structure exactly as the other three receipts are wired, and add the class to the module docstring's taxonomy.</sub>
+          <sub index="6">Module-level spelling: require_equity_above_floor in equity_floor.py (the order path's one call, the shape risk.require_orders_allowed gives feature 322 and risk.require_feed_fresh gives feature 328), exported from packages/risk/src/risk/__init__.py alongside the value type and the error. NO new @register builder and NO new component name: this guard owns no table and holds no store face, so a composed reflection of it would carry a constant and answer nothing a caller could not construct on the spot in one line — the same reason feature 328 registers nothing beside the four names. The member still registers exactly its existing four components (switch, ledger, flattener, halt door); test_component must still pin exactly four build_* builders, and src/app/modules/risk/__init__.py must remain untouched.</sub>
+          <sub index="7">Tests packages/risk/tests/test_equity_floor.py in the member's existing suite style (same class/fixture conventions as test_feed_staleness.py): strict boundary pinned at equality (equity exactly at 2 × min_notional admitted, one base unit below refused); exact Decimal product (a value multiplying past 28 significant digits compared against the true value, never float-approximated); re-derivation refusals in EquityFloorReading.__post_init__ (stated floor disagreeing with 2 × min_notional, stated verdict disagreeing with equity &lt; floor); every near-miss refused by name (bool equity, non-finite equity, non-positive equity, float min_notional, negative floor); fixed refusal order (equity before filters before reading); asymmetric absences (None filters refused, wrong-symbol filters refused, a value that is not RouterSymbolFilters refused); determinism-by-construction (same equity + floor → same verdict, no clock, no state); cross-process case proven against an actual second interpreter (a reading one process takes is one another process's guard refuses under, and lifts when equity recovers); and a test asserting the member still registers exactly four components and adds no seat export. Stdlib only, no network.</sub>
+        </sub_features>
+      </feature>
+    </category>
+  </features_to_add>
+
+  <integration_points>
+    The guard reads feature 310's RouterSymbolFilters (only its min_notional
+    field), the same value feature 313 judges the venue floor from, so it is
+    judged on an order path that has already fetched and narrowed exchangeInfo.
+    It is the risk member's answer to C10's equity floor, one module
+    (packages/risk/src/risk/equity_floor.py) plus one error
+    (packages/risk/src/risk/errors.py) plus one test file
+    (packages/risk/tests/test_equity_floor.py); the risk member's
+    src/app/modules/risk/__init__.py seat and its four @register builders are
+    deliberately not touched.
+  </integration_points>
+
+  <constraints>
+    Must not modify src/app/modules/risk/__init__.py (the member's seat) or add a
+    fifth @register component — the member registers exactly four components and
+    test_component must still pin exactly four build_* builders.
+    Must not edit shared order-sensitive files: src/app/middleware.py,
+    src/app/settings.py, migrations/versions/**, alembic/versions/**.
+    No migration: the guard owns no table, so no alembic revision and no DDL.
+    Stdlib only in the risk member; no new runtime dependency.
+    No network, no clock reads, no store writes — the judgement is a pure
+    function of the handed-over equity and the fetched filters.
+    All existing tests across tests/ and packages/*/tests must stay green.
+    The multiplier 2 is a module constant, never configuration, never a
+    hardcoded venue filter; the min_notional floor is always the fetched
+    document's own value.
+  </constraints>
+
+  <implementation_steps>
+    <phase name="M5 · Risk Supervisor Kill Switches">
+      Add packages/risk/src/risk/equity_floor.py: feature 324's live guard, no
+      table, no component, no I/O — a pure function of the handed-over equity and
+      feature 310's filters, with the EquityFloorReading value type and the
+      require_equity_above_floor verb.
+      Add RiskOrdersDustError to packages/risk/src/risk/errors.py — the order
+      path's refusal receipt, a sibling of the killed/stale/halted receipts,
+      carrying the reading, token orders_dust.
+      Export require_equity_above_floor and EquityFloorReading from
+      packages/risk/src/risk/__init__.py; add no new @register builder.
+      Add packages/risk/tests/test_equity_floor.py — boundary, exactness,
+      re-derivation refusals, near-miss refusals, fixed refusal order, asymmetric
+      absences, determinism, cross-process, four-component invariant.
+    </phase>
+  </implementation_steps>
+
+  <success_criteria>
+    Feature 324 implemented as a live, table-free guard in the risk member.
+    Equity exactly at twice the venue minimum notional is admitted; below it,
+    orders are refused with a reading-carrying RiskOrdersDustError.
+    The judgement is deterministic by construction — no clock, no state, no I/O.
+    The member still registers exactly four components; the seat module is
+    untouched; no migration added.
+    All existing tests across tests/ and packages/*/tests still green.
+  </success_criteria>
+</project_specification>
