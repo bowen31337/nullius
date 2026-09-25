@@ -9,7 +9,7 @@ that did not exist when the hypothesis was formed"*, and against the
 ``forward_record`` table feature 108's migration
 (``migrations/versions/0108_forward_and_universe_tables.py``) already declares.
 
-The member's surface is four modules, and each answers one question.
+The member's surface is five modules, and each answers one question.
 
 :mod:`forward.window` is **where the instant comes from**.  The promotion
 timestamp is not this member's to compute: it is feature 293's
@@ -34,10 +34,23 @@ opens one row per promoted signal and answers a retry with the standing one;
 :data:`~forward.record.FORWARD_PROMOTE_ROUTE` pinned on it; and
 :class:`~forward.record.ForwardRecord` is the row as the table holds it.
 
+:mod:`forward.observation` is **the tracking** — feature 333, the second
+clause of §5's sentence.  :class:`~forward.observation.ForwardObservations`
+appends the rows that carry the live information coefficient, one per
+observation date, each stating its own day and reading its ``promoted_at``
+off the record's standing rows rather than off the registry.  The store is
+built over the composed one
+(:meth:`~forward.observation.ForwardObservations.over`) — the same table in
+the same database — and holds the one-row-per-date law in the write path,
+where ``0108`` declined to hold it in a constraint: a retry is answered by
+the standing row, a different coefficient for a standing day is refused, and
+no day on or before the boundary is observed at all.
+
 :mod:`forward.errors` is **what can go wrong**, split by the repair the caller
 must make: a malformed row, a store that is misrouted or broken, a promotion
-with no instant to open at, and a signal that already holds a record for a
-different promotion.
+with no instant to open at, and a request that disagrees with the record a
+signal already holds — a second promotion instant, a day the boundary
+excludes, or a second coefficient claiming a measured day.
 
 **The one-signal law, and why this feature is not a plain append.**  §13.4
 makes the ``promoted_at`` / ``observed_on`` pair the vintage a forward record
@@ -104,7 +117,9 @@ a database the deployment names — the same fact ``DATABASE_URL`` states.  So t
 store the deployment holds is one table pointer, and it composes exactly as the
 promotion member's registry does.  Features 333-340 read and extend that same
 table through the component this builder registers, or through
-:func:`~forward.record.forward_record` when they hold a URL and no app.
+:func:`~forward.record.forward_record` and
+:func:`~forward.observation.forward_observation` when they hold a URL and no
+app.
 
 **The three sibling spellings, and which to reach for.**  A caller with a
 composed application asks the seat (``app.modules.forward``) for the store.  A
@@ -113,7 +128,13 @@ and gets ``(record, created)``.  A caller holding only a URL calls
 :func:`~forward.record.forward_record` and gets the record.  Every one of them
 reads the promotion instant through :func:`~forward.window.
 read_promotion_window`, so there is one read of feature 293's stamp in this
-package and every path to a record goes through it.
+package and every path to a record goes through it.  The observing act mirrors
+the same ladder one feature later — :meth:`~forward.observation.
+ForwardObservations.over` off the composed store,
+:meth:`~forward.observation.ForwardObservations.append_observation` on a held
+one, :func:`~forward.observation.forward_observation` from a bare URL — and
+reads no promotion at all: the instant its rows carry is the record's own,
+read once at the open.
 """
 
 from __future__ import annotations
@@ -130,9 +151,16 @@ from .errors import (
     ForwardRecordError,
     ForwardStoreError,
 )
+from .observation import (
+    FORWARD_OBSERVATION_SEAM,
+    ForwardObservations,
+    forward_observation,
+)
 from .record import (
     DATABASE_URL_ENV,
     FORWARD_PROMOTE_ROUTE,
+    LIVE_IC_BOUND,
+    LIVE_IC_COLUMN,
     NODE_ID_COLUMN,
     OBSERVED_ON_COLUMN,
     PROMOTED_AT_COLUMN,
@@ -151,10 +179,13 @@ __all__ = [
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
     "FORWARD_IDENTITY_ERROR_CODE",
+    "FORWARD_OBSERVATION_SEAM",
     "FORWARD_PROMOTE_ROUTE",
     "FORWARD_PROMOTION_ERROR_CODE",
     "FORWARD_RECORD_ERROR_CODE",
     "FORWARD_RECORD_TABLE",
+    "LIVE_IC_BOUND",
+    "LIVE_IC_COLUMN",
     "MIGRATION_ORDER",
     "NODE_ID_COLUMN",
     "OBSERVED_ON_COLUMN",
@@ -163,6 +194,7 @@ __all__ = [
     "PROMOTION_WINDOW_VERB",
     "ForwardError",
     "ForwardIdentityError",
+    "ForwardObservations",
     "ForwardPromotionError",
     "ForwardRecord",
     "ForwardRecordError",
@@ -173,6 +205,7 @@ __all__ = [
     "PromoteEndpoint",
     "bootstrap_schema",
     "build_forward_records",
+    "forward_observation",
     "forward_record",
     "read_promotion_window",
     "utc_now",

@@ -35,6 +35,7 @@ import sys
 from pathlib import Path
 
 import forward
+import forward.observation
 import forward.record
 import forward.schema
 import forward.window
@@ -198,8 +199,15 @@ def test_the_member_authors_no_ddl() -> None:
     # The schema law asserted on the member's *code*, with docstrings stripped:
     # ``schema.py`` has to be able to write the sentence *no CREATE TABLE is
     # authored here* while authoring none, and a scan of the raw file would
-    # fail on the very prose that makes the claim.
-    for module in (forward.schema, forward.record, forward.window):
+    # fail on the very prose that makes the claim.  ``observation`` joins the
+    # loop with feature 333: its act is an ``INSERT`` over the table the
+    # opening write opened, so it holds the same none-of-my-own-DDL law.
+    for module in (
+        forward.schema,
+        forward.record,
+        forward.observation,
+        forward.window,
+    ):
         text = code_of(module)
         for token in ("CREATE TABLE", "ALTER TABLE", "DROP TABLE", "CREATE INDEX"):
             assert token not in text, f"{module.__name__} authors DDL: {token}"
@@ -361,7 +369,13 @@ def test_the_member_imports_no_workspace_member_at_module_scope() -> None:
     # and the assertion is written to catch exactly it, so the list of allowed
     # roots is not a thing to maintain — ``promotion`` is what fails here, and
     # nothing else does.
-    for module in (forward, forward.record, forward.schema, forward.window):
+    for module in (
+        forward,
+        forward.record,
+        forward.observation,
+        forward.schema,
+        forward.window,
+    ):
         tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -433,8 +447,16 @@ def test_the_store_module_never_names_the_registry_table() -> None:
     # The other direction of the same boundary: the promotion member's table is
     # the promotion member's, and this one reads it only through feature 300's
     # window.  ``promotion_registry`` appearing in this member's code would mean
-    # a second reader of one table.
-    for module in (forward.record, forward.schema, forward.window):
+    # a second reader of one table.  ``observation`` is the sharper case for
+    # the same law: its act reads the record's standing rows rather than the
+    # registry precisely so the two cannot disagree, and a literal here would
+    # be the second reading it refuses to be.
+    for module in (
+        forward.record,
+        forward.observation,
+        forward.schema,
+        forward.window,
+    ):
         assert "promotion_registry" not in code_of(module)
 
 

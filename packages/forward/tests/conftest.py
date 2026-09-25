@@ -100,7 +100,7 @@ for _root in workspace_scan_roots(REPO_ROOT / "src" / "app" / "module_loader.py"
 
 _ensure_on_path(PACKAGE_SRC)
 
-from forward import ForwardRecords
+from forward import ForwardRecord, ForwardRecords
 
 VERSIONS_DIR = REPO_ROOT / "migrations" / "versions"
 
@@ -366,6 +366,31 @@ def _instant(text: str) -> Any:
     import datetime as dt
 
     return dt.datetime.fromisoformat(text)
+
+
+@pytest.fixture
+def opened_record(promoted_signal: ForwardRecords) -> ForwardRecord:
+    """One signal's record, opened — the state feature 333 observes onto.
+
+    Feature 332's whole act run once, over the real promotion side (see
+    :func:`promoted_signal`), so the boundary every observation test asserts
+    against is the one the member actually wrote: ``promoted_at`` at
+    :data:`DECIDED_AT` — 2026-03-01T12:00:00+00:00 — whose own UTC date
+    2026-03-01 is the boundary day, making **2026-03-02 the first day an
+    observation may honestly name**.  The constants are stated here once so
+    the observation suite's dates are read against a boundary the fixture
+    pins rather than one each test recomputes.
+
+    The row is opened through the store under test (not inserted by hand)
+    for the reason :func:`promoted_signal` states about the promotion side:
+    a hand-written ``forward_record`` row would pin the boundary against a
+    fixture the suite made up, and the one thing feature 333's appends must
+    provably carry is *the record's own* instant.
+    """
+    record, _created = promoted_signal.open_record(
+        NODE_ID, forward_days=FORWARD_DAYS
+    )
+    return record
 
 
 @pytest.fixture

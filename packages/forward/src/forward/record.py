@@ -30,8 +30,9 @@ the row is either derived from that instant or deliberately absent:
   says it in as many words: *"The three REAL columns are nullable because a
   freshly promoted signal has no observation yet — a NOT NULL here would force
   a fabricated zero on the day of promotion, which would read as 'measured,
-  and it was zero'."*  Feature 333 fills ``live_ic`` over time, feature 337
-  reads it, feature 340 reconciles ``realized_cost_bps``.  A writer that
+  and it was zero'."*  Feature 333 (:mod:`forward.observation`) fills
+  ``live_ic`` over time, feature 337 reads it, feature 340 reconciles
+  ``realized_cost_bps``.  A writer that
   stamped a zero here would be answering for three features that have not run.
 
 **The signal is the key, and there is exactly one record per signal.**  §13.4
@@ -77,12 +78,14 @@ not find itself in it.
 from __future__ import annotations
 
 import datetime as dt
+import math
 import os
 import sqlite3
 import uuid
 from collections.abc import Callable, Mapping
 from contextlib import closing
 from dataclasses import dataclass
+from numbers import Real
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -103,6 +106,8 @@ from .window import read_promotion_window
 __all__ = [
     "DATABASE_URL_ENV",
     "FORWARD_PROMOTE_ROUTE",
+    "LIVE_IC_BOUND",
+    "LIVE_IC_COLUMN",
     "NODE_ID_COLUMN",
     "OBSERVED_ON_COLUMN",
     "PROMOTED_AT_COLUMN",
@@ -141,6 +146,31 @@ PROMOTED_AT_COLUMN = "promoted_at"
 #: the write from the instant beside it (see the module docstring for why the
 #: caller states neither).
 OBSERVED_ON_COLUMN = "observed_on"
+
+#: The live information coefficient — the column feature 333's writer
+#: (:mod:`forward.observation`) fills, one observation row at a time, over the
+#: life feature 332's row opens.  Named here beside the three columns the
+#: opening write names because this module is the table's vocabulary — the
+#: ``_READ_SQL`` and :meth:`ForwardRecord.row` spellings of the observation
+#: columns already live here — so the one literal has one home, beside its
+#: siblings, for whichever act binds it into a statement.
+LIVE_IC_COLUMN = "live_ic"
+
+#: The bounds a live information coefficient lives in, as the largest
+#: magnitude one can reach.
+#:
+#: An information coefficient is a **correlation** — the evaluator's per-date
+#: figures are Spearman rank correlations, prd §6.1's ``metrics.ic_mean`` is
+#: their mean — so the live one this member persists is bounded in
+#: ``[−1, 1]`` by construction, whatever the estimator.  The constant is that
+#: fact spelled once, not a tolerance: a figure of ``2.5`` is not a large IC,
+#: it is a number that has stopped being one, and its presence means the
+#: caller handed something else — a z-score, a hit rate, an information ratio —
+#: under the right field name.  Restated here rather than read off the
+#: ``scoring`` member's own :data:`~scoring._divergence.IC_BOUND` because a
+#: member never imports another; the bound is a fact about the quantity, and
+#: facts outlive whichever module spells them.
+LIVE_IC_BOUND: float = 1.0
 
 #: The column list the insert names, in the order the placeholders bind.  Six
 #: of the table's seven columns: ``id`` is absent because ``0108`` declares a
@@ -318,6 +348,73 @@ def _validated_date(value: Any, field_name: str) -> dt.date:
     )
 
 
+def _validated_live_ic(value: Any) -> float:
+    """Return ``value`` as a live information coefficient, or refuse it.
+
+    The rule is three gates, each refused rather than resolved:
+
+    * **A finite real.** ``bool`` is refused first, for the reason every
+      numeric validator in this workspace refuses it: ``True`` is ``1``, and a
+      flag where a correlation belongs would persist a perfect coefficient
+      nobody measured.  Anything that is not a :class:`~numbers.Real` is
+      refused with it — text, ``None``, a sequence — because a coefficient is
+      one number, not a thing to be coerced.
+    * **Finite.** A NaN would make feature 337's retention ratio a NaN and
+      feature 334's decay curve a gap that *looks* like a measurement, and an
+      infinity is not a coefficient at all; SQLite stores either happily,
+      which is exactly why the gate belongs here rather than in the column.
+    * **Bounded by :data:`LIVE_IC_BOUND`.** An information coefficient is a
+      correlation, so it lives in ``[−1, 1]`` by construction whatever the
+      estimator.  A figure outside the interval is not a large IC — it is a
+      number that has stopped being one, and the likeliest thing wearing its
+      name is a z-score, a hit rate or an information ratio handed over under
+      this field name.  Refused rather than clamped: clamping ``2.5`` to one
+      would persist the *maximum* coefficient for a figure that may be an
+      honest something-else, and every later reader (feature 334's curve,
+      feature 337's ratio, §C10's demotion line) would account with a number
+      nobody measured.
+
+    Returns the value narrowed to ``float`` — the type the REAL column holds —
+    so a caller's ``int`` coefficient and the row's read-back of it compare
+    equal, and so the retry comparison in :mod:`forward.observation` is a
+    comparison of two floats rather than of a float and whatever the caller's
+    library handed over.
+    """
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ForwardRecordError(
+            f"{LIVE_IC_COLUMN} must be the live information coefficient as a "
+            f"real number — got {value!r} ({type(value).__name__}); the "
+            "coefficient is what a forward record exists to carry (prd §5's "
+            "*\"its live forward IC tracked from the promotion date "
+            "forward\"*), and a value that is not one number is not a "
+            "measurement any later reader can account with. Pass the "
+            "correlation the observation measured (feature 333)"
+        )
+    narrowed = float(value)
+    if not math.isfinite(narrowed):
+        raise ForwardRecordError(
+            f"{LIVE_IC_COLUMN} must be finite — got {narrowed!r}; a NaN would "
+            "make feature 337's retention ratio a NaN and feature 334's decay "
+            "curve a gap that reads as measured, and an infinity is not an "
+            "information coefficient at all — the record's whole value is "
+            "that its figures were measured, and a value that is not a "
+            "measurement cannot be one of them (feature 333)"
+        )
+    if not -LIVE_IC_BOUND <= narrowed <= LIVE_IC_BOUND:
+        raise ForwardRecordError(
+            f"{LIVE_IC_COLUMN} must be an information coefficient in "
+            f"[{-LIVE_IC_BOUND!r}, {LIVE_IC_BOUND!r}] — got {narrowed!r}; an "
+            "information coefficient is a correlation, so it is bounded by "
+            "construction whatever the estimator, and a figure outside the "
+            "bound is not a large coefficient but a number that has stopped "
+            "being one — the likeliest thing wearing its name is a z-score, a "
+            "hit rate or an information ratio. Clamping it to the bound would "
+            "persist a coefficient nobody measured, so the figure is refused "
+            "instead (feature 333)"
+        )
+    return narrowed
+
+
 def _translated(refusal: BaseException, what: str) -> ForwardStoreError:
     """Re-frame a sibling's refusal in this member's store vocabulary.
 
@@ -420,7 +517,11 @@ class ForwardRecord:
     #: appends later.
     observed_on: Any
     #: The live information coefficient, or ``None`` before anything has been
-    #: observed.  Feature 333's column.
+    #: observed.  Feature 333's column, and this feature's alone to validate:
+    #: present values go through :func:`_validated_live_ic` (a finite real in
+    #: ``[−1, 1]``) so a row read back carries the same check a row written
+    #: did, while ``backtest_ic`` and ``realized_cost_bps`` stay unvalidated
+    #: here — their features' laws are not this one's to guess.
     live_ic: Any = None
     #: The in-sample coefficient the live one is read against.  Feature 337's
     #: ratio is ``live_ic / backtest_ic``; NULL until it is read.
@@ -447,6 +548,15 @@ class ForwardRecord:
             "observed_on",
             _validated_date(self.observed_on, OBSERVED_ON_COLUMN),
         )
+        # The one observation column validated on the record — feature 333's
+        # own — and only when present: the opening row's NULL is the honest
+        # state 0108's comment protects, not a value to refuse.  The other two
+        # REAL columns are left exactly as held, for the reason their field
+        # comments state.
+        if self.live_ic is not None:
+            object.__setattr__(
+                self, "live_ic", _validated_live_ic(self.live_ic)
+            )
 
     @property
     def observed(self) -> bool:

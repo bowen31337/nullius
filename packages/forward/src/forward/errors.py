@@ -7,25 +7,35 @@ forward-test path with a single ``except``.  The subclasses split by *what
 the caller must do about it*, not by which line of code failed:
 
 * :class:`ForwardRecordError` — the row contract.  A record's identity, its
-  promotion instant or its observation date is malformed at construction —
-  a ``node_id`` that is not a UUID, a naive stamp, a ``DATE`` that is not a
-  date — or a row read back from the table cannot be rebuilt into a
-  trustworthy record.  Either way the row is a caller bug or a corrupted
-  record, never a runtime condition to catch and continue past: this is the
-  one table in the system whose whole value is the *vintage* it carries
-  (``0108``'s own docstring: *"a row that lost its promotion timestamp would
-  be an observation with no vintage, which is exactly the thing forward
-  testing exists to prevent"*), so a record whose promotion instant cannot be
-  trusted is a record that measures nothing.
+  promotion instant, its observation date or — once feature 333 appends the
+  rows that carry one — its live information coefficient is malformed at
+  construction: a ``node_id`` that is not a UUID, a naive stamp, a ``DATE``
+  that is not a date, a coefficient that is not a finite real in ``[−1, 1]``
+  (a correlation is bounded by construction, and a figure outside the bound
+  is a z-score or a hit rate wearing the field's name).  Or a row read back
+  from the table cannot be rebuilt into a trustworthy record.  Either way
+  the row is a caller bug or a corrupted record, never a runtime condition
+  to catch and continue past: this is the one table in the system whose
+  whole value is the *vintage* it carries (``0108``'s own docstring: *"a row
+  that lost its promotion timestamp would be an observation with no vintage,
+  which is exactly the thing forward testing exists to prevent"*), so a
+  record whose promotion instant cannot be trusted is a record that
+  measures nothing — and a record whose coefficient cannot be trusted is a
+  measurement nobody made.
 
 * :class:`ForwardStoreError` — the store contract.  The relational store is
   misrouted (a ``DATABASE_URL`` this member cannot speak) or configured and
   broken (the write failed, a parent row is absent, a row could not be read
-  back).  A store that is *absent* — no ``DATABASE_URL`` at all — is **not**
-  this error: it is a supported, discoverable state in which no ``forward``
-  component composes (see :meth:`forward.record.Forwards.resolve`), because
-  the factory's stance toward an unconfigured component is to degrade, not to
-  break.
+  back).  Feature 333 adds the two states the observing write can find the
+  table in: a signal that holds **no record at all** — the observation job
+  ran ahead of the promote step, and the repair is feature 332's act, which
+  is this feature's declared parent — and a record whose rows carry **two
+  promotion instants**, which no append can extend because nobody can state
+  the boundary they disagree about.  A store that is *absent* — no
+  ``DATABASE_URL`` at all — is **not** this error: it is a supported,
+  discoverable state in which no ``forward`` component composes (see
+  :meth:`forward.record.Forwards.resolve`), because the factory's stance
+  toward an unconfigured component is to degrade, not to break.
 
 * :class:`ForwardPromotionError` — the promotion seam.  The promotion
   member's own window could not be read for the node this promotion names —
@@ -41,15 +51,24 @@ the caller must do about it*, not by which line of code failed:
   write must be able to tell *the seam refused me* from *the body was
   malformed*.
 
-* :class:`ForwardIdentityError` — the **one-signal law**.  A signal that
-  already holds a forward record was asked to be promoted again with
-  different evidence.  docs/nullius-tech-architecture.md §13.4 makes the
-  promotion instant the boundary between backtest and out-of-sample, so there
-  is exactly one such boundary per signal: re-opening the record would move
-  it, and the moved record would keep the same ``observed_on`` values while
-  measuring a different window — the silent vintage edit this whole table
-  exists to make impossible.  A retry that states the *same* promotion is not
-  this error: it is answered by the standing row, as :class:`~ledger.store.
+* :class:`ForwardIdentityError` — the **one-signal law**, and feature 333's
+  two disagreements with a standing record.  A signal that already holds a
+  forward record was asked to be promoted again with different evidence:
+  docs/nullius-tech-architecture.md §13.4 makes the promotion instant the
+  boundary between backtest and out-of-sample, so there is exactly one such
+  boundary per signal: re-opening the record would move it, and the moved
+  record would keep the same ``observed_on`` values while measuring a
+  different window — the silent vintage edit this whole table exists to make
+  impossible.  The observing write adds the law's two day-scale faces, both
+  of them *disagreements with what stands* rather than faults in the ask: an
+  observation dated **on or before the boundary day** (the boundary day is
+  the opening row's own, and an earlier one measures in-sample data under an
+  out-of-sample vintage), and a date that already holds an observation
+  carrying a **different coefficient** (the measurement that landed on a day
+  is that day's fact, and last-wins would revise it after feature 334's
+  curve and feature 337's ratio may have read it).  A retry that states the
+  *same* promotion — or the *same* day's *same* coefficient — is not this
+  error: it is answered by the standing row, as :class:`~ledger.store.
   TrialLedger.debit` answers a retry by its prior sequence.
 
 Every message names the offending value and the contract it broke, in the
@@ -108,11 +127,15 @@ class ForwardError(Exception):
 
 
 class ForwardRecordError(ForwardError):
-    """A ``forward_record`` row's identity, instant or date was malformed.
+    """A ``forward_record`` row's identity, instant, date or coefficient is
+    malformed.
 
     Raised at construction, where the cause can still be named, and at the
     read, where a row that cannot be rebuilt into a
-    :class:`~forward.record.ForwardRecord` is refused rather than served.
+    :class:`~forward.record.ForwardRecord` is refused rather than served —
+    the coefficient gate (a finite real in ``[−1, 1]``) running on both
+    paths, so a hand-edited ``2.5`` served to feature 334's curve is refused
+    as loudly as one handed to feature 333's writer.
 
     **Why the read refuses too.**  SQLite's columns are dynamically typed, so
     a hand-edited or corrupted row is reachable here — and this is the one
@@ -133,7 +156,12 @@ class ForwardStoreError(ForwardError):
 
     A ``DATABASE_URL`` whose scheme this member does not speak, a sqlite URL
     with a host or without a path, an absent parent row, or a configured
-    store whose ``INSERT`` failed.  The last case is raised rather than
+    store whose ``INSERT`` failed.  Feature 333's append adds the state no
+    insert can repair past: a signal whose record was never opened (nothing
+    to observe onto — the repair is feature 332's ``POST /forward/promote``,
+    not a retry) and a record whose rows carry two promotion instants (a
+    vintage nobody can state, which appending would only compound).  The
+    write-failure case is raised rather than
     swallowed because a record that silently failed to land is exactly the
     state feature 332 exists to prevent: the signal is promoted, the
     evaluation that decided it has been charged, and the row that says *this
@@ -193,13 +221,16 @@ class ForwardPromotionError(ForwardError):
 
 
 class ForwardIdentityError(ForwardError):
-    """A signal that already holds a forward record was asked to open another.
+    """A request disagrees with the forward record a signal already holds.
 
-    Feature 332's one-signal law.  §13.4 makes the *promoted_at* / *observed_on*
+    Feature 332's one-signal law, and feature 333's two day-scale faces of
+    the same refusal.  §13.4 makes the *promoted_at* / *observed_on*
     pair carry a row's vintage, and docs/nullius-tech-architecture.md's Loop 3
     makes the promotion instant the boundary between backtest and
     out-of-sample: a signal has exactly one such boundary, so it has exactly
-    one forward record.
+    one forward record — and an observation dated on or before that boundary,
+    or a second coefficient claiming a day that already holds one, disagrees
+    with the record exactly as a second promotion instant does.
 
     **The naive alternative is the dangerous one.**  A store that appended a
     second row on every ``POST /forward/promote`` would satisfy the feature's
