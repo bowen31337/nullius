@@ -18,7 +18,7 @@ ledger, the member's second feature — and feature 330 — the flatten
 that survives a hung strategy process, the member's third — build on it
 too, and on nothing else: the ledger is the record of the halts the
 channel and the doors after it produce, and the flatten is the drainage
-of the authority the channel holds.  Six pieces:
+of the authority the channel holds.  Seven pieces:
 
 * :mod:`risk.kill` — the channel.  One row in the workspace's relational
   store (``DATABASE_URL``), held to one row by the table's own
@@ -88,8 +88,26 @@ of the authority the channel holds.  Six pieces:
   environment for the same reason the channel's and the ledger's do, and
   split the same way on its absence: a halting probe refuses without a
   store, a read answers the empty truth.
+* :mod:`risk.feed_staleness` — the watchdog, feature 328: *System rejects
+  new orders while holding positions when data feed staleness exceeds the
+  configured threshold.*  No table, and that absence is the feature: the
+  guard is the *order path's own act on its own submission path*, a live
+  judgement re-taken from the socket's last message at the moment a
+  submission asks, so it lifts by itself when the feed speaks again
+  rather than standing until a door resets it.  :func:`~risk.feed_staleness.
+  measure_feed_staleness` is the pure half — two caller-supplied readings,
+  their difference, a negative age refused rather than clamped —
+  :class:`~risk.feed_staleness.FeedStaleness` is the reading the
+  judgement rides on, and :meth:`~risk.feed_staleness.RiskFeedStalenessGuard.
+  require_fresh` (with :func:`~risk.feed_staleness.require_feed_fresh` as
+  its module-level spelling) is the refusal.  It does not flatten, does
+  not send the kill and does not record: §13.3's row for this feature is
+  *halt new orders, hold positions*, one row below the daily-loss row
+  that owns the flatten, and the retention of measured staleness is
+  feature 350's row in the :mod:`ops` member — handed the figure by
+  whoever measured it.
 * :mod:`risk.errors` — the refusal vocabulary.  One base so a single
-  ``except`` catches the member, and six nouns apart: the tables'
+  ``except`` catches the member, and eight nouns apart: the tables'
   shared address and persistence (:class:`~risk.errors.RiskStoreError`),
   the instruction's own terms (:class:`~risk.errors.
   RiskKillSwitchError`), the event's own terms
@@ -98,11 +116,17 @@ of the authority the channel holds.  Six pieces:
   the standing instruction), the flatten's own terms
   (:class:`~risk.errors.RiskFlattenError` — a face missing its verbs, a
   flatten under no standing kill, an engine whose re-reading still
-  reports something standing), and the measurement's own terms
+  reports something standing), the measurement's own terms
   (:class:`~risk.errors.RiskClockSkewError` — a reading that is naive or
   not a moment, a threshold that states no band, a stored row whose skew
   disagrees with its own two instants or never actually exceeded the band
-  it claims, and a halting measurement that could not be recorded).
+  it claims, and a halting measurement that could not be recorded), and
+  the watchdog's own terms (:class:`~risk.errors.RiskFeedStalenessError`
+  for a reading that is not a reading and
+  :class:`~risk.errors.RiskOrdersStaleError` for the order path's receipt,
+  a *sibling* of the killed receipt rather than a child of it: the kill is
+  a state that stands until a door resets it, the staleness is a live
+  reading that stops being true by itself).
 * :mod:`risk._identity` — the ``<host>/<pid>`` label that makes *"a
   separate process"* a checkable fact: a kill row names the process that
   sent it, read from the kernel and never accepted from the caller.
@@ -184,6 +208,26 @@ an application's).  The supervisor process itself reaches the
 flattener without composing, exactly as it reaches the switch, and the
 two doors cannot disagree for the same reason: one class, one URL, one
 channel.
+
+**The watchdog has no component, and the absence is stated rather than
+left to be noticed.**  Feature 328 registers nothing beside the four names
+above, for two reasons that are each sufficient.  The first is the
+*lifecycle*: a component is an object a composed application carries for
+as long as the application lives, and this feature's whole judgement is
+that the feed is stale *now* — a guard held in an application's registry
+would be a guard whose band a deployment set at composition and whose
+readings nobody took, while the process that must act on the silence is
+the one about to submit, and it must ask the socket at the moment it
+asks.  The second is that the *guard needs nothing composed*: the flattener
+owns no table and still reflects the URL its kill is read through, but
+this guard owns no table *and* holds no store face at all — its band is
+configuration and its reading is a last-message instant — so a composed
+reflection of it would carry a band and an optional source and answer
+nothing a caller could not have constructed on the spot in one line.  The
+order path reaches :func:`~risk.feed_staleness.require_feed_fresh` without
+composing, exactly as the supervisor reaches the switch, and for the
+member's oldest reason: the process this feature must survive is the one
+that must not be required to have composed anything.
 """
 
 from __future__ import annotations
@@ -201,17 +245,32 @@ from .clock_skew import (
 )
 from .errors import (
     CLOCK_SKEW_CODE,
+    FEED_STALENESS_CODE,
     FLATTEN_CODE,
     HALT_EVENT_CODE,
     KILL_INSTRUCTION_CODE,
     ORDERS_KILLED_CODE,
+    ORDERS_STALE_CODE,
     RiskClockSkewError,
     RiskError,
+    RiskFeedStalenessError,
     RiskFlattenError,
     RiskHaltEventError,
     RiskKillSwitchError,
     RiskOrdersKilledError,
+    RiskOrdersStaleError,
     RiskStoreError,
+)
+from .feed_staleness import (
+    FALLBACK_FEED_READING_ATTRIBUTES,
+    FeedStaleness,
+    FeedStalenessGuard,
+    FeedStalenessSource,
+    RiskFeedStalenessGuard,
+    measure_feed_staleness,
+    orders_stale_error,
+    read_feed_staleness,
+    require_feed_fresh,
 )
 from .flatten import (
     FLATTEN_STATUS_COMPLETED,
@@ -247,6 +306,8 @@ __all__ = [
     "CLOCK_SKEW_CODE",
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
+    "FALLBACK_FEED_READING_ATTRIBUTES",
+    "FEED_STALENESS_CODE",
     "FLATTENER_COMPONENT_NAME",
     "FLATTEN_CODE",
     "FLATTEN_STATUS_COMPLETED",
@@ -256,12 +317,16 @@ __all__ = [
     "KILL_INSTRUCTION",
     "KILL_INSTRUCTION_CODE",
     "ORDERS_KILLED_CODE",
+    "ORDERS_STALE_CODE",
     "PROCESS_ID_SEPARATOR",
     "RISK_CLOCK_SKEW_TABLE",
     "RISK_HALT_EVENT_TABLE",
     "RISK_HALT_ROUTE",
     "RISK_ORDER_KILL_TABLE",
     "ClockSkewHalt",
+    "FeedStaleness",
+    "FeedStalenessGuard",
+    "FeedStalenessSource",
     "FlattenResult",
     "HaltEndpoint",
     "HaltEvent",
@@ -271,6 +336,8 @@ __all__ = [
     "RiskClockSkewError",
     "RiskClockSkewStore",
     "RiskError",
+    "RiskFeedStalenessError",
+    "RiskFeedStalenessGuard",
     "RiskFlattenError",
     "RiskFlattener",
     "RiskHaltEventError",
@@ -278,15 +345,20 @@ __all__ = [
     "RiskKillSwitch",
     "RiskKillSwitchError",
     "RiskOrdersKilledError",
+    "RiskOrdersStaleError",
     "RiskStoreError",
     "flatten_positions",
     "halt_on_clock_skew",
     "measure_clock_skew",
+    "measure_feed_staleness",
     "measured_clock_skews",
     "orders_killed_error",
+    "orders_stale_error",
     "process_identity",
+    "read_feed_staleness",
     "record_halt",
     "recorded_halt_events",
+    "require_feed_fresh",
     "require_orders_allowed",
     "send_kill",
 ]

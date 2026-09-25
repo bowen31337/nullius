@@ -65,11 +65,36 @@ contract* was violated, not by which line of code failed:
   family in this module that may arrive *after* the halt has already
   fired — the kill went out and the record of why is what failed — which
   is why the refusal names the skew and the band rather than the row.
+* :class:`RiskFeedStalenessError` — feature 328's own noun, the *data
+  feed staleness* the order layer is refused on: a reading that is naive
+  or not a moment at all, a feed whose last message is stamped after the
+  reading that asked how long it had been silent (a negative age is not a
+  silence), a threshold that states no band (not real, not finite, not
+  strictly positive), and a live reading whose age disagrees with its own
+  two instants or never actually exceeded the band it was refused under.
+  A sibling of the others, and of :class:`RiskClockSkewError`
+  particularly — one duration is measured against a *band* and the other
+  against the *venue's clock*, and a caller sent from one to the other
+  would go and edit the wrong reading.  It is also where the malformed
+  *ask* lands, because the staleness is judged at submission and there is
+  no row downstream of the judgement to carry the fault.
+* :class:`RiskOrdersStaleError` — the order layer's receipt of feature
+  328's refusal: the feed has been silent past the configured band, so
+  new order submission is refused, and it carries the
+  :class:`~risk.feed_staleness.FeedStaleness` reading that refused it.
+  The sibling :class:`RiskOrdersKilledError` is to feature 322's standing
+  kill what this is to feature 328's live reading: the same kind of
+  object — a refusal the order path catches by type — over the other kind
+  of condition (a state that stands against a reading that is
+  re-judged on every submission), which is why the two are told apart by
+  class rather than by a flag on one of them: an operator paging on one
+  performs a different repair than an operator paging on the other.
 
 Every message names the offending value and the contract it broke, and
 the feature classes open with their greppable tokens
 (:data:`KILL_INSTRUCTION_CODE`, :data:`ORDERS_KILLED_CODE`,
-:data:`HALT_EVENT_CODE`, :data:`FLATTEN_CODE`, :data:`CLOCK_SKEW_CODE`)
+:data:`HALT_EVENT_CODE`, :data:`FLATTEN_CODE`, :data:`CLOCK_SKEW_CODE`,
+:data:`FEED_STALENESS_CODE`, :data:`ORDERS_STALE_CODE`)
 so an operator scanning a log for the member's refusals greps one word
 rather than a sentence — the same discipline the
 ``order_submission_unhealthy`` (feature 320) and ``determinism_broken``
@@ -80,21 +105,26 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:  # pragma: no cover - typing only; kill.py imports this
+if TYPE_CHECKING:  # pragma: no cover - typing only; both are one-way imports
+    from .feed_staleness import FeedStaleness
     from .kill import KillInstruction
 
 __all__ = [
     "CLOCK_SKEW_CODE",
+    "FEED_STALENESS_CODE",
     "FLATTEN_CODE",
     "HALT_EVENT_CODE",
     "KILL_INSTRUCTION_CODE",
     "ORDERS_KILLED_CODE",
+    "ORDERS_STALE_CODE",
     "RiskClockSkewError",
     "RiskError",
+    "RiskFeedStalenessError",
     "RiskFlattenError",
     "RiskHaltEventError",
     "RiskKillSwitchError",
     "RiskOrdersKilledError",
+    "RiskOrdersStaleError",
     "RiskStoreError",
 ]
 
@@ -157,6 +187,35 @@ FLATTEN_CODE = "flatten"
 #: clock's faults are the *measurement's*: the halt may well have fired,
 #: and what failed is the record of how far off the clock was.
 CLOCK_SKEW_CODE = "clock_skew"
+
+#: The greppable token every :class:`RiskFeedStalenessError` message opens
+#: with — the spec's own noun, app_spec.xml feature 328: *"System rejects
+#: new orders while holding positions when data feed staleness exceeds the
+#: configured threshold."*  An operator scanning a log for the feed's
+#: faults greps ``feed_staleness`` and finds the readings that stated no
+#: instant, the ages that ran backwards, the bands that were not bands
+#: and the live rows a reader cannot stand behind — a grep apart from the
+#: clock's (:data:`CLOCK_SKEW_CODE`), the channel's
+#: (:data:`KILL_INSTRUCTION_CODE`), the ledger's
+#: (:data:`HALT_EVENT_CODE`), the flatten's (:data:`FLATTEN_CODE`) and
+#: the order layer's two receipts, because the feed's faults are the
+#: *staleness reading's*: the band may well be exceeded, and what failed
+#: is the measurement of how long the socket has been quiet.
+FEED_STALENESS_CODE = "feed_staleness"
+
+#: The greppable token every :class:`RiskOrdersStaleError` message opens
+#: with.  It names the state the order path is refusing under — *orders
+#: stale* — rather than the reading that produced it, the split
+#: :data:`ORDERS_KILLED_CODE` states against
+#: :data:`KILL_INSTRUCTION_CODE`: a caller grepping its own order path's
+#: refusals finds the feed's receipt without also finding the reader's
+#: bookkeeping faults.  It deliberately does not spell ``halt`` —
+#: feature 328's action is *halt new orders, hold positions*, and the
+#: word ``halt`` belongs to feature 323's door, which sends a kill and
+#: flattens; a refusal that stopped new orders while leaving the book
+#: standing is not that act, and a token that borrowed its word would
+#: send an operator looking for a flatten that never happened.
+ORDERS_STALE_CODE = "orders_stale"
 
 
 class RiskError(Exception):
@@ -292,7 +351,9 @@ class RiskOrdersKilledError(RiskError):
     #: instruction behind it.
     instruction: KillInstruction | None
 
-    def __init__(self, message: str, instruction: KillInstruction | None = None) -> None:
+    def __init__(
+        self, message: str, instruction: KillInstruction | None = None
+    ) -> None:
         super().__init__(message)
         self.instruction = instruction
 
@@ -378,3 +439,111 @@ class RiskClockSkewError(RiskError):
     holding a clock it cannot trust, and the repair is a reading, a band
     or a deployment — not a stack trace.
     """
+
+
+class RiskFeedStalenessError(RiskError):
+    """A feed-staleness reading this module cannot judge, or stand behind.
+
+    app_spec.xml feature 328's noun is the *data feed staleness*, and this
+    is the failure of that noun's own terms: a reading or a last-message
+    instant that is naive or not a moment at all (an age measured from an
+    ambiguous instant is an age against no instant, and the refusal it
+    caused could not be ordered against anything), a last message stamped
+    *after* the reading that asked how long the feed had been silent (an
+    age that runs backwards is not a silence — it is a reading from a
+    different clock or a different feed, and a negative age would quietly
+    pass every band), a ``threshold_seconds`` that states no band — not a
+    real number, not finite, or not strictly positive, the last of which
+    is a deployment that would refuse every submission rather than a
+    silent feed — a reading whose own ``staleness_seconds`` disagrees with
+    the two instants beside it (the readings *are* the measurement, so a
+    reading where they disagree is one no refusal can be reconstructed
+    as) or whose ``exceeded`` bit disagrees with the band it states.  It
+    is also where a malformed *source* lands: a feed liveness object that
+    can say when the feed's most recent message arrived under no name this
+    module knows, and a guard built with a band and nothing to read from.
+
+    A sibling of :class:`RiskClockSkewError` particularly, and of the
+    others for the same reason they are siblings of each other: the noun
+    is the *duration*, not the venue's clock offset, not the instruction,
+    not the record and not the store's address.  The two durations are
+    measured against different things — feature 329 against the
+    *exchange server's own reading of one probe*, feature 328 against
+    *this process's reading of how long ago the last message was* — and a
+    caller sent from one to the other would go and edit the wrong
+    reading: a clock that has drifted is repaired with ``ntpd``, a socket
+    that has gone quiet with a reconnect.
+
+    Unlike the clock's family, this class is also where a malformed *ask*
+    lands, and that asymmetry is the feature rather than an oversight: a
+    staleness refusal is a judgement, not a record, so there is no row
+    downstream of it to carry the fault — and a submission that was
+    refused under a band nobody could evaluate must be refused, not
+    waved through, because the alternative is trading on a feed whose
+    silence cannot be bounded.
+
+    Every message opens with :data:`FEED_STALENESS_CODE` and names the
+    offending value, because the audience is the order path that was
+    about to submit under a feed it cannot vouch for, and the repair is a
+    reading, a band or a reconnect — not a stack trace.
+    """
+
+
+class RiskOrdersStaleError(RiskError):
+    """The data feed has been silent past the band; the order path refuses.
+
+    app_spec.xml feature 328: *"System rejects new orders while holding
+    positions when data feed staleness exceeds the configured threshold."*
+    ``docs/nullius-tech-architecture.md`` §13.3 line 724 fixes the action
+    in four words — *"Halt new orders, hold positions"* — to be read
+    against the row above it, whose action is *"Flatten, halt until manual
+    reset"*: the feed going quiet is not a reason to sell a book, it is a
+    reason to stop adding to it.  So this is that refusal, made catchable
+    by type: the order layer's guard
+    (:func:`risk.require_feed_fresh`) raises it when the reading it took
+    exceeded the band, and every submission path that consults the guard
+    refuses through it rather than through a boolean it would have to
+    enforce at each call site.
+
+    **It carries the reading.**  :attr:`staleness` is the
+    :class:`~risk.feed_staleness.FeedStaleness` the guard measured — how
+    long the feed had been silent, the band it exceeded — so the caller
+    that must act on the refusal learns *how stale* and *against what
+    band* without a second query, the same stance
+    :class:`RiskOrdersKilledError` takes toward the instruction it
+    carries.  That is why this class carries a value where most of its
+    siblings carry only messages: the reading's own numbers are the
+    feature's output, and an operator triaging a stalled socket needs
+    them in the log line the refusal produces.
+
+    A sibling of :class:`RiskOrdersKilledError` rather than a child or a
+    special case of it, because the two refusals are answers to different
+    questions and need different repairs.  The kill is a *state that
+    stands* — one row, first-write-wins, monotone, cleared by nobody in
+    this member — and the repair is an operator's act through the door
+    that owns a reset.  The staleness is a *live reading of another
+    process's liveness*, and it stops being true by itself: the moment
+    the feed speaks again the very next guard call passes.  Collapsing
+    them into one class would mean an operator could not tell *"a
+    supervisor told us to stop"* from *"our own socket has gone quiet"* —
+    which is the distinction feature 320's docstring exists to keep
+    visible from the other side (*"a router that never receives a quote
+    but keeps placing accepted orders reports healthy, because that is
+    the truth about order submission"*: the feed's health and the order
+    path's health are two facts, and here the feed's fact is what the
+    order path refuses on).
+
+    Every message opens with :data:`ORDERS_STALE_CODE` and names the
+    staleness, the band and the last message's own instant, because the
+    operator paging on a refused order path asks *how long has it been
+    quiet* and *since when* first.
+    """
+
+    #: The staleness reading the guard measured.  Present on every error
+    #: the guard raises; ``None`` only on a hand-built error with no
+    #: reading behind it.
+    staleness: FeedStaleness | None
+
+    def __init__(self, message: str, staleness: FeedStaleness | None = None) -> None:
+        super().__init__(message)
+        self.staleness = staleness
