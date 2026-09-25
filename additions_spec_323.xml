@@ -1,0 +1,346 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 323 (System exposes POST /risk/halt, which flattens open positions and rejects new order submission)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 323 in the existing risk member
+    (packages/risk, import name risk; seat src/app/modules/risk): a *halt
+    door*, `POST /risk/halt`, that flattens open positions and rejects new
+    order submission. This is the composed act the category was built for —
+    the one place where feature 322's kill channel and feature 330's flatten
+    are driven in order, over the same shared relational store, so that a
+    single instruction both stops the source and drains the sink. Feature
+    323 depends on feature 322 (the channel that carries the standing kill
+    instruction) and presupposes feature 330 (the flatten that survives a
+    hung strategy process): the door sends the kill through 322's channel,
+    then drives 330's flatten over the book, and the two cannot be separated
+    because a flatten without the kill first on record is refused by the
+    flatten's own authority check, and a kill that does not flatten leaves
+    the exposure standing. The member already holds every piece the door
+    composes — the kill channel (risk.kill: RiskKillSwitch, send_kill,
+    require_orders_allowed, KILL_INSTRUCTION), the flattener (risk.flatten:
+    RiskFlattener, flatten_positions, FlattenResult, FLATTEN_STATUS_COMPLETED)
+    and the error taxonomy (risk.errors) — so feature 323 adds no new table,
+    no new kill, no new flatten verb and no new error class: it is the seam
+    that sends and flattens in order, and the endpoint that serves it.
+
+    The endpoint is a Python seam, not an HTTP server — exactly the stance
+    the forward member (POST /forward/promote, feature 332) and the ledger
+    member (POST /ledger/debit, feature 95) take. It holds a kill switch and
+    a flattener, both resolved over the same DATABASE_URL, and its one verb,
+    `post(request)`, drives them in the order the sentence names: send the
+    kill (322's first-write-wins send, which lands the standing instruction
+    and returns the record), then flatten the book (330's engine-judged
+    flatten, which cancels every order and closes every position and returns
+    only a completed result). The rejection of new order submission is not a
+    second act the door performs — it is the *consequence* of the kill it
+    just sent: the order layer's submission path already consults
+    risk.require_orders_allowed (feature 322's guard), which raises
+    RiskOrdersKilledError while the instruction stands, so once the door has
+    sent the kill the order layer is refused by the channel that already
+    exists. The door does not reach into the order path to enforce anything;
+    it sets the state the order path already refuses under, and the
+    separation is the feature — the halt door is the supervisor's verb, the
+    guard is the order layer's read, and the shared row between them is what
+    makes "rejects new order submission" true without the door holding any
+    authority of its own.
+
+    The endpoint is registered as a component beside the switch and the
+    ledger, following the ledger member's precedent (ledger-debit,
+    ledger-k-effective register their endpoints beside the store) rather than
+    the forward member's (which leaves its endpoint as a function of the
+    store). The halt endpoint holds two resolved objects — the switch and the
+    flattener — over one URL, and a composed application that carries the
+    halt door must carry both pointed at the same database; registering it
+    under its own name keeps that object graph to one component the caller
+    asks for by name, rather than a pair the caller would have to keep
+    consistent. The member's existing three components (risk, risk-halt-events,
+    risk-flattener) are untouched; the door adds a fourth, `risk-halt`. The
+    door sends through the module-level `risk.send_kill` and drives through
+    `risk.flatten_positions`'s underlying store, resolving the same
+    DATABASE_URL the switch and flattener were built from, so the four doors
+    cannot disagree. No central registry, router, app factory, middleware,
+    settings or migration is edited; the member joins by workspace-scan
+    convention and imports no other workspace member.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (packages/* members, import names are
+      underscored slugs) / pytest (ruff + mypy conventions). The module loader
+      discovers members from the root pyproject.toml `[tool.uv.workspace]
+      members = ["packages/*"]`, imports each package so its module-level
+      `@register` fires, and composes what each `@register` builder contributes
+      under a component name. `app` (src/app) is a namespace package with no
+      `__init__.py`; the seats in src/app/modules/&lt;member&gt;/ are reached by
+      namespace import (e.g. app.modules.risk, app.modules.router). A member
+      never imports another member — it reaches shared shapes through `app.*`,
+      never through a sibling package's import name.</stack>
+    <test_baseline>The repository-level suite under tests/ is collected by
+      pytest with testpaths=tests; each workspace member's own suite lives under
+      packages/&lt;member&gt;/tests/ and is collected under its own conftest
+      (same-basename files collide under one pytest run), and is NOT graded by
+      the bare `uv run pytest` acceptance gate — a member suite must be run
+      explicitly (run both `uv run pytest tests/` and the member's own
+      `packages/risk/tests/`). Feature 323 composes two acts the member already
+      owns (send + flatten) over the shared relational store, so it adds no
+      third-party dependency: stdlib sqlite3, frozen dataclasses, no I/O beyond
+      the store the channel and flatten already touch. Measure the real numbers
+      by running the suite before relying on them. The repo lint is red on main
+      (mypy absent, pre-existing ruff errors), so lint only the changed files
+      and compare to a sibling.</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, docstrings that
+      cite app_spec.xml feature numbers and docs/alpha-engine-prd.md /
+      docs/nullius-tech-architecture.md sections, stdlib-only computation,
+      `@register` only in the package `__init__` (never a submodule — a
+      submodule's registration fires only on the first `create_app()` of a
+      process), degrade-don't-break composition (a builder that raises would
+      take composition down for every unrelated feature, so a builder returns
+      `None` for a deployment that names no store), member-owned tables created
+      lazily beside the only module that writes them (never in the shared
+      migration chain, which is order-sensitive and excluded from this feature's
+      file claim), and the error-vocabulary discipline that no member imports
+      another and a shared helper that raises another feature's error type
+      defeats the caller's `except` (translate at the seam). The risk member
+      already lives in this workspace (packages/risk: the kill channel feature
+      322, the flatten feature 330, the halt event ledger feature 331, and the
+      `__init__` that re-exports and fires `@register("risk")`,
+      `@register("risk-halt-events")`, `@register("risk-flattener")`, seat
+      src/app/modules/risk). Feature 323 is a sibling within that member, not a
+      new member. The governing documents are docs/nullius-tech-architecture.md
+      §13.3 ("Runs as a separate process with kill authority over the execution
+      engine, so a hung strategy process cannot prevent a flatten"), §17
+      ("No inbound ports on the live trading host" — the endpoint is a Python
+      seam, never a served socket), and docs/alpha-engine-prd.md C10 ("Risk and
+      kill switches").
+    </conventions>
+  </existing_context>
+  <!-- Layout mirrors the clean main app_spec.xml: uv-workspace is what makes
+       plugin="risk" resolve to the real packages/risk/ tree rather than the
+       single-package src/plugins/risk/ default. Parsed before features. -->
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Risk Supervisor &amp; Kill Switches">
+      <feature index="323" shape="plugin" plugin="risk" depends_on="322" covers="cq-5">
+        System exposes POST /risk/halt, which flattens open positions and
+        rejects new order submission.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    The halt door is the composed act of feature 322's kill channel and
+    feature 330's flatten, served at `POST /risk/halt` as a Python seam over
+    the risk member. It is reached directly from the member (`from risk import
+    RiskHaltEndpoint, HaltRequest, HaltResponse, RISK_HALT_ROUTE`), the way
+    feature 322's `send_kill` and feature 330's `flatten_positions` are, and —
+    for a composed application — through the new seat accessor in
+    src/app/modules/risk, which already hands back the switch (risk), the halt
+    event ledger (risk-halt-events) and the flattener (risk-flattener); feature
+    323 adds one component, `risk-halt`, and one accessor, `halt_component`,
+    reached the same way.
+
+    The endpoint holds a kill switch and a flattener, both resolved over the
+    same DATABASE_URL at construction (`HaltEndpoint.from_env` resolves both
+    exactly as the member's own builders do, so the endpoint and the composed
+    components always point at the same database; no DATABASE_URL composes no
+    endpoint — an unconfigured store is a discoverable state, not an error). It
+    is duck-checked against the seams it drives, not isinstance-guarded, because
+    the factory's scan imports the member under an alias module so the composed
+    switch and flattener are structurally the right shape but never the same
+    class object a direct import yields.
+
+    The endpoint's one verb, `post(request)`, drives the two acts in the order
+    the sentence names. First the kill: the endpoint sends feature 322's kill
+    instruction through the switch it holds (`RiskKillSwitch.send`, first-write-
+    wins — a halt over an already-killed channel writes nothing and returns the
+    standing record with `changed=False`), so the standing instruction lands on
+    record. Then the flatten: the endpoint drives feature 330's flatten over the
+    book (`RiskFlattener.flatten` with a caller-supplied execution engine face),
+    which reads the standing kill it just sent (the authority check passes,
+    because the send wrote the row first-write-wins and the flatten reads it
+    back), cancels every order standing, closes every position open, and returns
+    only a completed result — an engine whose own re-reading reports nothing
+    standing. The flatten's refusal (a residue, a fault, an engine that cannot
+    be asked) propagates as `RiskFlattenError`; the kill's refusal (a bad ask,
+    a store that cannot take the row) propagates as `RiskKillSwitchError` /
+    `RiskStoreError`. The endpoint composes neither act's vocabulary — it
+    propagates the channel's and the flatten's own refusals, exactly as the
+    forward endpoint propagates the store's and the promotion's.
+
+    The rejection of new order submission is the *consequence* of the kill the
+    door sends, not a third act: the order layer's submission path already
+    consults `risk.require_orders_allowed` (feature 322's guard), which raises
+    `RiskOrdersKilledError` carrying the standing instruction while one stands,
+    so once the door has sent the kill the order layer is refused by the channel
+    that already exists. The door does not reach into the order path, does not
+    hold order authority, and does not enforce anything itself — it sets the
+    state the order path already refuses under, and the shared row between the
+    send and the guard is what makes "rejects new order submission" true. The
+    caller wires the endpoint into the order path at the single point where a
+    halt must be pronounced: it constructs the endpoint (or asks the seat for
+    the `risk-halt` component), builds a `HaltRequest` carrying the execution
+    engine it holds, and calls `post`; on the completed `HaltResponse` the order
+    layer is already killed and the book is already flat, and every later
+    submission the guard refuses is the door's work standing.
+
+    The request carries the execution engine face the flatten must drive — the
+    one thing no composition can supply, because it is the supervisor's own hold
+    on the execution engine (feature 330's law: kill authority is a process's
+    fact, not an application's). There is no request body beyond the engine: the
+    kill's moment defaults to the instant of the call and the sender to the
+    calling process's kernel-read identity, exactly as `risk.send_kill` and
+    `risk.flatten_positions` refuse a caller-supplied label, so a halt cannot
+    borrow another process's name. The response carries the standing kill
+    instruction the door sent (which process killed, and when — first-write-
+    wins, so a retry over an already-killed channel returns the first record) and
+    the completed flatten result (what was cancelled, what was closed, when it
+    completed), so the caller holds the record of both acts rather than a
+    re-derivation.
+  </integration_points>
+  <constraints>
+    - Feature 323 is the *composed act* of feature 322's kill and feature 330's
+      flatten, served at `POST /risk/halt`. It must NOT add a new table, a new
+      kill, a new flatten verb, or a new error class: it sends through
+      `risk.send_kill` / `RiskKillSwitch.send`, flattens through
+      `risk.flatten_positions` / `RiskFlattener.flatten`, and propagates the
+      channel's and flatten's own refusals (`RiskKillSwitchError`,
+      `RiskStoreError`, `RiskFlattenError`, `RiskOrdersKilledError`) unchanged.
+      Feature 322's and feature 330's existing behaviour, messages, codes and
+      tests must be untouched.
+    - The endpoint is a Python seam, never an HTTP server: it holds no socket,
+      serves no port and imports no HTTP framework, per docs/nullius-tech-
+      architecture.md §17 ("No inbound ports on the live trading host"). The
+      route is spelled once as `RISK_HALT_ROUTE = "/risk/halt"`, pinned as a
+      class attribute so `HaltEndpoint.route` states the contract without an
+      instance, matching the forward and ledger members' `route` convention.
+    - The endpoint drives the two acts in the order the sentence names: send the
+      kill first (so the standing instruction is on record), then flatten (so
+      the flatten's authority check passes). It must not flatten before sending,
+      because a flatten under no standing kill is refused by the flatten's own
+      authority check, and it must not send after flattening, because the kill
+      stops the source the flatten drains.
+    - The rejection of new order submission is the consequence of the kill, not
+      a separate enforcement: the endpoint sets the standing instruction and the
+      order layer's existing `risk.require_orders_allowed` guard (feature 322)
+      refuses under it. The endpoint must not reach into the order path, hold
+      order authority, or enforce the refusal itself.
+    - The request carries the execution engine face (the supervisor's own hold
+      on the engine, caller-supplied and duck-checked, never composed) and
+      nothing else: no caller-supplied kill moment, no caller-supplied sender
+      label (both default to the instant and the kernel-read identity, as 322
+      and 330 refuse), no observation fields. A `HaltRequest` is a frozen value
+      carrying exactly the engine.
+    - The response is a frozen value carrying the standing kill instruction the
+      door sent (first-write-wins, so a retry returns the first record) and the
+      completed flatten result (what was cancelled and closed, when it
+      completed), so the caller holds the record of both acts.
+    - `@register` lives only in the package `__init__`, never a submodule. The
+      endpoint registers as one new component, `risk-halt`, beside the member's
+      existing three (`risk`, `risk-halt-events`, `risk-flattener`), which are
+      untouched. The seat src/app/modules/risk adds one accessor,
+      `halt_component`, reached the same way as the existing three.
+    - No member imports another. The endpoint resolves its switch and flattener
+      from DATABASE_URL exactly as the member's own builders do, so the four
+      doors cannot disagree; it imports no sibling member.
+    - No central registry, router, app factory, middleware, settings or
+      migration is edited. No order-sensitive shared file is edited (the
+      order-sensitive shared files are excluded from this feature's file claim
+      entirely).
+    - Degrade-don't-break composition: the `risk-halt` builder returns `None`
+      when no DATABASE_URL is configured (an unconfigured store is a
+      discoverable state, not an error), so a composed application without a
+      store composes no halt endpoint rather than breaking.
+    - The refusal message vocabulary is inherited, not restated: a bad kill ask
+      raises in `RiskKillSwitchError` (opening `kill_instruction`), a store that
+      cannot take the row in `RiskStoreError`, a residue or engine fault in
+      `RiskFlattenError` (opening `flatten`). The endpoint composes no message of
+      its own.
+    - All existing tests in the risk member (packages/risk/tests) and in tests/
+      must stay green. The member's own suite must be run explicitly (it is not
+      graded by the bare `uv run pytest` gate).
+  </constraints>
+  <implementation_steps>
+    <step>
+      Phase 1 — the request, the response and the route constant. Add one new
+      module, `packages/risk/src/risk/halt.py`. (1) Add `RISK_HALT_ROUTE =
+      "/risk/halt"`, the one route the endpoint serves, pinned so the endpoint,
+      the spec's API summary and whatever routes the deployment match on one
+      spelling. (2) Add a `HaltRequest` frozen value carrying exactly the
+      execution engine face it must drive — the supervisor's own hold,
+      caller-supplied and duck-checked, never composed, with no caller-supplied
+      kill moment or sender label (both default at the act, as 322 and 330
+      refuse). (3) Add a `HaltResponse` frozen value carrying the standing kill
+      instruction the door sent (first-write-wins) and the completed flatten
+      result, so the caller holds the record of both acts. Both values are
+      validated in `__post_init__` rather than only where built, for the reason
+      the channel's and flatten's records do the same: the value is the proof,
+      and a record that could be constructed disagreeing with the acts would
+      launder a residue into a completed halt.
+    </step>
+    <step>
+      Phase 2 — the endpoint. In `packages/risk/src/risk/halt.py`, add a
+      `HaltEndpoint` class: constructed with the kill switch and flattener it
+      drives (duck-checked against the `send` / `flatten` seams, not
+      isinstance-guarded, because the composed objects are structurally the
+      right shape but never the same class object a direct import yields);
+      carrying `route = RISK_HALT_ROUTE` as a class attribute; with a
+      `from_env` classmethod that resolves both the switch and the flattener
+      from DATABASE_URL exactly as the member's own builders do (returning
+      `None` when nothing names a store — an unconfigured store is a
+      discoverable state, not an error); and with the one verb,
+      `post(request)`, which drives the two acts in order: send the kill
+      (`self._switch.send()`, first-write-wins) then flatten the book
+      (`self._flattener.flatten(request.execution_engine)`, engine-judged
+      completion), returning a `HaltResponse` carrying the standing
+      instruction and the completed flatten result. The kill's and flatten's
+      own refusals propagate unchanged; the endpoint composes no message and
+      performs no store write of its own — the flatten's only store touch is
+      the read of the channel, which is the whole of the hung-proofness.
+    </step>
+    <step>
+      Phase 3 — the component and the seat. In the member's `__init__.py`,
+      register the endpoint under a fourth component name,
+      `HALT_COMPONENT_NAME = "risk-halt"`, with a `build_risk_halt` builder
+      that resolves the switch and flattener and returns `None` when nothing
+      names a store (degrade-don't-break), following the ledger member's
+      precedent for registering an endpoint beside its store. Re-export
+      `HaltEndpoint`, `HaltRequest`, `HaltResponse` and `RISK_HALT_ROUTE` from
+      the member's `__init__` alongside the existing names. In the seat
+      `src/app/modules/risk/__init__.py`, add one accessor,
+      `halt_component(app=None)`, reached the same way as the existing three
+      (`ledger_component`, `debit_component`, `k_effective_component`), which
+      reads the `risk-halt` component from the composed application.
+    </step>
+    <step>
+      Phase 4 — the tests. Add one test module,
+      `packages/risk/tests/test_halt.py`, asserting: the endpoint sends the
+      kill then flattens in that order (the standing instruction is on record
+      after `post`, and the book is flat — the engine reports nothing
+      standing); a halt over an already-killed channel writes nothing and
+      returns the first kill's record (`changed=False`) while still flattening;
+      the rejection of new order submission is the consequence — after `post`,
+      `risk.require_orders_allowed` over the same store raises
+      `RiskOrdersKilledError`; the response carries the standing instruction
+      and the completed flatten result (what was cancelled and closed); a
+      flatten that cannot complete (a residue, an engine fault) propagates
+      `RiskFlattenError` and the kill still stands; the endpoint holds no
+      caller-supplied kill moment or sender label (both default to the instant
+      and the kernel-read identity); `HaltEndpoint.from_env` returns `None`
+      when nothing names a store; the endpoint is duck-checked, not
+      isinstance-guarded; and the member's existing three components and all
+      existing risk tests are preserved (feature 323 adds names, it does not
+      remove or reword any). The cross-process case is proven against an actual
+      second interpreter, as the channel's and ledger's suites do: a halt a
+      separate supervisor process pronounces is a kill the order layer's guard
+      refuses under.
+    </step>
+    <step>
+      Phase 5 — verify. Run the risk member's own suite
+      (`uv run pytest packages/risk/tests`) and the repository-level suite
+      (`uv run pytest tests/`) — both, since the member suite is not graded by
+      the bare gate — and confirm all pass. Lint only the changed files against
+      a sibling (the repo lint is red on main). Confirm no new table was added
+      (the schema is the channel's `risk_order_kill` and nothing else), that
+      exactly one new component is registered (`risk-halt`, beside the existing
+      three), that the seat accessor reaches it, and that no order-sensitive
+      shared file was edited.
+    </step>
+  </implementation_steps>
+</project_specification>

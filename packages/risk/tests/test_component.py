@@ -31,11 +31,17 @@ import risk as member
 from app.module_loader import create_app
 from app.modules import risk as seat
 from app.modules.risk import COMPONENT_NAME as SEAT_COMPONENT_NAME
-from app.modules.risk import risk_flattener, risk_halt_event_store, risk_kill_switch
+from app.modules.risk import (
+    risk_flattener,
+    risk_halt_endpoint,
+    risk_halt_event_store,
+    risk_kill_switch,
+)
 
 EXPECTED_EXPORTS = {
     "COMPONENT_NAME",
     "risk_flattener",
+    "risk_halt_endpoint",
     "risk_halt_event_store",
     "risk_kill_switch",
 }
@@ -93,6 +99,14 @@ def _assert_is_the_flattener(component: object) -> None:
     assert component.database_url is not None
 
 
+def _assert_is_the_halt_endpoint(component: object) -> None:
+    assert type(component).__name__ == "HaltEndpoint"
+    assert type(component).__module__.endswith("risk.halt")
+    assert component.route == "/risk/halt"
+    assert component.switch is not None
+    assert component.flattener is not None
+
+
 # -- The registration ---------------------------------------------------------
 
 
@@ -104,12 +118,19 @@ def test_the_member_registers_under_its_own_name() -> None:
     # convention for a member's second and third components holds.
     assert member.HALT_EVENTS_COMPONENT_NAME == "risk-halt-events"
     assert member.FLATTENER_COMPONENT_NAME == "risk-flattener"
+    # The halt door is the fourth component — the composed act of the
+    # kill and the flatten, driven in order, under its own kebab-case name.
+    assert member.HALT_COMPONENT_NAME == "risk-halt"
 
 
-def test_the_member_exports_exactly_three_builders() -> None:
+def test_the_member_exports_exactly_four_builders() -> None:
+    # The halt door is a fourth component, registered beside the switch,
+    # the ledger and the flattener — the composed act of feature 322's
+    # kill and feature 330's flatten, driven in order.
     assert [name for name in dir(member) if name.startswith("build_")] == [
         "build_halt_event_store",
         "build_risk_flattener",
+        "build_risk_halt",
         "build_risk_kill_switch",
     ]
 
@@ -149,12 +170,25 @@ def test_the_scanned_application_carries_the_flattener(
     _assert_is_the_flattener(app.get(member.FLATTENER_COMPONENT_NAME))
 
 
+def test_the_scanned_application_carries_the_halt_door(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A fourth question — halt now — composed of the kill and the flatten
+    # driven in order, on its own name so a caller asking for the act is
+    # not handed one of its halves.
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'composed.db'}")
+    app = create_app()
+    assert member.HALT_COMPONENT_NAME in app
+    assert member.HALT_COMPONENT_NAME in app.order
+    _assert_is_the_halt_endpoint(app.get(member.HALT_COMPONENT_NAME))
+
+
 def test_the_component_survives_a_second_composition(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     # The submodule-registration hazard: the loader caches imported
     # submodules, so a @register in one fires on the first composition and
-    # silently drops out of every later one — the reason all three
+    # silently drops out of every later one — the reason all four
     # builders live in __init__.py.
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'composed.db'}")
     for app in (create_app(), create_app(), create_app()):
@@ -164,6 +198,8 @@ def test_the_component_survives_a_second_composition(
         assert member.HALT_EVENTS_COMPONENT_NAME in app.order
         _assert_is_the_flattener(app.get(member.FLATTENER_COMPONENT_NAME))
         assert member.FLATTENER_COMPONENT_NAME in app.order
+        _assert_is_the_halt_endpoint(app.get(member.HALT_COMPONENT_NAME))
+        assert member.HALT_COMPONENT_NAME in app.order
 
 
 def test_the_builder_degrades_to_none_without_a_database(
@@ -173,6 +209,7 @@ def test_the_builder_degrades_to_none_without_a_database(
     assert create_app().get(member.COMPONENT_NAME) is None
     assert create_app().get(member.HALT_EVENTS_COMPONENT_NAME) is None
     assert create_app().get(member.FLATTENER_COMPONENT_NAME) is None
+    assert create_app().get(member.HALT_COMPONENT_NAME) is None
 
 
 def test_an_empty_database_url_counts_as_unset(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -180,6 +217,7 @@ def test_an_empty_database_url_counts_as_unset(monkeypatch: pytest.MonkeyPatch, 
     assert create_app().get(member.COMPONENT_NAME) is None
     assert create_app().get(member.HALT_EVENTS_COMPONENT_NAME) is None
     assert create_app().get(member.FLATTENER_COMPONENT_NAME) is None
+    assert create_app().get(member.HALT_COMPONENT_NAME) is None
 
 
 def test_the_builders_never_raise_and_take_no_arguments(
@@ -188,14 +226,17 @@ def test_the_builders_never_raise_and_take_no_arguments(
     assert list(inspect.signature(member.build_risk_kill_switch).parameters) == []
     assert list(inspect.signature(member.build_halt_event_store).parameters) == []
     assert list(inspect.signature(member.build_risk_flattener).parameters) == []
+    assert list(inspect.signature(member.build_risk_halt).parameters) == []
     monkeypatch.delenv("DATABASE_URL", raising=False)
     assert member.build_risk_kill_switch() is None
     assert member.build_halt_event_store() is None
     assert member.build_risk_flattener() is None
+    assert member.build_risk_halt() is None
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'built.db'}")
     assert isinstance(member.build_risk_kill_switch(), member.RiskKillSwitch)
     assert isinstance(member.build_halt_event_store(), member.RiskHaltEventStore)
     assert isinstance(member.build_risk_flattener(), member.RiskFlattener)
+    assert isinstance(member.build_risk_halt(), member.HaltEndpoint)
 
 
 # -- The seat -------------------------------------------------------------------
@@ -226,6 +267,7 @@ def test_the_seats_accessors_take_no_app_argument() -> None:
     assert set(inspect.signature(risk_kill_switch).parameters) == set()
     assert set(inspect.signature(risk_halt_event_store).parameters) == set()
     assert set(inspect.signature(risk_flattener).parameters) == set()
+    assert set(inspect.signature(risk_halt_endpoint).parameters) == set()
 
 
 def test_the_seat_resolves_the_switch_for_this_process(
@@ -252,6 +294,14 @@ def test_the_seat_resolves_the_flattener_for_this_process(
     _assert_is_the_flattener(flattener)
 
 
+def test_the_seat_resolves_the_halt_door_for_this_process(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'seated.db'}")
+    door = risk_halt_endpoint()
+    _assert_is_the_halt_endpoint(door)
+
+
 def test_the_seat_answers_none_without_a_database(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -259,6 +309,7 @@ def test_the_seat_answers_none_without_a_database(
     assert risk_kill_switch() is None
     assert risk_halt_event_store() is None
     assert risk_flattener() is None
+    assert risk_halt_endpoint() is None
 
 
 def test_the_composed_reflection_and_the_resolved_switch_are_one_channel(

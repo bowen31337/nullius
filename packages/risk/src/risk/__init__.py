@@ -187,6 +187,12 @@ from .flatten import (
     RiskFlattener,
     flatten_positions,
 )
+from .halt import (
+    RISK_HALT_ROUTE,
+    HaltEndpoint,
+    HaltRequest,
+    HaltResponse,
+)
 from .halt_events import (
     RISK_HALT_EVENT_TABLE,
     HaltEvent,
@@ -211,6 +217,7 @@ __all__ = [
     "FLATTENER_COMPONENT_NAME",
     "FLATTEN_CODE",
     "FLATTEN_STATUS_COMPLETED",
+    "HALT_COMPONENT_NAME",
     "HALT_EVENTS_COMPONENT_NAME",
     "HALT_EVENT_CODE",
     "KILL_INSTRUCTION",
@@ -218,9 +225,13 @@ __all__ = [
     "ORDERS_KILLED_CODE",
     "PROCESS_ID_SEPARATOR",
     "RISK_HALT_EVENT_TABLE",
+    "RISK_HALT_ROUTE",
     "RISK_ORDER_KILL_TABLE",
     "FlattenResult",
+    "HaltEndpoint",
     "HaltEvent",
+    "HaltRequest",
+    "HaltResponse",
     "KillInstruction",
     "RiskError",
     "RiskFlattenError",
@@ -267,6 +278,16 @@ HALT_EVENTS_COMPONENT_NAME = "risk-halt-events"
 #: questions, and a caller asking a composed application for one must
 #: not be handed another's verb.
 FLATTENER_COMPONENT_NAME = "risk-flattener"
+
+#: The component name the halt door registers under — a fourth name beside the
+#: switch, the ledger and the flattener, the convention :mod:`canary` states
+#: for registering an endpoint beside its store (as :mod:`ledger` registers
+#: ``ledger-debit`` beside its store): the switch answers *is the order layer
+#: killed?*, the ledger answers *what halted, when, and why?*, the flattener
+#: answers *flatten now*, and the halt door answers *halt* — the composed act
+#: of the kill and the flatten driven in order, and a caller asking a composed
+#: application for that act must not be handed one of its halves.
+HALT_COMPONENT_NAME = "risk-halt"
 
 
 @register(COMPONENT_NAME)
@@ -340,3 +361,30 @@ def build_risk_flattener() -> RiskFlattener | None:
     supervisor's own hold on the engine.
     """
     return RiskFlattener.resolve()
+
+
+@register(HALT_COMPONENT_NAME)
+def build_risk_halt() -> HaltEndpoint | None:
+    """Component builder: the halt door bound to ``DATABASE_URL``.
+
+    The same reflection, under the halt door's own name (see
+    :data:`HALT_COMPONENT_NAME`): resolves the switch and the flattener from
+    ``DATABASE_URL`` at build time — exactly as the switch's and flattener's
+    builders do, so the door and the composed components point at the same
+    database — and returns ``None`` when nothing names a store, the
+    degrade-don't-break stance every builder in this workspace takes.
+    Construction performs no I/O: the schema is created on the first send or
+    flatten, so composing the application never touches a database.
+
+    What the composed halt door is *for* is the composed act of feature 322's
+    kill and feature 330's flatten, driven in order — the one place they meet.
+    The supervisor process reaches the same door without composing — see
+    :mod:`risk.halt` for the module-level spelling it uses instead — and still
+    hands :meth:`~risk.halt.HaltEndpoint.post` the execution engine itself,
+    because no composition can supply the supervisor's own hold on the engine.
+    """
+    switch = RiskKillSwitch.resolve()
+    flattener = RiskFlattener.resolve()
+    if switch is None or flattener is None:
+        return None
+    return HaltEndpoint(switch, flattener)

@@ -107,11 +107,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a dependency
-    from risk import RiskFlattener, RiskHaltEventStore, RiskKillSwitch
+    from risk import HaltEndpoint, RiskFlattener, RiskHaltEventStore, RiskKillSwitch
 
 __all__ = [
     "COMPONENT_NAME",
     "risk_flattener",
+    "risk_halt_endpoint",
     "risk_halt_event_store",
     "risk_kill_switch",
 ]
@@ -203,3 +204,39 @@ def risk_flattener() -> RiskFlattener | Any:
     from risk import RiskFlattener
 
     return RiskFlattener.resolve()
+
+
+def risk_halt_endpoint() -> HaltEndpoint | Any:
+    """Feature 323's halt door, resolved for whatever process is asking.
+
+    Resolved from ``DATABASE_URL`` through the member's own
+    :meth:`risk.halt.HaltEndpoint.from_env`, on the same road the switch,
+    the ledger and the flattener accessors take and for the reason that is
+    this category's whole shape: the halt door is the composed act of
+    feature 322's kill and feature 330's flatten driven in order, and it
+    must run while the strategy process is hung, so the door can be
+    nobody's composition — a halted-in-a-composed-app would be a halt that
+    app's lifetime bounded, and the process this feature must outlive is
+    the one that is hung.  Takes no ``app`` argument for the same reason
+    the other accessors do.
+
+    The accessor supplies the *authority* — the switch that sends the kill
+    and the flattener that drains the book, both over the same database —
+    but the caller supplies the *engine*: the endpoint's one ask,
+    :meth:`~risk.halt.HaltEndpoint.post`, takes the execution engine face
+    as its one field, because §13.3's kill authority is the supervisor
+    process's own hold on the engine and no seat could — or should — hand
+    one out.
+
+    ``None`` when no ``DATABASE_URL`` is configured — the same
+    discoverable deployment state, and the member's own builder returns it
+    for the same degrade-don't-break reason: a halt pronounced against a
+    database nobody named would be invisible to every order-layer process
+    that reads this seat, so a caller that must halt must treat the
+    ``None`` as a refusal to proceed.  Construction performs no I/O and
+    creates no table: the halt door owns no schema — the kill lands in
+    feature 322's ``risk_order_kill`` and the flatten writes nothing.
+    """
+    from risk import HaltEndpoint
+
+    return HaltEndpoint.from_env()
