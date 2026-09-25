@@ -1,0 +1,183 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — feature 336 (System rejects a purge configuration for forward data, because the record is out of sample by construction)</project_name>
+  <addition_summary>
+    Implement app_spec.xml feature 336 in the existing `forward` plugin
+    (packages/forward, import name forward; seat src/app/modules/forward):
+    the prohibition that enforces docs/alpha-engine-prd.md §5 Loop 3's own
+    closing line — *"After 90 days, that signal has a track record on data
+    that **did not exist when the hypothesis was formed**. No purging scheme
+    is needed; the data is honestly out of sample by construction."* — read
+    on its one operative clause this member has not yet enforced: a
+    configuration whose intent is to purge forward-record data is **rejected**,
+    because the record is out of sample by construction and is therefore never
+    purgeable. docs/nullius-tech-architecture.md §13.4 states the same rule
+    from the other side: *"After 90 days it has a record on data that did not
+    exist when the hypothesis was formed, so no purging scheme is needed."*
+
+    Feature 335 built the fact this feature builds on: a forward observation
+    is honest only while the window is open, and at the close the signal *has*
+    its 90-day track record on data that did not exist when the hypothesis was
+    formed. Feature 336 adds the prohibition that the record that 335 proves
+    is out of sample by construction may not be purged. One act, one module:
+    `purge.py` holds the record, the validator, the fact and the verdict.
+    `ForwardPurgeConfig` is the purge configuration as the sentence's object:
+    a frozen record of exactly two fields — `target` (the data scope the purge
+    would remove, a non-empty string naming a table) and `cutoff_days` (the
+    retention window — how many days of history the purge keeps, a positive
+    integer) — and it is deliberately the operator's own document, not a
+    re-derivation of the record: the configuration names its own target and
+    carries its own window, and neither is inferred from the rows. `rejects_
+    forward_purge(config)` is the sentence's *rejects*: it validates the ask
+    whole first (`ForwardPurgeConfigRequestError`, no code word — a malformed
+    configuration names its target in its first words) and then **raises**
+    `ForwardPurgeRejectedError` when the configuration names the forward record
+    — the table feature 108's migration gave this member (`forward_record`) —
+    returning None when the configuration names any other table. The refusal
+    opens with the greppable code `forward_purge_rejected`, names the target
+    and the window, cites §5 Loop 3 (*"No purging scheme is needed; the data is
+    honestly out of sample by construction"*), and states the one repair that
+    exists — the record is the only source of genuinely uncontaminated
+    evidence, so it is kept, never purged. `is_forward_purge(config)` is the
+    read-only spelling — the fact without the refusal — answering True exactly
+    when a configuration names the forward record.
+
+    The boundary is the **target**, not the window. This member judges one
+    thing — does the configuration name the forward record — and deliberately
+    not the window's length: a `cutoff_days` of zero is not a *worse* purge of
+    the record, it is a malformed window, and it is refused as the ask's own
+    fact (`ForwardPurgeConfigRequestError`) before any judgment of the target
+    is formed, so a caller that handed a broken window is told *state the
+    window* rather than *the record may not be purged*. A `cutoff_days` of a
+    thousand on a purge of the ledger is answered None — the window is
+    irrelevant to a target this member does not judge — and a `cutoff_days` of
+    one on a purge of the record is refused, because the target is the record
+    and the record is out of sample by construction. The ask is total before
+    the judgment: a present configuration that is not a well-stated
+    `ForwardPurgeConfig` (a blank target, a non-string target, a non-positive
+    or non-integer window) is refused as `ForwardPurgeConfigRequestError`
+    before any target is judged, so a caller that handed a broken configuration
+    is told *state the configuration*, never *the record may not be purged*.
+
+    No central registry, router, app factory, middleware, settings or
+    migration is edited; the member joins by workspace-scan convention, adds no
+    `@register`, no table and no endpoint, and imports no other workspace
+    member — the configuration and the record arrive as records because a
+    member never re-derives a fact it was handed. The module is stdlib-only at
+    module scope (`dataclasses`, `typing` and the member's own `.errors`), so
+    the factory's scan — which imports this package on every `create_app()` to
+    fire its `@register` — pays nothing for the prohibition beyond the import
+    it already paid for the record, the observation, the retention, the priors
+    and the beta-four acts.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (the `forward` member already exists:
+      packages/forward, import name forward; seat src/app/modules/forward). The
+      member currently carries features 332, 333, 334, 335, 337, 338, 339 and
+      340 — `record.py` (feature 332's act `ForwardRecords.open_record`, the
+      `ForwardRecord` row, the request and response, the `PromoteEndpoint`, the
+      vocabulary constants and the module-level `forward_record`),
+      `observation.py` (feature 333's `ForwardObservations.append_observation`
+      and `forward_observation`), `retention.py` (feature 337's
+      `ForwardIcRetentions`, `IcRetention` and `forward_ic_retention`),
+      `priors.py` (feature 339's `ForwardDecayPriors` and the two module-level
+      spellings), `beta_four.py` (feature 338's `ForwardBetaFourRevisions` and
+      the two module-level spellings), `reconciliation.py` (feature 340's
+      `ForwardCostReconciliations` and `reconcile_fill_costs`), `window.py`
+      (feature 332's and feature 335's promotion seam), `schema.py` (the DDL
+      adapter that runs the owning migrations by path) and `errors.py` (the
+      base `ForwardError` plus `ForwardRecordError`, `ForwardStoreError`,
+      `ForwardPromotionError`, `ForwardIdentityError`,
+      `ForwardReconciliationError`, `ForwardRetentionError`,
+      `ForwardDecayPriorError` and `ForwardBetaFourError`), with `__init__.py`
+      holding the one `@register` builder, `build_forward_records`, under the
+      component name `forward`. Feature 336 adds one module and no
+      registration.</stack>
+    <test_baseline>The forward member's own suite under
+      packages/forward/tests/ (test_forward_record, test_forward_observation,
+      test_forward_retention, test_forward_beta_four, test_forward_track,
+      test_forward_component, test_forward_reconciliation, and this feature's
+      test_forward_purge). The member is stdlib-only at module scope (the
+      factory's scan imports the package to fire its `@register`, so it must
+      pay nothing), and feature 336's module adds only `dataclasses`, `typing`
+      and the member's own `.errors` to that bill. The repository-level suite
+      under tests/ is collected by pytest's testpaths and does NOT collect
+      packages/*/tests (see the acceptance-gate memory), so the member's own
+      suite must be run explicitly as well. Lint only the new files and compare
+      to a sibling — the repo is red on main (mypy absent, ~163 pre-existing
+      ruff errors), so a baseline via `--stdin-filename` misreports.</test_baseline>
+    <conventions>
+      - One act, one module: `purge.py` holds the record, the validator, the
+        fact and the verdict; the two refusal classes are added to the existing
+        `errors.py` beside features 332's, 333's, 337's, 338's, 339's and
+        340's (one place per member, as its docstring already states);
+        `__init__.py` widens its re-export and `__all__` and gains no logic —
+        the shape every member in this workspace takes.
+      - A verdict, not a measurement: the prohibition judges a configuration
+        the caller already holds. It opens no database, reads no environment,
+        consults no clock, touches no filesystem and re-derives neither the
+        configuration nor the record — the shape feature 306's
+        `rejects_agent_authored_modification` and feature 308's
+        `rejects_overleveraged_target` take for their own verdicts, and the
+        reason a member never imports another member. It sweeps no state and
+        deletes no rows: the prohibition is a judgment, and the repair it
+        states is the operator's, not this member's.
+      - The boundary is the target, not the window: the configuration is
+        refused when it names the forward record (`forward_record`), answered
+        None when it names any other table, and refused as the ask's own fact
+        when its window is not a positive integer or its target is not a
+        non-empty string — the ask settles before the judgment, so a broken
+        window is told *state the window* rather than judged against the
+        record. This member judges the target only; what the window says is
+        none of this module's business once the target is not the record.
+      - Validation is total before any judgment is formed: the configuration's
+        two fields are refused in declaration order (target, window) as
+        `ForwardPurgeConfigRequestError` before any target is judged, so a
+        present-but-broken configuration is told *state the configuration*
+        rather than judged — the ordering every verdict in this workspace
+        states.
+      - Error vocabulary: two new siblings under `ForwardError`
+        (`ForwardPurgeConfigRequestError` for the ask, no code because a
+        malformed ask names its target in its first words;
+        `ForwardPurgeRejectedError` for the judgment, opening with
+        `forward_purge_rejected`), so a caller that refuses the whole forward
+        surface writes one `except` and a caller that must react differently can
+        still tell the two facts apart — the `ForwardRecordError` /
+        `ForwardStoreError` precedent one feature over.
+      - Every refusal message names the facts behind it (the target and the
+        window) and cites §5 Loop 3's rule, so the refusal is actionable
+        without a stack trace; the judgment's message states the one repair
+        that exists (the record is out of sample by construction, so it is
+        kept, never purged) and does not offer to purge it.
+      - Deterministic: pure functions over the configuration's fields, so the
+        same configuration answers identical verdicts and the module holds no
+        state.
+      - Do not edit a central registry, router, app factory, middleware,
+        settings or migration (core-task, order-sensitive shared files); no new
+        component is registered, so the composition story is unchanged and
+        `app.order` still carries exactly one `forward`.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Forward-Test Tracking">
+      <feature index="336" shape="plugin" plugin="forward" depends_on="335">
+        <description>System rejects a purge configuration for forward data, because the record is out of sample by construction. It exposes `ForwardPurgeConfig` — the purge configuration as the sentence's object — as a frozen record of exactly two fields: `target` (the data scope the purge would remove, a non-empty string naming a table) and `cutoff_days` (the retention window — how many days of history the purge keeps, a positive integer). Construction validates each field in declaration order and refuses with `ForwardPurgeConfigRequestError` what cannot be part of a stated configuration: a blank or non-string target, or a non-positive or non-integer window. The record is the operator's own document made structural — a purge that names no window cannot be judged — and it carries nothing else: the target is a free name (the table the purge would remove) and the window is a free count, and neither is re-derived from the rows.</description>
+      </feature>
+      <feature index="336" shape="plugin" plugin="forward" depends_on="335">
+        <description>System exposes `is_forward_purge(config)` — the read-only spelling of feature 336's prohibition. It validates the ask whole first (the configuration's two fields, `ForwardPurgeConfigRequestError`, before any target is judged — a present-but-broken configuration is refused as the ask's own fact, not judged against the record), and answers True exactly when a configuration names the member's own forward record (`forward_record`) and False when it names any other data scope. The shape `forward.retention` takes for its own fact: validate the ask, answer a fact, and let the caller decide what to do with it.</description>
+      </feature>
+      <feature index="336" shape="plugin" plugin="forward" depends_on="335">
+        <description>System exposes `rejects_forward_purge(config)` — the sentence's *rejects*. It reads the configuration's `target` / `cutoff_days` surface duck-typed (an absent attribute distinguished from a present-`None` one by sentinel, so the loader's synthetic-name copies are judged as well as canonical records), settles the configuration's ask whole in declaration order first (`ForwardPurgeConfigRequestError`, no code word, before any target is judged), and raises `ForwardPurgeRejectedError` when the configuration names the forward record, returning None when it names any other table. The refusal opens with `forward_purge_rejected`, names the target and the window, cites §5 Loop 3 (*"After 90 days, that signal has a track record on data that did not exist when the hypothesis was formed. No purging scheme is needed; the data is honestly out of sample by construction"*), and states the one repair that exists — the record is the only source of genuinely uncontaminated evidence, so it is kept, never purged. A refused configuration forms no value.</description>
+      </feature>
+      <feature index="336" shape="plugin" plugin="forward" depends_on="335">
+        <description>System defines the prohibition's two refusal classes in the member's one error module, as siblings under feature 332's `ForwardError` — the one-base-per-member shape the dreaming and regime members state, so a caller that refuses forward work wholesale writes one `except` while a caller that must react differently to *your configuration could not be stated* and *the record may not be purged* catches the specific siblings. `ForwardPurgeConfigRequestError` is the ask's face and carries no code word (a malformed configuration names its target in its first words, the `ForwardRecordError` precedent); it refuses the configuration's two fields' own facts before any target is judged. `ForwardPurgeRejectedError` is the judgment and opens every message with `forward_purge_rejected`; its repair is its own — the record is out of sample by construction, so it is kept, never purged — which is why it is its own class and not the base (whose repair is *fix the signals*) or the ask (whose repair is *state the configuration*). Both are subclasses of the base and neither of the other.</description>
+      </feature>
+      <feature index="336" shape="plugin" plugin="forward" depends_on="335">
+        <description>System keeps the prohibition a free function beside the record rather than a second component: `purge.py` is imported by the member's `__init__.py`, which widens its re-export (the record, the predicate, the verdict and the two error classes join features 332's, 333's, 337's, 338's, 339's and 340's names) and gains no `@register`. No new component is composed, `app.order` still carries exactly one `forward`, and the seat (src/app/modules/forward) is unchanged and still re-exports nothing — a caller that wants the prohibition reaches the member's own namespace, the discipline every seat in this workspace states. The module is stdlib-only at module scope (`dataclasses`, `typing` and the member's own `.errors`), so the factory's scan — which imports this package on every `create_app()` to fire its `@register` — pays nothing for the prohibition beyond the import it already paid. No shared order-sensitive surface is authored into — no registry, router, app factory, middleware or settings — and no data is created or removed, because the prohibition judges a configuration the caller hands it. The prohibition judges a configuration the caller hands it; it opens nothing, reads nothing, sweeps no state and removes nothing — the deployment's wiring delivers the configuration through the verdict, and this module enforces only that the record is never purged.</description>
+      </feature>
+      <feature index="336" shape="plugin" plugin="forward" depends_on="335">
+        <description>System passes the prohibition over the member's own fixtures: a well-stated `ForwardPurgeConfig` naming another table runs (the verdict answers None); a configuration naming `forward_record` is refused with `ForwardPurgeRejectedError` opening with `forward_purge_rejected` and naming the target and the window; a present-but-broken configuration (blank target, non-string target, non-positive window, non-integer window) is refused at the ask with `ForwardPurgeConfigRequestError` and no code word, and the ask settles before the judgment (a broken configuration naming the record meets the ask first); a duck-typed stand-in carrying the configuration's two attributes is judged identically to the member's own record (the loader's synthetic-copy trap); an absent attribute is distinguished from a present-`None` one by sentinel; both error classes are subclasses of `ForwardError` and neither of the other; the module is stdlib-only parsed from the AST, imports no other member, opens no store, reads no environment and consults no clock; no verb accepts a window-length or content parameter (pinned through `inspect.signature`); and a re-run over the same configuration answers the identical verdict.</description>
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>
