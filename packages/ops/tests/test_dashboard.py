@@ -37,6 +37,8 @@ from ops import (
     OPS_DASHBOARD_COMPONENT_NAME,
     DashboardPage,
     DashboardRenderError,
+    EpochCountChrome,
+    EpochCountGauge,
     FdrDeployEndpoint,
     FdrDeployPanel,
     FdrDeployResponse,
@@ -52,10 +54,16 @@ from app.modules import ops as ops_seat
 MEMBER_SRC = Path(__import__("ops").__file__).resolve().parent.parent
 
 #: The Streamlit calls the render makes, in the order the render makes
-#: them — the feature's ordering law, asserted as the exact transcript.
+#: them — the two features' ordering law, asserted as the exact
+#: transcript: page configuration, the title, the permanent chrome
+#: (feature 352's caption, the strip beneath the title), then the
+#: primary panel — headline, numeral, plate — and only then the one
+#: chart the dashboard draws.  Nothing renders above the numeral but
+#: the chrome.
 RENDER_SEQUENCE = (
     "set_page_config",
     "title",
+    "caption",
     "header",
     "metric",
     "caption",
@@ -94,9 +102,17 @@ class _RecordingStreamlit:
     def names(self) -> list[str]:
         return [name for name, _args, _kwargs in self.calls]
 
+    def of(self, name: str) -> list[tuple[tuple, dict]]:
+        """Every call emitted under ``name``, in order — the chrome
+        strip and the provenance plate are both captions now (feature
+        352 grew the second one), so a page render holds two of that
+        name and order is what tells them apart."""
+        return [call[1:] for call in self.calls if call[0] == name]
+
     def one(self, name: str) -> tuple[tuple, dict]:
-        """The single call emitted under ``name`` (there is at most one
-        of each in a page render)."""
+        """The single call emitted under ``name`` (callers use it only
+        for names a page render emits once; captions are read through
+        :meth:`of`, in order)."""
         matching = [call for call in self.calls if call[0] == name]
         assert len(matching) == 1, f"expected one {name}, got {matching}"
         return matching[0][1], matching[0][2]
@@ -124,7 +140,13 @@ def _persisted_store(test_database_url: str) -> scoring.FdrDeployStore:
 
 
 def _dashboard(test_database_url: str) -> OperatorDashboard:
-    return OperatorDashboard(FdrDeployEndpoint(_persisted_store(test_database_url)))
+    # The chrome's gauge rides the same URL the route's store reads —
+    # the one-database law — and reads the epoch ledger the promotion
+    # member owns (empty here, so the strip renders the honest 0).
+    return OperatorDashboard(
+        FdrDeployEndpoint(_persisted_store(test_database_url)),
+        EpochCountGauge(test_database_url),
+    )
 
 
 # -- the component and its spellings -------------------------------------------
@@ -217,7 +239,9 @@ def test_the_numeral_is_the_percentage_the_target_is_stated_in(
         _Pair(0.5, 1.0),
         computed_at="2026-01-01T00:00:00",
     )
-    panel = OperatorDashboard(FdrDeployEndpoint(store)).page().primary
+    panel = OperatorDashboard(
+        FdrDeployEndpoint(store), EpochCountGauge(test_database_url)
+    ).page().primary
     assert panel.figure == 0.0
     assert panel.numeral == "0.0%"
 
@@ -227,7 +251,9 @@ def test_the_numeral_is_the_percentage_the_target_is_stated_in(
         computed_at="2026-02-01T00:00:00",
     )
     assert panel.figure == 0.0  # the panel is frozen testimony
-    fresh = OperatorDashboard(FdrDeployEndpoint(store)).page().primary
+    fresh = OperatorDashboard(
+        FdrDeployEndpoint(store), EpochCountGauge(test_database_url)
+    ).page().primary
     assert fresh.figure == 1.0
     assert fresh.numeral == "100.0%"
 
@@ -240,7 +266,9 @@ def test_a_campaign_closed_between_two_renders_moves_the_numeral(
     # renders moves the second numeral — a cached figure would make
     # the top line a fact about when the page was first opened.
     store = _persisted_store(test_database_url)
-    dashboard = OperatorDashboard(FdrDeployEndpoint(store))
+    dashboard = OperatorDashboard(
+        FdrDeployEndpoint(store), EpochCountGauge(test_database_url)
+    )
     assert dashboard.render(_RecordingStreamlit()).primary.figure == pytest.approx(0.5)
 
     newest = store.persist(
@@ -272,7 +300,10 @@ def test_an_empty_trend_renders_no_numeral_ever_a_flawless_one(
     # dashboard this route feeds renders no numeral for it; what it
     # must never render is a flawless one."  A dash where the numeral
     # would be, words that say why, and no chart of an empty series.
-    dashboard = OperatorDashboard(FdrDeployEndpoint(scoring.FdrDeployStore(test_database_url)))
+    dashboard = OperatorDashboard(
+        FdrDeployEndpoint(scoring.FdrDeployStore(test_database_url)),
+        EpochCountGauge(test_database_url),
+    )
     panel = dashboard.page().primary
     assert not panel
     assert panel.figure is None
@@ -286,8 +317,13 @@ def test_an_empty_trend_renders_no_numeral_ever_a_flawless_one(
     value = st.one("metric")[1]["value"]
     assert value == "—"
     assert value != "0.0%"
-    caption = st.one("caption")[0][0]
-    assert "no campaign has closed" in caption
+    # Two captions, in order: the chrome strip still renders (the
+    # "at all times" clause — the count does not wait for content),
+    # then the words that say why there is no numeral.
+    captions = st.of("caption")
+    assert len(captions) == 2
+    assert captions[0][0][0] == page.chrome.line
+    assert captions[1][0][0].startswith("no campaign has closed")
     # No chart of an empty series: the trend chart is the panel's own,
     # and an absent trend has none to draw.
     assert "line_chart" not in st.names
@@ -297,11 +333,13 @@ def test_an_empty_trend_renders_no_numeral_ever_a_flawless_one(
 
 
 def test_the_render_emits_the_primary_panel_first(test_database_url: str) -> None:
-    # The feature's clause made literal: page configuration, the
-    # title, the primary panel — headline, numeral, plate — and only
-    # then the one chart the dashboard draws, over the panel's own
-    # FDR_deploy trend.  Nothing renders above the numeral but chrome,
-    # and the only series ever charted is the trend's figures.
+    # The features' clause made literal: page configuration, the
+    # title, the permanent chrome (feature 352's strip, beneath the
+    # title and above the panel), the primary panel — headline,
+    # numeral, plate — and only then the one chart the dashboard
+    # draws, over the panel's own FDR_deploy trend.  Nothing renders
+    # above the numeral but the chrome, and the only series ever
+    # charted is the trend's figures.
     st = _RecordingStreamlit()
     page = _dashboard(test_database_url).render(st)
 
@@ -316,8 +354,12 @@ def test_the_render_emits_the_primary_panel_first(test_database_url: str) -> Non
     # The header is the panel's headline — the qualifier beside the
     # figure's name, §16's own line.
     assert st.one("header")[0][0] == page.primary.headline
-    # The plate renders the provenance beneath the numeral.
-    assert st.one("caption")[0][0] == page.primary.plate
+    # Two captions, in order: the chrome strip first (permanent, above
+    # the panel), then the provenance plate beneath the numeral.
+    captions = st.of("caption")
+    assert len(captions) == 2
+    assert captions[0][0][0] == page.chrome.line
+    assert captions[1][0][0] == page.primary.plate
     # The one chart is the trend, and nothing else is charted.
     chart_args, _kwargs = st.one("line_chart")
     assert chart_args[0] == list(page.primary.series)
@@ -349,14 +391,20 @@ def test_the_render_answers_the_page_it_rendered(test_database_url: str) -> None
 
 def test_the_model_has_nowhere_for_an_equity_curve_to_land() -> None:
     # The structural half of the clause, pinned as a shape: the page
-    # holds a primary seat, the panel holds the route's response, the
-    # response holds the per-campaign FDR_deploy history — and that is
-    # the whole surface, top to bottom.  A returns series, a NAV curve
-    # or a Sharpe has no field anywhere on this path to occupy, so the
+    # holds a primary seat and its chrome (feature 352's — the one
+    # field the page grew, carrying a count and nothing a curve could
+    # occupy), the panel holds the route's response, the response
+    # holds the per-campaign FDR_deploy history — and that is the
+    # whole surface, top to bottom.  A returns series, a NAV curve or
+    # a Sharpe has no field anywhere on this path to occupy, so the
     # substitution cannot be represented, let alone rendered.
-    assert [f.name for f in dataclasses.fields(DashboardPage)] == ["primary"]
+    assert [f.name for f in dataclasses.fields(DashboardPage)] == [
+        "primary",
+        "chrome",
+    ]
     assert [f.name for f in dataclasses.fields(FdrDeployPanel)] == ["response"]
     assert [f.name for f in dataclasses.fields(FdrDeployResponse)] == ["history"]
+    assert [f.name for f in dataclasses.fields(EpochCountChrome)] == ["count"]
 
 
 def test_a_page_whose_primary_is_not_the_fdr_panel_is_refused() -> None:
@@ -372,7 +420,10 @@ def test_a_page_whose_primary_is_not_the_fdr_panel_is_refused() -> None:
         series = (100.0, 101.2, 99.8, 103.0)
 
     with pytest.raises(DashboardRenderError) as raised:
-        DashboardPage(primary=_EquityCurvePanel())  # type: ignore[arg-type]
+        DashboardPage(
+            primary=_EquityCurvePanel(),  # type: ignore[arg-type]
+            chrome=EpochCountChrome(count=0),
+        )
     assert isinstance(raised.value, OpsError)
     message = str(raised.value)
     assert "equity curve" in message
@@ -399,7 +450,10 @@ def test_the_primary_seat_judges_the_contract_not_the_class(
         plate = real.plate
         series = real.series
 
-    page = DashboardPage(primary=_DuckPanel())  # type: ignore[arg-type]
+    page = DashboardPage(
+        primary=_DuckPanel(),  # type: ignore[arg-type]
+        chrome=EpochCountChrome(count=0),
+    )
     assert page.primary.numeral == real.numeral
 
 
@@ -432,7 +486,7 @@ def test_the_route_carrier_is_duck_checked() -> None:
     # enough (it answers the trend, not the route's response), and the
     # refusal says so.
     with pytest.raises(TypeError, match="OperatorDashboard"):
-        OperatorDashboard("sqlite:///nowhere.db")
+        OperatorDashboard("sqlite:///nowhere.db", EpochCountGauge("sqlite:///x.db"))
 
 
 def test_the_render_carrier_is_duck_checked(test_database_url: str) -> None:
@@ -455,7 +509,15 @@ def test_a_failing_read_propagates_as_the_routes_own_vocabulary(
         def get(self):
             raise FdrDeployMetricError("the route's own words")
 
-    dashboard = OperatorDashboard(_RefusingRoute())
+    class _NeverAskedGauge:
+        """A gauge that fails the test if the chrome is read at all —
+        the primary seat is asked first, so a refusing route aborts the
+        page before the chrome's figure is ever requested."""
+
+        def remaining(self) -> int:
+            raise AssertionError("the chrome was asked after the route refused")
+
+    dashboard = OperatorDashboard(_RefusingRoute(), _NeverAskedGauge())
     with pytest.raises(FdrDeployMetricError, match="the route's own words"):
         dashboard.page()
     with pytest.raises(FdrDeployMetricError, match="the route's own words"):
@@ -557,7 +619,9 @@ def test_building_imports_neither_streamlit_nor_the_scoring_member(
 def test_from_env_composes_exactly_when_the_route_does(env) -> None:
     # The dashboard composes on the route's own decision — the same
     # unset spellings, the same resolved URL — with no second
-    # resolution the two surfaces could drift apart on.
+    # resolution the two surfaces could drift apart on.  The chrome's
+    # gauge rides the URL the route carries, so it composes on exactly
+    # the same decision and points at exactly the same database.
     route = FdrDeployEndpoint.from_env(env)
     dashboard = OperatorDashboard.from_env(env)
     if route is None:
@@ -565,6 +629,7 @@ def test_from_env_composes_exactly_when_the_route_does(env) -> None:
     else:
         assert dashboard is not None
         assert dashboard.route.store.database_url == route.store.database_url
+        assert dashboard.gauge.database_url == route.store.database_url
 
 
 def test_the_dashboard_and_route_compose_over_one_database(
@@ -574,13 +639,15 @@ def test_the_dashboard_and_route_compose_over_one_database(
     # composition for both surfaces: the route that answers the figure
     # and the dashboard that renders it resolve the one database
     # DATABASE_URL names — never two the numeral and its rows could
-    # drift apart on.
+    # drift apart on.  Feature 352's gauge rides the same carried URL,
+    # so the chrome's count is drawn from the one database too.
     app = create_app(MEMBER_SRC, registry=Registration())
     route = app.get("ops-fdr-deploy")
     dashboard = app.get("ops-dashboard")
     assert dashboard is not None and route is not None
     assert dashboard.route.store.database_url == route.store.database_url
     assert dashboard.route.store.database_url == test_database_url
+    assert dashboard.gauge.database_url == test_database_url
     assert "ops-dashboard" in app.order and "ops-fdr-deploy" in app.order
 
 

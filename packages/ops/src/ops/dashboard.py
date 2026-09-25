@@ -89,6 +89,24 @@ repair — and a *failed* read propagates as feature 341's own
 :class:`~ops.errors.FdrDeployMetricError`, already this member's
 vocabulary: re-wrapping it would only bury the route that refused.
 
+**Feature 352's chrome hangs off the page beside the seat, exactly
+where the page model promised it could.**  The dashboard now reads a
+second figure — the remaining clean epoch count, the spec's
+``ui_layout`` *"the remaining clean epoch count sit in permanent
+chrome"* and its success criteria's *"sees the remaining clean epoch
+count at all times"* — and the whole of that feature lives in
+:mod:`ops.chrome`, which this module only wires and renders: the
+count is read through a gauge (the promotion member's own, feature
+297's, reached through a deferred door) held beside the route, the
+page model *requires* its chrome so a chromeless page cannot be
+represented, and the render emits the chrome strip as one caption
+beneath the title — above the fold, on every page, including the
+honest-absence one — before the primary panel's header.  Chrome
+grows; the top line does not move: the primary numeral is still the
+page's one ``metric``, the trend still the one chart, and the count
+is furniture — visible always, competing never.  See
+:mod:`ops.chrome`'s own docstring for the feature's law whole.
+
 **Streamlit is the deployment's ambient dependency, not a workspace
 one.**  §16's stack line names Streamlit the way it names Postgres —
 an environment the operator runs, not a library the research loop
@@ -155,6 +173,12 @@ from typing import Any, Optional
 
 from app.modules.ops import fdr_deploy_component
 
+from .chrome import (
+    EPOCH_COUNT_LABEL,
+    EpochCountChrome,
+    EpochCountGauge,
+    require_promotion,
+)
 from .errors import DashboardRenderError
 from .fdr_route import (
     FDR_DEPLOY_ROUTE,
@@ -204,6 +228,22 @@ _PRIMARY_PANEL_CONTRACT = (
     "numeral",
     "plate",
     "series",
+)
+
+#: The permanent chrome's display contract — the reads the render makes
+#: of whatever occupies the page's chrome seat (feature 352's, the
+#: extension point the class docstring below named one feature ahead
+#: of the feature that used it).  A carrier that does not answer them
+#: all cannot sit in permanent chrome, and the page refuses it (see
+#: :class:`DashboardPage`): the spec's *"the remaining clean epoch
+#: count sit in permanent chrome"* and *"sees the remaining clean epoch
+#: count at all times"* are one law, and a page that could be built
+#: without a carrier answering the count would be a page on which
+#: depletion could go unseen.
+_CHROME_CONTRACT = (
+    "count",
+    "numeral",
+    "line",
 )
 
 #: The Streamlit calls the render makes — the whole contract a render
@@ -365,7 +405,8 @@ class FdrDeployPanel:
 
 @dataclass(frozen=True, slots=True)
 class DashboardPage:
-    """The dashboard's whole page: one primary panel, first.
+    """The dashboard's whole page: one primary panel, first, and its
+    permanent chrome.
 
     The page model exists to hold the feature's ordering law where a
     test can reach it: the primary seat is the page's first and
@@ -379,21 +420,33 @@ class DashboardPage:
     drifts into the primary seat renders nothing here, and the page
     says so instead.
 
-    The check is duck-typed, not ``isinstance``-guarded, for the
+    The second seat is feature 352's, and it is the other half of the
+    same modelling decision: the chrome is a *required* field, so a
+    page without it is not constructible — the spec's *"permanent
+    chrome"* and *"at all times"* made structural, the same move the
+    primary seat's contract makes for §16's law.  Its carrier answers
+    the chrome's display contract (:data:`_CHROME_CONTRACT`) or the
+    page is refused by name: a chrome that could not answer the count
+    would be a strip rendering on every page with nothing to say, and
+    the depletion it exists to show would go unseen exactly when it
+    mattered.
+
+    Both checks are duck-typed, not ``isinstance``-guarded, for the
     reason every seam in this workspace gives: the factory's scan
     imports members under synthetic names, so a composed panel is
     structurally this member's without being the same class object a
-    direct import yields.  The contract is the panel's public reads —
+    direct import yields.  The contract is the carrier's public reads —
     and a carrier that answers all of them *is* an FDR_deploy panel
-    for every purpose the render has.
+    (or an epoch-count chrome) for every purpose the render has.
 
     Later features of this category hang their own content off the
-    page (352's permanent chrome beside the primary panel) without
-    touching the primary seat, which is the point of modelling the seat
-    explicitly: chrome grows, the top line does not move.
+    page — 352's chrome landed here beside the primary seat without
+    moving the top line, which was the point of modelling the seats
+    explicitly: chrome grows, the top line does not.
     """
 
     primary: FdrDeployPanel
+    chrome: EpochCountChrome
 
     def __post_init__(self) -> None:
         missing = [
@@ -414,19 +467,49 @@ class DashboardPage:
                 f"refused rather than rendered with a panel that promotes "
                 f"anything above epistemic state (feature 351, docs §16)"
             )
+        chrome_missing = [
+            name for name in _CHROME_CONTRACT if not hasattr(self.chrome, name)
+        ]
+        if chrome_missing:
+            raise DashboardRenderError(
+                f"a DashboardPage's chrome is the permanent one (an "
+                f"{EpochCountChrome.__name__} or any carrier answering "
+                f"its display contract: "
+                f"{', '.join(_CHROME_CONTRACT)}), and this carrier does "
+                f"not answer: {', '.join(chrome_missing)}. The spec's "
+                "operator reads the remaining clean epoch count at all "
+                "times because it sits in permanent chrome, and a page "
+                "that could be built without a carrier answering the "
+                "count would be a page on which depletion could go "
+                "unseen — §13 item 4's 'When clean epochs run out, the "
+                "system stops' is a state the operator must see coming, "
+                "not one to discover at the stop (feature 352, prd "
+                "§13 item 4)"
+            )
 
 
 class OperatorDashboard:
-    """The operator surface: the primary panel, rendered over the
-    composed route.
+    """The operator surface: the primary panel with its permanent
+    chrome, rendered over the composed route.
 
     Constructed over the route (:class:`~ops.fdr_route.FdrDeployEndpoint`
-    or any carrier answering its ``get()``), and every render is a
-    fresh read — the dashboard holds no cache of a previous page, for
-    the reason the endpoint holds none: a campaign closed between two
-    renders must move the second numeral, and a cached figure would
-    make the dashboard's top line a fact about when the page was first
-    opened rather than about what the system measured.
+    or any carrier answering its ``get()``) *and* the chrome's gauge
+    (:class:`~ops.chrome.EpochCountGauge` or any carrier answering its
+    ``remaining()``) — two carriers, because the page reads two
+    figures from two members: §16's top-line number from the scoring
+    member's rows, and §13 item 4's remaining clean epoch count from
+    the promotion member's ledger.  The gauge is a required argument,
+    not an option: a dashboard without one would be a dashboard whose
+    chrome could quietly go missing, and "permanent" is a fact the
+    constructor states rather than a behaviour it hopes for.
+
+    Every render is a fresh read of both — the dashboard holds no
+    cache of a previous page, for the reason the endpoint holds none:
+    a campaign closed between two renders must move the second numeral,
+    and an epoch spent between two renders must move the second chrome
+    strip, because a cached figure of either kind would make the page
+    a fact about when it was first opened rather than about what the
+    system measured and what it has left.
 
     Two construction doors, one law each:
 
@@ -434,7 +517,8 @@ class OperatorDashboard:
       ``DATABASE_URL`` names; ``None`` when it names none (an
       unconfigured store is a discoverable deployment state, and the
       composed application simply carries no dashboard, exactly as it
-      carries no route);
+      carries no route — and no chrome without a dashboard, because
+      the strip rides the same URL the route resolved);
     * :meth:`composed` — the operator's door, through the seat in the
       app package namespace; a composed application that carries no
       route is *refused*, because a render asked for by name is a
@@ -442,7 +526,7 @@ class OperatorDashboard:
       nobody measured.
     """
 
-    def __init__(self, route: Any) -> None:
+    def __init__(self, route: Any, gauge: Any) -> None:
         if not callable(getattr(route, "get", None)):
             raise TypeError(
                 "OperatorDashboard renders over the composed fdr-deploy "
@@ -454,13 +538,32 @@ class OperatorDashboard:
                 "cannot name the figure a dashboard would render "
                 "(feature 351, docs §16)"
             )
+        if not callable(getattr(gauge, "remaining", None)):
+            raise TypeError(
+                "OperatorDashboard renders the remaining clean epoch "
+                "count in permanent chrome beside the primary panel "
+                "(feature 352), and that count is read through a gauge "
+                "— something with a remaining() answering feature 297's "
+                f"figure; got {type(gauge).__name__}. The chrome renders "
+                "on every page the dashboard draws, so a carrier that "
+                "cannot answer the count cannot be a dashboard's gauge: "
+                "there is no chromeless construction to fall back to "
+                "(feature 352, prd §13 item 4)"
+            )
         self._route = route
+        self._gauge = gauge
 
     @property
     def route(self) -> Any:
         """The route this dashboard reads — feature 341's, held
         duck-typed across the seam."""
         return self._route
+
+    @property
+    def gauge(self) -> Any:
+        """The gauge this dashboard's chrome reads — feature 297's
+        figure, held duck-typed across the seam the way the route is."""
+        return self._gauge
 
     # -- Construction -------------------------------------------------------
 
@@ -476,9 +579,18 @@ class OperatorDashboard:
         unset) and carries the deferred store — this door only wraps
         it, so the dashboard composes exactly when the route does and
         over the same database, with no second resolution to drift.
+        The chrome's gauge is wired over the URL that route already
+        resolved and carries (its store's ``database_url`` — the
+        composition fact, read off the route rather than re-resolved
+        from the environment), so the top line and the count point at
+        the one database the deployment named, and a later
+        environment cannot move the chrome without moving the store
+        it counts.
         """
         route = FdrDeployEndpoint.from_env(env)
-        return None if route is None else cls(route)
+        if route is None:
+            return None
+        return cls(route, EpochCountGauge(route.store.database_url))
 
     @classmethod
     def composed(cls, app: Any = None) -> "OperatorDashboard":
@@ -498,6 +610,12 @@ class OperatorDashboard:
         route and the environment variable that would compose it.  The
         alternative — rendering on without the figure — is the
         quietly-defaulted number this category exists to rule out.
+        The chrome's gauge is wired over the composed route's own
+        carried URL, the same ride :meth:`from_env` takes; a composed
+        route that will not name its database (not the member's
+        endpoint, a hand-registered stand-in) is refused by the
+        gauge's own wiring refusal rather than crashing the
+        composition on an attribute it never promised.
         """
         route = fdr_deploy_component(app)
         if route is None:
@@ -511,22 +629,64 @@ class OperatorDashboard:
                 f"numeral nobody measured; point DATABASE_URL at the "
                 f"metrics store and compose again (feature 351, docs §16)"
             )
-        return cls(route)
+        store = getattr(route, "store", None)
+        url = getattr(store, "database_url", None)
+        return cls(route, EpochCountGauge(url))
 
     # -- The page and its render ---------------------------------------------
 
     def page(self) -> DashboardPage:
-        """One fresh page over the route's answer.
+        """One fresh page over the route's answer and the gauge's.
 
-        The whole read is the route's ``get()`` — the store's own
-        history, figures already rebuilt from the pair each row
-        carries — and the page is built from the response alone.  A
-        read that fails propagates as feature 341's
-        :class:`~ops.errors.FdrDeployMetricError`: already this
-        member's vocabulary, already translated at the route's seam,
-        and re-wrapping it here would only bury which surface refused.
+        The whole content read is the route's ``get()`` — the store's
+        own history, figures already rebuilt from the pair each row
+        carries — and the page's content is built from the response
+        alone.  The chrome's count is read *after* it, from the
+        gauge's ``remaining()``: the primary seat is the page's first
+        and defining content, asked first, and a route that refuses
+        aborts the page before the chrome is ever asked — the load in
+        the ordering law, and the reason a failing route read and a
+        failing ledger read stay distinguishable (the route's arrives
+        as feature 341's :class:`~ops.errors.FdrDeployMetricError`,
+        already this member's vocabulary; the gauge's arrives as the
+        render vocabulary's own :class:`~ops.errors.
+        DashboardRenderError`, translated at the chrome's seam).
+        Neither is ever caught into an answer, and neither is cached:
+        the next page re-asks both.
         """
-        return DashboardPage(primary=FdrDeployPanel(response=self._route.get()))
+        response = self._route.get()
+        promotion = require_promotion()
+        try:
+            count = self._gauge.remaining()
+        except promotion.EpochChargeError as exc:
+            # The gauge's own refusal, translated at the member seam —
+            # the route's move one figure over (``get()`` narrowing the
+            # scoring store's refusal into FdrDeployMetricError): the
+            # ledger is the promotion member's, the chrome is this
+            # member's, and the vocabulary must live where the caller
+            # catches it, so a single ``except
+            # DashboardRenderError`` around a render guards every way
+            # the page can refuse to draw.  The original is chained so
+            # the operator still sees the gauge's own words — never
+            # swallowed, never retried, and never answered around with
+            # a count the ledger did not state.
+            raise DashboardRenderError(
+                f"the dashboard's chrome could not read the "
+                f"{EPOCH_COUNT_LABEL} count: the promotion member's "
+                f"gauge refused the ledger read: {exc!r}. The count "
+                "renders in permanent chrome on every page precisely "
+                "so depletion stays visible, and a read that cannot be "
+                "made is surfaced rather than answered around — a "
+                "chrome that quietly showed a full ledger while the "
+                "epochs ran out unseen is the state §13 item 4's "
+                "ledger exists to make visible, not hide; the repair "
+                "is the ledger's (the original refusal is chained), "
+                "never a fallback figure (feature 352, prd §13 item 4)"
+            ) from exc
+        return DashboardPage(
+            primary=FdrDeployPanel(response=response),
+            chrome=EpochCountChrome(count=count),
+        )
 
     def render(self, st: Any = None) -> DashboardPage:
         """Render one page through Streamlit and answer it.
@@ -539,15 +699,20 @@ class OperatorDashboard:
         emits, the same duck-check discipline the endpoint applies its
         store.
 
-        The order is the feature's law, made literal: page
-        configuration, the title, then the primary panel — its
-        headline (the qualifier beside the figure's name), its numeral
-        (no delta: the figure has no green-up direction), its
-        provenance plate — and only then the one chart the dashboard
-        draws, the panel's own FDR_deploy trend.  Nothing renders
-        above the numeral; nothing but the trend is ever charted.
-        The page answered is the page that rendered, so a caller (or a
-        test) can read exactly what the operator saw.
+        The order is the features' law, made literal: page
+        configuration, the title, the permanent chrome — feature
+        352's strip, the remaining clean epoch count as one caption
+        beneath the title, on every page including the one where no
+        campaign has closed — then the primary panel: its headline
+        (the qualifier beside the figure's name), its numeral (no
+        delta: the figure has no green-up direction), its provenance
+        plate, and only then the one chart the dashboard draws, the
+        panel's own FDR_deploy trend.  The chrome is the one thing
+        that renders above the numeral — furniture beside content,
+        never a second metric competing with the top line — and
+        nothing but the trend is ever charted.  The page answered is
+        the page that rendered, so a caller (or a test) can read
+        exactly what the operator saw.
         """
         carrier = require_streamlit() if st is None else st
         missing = [
@@ -568,6 +733,7 @@ class OperatorDashboard:
         panel = page.primary
         carrier.set_page_config(page_title=DASHBOARD_PAGE_TITLE)
         carrier.title(DASHBOARD_TITLE)
+        carrier.caption(page.chrome.line)
         carrier.header(panel.headline)
         carrier.metric(label=FDR_DEPLOY_LABEL, value=panel.numeral or "—")
         if panel:

@@ -21,7 +21,10 @@ measured somewhere else: ``FDR_deploy`` is the scoring member's
 (feature 267's per-campaign rows, reweighted once at the one constant),
 342's lamps read the canary member's drift record and the null
 oracle's KS guard, 343's counts read the regime member's coverage
-ledger.  What this member owns is the *surface* — the routes, the
+ledger, 352's chrome count is the promotion member's (feature 297's
+gauge over feature 294's epoch ledger — §13 item 4's depleting
+resource, read through that member's own derivation rather than
+re-spelled here).  What this member owns is the *surface* — the routes, the
 stores §16's later features persist into, the dashboard — and its law
 is therefore delegation: the fdr-deploy route reads feature 267's
 store through the scoring member itself (:func:`ops.fdr_route.
@@ -67,7 +70,11 @@ the metrics store feature 267's own docstring already reserves
 (*"the research-metrics row is the ops member's (feature 344 ...)"*);
 348-349's structured log records arrive as emission seams; 351's
 dashboard (:mod:`ops.dashboard`, landed) reads the route; 352's chrome
-hangs off its page model.  Each is its own module with its own refusal
+(:mod:`ops.chrome`, landed) hangs off its page model — the remaining
+clean epoch count, read through the promotion member's own gauge
+(feature 297's) over the same ``DATABASE_URL`` the route resolved, and
+rendered as one caption beneath the title on every page the dashboard
+draws.  Each is its own module with its own refusal
 vocabulary under :class:`~ops.errors.OpsError`, and each composes only
 if its sentence demands state a deployment holds — the
 registration-grows-per-feature shape the ledger, nulloracle and canary
@@ -95,6 +102,14 @@ member already says:
   curve, rendered over the composed route and refused, by name, when
   the route is absent or the primary seat is occupied by anything
   else.
+* :class:`~ops.chrome.EpochCountChrome` with
+  :class:`~ops.chrome.EpochCountGauge` and
+  :func:`~ops.chrome.require_promotion` — feature 352's chrome: the
+  remaining clean epoch count, read through the promotion member's
+  own gauge (feature 297's, deferred past builder time) and rendered
+  in permanent chrome on every page, so depletion stays visible —
+  refused, by name, when the carrier cannot answer the count, the
+  count is not one, or the ledger read fails.
 * :class:`~ops.errors.OpsError` with
   :class:`~ops.errors.FdrDeployMetricError` and
   :class:`~ops.errors.DashboardRenderError` — the member's refusal
@@ -106,6 +121,12 @@ from __future__ import annotations
 
 from app.module_loader import register
 
+from .chrome import (
+    EPOCH_COUNT_LABEL,
+    EpochCountChrome,
+    EpochCountGauge,
+    require_promotion,
+)
 from .dashboard import (
     DASHBOARD_PAGE_TITLE,
     DASHBOARD_TITLE,
@@ -127,12 +148,15 @@ from .fdr_route import (
 __all__ = [
     "DASHBOARD_PAGE_TITLE",
     "DASHBOARD_TITLE",
+    "EPOCH_COUNT_LABEL",
     "FDR_DEPLOY_LABEL",
     "FDR_DEPLOY_ROUTE",
     "OPS_COMPONENT_NAME",
     "OPS_DASHBOARD_COMPONENT_NAME",
     "DashboardPage",
     "DashboardRenderError",
+    "EpochCountChrome",
+    "EpochCountGauge",
     "FdrDeployEndpoint",
     "FdrDeployMetricError",
     "FdrDeployPanel",
@@ -140,6 +164,7 @@ __all__ = [
     "OperatorDashboard",
     "OpsError",
     "main",
+    "require_promotion",
     "require_scoring",
     "require_streamlit",
 ]

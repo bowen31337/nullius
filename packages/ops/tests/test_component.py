@@ -166,6 +166,10 @@ def test_the_seat_exposes_nothing_but_the_composition_accessor(
         "DashboardPage",
         "FdrDeployPanel",
         "DashboardRenderError",
+        "EpochCountChrome",
+        "EpochCountGauge",
+        "EPOCH_COUNT_LABEL",
+        "require_promotion",
     ):
         assert leaked not in ops_seat.__all__
 

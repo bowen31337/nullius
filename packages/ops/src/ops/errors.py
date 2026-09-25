@@ -10,7 +10,10 @@ each one actionable: the split is by surface, because a surface is the
 unit the category's features name (feature 341's fdr-deploy route, 342's
 instrument-status, 343's regime-coverage, 351's dashboard), and a caller
 asking one surface must not have to import another surface's error to
-catch its own refusals.
+catch its own refusals — and a surface that renders *within* another
+(the chrome within the dashboard) shares its vocabulary rather than
+splitting it, so a caller guarding one render catches every way the
+page can refuse to draw.
 
 What the member refuses, and why loudly: every figure this member
 serves is a number an operator steers the system by (§16 makes
@@ -68,10 +71,12 @@ class FdrDeployMetricError(OpsError):
 
 
 class DashboardRenderError(OpsError):
-    """Feature 351's refusals: the render path's own error states.
+    """The dashboard render path's refusals — features 351's and
+    352's, one vocabulary because one render refuses with it.
 
-    Raised in :mod:`ops.dashboard`, at the two places the dashboard's
-    sentence draws a line the render must not cross:
+    Raised in :mod:`ops.dashboard` and :mod:`ops.chrome`, at the
+    places the two features' sentences draw lines the render must not
+    cross:
 
     * **a page whose primary panel is not the FDR one is refused at
       construction.**  docs §16 states the law this member exists to
@@ -90,10 +95,30 @@ class DashboardRenderError(OpsError):
       store would answer "a flawless system" for one that never ran —
       the quietly-defaulted number this whole category exists to rule
       out.
+    * **a page whose chrome cannot answer the count is refused, and so
+      is a count that is not one** (feature 352, the permanent chrome).
+      The spec's *"the remaining clean epoch count sit in permanent
+      chrome"* and *"at all times"* are one law: a carrier that does
+      not answer the chrome's display contract, or a figure that is
+      not a non-negative count of rows, is refused by name rather than
+      rendered — a strip on every page showing a number nobody derived
+      would be depletion's own quietly-defaulted figure.
+    * **a chrome read that fails is translated here from the promotion
+      member's :class:`~promotion.errors.EpochChargeError`** (chained,
+      never swallowed), the same seam law that translates the scoring
+      store's failure into :class:`FdrDeployMetricError` one module
+      over: a caller whose single ``except DashboardRenderError``
+      guards a render must not be taken down by an error from a module
+      it never imported — and the read is never caught *into* an
+      answer, because a chrome that quietly showed a full ledger while
+      the epochs ran out unseen is the state prd §13 item 4's ledger
+      exists to make visible, not hide.
 
     Not raised for an *empty* trend — that absence renders honestly
-    (no numeral, the words that say why) — and not raised for a failed
-    store read, which arrives as feature 341's own
+    (no numeral, the words that say why) — and not for a *zero* count,
+    which is a measurement feature 297 answers and the chrome renders
+    (the visible exhaustion, never a refusal).  Not raised for a
+    failed store read either, which arrives as feature 341's own
     :class:`FdrDeployMetricError` and propagates untranslated: it is
     already this member's vocabulary, and re-wrapping it would only
     bury the route that refused.
