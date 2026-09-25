@@ -53,15 +53,27 @@ contract* was violated, not by which line of code failed:
   the event and not the store's address — and a caller sent from a
   residue to a bad ``DATABASE_URL`` would go and edit the deployment
   while the engine still reported the very exposure the refusal named.
+* :class:`RiskClockSkewError` — feature 329's own noun, the *measured
+  clock skew that halted trading*: a probe reading that is naive or not a
+  moment at all, a threshold that states no band (not real, not finite,
+  not strictly positive), a stored row whose skew disagrees with its own
+  two instants or never actually exceeded the band it claims, a
+  module-level halt that names no store to record through, and a halting
+  measurement that exceeded the band but could not be persisted.  A
+  sibling of the others for the same reason they are siblings of each
+  other: the noun is the *measurement*.  The clock's faults are the one
+  family in this module that may arrive *after* the halt has already
+  fired — the kill went out and the record of why is what failed — which
+  is why the refusal names the skew and the band rather than the row.
 
 Every message names the offending value and the contract it broke, and
 the feature classes open with their greppable tokens
 (:data:`KILL_INSTRUCTION_CODE`, :data:`ORDERS_KILLED_CODE`,
-:data:`HALT_EVENT_CODE`, :data:`FLATTEN_CODE`) so an operator scanning a
-log for the member's refusals greps one word rather than a sentence —
-the same discipline the ``order_submission_unhealthy`` (feature 320) and
-``determinism_broken`` (feature 143) tokens state for their own
-features.
+:data:`HALT_EVENT_CODE`, :data:`FLATTEN_CODE`, :data:`CLOCK_SKEW_CODE`)
+so an operator scanning a log for the member's refusals greps one word
+rather than a sentence — the same discipline the
+``order_submission_unhealthy`` (feature 320) and ``determinism_broken``
+(feature 143) tokens state for their own features.
 """
 
 from __future__ import annotations
@@ -72,10 +84,12 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; kill.py imports this
     from .kill import KillInstruction
 
 __all__ = [
+    "CLOCK_SKEW_CODE",
     "FLATTEN_CODE",
     "HALT_EVENT_CODE",
     "KILL_INSTRUCTION_CODE",
     "ORDERS_KILLED_CODE",
+    "RiskClockSkewError",
     "RiskError",
     "RiskFlattenError",
     "RiskHaltEventError",
@@ -129,6 +143,20 @@ HALT_EVENT_CODE = "halt_event"
 #: the flatten's faults are the *act's*: the authority was read, the
 #: channel worked, and the engine is the thing still holding exposure.
 FLATTEN_CODE = "flatten"
+
+#: The greppable token every :class:`RiskClockSkewError` message opens
+#: with — the spec's own noun, app_spec.xml feature 329: *"System persists
+#: the measured clock skew that halted trading when it exceeded the
+#: threshold against exchange server time."*  An operator scanning a log
+#: for the clock's faults greps ``clock_skew`` and finds the probes that
+#: could not be measured, the bands that were not bands, and the halts
+#: that exceeded their threshold but could not be written — a grep apart
+#: from the channel's (:data:`KILL_INSTRUCTION_CODE`), the ledger's
+#: (:data:`HALT_EVENT_CODE`), the flatten's (:data:`FLATTEN_CODE`) and
+#: the order layer's receipt (:data:`ORDERS_KILLED_CODE`), because the
+#: clock's faults are the *measurement's*: the halt may well have fired,
+#: and what failed is the record of how far off the clock was.
+CLOCK_SKEW_CODE = "clock_skew"
 
 
 class RiskError(Exception):
@@ -308,4 +336,45 @@ class RiskFlattenError(RiskError):
     offending value, because the audience is the supervisor process
     holding a book that is still open, and the repair is an act, not a
     stack trace.
+    """
+
+
+class RiskClockSkewError(RiskError):
+    """A clock-skew measurement this module cannot judge, or reconstruct.
+
+    app_spec.xml feature 329's noun is the *measured clock skew that
+    halted trading*, and this is the failure of that noun's own terms: a
+    probe reading that is naive or not a moment at all (a skew measured
+    against an ambiguous instant is a skew against no instant, and the
+    halt it caused could not be ordered against anything), a
+    ``threshold_seconds`` that states no band — not a real number, not
+    finite, or not strictly positive, the last of which is a supervisor
+    that would halt on every probe rather than on a clock fault — a
+    ``measured_skew_seconds`` that disagrees with the two instants beside
+    it (the readings *are* the measurement, so a row where they disagree
+    is one no halt can be reconstructed as), a stored row whose skew did
+    not actually exceed its own band (a probe inside the band is not a
+    halt, and a row filed for one reports a halt that never fired), a
+    record whose sequence is not one the table minted, a
+    module-level :func:`risk.halt_on_clock_skew` that names no store to
+    record through (the one refusal this class makes that is about the
+    *deployment* rather than the terms), and a halting measurement that
+    exceeded the band but could not be persisted (a halt with nothing on
+    disk to account for it is indistinguishable from a supervisor that
+    died for an unrelated reason, which is the hole this feature exists
+    to fill).
+
+    A sibling of :class:`RiskStoreError` rather than a child of it, and a
+    sibling of :class:`RiskKillSwitchError`, :class:`RiskHaltEventError`
+    and :class:`RiskFlattenError` for the same reason they are siblings
+    of each other: the noun is the *measurement*, not the channel and not
+    the store's address.  A caller sent from a malformed probe to a bad
+    ``DATABASE_URL`` would go and edit the deployment while the clock
+    stayed off, and the next skew would fail the same way on a channel and
+    a table that were both fine.
+
+    Every message opens with :data:`CLOCK_SKEW_CODE` and names the
+    offending value, because the audience is the supervisor process
+    holding a clock it cannot trust, and the repair is a reading, a band
+    or a deployment — not a stack trace.
     """

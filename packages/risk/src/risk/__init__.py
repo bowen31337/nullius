@@ -18,7 +18,7 @@ ledger, the member's second feature — and feature 330 — the flatten
 that survives a hung strategy process, the member's third — build on it
 too, and on nothing else: the ledger is the record of the halts the
 channel and the doors after it produce, and the flatten is the drainage
-of the authority the channel holds.  Five pieces:
+of the authority the channel holds.  Six pieces:
 
 * :mod:`risk.kill` — the channel.  One row in the workspace's relational
   store (``DATABASE_URL``), held to one row by the table's own
@@ -70,17 +70,39 @@ of the authority the channel holds.  Five pieces:
   for the reconciler — open it from the environment for the same reason
   the channel's spellings do, and split the same way on its absence:
   recording refuses, reading answers the empty truth.
+* :mod:`risk.clock_skew` — the measurement, feature 329: *System
+  persists the measured clock skew that halted trading when it exceeded
+  the threshold against exchange server time.*  A third table
+  (``risk_clock_skew``), one row per *halting* measurement, written by
+  :meth:`~risk.clock_skew.RiskClockSkewStore.halt_on_skew` — which
+  measures the skew from two caller-supplied readings of one probe,
+  returns ``None`` inside the band, and otherwise sends the channel's
+  kill and then records the row, with ``halted_at`` read back from the
+  standing instruction rather than stamped here.  Where the channel is
+  the *state* that stands and the ledger is the *log* of every halt,
+  this is the *measurement* that caused one: the two instants and the
+  arithmetic between them, signed, so a later reader can re-derive the
+  skew that stopped trading instead of taking a number's word for it.
+  The module-level spellings — :func:`~risk.clock_skew.halt_on_clock_skew`
+  and :func:`~risk.clock_skew.measured_clock_skews` — open it from the
+  environment for the same reason the channel's and the ledger's do, and
+  split the same way on its absence: a halting probe refuses without a
+  store, a read answers the empty truth.
 * :mod:`risk.errors` — the refusal vocabulary.  One base so a single
-  ``except`` catches the member, and five nouns apart: the tables'
+  ``except`` catches the member, and six nouns apart: the tables'
   shared address and persistence (:class:`~risk.errors.RiskStoreError`),
   the instruction's own terms (:class:`~risk.errors.
   RiskKillSwitchError`), the event's own terms
   (:class:`~risk.errors.RiskHaltEventError`), the order layer's
   receipt (:class:`~risk.errors.RiskOrdersKilledError`, which carries
-  the standing instruction), and the flatten's own terms
+  the standing instruction), the flatten's own terms
   (:class:`~risk.errors.RiskFlattenError` — a face missing its verbs, a
   flatten under no standing kill, an engine whose re-reading still
-  reports something standing).
+  reports something standing), and the measurement's own terms
+  (:class:`~risk.errors.RiskClockSkewError` — a reading that is naive or
+  not a moment, a threshold that states no band, a stored row whose skew
+  disagrees with its own two instants or never actually exceeded the band
+  it claims, and a halting measurement that could not be recorded).
 * :mod:`risk._identity` — the ``<host>/<pid>`` label that makes *"a
   separate process"* a checkable fact: a kill row names the process that
   sent it, read from the kernel and never accepted from the caller.
@@ -169,11 +191,21 @@ from __future__ import annotations
 from app.module_loader import register
 
 from ._identity import PROCESS_ID_SEPARATOR, process_identity
+from .clock_skew import (
+    RISK_CLOCK_SKEW_TABLE,
+    ClockSkewHalt,
+    RiskClockSkewStore,
+    halt_on_clock_skew,
+    measure_clock_skew,
+    measured_clock_skews,
+)
 from .errors import (
+    CLOCK_SKEW_CODE,
     FLATTEN_CODE,
     HALT_EVENT_CODE,
     KILL_INSTRUCTION_CODE,
     ORDERS_KILLED_CODE,
+    RiskClockSkewError,
     RiskError,
     RiskFlattenError,
     RiskHaltEventError,
@@ -212,6 +244,7 @@ from .kill import (
 )
 
 __all__ = [
+    "CLOCK_SKEW_CODE",
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
     "FLATTENER_COMPONENT_NAME",
@@ -224,15 +257,19 @@ __all__ = [
     "KILL_INSTRUCTION_CODE",
     "ORDERS_KILLED_CODE",
     "PROCESS_ID_SEPARATOR",
+    "RISK_CLOCK_SKEW_TABLE",
     "RISK_HALT_EVENT_TABLE",
     "RISK_HALT_ROUTE",
     "RISK_ORDER_KILL_TABLE",
+    "ClockSkewHalt",
     "FlattenResult",
     "HaltEndpoint",
     "HaltEvent",
     "HaltRequest",
     "HaltResponse",
     "KillInstruction",
+    "RiskClockSkewError",
+    "RiskClockSkewStore",
     "RiskError",
     "RiskFlattenError",
     "RiskFlattener",
@@ -243,6 +280,9 @@ __all__ = [
     "RiskOrdersKilledError",
     "RiskStoreError",
     "flatten_positions",
+    "halt_on_clock_skew",
+    "measure_clock_skew",
+    "measured_clock_skews",
     "orders_killed_error",
     "process_identity",
     "record_halt",
