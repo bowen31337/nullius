@@ -88,6 +88,24 @@ the caller must do about it*, not by which line of code failed:
   β₄ recalibration read, and a figure nobody can vouch for is worse than a
   refusal.
 
+* :class:`ForwardRetentionError` — feature 337's division, and the figures
+  it divides.  The live information coefficient is read off feature 333's
+  rows and the backtest one off the opening row's own column, so this class
+  is raised where the *arithmetic* cannot run: a zero backtest coefficient
+  (the quotient §11 states is undefined; :mod:`scoring._divergence` declines
+  to charge on the ratio for the same reason), a record with no observation
+  at all (answered rather than zeroed, because a measured zero is §C10's
+  demotion candidate and an unrun job is not), an opening row whose
+  ``backtest_ic`` has not been landed yet, a second backtest coefficient
+  disagreeing with the one the record holds, or a ratio that is not the
+  quotient of its own operands.  It is a class of its own because **nothing
+  failed**: the database answered, the row is intact, and the repair is to
+  look at the ask and the figures rather than at the store — which is what
+  separates it from :class:`ForwardStoreError` on one side and
+  :class:`ForwardIdentityError` on the other.  The identity class is about a
+  request that disagrees with a row an *identity* holds; this one is about a
+  request, or a state, that a *quotient* cannot be taken over.
+
 Every message names the offending value and the contract it broke, in the
 same discipline as the promotion and trial-ledger taxonomies: these errors
 are operational signals for a pipeline that runs unattended for months (the
@@ -96,7 +114,7 @@ be speakable, not merely loggable.
 
 The member raises nothing else.  A ``sqlite3.IntegrityError`` on the write,
 an ``OSError`` on the file, a promotion-side refusal from the seam — every
-one of them arrives at a caller as one of these five, because a caller's
+one of them arrives at a caller as one of these six, because a caller's
 ``except ForwardError`` guarding a forward record must not be defeated by a
 neighbouring member's vocabulary.
 """
@@ -109,6 +127,7 @@ __all__ = [
     "ForwardPromotionError",
     "ForwardReconciliationError",
     "ForwardRecordError",
+    "ForwardRetentionError",
     "ForwardStoreError",
 ]
 
@@ -140,6 +159,18 @@ FORWARD_IDENTITY_ERROR_CODE = "forward_record_already_open"
 #: execution path handed over — two repairs for two faults, which is the
 #: whole reason the classes split.
 FORWARD_RECONCILIATION_ERROR_CODE = "forward_reconciliation_malformed"
+
+#: The greppable word that opens every :class:`ForwardRetentionError`
+#: message: feature 337's division did not happen, and the reason is one of
+#: five — the backtest coefficient is zero, the signal has not been observed,
+#: no backtest figure has been landed, a supply disagrees with the figure the
+#: record already holds, or a constituent of the ratio is not a number.  One
+#: word for all five because they are one repair: go and look at the *ask*
+#: and the figures it names.  Deliberately not ``forward_record_unwritable``'s
+#: vocabulary — that word sends an operator to the database, and none of
+#: these five is a database fault: the store answered, and the rows it
+#: answered with are intact.
+FORWARD_RETENTION_ERROR_CODE = "forward_retention_undivided"
 
 
 class ForwardError(Exception):
@@ -328,4 +359,48 @@ class ForwardReconciliationError(ForwardError):
     — a row lying about its own arithmetic — is refused rather than served,
     naming the row it came from so an operator gets a row to repair instead
     of a complaint about a value with no address.
+    """
+
+
+class ForwardRetentionError(ForwardError):
+    """Feature 337's division did not happen, or a figure it divides is not one.
+
+    The class of the *ask* rather than of the store, and the distinction is
+    the whole reason it is not a :class:`ForwardStoreError`: the database
+    answered, the rows are intact, and the caller's repair is to look at the
+    figures and the order they arrived in — not to go and fix a table.
+
+    **The five faces.**  One word opens every message
+    (:data:`FORWARD_RETENTION_ERROR_CODE`) because they are one repair, but
+    the faces are distinct and each names its own:
+
+    * A **zero backtest coefficient** at the division.  The figure is
+      well-formed and stored; the quotient §11's criterion states has no
+      value.  ``+inf`` would be a division that did not happen and ``0.0``
+      would read as a signal that kept none of an edge nobody measured.
+      :mod:`scoring._divergence` declines to charge on this ratio on exactly
+      this ground — it *"is undefined at zero backtest IC"* — so the two
+      members agree by refusing rather than by inventing a convention.
+    * An **unobserved signal**: a record whose rows carry no ``live_ic`` at
+      all.  Answered rather than zeroed, because a measured zero is §C10's
+      demotion candidate and an unrun job is not, and the two must not read
+      alike in front of a demotion line.
+    * An **unfilled denominator**: the opening row holds no
+      ``backtest_ic`` yet.  Nullable by ``0108``'s own shape — feature 332
+      opens the record, this feature fills the column — so the null is a
+      state, named as one.
+    * A **disagreement with what the record holds**: a second backtest
+      coefficient for one signal, or a ratio that is not the quotient of its
+      own operands.  Last-wins would move the baseline §11 divides by; the
+      two are reconciled offline instead.
+    * A **malformed constituent**: a coefficient that is not a finite real
+      in ``[−1, 1]``, a ratio that is not finite, a count that is not a
+      positive whole number.  ``bool`` refused first, as everywhere in this
+      workspace.
+
+    **What is deliberately *not* here.**  The ratio carries no bound, so no
+    message in this class reports one: over-delivery above one and inversion
+    below zero are both *answers* feature 337 states (see
+    :func:`forward.retention._validated_ratio`), and a caller catching this
+    error is never catching a figure that merely looked large.
     """

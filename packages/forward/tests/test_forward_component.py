@@ -37,6 +37,7 @@ from pathlib import Path
 import forward
 import forward.observation
 import forward.record
+import forward.retention
 import forward.schema
 import forward.window
 import pytest
@@ -202,10 +203,14 @@ def test_the_member_authors_no_ddl() -> None:
     # fail on the very prose that makes the claim.  ``observation`` joins the
     # loop with feature 333: its act is an ``INSERT`` over the table the
     # opening write opened, so it holds the same none-of-my-own-DDL law.
+    # ``retention`` joins with feature 337, whose act is an ``UPDATE`` of
+    # ``0108``'s own ``backtest_ic`` column — a column the migration drew and
+    # this member adds nothing to.
     for module in (
         forward.schema,
         forward.record,
         forward.observation,
+        forward.retention,
         forward.window,
     ):
         text = code_of(module)
@@ -374,6 +379,7 @@ def test_the_member_imports_no_workspace_member_at_module_scope() -> None:
         forward.record,
         forward.observation,
         forward.reconciliation,
+        forward.retention,
         forward.schema,
         forward.window,
     ):
@@ -456,6 +462,7 @@ def test_the_store_module_never_names_the_registry_table() -> None:
         forward.record,
         forward.observation,
         forward.reconciliation,
+        forward.retention,
         forward.schema,
         forward.window,
     ):

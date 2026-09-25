@@ -9,7 +9,7 @@ that did not exist when the hypothesis was formed"*, and against the
 ``forward_record`` table feature 108's migration
 (``migrations/versions/0108_forward_and_universe_tables.py``) already declares.
 
-The member's surface is six modules, and each answers one question.
+The member's surface is seven modules, and each answers one question.
 
 :mod:`forward.window` is **where the instant comes from**.  The promotion
 timestamp is not this member's to compute: it is feature 293's
@@ -62,13 +62,33 @@ column on the record), the difference is computed and never stated, and a
 second reconciliation naming different figures for one rebalance is
 refused — the one-row law the record holds, one grain over.
 
+:mod:`forward.retention` is **the criterion** — feature 337, prd §11's
+*"Forward-test IC retention: live IC ÷ backtest IC at 90 days | > 0.5"* and
+§C10's *"if live IC falls below 40% of backtest IC over a statistically
+meaningful window, demote automatically."*
+:class:`~forward.retention.ForwardIcRetentions` lands the backtest
+coefficient on the record's opening row — the column ``0108`` drew for this
+feature and which neither writer before it may name — and divides the
+record's own live coefficients by it, answering
+:class:`~forward.retention.IcRetention`.  Both operands are **read**: the
+live IC is the mean of feature 333's observed rows with the day count beside
+it as the evidence §11's *"at 90 days"* counts, and the backtest IC is the
+figure the caller landed once and the row kept — this member never reads the
+evaluation member's tables, so prd §6.1's ``metrics.ic_mean`` arrives from
+the caller rather than being fetched.  A zero backtest is refused at the
+division rather than answered with an infinity or a zero, and the ratio
+carries **no bound**: over-delivery above one and inversion below zero are
+both facts §11 and §C10 read, which is why the scoring member declines to
+charge on this ratio at all.
+
 :mod:`forward.errors` is **what can go wrong**, split by the repair the caller
 must make: a malformed row, a store that is misrouted or broken, a promotion
 with no instant to open at, a reconciliation whose book, instant or figures
-state nothing measurable, and a request that disagrees with a row an
-identity already holds — a second promotion instant, a day the boundary
-excludes, a second coefficient claiming a measured day, or a second
-reconciliation claiming a rebalance that already holds one.
+state nothing measurable, a division whose operands do not support it, and a
+request that disagrees with a row an identity already holds — a second
+promotion instant, a day the boundary excludes, a second coefficient claiming
+a measured day, or a second reconciliation claiming a rebalance that already
+holds one.
 
 **The one-signal law, and why this feature is not a plain append.**  §13.4
 makes the ``promoted_at`` / ``observed_on`` pair the vintage a forward record
@@ -87,7 +107,8 @@ its reason in the comment beside them: *"a freshly promoted signal has no
 observation yet — a NOT NULL here would force a fabricated zero on the day of
 promotion, which would read as 'measured, and it was zero'."*  Feature 332
 measures nothing, so its ``INSERT`` names three columns and stamps no zero.
-Feature 333 fills ``live_ic`` and feature 337 divides it;
+Feature 333 fills ``live_ic``, feature 337 lands ``backtest_ic`` on the
+opening row and divides the one by the other;
 ``realized_cost_bps`` stays NULL for the signal-day aggregate the column was
 drawn for, because feature 340's sentence prices a different grain — *per
 rebalance*, the ``(book_id, rebalance_ts)`` pair no column of this table
@@ -173,7 +194,16 @@ the composed store,
 held one, :func:`~forward.reconciliation.reconcile_fill_costs` from a bare
 URL — and reads neither a promotion nor a record: the rebalance it prices
 is named by the pair the order path already hashed, and the figures arrive
-from the paths that measured them.
+from the paths that measured them.  The retaining act climbs the same ladder
+one feature later — :meth:`~forward.retention.ForwardIcRetentions.over` off
+the composed store,
+:meth:`~forward.retention.ForwardIcRetentions.record_backtest_ic` or
+:meth:`~forward.retention.ForwardIcRetentions.retention` on a held one,
+:func:`~forward.retention.forward_ic_retention` from a bare URL — and is the
+one act in this member with two, because it both lands a figure and computes
+one: the writer refuses an unconfigured deployment while the reader's
+``resolve`` answers ``None``, the way :func:`~forward.reconciliation.
+reconciled_fill_costs` answers nothing rather than refusing it.
 """
 
 from __future__ import annotations
@@ -185,11 +215,13 @@ from .errors import (
     FORWARD_PROMOTION_ERROR_CODE,
     FORWARD_RECONCILIATION_ERROR_CODE,
     FORWARD_RECORD_ERROR_CODE,
+    FORWARD_RETENTION_ERROR_CODE,
     ForwardError,
     ForwardIdentityError,
     ForwardPromotionError,
     ForwardReconciliationError,
     ForwardRecordError,
+    ForwardRetentionError,
     ForwardStoreError,
 )
 from .observation import (
@@ -221,10 +253,19 @@ from .record import (
     forward_record,
     utc_now,
 )
+from .retention import (
+    BACKTEST_IC_COLUMN,
+    FORWARD_RETENTION_SEAM,
+    RETENTION_RATIO_KEY,
+    ForwardIcRetentions,
+    IcRetention,
+    forward_ic_retention,
+)
 from .schema import FORWARD_RECORD_TABLE, MIGRATION_ORDER, bootstrap_schema
 from .window import PROMOTION_MEMBER, PROMOTION_WINDOW_VERB, read_promotion_window
 
 __all__ = [
+    "BACKTEST_IC_COLUMN",
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
     "FORWARD_COST_RECONCILIATION_TABLE",
@@ -236,6 +277,8 @@ __all__ = [
     "FORWARD_RECONCILIATION_SEAM",
     "FORWARD_RECORD_ERROR_CODE",
     "FORWARD_RECORD_TABLE",
+    "FORWARD_RETENTION_ERROR_CODE",
+    "FORWARD_RETENTION_SEAM",
     "LIVE_IC_BOUND",
     "LIVE_IC_COLUMN",
     "MIGRATION_ORDER",
@@ -244,9 +287,11 @@ __all__ = [
     "PROMOTED_AT_COLUMN",
     "PROMOTION_MEMBER",
     "PROMOTION_WINDOW_VERB",
+    "RETENTION_RATIO_KEY",
     "CostReconciliation",
     "ForwardCostReconciliations",
     "ForwardError",
+    "ForwardIcRetentions",
     "ForwardIdentityError",
     "ForwardObservations",
     "ForwardPromotionError",
@@ -256,10 +301,13 @@ __all__ = [
     "ForwardRecordRequest",
     "ForwardRecordResponse",
     "ForwardRecords",
+    "ForwardRetentionError",
     "ForwardStoreError",
+    "IcRetention",
     "PromoteEndpoint",
     "bootstrap_schema",
     "build_forward_records",
+    "forward_ic_retention",
     "forward_observation",
     "forward_record",
     "read_promotion_window",
