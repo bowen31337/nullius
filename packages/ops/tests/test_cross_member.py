@@ -41,8 +41,14 @@ import sqlite3
 import uuid
 
 import pytest
-from ops import DiscoveryRateError, DiscoveryRates, FdrDeployEndpoint, require_scoring
-from scoring import FdrDeployError, FdrDeployStore, fdr_deploy
+from ops import (
+    DiscoveryRateError,
+    DiscoveryRates,
+    FdrDeployEndpoint,
+    TypeBDepths,
+    require_scoring,
+)
+from scoring import FdrDeployError, FdrDeployStore, account_errors, fdr_deploy
 
 CAMPAIGN_A = "11111111-1111-1111-1111-111111111111"
 CAMPAIGN_B = "22222222-2222-2222-2222-222222222222"
@@ -312,3 +318,129 @@ def test_the_two_ops_tables_share_the_one_database(
         }
     assert "scoring_fdr_deploy" in tables
     assert "ops_discovery_rate" in tables
+
+
+class _TypeDNode:
+    """A stand-in for the oracle-side Type-D resolution — exactly the
+    three facts feature 269's seam duck-reads (``node_id``, ``depth`` and
+    the branch's drawn ``flip_depth``), and nothing else.  A member never
+    imports another member's types to test what crosses the seam; the
+    duck-typed carrier is the honest way to do it, and it proves the
+    accounting's seam validates what it reads."""
+
+    __slots__ = ("node_id", "depth", "flip_depth")
+
+    def __init__(self, node_id: str, depth: int, flip_depth: int) -> None:
+        self.node_id = node_id
+        self.depth = depth
+        self.flip_depth = flip_depth
+
+
+class _Scorer:
+    """A stand-in for feature 265's process — exactly the one callable
+    ``null_pick_rate`` the accounting asks for, answering a fixed rate and
+    reading nothing, so the Type-B half of the answer is what the test
+    isolates."""
+
+    __slots__ = ()
+
+    def null_pick_rate(self, picks: object) -> float:
+        return 0.25
+
+
+def test_the_type_b_depth_is_the_accountings_own_figure(
+    test_database_url: str,
+) -> None:
+    # Feature 345's seam with feature 269, pinned from both sides at once:
+    # the accounting answers Type-B's metric as a count of explored nodes
+    # at or beyond their branch's flip (§7.2's inclusive boundary — the
+    # node at the flip is the first null node), and this store persists
+    # that count per campaign, unchanged, which is the whole of the
+    # hand-over ("which returns the trend across campaigns" — the trend
+    # over these rows is the trend over the accounting's answers).
+    # One Type-D branch, flip drawn at depth 3: below the flip is real
+    # exploration (not this metric's error), at or beyond it is one
+    # Type-B error per node.
+    explored = (
+        _TypeDNode("node-below", 2, 3),
+        _TypeDNode("node-at", 3, 3),
+        _TypeDNode("node-beyond", 4, 3),
+        _TypeDNode("node-deeper", 5, 3),
+    )
+    accounting = account_errors((), explored=explored, scorer=_Scorer())
+    assert accounting.depth_past_flip_errors == 3
+    store = TypeBDepths(test_database_url)
+    row = store.record(
+        CAMPAIGN_A,
+        depth_past_flip_errors=accounting.depth_past_flip_errors,
+        recorded_at="2026-01-01T00:00:00+00:00",
+    )
+    assert row.depth_past_flip_errors == accounting.depth_past_flip_errors
+    # A second Type-D campaign that crossed nothing — the accounting's
+    # zero is a measurement, and the trend the store answers is the
+    # sequence the scorecard reads its "falling" across.
+    clean = account_errors(
+        (), explored=(_TypeDNode("node-early", 1, 4),), scorer=_Scorer()
+    )
+    assert clean.depth_past_flip_errors == 0
+    store.record(
+        CAMPAIGN_B,
+        depth_past_flip_errors=clean.depth_past_flip_errors,
+        recorded_at="2026-02-01T00:00:00+00:00",
+    )
+    assert [r.depth_past_flip_errors for r in store.history()] == [3, 0]
+
+
+def test_the_type_b_depth_joins_the_research_rows_on_the_campaign_id(
+    test_database_url: str,
+) -> None:
+    # §16's research metrics are per campaign, and the three figures are
+    # keyed by the same canonical id — so a reader holding one campaign's
+    # row joins its base-rate-reweighted false discovery rate (feature
+    # 267's, feature 341's surface), its discoveries per 1000
+    # budget-charging trials (feature 346's) and its Type-B depth (this
+    # feature's) without a second spelling of the campaign's identity.
+    FdrDeployStore(test_database_url).persist(
+        uuid.UUID(CAMPAIGN_A), _Pair(0.75, 0.25), computed_at="2026-01-01T00:00:00"
+    )
+    DiscoveryRates(test_database_url).record(
+        CAMPAIGN_A, discoveries=8, budget_charging_trials=3200, ledger_trials=4000
+    )
+    depths = TypeBDepths(test_database_url)
+    row = depths.record(CAMPAIGN_A, depth_past_flip_errors=5)
+    # The row is readable by the same canonical spelling the other two
+    # stores used, in any form uuid.UUID parses.
+    assert depths.depth(uuid.UUID(CAMPAIGN_A)) == row
+    assert depths.depth(CAMPAIGN_A.upper()) == row
+    assert row.campaign_id == CAMPAIGN_A
+
+
+def test_the_type_b_rows_share_the_one_database(
+    test_database_url: str,
+) -> None:
+    # §16's "single Postgres metrics table" allowance, held for this
+    # table too: the scoring member's FDR_deploy rows, the member's
+    # discovery-rate rows and its Type-B depth rows live in the one
+    # database DATABASE_URL names, so an operator joins them in one query
+    # rather than reconciling stores.
+    from pathlib import Path
+    from urllib.parse import urlparse
+
+    FdrDeployStore(test_database_url).persist(
+        uuid.UUID(CAMPAIGN_A), _Pair(0.75, 0.25), computed_at="2026-01-01T00:00:00"
+    )
+    DiscoveryRates(test_database_url).record(
+        CAMPAIGN_A, discoveries=8, budget_charging_trials=3200, ledger_trials=4000
+    )
+    TypeBDepths(test_database_url).record(CAMPAIGN_A, depth_past_flip_errors=5)
+    database_path = Path(urlparse(test_database_url).path.removeprefix("/"))
+    with sqlite3.connect(database_path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert "scoring_fdr_deploy" in tables
+    assert "ops_discovery_rate" in tables
+    assert "ops_type_b_depth" in tables

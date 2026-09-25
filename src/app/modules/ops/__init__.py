@@ -47,7 +47,8 @@ spelling of any of those here would be a second thing to keep in sync.
 This module answers exactly the composition questions — *what is the
 composed fdr-deploy route?*, *what is the composed dashboard?*, *what
 is the composed live-metrics store?*, *what is the composed
-meta-overfit gap store?*, *what is the composed discovery-rate store?*
+meta-overfit gap store?*, *what is the composed discovery-rate store?*,
+*what is the composed Type-B depth store?*
 — so the observability features that follow (342's lamps, 343's
 coverage, 352's chrome) can ask them without importing the member
 directly.
@@ -66,6 +67,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a depende
         LiveMetricsStore,
         MetaOverfitGaps,
         OperatorDashboard,
+        TypeBDepths,
     )
 
 __all__ = [
@@ -74,11 +76,13 @@ __all__ = [
     "OPS_DISCOVERY_RATE_COMPONENT_NAME",
     "OPS_LIVE_METRIC_COMPONENT_NAME",
     "OPS_META_OVERFIT_COMPONENT_NAME",
+    "OPS_TYPE_B_DEPTH_COMPONENT_NAME",
     "dashboard_component",
     "discovery_rate_component",
     "fdr_deploy_component",
     "live_metric_component",
     "meta_overfit_component",
+    "type_b_depth_component",
 ]
 
 #: The component name the ops member registers its fdr-deploy route
@@ -127,6 +131,17 @@ OPS_META_OVERFIT_COMPONENT_NAME = "ops-meta-overfit"
 #: prefix.  The member's suite asserts this seat and the member's own
 #: :data:`~ops.OPS_DISCOVERY_RATE_COMPONENT_NAME` cannot drift apart.
 OPS_DISCOVERY_RATE_COMPONENT_NAME = "ops-discovery-rate"
+
+#: The component name the ops member registers its Type-B depth store
+#: under (feature 345: persists Type-B depth past the flip for Type-D
+#: worlds — docs §16's research metric *"Type-B depth past the flip in
+#: Type-D worlds"* and prd §11's secondary scorecard row *"Type-B error
+#: rate: depth past the flip in Type-D worlds | falling across
+#: campaigns"*), the route, dashboard, live-metrics store, meta-overfit
+#: gap store and discovery-rate store's peer under the same member-first
+#: prefix.  The member's suite asserts this seat and the member's own
+#: :data:`~ops.OPS_TYPE_B_DEPTH_COMPONENT_NAME` cannot drift apart.
+OPS_TYPE_B_DEPTH_COMPONENT_NAME = "ops-type-b-depth"
 
 
 def fdr_deploy_component(app: Application | None = None) -> "FdrDeployEndpoint | Any":
@@ -224,3 +239,23 @@ def discovery_rate_component(app: Application | None = None) -> "DiscoveryRates 
     """
     application = app if app is not None else create_app()
     return application.get(OPS_DISCOVERY_RATE_COMPONENT_NAME)
+
+
+def type_b_depth_component(app: Application | None = None) -> "TypeBDepths | Any":
+    """Return the composed Type-B depth store (feature 345's store).
+
+    The same composition accessor as :func:`fdr_deploy_component`, for the
+    member's sixth component: reads from ``app`` when handed one, composes
+    the declared workspace otherwise, and answers ``None`` when no
+    ``ops-type-b-depth`` component is registered — the same discoverable
+    state, for the same reasons (the member was not scanned, or nothing
+    named a database).  A caller that resolves ``None`` here and needs to
+    persist a campaign's count is pointed at the member's own store, which
+    refuses to proceed rather than silently persisting nowhere — a count
+    that measured but never landed is exactly the state feature 345 exists
+    to rule out, because prd §11's *"falling across campaigns"* is read
+    off these rows, and a missing row reads as a campaign that crossed
+    nothing — the quietest possible flattery.
+    """
+    application = app if app is not None else create_app()
+    return application.get(OPS_TYPE_B_DEPTH_COMPONENT_NAME)

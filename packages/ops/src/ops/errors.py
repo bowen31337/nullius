@@ -83,6 +83,23 @@ measured exactly that, and prd §11 grades the metric by its direction),
 and only a rate that could not have been divided is refused — because a
 flattering denominator is precisely the failure the sentence's second
 clause exists to prevent.
+
+Feature 345 adds the Type-B depth store's own: :class:`TypeBDepthError`,
+the refusal of a figure that cannot be the count it claims — a campaign
+id that joins no campaign, a count that is not a whole number of error
+events, a negative count, a count past the column's range, a label that
+orders no trend, a store that cannot be asked.  It is the fourth of the
+store-surface siblings (:class:`LiveMetricError`,
+:class:`MetaOverfitGapError` and :class:`DiscoveryRateError` are the
+other three) and it carries the family's asymmetry in its Type-B shape:
+an *absent* figure is a discoverable state answered as an absence (no
+campaign has closed a count out yet), a **zero count is the target
+measurement the store persists happily** (a Type-D campaign that
+deepened past nothing is exactly the state prd §11's *"falling across
+campaigns"* is driving toward), and what is refused is a figure that
+could not have been accounted — because the count is feature 269's own
+answer, an integer of events the store hands back unchanged, and a
+number that is not one is nobody's measurement.
 """
 
 from __future__ import annotations
@@ -96,6 +113,7 @@ __all__ = [
     "MetaOverfitGapError",
     "OpsError",
     "ReplayLogError",
+    "TypeBDepthError",
 ]
 
 
@@ -403,4 +421,54 @@ class DiscoveryRateError(OpsError):
     claims, and the failure mode this feature exists to rule out — a
     flattering denominator, or a quotient nobody divided — is refused
     rather than served.
+    """
+
+
+class TypeBDepthError(OpsError):
+    """Feature 345's refusals: the Type-B depth store's own error
+    states.
+
+    Raised in exactly the places :mod:`ops.type_b_depth` states the
+    store's contract, and the split between them is the member-seam law
+    the whole workspace states for error vocabulary: a helper that raised
+    another module's error would escape through this member's call path,
+    and a caller who wrote ``except TypeBDepthError`` — the whole point
+    of the store owning a class — would be taken down by an error from a
+    module it never imported.  So:
+
+    * an id that is not a UUID is refused, because §16's research
+      metrics are *per campaign* and an id that cannot join the tree's
+      campaign key — and the member's other research rows, keyed the
+      same way — names no campaign a Type-B count could be persisted
+      for;
+    * a count that is not a whole number is refused, because the figure
+      is feature 269's own ``depth_past_flip_errors`` — an integer of
+      error events — and a fractional or flag-valued one would be this
+      store inventing a figure the caller never stated;
+    * a **negative count** is refused, because the count is of events
+      that happened and there is no path by which fewer than none
+      occurred;
+    * a stored row whose count is not a count is refused on the read,
+      because SQLite's columns are dynamically typed and a hand-edited
+      row would otherwise reach prd §11's trend as an error figure
+      nobody measured; and
+    * a read or write that failed against the store is *translated* here
+      from :class:`sqlite3.Error` (chained, never swallowed), because the
+      table is this member's and the caller's single ``except
+      TypeBDepthError`` must catch a count that measured but never
+      landed rather than be taken down by the database's own error.
+
+    **Never raised for an absent figure.**  A deployment that has closed
+    no Type-D campaign out answers ``None`` from the point read and an
+    empty sequence from the sweep — a discoverable state, not a refusal,
+    exactly as an unclosed campaign is for feature 267's trend and
+    feature 346's rate, an unclosed cycle for feature 347's gap and an
+    unrecorded metric for feature 350's four tiles.  **Never raised for a
+    zero, either**: a Type-D campaign that deepened past nothing measured
+    exactly that, prd §11's *"falling across campaigns"* is a direction
+    whose honest floor is a flat zero, and the zero is a figure the
+    store persists, not a refusal it makes.  What is refused is a figure
+    that could not have been accounted, and the failure mode this
+    feature exists to rule out — a count nobody measured, quietly
+    defaulted into the trend — is refused rather than served.
     """

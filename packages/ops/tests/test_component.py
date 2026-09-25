@@ -17,12 +17,16 @@ breaking.
 The member's third component is feature 350's live-metrics store
 (``ops-live-metric``), its fourth is feature 347's meta-overfit gap
 store (``ops-meta-overfit``, the train-versus-holdout world score gap —
-docs §16's *"train-vs-holdout world score gap (meta-overfit)"*) and its
+docs §16's *"train-vs-holdout world score gap (meta-overfit)"*), its
 fifth is feature 346's discovery-rate store (``ops-discovery-rate``,
 discoveries per 1000 budget-charging trials — docs §16's *"discoveries
 per 1000 budget-charging trials"*, prd §11's *"Discoveries per 1,000
-trials charged (nulls excluded from the denominator)"*); all are pinned
-here at the composition seam and in their own suites.
+trials charged (nulls excluded from the denominator)"*) and its sixth
+is feature 345's Type-B depth store (``ops-type-b-depth``, Type-B
+depth past the flip per Type-D campaign — docs §16's *"Type-B depth
+past the flip in Type-D worlds"*, prd §11's *"Type-B error rate: depth
+past the flip in Type-D worlds | falling across campaigns"*); all are
+pinned here at the composition seam and in their own suites.
 
 They also pin the member's two composition-time promises: building the
 route touches no disk (the store it holds resolves its path lazily, so
@@ -63,11 +67,13 @@ EXPECTED_EXPORTS = {
     "OPS_DISCOVERY_RATE_COMPONENT_NAME",
     "OPS_LIVE_METRIC_COMPONENT_NAME",
     "OPS_META_OVERFIT_COMPONENT_NAME",
+    "OPS_TYPE_B_DEPTH_COMPONENT_NAME",
     "dashboard_component",
     "discovery_rate_component",
     "fdr_deploy_component",
     "live_metric_component",
     "meta_overfit_component",
+    "type_b_depth_component",
 }
 
 
@@ -397,6 +403,92 @@ def test_the_seat_exposes_the_composed_discovery_rate_store(
     assert component.database_url == test_database_url
 
 
+def test_scan_registers_the_type_b_depth_store() -> None:
+    # The member's sixth component registers under its own name, beside the
+    # route, the dashboard and the member's four other stores — the
+    # registration-grows-per-feature shape, and the growth the member's own
+    # registration reserved when feature 341 landed (*"344's and 345's
+    # arrive as their own tables under the same allowance"*).
+    registry = Registration()
+    components = scan_components(MEMBER_SRC, registry=registry)
+    names = [component.name for component in components]
+    assert ops.OPS_TYPE_B_DEPTH_COMPONENT_NAME in names
+    assert ops.OPS_TYPE_B_DEPTH_COMPONENT_NAME == "ops-type-b-depth"
+    again = scan_components(MEMBER_SRC, registry=registry)
+    assert [c.name for c in again].count(ops.OPS_TYPE_B_DEPTH_COMPONENT_NAME) == 1
+
+
+def test_composed_app_builds_the_type_b_depth_store(
+    test_database_url: str,
+) -> None:
+    app = create_app(MEMBER_SRC, registry=Registration())
+    component = app.get(ops.OPS_TYPE_B_DEPTH_COMPONENT_NAME)
+    assert component is not None
+    assert component.database_url == test_database_url
+    assert ops.OPS_TYPE_B_DEPTH_COMPONENT_NAME in app.order
+
+
+def test_composing_the_type_b_depth_store_touches_no_disk(
+    test_database_url: str,
+) -> None:
+    # Composition-time work must not touch the disk: the store resolves its
+    # path lazily, so building the application creates no database and no
+    # schema.  The first record() is where the store is asked — the store's
+    # own "constructing one performs no I/O" law, pinned here at the
+    # component that holds it.
+    database_path = Path(urlparse(test_database_url).path.removeprefix("/"))
+    create_app(MEMBER_SRC, registry=Registration())
+    assert not database_path.exists()
+
+
+def test_the_type_b_depth_builder_contributes_nothing_without_a_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An unconfigured relational store is a discoverable state, not an
+    # error: the composed application simply carries no Type-B depth
+    # component, the same degradation the factory applies to an absent
+    # workspace and the member's other store-bound builders take.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    app = create_app(MEMBER_SRC, registry=Registration())
+    assert app.get(ops.OPS_TYPE_B_DEPTH_COMPONENT_NAME) is None
+
+
+def test_the_seat_names_line_up_type_b_depth() -> None:
+    # The seat's constant, the member's constant and the spec's feature
+    # sentence are one name.  Three spellings of one name is exactly the
+    # kind of drift a test is cheaper than.
+    assert (
+        ops_seat.OPS_TYPE_B_DEPTH_COMPONENT_NAME
+        == ops.OPS_TYPE_B_DEPTH_COMPONENT_NAME
+        == "ops-type-b-depth"
+    )
+
+
+def test_the_type_b_depth_store_and_the_route_compose_over_one_database(
+    test_database_url: str,
+) -> None:
+    # §16's "single Postgres metrics table" allowance, held for the
+    # member's own tables too: the route and the member's four stores
+    # resolve the one database DATABASE_URL names — never two databases a
+    # metric and the surface that renders it could drift apart on.
+    app = create_app(MEMBER_SRC, registry=Registration())
+    depths = app.get(ops.OPS_TYPE_B_DEPTH_COMPONENT_NAME)
+    route = app.get(ops.OPS_COMPONENT_NAME)
+    rates = app.get(ops.OPS_DISCOVERY_RATE_COMPONENT_NAME)
+    assert depths is not None and route is not None and rates is not None
+    assert depths.database_url == route.store.database_url == test_database_url
+    assert rates.database_url == depths.database_url
+
+
+def test_the_seat_exposes_the_composed_type_b_depth_store(
+    test_database_url: str,
+) -> None:
+    app = create_app(MEMBER_SRC, registry=Registration())
+    component = ops_seat.type_b_depth_component(app)
+    assert component is app.get(ops.OPS_TYPE_B_DEPTH_COMPONENT_NAME)
+    assert component.database_url == test_database_url
+
+
 def test_the_seat_exposes_nothing_but_the_composition_accessor(
     test_database_url: str,
 ) -> None:
@@ -437,6 +529,10 @@ def test_the_seat_exposes_nothing_but_the_composition_accessor(
         "DiscoveryRate",
         "DiscoveryRateError",
         "DISCOVERY_RATE_TABLE",
+        "TypeBDepths",
+        "TypeBDepth",
+        "TypeBDepthError",
+        "TYPE_B_DEPTH_TABLE",
     ):
         assert leaked not in ops_seat.__all__
 

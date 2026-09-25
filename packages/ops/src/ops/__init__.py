@@ -71,11 +71,14 @@ metrics store feature 267's own docstring already reserves
 347's train-versus-holdout world score gap (the whole row
 *"train-vs-holdout world score gap (meta-overfit)"* of §16, landed as
 :mod:`ops.meta_overfit`), 350's four live metrics (landed as
-:mod:`ops.live_metrics`) and 346's discoveries per 1000 budget-charging
-trials (landed as :mod:`ops.discovery_rate`) are the three that have;
-344's and 345's arrive as their own tables under the same allowance,
-each with its own refusal vocabulary and its own ``@register`` here
-beside the route, the dashboard and the three stores' — 348's
+:mod:`ops.live_metrics`), 346's discoveries per 1000 budget-charging
+trials (landed as :mod:`ops.discovery_rate`) and 345's Type-B depth
+past the flip (§16's *"Type-B depth past the flip in Type-D worlds"*,
+landed as :mod:`ops.type_b_depth`) are the four that have; 344's
+sensitivity/specificity row arrives as its own table under the same
+allowance, each with its own refusal vocabulary and its own
+``@register`` here
+beside the route, the dashboard and the four stores' — 348's
 evaluation record and 349's replay record landed as
 :mod:`ops.evaluation_log` and :mod:`ops.replay_log` — the emission
 seams the reserved clause named: one structured stdlib log record per
@@ -175,13 +178,26 @@ member already says:
   budget_charging_trials × 1000`` — is the store's own arithmetic, with
   no parameter for it at any spelling, the stance feature 347 takes
   toward its gap and 340 toward its difference.
+* :class:`~ops.type_b_depth.TypeBDepths` with
+  :class:`~ops.type_b_depth.TypeBDepth` — feature 345's store: Type-B
+  depth past the flip per Type-D campaign, §16's research metric
+  (*"Type-B depth past the flip in Type-D worlds"*) and prd §11's
+  secondary scorecard row (*"Type-B error rate: depth past the flip in
+  Type-D worlds | falling across campaigns"*), persisted into the
+  member's own table in the store ``DATABASE_URL`` names.  The figure is
+  feature 269's own ``depth_past_flip_errors`` — the count of explored
+  nodes at or beyond their branch's flip, handed over already measured —
+  and the store, alone among its store siblings, computes **nothing**:
+  no quotient, no difference, no denominator, because the count is an
+  integer of events and prd §11's *"falling"* is read over it unchanged.
 * :class:`~ops.errors.OpsError` with
   :class:`~ops.errors.FdrDeployMetricError`,
   :class:`~ops.errors.LiveMetricError`,
   :class:`~ops.errors.MetaOverfitGapError`,
   :class:`~ops.errors.DiscoveryRateError`,
   :class:`~ops.errors.ReplayLogError`,
-  :class:`~ops.errors.EvaluationLogError` and
+  :class:`~ops.errors.EvaluationLogError`,
+  :class:`~ops.errors.TypeBDepthError` and
   :class:`~ops.errors.DashboardRenderError` — the member's refusal
   vocabulary: one base so a caller catches the member as a whole, one
   subclass per surface so a refusal names where it happened.
@@ -222,6 +238,7 @@ from .errors import (
     MetaOverfitGapError,
     OpsError,
     ReplayLogError,
+    TypeBDepthError,
 )
 from .evaluation_log import (
     EVALUATION_LOG_LEVEL,
@@ -255,6 +272,12 @@ from .replay_log import (
     ReplayLogRecord,
     emit_replay_log,
 )
+from .type_b_depth import (
+    OPS_TYPE_B_DEPTH_COMPONENT_NAME,
+    TYPE_B_DEPTH_TABLE,
+    TypeBDepth,
+    TypeBDepths,
+)
 
 __all__ = [
     "DASHBOARD_PAGE_TITLE",
@@ -274,8 +297,10 @@ __all__ = [
     "OPS_DISCOVERY_RATE_COMPONENT_NAME",
     "OPS_LIVE_METRIC_COMPONENT_NAME",
     "OPS_META_OVERFIT_COMPONENT_NAME",
+    "OPS_TYPE_B_DEPTH_COMPONENT_NAME",
     "REPLAY_LOG_LEVEL",
     "REPLAY_LOG_LOGGER_NAME",
+    "TYPE_B_DEPTH_TABLE",
     "DashboardPage",
     "DashboardRenderError",
     "DiscoveryRate",
@@ -299,6 +324,9 @@ __all__ = [
     "OpsError",
     "ReplayLogError",
     "ReplayLogRecord",
+    "TypeBDepth",
+    "TypeBDepthError",
+    "TypeBDepths",
     "emit_evaluation_log",
     "emit_replay_log",
     "main",
@@ -491,3 +519,45 @@ def build_discovery_rate_store() -> DiscoveryRates | None:
     where the store is both constructed and asked.
     """
     return DiscoveryRates.resolve()
+
+
+#: The component name the member registers its Type-B depth store under —
+#: the route, dashboard, live-metrics store, meta-overfit gap store and
+#: discovery-rate store's peer under the same member-first prefix
+#: (:data:`OPS_COMPONENT_NAME`, :data:`OPS_DASHBOARD_COMPONENT_NAME`,
+#: :data:`OPS_LIVE_METRIC_COMPONENT_NAME`,
+#: :data:`OPS_META_OVERFIT_COMPONENT_NAME`,
+#: :data:`OPS_DISCOVERY_RATE_COMPONENT_NAME`), so a composed application's
+#: ``order`` sorts this member's components *beside* — never inside —
+#: another member's.  Spelled in the app package seat
+#: (:mod:`app.modules.ops`) as well, and the member's suite asserts the two
+#: agree.  The growth was reserved by the member's own registration when
+#: feature 341 landed and the app-package seat reserved beside it (*"344's
+#: and 345's arrive as their own tables under the same allowance"*).  It is
+#: *defined* in :mod:`ops.type_b_depth` and imported above — the same
+#: placement the other three stores' names take, so the constant lives
+#: beside the module whose component it names.
+@register(OPS_TYPE_B_DEPTH_COMPONENT_NAME)
+def build_type_b_depth_store() -> TypeBDepths | None:
+    """Component builder: feature 345's Type-B depth store, bound to the
+    store ``DATABASE_URL`` names.
+
+    Takes no arguments — the factory's registration protocol — and decides
+    at build time only what the discovery-rate store's builder beside it
+    decides: whether ``DATABASE_URL`` names a store.  It resolves the URL
+    itself rather than importing any sibling, so whole-workspace
+    composition never depends on a member that is not promised to be on
+    ``sys.path`` at build time — the store is stdlib-only by design, and
+    the URL is the one composition fact the route, the dashboard and the
+    member's other four stores all share.
+
+    Returns ``None`` when no ``DATABASE_URL`` is configured — an
+    unconfigured store is a discoverable deployment state, not an
+    exception, the same stance the route, dashboard, live-metrics,
+    meta-overfit and discovery-rate builders take — so a deployment
+    without a relational store still composes.  Building performs no I/O:
+    no store is constructed, no database opened, no schema created — the
+    first :meth:`~ops.type_b_depth.TypeBDepths.record` is where the store
+    is both constructed and asked.
+    """
+    return TypeBDepths.resolve()
