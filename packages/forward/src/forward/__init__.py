@@ -81,11 +81,31 @@ carries **no bound**: over-delivery above one and inversion below zero are
 both facts §11 and §C10 read, which is why the scoring member declines to
 charge on this ratio at all.
 
+:mod:`forward.priors` is **the outer loop's other recalibration** — feature
+339, §13.4's third clause: *"Those outcomes become labels. They recalibrate
+``β₄`` (sim-reality divergence), the decay priors, and which signal families
+the objective should reward."*  A signal's forward half-life is the day its
+prefix retention — feature 337's own statistic, computed on prefixes —
+first falls to §11's half line, and :class:`~forward.priors.ForwardDecayPriors`
+folds every observed half-life into the 90-day prior the prd itself states
+(§5's *"After 90 days"*), at the pseudo-count strength feature 228
+established.  The answer :class:`~forward.priors.DecayPriorRevision` is the
+revised input the risk register's mitigation names — *"feed half-life into
+``plan_grid``"* — carried with its evidence (the half-lives, the censored
+bounds, the absences) and **persisted nowhere**: the revision is a pure
+function of rows features 332, 333 and 337 already hold, and where a
+campaign's planned-with figures live is the planning side's own question.
+A signal that has not fallen to half is *censored*, not dead — its bound is
+counted, never averaged in — and the aggregate counts what it cannot
+measure (young, unbacktested, edgeless signals) where the per-signal ask
+refuses the same states, each naming its one-call repair.
+
 :mod:`forward.errors` is **what can go wrong**, split by the repair the caller
 must make: a malformed row, a store that is misrouted or broken, a promotion
 with no instant to open at, a reconciliation whose book, instant or figures
-state nothing measurable, a division whose operands do not support it, and a
-request that disagrees with a row an identity already holds — a second
+state nothing measurable, a division whose operands do not support it, a
+revision whose half-lives cannot be dated or whose evidence does not blend,
+and a request that disagrees with a row an identity already holds — a second
 promotion instant, a day the boundary excludes, a second coefficient claiming
 a measured day, or a second reconciliation claiming a rebalance that already
 holds one.
@@ -203,7 +223,15 @@ the composed store,
 one act in this member with two, because it both lands a figure and computes
 one: the writer refuses an unconfigured deployment while the reader's
 ``resolve`` answers ``None``, the way :func:`~forward.reconciliation.
-reconciled_fill_costs` answers nothing rather than refusing it.
+reconciled_fill_costs` answers nothing rather than refusing it.  The
+revising act climbs the same ladder one feature later again —
+:meth:`~forward.priors.ForwardDecayPriors.over` off the composed store,
+:meth:`~forward.priors.ForwardDecayPriors.half_life` or
+:meth:`~forward.priors.ForwardDecayPriors.revise` on a held one,
+:func:`~forward.priors.forward_half_life` and
+:func:`~forward.priors.revised_decay_prior` from a bare URL — and lands
+nothing anywhere: it is the member's one act that only reads, because every
+figure it answers is derived from rows the other acts already hold.
 """
 
 from __future__ import annotations
@@ -211,11 +239,13 @@ from __future__ import annotations
 from app.module_loader import register
 
 from .errors import (
+    FORWARD_DECAY_PRIOR_ERROR_CODE,
     FORWARD_IDENTITY_ERROR_CODE,
     FORWARD_PROMOTION_ERROR_CODE,
     FORWARD_RECONCILIATION_ERROR_CODE,
     FORWARD_RECORD_ERROR_CODE,
     FORWARD_RETENTION_ERROR_CODE,
+    ForwardDecayPriorError,
     ForwardError,
     ForwardIdentityError,
     ForwardPromotionError,
@@ -228,6 +258,18 @@ from .observation import (
     FORWARD_OBSERVATION_SEAM,
     ForwardObservations,
     forward_observation,
+)
+from .priors import (
+    FORWARD_PRIOR_SEAM,
+    PRIOR_HALF_LIFE_DAYS,
+    PRIOR_WEIGHT,
+    RETENTION_LINE,
+    REVISED_HALF_LIFE_KEY,
+    DecayPriorRevision,
+    ForwardDecayPriors,
+    ForwardHalfLife,
+    forward_half_life,
+    revised_decay_prior,
 )
 from .reconciliation import (
     FORWARD_COST_RECONCILIATION_TABLE,
@@ -269,8 +311,10 @@ __all__ = [
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
     "FORWARD_COST_RECONCILIATION_TABLE",
+    "FORWARD_DECAY_PRIOR_ERROR_CODE",
     "FORWARD_IDENTITY_ERROR_CODE",
     "FORWARD_OBSERVATION_SEAM",
+    "FORWARD_PRIOR_SEAM",
     "FORWARD_PROMOTE_ROUTE",
     "FORWARD_PROMOTION_ERROR_CODE",
     "FORWARD_RECONCILIATION_ERROR_CODE",
@@ -284,13 +328,21 @@ __all__ = [
     "MIGRATION_ORDER",
     "NODE_ID_COLUMN",
     "OBSERVED_ON_COLUMN",
+    "PRIOR_HALF_LIFE_DAYS",
+    "PRIOR_WEIGHT",
     "PROMOTED_AT_COLUMN",
     "PROMOTION_MEMBER",
     "PROMOTION_WINDOW_VERB",
+    "RETENTION_LINE",
     "RETENTION_RATIO_KEY",
+    "REVISED_HALF_LIFE_KEY",
     "CostReconciliation",
+    "DecayPriorRevision",
     "ForwardCostReconciliations",
+    "ForwardDecayPriorError",
+    "ForwardDecayPriors",
     "ForwardError",
+    "ForwardHalfLife",
     "ForwardIcRetentions",
     "ForwardIdentityError",
     "ForwardObservations",
@@ -307,12 +359,14 @@ __all__ = [
     "PromoteEndpoint",
     "bootstrap_schema",
     "build_forward_records",
+    "forward_half_life",
     "forward_ic_retention",
     "forward_observation",
     "forward_record",
     "read_promotion_window",
     "reconcile_fill_costs",
     "reconciled_fill_costs",
+    "revised_decay_prior",
     "utc_now",
 ]
 

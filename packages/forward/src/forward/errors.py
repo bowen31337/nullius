@@ -106,6 +106,25 @@ the caller must do about it*, not by which line of code failed:
   request that disagrees with a row an *identity* holds; this one is about a
   request, or a state, that a *quotient* cannot be taken over.
 
+* :class:`ForwardDecayPriorError` — feature 339's revision, and the
+  half-lives it is revised from.  The prior is a pure function of the rows
+  features 332, 333 and 337 already hold, so this class is raised where the
+  *derivation* cannot run or cannot be trusted: a half-life asked of a
+  record that is absent, unobserved, unbacktested or carrying no positive
+  edge (the per-signal spelling refuses what the aggregate counts, because
+  the caller asked about one signal and each absence has a one-call repair),
+  a backtest figure that is negative on a signal promotion requires to be
+  positive, a record whose rows carry two promotion instants (a boundary a
+  half-life cannot be dated from), or an answer whose stated half-life,
+  crossing or revised figure is not the arithmetic of its own evidence — the
+  re-derivation law that keeps a fabricated timescale away from
+  ``plan_grid``.  Like the retention class it is about the ask and the
+  figures rather than the store, and it sits beside that class for the same
+  reason: a caller guarding the outer loop with one ``except`` must be able
+  to tell *the ratio could not be divided* from *the prior could not be
+  revised* — two repairs, read by the same operator on different days of
+  the cycle.
+
 Every message names the offending value and the contract it broke, in the
 same discipline as the promotion and trial-ledger taxonomies: these errors
 are operational signals for a pipeline that runs unattended for months (the
@@ -114,7 +133,7 @@ be speakable, not merely loggable.
 
 The member raises nothing else.  A ``sqlite3.IntegrityError`` on the write,
 an ``OSError`` on the file, a promotion-side refusal from the seam — every
-one of them arrives at a caller as one of these six, because a caller's
+one of them arrives at a caller as one of these seven, because a caller's
 ``except ForwardError`` guarding a forward record must not be defeated by a
 neighbouring member's vocabulary.
 """
@@ -122,6 +141,7 @@ neighbouring member's vocabulary.
 from __future__ import annotations
 
 __all__ = [
+    "ForwardDecayPriorError",
     "ForwardError",
     "ForwardIdentityError",
     "ForwardPromotionError",
@@ -171,6 +191,21 @@ FORWARD_RECONCILIATION_ERROR_CODE = "forward_reconciliation_malformed"
 #: these five is a database fault: the store answered, and the rows it
 #: answered with are intact.
 FORWARD_RETENTION_ERROR_CODE = "forward_retention_undivided"
+
+#: The greppable word that opens every :class:`ForwardDecayPriorError`
+#: message: feature 339's revision did not happen, and the reason is one of
+#: the faces below — an ask about a record that is absent, unobserved,
+#: unbacktested or edgeless, a backtest figure that contradicts the promotion
+#: it decided, a record nobody can state the boundary of, or an answer whose
+#: stated figures are not the arithmetic of its own evidence.  One word for
+#: all of them because they are one repair: go and look at the *ask* and the
+#: rows it reads — the same stance the retention code word takes, spelled
+#: one act later in the loop.  Deliberately not
+#: ``forward_record_unwritable``'s vocabulary (that word sends an operator to
+#: the database, and none of these faces is a database fault) and not
+#: ``forward_retention_undivided``'s either (that one is about a quotient;
+#: this one is about a timescale and the evidence it was dated on).
+FORWARD_DECAY_PRIOR_ERROR_CODE = "forward_decay_prior_unrevised"
 
 
 class ForwardError(Exception):
@@ -403,4 +438,65 @@ class ForwardRetentionError(ForwardError):
     below zero are both *answers* feature 337 states (see
     :func:`forward.retention._validated_ratio`), and a caller catching this
     error is never catching a figure that merely looked large.
+    """
+
+
+class ForwardDecayPriorError(ForwardError):
+    """Feature 339's revision did not happen, or a figure it folds is not one.
+
+    The class of the *ask and the evidence* rather than of the store, and
+    that is the whole reason it is not a :class:`ForwardStoreError`: the
+    database answered, the rows are intact, and the caller's repair is to
+    look at the signal it named and the figures on its record — not to go
+    and fix a table.  It is not a :class:`ForwardRetentionError` either,
+    though the two sit beside each other in the loop: that class is about a
+    *quotient* that cannot be taken, this one is about a *timescale* that
+    cannot be dated or a revision that cannot be blended.
+
+    **The two spellings, two stances.**  The per-signal ask
+    (:meth:`forward.priors.ForwardDecayPriors.half_life`) **refuses** the
+    absences, because its caller asked about one signal and every absence
+    has a one-call repair named in the message: open the record (feature
+    332's route), observe the signal (feature 333's job), land the backtest
+    figure (feature 337's writer).  The aggregate
+    (:meth:`forward.priors.ForwardDecayPriors.revise`) **counts** those same
+    absences instead — a fleet is heterogeneous on purpose, and a young
+    deployment's outer loop must not be blocked by the figures that have
+    not arrived — so what refuses the aggregate is only what nobody can
+    state: the faces below.
+
+    **The faces.**  One word opens every message
+    (:data:`FORWARD_DECAY_PRIOR_ERROR_CODE`) because they are one repair —
+    look at the ask and the rows — but the faces are distinct and each
+    names its own:
+
+    * A **record the ask cannot measure**: absent, unobserved, unbacktested,
+      or carrying a backtest with no positive edge to halve.  A zero
+      backtest is the honest figure of an edgeless signal — feature 337
+      stores it, the aggregate counts it — and the refusal names the
+      division's absence rather than accusing the figure.
+    * A **negative backtest** on a signal promotion requires to be
+      positive: a figure wearing the column's name, refused by the
+      aggregate as well, because no decay threshold anyone defined is the
+      half of a negative coefficient.
+    * A **record of two vintages**: rows disagreeing about ``promoted_at``,
+      so no boundary exists to date a half-life from — the same law the
+      record, observation and retention modules refuse in their own words.
+    * An **answer that is not its own derivation**: a stated half-life the
+      crossing day does not produce, a crossing mean that has not fallen to
+      §11's line, a censored signal carrying crossing figures, a revision
+      whose figure is not the blend of its own evidence, or a prior that is
+      not the member's own two constants.  The re-derivation law — the same
+      discipline :class:`forward.retention.IcRetention` applies to its
+      quotient — is what keeps a fabricated decay timescale away from
+      ``plan_grid`` and the campaigns it plans.
+    * A **malformed constituent**: a count or tally that is not a whole
+      number, a prior or revised figure that is not a finite real.
+      ``bool`` refused first, as everywhere in this workspace.
+
+    **What is deliberately *not* here.**  Censoring is not a fault — a
+    signal that has not fallen to half is the healthy common case, answered
+    with its bound rather than refused — and neither is an empty table: the
+    revision over no evidence answers the prior exactly, which is the
+    zero-evidence law, not an error.
     """
