@@ -121,6 +121,20 @@ measurement.  The store derives nothing beyond them: no blend, no rate
 over the two and no interval around either, so there is no derived-column
 reconciliation to refuse here as there is at the sibling that computes its
 own gap.
+
+Feature 343 adds the regime-coverage route's own:
+:class:`RegimeCoverageMetricError`, the refusal of a distribution that
+cannot be the pool's shape — a stratum named twice, a name that states
+nothing, a count that is not a genuine non-negative integer, a ledger
+whose §C7 mapping cannot be read, a coverage read that failed.  It is
+feature 341's shape one surface on (a read-only route over another
+member's store, its cross-member refusal translated at the seam), and it
+carries §C7's own asymmetry: an *empty* ledger is a discoverable state
+answered with no rows — the pool names nothing — while the two states a
+careless surface would collapse into a zeroed distribution are held
+apart, no ``DATABASE_URL`` composing no route at all and a *broken* read
+refused in this vocabulary with the original chained.  A named-empty
+stratum (``crash: 0``) is neither: it is a measurement the route serves.
 """
 
 from __future__ import annotations
@@ -134,6 +148,7 @@ __all__ = [
     "MetaOverfitGapError",
     "NullCalibrationError",
     "OpsError",
+    "RegimeCoverageMetricError",
     "ReplayLogError",
     "TypeBDepthError",
 ]
@@ -544,4 +559,45 @@ class NullCalibrationError(OpsError):
     a pair that could not have been measured, and the failure mode this
     feature exists to rule out — a calibration nobody took, quietly
     defaulted into the trend — is refused rather than served.
+    """
+
+
+class RegimeCoverageMetricError(OpsError):
+    """Feature 343's refusals: the regime-coverage route's own error
+    states.
+
+    Raised in exactly the places :mod:`ops.regime_coverage` states the
+    route's contract, and the split between them is the member-seam law
+    the whole workspace states for error vocabulary: a helper that raises
+    *another member's* error escapes through this member's call path, and
+    a caller who wrote ``except RegimeCoverageMetricError`` — the whole
+    point of the route owning a class — would take the process down with
+    an error from a module it never imported.  So:
+
+    * a distribution the response cannot hold — a stratum named twice,
+      an entry that is not a ``(stratum, world_count)`` pair, a name that
+      states nothing, a count that is not a genuine non-negative integer
+      (``bool`` refused before ``int``) — is refused here at
+      construction, because a frozen value that validated nothing would
+      hand a hand-built distribution the ledger's own guarantees never
+      stood behind;
+    * a ledger the route can reach but cannot read — a carrier whose
+      ``ledger()`` answers something that does not carry §C7's
+      ``{stratum: world_count}`` mapping — is refused by name rather than
+      guessed at, because the alternative is this module assembling a
+      distribution out of a value it does not understand; and
+    * a read that failed is *translated* here from the regime member's
+      :class:`~regime.CoverageError` (chained, never swallowed), because
+      the rows are the regime member's and the route is this member's,
+      and the refusal's vocabulary must live where the caller catches it.
+
+    **Never raised for an empty ledger.**  A configured database where
+    no census has run yet names no stratum, and that is a discoverable
+    state the response answers with no rows, not a refusal — the stance
+    feature 284's own read takes, and the same stance an absent campaign
+    is for feature 341's trend.  The distinction this class exists to
+    hold apart is the one §C7 turns on: an *empty* ledger (the pool
+    names nothing) is answered, while a *broken* one — the store
+    refusing, the mapping unreadable — is refused loudly, and neither is
+    ever answered with a zeroed distribution nobody counted.
     """

@@ -513,16 +513,19 @@ def test_the_sentence_demands_no_state_so_nothing_composes() -> None:
     # The member's registration-grows-per-feature law: each feature
     # composes only if its sentence demands state a deployment holds,
     # and an emission demands none — the scan still registers exactly
-    # the stateful components (the route, the dashboard, the
-    # live-metrics store, feature 347's meta-overfit gap store, feature
-    # 346's discovery-rate store, feature 345's Type-B depth store and
-    # feature 344's calibration store)
-    # and no ``replay-log`` eighth.
+    # the stateful components (the two read-only routes, the dashboard,
+    # the live-metrics store, feature 347's meta-overfit gap store,
+    # feature 346's discovery-rate store, feature 345's Type-B depth
+    # store and feature 344's calibration store)
+    # and no ``replay-log`` ninth.
+    from ops import OPS_REGIME_COVERAGE_COMPONENT_NAME
+
     registry = Registration()
     components = scan_components(MEMBER_SRC, registry=registry)
     assert sorted(component.name for component in components) == sorted(
         {
             OPS_COMPONENT_NAME,
+            OPS_REGIME_COVERAGE_COMPONENT_NAME,
             OPS_DASHBOARD_COMPONENT_NAME,
             OPS_LIVE_METRIC_COMPONENT_NAME,
             OPS_META_OVERFIT_COMPONENT_NAME,

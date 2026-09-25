@@ -365,12 +365,14 @@ version = "0.1.0"
 source = { editable = "packages/ops" }
 dependencies = [
     { name = "nullius" },
+    { name = "regime" },
     { name = "scoring" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "nullius", editable = "." },
+    { name = "regime", editable = "packages/regime" },
     { name = "scoring", editable = "packages/scoring" },
 ]
 

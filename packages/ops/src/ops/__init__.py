@@ -116,6 +116,18 @@ member already says:
 * :data:`~ops.fdr_route.FDR_DEPLOY_ROUTE` — the route's one spelling,
   shared by the endpoint's ``route`` attribute and the spec's API
   summary row.
+* :class:`~ops.regime_coverage.RegimeCoverageEndpoint` with
+  :class:`~ops.regime_coverage.RegimeCoverageResponse` — feature 343's
+  route: GET /metrics/regime-coverage, answering the replay pool's
+  stored world counts per stratum — §C7's coverage ledger
+  (*"``{high-vol trend: 2, low-vol chop: 14, crash: 0, …}``"*) read
+  whole through the regime member's own store (features 283's writer
+  and 284's read) rather than re-spelled here, so a named-empty stratum
+  stays a row and an uncounted one stays absent — the distribution the
+  promotion block and the diversity floor both judge.
+* :data:`~ops.regime_coverage.REGIME_COVERAGE_ROUTE` — that route's one
+  spelling, shared by the endpoint's ``route`` attribute and the spec's
+  API summary row.
 * :class:`~ops.dashboard.OperatorDashboard` with
   :class:`~ops.dashboard.DashboardPage` and
   :class:`~ops.dashboard.FdrDeployPanel` — feature 351's surface: the
@@ -258,6 +270,7 @@ from .errors import (
     MetaOverfitGapError,
     NullCalibrationError,
     OpsError,
+    RegimeCoverageMetricError,
     ReplayLogError,
     TypeBDepthError,
 )
@@ -293,6 +306,13 @@ from .null_calibration import (
     NullCalibration,
     NullCalibrations,
 )
+from .regime_coverage import (
+    OPS_REGIME_COVERAGE_COMPONENT_NAME,
+    REGIME_COVERAGE_ROUTE,
+    RegimeCoverageEndpoint,
+    RegimeCoverageResponse,
+    require_regime,
+)
 from .replay_log import (
     REPLAY_LOG_LEVEL,
     REPLAY_LOG_LOGGER_NAME,
@@ -326,7 +346,9 @@ __all__ = [
     "OPS_LIVE_METRIC_COMPONENT_NAME",
     "OPS_META_OVERFIT_COMPONENT_NAME",
     "OPS_NULL_CALIBRATION_COMPONENT_NAME",
+    "OPS_REGIME_COVERAGE_COMPONENT_NAME",
     "OPS_TYPE_B_DEPTH_COMPONENT_NAME",
+    "REGIME_COVERAGE_ROUTE",
     "REPLAY_LOG_LEVEL",
     "REPLAY_LOG_LOGGER_NAME",
     "TYPE_B_DEPTH_TABLE",
@@ -354,6 +376,9 @@ __all__ = [
     "NullCalibrations",
     "OperatorDashboard",
     "OpsError",
+    "RegimeCoverageEndpoint",
+    "RegimeCoverageMetricError",
+    "RegimeCoverageResponse",
     "ReplayLogError",
     "ReplayLogRecord",
     "TypeBDepth",
@@ -363,6 +388,7 @@ __all__ = [
     "emit_replay_log",
     "main",
     "require_promotion",
+    "require_regime",
     "require_scoring",
     "require_streamlit",
 ]
@@ -642,3 +668,56 @@ def build_null_calibration_store() -> NullCalibrations | None:
     both constructed and asked.
     """
     return NullCalibrations.resolve()
+
+
+#: The component name the member registers its regime-coverage route
+#: under — the fdr-deploy route's peer under the same member-first,
+#: route-second prefix (:data:`OPS_COMPONENT_NAME` above), so a composed
+#: application's ``order`` sorts the category's two read-only routes
+#: beside each other: feature 341's top-line figure and feature 343's
+#: distribution.  *Defined* in :mod:`ops.regime_coverage` and imported
+#: above — the placement the member's five store names take, so the
+#: constant lives beside the module whose component it names — and
+#: spelled in the app package seat (:mod:`app.modules.ops`) as well, with
+#: the member's suite asserting the two agree.  The seat reservation was
+#: already made when feature 341 landed (:data:`OPS_COMPONENT_NAME`'s own
+#: note names *"343's coverage"* among the sibling routes that *"land as
+#: its peers under the same prefix"*), and the route the spec's API
+#: summary writes at line ``GET /metrics/regime-coverage`` is now that
+#: peer.
+@register(OPS_REGIME_COVERAGE_COMPONENT_NAME)
+def build_regime_coverage_route() -> RegimeCoverageEndpoint | None:
+    """Component builder: the GET /metrics/regime-coverage route, bound to
+    the store ``DATABASE_URL`` names.
+
+    Takes no arguments — the factory's registration protocol — and decides
+    at build time only whether a store is configured: it reads
+    ``DATABASE_URL`` itself (absent, empty and whitespace-only all unset)
+    and holds the URL in a deferred carrier that constructs the *regime*
+    member's store on the first read
+    (:meth:`~ops.regime_coverage.RegimeCoverageEndpoint.from_env`).
+
+    The deferral here is one step stronger than the fdr-deploy route's
+    beside it, and for the same scan-order reason: builders fire after the
+    factory's scan has taken each member's ``src/`` back off ``sys.path``,
+    so importing the regime member at build time would make this
+    component's presence — and every whole-workspace composition that
+    fires it — depend on an import that is not promised to work at that
+    moment.  This route reads the coverage ledger through the regime
+    member's own store and its own whole-table read (features 283 and 284)
+    rather than growing a second spelling of the pool's distribution, so
+    the URL resolved here is the composition fact that keeps this route,
+    the composed ``regime-coverage`` store and the promotion gate that
+    blocks on the same rows (feature 285) pointing at one database.
+
+    Returns ``None`` when no ``DATABASE_URL`` is configured — an
+    unconfigured store is a discoverable deployment state, not an
+    exception (the stance every builder in this member takes), and it is
+    deliberately not the empty-ledger answer: no route at all says there
+    is nowhere a count could have been persisted, while an empty ledger
+    says the pool names no stratum yet.  And building performs no I/O of
+    any kind: no store is constructed, no database opened, no schema
+    created — the first ``get()`` is where the store is both constructed
+    and asked.
+    """
+    return RegimeCoverageEndpoint.from_env()

@@ -73,6 +73,7 @@ EXPECTED_EXPORTS = {
     "OPS_LIVE_METRIC_COMPONENT_NAME",
     "OPS_META_OVERFIT_COMPONENT_NAME",
     "OPS_NULL_CALIBRATION_COMPONENT_NAME",
+    "OPS_REGIME_COVERAGE_COMPONENT_NAME",
     "OPS_TYPE_B_DEPTH_COMPONENT_NAME",
     "dashboard_component",
     "discovery_rate_component",
@@ -80,6 +81,7 @@ EXPECTED_EXPORTS = {
     "live_metric_component",
     "meta_overfit_component",
     "null_calibration_component",
+    "regime_coverage_component",
     "type_b_depth_component",
 }
 
@@ -586,6 +588,100 @@ def test_the_seat_exposes_the_composed_null_calibration_store(
     assert component.database_url == test_database_url
 
 
+def test_scan_registers_the_regime_coverage_route() -> None:
+    # The member's eighth component registers under its own name, beside the
+    # route, the dashboard and the member's five stores — the
+    # registration-grows-per-feature shape, and the peer the member's own
+    # route registration reserved when feature 341 landed (*"the sibling
+    # routes this category's later features add (342's lamps, 343's
+    # coverage) land as its peers under the same prefix"*).
+    registry = Registration()
+    components = scan_components(MEMBER_SRC, registry=registry)
+    names = [component.name for component in components]
+    assert ops.OPS_REGIME_COVERAGE_COMPONENT_NAME in names
+    assert ops.OPS_REGIME_COVERAGE_COMPONENT_NAME == "ops-regime-coverage"
+    again = scan_components(MEMBER_SRC, registry=registry)
+    assert (
+        [c.name for c in again].count(ops.OPS_REGIME_COVERAGE_COMPONENT_NAME) == 1
+    )
+
+
+def test_composed_app_builds_the_regime_coverage_route(
+    test_database_url: str,
+) -> None:
+    app = create_app(MEMBER_SRC, registry=Registration())
+    component = app.get(ops.OPS_REGIME_COVERAGE_COMPONENT_NAME)
+    assert component is not None
+    assert component.route == "/metrics/regime-coverage"
+    assert component.store.database_url == test_database_url
+    assert ops.OPS_REGIME_COVERAGE_COMPONENT_NAME in app.order
+
+
+def test_composing_the_regime_coverage_route_touches_no_disk(
+    test_database_url: str,
+) -> None:
+    # Composition-time work must not touch the disk, and for this route that
+    # is doubly load-bearing: the store it reads belongs to another member,
+    # reached through a deferred carrier, so a builder that imported the
+    # regime member — or constructed its store — would both touch the disk
+    # and make composition depend on an import that is not promised to work
+    # where builders fire.  Building creates no database and no schema; the
+    # first get() is where the store is both constructed and asked.
+    database_path = Path(urlparse(test_database_url).path.removeprefix("/"))
+    create_app(MEMBER_SRC, registry=Registration())
+    assert not database_path.exists()
+
+
+def test_the_regime_coverage_builder_contributes_nothing_without_a_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An unconfigured relational store is a discoverable state, not an error:
+    # the composed application simply carries no coverage route, the same
+    # degradation the factory applies to an absent workspace and the member's
+    # other store-bound builders take.  It is deliberately *not* the
+    # empty-ledger answer — no route says there is nowhere a count could have
+    # been persisted, which is a different fact from a configured database
+    # where the census has not run.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    app = create_app(MEMBER_SRC, registry=Registration())
+    assert app.get(ops.OPS_REGIME_COVERAGE_COMPONENT_NAME) is None
+
+
+def test_the_seat_names_line_up_regime_coverage() -> None:
+    # The seat's constant, the member's constant and the spec's API summary
+    # row are one name.  Three spellings of one name is exactly the kind of
+    # drift a test is cheaper than.
+    assert (
+        ops_seat.OPS_REGIME_COVERAGE_COMPONENT_NAME
+        == ops.OPS_REGIME_COVERAGE_COMPONENT_NAME
+        == "ops-regime-coverage"
+    )
+
+
+def test_the_regime_coverage_route_and_the_route_compose_over_one_database(
+    test_database_url: str,
+) -> None:
+    # §16's "single Postgres metrics table" allowance, held across the
+    # member's own surfaces: the coverage route and the fdr-deploy route
+    # resolve the one database DATABASE_URL names — never two databases where
+    # the distribution an operator reads and the ledger the promotion gate
+    # blocks on could drift apart.
+    app = create_app(MEMBER_SRC, registry=Registration())
+    coverage = app.get(ops.OPS_REGIME_COVERAGE_COMPONENT_NAME)
+    route = app.get(ops.OPS_COMPONENT_NAME)
+    assert coverage is not None and route is not None
+    assert coverage.store.database_url == route.store.database_url == test_database_url
+
+
+def test_the_seat_exposes_the_composed_regime_coverage_route(
+    test_database_url: str,
+) -> None:
+    app = create_app(MEMBER_SRC, registry=Registration())
+    component = ops_seat.regime_coverage_component(app)
+    assert component is app.get(ops.OPS_REGIME_COVERAGE_COMPONENT_NAME)
+    assert component.route == "/metrics/regime-coverage"
+
+
 def test_the_seat_exposes_nothing_but_the_composition_accessor(
     test_database_url: str,
 ) -> None:
@@ -634,6 +730,11 @@ def test_the_seat_exposes_nothing_but_the_composition_accessor(
         "NullCalibration",
         "NullCalibrationError",
         "NULL_CALIBRATION_TABLE",
+        "RegimeCoverageEndpoint",
+        "RegimeCoverageResponse",
+        "RegimeCoverageMetricError",
+        "REGIME_COVERAGE_ROUTE",
+        "require_regime",
     ):
         assert leaked not in ops_seat.__all__
 

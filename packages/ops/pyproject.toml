@@ -20,7 +20,22 @@
 # `_reweighted`, which feature 268's publication seam already refuses
 # to re-spell); a second spelling here would be a second place the
 # deployment projection could drift from the one the M3 gate judges.
-# Both dependencies are workspace members, so neither needs a registry
+#
+# Dependencies: also the `regime` member, whose coverage ledger (feature
+# 283's writer and 284's whole-table read) this member's second route
+# publishes as GET /metrics/regime-coverage (feature 343) rather than
+# growing a second reader of the `regime_coverage` table — the same
+# "never grow a second spelling" reasoning that makes the scoring edge
+# above load-bearing, and the stronger version of it: the ledger this
+# route answers is the one feature 285's promotion block and feature
+# 289's diversity refusal both judge, so a second whole-table read here
+# would be a second place the pool's distribution could drift from.
+# §C7 fixes the figure the route serves as the shape of the replay pool
+# ("Maintain an explicit ledger: {high vol trend: 2, low vol chop: 14,
+# crash: 0, …}"), and prd §11 reads it across campaigns; a re-derivation
+# here would put a private copy of that ledger in front of the operator.
+#
+# All three dependencies are workspace members, so none needs a registry
 # fetch and the lockfile gains no third-party edge from this package.
 #
 # The scoring import is deferred past module scope AND past builder
@@ -34,6 +49,11 @@
 # `DATABASE_URL` itself and constructs the store only at first read;
 # an import at build time would crash every whole-workspace
 # composition in an environment where the members are not installed.
+#
+# The regime import (feature 343's route) is deferred by the same
+# pattern: `ops.regime_coverage.require_regime` holds the one
+# module-scope-reachable import, and the `_DeferredRegimeStore` carrier
+# beside it defers the store's construction to the first read.
 #
 # Streamlit — feature 351's render target — is deliberately NOT a
 # dependency of this member.  docs §16's stack line names it the way
@@ -50,9 +70,9 @@
 [project]
 name = "ops"
 version = "0.1.0"
-description = "Observability surface: GET /metrics/fdr-deploy serving the base-rate reweighted false discovery rate as the top-line figure, read from feature 267's per-campaign rows; and the Streamlit dashboard whose primary panel renders that figure rather than an equity curve."
+description = "Observability surface: GET /metrics/fdr-deploy serving the base-rate reweighted false discovery rate as the top-line figure, read from feature 267's per-campaign rows; GET /metrics/regime-coverage serving the replay pool's stored world counts per stratum, read from feature 284's coverage ledger; and the Streamlit dashboard whose primary panel renders the top-line figure rather than an equity curve."
 requires-python = ">=3.12"
-dependencies = ["nullius", "scoring"]
+dependencies = ["nullius", "scoring", "regime"]
 
 [build-system]
 requires = ["hatchling"]
@@ -61,6 +81,7 @@ build-backend = "hatchling.build"
 [tool.uv.sources]
 nullius = { workspace = true }
 scoring = { workspace = true }
+regime = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ops"]

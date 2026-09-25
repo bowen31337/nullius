@@ -49,10 +49,10 @@ composed fdr-deploy route?*, *what is the composed dashboard?*, *what
 is the composed live-metrics store?*, *what is the composed
 meta-overfit gap store?*, *what is the composed discovery-rate store?*,
 *what is the composed Type-B depth store?*, *what is the composed
-planted-null calibration store?*
-— so the observability features that follow (342's lamps, 343's
-coverage, 352's chrome) can ask them without importing the member
-directly.
+planted-null calibration store?*, *what is the composed regime-coverage
+route?*
+— so the observability features that follow (342's lamps, 352's
+chrome) can ask them without importing the member directly.
 """
 
 from __future__ import annotations
@@ -69,6 +69,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; the member is not a depende
         MetaOverfitGaps,
         NullCalibrations,
         OperatorDashboard,
+        RegimeCoverageEndpoint,
         TypeBDepths,
     )
 
@@ -79,6 +80,7 @@ __all__ = [
     "OPS_LIVE_METRIC_COMPONENT_NAME",
     "OPS_META_OVERFIT_COMPONENT_NAME",
     "OPS_NULL_CALIBRATION_COMPONENT_NAME",
+    "OPS_REGIME_COVERAGE_COMPONENT_NAME",
     "OPS_TYPE_B_DEPTH_COMPONENT_NAME",
     "dashboard_component",
     "discovery_rate_component",
@@ -86,6 +88,7 @@ __all__ = [
     "live_metric_component",
     "meta_overfit_component",
     "null_calibration_component",
+    "regime_coverage_component",
     "type_b_depth_component",
 ]
 
@@ -158,6 +161,16 @@ OPS_TYPE_B_DEPTH_COMPONENT_NAME = "ops-type-b-depth"
 #: asserts this seat and the member's own
 #: :data:`~ops.OPS_NULL_CALIBRATION_COMPONENT_NAME` cannot drift apart.
 OPS_NULL_CALIBRATION_COMPONENT_NAME = "ops-null-calibration"
+
+#: The component name the ops member registers its regime-coverage route
+#: under (feature 343: GET /metrics/regime-coverage, the replay pool's
+#: stored world counts per stratum — §C7's coverage ledger read whole),
+#: the fdr-deploy route's peer under the same member-first prefix.  The
+#: member's suite asserts this seat and the member's own
+#: :data:`~ops.OPS_REGIME_COVERAGE_COMPONENT_NAME` cannot drift apart,
+#: and the spec's API summary row for the route is the third spelling
+#: that assertion pins.
+OPS_REGIME_COVERAGE_COMPONENT_NAME = "ops-regime-coverage"
 
 
 def fdr_deploy_component(app: Application | None = None) -> "FdrDeployEndpoint | Any":
@@ -297,3 +310,26 @@ def null_calibration_component(
     """
     application = app if app is not None else create_app()
     return application.get(OPS_NULL_CALIBRATION_COMPONENT_NAME)
+
+
+def regime_coverage_component(
+    app: Application | None = None,
+) -> "RegimeCoverageEndpoint | Any":
+    """Return the composed regime-coverage route (feature 343's route).
+
+    The same composition accessor as :func:`fdr_deploy_component`, for the
+    member's eighth component: reads from ``app`` when handed one, composes
+    the declared workspace otherwise, and answers ``None`` when no
+    ``ops-regime-coverage`` component is registered — the same discoverable
+    state, for the same reasons (the member was not scanned, or nothing named
+    a database).  It is deliberately *not* the empty-ledger state: the caller
+    that resolves ``None`` here learns the deployment has nowhere a stratum
+    count could have been persisted, while an endpoint that answers a
+    response with no rows reports a configured database the census has not
+    reached yet — two different facts, and a caller that needs the pool's
+    distribution wants to tell them apart.  Asking the route is
+    ``component.get()``; the accessor returns the component, not its answer,
+    so the read happens where the caller decided it should.
+    """
+    application = app if app is not None else create_app()
+    return application.get(OPS_REGIME_COVERAGE_COMPONENT_NAME)
