@@ -1,0 +1,54 @@
+# The "ops" workspace member — Observability & Dashboards
+# (app_spec.xml, "Observability & Dashboards", feature 341;
+# docs/nullius-tech-architecture.md §16 for the surface this member is).
+#
+# Per the root pyproject.toml workspace contract, this directory joins
+# the uv workspace (and uv.lock) automatically by existing with this
+# file; no edit to any other file registers it.  The module loader
+# discovers it by scanning the declared members, so nothing outside
+# this directory ever needs to know this package's name.
+#
+# Dependencies: the workspace root, for the factory's registration
+# protocol (`import app.module_loader`), and the `scoring` member,
+# whose FDR_deploy store (feature 267) this member's first route reads
+# through rather than growing a second reader of the same pair — the
+# same "never grow a second parser" reasoning that makes the router
+# member depend on nullius-ingest for the venue document model.  §16
+# fixes the figure the route serves as *the* top-line number
+# ("The top-line dashboard number is FDR_deploy, not Sharpe"), and prd
+# §4.1.3's reweighting is spelled once in the workspace (feature 267's
+# `_reweighted`, which feature 268's publication seam already refuses
+# to re-spell); a second spelling here would be a second place the
+# deployment projection could drift from the one the M3 gate judges.
+# Both dependencies are workspace members, so neither needs a registry
+# fetch and the lockfile gains no third-party edge from this package.
+#
+# The scoring import is deferred past module scope AND past builder
+# time (see `ops.fdr_route.require_scoring` and the `_DeferredFdrStore`
+# carrier below it), for the reason `router.exchange_info.
+# require_ingest` gives for its own cross-member import — the factory's
+# workspace scan puts one member's `src/` on `sys.path` at a time, so a
+# module-scope import would make this component's presence depend on
+# scan order — taken one step further: builders fire after the scan has
+# taken the sibling's `src/` back off, so the builder reads
+# `DATABASE_URL` itself and constructs the store only at first read;
+# an import at build time would crash every whole-workspace
+# composition in an environment where the members are not installed.
+
+[project]
+name = "ops"
+version = "0.1.0"
+description = "Observability surface: GET /metrics/fdr-deploy serving the base-rate reweighted false discovery rate as the top-line figure, read from feature 267's per-campaign rows."
+requires-python = ">=3.12"
+dependencies = ["nullius", "scoring"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+scoring = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ops"]

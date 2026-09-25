@@ -18,6 +18,7 @@ members = [
     "nullius-feature-store",
     "nullius-ingest",
     "nulloracle",
+    "ops",
     "policy-runtime",
     "promotion",
     "providers",
@@ -343,6 +344,21 @@ dependencies = [
 requires-dist = [
     { name = "cryptography", specifier = ">=42.0" },
     { name = "nullius", editable = "." },
+]
+
+[[package]]
+name = "ops"
+version = "0.1.0"
+source = { editable = "packages/ops" }
+dependencies = [
+    { name = "nullius" },
+    { name = "scoring" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "nullius", editable = "." },
+    { name = "scoring", editable = "packages/scoring" },
 ]
 
 [[package]]

@@ -1,0 +1,216 @@
+"""The ops member's seam with the scoring member: one figure, two
+members.
+
+The route this member exposes serves a number the scoring member owns:
+feature 267's per-campaign ``FDR_deploy``, reweighted once at the one
+constant, persisted in the scoring member's own table.  These tests
+pin the seam from both sides at once — writing through the scoring
+member's real store and reading back through this member's real route
+— because that is the composition the spec describes (§16: the
+dashboard reads the metrics store; feature 341: the route returns the
+base-rate reweighted false discovery rate), and because a seam tested
+from one side only can drift on the other.
+
+What is pinned:
+
+* **the same figure to the bit** — every triple the route answers
+  equals what the store's own ``history()`` answers, and the top-line
+  figure equals what the scoring member's pure ``fdr_deploy`` verb
+  computes over the same pair;
+* **the projection, never the raw rate** — prd §4.1.3's arithmetic is
+  the argument: a campaign planted at φ ≈ 0.25 measures a pair whose
+  *in-campaign* false discovery rate is small exactly because three
+  quarters of its population is real, while the deployment projection
+  at π₀ = 0.9 is the number that matters where the system actually
+  runs; the route answers the projection;
+* **the corner never reaches the surface** — the 0/0 pair (sensitivity
+  0.0, specificity 1.0, a campaign that committed to nothing) is
+  refused by the store's own write law before any row exists, so the
+  route's trend keeps whatever honest shape it had.
+
+A plain stand-in pair (two attributes, nothing else) is used for the
+figures rather than the scoring member's own value type — a member
+never imports another member's *types* to test what crosses the seam;
+the duck-typed carrier is the honest way to do it, and it proves the
+seam validates what it reads.
+"""
+
+from __future__ import annotations
+
+import uuid
+
+import pytest
+from ops import FdrDeployEndpoint, require_scoring
+from scoring import FdrDeployError, FdrDeployStore, fdr_deploy
+
+CAMPAIGN_A = "11111111-1111-1111-1111-111111111111"
+CAMPAIGN_B = "22222222-2222-2222-2222-222222222222"
+
+
+class _Pair:
+    """A stand-in for feature 266's calibration figures — exactly the
+    two attributes the reweighting reads, and nothing else."""
+
+    __slots__ = ("sensitivity", "specificity")
+
+    def __init__(self, sensitivity: float, specificity: float) -> None:
+        self.sensitivity = sensitivity
+        self.specificity = specificity
+
+
+def test_require_scoring_returns_the_member_that_owns_the_rows() -> None:
+    # The delegation door: the route reads the figure through the
+    # scoring member itself (the "never grow a second parser" door the
+    # router member opened for the ingest parser), so the module it
+    # resolves is the one whose store law the figures already passed.
+    import scoring
+
+    assert require_scoring() is scoring
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {},
+        {"DATABASE_URL": ""},
+        {"DATABASE_URL": "   "},
+        {"DATABASE_URL": "sqlite:///tmp/ops-agreement-test.db"},
+        {"DATABASE_URL": "sqlite:///tmp/ops-agreement-test-2.db"},
+    ],
+)
+def test_from_env_composes_exactly_when_the_store_resolves(env) -> None:
+    # The route reads DATABASE_URL itself (not through the scoring
+    # member — the builder runs after the factory's scan has taken the
+    # sibling's src/ back off sys.path, so an import there would make
+    # every whole-workspace composition depend on scan order).  What
+    # must not drift is the *decision*: the route composes exactly when
+    # the store resolves, and over the URL the store resolved, so a
+    # deployment can never hold a route pointing at one database while
+    # feature 267's rows go to another.  Pinned across the unset
+    # spellings (absent, empty, whitespace) and two configured ones.
+    resolved = FdrDeployStore.resolve(env)
+    endpoint = FdrDeployEndpoint.from_env(env)
+    if resolved is None:
+        assert endpoint is None
+    else:
+        assert endpoint is not None
+        assert endpoint.store.database_url == resolved.database_url
+
+
+def test_the_deferred_carrier_builds_without_the_scoring_member_importable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The scan-order law, pinned as the composition bug it once was:
+    # the builder must not import the scoring member, because builders
+    # fire after the factory's scan has taken each member's ``src/``
+    # off ``sys.path`` — in an environment where the members are not
+    # installed, that import crashed every whole-workspace
+    # composition.  Resolving an endpoint and reading its URL (the
+    # composition facts) imports no sibling; the first read is where
+    # the import happens, and it names its repair if it cannot.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_scoring(name, *args, **kwargs):
+        if name == "scoring":
+            raise AssertionError(
+                "the builder must not import the scoring member — it "
+                "runs after the factory's scan has taken the sibling's "
+                "src/ off sys.path (feature 341)"
+            )
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_scoring)
+    endpoint = FdrDeployEndpoint.from_env(
+        {"DATABASE_URL": "sqlite:///tmp/ops-deferred-test.db"}
+    )
+    assert endpoint is not None
+    # The composition facts are readable without the sibling: the
+    # route name and the database the URL names.
+    assert endpoint.route == "/metrics/fdr-deploy"
+    assert endpoint.store.database_url == "sqlite:///tmp/ops-deferred-test.db"
+
+
+def test_the_route_answers_the_stores_own_history_exactly(
+    test_database_url: str,
+) -> None:
+    store = FdrDeployStore(test_database_url)
+    store.persist(uuid.UUID(CAMPAIGN_A), _Pair(0.5, 0.5), computed_at="2026-01-01T00:00:00")
+    store.persist(uuid.UUID(CAMPAIGN_B), _Pair(0.75, 0.25), computed_at="2026-02-01T00:00:00")
+
+    response = FdrDeployEndpoint(store).get()
+    assert response.history == tuple(store.history())
+    assert len(response.history) == 2
+
+
+def test_the_top_line_equals_the_scoring_members_reweighting_to_the_bit(
+    test_database_url: str,
+) -> None:
+    # The figure the route top-lines is the one the scoring member's
+    # free verb computes over the same pair — no second spelling of
+    # §4.1.3's arithmetic anywhere on the path, so there is no place
+    # for the route's number and the store's number to drift apart.
+    store = FdrDeployStore(test_database_url)
+    pair = _Pair(0.75, 0.25)
+    persisted = store.persist(
+        uuid.UUID(CAMPAIGN_A), pair, computed_at="2026-01-01T00:00:00"
+    )
+
+    assert persisted == fdr_deploy(pair)
+    assert FdrDeployEndpoint(store).get().fdr_deploy == fdr_deploy(pair)
+
+
+def test_the_top_line_is_the_projection_never_the_raw_in_campaign_rate(
+    test_database_url: str,
+) -> None:
+    # prd §4.1.3's own argument, pinned as a number.  A campaign
+    # planted at φ = 0.25 (the section's shaded floor) with this pair
+    # measures an *in-campaign* false discovery rate of
+    # φ(1−spec)/[φ(1−spec)+(1−φ)·sens] ≈ 0.036 — small because three
+    # quarters of the population is real — while the deployment
+    # projection at π₀ = 0.9 is 0.5, the number the section insists the
+    # dashboard show.  The route answers 0.5.  A route that answered
+    # the raw rate (or fell back to it for a young deployment) would
+    # top-line exactly the under-skeptical figure the reweighting
+    # exists to replace.
+    phi = 0.25
+    sensitivity, specificity = 0.9, 0.9
+    raw_in_campaign = (phi * (1.0 - specificity)) / (
+        phi * (1.0 - specificity) + (1.0 - phi) * sensitivity
+    )
+    projection = fdr_deploy(_Pair(sensitivity, specificity))
+
+    assert raw_in_campaign == pytest.approx(0.0357, abs=1e-4)
+    assert projection == pytest.approx(0.5)
+    assert projection != pytest.approx(raw_in_campaign)
+
+    store = FdrDeployStore(test_database_url)
+    store.persist(
+        uuid.UUID(CAMPAIGN_A),
+        _Pair(sensitivity, specificity),
+        computed_at="2026-01-01T00:00:00",
+    )
+    assert FdrDeployEndpoint(store).get().fdr_deploy == projection
+
+
+def test_the_committed_to_nothing_corner_never_reaches_the_surface(
+    test_database_url: str,
+) -> None:
+    # The 0/0 corner (sensitivity 0.0, specificity 1.0) is feature
+    # 266's honest answer for a campaign that committed to nothing,
+    # and feature 267's write law refuses to project it: no fraction of
+    # declarations is defined for a campaign that made none.  The
+    # refusal is the store's, it happens at the write, and the surface
+    # this member serves is never asked to render it — the trend keeps
+    # the honest shape it had, which here is the honest empty one.
+    store = FdrDeployStore(test_database_url)
+    with pytest.raises(FdrDeployError):
+        store.persist(
+            uuid.UUID(CAMPAIGN_A),
+            _Pair(0.0, 1.0),
+            computed_at="2026-01-01T00:00:00",
+        )
+    response = FdrDeployEndpoint(store).get()
+    assert response.history == ()
+    assert response.fdr_deploy is None
