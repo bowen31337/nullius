@@ -11,7 +11,8 @@ beta, score, committed_pick)``"* — so the feature is an **emission**,
 and the member's own registration reserved the shape when feature 341
 landed (*"348-349's structured log records arrive as emission
 seams"*).  This module is the replay half of that pair; the evaluation
-half (348) is this seam's sibling-to-come under the same member.
+half (348) landed as its sibling, :mod:`ops.evaluation_log`, under the
+same member.
 
 **What the record is, and why one media and not the other.**  The five
 fields §16 names are the five columns of the replay member's own row
@@ -117,8 +118,8 @@ caller that runs replays reaches this seam by importing the member —
 the same reach the fdr-deploy route's own docstring describes for the
 operator surface — and the logger's name is the deployment's routing
 handle: one handler on ``"ops"`` captures every record this member
-emits, and 348's evaluation records will nest beside these under the
-same parent when that seam lands.
+emits, and 348's evaluation records nest beside these under the same
+parent (:mod:`ops.evaluation_log`).
 
 Stdlib only — :mod:`dataclasses` for the record, :mod:`logging` for
 the one emission, :mod:`math` for the finite and NaN checks,
@@ -158,7 +159,7 @@ _ABSENT = object()
 #: name the deployment needs to configure.  Dotted under ``"ops"`` so
 #: the member's records nest under one parent: a deployment's single
 #: handler on ``"ops"`` captures these records and the evaluation
-#: records feature 348 will emit beside them, and the parent's level is
+#: records feature 348 emits beside them, and the parent's level is
 #: the one knob that says whether the system's structured log ships.
 REPLAY_LOG_LOGGER_NAME = "ops.replay_log"
 

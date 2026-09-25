@@ -68,13 +68,16 @@ route modules over the members that hold those facts; 344-347's and
 relational store (§16's *"single Postgres metrics table"* allowance) —
 the metrics store feature 267's own docstring already reserves
 (*"the research-metrics row is the ops member's (feature 344 ...)"*);
-348's evaluation record remains to arrive, and 349's replay record
-landed as :mod:`ops.replay_log` — the emission seam that reserved
-clause's first half: one structured stdlib log record per replay,
-carrying §16's tuple ``(policy_version, world_id, beta, score,
-committed_pick)``, with no store and no component because the sentence
-says *emits*, not *persists* (feature 255's row is the persistence
-half, over the same carrier); 351's dashboard (:mod:`ops.dashboard`,
+348's evaluation record and 349's replay record landed as
+:mod:`ops.evaluation_log` and :mod:`ops.replay_log` — the emission
+seams the reserved clause named: one structured stdlib log record per
+evaluation, carrying §16's provenance triple plus ``node_id`` and
+``campaign_id``, and one per replay, carrying §16's tuple
+``(policy_version, world_id, beta, score, committed_pick)`` — each
+with no store and no component because the sentences say *emits*,
+not *persists* (feature 87's stamp on the trial row is the
+evaluation's persistence half, feature 255's row the replay's);
+351's dashboard (:mod:`ops.dashboard`,
 landed) reads the route; 352's chrome (:mod:`ops.chrome`, landed)
 hangs off its page model — the remaining clean epoch count, read
 through the promotion member's own gauge (feature 297's) over the same
@@ -125,10 +128,21 @@ member already says:
   name when the ask names no replay, with the miss (``-inf``, no pick)
   emitted, never refused, because the stream is where the miss rate is
   counted.
+* :class:`~ops.evaluation_log.EvaluationLogRecord` with
+  :func:`~ops.evaluation_log.emit_evaluation_log` — feature 348's
+  emission seam, the replay half's sibling over §16's other record:
+  one structured log record per evaluation, carrying the full
+  provenance triple (evaluator, snapshot, cost model — feature 87's
+  stamp) plus ``node_id`` and ``campaign_id``, read duck-typed off the
+  charge the evaluation was booked as, over the logger
+  :data:`~ops.evaluation_log.EVALUATION_LOG_LOGGER_NAME` names beside
+  the replay records — refused by name when the ask names no
+  evaluation the ledger could join.
 * :class:`~ops.errors.OpsError` with
   :class:`~ops.errors.FdrDeployMetricError`,
   :class:`~ops.errors.LiveMetricError`,
-  :class:`~ops.errors.ReplayLogError` and
+  :class:`~ops.errors.ReplayLogError`,
+  :class:`~ops.errors.EvaluationLogError` and
   :class:`~ops.errors.DashboardRenderError` — the member's refusal
   vocabulary: one base so a caller catches the member as a whole, one
   subclass per surface so a refusal names where it happened.
@@ -156,10 +170,17 @@ from .dashboard import (
 )
 from .errors import (
     DashboardRenderError,
+    EvaluationLogError,
     FdrDeployMetricError,
     LiveMetricError,
     OpsError,
     ReplayLogError,
+)
+from .evaluation_log import (
+    EVALUATION_LOG_LEVEL,
+    EVALUATION_LOG_LOGGER_NAME,
+    EvaluationLogRecord,
+    emit_evaluation_log,
 )
 from .fdr_route import (
     FDR_DEPLOY_ROUTE,
@@ -187,6 +208,8 @@ __all__ = [
     "DASHBOARD_TITLE",
     "DATABASE_URL_ENV",
     "EPOCH_COUNT_LABEL",
+    "EVALUATION_LOG_LEVEL",
+    "EVALUATION_LOG_LOGGER_NAME",
     "FDR_DEPLOY_LABEL",
     "FDR_DEPLOY_ROUTE",
     "LIVE_METRICS",
@@ -200,6 +223,8 @@ __all__ = [
     "DashboardRenderError",
     "EpochCountChrome",
     "EpochCountGauge",
+    "EvaluationLogError",
+    "EvaluationLogRecord",
     "FdrDeployEndpoint",
     "FdrDeployMetricError",
     "FdrDeployPanel",
@@ -211,6 +236,7 @@ __all__ = [
     "OpsError",
     "ReplayLogError",
     "ReplayLogRecord",
+    "emit_evaluation_log",
     "emit_replay_log",
     "main",
     "require_promotion",

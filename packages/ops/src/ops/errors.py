@@ -8,8 +8,9 @@ clause, exactly the way :class:`~regime.errors.RegimeError` and
 subclasses split by *where the refusal happens*, which is what makes
 each one actionable: the split is by surface, because a surface is the
 unit the category's features name (feature 341's fdr-deploy route, 342's
-instrument-status, 343's regime-coverage, 349's replay log record, 350's
-live-metrics store, 351's dashboard), and a caller asking one surface
+instrument-status, 343's regime-coverage, 348's evaluation log record,
+349's replay log record, 350's live-metrics store, 351's dashboard), and
+a caller asking one surface
 must not have to import another surface's error to catch its own
 refusals — and a surface that renders *within* another (the chrome
 within the dashboard) shares its vocabulary rather than splitting it,
@@ -45,12 +46,20 @@ anything is emitted**, because a malformed record on a log stream
 would be structured testimony nobody measured — the quietly-defaulted
 figure this category exists to rule out, in its log-shaped form, and
 the one medium where it cannot be corrected by a re-read.
+
+Feature 348 adds the evaluation log record's own:
+:class:`EvaluationLogError`, the replay half's sibling over §16's
+other record — the refusal of an ask that names no evaluation, stated
+under the same ordering law (before anything is emitted) and for the
+same reason: the pair ships on one parent logger, and one knob must
+not mix testimony nobody booked onto the stream it gates.
 """
 
 from __future__ import annotations
 
 __all__ = [
     "DashboardRenderError",
+    "EvaluationLogError",
     "FdrDeployMetricError",
     "LiveMetricError",
     "OpsError",
@@ -218,4 +227,45 @@ class ReplayLogError(OpsError):
     ask puts nothing on the stream, so the stream carries one record
     per replay and only records that are testimony of a scoring that
     completed.
+    """
+
+
+class EvaluationLogError(OpsError):
+    """Feature 348's refusals: the evaluation log record's own error
+    states.
+
+    The replay half of §16's structured-logging pair states the
+    emission law (:class:`ReplayLogError`, above) and this is its
+    sibling for the evaluation half — the same law over a different
+    record, raised in exactly the places :mod:`ops.evaluation_log`
+    states the seam's contract (the carrier reads and the record's
+    own construction), and nowhere else on the path.  So:
+
+    * a carrier that does not state one of the five fields — the
+      provenance triple plus ``node_id`` and ``campaign_id`` — is
+      refused at the read, naming what arrived, because the record's
+      schema is §16's sentence and a carrier that does not state a
+      field names no evaluation the ledger could join;
+    * a triple term of ``None`` — the pre-stamp read's spelling, a
+      statement about the ledger's history rather than provenance an
+      evaluation ran under — is refused, for the reason the ledger's
+      own write seams refuse it: a charge that cannot name its
+      evaluator, its snapshot and its cost model is a charge no
+      replay can reproduce;
+    * a hash that is not the sha256 hexdigest's own 64-hex spelling
+      (a ``sha256:``-prefixed image reference, a short hash, a
+      truncated value, a non-hex token, a non-string) and an id that
+      is not a UUID are refused at construction, so a record built by
+      hand is held to the law the emission path already passed.
+
+    **Never raised for a failed evaluation.**  §16's sentence names
+    identity fields and no verdict, and the trial's own row carries
+    the outcome because a count of outcomes is what the ledger is
+    for — a failed trial is as chargeable a fact as a successful one,
+    and its record ships the same five fields a successful one's
+    does, because the identity the record carries exists whatever the
+    verdict was.  What is refused is the ask, and every refusal fires
+    **before anything is emitted** — a refused ask puts nothing on
+    the stream, so the stream carries one record per evaluation and
+    only records that are testimony of an evaluation that was booked.
     """
