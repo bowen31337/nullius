@@ -102,13 +102,28 @@ contract* was violated, not by which line of code failed:
   re-judged on every submission), which is why the two are told apart by
   class rather than by a flag on one of them: an operator paging on one
   performs a different repair than an operator paging on the other.
+* :class:`RiskDemotionWindowError` — feature 327's own noun, the
+  *observation window* an auto-demotion must be taken over: an
+  observed-day count that is not a whole positive number (``bool``
+  refused first, the member's standing discipline), a minimum that states
+  no requirement (not whole, not positive — a minimum of zero is a gate
+  open at every sample, which is the absence of this feature rather than
+  its configuration), and the rejection itself: a demoting ratio over a
+  sample thinner than the window the deployment required, refused with
+  the window riding on the error so the operator paging on a withheld
+  demotion learns how many days were seen and how many were required
+  without a second query.  A sibling of :class:`RiskSignalDemotionError`
+  particularly — one judges the ratio against the bound, the other judges
+  the evidence behind the ratio — and a caller sent from one to the other
+  would wait for days that are never coming, or edit a ratio that was
+  fine.
 
 Every message names the offending value and the contract it broke, and
 the feature classes open with their greppable tokens
 (:data:`KILL_INSTRUCTION_CODE`, :data:`ORDERS_KILLED_CODE`,
 :data:`HALT_EVENT_CODE`, :data:`FLATTEN_CODE`, :data:`CLOCK_SKEW_CODE`,
 :data:`FEED_STALENESS_CODE`, :data:`ORDERS_STALE_CODE`,
-:data:`SIGNAL_DEMOTION_CODE`)
+:data:`SIGNAL_DEMOTION_CODE`, :data:`DEMOTION_WINDOW_CODE`)
 so an operator scanning a log for the member's refusals greps one word
 rather than a sentence — the same discipline the
 ``order_submission_unhealthy`` (feature 320) and ``determinism_broken``
@@ -120,11 +135,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; both are one-way imports
+    from .demotion_window import DemotionWindow
     from .feed_staleness import FeedStaleness
     from .kill import KillInstruction
 
 __all__ = [
     "CLOCK_SKEW_CODE",
+    "DEMOTION_WINDOW_CODE",
     "FEED_STALENESS_CODE",
     "FLATTEN_CODE",
     "HALT_EVENT_CODE",
@@ -133,6 +150,7 @@ __all__ = [
     "ORDERS_STALE_CODE",
     "SIGNAL_DEMOTION_CODE",
     "RiskClockSkewError",
+    "RiskDemotionWindowError",
     "RiskError",
     "RiskFeedStalenessError",
     "RiskFlattenError",
@@ -247,6 +265,21 @@ ORDERS_STALE_CODE = "orders_stale"
 #: below the bound, and what failed is the record of how far the live IC had
 #: fallen below the backtest one.
 SIGNAL_DEMOTION_CODE = "signal_demotion"
+
+#: The greppable token every :class:`RiskDemotionWindowError` message opens
+#: with — the spec's own noun, app_spec.xml feature 327: *"System requires a
+#: statistically meaningful observation window before auto-demotion fires,
+#: which rejects a demotion on a thin sample."*  An operator scanning a log
+#: for the window's faults greps ``demotion_window`` and finds the counts
+#: that were not whole numbers, the minimums that required nothing, and the
+#: demotions that were rejected on samples too thin to carry them — a grep
+#: apart from the demotion's own (:data:`SIGNAL_DEMOTION_CODE`), because the
+#: two features judge different halves of one trigger row: 326 judges the
+#: ratio against the bound, 327 judges the evidence behind the ratio, and a
+#: caller grepping one must not be handed the other's faults.  A rejected
+#: demotion is not a demotion that failed to record — it is a demotion the
+#: window refused to let fire, and the repair is days, not a row.
+DEMOTION_WINDOW_CODE = "demotion_window"
 
 
 class RiskError(Exception):
@@ -617,3 +650,54 @@ class RiskOrdersStaleError(RiskError):
     def __init__(self, message: str, staleness: FeedStaleness | None = None) -> None:
         super().__init__(message)
         self.staleness = staleness
+
+
+class RiskDemotionWindowError(RiskError):
+    """An observation window this module cannot accept — or stand behind.
+
+    app_spec.xml feature 327's noun is the *observation window* — the
+    statistically meaningful span of observed days an auto-demotion must
+    be taken over — and this is the failure of that noun's own terms: an
+    ``observed_days`` that is not a whole positive number (a count that is
+    not a count leaves the window with no length, and a ``bool`` dressed
+    as one is refused before the number is looked at, the member's
+    standing discipline), a ``minimum_observed_days`` that states no
+    requirement — not whole, not positive, the last of which is a gate
+    open at every sample rather than a window any statistics could be
+    meaningful over — and the rejection the feature exists to make: a
+    retention ratio below the demotion bound over a sample thinner than
+    the window the deployment required, refused rather than persisted,
+    with the :class:`~risk.demotion_window.DemotionWindow` riding on the
+    error so the caller learns how many days were seen and how many were
+    required without a second query.
+
+    **It carries the window.**  :attr:`window` is the judgement the
+    refusal acted on, the same stance :class:`RiskOrdersKilledError`
+    takes toward the instruction and :class:`RiskOrdersStaleError` toward
+    the reading: the operator paging on a withheld demotion asks *"how
+    much have we seen, and against what requirement?"* first, and the
+    refusal is where they will look for it.
+
+    A sibling of :class:`RiskSignalDemotionError` rather than a child of
+    it, for the reason that class is a sibling of the clock's: the noun is
+    the *window*, not the demotion and not the store's address.  Feature
+    326 judges the ratio against the bound; feature 327 judges the
+    evidence behind the ratio; and a caller sent from a thin sample to a
+    malformed ratio would go and fix the ask while the signal kept
+    waiting for days that were never the problem — while a caller sent
+    the other way would edit a ratio that was fine.
+
+    Every message opens with :data:`DEMOTION_WINDOW_CODE` and names the
+    offending count or the sample it rejected, because the audience is
+    the supervisor process holding a signal that looks decayed but is not
+    yet proven so, and the repair is days — not a row, not a stack trace.
+    """
+
+    #: The window the refusal judged.  Present on every error the gate
+    #: raises; ``None`` on the malformed-ask refusals, where no window
+    #: could be constructed to carry.
+    window: DemotionWindow | None
+
+    def __init__(self, message: str, window: DemotionWindow | None = None) -> None:
+        super().__init__(message)
+        self.window = window

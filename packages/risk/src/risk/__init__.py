@@ -18,7 +18,7 @@ ledger, the member's second feature — and feature 330 — the flatten
 that survives a hung strategy process, the member's third — build on it
 too, and on nothing else: the ledger is the record of the halts the
 channel and the doors after it produce, and the flatten is the drainage
-of the authority the channel holds.  Seven pieces:
+of the authority the channel holds.  Nine pieces:
 
 * :mod:`risk.kill` — the channel.  One row in the workspace's relational
   store (``DATABASE_URL``), held to one row by the table's own
@@ -107,6 +107,27 @@ of the authority the channel holds.  Seven pieces:
   and nothing names a store; the reader's spelling,
   :func:`~risk.demotion.recorded_demotions`, answers the empty truth on the
   same absence.
+* :mod:`risk.demotion_window` — the gate, feature 327: *System requires a
+  statistically meaningful observation window before auto-demotion fires,
+  which rejects a demotion on a thin sample.*  No table, and that absence
+  is the feature: the window is a *judgement*, not a record — the count
+  of observed days behind the ratio (feature 337 carries it beside the
+  figure as *the evidence for it*), handed over with the ratio and never
+  derived here, judged against a ``minimum_observed_days`` the deployment
+  states as a required keyword with no default, because the spec says
+  *"statistically meaningful"* and names no number.
+  :class:`~risk.demotion_window.DemotionWindow` is the value that holds
+  both counts and derives the judgement (meaningful at ``>=``, thin
+  strictly below), and :func:`~risk.demotion_window.
+  demote_over_meaningful_window` is the gated spelling of feature 326's
+  act: a held ratio answers ``None`` with the window moot, a firing ratio
+  over a thin sample is *rejected* in
+  :class:`~risk.errors.RiskDemotionWindowError` with the window riding
+  on the error — no row, no store opened, and a rejection that lifts by
+  itself as the record accrues days — and a firing ratio over a
+  meaningful window demotes by delegating wholesale to
+  :func:`~risk.demotion.demote_on_ic_drop`, inheriting first-write-wins
+  and the no-store refusal rather than restating them.
 * :mod:`risk.feed_staleness` — the watchdog, feature 328: *System rejects
   new orders while holding positions when data feed staleness exceeds the
   configured threshold.*  No table, and that absence is the feature: the
@@ -126,7 +147,7 @@ of the authority the channel holds.  Seven pieces:
   feature 350's row in the :mod:`ops` member — handed the figure by
   whoever measured it.
 * :mod:`risk.errors` — the refusal vocabulary.  One base so a single
-  ``except`` catches the member, and eight nouns apart: the tables'
+  ``except`` catches the member, and ten nouns apart: the tables'
   shared address and persistence (:class:`~risk.errors.RiskStoreError`),
   the instruction's own terms (:class:`~risk.errors.
   RiskKillSwitchError`), the event's own terms
@@ -139,7 +160,14 @@ of the authority the channel holds.  Seven pieces:
   (:class:`~risk.errors.RiskClockSkewError` — a reading that is naive or
   not a moment, a threshold that states no band, a stored row whose skew
   disagrees with its own two instants or never actually exceeded the band
-  it claims, and a halting measurement that could not be recorded), and
+  it claims, and a halting measurement that could not be recorded), the
+  demotion's own terms (:class:`~risk.errors.RiskSignalDemotionError` —
+  a node that is not a signal identity, a ratio that is not a number, a
+  bound that is not a band, and a stored row no demotion can be
+  reconstructed as), the window's own terms
+  (:class:`~risk.errors.RiskDemotionWindowError` — a count that is not
+  a whole positive number, a minimum that states no requirement, and the
+  thin-sample rejection, carrying the window it judged), and
   the watchdog's own terms (:class:`~risk.errors.RiskFeedStalenessError`
   for a reading that is not a reading and
   :class:`~risk.errors.RiskOrdersStaleError` for the order path's receipt,
@@ -271,8 +299,13 @@ from .demotion import (
     demote_on_ic_drop,
     recorded_demotions,
 )
+from .demotion_window import (
+    DemotionWindow,
+    demote_over_meaningful_window,
+)
 from .errors import (
     CLOCK_SKEW_CODE,
+    DEMOTION_WINDOW_CODE,
     FEED_STALENESS_CODE,
     FLATTEN_CODE,
     HALT_EVENT_CODE,
@@ -281,6 +314,7 @@ from .errors import (
     ORDERS_STALE_CODE,
     SIGNAL_DEMOTION_CODE,
     RiskClockSkewError,
+    RiskDemotionWindowError,
     RiskError,
     RiskFeedStalenessError,
     RiskFlattenError,
@@ -337,6 +371,7 @@ __all__ = [
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
     "DEMOTION_BOUND",
+    "DEMOTION_WINDOW_CODE",
     "FALLBACK_FEED_READING_ATTRIBUTES",
     "FEED_STALENESS_CODE",
     "FLATTENER_COMPONENT_NAME",
@@ -358,6 +393,7 @@ __all__ = [
     "RISK_SIGNAL_DEMOTION_TABLE",
     "SIGNAL_DEMOTION_CODE",
     "ClockSkewHalt",
+    "DemotionWindow",
     "FeedStaleness",
     "FeedStalenessGuard",
     "FeedStalenessSource",
@@ -369,6 +405,7 @@ __all__ = [
     "KillInstruction",
     "RiskClockSkewError",
     "RiskClockSkewStore",
+    "RiskDemotionWindowError",
     "RiskError",
     "RiskFeedStalenessError",
     "RiskFeedStalenessGuard",
@@ -385,7 +422,7 @@ __all__ = [
     "RiskStoreError",
     "SignalDemotion",
     "demote_on_ic_drop",
-    "recorded_demotions",
+    "demote_over_meaningful_window",
     "flatten_positions",
     "halt_on_clock_skew",
     "measure_clock_skew",
@@ -396,6 +433,7 @@ __all__ = [
     "process_identity",
     "read_feed_staleness",
     "record_halt",
+    "recorded_demotions",
     "recorded_halt_events",
     "require_feed_fresh",
     "require_orders_allowed",
