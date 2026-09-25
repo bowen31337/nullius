@@ -11,10 +11,12 @@ triggers (equity floor, daily loss, IC decay, staleness watchdog) that the
 category's later features own, one each.
 
 This member is the category's first feature, and everything after it
-(323's halt door, 325's manual reset, 330's flatten-while-hung, 331's
-halt event ledger) builds on the one thing it delivers: **a channel
-through which a supervisor in its own process stops an order layer in
-another one.**  Three pieces:
+(323's halt door, 325's manual reset, 330's flatten-while-hung) builds
+on the one thing it delivers: **a channel through which a supervisor in
+its own process stops an order layer in another one.**  Feature 331 —
+the halt event ledger, the member's second feature — builds on it too,
+and on nothing else: it is the record of the halts the channel and the
+doors after it produce.  Four pieces:
 
 * :mod:`risk.kill` — the channel.  One row in the workspace's relational
   store (``DATABASE_URL``), held to one row by the table's own
@@ -27,12 +29,33 @@ another one.**  Three pieces:
   :func:`~risk.kill.require_orders_allowed` for the order layer's — open
   the switch from the environment so neither process composes anything
   to use it.
+* :mod:`risk.halt_events` — the ledger, feature 331: *System persists
+  every halt event with its trigger reason and timestamp for later
+  reconciliation.*  A second table in the same store
+  (``risk_halt_event``), appended to by the halting process's
+  :meth:`~risk.halt_events.RiskHaltEventStore.record` — one row per
+  event, each carrying its trigger reason, its ``triggered_at`` moment,
+  its ``recorded_at`` moment and the recording process's identity — and
+  swept oldest-first by :meth:`~risk.halt_events.RiskHaltEventStore.
+  events`, anchored at an instant when the reconciler passes one (the
+  channel's own ``sent_at`` is the anchor its docstrings promised this
+  ledger would order against).  Where the channel is the *state* that
+  stands, this is the *log* of what happened: every event, ever,
+  append-only, no deduplication — completeness is the feature, because a
+  reconciliation over a ledger with a hole in it reconciles nothing.
+  The module-level spellings — :func:`~risk.halt_events.record_halt` for
+  the halting process, :func:`~risk.halt_events.recorded_halt_events`
+  for the reconciler — open it from the environment for the same reason
+  the channel's spellings do, and split the same way on its absence:
+  recording refuses, reading answers the empty truth.
 * :mod:`risk.errors` — the refusal vocabulary.  One base so a single
-  ``except`` catches the member, and three nouns apart: the channel's
-  address and persistence (:class:`~risk.errors.RiskStoreError`), the
-  instruction's own terms (:class:`~risk.errors.RiskKillSwitchError`),
-  and the order layer's receipt (:class:`~risk.errors.
-  RiskOrdersKilledError`, which carries the standing instruction).
+  ``except`` catches the member, and four nouns apart: the tables'
+  shared address and persistence (:class:`~risk.errors.RiskStoreError`),
+  the instruction's own terms (:class:`~risk.errors.
+  RiskKillSwitchError`), the event's own terms
+  (:class:`~risk.errors.RiskHaltEventError`), and the order layer's
+  receipt (:class:`~risk.errors.RiskOrdersKilledError`, which carries
+  the standing instruction).
 * :mod:`risk._identity` — the ``<host>/<pid>`` label that makes *"a
   separate process"* a checkable fact: a kill row names the process that
   sent it, read from the kernel and never accepted from the caller.
@@ -85,6 +108,19 @@ store's readers; this member's supervisor is that reader, and its order
 layer is the writer's counterpart).  The two doors cannot disagree,
 because both construct the same class over the same URL, and the row
 behind both is one.
+
+**The ledger's component is the same reflection, under a second name.**
+:data:`HALT_EVENTS_COMPONENT_NAME` registers
+:func:`build_halt_event_store` beside the switch — the convention
+:mod:`canary` states for its own second and third components, kept for
+the reason that member gives: the switch answers *is the order layer
+killed?*, the ledger answers *what halted, when, and why?* — two
+different questions on two different lifecycles, and a caller asking a
+composed application for one must not be handed the other.  The halting
+process and the reconciler reach the ledger without composing, exactly
+as the channel's two processes do and for the same reason, and the two
+doors cannot disagree for the same reason: one class, one URL, one
+table.
 """
 
 from __future__ import annotations
@@ -93,12 +129,21 @@ from app.module_loader import register
 
 from ._identity import PROCESS_ID_SEPARATOR, process_identity
 from .errors import (
+    HALT_EVENT_CODE,
     KILL_INSTRUCTION_CODE,
     ORDERS_KILLED_CODE,
     RiskError,
+    RiskHaltEventError,
     RiskKillSwitchError,
     RiskOrdersKilledError,
     RiskStoreError,
+)
+from .halt_events import (
+    RISK_HALT_EVENT_TABLE,
+    HaltEvent,
+    RiskHaltEventStore,
+    record_halt,
+    recorded_halt_events,
 )
 from .kill import (
     DATABASE_URL_ENV,
@@ -114,31 +159,49 @@ from .kill import (
 __all__ = [
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
+    "HALT_EVENTS_COMPONENT_NAME",
+    "HALT_EVENT_CODE",
     "KILL_INSTRUCTION",
     "KILL_INSTRUCTION_CODE",
     "ORDERS_KILLED_CODE",
     "PROCESS_ID_SEPARATOR",
+    "RISK_HALT_EVENT_TABLE",
     "RISK_ORDER_KILL_TABLE",
+    "HaltEvent",
     "KillInstruction",
     "RiskError",
+    "RiskHaltEventError",
+    "RiskHaltEventStore",
     "RiskKillSwitch",
     "RiskKillSwitchError",
     "RiskOrdersKilledError",
     "RiskStoreError",
     "orders_killed_error",
     "process_identity",
+    "record_halt",
+    "recorded_halt_events",
     "require_orders_allowed",
     "send_kill",
 ]
 
 __version__ = "0.1.0"
 
-#: The component name this member registers under — unprefixed, following
-#: the ``router`` / ``book`` / ``canary`` precedent for a member's first
-#: and only component, so the member, its seat in ``app.modules.risk`` and
-#: the spec's ``plugin="risk"`` share one spelling they cannot drift from
-#: silently.  The member's suite asserts the two agree.
+#: The component name this member's first component registers under —
+#: unprefixed, following the ``router`` / ``book`` / ``canary`` precedent
+#: for a member's first component, so the member, its seat in
+#: ``app.modules.risk`` and the spec's ``plugin="risk"`` share one
+#: spelling they cannot drift from silently.  The member's suite asserts
+#: the two agree.
 COMPONENT_NAME = "risk"
+
+#: The component name the halt event ledger registers under — a second
+#: name beside :data:`COMPONENT_NAME`, the convention :mod:`canary` states
+#: for its own ``canary-dream-halt`` and that member's reason for it: the
+#: switch answers *is the order layer killed?* and the ledger answers
+#: *what halted, when, and why?* — two different questions on two
+#: different lifecycles, and a caller asking a composed application for
+#: one must not be handed the other.
+HALT_EVENTS_COMPONENT_NAME = "risk-halt-events"
 
 
 @register(COMPONENT_NAME)
@@ -165,3 +228,24 @@ def build_risk_kill_switch() -> RiskKillSwitch | None:
     module-level spellings they use instead.
     """
     return RiskKillSwitch.resolve()
+
+
+@register(HALT_EVENTS_COMPONENT_NAME)
+def build_halt_event_store() -> RiskHaltEventStore | None:
+    """Component builder: the halt event ledger bound to ``DATABASE_URL``.
+
+    The same reflection, under the ledger's own name (see
+    :data:`HALT_EVENTS_COMPONENT_NAME`): takes no arguments, resolves
+    ``DATABASE_URL`` at build time, and returns ``None`` when nothing
+    names a store — the same stance the switch's builder takes, for the
+    same reason.  Construction performs no I/O: the schema is created on
+    the first :meth:`~risk.halt_events.RiskHaltEventStore.record` or
+    read, so composing the application never touches a database.
+
+    What the composed ledger is *for* is the mirror of the switch's
+    answer: a caller that asks a composed application for the record by
+    name.  The halting process and the reconciler reach the same ledger
+    without composing — see :mod:`risk.halt_events` for the two
+    module-level spellings they use instead.
+    """
+    return RiskHaltEventStore.resolve()
