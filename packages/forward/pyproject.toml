@@ -1,0 +1,48 @@
+# nullius workspace member: the forward plugin
+# (app_spec.xml, "Forward-Test Tracking", feature 332; docs/alpha-engine-prd.md
+# §5 Loop 3 for the outer loop this member opens, §7.1 for the β₄ term it feeds,
+# and docs/nullius-tech-architecture.md §19 for the ``forward/`` slot in Z2).
+#
+# Joins the uv workspace by convention — packages/forward with this file — so
+# the module loader (src/app/module_loader.py) discovers it by scanning the
+# members the root pyproject.toml declares.  No edit to any central registry,
+# router table or app factory is needed or wanted to wire this package in.
+#
+# Dependencies: the workspace root, and nothing else.  The factory's
+# registration protocol (`import app.module_loader`) is the whole of it — the
+# same one-dependency shape the promotion, replay, dreaming, regime and
+# discovery members ship, and for the same reason: this member's first feature
+# is a *write* into a table the spec's own migration already created
+# (``migrations/versions/0108_forward_and_universe_tables.py`` declares
+# ``forward_record``), so there is no data file to ship, no download to declare
+# and no third-party numerics to trust.  ``sqlite3`` and ``urllib.parse`` are
+# the whole of the I/O, and every figure this member persists is a timestamp it
+# *read* rather than one it computed.
+#
+# A member never imports another member.  The promotion instant feature 332's
+# row carries is feature 300's ``promotion_window`` — a read through the
+# ``promotion`` member's own registry row, which is the one place the boundary
+# between backtest and out-of-sample is decided.  That seam is reached through
+# ``importlib.import_module("promotion")`` at call time, the move
+# :mod:`replay.dependencies` makes toward ``is_replaying`` and
+# :mod:`dreaming.select` makes toward §7's blend: the callable is what is
+# wanted, never a class identity, and this package never names
+# ``promotion`` as a dependency — so the two cannot drift into a cycle, and the
+# loader's synthetic module names cannot break the seam.
+
+[project]
+name = "forward"
+version = "0.1.0"
+description = "Opens one forward record per promoted signal, carrying the promotion instant it was read from."
+requires-python = ">=3.12"
+dependencies = ["nullius"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/forward"]

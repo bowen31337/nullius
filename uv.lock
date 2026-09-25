@@ -12,6 +12,7 @@ members = [
     "discovery",
     "dreaming",
     "evaluator",
+    "forward",
     "ledger",
     "nullius",
     "nullius-contract",
@@ -267,6 +268,17 @@ requires-dist = [{ name = "nullius", editable = "." }]
 name = "evaluator"
 version = "0.1.0"
 source = { editable = "packages/evaluator" }
+
+[[package]]
+name = "forward"
+version = "0.1.0"
+source = { editable = "packages/forward" }
+dependencies = [
+    { name = "nullius" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "nullius", editable = "." }]
 
 [[package]]
 name = "iniconfig"
