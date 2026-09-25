@@ -99,7 +99,10 @@ SQLite's dynamically typed columns would otherwise serve a hand-edited
 :data:`_OBSERVATION_INSERT_SQL` names ``node_id``, ``promoted_at``,
 ``observed_on`` and ``live_ic`` — and *cannot* name ``backtest_ic``
 (feature 337's ratio reads that column; filling it is another act) or
-``realized_cost_bps`` (feature 340's reconciliation), the same structural
+``realized_cost_bps`` (whose filler is no feature of this table: feature
+340's sentence prices *per rebalance*, a grain no column here names, and
+its reconciliations land in their own table —
+:mod:`forward.reconciliation`), the same structural
 discipline feature 332's three-column insert states: a writer that cannot
 name a column cannot fabricate its value.  The ``promoted_at`` it binds is
 the record's own, read — the caller states no instant, exactly as feature
@@ -445,8 +448,11 @@ class ForwardObservations:
         332's act, and the one this feature's ``depends_on`` names); it
         never reads the promotion member (the instant is the record's own,
         read once at the open); it never fills ``backtest_ic`` or
-        ``realized_cost_bps`` (feature 337's and feature 340's columns — the
-        insert cannot name them); and it never enforces a horizon (the
+        ``realized_cost_bps`` (``backtest_ic`` is feature 337's to read,
+        and ``realized_cost_bps`` is nobody's to fill from here — feature
+        340 prices *per rebalance*, a grain this table does not name, and
+        the insert cannot name either column); and it never enforces a
+        horizon (the
         90-day track is feature 335's sentence, and a writer that refused a
         late observation here would be answering it before it is asked).
 

@@ -9,7 +9,7 @@ that did not exist when the hypothesis was formed"*, and against the
 ``forward_record`` table feature 108's migration
 (``migrations/versions/0108_forward_and_universe_tables.py``) already declares.
 
-The member's surface is five modules, and each answers one question.
+The member's surface is six modules, and each answers one question.
 
 :mod:`forward.window` is **where the instant comes from**.  The promotion
 timestamp is not this member's to compute: it is feature 293's
@@ -46,11 +46,29 @@ where ``0108`` declined to hold it in a constraint: a retry is answered by
 the standing row, a different coefficient for a standing day is refused, and
 no day on or before the boundary is observed at all.
 
+:mod:`forward.reconciliation` is **the cost half** — feature 340, the loop
+§13.4 closes: *"Those outcomes become the labels that recalibrate ``β₄``
+and the decay priors in the outer loop."*  A rebalance's fills are one of
+those outcomes.
+:class:`~forward.reconciliation.ForwardCostReconciliations` persists one row
+per rebalance — the ``(book_id, rebalance_ts)`` pair feature 309 persists
+and feature 316 hashes — carrying the realized fill cost against the
+modeled cost, both in basis points, and the difference the store computes
+between them: §6.2's *"divergence between these two is exactly the
+quantity ``β₄`` penalizes"*, §16's live metric, and the fact §15's repair
+(*reconcile the cost model*) starts from.  The table is the module's own
+(see the paragraph on the three NULL columns below for why it is not a
+column on the record), the difference is computed and never stated, and a
+second reconciliation naming different figures for one rebalance is
+refused — the one-row law the record holds, one grain over.
+
 :mod:`forward.errors` is **what can go wrong**, split by the repair the caller
 must make: a malformed row, a store that is misrouted or broken, a promotion
-with no instant to open at, and a request that disagrees with the record a
-signal already holds — a second promotion instant, a day the boundary
-excludes, or a second coefficient claiming a measured day.
+with no instant to open at, a reconciliation whose book, instant or figures
+state nothing measurable, and a request that disagrees with a row an
+identity already holds — a second promotion instant, a day the boundary
+excludes, a second coefficient claiming a measured day, or a second
+reconciliation claiming a rebalance that already holds one.
 
 **The one-signal law, and why this feature is not a plain append.**  §13.4
 makes the ``promoted_at`` / ``observed_on`` pair the vintage a forward record
@@ -69,8 +87,15 @@ its reason in the comment beside them: *"a freshly promoted signal has no
 observation yet — a NOT NULL here would force a fabricated zero on the day of
 promotion, which would read as 'measured, and it was zero'."*  Feature 332
 measures nothing, so its ``INSERT`` names three columns and stamps no zero.
-Features 333, 337 and 340 fill those columns; a writer here that guessed would
-be answering for three features that have not run — the same boundary the
+Feature 333 fills ``live_ic`` and feature 337 divides it;
+``realized_cost_bps`` stays NULL for the signal-day aggregate the column was
+drawn for, because feature 340's sentence prices a different grain — *per
+rebalance*, the ``(book_id, rebalance_ts)`` pair no column of this table
+names — and lands its differences in its own table
+(:data:`~forward.reconciliation.FORWARD_COST_RECONCILIATION_TABLE`) rather
+than allocating one book-level figure across signal-days, an allocation no
+spec states and no honest default exists for.  A writer here that guessed
+would be answering for features that have not run — the same boundary the
 promotion member's own suite pins from the other side, where
 ``packages/promotion/src/promotion/forward.py`` refuses even to *name* this
 table because its rows are this plugin's to write.
@@ -116,10 +141,12 @@ record's act is a function of a **promotion instant**, and that instant lives in
 a database the deployment names — the same fact ``DATABASE_URL`` states.  So the
 store the deployment holds is one table pointer, and it composes exactly as the
 promotion member's registry does.  Features 333-340 read and extend that same
-table through the component this builder registers, or through
-:func:`~forward.record.forward_record` and
-:func:`~forward.observation.forward_observation` when they hold a URL and no
-app.
+database through the component this builder registers — feature 340's table
+lands in it beside the record, authored by the one module that writes it — or
+through :func:`~forward.record.forward_record`,
+:func:`~forward.observation.forward_observation` and
+:func:`~forward.reconciliation.reconcile_fill_costs` when they hold a URL and
+no app.
 
 **The three sibling spellings, and which to reach for.**  A caller with a
 composed application asks the seat (``app.modules.forward``) for the store.  A
@@ -134,7 +161,14 @@ ForwardObservations.over` off the composed store,
 :meth:`~forward.observation.ForwardObservations.append_observation` on a held
 one, :func:`~forward.observation.forward_observation` from a bare URL — and
 reads no promotion at all: the instant its rows carry is the record's own,
-read once at the open.
+read once at the open.  The reconciling act is the same ladder one grain
+over — :meth:`~forward.reconciliation.ForwardCostReconciliations.over` off
+the composed store,
+:meth:`~forward.reconciliation.ForwardCostReconciliations.reconcile` on a
+held one, :func:`~forward.reconciliation.reconcile_fill_costs` from a bare
+URL — and reads neither a promotion nor a record: the rebalance it prices
+is named by the pair the order path already hashed, and the figures arrive
+from the paths that measured them.
 """
 
 from __future__ import annotations
@@ -144,10 +178,12 @@ from app.module_loader import register
 from .errors import (
     FORWARD_IDENTITY_ERROR_CODE,
     FORWARD_PROMOTION_ERROR_CODE,
+    FORWARD_RECONCILIATION_ERROR_CODE,
     FORWARD_RECORD_ERROR_CODE,
     ForwardError,
     ForwardIdentityError,
     ForwardPromotionError,
+    ForwardReconciliationError,
     ForwardRecordError,
     ForwardStoreError,
 )
@@ -155,6 +191,14 @@ from .observation import (
     FORWARD_OBSERVATION_SEAM,
     ForwardObservations,
     forward_observation,
+)
+from .reconciliation import (
+    FORWARD_COST_RECONCILIATION_TABLE,
+    FORWARD_RECONCILIATION_SEAM,
+    CostReconciliation,
+    ForwardCostReconciliations,
+    reconcile_fill_costs,
+    reconciled_fill_costs,
 )
 from .record import (
     DATABASE_URL_ENV,
@@ -178,10 +222,13 @@ from .window import PROMOTION_MEMBER, PROMOTION_WINDOW_VERB, read_promotion_wind
 __all__ = [
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
+    "FORWARD_COST_RECONCILIATION_TABLE",
     "FORWARD_IDENTITY_ERROR_CODE",
     "FORWARD_OBSERVATION_SEAM",
     "FORWARD_PROMOTE_ROUTE",
     "FORWARD_PROMOTION_ERROR_CODE",
+    "FORWARD_RECONCILIATION_ERROR_CODE",
+    "FORWARD_RECONCILIATION_SEAM",
     "FORWARD_RECORD_ERROR_CODE",
     "FORWARD_RECORD_TABLE",
     "LIVE_IC_BOUND",
@@ -192,10 +239,13 @@ __all__ = [
     "PROMOTED_AT_COLUMN",
     "PROMOTION_MEMBER",
     "PROMOTION_WINDOW_VERB",
+    "CostReconciliation",
+    "ForwardCostReconciliations",
     "ForwardError",
     "ForwardIdentityError",
     "ForwardObservations",
     "ForwardPromotionError",
+    "ForwardReconciliationError",
     "ForwardRecord",
     "ForwardRecordError",
     "ForwardRecordRequest",
@@ -208,6 +258,8 @@ __all__ = [
     "forward_observation",
     "forward_record",
     "read_promotion_window",
+    "reconcile_fill_costs",
+    "reconciled_fill_costs",
     "utc_now",
 ]
 

@@ -71,6 +71,23 @@ the caller must do about it*, not by which line of code failed:
   error: it is answered by the standing row, as :class:`~ledger.store.
   TrialLedger.debit` answers a retry by its prior sequence.
 
+* :class:`ForwardReconciliationError` — the fill-cost reconciliation's own
+  row contract, feature 340's table's equivalent of the law
+  :class:`ForwardRecordError` holds for ``forward_record``.  A reconciliation
+  is two measured figures and the difference between them, keyed by the
+  rebalance they price, so the ask is refused when a book states nothing, a
+  rebalance instant states no time, or a figure is not a finite real —
+  including the near-misses a dynamic column would happily store: ``bool``
+  where a cost belongs, a NaN that would propagate into feature 338's β₄
+  recalibration, an infinity that is not a cost at all.  The read refuses a
+  row no reconciliation can be rebuilt as — a moment no parser accepts, a
+  sequence the ledger never minted, or a stored difference that disagrees
+  with the two sides stored beside it, which is a row lying about its own
+  arithmetic — for the reason the record contract refuses too: this is the
+  table §16's *realized vs. modeled fill costs in bps* metric and §13.4's
+  β₄ recalibration read, and a figure nobody can vouch for is worse than a
+  refusal.
+
 Every message names the offending value and the contract it broke, in the
 same discipline as the promotion and trial-ledger taxonomies: these errors
 are operational signals for a pipeline that runs unattended for months (the
@@ -79,7 +96,7 @@ be speakable, not merely loggable.
 
 The member raises nothing else.  A ``sqlite3.IntegrityError`` on the write,
 an ``OSError`` on the file, a promotion-side refusal from the seam — every
-one of them arrives at a caller as one of these four, because a caller's
+one of them arrives at a caller as one of these five, because a caller's
 ``except ForwardError`` guarding a forward record must not be defeated by a
 neighbouring member's vocabulary.
 """
@@ -90,6 +107,7 @@ __all__ = [
     "ForwardError",
     "ForwardIdentityError",
     "ForwardPromotionError",
+    "ForwardReconciliationError",
     "ForwardRecordError",
     "ForwardStoreError",
 ]
@@ -112,6 +130,16 @@ FORWARD_PROMOTION_ERROR_CODE = "forward_promotion_unstamped"
 #: The greppable word that opens every :class:`ForwardIdentityError` message:
 #: the signal already holds a forward record and the request asked to move it.
 FORWARD_IDENTITY_ERROR_CODE = "forward_record_already_open"
+
+#: The greppable word that opens every :class:`ForwardReconciliationError`
+#: message: the reconciliation's own terms were not met — a book, an instant
+#: or a figure that states nothing measurable, or a stored row no
+#: reconciliation can be rebuilt as.  Deliberately not
+#: ``forward_record_unwritable``'s vocabulary, because that word sends an
+#: operator to the database while this one sends them to the figures the
+#: execution path handed over — two repairs for two faults, which is the
+#: whole reason the classes split.
+FORWARD_RECONCILIATION_ERROR_CODE = "forward_reconciliation_malformed"
 
 
 class ForwardError(Exception):
@@ -221,16 +249,25 @@ class ForwardPromotionError(ForwardError):
 
 
 class ForwardIdentityError(ForwardError):
-    """A request disagrees with the forward record a signal already holds.
+    """A request disagrees with a row an identity already holds.
 
-    Feature 332's one-signal law, and feature 333's two day-scale faces of
-    the same refusal.  §13.4 makes the *promoted_at* / *observed_on*
-    pair carry a row's vintage, and docs/nullius-tech-architecture.md's Loop 3
-    makes the promotion instant the boundary between backtest and
-    out-of-sample: a signal has exactly one such boundary, so it has exactly
-    one forward record — and an observation dated on or before that boundary,
-    or a second coefficient claiming a day that already holds one, disagrees
-    with the record exactly as a second promotion instant does.
+    Feature 332's one-signal law, feature 333's two day-scale faces of the
+    same refusal, and feature 340's per-rebalance face — three spellings of
+    one law: an identity holds one row, and a second claim that *disagrees*
+    with it is refused rather than resolved.  §13.4 makes the
+    *promoted_at* / *observed_on* pair carry a row's vintage, and
+    docs/nullius-tech-architecture.md's Loop 3 makes the promotion instant the
+    boundary between backtest and out-of-sample: a signal has exactly one
+    such boundary, so it has exactly one forward record — and an observation
+    dated on or before that boundary, or a second coefficient claiming a day
+    that already holds one, disagrees with the record exactly as a second
+    promotion instant does.  A rebalance is the same shape one grain over: it
+    happened once, its legs filled once, and the reconciliation of its
+    realized against its modeled cost is one fact — a second reconciliation
+    naming *different* figures for a rebalance that already holds one is two
+    claims about one rebalance's costs, and the store refuses to choose
+    between them for the same reason it refuses to choose between two
+    promotion instants.
 
     **The naive alternative is the dangerous one.**  A store that appended a
     second row on every ``POST /forward/promote`` would satisfy the feature's
@@ -256,4 +293,39 @@ class ForwardIdentityError(ForwardError):
     class *is* one, and it is separate from :class:`ForwardStoreError`
     because nothing failed: the database answered, the row is intact, and the
     caller's repair is to stop asking rather than to fix anything.
+    """
+
+
+class ForwardReconciliationError(ForwardError):
+    """A fill-cost reconciliation's figures, key or stored row are malformed.
+
+    Feature 340's row contract, held the way :class:`ForwardRecordError`
+    holds ``forward_record``'s: at the write for the ask's own terms, and at
+    the read for a row no reconciliation can be rebuilt as.
+
+    **The ask face.**  A reconciliation is *two measured figures and the
+    difference between them*, keyed by the rebalance they price, so the ask
+    is refused when the book states nothing (non-empty text names the book
+    the order path hashed its client order identifiers from), when the
+    rebalance's instant is not a timezone-aware datetime (a naive stamp
+    cannot say when the rebalance was for, and two books' rebalances would
+    file in one order or none), or when either figure is not a finite real.
+    ``bool`` is refused first, for the reason every numeric validator in
+    this workspace refuses it; a NaN is refused because it would propagate
+    into feature 338's β₄ recalibration and into every operator trend line
+    drawn over these rows, and an infinity is not a cost at all.  No sign is
+    bound, and that absence is deliberate: a realized figure can be negative
+    (fills that improved on their benchmark), a modeled one can be (a venue
+    that rebates), and the *sign of the difference* — the model understated,
+    or overcharged — is the very fact the reconciliation exists to persist.
+
+    **The read face.**  SQLite's columns are dynamically typed, so a
+    hand-edited or foreign-written row is reachable here, and the table's
+    readers (feature 338's β₄ recalibration, §16's live metric, §15's
+    *reconcile the cost model* repair) all run later and elsewhere.  A row
+    whose moment no parser accepts, whose sequence the ledger never minted,
+    or whose stored difference disagrees with the two sides stored beside it
+    — a row lying about its own arithmetic — is refused rather than served,
+    naming the row it came from so an operator gets a row to repair instead
+    of a complaint about a value with no address.
     """

@@ -373,6 +373,7 @@ def test_the_member_imports_no_workspace_member_at_module_scope() -> None:
         forward,
         forward.record,
         forward.observation,
+        forward.reconciliation,
         forward.schema,
         forward.window,
     ):
@@ -454,6 +455,7 @@ def test_the_store_module_never_names_the_registry_table() -> None:
     for module in (
         forward.record,
         forward.observation,
+        forward.reconciliation,
         forward.schema,
         forward.window,
     ):

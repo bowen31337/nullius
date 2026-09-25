@@ -31,8 +31,13 @@ the row is either derived from that instant or deliberately absent:
   freshly promoted signal has no observation yet — a NOT NULL here would force
   a fabricated zero on the day of promotion, which would read as 'measured,
   and it was zero'."*  Feature 333 (:mod:`forward.observation`) fills
-  ``live_ic`` over time, feature 337 reads it, feature 340 reconciles
-  ``realized_cost_bps``.  A writer that
+  ``live_ic`` over time and feature 337 reads it;
+  ``realized_cost_bps`` stays NULL for the signal-day aggregate the column
+  was drawn for, because feature 340's sentence prices a different grain —
+  *per rebalance*, the ``(book_id, rebalance_ts)`` pair no column of this
+  table names — and persists its differences in its own table
+  (:mod:`forward.reconciliation`) rather than allocating one book-level
+  figure across signal-days.  A writer that
   stamped a zero here would be answering for three features that have not run.
 
 **The signal is the key, and there is exactly one record per signal.**  §13.4

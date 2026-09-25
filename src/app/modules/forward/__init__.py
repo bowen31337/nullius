@@ -14,8 +14,10 @@ members.  This one answers it for the forward member's first and only
 component: *what is the composed forward-record store?*  The category's later
 features reach the same store through this seat rather than through a second
 component — feature 334's ``GET /forward/decay`` reads the curve from the rows
-it holds, feature 337's retention ratio divides two of them, feature 340
-reconciles a third — so the one question this module answers is the one every
+it holds, feature 337's retention ratio divides two of them, and feature 340's
+reconciliations land in the same database beside them, priced per rebalance
+(a grain the record's own table does not name, in a table the reconciliation
+module authors) — so the one question this module answers is the one every
 reader of §5's Loop 3 record starts from.
 
 **The route is not a second component, and that is the decision this seat
