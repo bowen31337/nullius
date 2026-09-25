@@ -113,6 +113,22 @@ one process's startup configuration, not a fact the next process must agree
 on) and no component, and the member still registers exactly one, feature
 310's exchangeInfo store.
 
+Feature 314 adds a ninth: :mod:`router.posture` — *how an order crosses*,
+the choice §13.2 fixes as *"Post-only by default; aggressive only when
+the signal's decay horizon is shorter than the expected fill time"* and
+C9 repeats as *"taker only when signal decay horizon < expected fill
+time"*.  It is the member's per-order decision — :mod:`router.margin`
+names it exactly that, one paragraph over — and the sentence's *only
+when* is structural in it: the verb takes **no posture argument**, so
+the single door to an aggressive order is the comparison itself, made
+inside the one act that resolves a posture.  No table (the posture is
+derived per order as it is built, and two processes agree on it the way
+they agree on feature 316's key, by deriving it rather than by
+consulting one), no component (the member still registers exactly one,
+feature 310's exchangeInfo store), no clock and no I/O — a posture that
+depended on when it was computed would be a second posture for one
+order between the decision and the send.
+
 This package also *is* a component of the composed application: importing
 it registers a builder with the application factory
 (``app.module_loader.register``), so the module loader discovers it by
@@ -144,6 +160,7 @@ from .client_order_id import (
 from .errors import (
     CLIENT_ORDER_ID_CODE,
     CROSS_MARGIN_CODE,
+    ORDER_POSTURE_CODE,
     ORDER_SUBMISSION_UNHEALTHY_CODE,
     RATE_LIMITED_CODE,
     RETRY_BACKOFF_CODE,
@@ -154,6 +171,7 @@ from .errors import (
     RouterCrossMarginError,
     RouterError,
     RouterFilterError,
+    RouterOrderPostureError,
     RouterRateLimitedError,
     RouterRateLimitError,
     RouterRetryError,
@@ -189,6 +207,13 @@ from .margin import (
     BookMargin,
     MarginScope,
     require_isolated_margin,
+)
+from .posture import (
+    AGGRESSIVE_ORDER,
+    ORDER_POSTURES,
+    PASSIVE_ORDER,
+    OrderPosture,
+    resolve_order_posture,
 )
 from .retry import (
     DEFAULT_BACKOFF_SCHEDULE,
@@ -226,6 +251,7 @@ from .submission_result import (
 )
 
 __all__ = [
+    "AGGRESSIVE_ORDER",
     "CLIENT_ORDER_ID_CODE",
     "CLIENT_ORDER_ID_LENGTH",
     "COMPONENT_NAME",
@@ -246,11 +272,14 @@ __all__ = [
     "OPERATION_QUERY_ORDER",
     "ORDER_PLACEMENT_OUTCOMES",
     "ORDER_PLACEMENT_TABLE",
+    "ORDER_POSTURES",
+    "ORDER_POSTURE_CODE",
     "ORDER_SUBMISSION_ACCEPTED",
     "ORDER_SUBMISSION_HEALTH_TABLE",
     "ORDER_SUBMISSION_OUTCOMES",
     "ORDER_SUBMISSION_REJECTED",
     "ORDER_SUBMISSION_UNHEALTHY_CODE",
+    "PASSIVE_ORDER",
     "RATE_LIMITED_CODE",
     "RATE_LIMIT_RETRY_EVENT",
     "RETRY_BACKOFF_CODE",
@@ -270,6 +299,7 @@ __all__ = [
     "ClientOrderId",
     "MarginScope",
     "OrderPlacement",
+    "OrderPosture",
     "PlacementOrder",
     "PlacementResult",
     "RateLimitHeadroom",
@@ -282,6 +312,7 @@ __all__ = [
     "RouterExchangeInfoVersion",
     "RouterFilterError",
     "RouterOrderPlacementStore",
+    "RouterOrderPostureError",
     "RouterRateLimitError",
     "RouterRateLimitedError",
     "RouterRateLimiter",
@@ -301,6 +332,7 @@ __all__ = [
     "normalize_client_order_id",
     "process_identity",
     "require_isolated_margin",
+    "resolve_order_posture",
     "resolve_router_filters",
     "retry_rate_limited",
 ]

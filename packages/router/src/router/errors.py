@@ -112,6 +112,29 @@ violated, not by which line of code failed:
   configured with — the book is spelled perfectly well in the fault this
   class reports, and it is the margin around it that is wrong.
 
+* :class:`RouterOrderPostureError` — feature 314's fault, and a
+  *sibling* of every class above rather than a child of any of them.
+  Its noun is *how one order crosses* — the passive/aggressive choice
+  the sentence gates on a single comparison — which is not a fetched
+  document (:class:`RouterFilterError`), not a persisted filter version
+  (:class:`RouterStoreError`), not the router's liveness
+  (:class:`RouterSubmissionHealthError`), not the order's own name
+  (:class:`RouterClientOrderIdError`), not a pacing fault
+  (:class:`RouterRateLimitError`), not the placement being asked about
+  (:class:`RouterSubmissionResultError`) and not the margin arrangement
+  the books settle under (:class:`RouterCrossMarginError`): a duration
+  that states no unit or runs backwards, and a stated posture that
+  contradicts the terms it rides beside, are none of those repairs, so
+  a caller told any of them would go and fix the wrong file while the
+  order crossed the wrong way round.  The split from
+  :class:`RouterCrossMarginError` is the one that module's own
+  docstring draws: margin is judged once per deployment, at startup;
+  this is judged per order, as it is built.  And the split from
+  :class:`RouterClientOrderIdError` is the fine one between two facts
+  about the same order — that class refuses a name it cannot hash into
+  a key, while this one refuses the durations the crossing choice
+  cannot read.
+
 Every message names the offending value and the contract it broke, because
 these are operational signals for a pipeline the order path trusts for its
 step size and tick size, not debugging aids.
@@ -127,6 +150,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, and limiter imports this
 __all__ = [
     "CLIENT_ORDER_ID_CODE",
     "CROSS_MARGIN_CODE",
+    "ORDER_POSTURE_CODE",
     "ORDER_SUBMISSION_UNHEALTHY_CODE",
     "RATE_LIMITED_CODE",
     "RETRY_BACKOFF_CODE",
@@ -137,6 +161,7 @@ __all__ = [
     "RouterCrossMarginError",
     "RouterError",
     "RouterFilterError",
+    "RouterOrderPostureError",
     "RouterRateLimitedError",
     "RouterRetryError",
     "RouterStoreError",
@@ -217,6 +242,23 @@ SUBMISSION_RESULT_CODE = "submission_result"
 #: correct configuration states, so a token that named the noun would send an
 #: operator grepping for faults to every configuration that mentions it.
 CROSS_MARGIN_CODE = "cross_margin"
+
+#: Feature 314's greppable token, for the choice of how an order crosses.
+#: Every :class:`RouterOrderPostureError` message opens with it, so a
+#: malformed posture ask is one grep apart from the margin faults feature
+#: 315 names (:data:`CROSS_MARGIN_CODE`), which also judge one
+#: deployment's trading but judge its *configuration* once at startup
+#: rather than one order's crossing, and from the identifier faults
+#: feature 316 names (:data:`CLIENT_ORDER_ID_CODE`), which refuse a name
+#: the hash cannot read rather than durations the comparison cannot.  It
+#: deliberately does not spell ``passive`` — the sentence's default, and
+#: the answer every well-formed ask returns, so a token that named it
+#: would send an operator grepping for faults to every order that worked
+#: — and not ``aggressive`` either, which is the exception the sentence
+#: *permits* rather than a fault this class reports: the token names the
+#: subject, not the verdict, for the same reason
+#: :data:`SUBMISSION_RESULT_CODE` refuses to spell ``duplicate``.
+ORDER_POSTURE_CODE = "order_posture"
 
 
 class RouterError(Exception):
@@ -479,6 +521,48 @@ class RouterCrossMarginError(RouterError):
     the account and the mode that was supplied, because a deployment editing
     its book configuration is the audience and the repair — *margin this
     book on its own* — is one line of a config file, not a stack trace.
+    """
+
+
+class RouterOrderPostureError(RouterError):
+    """A posture ask this module cannot decide.
+
+    app_spec.xml, "Order Routing & Venue Filters", feature 314: *System
+    posts orders passively by default, which sends an aggressive order
+    only when signal decay horizon is shorter than expected fill time.*
+    This is the failure of that sentence's ask: a signal decay horizon
+    or an expected fill time that is not a length of time the comparison
+    can read (a bare number with no unit, a duration that runs
+    backwards), or a stated posture that disagrees with the terms it
+    rides beside.  In every one of those the comparison has nothing to
+    compare, so it is raised rather than shrugged into a near-miss
+    default — an ask answered "passive" for an order whose urgency was
+    never stated is exactly the silent aggression the sentence's *only
+    when* exists to prevent, wearing the default as a disguise.
+
+    **The noun is one order's crossing, and it is per order.**  A
+    sibling of the fetch fault (:class:`RouterFilterError`), the record
+    fault (:class:`RouterStoreError`), the health fault
+    (:class:`RouterSubmissionHealthError`), the derived-identity fault
+    (:class:`RouterClientOrderIdError`), the rate-limit tree
+    (:class:`RouterRateLimitError`), the duplicate-submission fault
+    (:class:`RouterSubmissionResultError`) and the margin fault
+    (:class:`RouterCrossMarginError`) rather than a child of any of
+    them, because none of those repairs repairs a posture.  The split
+    from :class:`RouterCrossMarginError` is the one that module draws
+    itself: margin judges a deployment's configuration once, before the
+    first order; this judges each order as it is built, against terms
+    that change with the signal and the queue.  The split from
+    :class:`RouterClientOrderIdError` is the fine one between two facts
+    about the same order: that class refuses a name it cannot hash
+    *into a key*, while this one refuses the durations the crossing
+    choice cannot read — the order is the same order either way, and a
+    caller sent to fix its key instead of its urgency would cross the
+    spread for nothing.
+
+    Every message opens with :data:`ORDER_POSTURE_CODE` and names the
+    offending value, because the audience is whoever measured the edge
+    or the queue, and the repair is a unit or a sign, not a stack trace.
     """
 
 
