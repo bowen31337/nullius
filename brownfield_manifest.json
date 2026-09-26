@@ -1,0 +1,5 @@
+{
+  "stack": "Python 3.12 Polars for the evaluation path DuckDB querying Parquet in place Pydantic Settings + YAML, typed and hashable multiprocessing, with Ray only if scaling past one machine asyncio + websocket\u2026",
+  "test_baseline": "greenfield build: 1 feature completed \u2014 run your test suite to record a real baseline",
+  "conventions": "pytest"
+}
