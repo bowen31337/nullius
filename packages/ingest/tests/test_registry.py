@@ -111,6 +111,7 @@ def test_a_private_registry_never_leaks_into_the_default() -> None:
         StreamClass.EXCHANGE_INFO,
         StreamClass.FUNDING,
         StreamClass.KLINES,
+        StreamClass.L1_BOOK,
         StreamClass.MICROSTRUCTURE,
         StreamClass.TRADE_FLOW,
     }

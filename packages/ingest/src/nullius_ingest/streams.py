@@ -55,6 +55,9 @@ class StreamClass(StrEnum):
     BOOK_DIFFS = "bookDiffs"
     """L2 book diffs at 100ms, kept under a rolling 90-day window."""
 
+    L1_BOOK = "bookTicker"
+    """L1 best bid/ask snapshots at 1s, retained forever."""
+
     BOOK_FEATURES = "bookFeatures"
     """Derived 1s book features computed from the L2 diffs."""
 

@@ -16,6 +16,7 @@ def test_stream_classes_are_the_section_4_1_streams() -> None:
     assert {member.value for member in StreamClass} == {
         "klines",
         "aggTrades",
+        "bookTicker",  # §4.1 "L1 best bid/ask" — feature: raw best bid/ask at 1s
         "bookDiffs",
         "bookFeatures",  # §4.1 "Book features (derived)" — feature 20's depth ladder
         "microstructure",  # §4.1 same row — feature 21's microprice, spread and OFI
@@ -32,6 +33,7 @@ def test_every_wire_stream_maps_onto_exactly_one_section_4_1_row() -> None:
     wire = {
         "klines",
         "aggTrades",
+        "bookTicker",
         "bookDiffs",
         "funding",
         "exchangeInfo",
