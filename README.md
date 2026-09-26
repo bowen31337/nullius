@@ -139,3 +139,7 @@ NULLIUS was built feature by feature, with each feature specified up front and i
 The repository contains no credentials. Configuration comes from environment variables (see `.env.example`), and local secret files (`.env`, `.env.tpl`, `claw-forge.local.yaml`) are git-ignored. Exchange credentials belong in a secrets manager. Any key-like strings under `infra/security/tests/` are fake fixtures that exercise the secrets-management code.
 
 If you find a security issue, please open a private security advisory on GitHub rather than a public issue.
+
+## License
+
+Released under the [MIT License](LICENSE).
