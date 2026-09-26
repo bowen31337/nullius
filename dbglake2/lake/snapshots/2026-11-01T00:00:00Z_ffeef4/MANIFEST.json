@@ -1,0 +1,1549 @@
+{
+  "content_digest": "de79aa61ace1640d54217b8ec5b6f9c56d406f3e414f64fa4ec8c3abf334e2ca",
+  "files": {
+    "bars/symbol=SYM00/date=2026-09-01/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "d88099bfd9c5af57319a45ef7af7f1b338a128db5f739ad5f6d15c1d480fc46c"
+    },
+    "bars/symbol=SYM00/date=2026-09-02/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "ce51b2b6a3a72e01ab483ebc32958d91b010d3f67cf0787498af305bae2eff2e"
+    },
+    "bars/symbol=SYM00/date=2026-09-03/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "c6e2c7a7788c5a9d98374092f348f92450470aa359c964791d9eac962d7787bc"
+    },
+    "bars/symbol=SYM00/date=2026-09-04/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "7fe895625b83e608dbeaa661ff6c40136a01e61174e235eb39803e62303f0d13"
+    },
+    "bars/symbol=SYM00/date=2026-09-05/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "b76230843bf39a429fb8655ae0d2d57ba68de5b29a219fa5ea2f23368eae8008"
+    },
+    "bars/symbol=SYM00/date=2026-09-06/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "99df7cb043a73561d5e972494ee254efdabf98136f168138640e85bc765088e1"
+    },
+    "bars/symbol=SYM00/date=2026-09-07/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "dc31fe55e9040a3868f31e25cb19d2367882e1b6ecd8738ae6b17f565c65010b"
+    },
+    "bars/symbol=SYM00/date=2026-09-08/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "875e49cd5be86f34246f820df751720aeef5fd22057342623e78074ada7861d0"
+    },
+    "bars/symbol=SYM00/date=2026-09-09/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "65c02798d95027ebc4705791e9d7242af6d0d5b372abd6140c8207d73072f94e"
+    },
+    "bars/symbol=SYM00/date=2026-09-10/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "22aeabd27edb660e0e55dcc14293bb870c1920beaeb24a2da442f0c984d18a2f"
+    },
+    "bars/symbol=SYM00/date=2026-09-11/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "d4136ffa64102fc8e8957075a04075bc73aa8eb3b42ad1dae32fcc71c0f09bd6"
+    },
+    "bars/symbol=SYM00/date=2026-09-12/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "db80fc90ba76406d88326c8ad9a87e3ba222eeb016ea4aa5c714744072fdeac8"
+    },
+    "bars/symbol=SYM00/date=2026-09-13/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "1e94937a6f895eb83bd5af52dd06d240e9edf6f9369e69f6bb3549a4bb6ef68e"
+    },
+    "bars/symbol=SYM00/date=2026-09-14/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "ea399336164f11f78add6a62c603088562c1fcff044e93e92b7ff595a2446b54"
+    },
+    "bars/symbol=SYM00/date=2026-09-15/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "ca8bd632cd0ef9096c16b3a650fd676aabe641f875dbb1f65595ef824791af6d"
+    },
+    "bars/symbol=SYM00/date=2026-09-16/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "a09c488b1c974a030d58b28acd877a5386245834c1b57bc31146224c7b2fee88"
+    },
+    "bars/symbol=SYM00/date=2026-09-17/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "407e444f1807c11f9c78325976742a9557e9da628abda85d1dea8aa0089007dd"
+    },
+    "bars/symbol=SYM00/date=2026-09-18/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "3731a7d8669147715f0abe699358f4c821bdd0a47d96dcfe0ce0a8e0e692ca28"
+    },
+    "bars/symbol=SYM00/date=2026-09-19/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "8123577a91ec3d6018b55bf621d5a00d0f38f03daef346037777a1615ae751e3"
+    },
+    "bars/symbol=SYM00/date=2026-09-20/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "bde97f7da8b81d411d9661b40931a7ae8d2d1c9041ecbc914398ba9283f1b927"
+    },
+    "bars/symbol=SYM00/date=2026-09-21/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "c5e1e8f070f20a4b58a9f89f828f1918feb1be9227024f94f6fab65075d3ad8e"
+    },
+    "bars/symbol=SYM00/date=2026-09-22/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "d6e5c2fb68ad1d6af5396b50b6c6536e4e0e10b1a23b6d841eb00e0eba3e0426"
+    },
+    "bars/symbol=SYM00/date=2026-09-23/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "0a4671be26a83df1c3d97b4564e21823e2c06bf4a0aac7d169241e287d44edd9"
+    },
+    "bars/symbol=SYM00/date=2026-09-24/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "181a02a1940b2170f81950332ebab319e3a038eb720bf5aece5e79ed79740d1d"
+    },
+    "bars/symbol=SYM00/date=2026-09-25/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "5e407753426f6aa7122939757da4eca055926cb2cb2a4f851adde5ef23e7d426"
+    },
+    "bars/symbol=SYM00/date=2026-09-26/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "b10cc5ffaf19c426f4f215237c35d5bddbfb6d49278bf92f6c1319592c9cfce3"
+    },
+    "bars/symbol=SYM00/date=2026-09-27/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "5d14a7b422130191f719a39b7f6089a055debc97d0a18e073378937783cbf364"
+    },
+    "bars/symbol=SYM00/date=2026-09-28/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "76ba957cfa220da094348f4eb111db4e87fa2b201d5ebfff8ea1e9e7eb613d32"
+    },
+    "bars/symbol=SYM00/date=2026-09-29/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "c74a25820c05650f7033c297dafc3436c6e1a69979017410a3ccb2d168a8742a"
+    },
+    "bars/symbol=SYM00/date=2026-09-30/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "effba93a4c6a2622e29929e5a7ae694b14e9a23dd81f4d69282b02a099ba23bf"
+    },
+    "bars/symbol=SYM00/date=2026-10-01/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "9666c119531bee5d225d9c0098c2c6e76476aab222ae32d9715d04484dc134ea"
+    },
+    "bars/symbol=SYM00/date=2026-10-02/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "1af6f574a88673678336ad9c5daaaa0526fefe22bb78417e22505561b2ff95a3"
+    },
+    "bars/symbol=SYM00/date=2026-10-03/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "3868b84ec5b550604ab0e642eebc20a3b2fba41595b54b2da4bcbfc47e54f7f0"
+    },
+    "bars/symbol=SYM00/date=2026-10-04/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "41d5bb187c0415f5f304eb13ffdf7969c24ef8c5b25d888d272b30b1d9b7d5a5"
+    },
+    "bars/symbol=SYM00/date=2026-10-05/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "b8143c087a54c7f8ba7623e260166723154ccafe0b9bf5c8290fdf2513a98010"
+    },
+    "bars/symbol=SYM00/date=2026-10-06/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "9820c167685866440847ceb4bd1a3f5f9b529e26d006d33d9be08c1fdb95540f"
+    },
+    "bars/symbol=SYM00/date=2026-10-07/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "7d670fa1af4321d64eb4a8f904830806f847b45bf3aba707ef15d77a225c2ca6"
+    },
+    "bars/symbol=SYM00/date=2026-10-08/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "48a2caced73b365342f1c0d433c3d9c6804f2bf12fe5276b241bf1548d0477e0"
+    },
+    "bars/symbol=SYM00/date=2026-10-09/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "adc92050bfafb00978af55b3d02e3f9bc1bb34b992891fa0e778c30a800c8809"
+    },
+    "bars/symbol=SYM00/date=2026-10-10/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "1a1907d1f8f476722dc98c841307273526619c9ce6d2cb092695faa78b7018e9"
+    },
+    "bars/symbol=SYM00/date=2026-10-11/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "6b2651c6a865475d74f95a205d6618fa755a413b2863d2488f575c880989435f"
+    },
+    "bars/symbol=SYM00/date=2026-10-12/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "3f7a77e3942823203a81e7c0a67565b3767678b5096dc33386bb97b2edf8958b"
+    },
+    "bars/symbol=SYM00/date=2026-10-13/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "776631a3aa929496ca4d22eefec086d006d3942711a0c2981117d89bd6b0e297"
+    },
+    "bars/symbol=SYM00/date=2026-10-14/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "d93f7007547fe69aa20b17463acb5f10637ed421c36d709522d20e90008dc3b8"
+    },
+    "bars/symbol=SYM00/date=2026-10-15/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "dbccd61db373a702d03eb1bcabb221931a35e4c525f371856bacdec43fda12d1"
+    },
+    "bars/symbol=SYM00/date=2026-10-16/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "65ccbb0d02ae1d8022b485bad8d4bbe9414f73f286c0cd883cb4fa566460cdc8"
+    },
+    "bars/symbol=SYM00/date=2026-10-17/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "41b8d1e5cd0b5119549edc58e119f3776cdff9b0250dc1532b0090cc2ace05f9"
+    },
+    "bars/symbol=SYM00/date=2026-10-18/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "57559c83b1af125b362a7747ee3bef70225d8cec28e1cbc89adde337623667c8"
+    },
+    "bars/symbol=SYM01/date=2026-09-01/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "36b9fc72452b1ad560921adc486a023ae9c025c299b6feb3e9278c46c286f140"
+    },
+    "bars/symbol=SYM01/date=2026-09-02/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "5ee947a825a60d0de75be930c7fa24664b3476c9db760eff5414a53f8071aa5f"
+    },
+    "bars/symbol=SYM01/date=2026-09-03/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "0320857958e1884e4893f3d294c2d7ad66331f9b12d430d65511bbe70e0457d5"
+    },
+    "bars/symbol=SYM01/date=2026-09-04/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "9a955cb083d7e75dc3133baabebc9f353b467555a97a367c52a9277faed3214f"
+    },
+    "bars/symbol=SYM01/date=2026-09-05/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "3a5a70481685b711ebb8115fdb05f30eca9687ec7ca703b89995602d52566bfe"
+    },
+    "bars/symbol=SYM01/date=2026-09-06/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "d310f15acf7f96f4416166acd1d115de74c080e9de7ab12105b24bd40ae1c3a3"
+    },
+    "bars/symbol=SYM01/date=2026-09-07/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "be9a45ccdb19fd7a8cf44017985c2fe5592188241d8feea0d9b89eaa6a0a0d7f"
+    },
+    "bars/symbol=SYM01/date=2026-09-08/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "6412bdb611a1e92766398ace809685626f0f504e0f9e4287d031bda106531261"
+    },
+    "bars/symbol=SYM01/date=2026-09-09/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "24d23eb949c4e3efbdb1cb919f652a3c094be9e94b87de631b1851c56d1f1e87"
+    },
+    "bars/symbol=SYM01/date=2026-09-10/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "c6b5151e3da48a9eae5f77624a40a8acb8d7cba9da57f1b6517f1b644d14bd52"
+    },
+    "bars/symbol=SYM01/date=2026-09-11/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "705de8c8c65887ccb059dfdda33eb9bcab3889cf203295805b8207059bd6903a"
+    },
+    "bars/symbol=SYM01/date=2026-09-12/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "b30b8259daba4701792814f19ec35aea40b55041a92d9eb9972b7022a997f1f2"
+    },
+    "bars/symbol=SYM01/date=2026-09-13/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "3676dfccb6307866a9aab17555df3404e9c8b95dd995b6fae32478d8a2f6a495"
+    },
+    "bars/symbol=SYM01/date=2026-09-14/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "798f5fb7b365120845289205d3b5e0b8add89105806700bf9760ce13a7fac992"
+    },
+    "bars/symbol=SYM01/date=2026-09-15/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "8516977784a6a330349c1984f6ea87c4d41bec89c9efa509a261d61b52b54bd7"
+    },
+    "bars/symbol=SYM01/date=2026-09-16/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "6308ad8f1e9bab8b3652e785a3c4bfa98774b11b16f4f335cc879a591355c41f"
+    },
+    "bars/symbol=SYM01/date=2026-09-17/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "fa32b44bd617804ff88bd9947c1567f7f01b3998bc70a8f260025bf791153852"
+    },
+    "bars/symbol=SYM01/date=2026-09-18/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "c06535e1262b52de967faadef4a817050bf586f5dd93735bd39dcbcf8a417aba"
+    },
+    "bars/symbol=SYM01/date=2026-09-19/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "4e2fe85705842135eaeb1f3fa5f6e5e9226e642489334fe33979bb86c1326fd9"
+    },
+    "bars/symbol=SYM01/date=2026-09-20/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "ea0b68626290a823362a7c6622e283b5d188048d307ba3632916edf4d513767f"
+    },
+    "bars/symbol=SYM01/date=2026-09-21/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "918715d2189a2a1e73aec41dbd4c878949c3f237876cba614e7fdb4e583c3b89"
+    },
+    "bars/symbol=SYM01/date=2026-09-22/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "3d15996b783f1aa2c4edaacce282048ddf2fa29756e391dce5fcabc6a4051f9c"
+    },
+    "bars/symbol=SYM01/date=2026-09-23/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "2dce877f7648721ed6f112aa6bb4f611f14ad98a3668e6f6b1bc868b9c696eb3"
+    },
+    "bars/symbol=SYM01/date=2026-09-24/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "502ab93922f6c28943fab8075e4d66ac14d2a5c0ac9666537709f14c4163d769"
+    },
+    "bars/symbol=SYM01/date=2026-09-25/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "f1b3b3b261d4fe58d6ddecb87110777440ba911848c45e50eca6f362657496da"
+    },
+    "bars/symbol=SYM01/date=2026-09-26/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "f417e3077fd8831a7a47b85ef12bf3ee2348de9d1f5e3ce654e2bc5e837b1c0d"
+    },
+    "bars/symbol=SYM01/date=2026-09-27/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "c9f91203cd1e36e9c77ea7a8c3e599971f6939ec6c8d187d3653c5fb73062bf0"
+    },
+    "bars/symbol=SYM01/date=2026-09-28/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "8e21817147ebed2505386f1fe604afb3445fc78988c9eecb8ef917f26f3ae3e3"
+    },
+    "bars/symbol=SYM01/date=2026-09-29/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "a36229efe8519cb9fde3b807b791796d3de61bae5a1b9dbd578588155da7bec5"
+    },
+    "bars/symbol=SYM01/date=2026-09-30/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "aa14db79ba41800944b67c3d5898a75cac9663c41bc6ab8e80c264ee50ec18e5"
+    },
+    "bars/symbol=SYM01/date=2026-10-01/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "60043a723bf5fe1f55f68071c6b61b98291cef6d080e00adcb5074ace105cad2"
+    },
+    "bars/symbol=SYM01/date=2026-10-02/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "48fd0517dedac88156a64229b3d8490be8c8789dcafbdd8671cb7839c912a6da"
+    },
+    "bars/symbol=SYM01/date=2026-10-03/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "6ae33bc09522c6546fc49982e973db29fa3a14d3701d1e7312967f5ce5741555"
+    },
+    "bars/symbol=SYM01/date=2026-10-04/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "3b6d608060eac43da989c42f3bdccd6311f932b4ec4750315b30f68430e683c6"
+    },
+    "bars/symbol=SYM01/date=2026-10-05/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "51c4c6807045bfb70c243237a8cc56294564966d5a0b8e5d62ed230a86f4248f"
+    },
+    "bars/symbol=SYM01/date=2026-10-06/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "811419b86f32da31ef47195117882ad64329a94c385b3a82d861ae7a2b907df3"
+    },
+    "bars/symbol=SYM01/date=2026-10-07/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "a4c08b32b068f8f33da8ea3f81ef5ace079a960a42f7bf7119be79718b9365e5"
+    },
+    "bars/symbol=SYM01/date=2026-10-08/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "4244cdba7ae6a22e5fd4095a616d8d57b14f15bd75d4543e02896f90d1b79f44"
+    },
+    "bars/symbol=SYM01/date=2026-10-09/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "21e2296e2826d8f269229f963b8bd4c9b4610d3723e5437f93cfa729243e5afc"
+    },
+    "bars/symbol=SYM01/date=2026-10-10/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "6eb50ebd75b8faf9e69469be0b472b64f7f1bd37da53e229bb619aed58e9edd7"
+    },
+    "bars/symbol=SYM01/date=2026-10-11/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "b11b1c14804c1e4a2a9c3844d9552c1735c6159c677a6c17f402cc6cc357fddb"
+    },
+    "bars/symbol=SYM01/date=2026-10-12/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "d81042c34b23978ba65cd06f19ea17d18a5fd74537223bcd49c9a5cb2af31ec5"
+    },
+    "bars/symbol=SYM01/date=2026-10-13/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "b6312cbbd9ebe6415d9897cc51408258e6e00438a9daf3602d09f71c17d72b5f"
+    },
+    "bars/symbol=SYM01/date=2026-10-14/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "8d7ae94eb452ac272844e37ef2bcbf5fb1cfebf1c04a82f79a815deccaedbd33"
+    },
+    "bars/symbol=SYM01/date=2026-10-15/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "e012b9c5a920d860e1587b8285a8230155a703d9cee23c92a74d809ef19e4072"
+    },
+    "bars/symbol=SYM01/date=2026-10-16/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "d1e150d97beae4b21273cb1a20c3a31772c1de2876c44b214da6b4468c26ab1e"
+    },
+    "bars/symbol=SYM01/date=2026-10-17/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "43b4ecab4065b5d7f84eba9095de203c50107cd7e1c1bae0d0b720cb931e4888"
+    },
+    "bars/symbol=SYM01/date=2026-10-18/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "9ce1f67383a752516b398139a3cbeffed7228ff1632aae251c20025c5742b277"
+    },
+    "bars/symbol=SYM02/date=2026-09-01/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "9501a10d46eef7b9b1c612c8d48754a6211e5f3423113c089ef75e5139223b4b"
+    },
+    "bars/symbol=SYM02/date=2026-09-02/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "33acb00dec02ab3ca276c532750458187499f523e66b590b73701ba9b72a442b"
+    },
+    "bars/symbol=SYM02/date=2026-09-03/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "36e24faeafd1071d6dd7312027d5acd48b0d9fd599114261d02b29b234a7cd9b"
+    },
+    "bars/symbol=SYM02/date=2026-09-04/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "877863e46255546eabbcf0671aa11467f562b7374a08aefb9558a31c6de75378"
+    },
+    "bars/symbol=SYM02/date=2026-09-05/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "41401df3d3ac3560c5139940537db79b8b9465c760e2095871c0d74611fd1aa4"
+    },
+    "bars/symbol=SYM02/date=2026-09-06/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "83e89e866119bec68e7d5fbdbf316bf1a588db7146d40205ca0e8ffb3428d73a"
+    },
+    "bars/symbol=SYM02/date=2026-09-07/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "48ed20cf3b43f89d1550050e84dfe1ebe7954b7a421500080b273217d6e34f86"
+    },
+    "bars/symbol=SYM02/date=2026-09-08/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "de859444e9ae1337d3273b33123deb14ce3f5147c461b216cd48b29e2a85ecc5"
+    },
+    "bars/symbol=SYM02/date=2026-09-09/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "1284c8ebda323a5e917d0d21b244ead0c738649babf5655579276e2df45db722"
+    },
+    "bars/symbol=SYM02/date=2026-09-10/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "08ab00e19e1d883b00d60c71520b8760beb1089e1de6ba64d3566cfd17077ba2"
+    },
+    "bars/symbol=SYM02/date=2026-09-11/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "212b0ca750cfe660c857696df9c29879beaf17d045b09e366c1e631a9fec4179"
+    },
+    "bars/symbol=SYM02/date=2026-09-12/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "8d61deb183815c2bd29e002d4bafb0887942f7fd6a8004516c859b704f02ee21"
+    },
+    "bars/symbol=SYM02/date=2026-09-13/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "3b39ff1ab7baac2650e94137c8e39cb03d8879e98c6a6f4e779a532a2d8c8f60"
+    },
+    "bars/symbol=SYM02/date=2026-09-14/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "1d0e430df0d1970eda171124e7e3cc63d439d6f13e18f75a171cfac869d56019"
+    },
+    "bars/symbol=SYM02/date=2026-09-15/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "9e2dc4eb856e01c16e6cba62233ff7f3a569ea02bfd8a4d39be49a7bb37fbcab"
+    },
+    "bars/symbol=SYM02/date=2026-09-16/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "9d32ef837050c7b494410ac7b40dd02e45812fa97f830349871818cb25d28528"
+    },
+    "bars/symbol=SYM02/date=2026-09-17/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "190fdbffb5970c9c2f0652b2ec8f07f6a62f8776d4bf0fdc88afa2aaa3ef68dd"
+    },
+    "bars/symbol=SYM02/date=2026-09-18/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "0f4952c3c3e20b0bad005c0897594ae35a8206dd56eee79bef55d44d52d2638e"
+    },
+    "bars/symbol=SYM02/date=2026-09-19/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "2421d2300b270e018135b41d6a31f74010505ea75932898f4dfc60e2b1c86350"
+    },
+    "bars/symbol=SYM02/date=2026-09-20/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "467a0714e7e6e568b5ccb46db66b1bc074b71cbab0f50a9cbd5f7911981db763"
+    },
+    "bars/symbol=SYM02/date=2026-09-21/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "da79b333f6ec94993f3174095f9d80111df19cb64c758e68446ac89ebf89b88d"
+    },
+    "bars/symbol=SYM02/date=2026-09-22/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "fc17c0c3a3a32528e80871a52f43eed1470064b0efcbe4d4b4b09d399f35137d"
+    },
+    "bars/symbol=SYM02/date=2026-09-23/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "633526b876742390a32c80347bfa100782897ce358307ad87d359c409b33b538"
+    },
+    "bars/symbol=SYM02/date=2026-09-24/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "411a4a217e925e979691e3d277b181b7e58c57cf38ad7d6864bf4ec09fb272b2"
+    },
+    "bars/symbol=SYM02/date=2026-09-25/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "cfa2ece7dc00ef12c838bca0cc3e6fd5cf32cb1f13804e045d0fe3a49ce83ab4"
+    },
+    "bars/symbol=SYM02/date=2026-09-26/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "c4a00ee305cbf5630fbd30559c003350ddf7dc2c813ce63cd2071912ea7fab40"
+    },
+    "bars/symbol=SYM02/date=2026-09-27/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "8ce62e051881ee2c0232a977f65a0a6660306ab32df277dddb819e823e532cc3"
+    },
+    "bars/symbol=SYM02/date=2026-09-28/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "c7bfa5c40f653042dbf0c40d13bc3f35b50056f907a88632d8562a448b2a7da8"
+    },
+    "bars/symbol=SYM02/date=2026-09-29/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "009725162526b8bf94e5a34fa2c92815003e0f48456d2ff1845448898f42ace3"
+    },
+    "bars/symbol=SYM02/date=2026-09-30/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "15aff03a3a16fdbfbb69498145359714064ae41a434f7bd930d46621aed0138a"
+    },
+    "bars/symbol=SYM02/date=2026-10-01/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "dea567508320ef85d82b7c5744bd212eb92b61741beb327d58a13ed63dc20dec"
+    },
+    "bars/symbol=SYM02/date=2026-10-02/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "7217de48851b27b8040e78d3c8f79a47815487af81954a32df9d1938d544973f"
+    },
+    "bars/symbol=SYM02/date=2026-10-03/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "ed5682984015cd3a365e1efead82a058d96692f06de5748501c4e23d5d2c7f45"
+    },
+    "bars/symbol=SYM02/date=2026-10-04/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "324a1f4368cc00cbc984313ab501bbea539b854c95a2bc6446374296e1477771"
+    },
+    "bars/symbol=SYM02/date=2026-10-05/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "3a88f5b9a4c7787d8b10d39827f4cff6945f4afc8e8c9fae7c7bad35652b5a4e"
+    },
+    "bars/symbol=SYM02/date=2026-10-06/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "35b050aeba83e07aeb60ebdec52ce9bb60a3fab6441e98cd583e9af3a2352e0f"
+    },
+    "bars/symbol=SYM02/date=2026-10-07/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "29148c14f4d4f2bf077f4dbcac469e19642773963357371fddf21ed682c88a3f"
+    },
+    "bars/symbol=SYM02/date=2026-10-08/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "e0df1dd3c07b89e9ea48edf6c2391d8cad0d008263afede61e6bc5dacc86ecab"
+    },
+    "bars/symbol=SYM02/date=2026-10-09/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "5c00f876c7d2bdfa8debc46c236c6b3c17a560d327ac14592cd2a8e1deecf7e0"
+    },
+    "bars/symbol=SYM02/date=2026-10-10/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "37e5b07b5bf84f49d0267980d53538b9d81c52ea5ad62216405468df819725e2"
+    },
+    "bars/symbol=SYM02/date=2026-10-11/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "88fcee33fa0e2742ead56eb661d2ac10ad1581ab09e64bc8e4ace7f67087a787"
+    },
+    "bars/symbol=SYM02/date=2026-10-12/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "cad355593f8a64e2e22cfc298afb9abb313e40e1929ae4d55fa2f92fe78f5c44"
+    },
+    "bars/symbol=SYM02/date=2026-10-13/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "5b22247867683573c176dfed6f6b251c5011281e723d6be272998938c84b6811"
+    },
+    "bars/symbol=SYM02/date=2026-10-14/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "73ad5181af81f637b7e76aa3f77c24c142f6cab0e506359986ab0c2a0d6d8fe8"
+    },
+    "bars/symbol=SYM02/date=2026-10-15/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "61c79930e5618090cc663f540758f1976a3b3e26700b3b4d370b298bed14b7f8"
+    },
+    "bars/symbol=SYM02/date=2026-10-16/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "b4022e2e7ff1e30fefd8e782f927446f7c8a086abfd4fc4d2d0bf268df179502"
+    },
+    "bars/symbol=SYM02/date=2026-10-17/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "ef4eabc66d11435372cbb35ba182e289a6af578eb4b689474089319b48bd48b8"
+    },
+    "bars/symbol=SYM02/date=2026-10-18/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "ccb0e97a895a7d4e28a3dc865f0a9ff4ec5a06f1d8a025c5408243f0315f744e"
+    },
+    "bars/symbol=SYM03/date=2026-09-01/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "d385e74dcec9d1e7dd2e6cb817d33d5784212637d8d75927c7389f336515f635"
+    },
+    "bars/symbol=SYM03/date=2026-09-02/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "4814eadaeb47f5ec0f1b9105889d7ca23dd65023dbe1c0deece1a2b0bdcd9a13"
+    },
+    "bars/symbol=SYM03/date=2026-09-03/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "1e3a1d4645bedb9d563f6b2080339f3fcb98b23b1dc2b5ef0841ca12cd16acdd"
+    },
+    "bars/symbol=SYM03/date=2026-09-04/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "8934436c87ec22c5b9e71affc51ac78d5e1e0353f8bd8256aaa552b1913f1ccb"
+    },
+    "bars/symbol=SYM03/date=2026-09-05/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "3e173cc7f5ff460156ad454083f6d4cdfd35b53f3e82158dd9ce8462bd8ef19a"
+    },
+    "bars/symbol=SYM03/date=2026-09-06/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "c82b1f7f8f87b3c810352fb047235367df0b65fe4ee72eb64317ea2dba964e82"
+    },
+    "bars/symbol=SYM03/date=2026-09-07/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "72d7621030a6463c272096068fa771537ddd16c8e51f7979099b7271c02eb739"
+    },
+    "bars/symbol=SYM03/date=2026-09-08/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "4f8bf0c25cdb732419d2881d4b3ea500bca640fb362dab552a94ce416f432dc3"
+    },
+    "bars/symbol=SYM03/date=2026-09-09/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "035823d5a9f61b7b8e88f5a2acd099cc20e54e62d8e8f2a14e4f9f96325f4344"
+    },
+    "bars/symbol=SYM03/date=2026-09-10/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "c82ffe48f795a03786fa39177b0947bf9893d432f562fd9e65a23a17dd4c5fdc"
+    },
+    "bars/symbol=SYM03/date=2026-09-11/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "931fa840a0afa0d4120d9094fee0f7052ea3d82d94dfc894aa632a8271bbf857"
+    },
+    "bars/symbol=SYM03/date=2026-09-12/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "f1ae9e1abadaf8f92c4257d0bc91bade1473b94e0ed865e44be095c75579469a"
+    },
+    "bars/symbol=SYM03/date=2026-09-13/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "869a88208612cb7fa32c24299154f91008fbb024ee4d171ce82c37e3cd261d52"
+    },
+    "bars/symbol=SYM03/date=2026-09-14/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "1099bad847eb27eaaae197e22b7d63a5c395ab130ff65d18ce277564a8f4f3de"
+    },
+    "bars/symbol=SYM03/date=2026-09-15/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "939f77a0b6e6eb10817c84a89c8d06456e46849e60728cc24b651d35c2b91d86"
+    },
+    "bars/symbol=SYM03/date=2026-09-16/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "48c118ee64724d20c46b319e44821fb269e226ae6d35af450cc512eaf9d90b51"
+    },
+    "bars/symbol=SYM03/date=2026-09-17/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "431d0733e359826105e12b549e4b87b01fafdebacb260b0556ccfcd217006ec9"
+    },
+    "bars/symbol=SYM03/date=2026-09-18/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "78c1829ef72a36e32626e6616ffd3fa4ced81b9626edef8d22cd3e1957b4bc82"
+    },
+    "bars/symbol=SYM03/date=2026-09-19/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "e5d39e331294385b5c8623dfa29fd2c04de367cf3ac5cd4513fa552425709101"
+    },
+    "bars/symbol=SYM03/date=2026-09-20/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "e932e7d7144a7c2fe5cab8eb7c6e1ec12eb4bd68e29924c9ea99cfb71b34e460"
+    },
+    "bars/symbol=SYM03/date=2026-09-21/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "aca376b1b17d75a630bb630369d7a444b13e335c21144f55e751ecbbd97d369a"
+    },
+    "bars/symbol=SYM03/date=2026-09-22/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "ff03bfa83433e7a879d0e8facf42d1d5b1bc686281d1ffd70ae659af67491260"
+    },
+    "bars/symbol=SYM03/date=2026-09-23/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "4ba7d24a7e04b6840e8467df185becc145e07d9c49ac636e72e3b1ae4e23a81e"
+    },
+    "bars/symbol=SYM03/date=2026-09-24/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "bf6cb24fa6b7b6bf0d5ef69408eca6f75c32900fbbe8e196940073179d8db408"
+    },
+    "bars/symbol=SYM03/date=2026-09-25/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "96a35a43d0103463c74e09b09cf01e5a56fd50c212535ad79c929a82d7d1da9f"
+    },
+    "bars/symbol=SYM03/date=2026-09-26/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "0589ad8611515b91880f9afe909fe759f8a3232304329d4fcfb92ddfdc920cfc"
+    },
+    "bars/symbol=SYM03/date=2026-09-27/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "9056cb4962628608182bf7033c1bdec122aaf1aec94d4dd937edbdc6c6f758d8"
+    },
+    "bars/symbol=SYM03/date=2026-09-28/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "ff571cabc1ae673761210d7ec48f1f35d979b5035854714c5f42728a73a7e259"
+    },
+    "bars/symbol=SYM03/date=2026-09-29/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "8c202cfe642cba74e68e0652f6737f0a2280ff91541258c4638dd8b6e585c679"
+    },
+    "bars/symbol=SYM03/date=2026-09-30/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "17b9a8293c953efced4c53d9fa695c12ee8ff805b1544d3fa38dee81b986ac5a"
+    },
+    "bars/symbol=SYM03/date=2026-10-01/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "ea0e29d098728e8b55064a0bf771627ebc5849e64f6d485dfb32a17ff247ec73"
+    },
+    "bars/symbol=SYM03/date=2026-10-02/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "2cac4e2e3ab3a527a0a1e160f64e8917a98a3cc561fdb831c1868b3d8e4f24a7"
+    },
+    "bars/symbol=SYM03/date=2026-10-03/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "2e47f0ec709ecd3dfe5dd0b67c630300671a103d2c15ae46c339a35be5be324e"
+    },
+    "bars/symbol=SYM03/date=2026-10-04/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "dbfb686df5aa77d96b30d761484dd8bc2bc4a3b76a3eeb0ee265be548d1249e7"
+    },
+    "bars/symbol=SYM03/date=2026-10-05/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "82328fcf32f2e90021a94ba9f2cddcd9ab5017cca2bb3f7a70c4b328cc7800af"
+    },
+    "bars/symbol=SYM03/date=2026-10-06/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "5d68cdf5d967e0ab247a070d0d89dd26925090322431595583bcc8086102eb73"
+    },
+    "bars/symbol=SYM03/date=2026-10-07/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "0fb0f923a97a6a1fc40263405c87100fab0067ba7be5815e29a63c8f30d5712d"
+    },
+    "bars/symbol=SYM03/date=2026-10-08/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "d4906df87855f56a6d523aaa006776c45a510ca652e755a907f161aca8bf8f22"
+    },
+    "bars/symbol=SYM03/date=2026-10-09/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "3aadc3bfbbc817f1f2708701ee7e2d81448d5741bbe8d70a31c5d5845736dd51"
+    },
+    "bars/symbol=SYM03/date=2026-10-10/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "5bba23de2368f908e1c5086e2a51cc621bab8765d3cd1ba857f3f4db626779d9"
+    },
+    "bars/symbol=SYM03/date=2026-10-11/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "e6eb578c3feabb6ff4d091bae7b44d5d251748c2628819f2e2378fc09780007f"
+    },
+    "bars/symbol=SYM03/date=2026-10-12/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "4e368304ff00f48a68780fc0753a2ff05f22a7f3eae65f418eb7c163f877f5b9"
+    },
+    "bars/symbol=SYM03/date=2026-10-13/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "2a4e18644ace9477a1e61a2f741e26a002842dd85b2a445a269cfe2b6b4e44d5"
+    },
+    "bars/symbol=SYM03/date=2026-10-14/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "6c63c3f4d48cffb425e3ff20a42619d2c3b44339b1b50935369cca781eca7695"
+    },
+    "bars/symbol=SYM03/date=2026-10-15/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "d502dc05f041aa3442cd211e94e2d9f006f9ec2cd7307c91fb284c49e2405be2"
+    },
+    "bars/symbol=SYM03/date=2026-10-16/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "85f41ebc50fa328e0120dcac9a97661133e44538876c7dcaefa44a964eed0c52"
+    },
+    "bars/symbol=SYM03/date=2026-10-17/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "cb440d6e108eb601e54021edeb75f7111718436e00183068bf3919cc009dd76c"
+    },
+    "bars/symbol=SYM03/date=2026-10-18/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "2ce5930542add864bef37d57f268b7f324b151c14901b8902c76422dcd196bd9"
+    },
+    "bars/symbol=SYM04/date=2026-09-01/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "0814928e22d9884244b1cadb611a4e2a3bc26a4381d88fd1df7173eb3fa8ecab"
+    },
+    "bars/symbol=SYM04/date=2026-09-02/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "064af14ba7bbad98e8851db63c708c6a542fa03fe575d61cd5ce9d78dec89e50"
+    },
+    "bars/symbol=SYM04/date=2026-09-03/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "65c2b8192a140b0076b203199420f4cb90c612476febfe48e41af344e7b27eac"
+    },
+    "bars/symbol=SYM04/date=2026-09-04/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "e5765a119061158c20842fbac653c56cf8f21ea7481d8bbf8c3399b9b41936dd"
+    },
+    "bars/symbol=SYM04/date=2026-09-05/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "22ec9fac0c485b4a8632b9db6be66a1af128c63f3260ac6f1a68080f28046b3c"
+    },
+    "bars/symbol=SYM04/date=2026-09-06/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "887f7eeaa45ca07b83c165057171b35b263fd66520ea0f6dc41277a62b7f95f1"
+    },
+    "bars/symbol=SYM04/date=2026-09-07/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "e9746a5b4edfe357c4bf69caed587d796b1ae0843245ca03e6646c17f14f5ee5"
+    },
+    "bars/symbol=SYM04/date=2026-09-08/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "39d7d91ac78bfe38ecc983020af516589c20010875a63a7c73f793a45699b0d8"
+    },
+    "bars/symbol=SYM04/date=2026-09-09/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "55a2518398ae7d740686b3dbb04dc5e15d87aedc4aee7b21e73e01cc7d9c1433"
+    },
+    "bars/symbol=SYM04/date=2026-09-10/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "c996973ebd2672482c31d9b96e2e222878c739ac09aa81fc7e1c4ceea9ea0a84"
+    },
+    "bars/symbol=SYM04/date=2026-09-11/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "54fe1c22c7b0c83eaae785aeb2eb83b6b654f65ea87e027cb48da8cb3d4976f1"
+    },
+    "bars/symbol=SYM04/date=2026-09-12/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "ac3c05eaae0425779eab45c0802ab083aa0344b5dcb290a512a8f32f6f81fd43"
+    },
+    "bars/symbol=SYM04/date=2026-09-13/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "cc7dbf4414a3d17740bcc9f1533fede841913147f7635bef6915e48a889ece35"
+    },
+    "bars/symbol=SYM04/date=2026-09-14/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "2a2bbd044040771686bd4d00449b00f5f5e50ff61b9560599aebea8ccfb9aff6"
+    },
+    "bars/symbol=SYM04/date=2026-09-15/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "5c5932fa9930edcf3b66d5ef9a365883e0efabbed98a150ccf8d277e4cbf167b"
+    },
+    "bars/symbol=SYM04/date=2026-09-16/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "34d0c184d8d41d0920ffea74d606e33550c8ed61270ed39b305fb14755816405"
+    },
+    "bars/symbol=SYM04/date=2026-09-17/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "fec3fd7d4af0dbbb4cc493765e3221f6086c8adb03104ef92ad6478acdec754e"
+    },
+    "bars/symbol=SYM04/date=2026-09-18/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "cf63c51cde234a0cd96ea6c553efff0aed861797dfed8ab18778b451ac9c9f01"
+    },
+    "bars/symbol=SYM04/date=2026-09-19/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "051239a58b0cb8edeab6817823722b77ebe13f0884478ceadf7ba892a636882d"
+    },
+    "bars/symbol=SYM04/date=2026-09-20/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "5f968b9d15080aef784052777b1e93cef25e02b5a72fdf166321d9020d0ea94b"
+    },
+    "bars/symbol=SYM04/date=2026-09-21/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "f8bfe3fd805d0b7a80c75780258e6137621e03f58db0109c62dbbb415b3a3d69"
+    },
+    "bars/symbol=SYM04/date=2026-09-22/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "cc4cf56ba11ed77017c86b89042a3dcf75d4c1e564b6add203f044f7849ff0ef"
+    },
+    "bars/symbol=SYM04/date=2026-09-23/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "302376fad254d6dce951e325a956f2a1dfdfcd4faa69047da24d6c28ecdc70cd"
+    },
+    "bars/symbol=SYM04/date=2026-09-24/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "92fc656982b7bc829da2c7359cd83f602d7653dcda0fe5c128e2a55e71d80ca2"
+    },
+    "bars/symbol=SYM04/date=2026-09-25/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "cf0cf76fbe2ecc38c0152b94ab6b1e0c1a0376811648186e016fb3daf16001f6"
+    },
+    "bars/symbol=SYM04/date=2026-09-26/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "01ab7b1894b8ae2b3ac3632b4f76240f91ae301eea7d734cb19486306467435b"
+    },
+    "bars/symbol=SYM04/date=2026-09-27/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "f4b74da929d5619e6c8c49027edf9aad4557222718512e24fe056e2bdffb9e9a"
+    },
+    "bars/symbol=SYM04/date=2026-09-28/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "8f825247b4eb1642b5d0b80baa2320791fa077fc595c26172e16b2b5fe53d872"
+    },
+    "bars/symbol=SYM04/date=2026-09-29/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "3c4ea4042569aa8f81ad6ef74a2a1783aaea9ae0dc57c1053316b563ceca709d"
+    },
+    "bars/symbol=SYM04/date=2026-09-30/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "a641d7c5223881b3a2d1d9d5d3de6c3ed4acd98f6e7a1b0f3bbbed175ea87fda"
+    },
+    "bars/symbol=SYM04/date=2026-10-01/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "64db4d1ca4fac123acebdc0a1501715206a6c02630b4e8111565a4d2174f910a"
+    },
+    "bars/symbol=SYM04/date=2026-10-02/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "92d3177ebd68dd29ee4435366913e76eaaee8e1ea5687d869e0ada93685c4cc1"
+    },
+    "bars/symbol=SYM04/date=2026-10-03/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "98572af2c0599c0e4dc7ff5c704dacf7799d8893d6e9736ccbb35c7c80a3bd5c"
+    },
+    "bars/symbol=SYM04/date=2026-10-04/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "f5ee12afdeec66119a69858077b6e8833fbcd7b1e306ab85f6df38aea729b827"
+    },
+    "bars/symbol=SYM04/date=2026-10-05/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "f1c1d68f1cf23ba40faa173ac80b8d272b79488ac0f74ba501c78b91481f3260"
+    },
+    "bars/symbol=SYM04/date=2026-10-06/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "a497d38d7085cdcb2acd3c87a024db6cc58c3f2c997465ef6d040c3763a66351"
+    },
+    "bars/symbol=SYM04/date=2026-10-07/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "1e07b5317996a6679385321e3428af11597e44df353d079cb0cc94f2475694da"
+    },
+    "bars/symbol=SYM04/date=2026-10-08/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "b7ff93eaff000e36342cc964e06ff90ed3f5303182ef56b5841ad1f5d8ca3cf6"
+    },
+    "bars/symbol=SYM04/date=2026-10-09/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "5db6cab2785dacf2656bc035d2b9956a20a40a1a4e91c40f91961f63365bd260"
+    },
+    "bars/symbol=SYM04/date=2026-10-10/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "b6e6a372626d36bdc712a715ad157a095e77d0e8bc48aba21740f40068fb3cf1"
+    },
+    "bars/symbol=SYM04/date=2026-10-11/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "3b2ef9e0bf25134cbcf2d4695572aa3f2a9280315cd193fa7804531a72fe0dc2"
+    },
+    "bars/symbol=SYM04/date=2026-10-12/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "95da37c14714f7d3f900532f783aef3c8cbac4608bdf9e9f0293d8837fec7a9e"
+    },
+    "bars/symbol=SYM04/date=2026-10-13/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "442e37fb8ed594d066ca745227175b6a5dddd3f820cf01ed2fccc7fd09eea937"
+    },
+    "bars/symbol=SYM04/date=2026-10-14/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "c088a09e240d537f99c3d320b76fa8934bc51145af8863e8e68918d6a93009c3"
+    },
+    "bars/symbol=SYM04/date=2026-10-15/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "a3a8a65ba635c9360b93d7c578597011402115b55197f50a2625c00a1a9498cc"
+    },
+    "bars/symbol=SYM04/date=2026-10-16/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "8826f0ea793fdf701194097067eac91ecfad5e4532aae4f62d520f2f6de8f5d4"
+    },
+    "bars/symbol=SYM04/date=2026-10-17/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "1b860fb98d5750f76dbd2a4b9209193550cd863f70aa4e572b4c225e9c32d0f3"
+    },
+    "bars/symbol=SYM04/date=2026-10-18/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "f3c1763e8323b77e064b74f5e353aae158c74127eef15cd95863c87b1f4b2b3f"
+    },
+    "bars/symbol=SYM05/date=2026-09-01/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "503211e9b3637978db65f87c070fb306133e6476b006e4c4ff1cc03a9604d045"
+    },
+    "bars/symbol=SYM05/date=2026-09-02/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "c30bd1723947ebaf01786dc25c09d0bec656117a8bfb82c8f4d512c21ef17f80"
+    },
+    "bars/symbol=SYM05/date=2026-09-03/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "f6219844ee45dda558a5aef0ebdeb9c4805917f62d005ab3678997ae5faa6eb5"
+    },
+    "bars/symbol=SYM05/date=2026-09-04/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "018b51fcfdec42b48f55dbc816ba7cdea93b5a862b0cd9e642a6394d05a13431"
+    },
+    "bars/symbol=SYM05/date=2026-09-05/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "79c246e032d4b0701a38d65899f1bb874797228dccecf49594c1cb71ac5fb9a4"
+    },
+    "bars/symbol=SYM05/date=2026-09-06/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "71db2c5b7da9f1d0513ddf38afbe440973ec576098db861046c639ace4d04890"
+    },
+    "bars/symbol=SYM05/date=2026-09-07/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "b3344988512fdc3a21ec7f824cf1b8e61896f506aca1c8febda53ed024635eab"
+    },
+    "bars/symbol=SYM05/date=2026-09-08/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "b5e2d1b5909ca7bbfc2080ce9a441109769456ba96194c80138c3eacc536b5cf"
+    },
+    "bars/symbol=SYM05/date=2026-09-09/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "33486f9a558e460f47e9e4ff11818669dd5d39a0514115ca894c4c97bd17ad5b"
+    },
+    "bars/symbol=SYM05/date=2026-09-10/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "834c7b99d61de6739290472253152d5fd45cac1ca8e9e18696a1a7de2ab5da2a"
+    },
+    "bars/symbol=SYM05/date=2026-09-11/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "70508267db2dc86274adbdc2fa2d7c194c7d9b6399580fca965290d1da35338d"
+    },
+    "bars/symbol=SYM05/date=2026-09-12/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "e673a8d50c1d7fc657a4a31edf94b3741beb098a6d923132218102abbb9d42ae"
+    },
+    "bars/symbol=SYM05/date=2026-09-13/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "b31a65cb2e2ce0ced248ec388bfb694b5a78aaea531ec108b18915a7d07f1246"
+    },
+    "bars/symbol=SYM05/date=2026-09-14/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "198d2243b59f275ae883f338144974a23a5243cbfbb0b25d4133b0c827d0cb2e"
+    },
+    "bars/symbol=SYM05/date=2026-09-15/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "9738f19c89363ec7260a34f2095453761294df648489c7c559e329c2a349d657"
+    },
+    "bars/symbol=SYM05/date=2026-09-16/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "6ec7d9a031b83a0b5fae9a83ab918ddad2d744ff0b512df5c1b7e30835a251bb"
+    },
+    "bars/symbol=SYM05/date=2026-09-17/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "2ef0efc2af6f1fcff15231cf4fa0f8ba9197f5e4d55a22005c99feea359e1d68"
+    },
+    "bars/symbol=SYM05/date=2026-09-18/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "fb53add7ec967f0c977d0dbfe8c7ee96020cd30e648f319bc9cb292465c9c6a5"
+    },
+    "bars/symbol=SYM05/date=2026-09-19/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "5018475909dd30caf770384a3ee5adccc7d4a39aa5b07265335296db25854bf8"
+    },
+    "bars/symbol=SYM05/date=2026-09-20/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "7327fbd396f318019b86667205144a822eed42c8e9612add9eabbbac897e2c1c"
+    },
+    "bars/symbol=SYM05/date=2026-09-21/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "2f7f105acc07a7e0c966765e566802ab7f919b00ff5a71d8ac619eea402f9b27"
+    },
+    "bars/symbol=SYM05/date=2026-09-22/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "a4c843ff5986242be96cb471736a04235504bc0dddc6c45efd272e42b68d061f"
+    },
+    "bars/symbol=SYM05/date=2026-09-23/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "bb894337ace10da1f46bcaa17f408c7c62f4045ec750a63c87406191913b750b"
+    },
+    "bars/symbol=SYM05/date=2026-09-24/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "299c15d15e8ab121743ab6c5c0fdcf3b5bac5468ea74e7607235e67ae6d66a24"
+    },
+    "bars/symbol=SYM05/date=2026-09-25/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "ea4ec3b3bffdd5a64d7dfc6aaf13e368ac0447976f468632ba015d63eb811ce6"
+    },
+    "bars/symbol=SYM05/date=2026-09-26/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "56ef5c0ce8967c8e5a5933696ac6934e7cc33aa42d5d00ad1cc53a2c61fa1c57"
+    },
+    "bars/symbol=SYM05/date=2026-09-27/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "3fa1f95e94ee407b0b5dae65fa42dee1f6b97a8bc8d392ca2f686ee95e5db32e"
+    },
+    "bars/symbol=SYM05/date=2026-09-28/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "4d3717efa86796d5a45bfb470c20037d3a5b272838123834544feef213178a4c"
+    },
+    "bars/symbol=SYM05/date=2026-09-29/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "9e7f9601b7a34706fbe0672d6e8c4c09a30802e1c7801d87fbc6acb517f5d93d"
+    },
+    "bars/symbol=SYM05/date=2026-09-30/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "fe03aa29efd8f6d421e88a109be4f70502bbff107d6ac2d76446ff4c0c297623"
+    },
+    "bars/symbol=SYM05/date=2026-10-01/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "a67483bbe5667c497d67d7e025798550cb1d41ce1edbdc06c730a4002c9c538a"
+    },
+    "bars/symbol=SYM05/date=2026-10-02/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "9ed53656cabfe6e3647a15ed012856ed8a0067fe91c4148c6028b6041fb31034"
+    },
+    "bars/symbol=SYM05/date=2026-10-03/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "d7b234fc4552f11e9825682e543ad128b37065fa8ba019ee87fbb7d1f1a4c97c"
+    },
+    "bars/symbol=SYM05/date=2026-10-04/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "49e77aff7694d6def451aec3a2c4f94a9b231d7b87e3449e0135de99e746457e"
+    },
+    "bars/symbol=SYM05/date=2026-10-05/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "ab5f7d29c171dcb71fde1b28833993412d44e005f5bb05d477c99c4a5af3ea96"
+    },
+    "bars/symbol=SYM05/date=2026-10-06/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "8287f2a195b0a7fc6200f39f4df8bd81915537948802caab56d55e9bfeb2b572"
+    },
+    "bars/symbol=SYM05/date=2026-10-07/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "ba4c95ee448b41ac959d2415eeb64dff537cbda3fca3d8b6e740557fdaf4e700"
+    },
+    "bars/symbol=SYM05/date=2026-10-08/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "cf6929cae1366754a732d3cd8e439ebca56903ebf577d87dcb42c6d2c23dc27e"
+    },
+    "bars/symbol=SYM05/date=2026-10-09/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "5d47341b901aeb87069bc425ac48bbc38bc11826aa784eb956600c4363efae0c"
+    },
+    "bars/symbol=SYM05/date=2026-10-10/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "1d3f21b980b1c64b263b54eb5bddd5a4c17f1b46865d37527f0b9695b8c04674"
+    },
+    "bars/symbol=SYM05/date=2026-10-11/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "fd7c8134328e3fd75ae6c9d065ec845bf364b1497dceb2be20b651c4eb556a4c"
+    },
+    "bars/symbol=SYM05/date=2026-10-12/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "2cf35a900344791861d56fbdfa6181ca5ed73b1f4fea45338c1de21c74ce8a81"
+    },
+    "bars/symbol=SYM05/date=2026-10-13/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "bb79e95706e0f056d9d799ac697ea34e5a5780d7e253d2361061a3b9a3dabfbd"
+    },
+    "bars/symbol=SYM05/date=2026-10-14/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "c046913968ef33254d180b6648928276e903087edac88ab0cc625ae8badf6414"
+    },
+    "bars/symbol=SYM05/date=2026-10-15/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "241d3984d73707dbc7e5b563d4e5632fecd85fa852bf1de83ccdbfb6f25ea142"
+    },
+    "bars/symbol=SYM05/date=2026-10-16/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "6d8b13bc36500cbe61dc1ce46fe2d29624d95f4edc72b3908b8a58bdfd419bcb"
+    },
+    "bars/symbol=SYM05/date=2026-10-17/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "9b221feacce1f95abbe183b27d4c70834e739ae2c1ab1947ed62eaad19d72159"
+    },
+    "bars/symbol=SYM05/date=2026-10-18/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "6c248f8547d8e82299fa471df0e6504be23866862748a6bbb9d1078272b84787"
+    },
+    "bars/symbol=SYM06/date=2026-09-01/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "7761c94ad85e6a89a65a10a559776034e9c46086965e17cd4f294f49eb97ded7"
+    },
+    "bars/symbol=SYM06/date=2026-09-02/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "8374ed4006bdb5e2d7ff2d70e05baab4fea4148e566a88913c9a13446813b78c"
+    },
+    "bars/symbol=SYM06/date=2026-09-03/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "317908add3d5385198180d5d2c7d58a21bf26991ab495c3aaaf02af8d4a4f6d3"
+    },
+    "bars/symbol=SYM06/date=2026-09-04/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "050a4d66b41f4f28a65ea75d6cefb236f927b9ba694e798ed218713effe4d93e"
+    },
+    "bars/symbol=SYM06/date=2026-09-05/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "948f4968399975bb7de2774631c639aa8571c7e2c27eb263b45b744cd5be7e77"
+    },
+    "bars/symbol=SYM06/date=2026-09-06/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "c81ce2b618c818df6c85b5d9706bb94159ebe031567eb6d98f2f1a45d5e63c17"
+    },
+    "bars/symbol=SYM06/date=2026-09-07/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "8e377798d58d3661309fe23dc5c7b0c4012fbd2b2ac53bb7d161eb2deb5d0af1"
+    },
+    "bars/symbol=SYM06/date=2026-09-08/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "bdfbe882205a76d11007c68469483b462e389f18f2ff5891df13903306fde30c"
+    },
+    "bars/symbol=SYM06/date=2026-09-09/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "7d8bcafe5dff08aa56ad3342d2b6696112ea36d7176b4c2bf8ef21b107097600"
+    },
+    "bars/symbol=SYM06/date=2026-09-10/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "acd90ba6779540200505aece9d4f7f15bfe686df445fcd7150cb2cc46a2c531e"
+    },
+    "bars/symbol=SYM06/date=2026-09-11/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "da471cc4b22fb48137d1b124dafd7680a8163dbeae5ecd89c9fcc561a9e2e73b"
+    },
+    "bars/symbol=SYM06/date=2026-09-12/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "07d2f434268f327c9809bdb5a68ecaadf4b5fca65b56ec8535af5ce667718c90"
+    },
+    "bars/symbol=SYM06/date=2026-09-13/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "256909344f7f1da7185f502b557c392611bf03d07e97c0c058e67867a7c23cbf"
+    },
+    "bars/symbol=SYM06/date=2026-09-14/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "48c2cb068660c552cfdc6f7da764ca98d0cc21731465ebee1b28a22498963b58"
+    },
+    "bars/symbol=SYM06/date=2026-09-15/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "812b40412a3015db3d82e990f22b2ad4b6d5e73e7fdf9a5c552e18482d78295f"
+    },
+    "bars/symbol=SYM06/date=2026-09-16/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "071371a5ac9fb16b945fd238c07b37eda4da140343ebfe2510f261b91a6e478f"
+    },
+    "bars/symbol=SYM06/date=2026-09-17/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "b70d05456f6ee15dd7855431e907d4bb4d3d981d796c3dbd84c52cb8fe2d8693"
+    },
+    "bars/symbol=SYM06/date=2026-09-18/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "81d003a22c48f53b8f1e5e94ecc994593f03d4e678fa0d360eb35f97cb262aad"
+    },
+    "bars/symbol=SYM06/date=2026-09-19/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "40d9781f09e66bc0b65a77d49d4ac89287290d34f18e2d5a3ab300e155e59f8a"
+    },
+    "bars/symbol=SYM06/date=2026-09-20/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "6cdbba0b14b606712c7cb7cb7c1c7b5708d02286032eba827f1d1bb8f61fd439"
+    },
+    "bars/symbol=SYM06/date=2026-09-21/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "1c282f5aa1ab0c3994eb34d366821e495f0aaf73e3d07884d6dab574e3f99f7d"
+    },
+    "bars/symbol=SYM06/date=2026-09-22/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "5de34a43f008d1c740faac516e8f11fd0800008ebdd0d53535dde57a22a04051"
+    },
+    "bars/symbol=SYM06/date=2026-09-23/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "fd8604421be3b944a05fd074f682804ad98f29b8da6749b4d1a4f62500b3c20c"
+    },
+    "bars/symbol=SYM06/date=2026-09-24/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "e318cd169b7dad4852054d624bba0f03289f76f46f6f1e53f35bff7539ee62ca"
+    },
+    "bars/symbol=SYM06/date=2026-09-25/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "18221bd9b2343b245db86b8961c227b184c08dac6d81759c65431146ed1aab04"
+    },
+    "bars/symbol=SYM06/date=2026-09-26/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "731491594f29709cad5e3203d9992592fd0856df3b82f916958fb185320116e0"
+    },
+    "bars/symbol=SYM06/date=2026-09-27/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "78959c91e381f8b80acd86eee5abe83f898e18a6e2433373792728d569c38115"
+    },
+    "bars/symbol=SYM06/date=2026-09-28/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "bf4d757fee2940c556d49857913fb9f2e8fdc199fde702f002ca72cdf57e6ecc"
+    },
+    "bars/symbol=SYM06/date=2026-09-29/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "3fa158b4891bd3ee69993c407dcba39fda6cee61e0d38e8f4d8f3312acd4fe3b"
+    },
+    "bars/symbol=SYM06/date=2026-09-30/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "78a3dc97cfb91bd13c04df0c5f914d98c49b4148988eb4b932f2b6a3ccae9929"
+    },
+    "bars/symbol=SYM06/date=2026-10-01/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "d2efefb313aabdbfebb3270429d5489037540e7a353c18e2ca7502a70d588c42"
+    },
+    "bars/symbol=SYM06/date=2026-10-02/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "42925dc1550a9b17629ceeaaf7525670e5f607ee78ec739191a49049de8b6d8a"
+    },
+    "bars/symbol=SYM06/date=2026-10-03/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "99f151b8b238d3b4d8b7eac4ad5f8ff61453a747b43b1a350651a2ecfea754a9"
+    },
+    "bars/symbol=SYM06/date=2026-10-04/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "185fea637c97647ea036f45a34d30d750ec882ff2829cf7987acb8f6b03439ab"
+    },
+    "bars/symbol=SYM06/date=2026-10-05/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "e64d087ea34c273415fd3302c83b7c4fdff72b85a77dc4aa8f7286337c04359b"
+    },
+    "bars/symbol=SYM06/date=2026-10-06/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "3bb4e0f5e9fa252af6de6e7ec06a0ce8ea8d3328079c25917e9140759b0305db"
+    },
+    "bars/symbol=SYM06/date=2026-10-07/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "7cb4dea5afe8e33d59b25d3dffaa2800a9036a2993d9af47c2f734379908bdca"
+    },
+    "bars/symbol=SYM06/date=2026-10-08/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "b346558ebfba09600dc8752b560e85ee7b8176d3e531d4c0cd78af0a4492593b"
+    },
+    "bars/symbol=SYM06/date=2026-10-09/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "9e78230f1b98efeb808b156ae604e3f66b22772289e0efd3b4a18cfc9ec20f99"
+    },
+    "bars/symbol=SYM06/date=2026-10-10/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "be6bd51a2400d0bc37a24c045c7df4cdbbe78ab006a89ea8971b3eb5421140b3"
+    },
+    "bars/symbol=SYM06/date=2026-10-11/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "3e8fb8c2e584def066e61f8160585ca110ec30df8ecb91a6b745edd7ffddb3fd"
+    },
+    "bars/symbol=SYM06/date=2026-10-12/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "6697e4dbf966fb3efc6c380480e1b2f400ce6d3e8978d89ebef9b0b078210938"
+    },
+    "bars/symbol=SYM06/date=2026-10-13/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "795252bef08b8e8f96f093059dd7ea9fe2620bb11b75bd15f6b27d1e23f7c942"
+    },
+    "bars/symbol=SYM06/date=2026-10-14/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "d2f32e1f0fd103f5a15eeb5774d102cd0ded9bd847a3605d88ab41ff492ca807"
+    },
+    "bars/symbol=SYM06/date=2026-10-15/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "483f06c08640b140c59de3df5a8c72f465737e8cf811fe41ecd5c0e818011f83"
+    },
+    "bars/symbol=SYM06/date=2026-10-16/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "39c28930180262d79254eb575e6f5a2ae9874ad19ad29e1770f594dafd7d6a71"
+    },
+    "bars/symbol=SYM06/date=2026-10-17/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "81e7bfe8a6e5c383de08558f091081a4a456be5c5100ddf0cf64f192146ddc78"
+    },
+    "bars/symbol=SYM06/date=2026-10-18/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "de2cab72f6284fbc1263bf33231a78c82b37962ced32ec936fb4e8825f6bfe57"
+    },
+    "bars/symbol=SYM07/date=2026-09-01/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "531e562a0b1ffa90761524860121e74de39a411c524b49ab5d8d96469f7e2374"
+    },
+    "bars/symbol=SYM07/date=2026-09-02/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "f97e172ab2bca71762aa744133a5095d68eac69697963e122bca0a11ff7ac9e7"
+    },
+    "bars/symbol=SYM07/date=2026-09-03/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "2cd29036cdbdae07d373a8ee8ef7d94739c93b5bde501d9a1587689469597cbf"
+    },
+    "bars/symbol=SYM07/date=2026-09-04/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "63afc4fcd5984b282a050c02642b7d94304046f0d83e814c58b47c4160500626"
+    },
+    "bars/symbol=SYM07/date=2026-09-05/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "6724ff3de79326525b1484dfd6019f9192bb4e91a1bc47a3a025cbcf27153342"
+    },
+    "bars/symbol=SYM07/date=2026-09-06/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "0282b7cddecb674de03840142d5fe35bf47ee6340e67800903f0803dca3ece3e"
+    },
+    "bars/symbol=SYM07/date=2026-09-07/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "8eacc8ce1c2348e38303a05c582c260582c60bc8436b29ab5a05bd2655930543"
+    },
+    "bars/symbol=SYM07/date=2026-09-08/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "c235fb52623460f46fa765b4bce1a5e39048f00747b1ea7dae5c7f8b9266b18c"
+    },
+    "bars/symbol=SYM07/date=2026-09-09/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "916f1003adbf7f7d59c22f54acc79dceda4745248a4ce8f0aa3f5d9cf3cf6aae"
+    },
+    "bars/symbol=SYM07/date=2026-09-10/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "53d874eef01937cb359d663c9ad732acc038ad15e0c886a58a436f41ceaf344d"
+    },
+    "bars/symbol=SYM07/date=2026-09-11/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "e597a7fd0e333a7f552f79e20b81931df1ad276dd9252fb429f0603ca63f0867"
+    },
+    "bars/symbol=SYM07/date=2026-09-12/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "e5411677e890b0b810f0eddf55a256097809d5b161e11ac4559e63240307656e"
+    },
+    "bars/symbol=SYM07/date=2026-09-13/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "2ac2970287e04cb0720ebe385413644817cc39fad841f2cec31c8d34f60cc2da"
+    },
+    "bars/symbol=SYM07/date=2026-09-14/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "7ca21dcbdb928d3dcfc1bef08975bb8e32f3707607c1b72c3ff5e620a78b227a"
+    },
+    "bars/symbol=SYM07/date=2026-09-15/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "3f04c30b384809529268c4231cf8c51258ccab9b76f6b993fca8a99216b41a04"
+    },
+    "bars/symbol=SYM07/date=2026-09-16/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "e5b26553b2673be825ad90fb1f2710af499c1e435fc73d6fd71484208f3405f0"
+    },
+    "bars/symbol=SYM07/date=2026-09-17/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "1d14294751e3b52a65f2505659a6e5635b79cc40ef6eccd50d6c525a273098e9"
+    },
+    "bars/symbol=SYM07/date=2026-09-18/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "5e556b6f7531a5d2219ae2eddf0808699942117eaf5e825116ffccb6b46b248e"
+    },
+    "bars/symbol=SYM07/date=2026-09-19/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "49702fd941e30d04882c4d55577f3789c13a7f3c86d50d8e01a925843017b50c"
+    },
+    "bars/symbol=SYM07/date=2026-09-20/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "bfc79871a5c347389388996ad99a5fbc096beda979e905fc0e4bbcfc495e1225"
+    },
+    "bars/symbol=SYM07/date=2026-09-21/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "6059be7865fda447c3780d330ba7006a645e6747aaa5867e625f032ef1e6f10c"
+    },
+    "bars/symbol=SYM07/date=2026-09-22/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "2d43f05ec9b365a060ac3ef8cef91e26d618956d2826b094efe9df28f7ae743d"
+    },
+    "bars/symbol=SYM07/date=2026-09-23/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "cd760cf0835b809349c2ea780fe3ea29085405b96e744fe127bc642f9d0a2bc5"
+    },
+    "bars/symbol=SYM07/date=2026-09-24/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "fac0410cc290612ac5c313972dfabd815e4d1144f6bd88557bf3a605880e640b"
+    },
+    "bars/symbol=SYM07/date=2026-09-25/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "f786abe6ee8bfeeb0557223496103e33d370e91ca804c971631879b33dda6948"
+    },
+    "bars/symbol=SYM07/date=2026-09-26/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "f2efcf30f378d8f4257b4a6f99f9b8b23d560adc80750f73058394724d18775e"
+    },
+    "bars/symbol=SYM07/date=2026-09-27/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "449fa4713fd12448749375f20a68c0cc78181cf8d652016f9ab14ec6e87bf6d0"
+    },
+    "bars/symbol=SYM07/date=2026-09-28/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "eb58ae7d9bd36442d49314c5d254f7d15355def667eadf22e89f06441683be5b"
+    },
+    "bars/symbol=SYM07/date=2026-09-29/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "8a43a2c8ab091db4a3c2d65072cab3b6858a64bf843d2dfc71aae19261c2dc9c"
+    },
+    "bars/symbol=SYM07/date=2026-09-30/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "f4a863d0236bdf6304763c569d6ef34056e72c8a9301d32781278dcedd604384"
+    },
+    "bars/symbol=SYM07/date=2026-10-01/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "085b3f4057d488bd4679bc09376823ff7190c5d93b7c108e56355df1fb221e01"
+    },
+    "bars/symbol=SYM07/date=2026-10-02/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "ab02fe66df5b726e7c84373e45461c4d25ae1f8201eeff47343771a4462e827f"
+    },
+    "bars/symbol=SYM07/date=2026-10-03/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "b873bcc1a30bd9e8ba9a61e36374003f3de59fc8ba697cad8e7318b2cfdeb1ce"
+    },
+    "bars/symbol=SYM07/date=2026-10-04/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "095bcf19d188c1ef1e0df9581b4f4546cecad1cb3a63fc881954c2d9703691a2"
+    },
+    "bars/symbol=SYM07/date=2026-10-05/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "9dcf29ebdbbc39908a2cbb900910b17cde81e4cb1b69c860b6a9c9517262061c"
+    },
+    "bars/symbol=SYM07/date=2026-10-06/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "2051a1eab2e19c50746763c719b5b795955b01c2c291ddc1b388f475280efe1f"
+    },
+    "bars/symbol=SYM07/date=2026-10-07/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "b108c384f38b9892e510f18a83e2832bba6af1498fa004f4e60a565ce287eaa8"
+    },
+    "bars/symbol=SYM07/date=2026-10-08/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "7782ed3072f4efeee485276bd6d84bceab09f75893579c5b98d33dc25c4c2aae"
+    },
+    "bars/symbol=SYM07/date=2026-10-09/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "b24bbf1e32115d0f1f2e9d255fa9b80a2824da4aa9534ad68b35b92ed703b1d5"
+    },
+    "bars/symbol=SYM07/date=2026-10-10/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "abbfa7ead3d168db78158246ee316d94fbc83d4408e038a438f2d24b739d1bae"
+    },
+    "bars/symbol=SYM07/date=2026-10-11/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "4cd8bbee1ef134b8e04f96924adeae2aec6d530ce534f1c9da0e4a009a08f9f9"
+    },
+    "bars/symbol=SYM07/date=2026-10-12/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "be67d912875a0efe33a23bff0a9e3ef6e4cf950c7a9caabc88fa6b1c90e988d5"
+    },
+    "bars/symbol=SYM07/date=2026-10-13/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "6ac443a90bc4292a8cfc0ef291d1547602386683c7f34158fd8e75152e06a2cc"
+    },
+    "bars/symbol=SYM07/date=2026-10-14/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "123a906a6d9b81681e61c82b8179ec5bc03f9691f947b5736121671f06b33d09"
+    },
+    "bars/symbol=SYM07/date=2026-10-15/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "94f97b4710a51716e2c6c230c8aeb7af987b03181fd13bcaa63174606749d199"
+    },
+    "bars/symbol=SYM07/date=2026-10-16/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "f6bc17e713fedf1ba512240d83f379a43da2980eb3bb4eae84262020fe7e17cf"
+    },
+    "bars/symbol=SYM07/date=2026-10-17/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "d3e031efc9e54312538cc466dafbe3d2159e47828cbe0eb9782243aee36501d1"
+    },
+    "bars/symbol=SYM07/date=2026-10-18/part-0.parquet": {
+      "row_count": 1,
+      "sha256": "0ad35be22ef04ccd6951277a404603228426dfa66a7f5831934ee3744a06ed51"
+    }
+  },
+  "manifest_version": 1,
+  "sealed_at": "2026-11-01T00:00:00Z",
+  "snapshot_hash": "ffeef4795867e7b9e574f188abd5d2aff3ba5da3e86aecf6c50189ba438e591c",
+  "totals": {
+    "files": 384,
+    "rows": 384
+  },
+  "universe": null
+}
