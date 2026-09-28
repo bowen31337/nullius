@@ -29,7 +29,8 @@ import typing
 from dataclasses import dataclass
 
 import pytest
-from nullius_api import ApiServer, build_server, error_payload
+from conftest import TEST_TOKENS, token_for
+from nullius_api import API_ROUTES, INDEX_SCOPE, ApiServer, build_server, error_payload
 from nullius_api.server import (
     COMPONENT_UNCONFIGURED_CLASS,
     DEFAULT_ERROR_CLASS,
@@ -118,19 +119,33 @@ _MemberRefusal = type(
 
 
 class _Boot:
-    """Boot one server per case on an ephemeral port, on loopback."""
+    """Boot one server per case on an ephemeral port, on loopback.
+
+    Every server boots with the suite's own token set
+    (:data:`conftest.TEST_TOKENS`), because feature 18 puts a bearer
+    token in front of every route this dispatch serves: a boot helper
+    that built a tokenless server would be one every test in this module
+    answered 401 from, which is a fact about the helper rather than
+    about the law under test.  ``tokens`` is overridable for the cases
+    that are *about* the gate.
+    """
 
     def __init__(self) -> None:
         self._servers: list[tuple[ApiServer, threading.Thread]] = []
 
-    def __call__(self, components, execution_engine=None) -> ApiServer:
+    def __call__(
+        self, components, execution_engine=None, tokens=None
+    ) -> ApiServer:
         application = (
             components
             if isinstance(components, Application)
             else Application(components=dict(components), order=tuple(components))
         )
         server = ApiServer(
-            ("127.0.0.1", 0), application, execution_engine=execution_engine
+            ("127.0.0.1", 0),
+            application,
+            TEST_TOKENS if tokens is None else tokens,
+            execution_engine=execution_engine,
         )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -151,19 +166,63 @@ def boot():
     runner.shutdown()
 
 
-def _ask(server: ApiServer, method: str, path: str) -> tuple[int, dict, typing.Any]:
-    """One request: status, lower-cased headers, parsed JSON body."""
+def _authorization(scope: str) -> dict[str, str]:
+    """The ``Authorization`` header for one of the four scopes.
+
+    Thin wrapper over :func:`conftest.token_for` so the request helpers
+    below read as *which credential* rather than as header plumbing.
+    """
+    return {"Authorization": f"Bearer {token_for(scope)}"}
+
+
+def _ask(
+    server: ApiServer, method: str, path: str, scope: str | None = "any"
+) -> tuple[int, dict, typing.Any]:
+    """One request: status, lower-cased headers, parsed JSON body.
+
+    ``scope`` names which credential to present, defaulting to ``"any"``
+    — a token that reaches every route in this table is not available,
+    so ``"any"`` resolves to *the scope the route wants*, looked up from
+    the table.  That is what makes the pre-feature-18 call sites keep
+    reading as *ask the route a well-formed question*: they say
+    ``_ask(server, "GET", "/metrics/fdr-deploy")`` and get the metrics
+    credential, without every one of them growing a scope argument whose
+    value is always the same.  A test that is *about* the gate passes an
+    explicit scope — or ``None`` for no token at all, or a scope the
+    route does not want for a 403.
+    """
+    headers = {} if scope is None else _authorization(_scope_wanted(path, scope))
     connection = http.client.HTTPConnection(
         "127.0.0.1", server.server_address[1], timeout=10
     )
     try:
-        connection.request(method, path)
+        connection.request(method, path, headers=headers)
         response = connection.getresponse()
         body = response.read().decode("utf-8")
         headers = {name.lower(): value for name, value in response.getheaders()}
         return response.status, headers, (json.loads(body) if body else None)
     finally:
         connection.close()
+
+
+def _scope_wanted(path: str, scope: str) -> str:
+    """The scope to present: ``scope``, or the route's own when ``"any"``.
+
+    For ``"any"`` the scope is read from the same table the dispatch
+    reads it from, so a test asserting on a route's behaviour never has
+    to restate which credential that route wants — the pairing is
+    already spelled once, in :mod:`nullius_api.routes`.  A path the
+    table does not hold (an unknown path, a meta-route) falls back to
+    ``metrics:read``, which is what the index wants and what a test
+    probing an unknown path needs to get *past* the gate to the 404 it
+    is about.
+    """
+    if scope != "any":
+        return scope
+    for row in API_ROUTES:
+        if row.path == path.split("?", 1)[0].split("#", 1)[0]:
+            return row.scope
+    return INDEX_SCOPE
 
 
 # -- The server is the spec's own server ------------------------------------------
@@ -711,7 +770,7 @@ def test_build_server_composes_when_given_no_application(
     """The construction path the entrypoint takes: no application
     handed in means the factory composes one — and the routes resolve
     over what composition built."""
-    server = build_server(ApiConfig.resolve(env={PORT_ENV: "0"}))
+    server = build_server(ApiConfig.resolve(env={PORT_ENV: "0"}), tokens=TEST_TOKENS)
     try:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()

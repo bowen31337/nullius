@@ -37,6 +37,7 @@ import time
 from typing import Any
 
 import pytest
+from conftest import TEST_TOKENS, token_for
 from nullius_api import ApiServer
 from nullius_api.server import (
     BODY_TOO_LARGE_CLASS,
@@ -91,7 +92,10 @@ class _Boot:
     def __call__(self, components, execution_engine=None) -> ApiServer:
         application = Application(components=dict(components), order=tuple(components))
         server = ApiServer(
-            ("127.0.0.1", 0), application, execution_engine=execution_engine
+            ("127.0.0.1", 0),
+            application,
+            TEST_TOKENS,
+            execution_engine=execution_engine,
         )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -113,13 +117,31 @@ def boot():
 
 
 def _request_bytes(
-    verb: str, path: str, *, content_length: int, body: bytes = b""
+    verb: str,
+    path: str,
+    *,
+    content_length: int,
+    body: bytes = b"",
+    scope: str | None = None,
 ) -> bytes:
     """One HTTP/1.1 request head, exactly as spelled, plus any body bytes
-    the caller wants to have already sent when the request stalls."""
+    the caller wants to have already sent when the request stalls.
+
+    ``scope`` adds the ``Authorization`` header for that scope; the
+    default of ``None`` sends *no* header, which is what the cap cases
+    want — the reader's refusals precede the token gate (see
+    :meth:`~nullius_api.server.ApiRequestHandler._dispatch_by_table`),
+    so a body over the cap or a stalled read answers 413 or 408 to a
+    caller who never authenticated.  Only the cases that expect to
+    *reach* a route present a token.
+    """
+    authorization = (
+        f"Authorization: Bearer {token_for(scope)}\r\n" if scope else ""
+    )
     head = (
         f"{verb} {path} HTTP/1.1\r\n"
         "Host: 127.0.0.1\r\n"
+        f"{authorization}"
         f"Content-Length: {content_length}\r\n"
         "\r\n"
     )
@@ -169,13 +191,17 @@ def _server_closed(sock: socket.socket) -> bool:
         return True
 
 
-def _post(server: ApiServer, path: str) -> tuple[int, Any]:
+def _post(
+    server: ApiServer, path: str, scope: str = "risk"
+) -> tuple[int, Any]:
     """One ordinary body-less POST, as a well-behaved caller sends it."""
     connection = http.client.HTTPConnection(
         "127.0.0.1", server.server_address[1], timeout=10
     )
     try:
-        connection.request("POST", path)
+        connection.request(
+            "POST", path, headers={"Authorization": f"Bearer {token_for(scope)}"}
+        )
         response = connection.getresponse()
         raw = response.read().decode("utf-8")
         return response.status, (json.loads(raw) if raw else None)
@@ -285,7 +311,7 @@ def test_a_body_exactly_at_the_cap_is_read_whole(boot) -> None:
     assert len(body) == MAX_BODY_BYTES
     with _connect(server) as sock:
         request = _request_bytes(
-            "POST", "/risk/halt", content_length=len(body), body=body
+            "POST", "/risk/halt", content_length=len(body), body=body, scope="risk"
         )
         sock.sendall(request)
         status, _, _raw = _read_response(sock)

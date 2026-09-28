@@ -51,3 +51,38 @@ These are specified for claw-forge in [`additions_spec_journeys.xml`](../../addi
 | J7 | Exposure | ✅ pass | Binds `127.0.0.1:8501` only, no External URL, no Deploy button, no error details. | same as J2, J3 |
 
 Note: on an empty store the canary lamp reads `ok`. That is by design: feature 342's canary lamp is never absent, and "no halt recorded" means healthy. It is not a finding.
+
+## Run 17 — 2026-09-29, the bearer-token gate (feature 18)
+
+- **Branch:** `feat/http-api-transp-system-requires-a-bearer-token-o-08d2ad`.
+- **Checker:** `packages/api/tests/test_auth.py` (the token file's contract)
+  and `packages/api/tests/test_token_gate.py` (the two refusals over the
+  wire), 94 cases, run with the whole api member suite.
+- **Token file:** a JSON object mapping each scope to the tokens carrying
+  it — `{"metrics:read": ["…"], "research": ["…"], "evaluator": ["…"],
+  "risk": ["…"]}` — named by `NULLIUS_API_TOKENS_FILE`.
+
+The J14 steps that feature 18 covers are pinned as tests rather than
+browser runs: `GET /healthz` answers 200 with no token and 405 for a
+wrong verb; every other path — the index and unknown paths included —
+answers 401 without one; an unknown token answers 401; a token outside
+the route's scope answers 403; and a server started with no token file
+configured exits 2 with one plain sentence and no traceback. Every one
+of the ten routes is swept against its own scope and against the other
+three, so a row that accepted a scope it should not cannot hide behind
+a hand-picked pair.
+
+Feature 18's two consequences are worth an operator knowing, because
+both are deliberate. An unauthenticated caller cannot map the surface:
+`GET /no-such-route` answers 401 like any other path, so the 404s do
+not enumerate the routes. And a wrong-scoped caller cannot learn
+whether a store is configured: the 403 precedes the unconfigured-
+component check, so this deployment's `metrics:read` token gets the same
+403 from `POST /risk/halt` whether or not `DATABASE_URL` is set.
+
+J14's steps 1 and 3 (the index's content, the 404/405 statuses) remain
+browser journeys and are not claimed by this run.
+
+**Suites:** the api member suite is 388 passed (14:17), the root suite
+1579 passed (10:23), both with `-p no:randomly`. `ruff check` is clean
+over the member's `src`, its `tests` and `src/app/modules/api`.

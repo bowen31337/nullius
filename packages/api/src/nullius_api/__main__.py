@@ -23,6 +23,17 @@ token feature takes for a missing token file, applied here to a port
 that is not a port and an engine path that does not resolve.  Never a
 traceback: an operator starting the server is exactly the reader the
 structured refusals exist for.
+
+The token file is read **first of all**, ahead of the port, ahead of
+the engine and ahead of composition, and that order is the safety
+posture rather than tidiness: *a missing token file is a refusal to
+start, not an open server* (the constraint's own words), so the
+credentials are the first thing established and every later step is
+downstream of a deployment that has some.  A port that cannot be
+parsed is reported before an engine that cannot be imported only
+because it is cheaper the other way round; a token file that cannot be
+read is reported before both because it is the one failure that would
+otherwise serve an open API.
 """
 
 from __future__ import annotations
@@ -33,6 +44,12 @@ import os
 import sys
 from collections.abc import Sequence
 
+from .auth import (
+    API_SCOPES,
+    TOKENS_FILE_ENV,
+    ApiTokenConfigError,
+    ApiTokens,
+)
 from .routes import API_ROUTES
 from .server import (
     EXECUTION_ENGINE_ENV,
@@ -56,9 +73,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "unless --host or NULLIUS_API_HOST names another address."
         ),
         epilog=(
-            f"{len(API_ROUTES)} routes are declared; the flags and "
-            f"{EXECUTION_ENGINE_ENV} are the deployment's whole "
-            "configuration surface."
+            f"{len(API_ROUTES)} routes are declared; the flags, "
+            f"{EXECUTION_ENGINE_ENV} and {TOKENS_FILE_ENV} are the "
+            "deployment's whole configuration surface. Every route but "
+            "GET /healthz needs a bearer token carrying the route's "
+            f"scope ({', '.join(API_SCOPES)})."
         ),
     )
     parser.add_argument(
@@ -85,7 +104,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Compose, resolve, bind, serve — in that order.
+    """Read the tokens, compose, resolve, bind, serve — in that order.
 
     Returns the process exit status: 0 after a clean shutdown
     (``KeyboardInterrupt`` included — an operator stopping their own
@@ -97,6 +116,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     args = _build_parser().parse_args(argv)
+
+    # The tokens, first and unconditionally: a deployment that
+    # configured none gets the refusal before anything else this
+    # function could do, so there is no ordering in which a server
+    # reaches a bound socket without credentials.  Loaded here rather
+    # than left to ``build_server``'s own default so the refusal is
+    # reported by name at this door, where the operator is looking.
+    try:
+        tokens: ApiTokens = ApiTokens.from_env()
+    except ApiTokenConfigError as exc:
+        print(f"nullius_api: {exc}", file=sys.stderr)
+        return 2
 
     try:
         config = ApiConfig.resolve(host=args.host, port=args.port)
@@ -116,7 +147,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # the internal error.  The factory never raises for an unconfigured
     # environment — that resolves to endpoint-less routes the server
     # answers with the unconfigured refusal.
-    server = build_server(config, execution_engine=engine)
+    server = build_server(config, execution_engine=engine, tokens=tokens)
     host, port = server.server_address[:2]
     logging.getLogger("nullius_api.server").info(
         "nullius-api listening on http://%s:%s", host, port

@@ -11,12 +11,19 @@ headless Chromium. Screenshots are saved under `screenshots/<run>/`.
 
 ## Actors
 
-| Actor | Who | Surface |
-|---|---|---|
-| **Operator** | The human who watches the running system | Streamlit operator dashboard |
-| **Researcher** | The human who pre-registers and promotes signals | HTTP API (`/promotion`, `/forward`) |
-| **Evaluator** | The frozen evaluator service (Z0) | HTTP API (`/ledger`, `/target`) |
-| **Risk supervisor** | The kill-switch process, or a human pressing it | HTTP API (`/risk/halt`) |
+| Actor | Who | Surface | Token scope |
+|---|---|---|---|
+| **Operator** | The human who watches the running system | Streamlit operator dashboard | — (the dashboard reads the store directly) |
+| **Researcher** | The human who pre-registers and promotes signals | HTTP API (`/promotion`, `/forward`) | `research` |
+| **Evaluator** | The frozen evaluator service (Z0) | HTTP API (`/ledger`, `/target`) | `evaluator` |
+| **Risk supervisor** | The kill-switch process, or a human pressing it | HTTP API (`/risk/halt`) | `risk` |
+| **Any caller reading metrics** | Monitoring, the dashboard's chrome | HTTP API (`/metrics`, the index at `/`) | `metrics:read` |
+
+Every HTTP journey except [J14](J14-api-discoverability.md)'s `/healthz` step
+presents its actor's token as `Authorization: Bearer <token>`; the four scopes
+are the whole vocabulary, `GET /healthz` is the one route that answers without
+one, and a server started with no token file configured refuses to start
+(additions_spec_journeys.xml feature 18).
 
 ## Journeys
 

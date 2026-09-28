@@ -52,6 +52,7 @@ import uuid
 from typing import Any
 
 import pytest
+from conftest import TEST_TOKENS, token_for
 from nullius_api import ApiServer
 from nullius_api.server import TARGET_UNKNOWN_NODE_CLASS
 
@@ -104,6 +105,7 @@ class _Boot:
         server = ApiServer(
             ("127.0.0.1", 0),
             application if application is not None else create_app(),
+            TEST_TOKENS,
         )
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self._servers.append(server)
@@ -123,7 +125,11 @@ def boot():
 
 
 def _post(
-    server: ApiServer, body: Any, *, raw: bytes | None = None
+    server: ApiServer,
+    body: Any,
+    *,
+    raw: bytes | None = None,
+    scope: str | None = "evaluator",
 ) -> tuple[int, dict[str, str], bytes]:
     """One ``POST /target``: status, headers and the *raw* body bytes.
 
@@ -134,13 +140,14 @@ def _post(
     about.
     """
     payload = raw if raw is not None else json.dumps(body).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if scope is not None:
+        headers["Authorization"] = f"Bearer {token_for(scope)}"
     connection = http.client.HTTPConnection(
         "127.0.0.1", server.server_address[1], timeout=10
     )
     try:
-        connection.request(
-            "POST", "/target", payload, {"Content-Type": "application/json"}
-        )
+        connection.request("POST", "/target", payload, headers)
         response = connection.getresponse()
         return (
             response.status,
@@ -151,13 +158,16 @@ def _post(
         connection.close()
 
 
-def _get(server: ApiServer, path: str) -> tuple[int, dict[str, str], Any]:
+def _get(
+    server: ApiServer, path: str, scope: str | None = "evaluator"
+) -> tuple[int, dict[str, str], Any]:
     """One no-argument GET, answered as parsed JSON."""
+    headers = {} if scope is None else {"Authorization": f"Bearer {token_for(scope)}"}
     connection = http.client.HTTPConnection(
         "127.0.0.1", server.server_address[1], timeout=10
     )
     try:
-        connection.request("GET", path)
+        connection.request("GET", path, headers=headers)
         response = connection.getresponse()
         raw = response.read().decode("utf-8")
         headers = {name.lower(): value for name, value in response.getheaders()}
@@ -334,16 +344,12 @@ def test_the_unknown_node_is_told_from_an_unknown_path_by_class(
     _, _, node_raw = _post(server, _ask_body(str(uuid.uuid4())))
     assert json.loads(node_raw)["error"]["class"] == TARGET_UNKNOWN_NODE_CLASS
 
-    connection = http.client.HTTPConnection(
-        "127.0.0.1", server.server_address[1], timeout=10
-    )
-    try:
-        connection.request("GET", "/nowhere")
-        response = connection.getresponse()
-        path_body = json.loads(response.read())
-    finally:
-        connection.close()
+    # Asked *past* the gate — an unauthenticated GET /nowhere is a 401
+    # whose class differs from the target's for the wrong reason, which
+    # would make this comparison vacuous rather than absent.
+    _, _, path_body = _get(server, "/nowhere")
     assert path_body["error"]["class"] != TARGET_UNKNOWN_NODE_CLASS
+    assert path_body["error"]["code"] == "unknown_route"
 
 
 def test_an_unknown_node_never_reaches_the_series_supply(
@@ -896,7 +902,7 @@ def test_a_members_route_path_survives_the_redaction_over_the_wire(
         session_application, "ops-fdr-deploy", _RefusingEndpoint(refusal)
     )
     server = boot(application)
-    status, _, body = _get(server, "/metrics/fdr-deploy")
+    status, _, body = _get(server, "/metrics/fdr-deploy", scope="metrics:read")
     assert status == 503
     assert body["error"]["class"] == "FdrDeployMetricError"
     assert "/metrics/fdr-deploy" in body["error"]["message"]

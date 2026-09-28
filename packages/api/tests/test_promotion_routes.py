@@ -55,6 +55,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 import pytest
+from conftest import TEST_TOKENS, token_for
 from nullius_api import (
     PROMOTION_CONFLICT_CODE,
     PROMOTION_PARENT_ABSENT_CODE,
@@ -77,6 +78,7 @@ class _Boot:
         server = ApiServer(
             ("127.0.0.1", 0),
             application if application is not None else create_app(),
+            TEST_TOKENS,
         )
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self._servers.append(server)
@@ -95,7 +97,17 @@ def boot():
     runner.shutdown()
 
 
-def _post(server: ApiServer, path: str, body: Any) -> tuple[int, dict[str, str], Any]:
+def _post(
+    server: ApiServer, path: str, body: Any, scope: str | None = "research"
+) -> tuple[int, dict[str, str], Any]:
+    """One POST presenting ``scope``'s token (``None`` for no header).
+
+    The promotion route wants ``research``; the gate cases pass another
+    scope or ``None``, and ``raw`` bodies go through the same door.
+    """
+    headers = {"Content-Type": "application/json"}
+    if scope is not None:
+        headers["Authorization"] = f"Bearer {token_for(scope)}"
     connection = http.client.HTTPConnection(
         "127.0.0.1", server.server_address[1], timeout=10
     )
@@ -104,7 +116,7 @@ def _post(server: ApiServer, path: str, body: Any) -> tuple[int, dict[str, str],
             "POST",
             path,
             json.dumps(body).encode("utf-8"),
-            {"Content-Type": "application/json"},
+            headers,
         )
         response = connection.getresponse()
         raw = response.read().decode("utf-8")
@@ -678,13 +690,21 @@ def test_the_unconfigured_store_answers_503(boot, monkeypatch) -> None:
 
 def test_a_wrong_verb_answers_405_with_an_allow_header(seeded, boot) -> None:
     """The path serves POST alone; a GET is the transport's own refusal,
-    stated with the verb the route does answer."""
+    stated with the verb the route does answer.
+
+    Asked with the route's own token: the 405 is the *dispatch's* answer,
+    and since feature 18 an unauthenticated caller meets the gate first
+    (401), which is a different law with its own test."""
     server = boot(create_app())
     connection = http.client.HTTPConnection(
         "127.0.0.1", server.server_address[1], timeout=10
     )
     try:
-        connection.request("GET", "/promotion/pre-register")
+        connection.request(
+            "GET",
+            "/promotion/pre-register",
+            headers={"Authorization": f"Bearer {token_for('research')}"},
+        )
         response = connection.getresponse()
         headers = {name.lower(): value for name, value in response.getheaders()}
         body = json.loads(response.read().decode("utf-8"))

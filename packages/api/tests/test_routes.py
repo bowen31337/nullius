@@ -126,7 +126,7 @@ def test_the_table_groups_by_path_verb_aware() -> None:
     grouped = routes_by_path()
     assert set(grouped) == {row.path for row in API_ROUTES}
     assert grouped["/forward/decay"] == (
-        ApiRoute("/forward/decay", "GET", "forward-decay"),
+        ApiRoute("/forward/decay", "GET", "forward-decay", "research"),
     )
     assert [row.verb for row in grouped["/ledger/debit"]] == ["POST"]
     for path, rows in grouped.items():
@@ -189,7 +189,7 @@ def test_an_unknown_wrap_marker_is_refused_by_name() -> None:
     with pytest.raises(TypeError) as raised:
         _resolve_one(
             Application(components={"x": _FakePreRegistrationStore()}, order=("x",)),
-            ApiRoute("/x", "POST", "x", wrap="nowhere"),
+            ApiRoute("/x", "POST", "x", "research", wrap="nowhere"),
         )
     assert "nowhere" in str(raised.value)
 

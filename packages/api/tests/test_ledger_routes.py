@@ -70,6 +70,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
+from conftest import TEST_TOKENS, token_for
 from nullius_api import ApiServer
 from nullius_api.demo import seed_demo_store
 
@@ -88,6 +89,7 @@ class _Boot:
         server = ApiServer(
             ("127.0.0.1", 0),
             application if application is not None else create_app(),
+            TEST_TOKENS,
         )
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self._servers.append(server)
@@ -106,7 +108,17 @@ def boot():
     runner.shutdown()
 
 
-def _post(server: ApiServer, path: str, body: Any) -> tuple[int, dict[str, str], Any]:
+def _post(
+    server: ApiServer, path: str, body: Any, scope: str | None = "evaluator"
+) -> tuple[int, dict[str, str], Any]:
+    """One POST presenting ``scope``'s token (``None`` for no header).
+
+    The ledger routes want ``evaluator``; the gate cases pass another
+    scope or ``None``.
+    """
+    headers = {"Content-Type": "application/json"}
+    if scope is not None:
+        headers["Authorization"] = f"Bearer {token_for(scope)}"
     connection = http.client.HTTPConnection(
         "127.0.0.1", server.server_address[1], timeout=10
     )
@@ -115,7 +127,7 @@ def _post(server: ApiServer, path: str, body: Any) -> tuple[int, dict[str, str],
             "POST",
             path,
             json.dumps(body).encode("utf-8"),
-            {"Content-Type": "application/json"},
+            headers,
         )
         response = connection.getresponse()
         raw = response.read().decode("utf-8")
@@ -125,12 +137,16 @@ def _post(server: ApiServer, path: str, body: Any) -> tuple[int, dict[str, str],
         connection.close()
 
 
-def _get(server: ApiServer, path: str) -> tuple[int, dict[str, str], Any]:
+def _get(
+    server: ApiServer, path: str, scope: str | None = "evaluator"
+) -> tuple[int, dict[str, str], Any]:
+    """One GET presenting ``scope``'s token (``None`` for no header)."""
+    headers = {} if scope is None else {"Authorization": f"Bearer {token_for(scope)}"}
     connection = http.client.HTTPConnection(
         "127.0.0.1", server.server_address[1], timeout=10
     )
     try:
-        connection.request("GET", path)
+        connection.request("GET", path, headers=headers)
         response = connection.getresponse()
         raw = response.read().decode("utf-8")
         headers = {name.lower(): value for name, value in response.getheaders()}
@@ -487,7 +503,11 @@ def test_an_empty_body_is_a_charge_that_states_nothing(boot) -> None:
         "127.0.0.1", server.server_address[1], timeout=10
     )
     try:
-        connection.request("POST", "/ledger/debit")
+        connection.request(
+            "POST",
+            "/ledger/debit",
+            headers={"Authorization": f"Bearer {token_for('evaluator')}"},
+        )
         response = connection.getresponse()
         body = json.loads(response.read().decode("utf-8"))
     finally:

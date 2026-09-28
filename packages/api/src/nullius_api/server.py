@@ -74,8 +74,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from .auth import (
+    TOKENS_FILE_ENV,
+    ApiTokenConfigError,
+    ApiTokens,
+    bearer_token,
+)
 from .json_encoding import dumps
-from .routes import ResolvedRoute, resolve_routes
+from .routes import INDEX_SCOPE, ResolvedRoute, resolve_routes
 
 __all__ = [
     "BODY_TOO_LARGE_CLASS",
@@ -85,6 +91,7 @@ __all__ = [
     "DEFAULT_PORT",
     "EXECUTION_ENGINE_ENV",
     "EXECUTION_ENGINE_UNBOUND_CLASS",
+    "FORBIDDEN_CLASS",
     "HOST_ENV",
     "INTERNAL_ERROR_CLASS",
     "MALFORMED_REQUEST_CLASS",
@@ -96,12 +103,17 @@ __all__ = [
     "REQUEST_STALLED_CLASS",
     "ROUTE_NOT_IMPLEMENTED_CLASS",
     "TARGET_UNKNOWN_NODE_CLASS",
+    "TOKENS_FILE_ENV",
+    "UNAUTHENTICATED_CLASS",
     "UNKNOWN_ROUTE_CLASS",
     "ApiConfig",
     "ApiRequest",
     "ApiRequestHandler",
     "ApiServer",
+    "ApiTokenConfigError",
+    "ApiTokens",
     "ExecutionEngineResolutionError",
+    "bearer_token",
     "build_server",
     "error_payload",
     "resolve_execution_engine",
@@ -131,6 +143,34 @@ EXECUTION_ENGINE_UNBOUND_CLASS = "ExecutionEngineUnboundError"
 #: body that did not finish arriving inside the read deadline (408).
 BODY_TOO_LARGE_CLASS = "BodyTooLargeError"
 REQUEST_STALLED_CLASS = "RequestStalledError"
+
+#: The class names the token gate's two refusals carry (feature 18),
+#: spelled in the same greppable style.  They are deliberately *two*
+#: classes rather than one: *I do not know you* and *I know you and you
+#: may not ask for this* are different facts with different repairs (a
+#: usable credential vs. a credential carrying the route's scope), which
+#: is why the sentence gives them different statuses — 401 and 403.
+UNAUTHENTICATED_CLASS = "UnauthenticatedError"
+FORBIDDEN_CLASS = "ForbiddenError"
+
+#: The code words the two token refusals carry.  ``missing_token`` and
+#: ``unknown_token`` are one status but two code words, because they are
+#: two different operator facts — a caller who sent no ``Authorization``
+#: header at all has a different repair from one whose header named a
+#: credential this deployment does not configure — and the code word is
+#: the field the envelope exists to carry that distinction in.  The
+#: status treats them alike because, to a caller, they are alike: neither
+#: presented a usable token.
+MISSING_TOKEN_CODE = "missing_token"
+UNKNOWN_TOKEN_CODE = "unknown_token"
+FORBIDDEN_SCOPE_CODE = "forbidden_scope"
+
+#: The ``WWW-Authenticate`` challenge a 401 carries, per RFC 7235: the
+#: header a 401 owes the caller, naming the scheme that would have been
+#: accepted.  Only the scheme, never the realm — a realm string here
+#: would be deployment detail a caller can do nothing with, and the
+#: scheme alone is the whole of what the repair needs.
+AUTHENTICATE_HEADER = ("WWW-Authenticate", "Bearer")
 
 #: The most request-body bytes the reader will read: 1 MiB, the number
 #: feature 19's sentence states.  A ``Content-Length`` over this cap is
@@ -420,6 +460,18 @@ class ApiRequest:
     cannot be read is refused by the reader's own 400 rather than by
     whichever adapter happened to be asked.  The size and time caps on
     that read are the body-limit feature's half and land in the reader.
+
+    ``scope`` is the scope of the token this request presented — the
+    *name* of the credential's authority, never the credential.  It is
+    the second field that is not something this particular request
+    states: like ``execution_engine`` it is resolved once per request by
+    the dispatch, from the ``Authorization`` header and the server's
+    configured tokens, and rides in so that the access-log feature can
+    record which authority asked without this member ever holding the
+    token itself.  Nothing an adapter is handed can authenticate
+    anything, because by the time an adapter is reached the gate has
+    already answered; the field is decoration for a log, which is
+    exactly why it is safe to thread through.
     """
 
     verb: str
@@ -427,6 +479,7 @@ class ApiRequest:
     query: Mapping[str, str]
     execution_engine: Any = None
     body: Any = None
+    scope: str | None = None
 
 
 # -- The adapters ----------------------------------------------------------------
@@ -1494,9 +1547,20 @@ class ApiServer(ThreadingHTTPServer):
     Holds the composed :class:`~app.module_loader.Application`, the
     resolved route bindings (:func:`~nullius_api.routes.resolve_routes`
     over the whole table, so an unconfigured component is a discovered
-    fact the server can name, not a route that vanished), and the
-    execution engine the entrypoint bound — the supervisor's hold the
-    halt route drives, or ``None`` when the deployment named none.
+    fact the server can name, not a route that vanished), the execution
+    engine the entrypoint bound — the supervisor's hold the halt route
+    drives, or ``None`` when the deployment named none — and the
+    :class:`~nullius_api.auth.ApiTokens` every request is checked
+    against.
+
+    ``tokens`` has **no default**, and that is the point: a server that
+    could be constructed without a token set is a server that could be
+    started open, which is the one failure this feature exists to make
+    unreachable.  :func:`build_server` loads them from the environment
+    (refusing to compose anything when it cannot), the entrypoint calls
+    that, and the tests hand in their own set explicitly — so there is
+    no construction path that reaches a bound socket with no
+    credentials, and no default for a future caller to overlook.
     """
 
     daemon_threads = True
@@ -1505,10 +1569,12 @@ class ApiServer(ThreadingHTTPServer):
         self,
         address: tuple[str, int],
         application: Any,
+        tokens: ApiTokens,
         execution_engine: Any = None,
     ) -> None:
         super().__init__(address, ApiRequestHandler)
         self.application = application
+        self.tokens = tokens
         self.execution_engine = execution_engine
         self.routes: tuple[ResolvedRoute, ...] = resolve_routes(application)
         # The resolved table grouped by path — the handler's lookup
@@ -1529,6 +1595,17 @@ class ApiServer(ThreadingHTTPServer):
             configured,
             len(self.routes) - configured,
         )
+        # The count and the scopes, never a token: the startup log says
+        # *how many credentials this deployment configured and which
+        # surfaces they reach*, which is what an operator needs to see,
+        # and says nothing that would let a reader of the log ask.
+        log.info(
+            "token file %s: %d tokens over scopes %s; only GET /healthz "
+            "answers without one",
+            tokens.source,
+            len(tokens),
+            ", ".join(tokens.scopes) or "none",
+        )
 
 
 def _component_count(application: Any) -> int:
@@ -1545,8 +1622,9 @@ def build_server(
     application: Any = None,
     execution_engine: Any = None,
     env: Mapping[str, str] | None = None,
+    tokens: ApiTokens | None = None,
 ) -> ApiServer:
-    """Build the serving transport: compose, resolve, bind.
+    """Build the serving transport: load the tokens, compose, resolve, bind.
 
     The one construction path the entrypoint and the tests share.  With
     no ``application`` the factory composes it
@@ -1557,7 +1635,23 @@ def build_server(
     Binding to port 0 lets a caller take the ephemeral port the kernel
     chose off ``server.server_address`` — how the tests boot one server
     per case without a port race.
+
+    ``tokens`` is the one argument with no honest default.  Omitted, the
+    tokens load from :data:`~nullius_api.auth.TOKENS_FILE_ENV` through
+    :meth:`~nullius_api.auth.ApiTokens.from_env`, which raises
+    :class:`~nullius_api.auth.ApiTokenConfigError` when the deployment
+    configured none — so *refuses to start when no token is configured*
+    is a property of this function rather than a check its caller
+    remembers.  And it is the **first** thing this function does, before
+    composition and before the address is resolved into a bind: no work
+    is spent building a server that cannot be started, and no ordering
+    exists in which a composed application sits behind a socket whose
+    credentials were never read.  A caller that has already loaded its
+    own set (the entrypoint, which wants the refusal earlier still;
+    every test, which hands in a known one) passes it here.
     """
+    if tokens is None:
+        tokens = ApiTokens.from_env(env)
     if config is None:
         config = ApiConfig.resolve(env=env)
     if application is None:
@@ -1565,7 +1659,10 @@ def build_server(
 
         application = create_app()
     return ApiServer(
-        (config.host, config.port), application, execution_engine=execution_engine
+        (config.host, config.port),
+        application,
+        tokens,
+        execution_engine=execution_engine,
     )
 
 
@@ -1867,6 +1964,113 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             pass
         self.close_connection = True
 
+    # -- The token gate (feature 18) --------------------------------------------
+
+    def _authenticate(self, path: str) -> str | None:
+        """Identify the caller, or answer 401 and return ``None``.
+
+        The whole of *who is asking*: :func:`~nullius_api.auth.bearer_token`
+        parses the ``Authorization`` header, the server's configured
+        tokens answer whether that credential is one of this
+        deployment's, and the scope it carries is returned for the
+        caller to check against the route.  ``None`` means a refusal was
+        already written and the dispatch must stop.
+
+        Two shapes answer 401, and they carry different code words
+        because they are different operator facts.  ``missing_token`` is
+        a request that presented nothing usable — no header, a scheme
+        that is not ``Bearer``, a ``Bearer`` with nothing after it — and
+        its message says which header to add.  ``unknown_token`` is a
+        request that presented a credential this deployment does not
+        configure, and its message says so without repeating it.  Both
+        are 401 because both mean *you have not identified yourself*,
+        and the sentence gives one status for the two.
+
+        The refusal is written through the ordinary JSON door with a
+        ``WWW-Authenticate: Bearer`` challenge, which is what a 401 owes
+        a caller.  Nothing written here — no code word, no class, no
+        message — carries the token that was presented or any token that
+        is configured, and the access log the base class writes carries
+        only the request line, so the credential cannot reach a log
+        through this path either.
+
+        **The token never reaches the log on the way past either**: the
+        message names the *scope* the route wanted, never the header
+        value, and the dispatch's own logging of a refused request (the
+        base class's ``log_message``) sees the request line alone.
+        """
+        presented = bearer_token(self.headers.get("Authorization"))
+        if presented is None:
+            self._write_json(
+                401,
+                error_payload(
+                    MISSING_TOKEN_CODE,
+                    f"{path} needs a bearer token. The repair is an "
+                    "Authorization: Bearer <token> header carrying one of "
+                    "the tokens this deployment configured; GET /healthz "
+                    "is the one route that answers without one",
+                    error_class=UNAUTHENTICATED_CLASS,
+                ),
+                extra_headers=dict((AUTHENTICATE_HEADER,)),
+            )
+            return None
+        scope = self.server.tokens.scope_for(presented)
+        if scope is None:
+            self._write_json(
+                401,
+                error_payload(
+                    UNKNOWN_TOKEN_CODE,
+                    f"{path} was asked with a token this deployment does "
+                    "not configure. The repair is a token from the file "
+                    f"NULLIUS_API_TOKENS_FILE names; the token that was "
+                    "presented is not echoed here and is not written to a "
+                    "log",
+                    error_class=UNAUTHENTICATED_CLASS,
+                ),
+                extra_headers=dict((AUTHENTICATE_HEADER,)),
+            )
+            return None
+        return scope
+
+    def _require_scope(self, route: str, required: str, held: str) -> bool:
+        """Whether ``held`` reaches ``route``, or answer 403 and ``False``.
+
+        *403 for a token outside the route's scope*, and the whole of
+        that clause: the caller has identified themselves, and this
+        route wants a word their credential does not carry.
+
+        The message names all three facts a caller acts on — the route,
+        the scope it wants, and the scope the presented token does carry
+        — and never the token itself.  Naming the held scope is
+        deliberate even though it tells a caller something about their
+        own credential: they already hold it, and *you have
+        ``metrics:read`` and this needs ``risk``* is the difference
+        between a refusal an operator can repair and one that sends them
+        looking for the wrong file.  The list of configured scopes is
+        *not* included — which scopes this deployment provisions is not a
+        fact a wrong-scoped caller needs, and a 403 is not the place to
+        enumerate the surface.
+
+        A short-circuit is safe here in a way it is not in
+        :meth:`~nullius_api.auth.ApiTokens.scope_for`: this compares two
+        scope *names* the caller has already been told, not a secret
+        against a guess, so there is no timing side channel to close.
+        """
+        if held == required:
+            return True
+        self._write_json(
+            403,
+            error_payload(
+                FORBIDDEN_SCOPE_CODE,
+                f"{route} needs the {required} scope; the token presented "
+                f"carries {held}. The repair is a token carrying "
+                f"{required}, which this deployment provisions under that "
+                "key in the file NULLIUS_API_TOKENS_FILE names",
+                error_class=FORBIDDEN_CLASS,
+            ),
+        )
+        return False
+
     # -- The dispatch -----------------------------------------------------------
 
     def _dispatch(self) -> None:
@@ -1902,7 +2106,8 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 self.close_connection = True
 
     def _dispatch_by_table(self) -> None:
-        """The dispatch itself: read the body, find the row, serve.
+        """The dispatch itself: read the body, identify the caller, find
+        the row, serve.
 
         The body is read **first**, before the table is consulted, and
         that ordering is load-bearing rather than tidy.  The handler
@@ -1925,6 +2130,24 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         answers 408, whatever path the request named — and both close the
         connection, because a body the reader refused or abandoned leaves
         the socket somewhere no next request begins.
+
+        **The token gate (feature 18) stands between the reader and
+        everything the table decides**, and its placement is the
+        feature's own sentence read as an order.  ``GET /healthz`` is the
+        one route that answers without a token, so it is dispatched
+        first, before the gate is ever consulted; every other path —
+        including the index and including paths no route serves — meets
+        :meth:`_authenticate` before anything looks up a component.  Two
+        consequences are deliberate rather than incidental.  A caller
+        with no usable token cannot map this server's surface at all: an
+        unknown path answers 401 like every other path, so *which routes
+        exist* is not a fact an unauthenticated caller can probe, which
+        is the same reason the 403 is checked before a component's
+        configured state is.  And authentication precedes *authorization*
+        strictly, so a token this deployment does not configure is 401
+        whatever path it was sent to and whatever scope that path wants —
+        the two refusals answer two different questions and are never
+        merged.
         """
         try:
             body = self._read_json_body()
@@ -1966,14 +2189,16 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             for name, values in parse_qs(parts.query, keep_blank_values=True).items()
         }
 
-        # The two meta-routes the transport serves directly, not through
-        # the composed component table: the liveness probe answers a
-        # bare 200, and the index describes the transport's own surface.
-        # Both are served only for the verb they own.  They are answered
-        # from the resolved table the server already holds, ahead of the
-        # table lookup — the probe's openness (it needs no token, unlike
-        # every other route) is exactly the property a later token gate
-        # keys off this same ``path == HEALTHZ_PATH`` test.
+        # The liveness probe, and the one route that answers without a
+        # token: *every route except GET /healthz* is the sentence's own
+        # carve-out, so the probe is dispatched here — ahead of the gate —
+        # and answers its bare 200 to anyone who asks.  It asks nothing of
+        # any store (it is a fact about the process), so it has nothing to
+        # protect and nothing to leak: the body is a fixed word and the
+        # only variable is the status.  A wrong verb is still refused, and
+        # refused *without* a token, because that refusal is about the
+        # request line rather than about the caller — a caller who cannot
+        # be told their verb is wrong has no way to learn the right one.
         if path == HEALTHZ_PATH:
             if verb != "GET":
                 self._method_not_allowed(path, ("GET",))
@@ -1983,9 +2208,26 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 {"status": HEALTHZ_STATUS},
             )
             return
+
+        # The gate.  Everything below this line has already established
+        # *who is asking*; what remains is whether they may.
+        scope = self._authenticate(path)
+        if scope is None:
+            return
+        request_scope: str = scope
+
+        # The index is the second meta-route: it describes the
+        # transport's own surface rather than answering for a composed
+        # component, so it has no row in the table to carry its scope —
+        # it reads :data:`~nullius_api.routes.INDEX_SCOPE` instead.  It
+        # is *not* exempt from the gate (only ``/healthz`` is), which is
+        # why it sits after :meth:`_authenticate` and after its own scope
+        # check.
         if path == INDEX_PATH:
             if verb != "GET":
                 self._method_not_allowed(path, ("GET",))
+                return
+            if not self._require_scope(INDEX_PATH, INDEX_SCOPE, request_scope):
                 return
             self._write_html(
                 200,
@@ -2024,6 +2266,25 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             return
 
         resolved = next(row for row in grouped if row.route.verb == verb)
+
+        # Authorization, strictly after authentication and strictly
+        # before anything about the deployment: the caller has a token
+        # this server configured, and the remaining question is whether
+        # that token carries the scope *this row* states.  It sits ahead
+        # of the unconfigured-component check below on purpose.  *You may
+        # not ask* and *nobody is listening* are different facts, and
+        # a caller holding the wrong credential should not be able to
+        # learn from the status alone whether a store is configured —
+        # 403 for this deployment's metrics token on ``POST /risk/halt``,
+        # whether or not ``DATABASE_URL`` is set.  The scope comes off
+        # the resolved row rather than a second table, so the pairing
+        # this route actually serves is the pairing it is checked
+        # against.
+        if not self._require_scope(
+            f"{verb} {path}", resolved.route.scope, request_scope
+        ):
+            return
+
         if resolved.endpoint is None:
             self._write_json(
                 503,
@@ -2063,6 +2324,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             query,
             execution_engine=self.server.execution_engine,
             body=body,
+            scope=request_scope,
         )
         try:
             status, payload = adapter(resolved.endpoint, request)
@@ -2244,11 +2506,11 @@ class ExecutionEngineResolutionError(Exception):
     """``NULLIUS_EXECUTION_ENGINE`` names an engine that cannot be bound.
 
     Refused at startup — the entrypoint reports it and exits, the same
-    stance a missing token file takes later in the spec — because a
-    server that started with a silently-unbound engine would answer the
-    halt route as though the deployment had configured one.  The
-    message names the path given and the one repair; it never carries
-    the import's own traceback.
+    stance :class:`~nullius_api.auth.ApiTokenConfigError` takes for a
+    token file that cannot be read — because a server that started with
+    a silently-unbound engine would answer the halt route as though the
+    deployment had configured one.  The message names the path given and
+    the one repair; it never carries the import's own traceback.
     """
 
 

@@ -48,6 +48,7 @@ import threading
 from typing import Any
 
 import pytest
+from conftest import TEST_TOKENS, token_for
 from nullius_api import ApiServer
 
 from app.module_loader import create_app
@@ -65,6 +66,7 @@ class _Boot:
         server = ApiServer(
             ("127.0.0.1", 0),
             application if application is not None else create_app(),
+            TEST_TOKENS,
         )
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self._servers.append(server)
@@ -83,12 +85,20 @@ def boot():
     runner.shutdown()
 
 
-def _get(server: ApiServer, path: str) -> tuple[int, dict[str, str], Any]:
+def _get(
+    server: ApiServer, path: str, scope: str | None = "metrics:read"
+) -> tuple[int, dict[str, str], Any]:
+    """One GET, presenting ``scope``'s token (``None`` for no header).
+
+    The metrics routes all want ``metrics:read``, so that is the default;
+    the cases about the gate pass ``None`` or another scope.
+    """
+    headers = {} if scope is None else {"Authorization": f"Bearer {token_for(scope)}"}
     connection = http.client.HTTPConnection(
         "127.0.0.1", server.server_address[1], timeout=10
     )
     try:
-        connection.request("GET", path)
+        connection.request("GET", path, headers=headers)
         response = connection.getresponse()
         raw = response.read().decode("utf-8")
         headers = {name.lower(): value for name, value in response.getheaders()}

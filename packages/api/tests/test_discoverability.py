@@ -24,7 +24,8 @@ prove.
 from __future__ import annotations
 
 import pytest
-from nullius_api import API_ROUTES, ApiServer, ResolvedRoute
+from conftest import token_for
+from nullius_api import API_ROUTES, INDEX_SCOPE, ApiServer, ResolvedRoute
 from nullius_api.routes import ApiRoute
 from nullius_api.server import (
     HEALTHZ_PATH,
@@ -36,16 +37,28 @@ from nullius_api.server import (
 from test_server import _ask, _Boot, _GetEndpoint  # type: ignore[import-not-found]
 
 
-def _ask_raw(server: ApiServer, method: str, path: str) -> tuple[int, dict, str]:
+def _ask_raw(
+    server: ApiServer, method: str, path: str, scope: str | None = None
+) -> tuple[int, dict, str]:
     """One request returning the *raw* body — the index is HTML, not
-    JSON, so it cannot pass through the JSON-parsing ``_ask``."""
+    JSON, so it cannot pass through the JSON-parsing ``_ask``.
+
+    ``scope`` is the credential to present; the default of ``None``
+    means *no header*, because the meta-routes are where the suite
+    exercises the gate and the caller must be able to say so explicitly.
+    Tests asking for the index's HTML pass the scope ``/`` wants
+    (``INDEX_SCOPE``); ``/healthz`` needs none.
+    """
     import http.client
 
     connection = http.client.HTTPConnection(
         "127.0.0.1", server.server_address[1], timeout=10
     )
     try:
-        connection.request(method, path)
+        headers = (
+            {"Authorization": f"Bearer {token_for(scope)}"} if scope else {}
+        )
+        connection.request(method, path, headers=headers)
         response = connection.getresponse()
         body = response.read().decode("utf-8")
         headers = {name.lower(): value for name, value in response.getheaders()}
@@ -75,7 +88,7 @@ def test_the_index_answers_html_with_a_route_per_declared_row(boot: _Boot) -> No
     """``GET /`` is a complete HTML document, one row per declared
     route, each naming the route's own verb, path and component."""
     server = boot({})
-    status, headers, body = _ask_raw(server, "GET", INDEX_PATH)
+    status, headers, body = _ask_raw(server, "GET", INDEX_PATH, INDEX_SCOPE)
     assert status == 200
     assert headers["content-type"] == "text/html; charset=utf-8"
     assert body.startswith("<!doctype html>")
@@ -98,7 +111,7 @@ def test_the_index_names_whether_each_component_is_configured(
     is up.
     """
     server = boot({"ops-fdr-deploy": _GetEndpoint()})
-    _, _, body = _ask_raw(server, "GET", INDEX_PATH)
+    _, _, body = _ask_raw(server, "GET", INDEX_PATH, INDEX_SCOPE)
     # The present component is configured; the nine absent ones are not,
     # so both words appear and neither is the whole table.
     assert "configured" in body
@@ -114,7 +127,7 @@ def test_the_index_is_the_resolved_table_rendered(boot: _Boot) -> None:
     the ``endpoint`` each row carries, not a re-derived guess — so the
     configured state the page shows is the state the server serves."""
     server = boot({"ops-fdr-deploy": _GetEndpoint()})
-    _, _, body = _ask_raw(server, "GET", INDEX_PATH)
+    _, _, body = _ask_raw(server, "GET", INDEX_PATH, INDEX_SCOPE)
     # All ten routes are declared; exactly one is configured (the one
     # component booted), the rest unconfigured — the page's count says
     # which, so the index reflects the resolved table, not a constant.
@@ -125,7 +138,7 @@ def test_the_index_builds_from_the_resolved_routes() -> None:
     """The page builder renders the resolved table's verb, path,
     component and configured state — a unit pin on the one function
     that turns the table into HTML."""
-    route = ApiRoute("/metrics/fdr-deploy", "GET", "ops-fdr-deploy")
+    route = ApiRoute("/metrics/fdr-deploy", "GET", "ops-fdr-deploy", "metrics:read")
     html = _index_html((ResolvedRoute(route=route, endpoint=object()),))
     assert "<!doctype html>" in html
     assert ">GET<" in html
@@ -137,7 +150,7 @@ def test_the_index_builds_from_the_resolved_routes() -> None:
 def test_the_index_escapes_route_values() -> None:
     """A verb, path or component that carries HTML metacharacters is
     escaped, never injected — the page is text, not a script vector."""
-    route = ApiRoute("/a<script>", "GE'T", "ops<>&")
+    route = ApiRoute("/a<script>", "GE'T", "ops<>&", "metrics:read")
     html = _index_html((ResolvedRoute(route=route, endpoint=None),))
     assert "<script>" not in html
     assert "&lt;script&gt;" in html
@@ -217,7 +230,7 @@ def test_no_body_on_the_index_carries_a_traceback_or_a_path(
     server = boot(
         {"ops-fdr-deploy": _GetEndpoint(refusal=RuntimeError(f"leaked {tmp_path}"))}
     )
-    _, _, body = _ask_raw(server, "GET", INDEX_PATH)
+    _, _, body = _ask_raw(server, "GET", INDEX_PATH, INDEX_SCOPE)
     assert "Traceback" not in body
     assert str(tmp_path) not in body
     assert ".py" not in body

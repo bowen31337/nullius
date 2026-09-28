@@ -32,6 +32,12 @@ with the unconfigured refusal — never by silently omitting the route,
 because a caller must be able to tell *nowhere configured* from
 *configured and empty* (the same distinction the members draw between
 no store and an empty one).
+
+Each row also states the *scope* a caller must hold to reach it
+(feature 18), so the pairing of route to credential is spelled once
+here beside the pairing of route to component, and the dispatch checks
+the scope off the row it is about to serve rather than a second table
+that could drift from it.
 """
 
 from __future__ import annotations
@@ -40,8 +46,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from .auth import EVALUATOR, METRICS_READ, RESEARCH, RISK
+
 __all__ = [
     "API_ROUTES",
+    "INDEX_SCOPE",
     "PRE_REGISTER_WRAP",
     "PROMOTE_WRAP",
     "ApiRoute",
@@ -49,6 +58,18 @@ __all__ = [
     "resolve_routes",
     "routes_by_path",
 ]
+
+#: The scope the index answers under.  ``GET /`` is a *meta* route (see
+#: :mod:`nullius_api.server`), not a row of :data:`API_ROUTES`, so its
+#: required scope cannot live in a table row — but it must still be
+#: stated somewhere the transport can read, because feature 18's
+#: constraint is that *no route other than GET /healthz* answers without
+#: a valid token, and ``/`` is a route.  It carries ``metrics:read``
+#: because that is the scope over the transport's own surface: the page
+#: describes the composition an operator reads, and the journeys that
+#: open it (J8, J14) hold a ``metrics:read`` token.  ``/healthz`` alone
+#: has no scope, which is the whole of its exemption.
+INDEX_SCOPE = METRICS_READ
 
 #: The wrap marker for the promotion component: its composed value is
 #: feature 291's store, served through the member's own endpoint.
@@ -76,11 +97,34 @@ class ApiRoute:
     arrives as the endpoint itself; ``configuration`` names the
     environment the component resolves from, for the unconfigured
     refusal's message.
+
+    ``scope`` is the credential a caller must hold to reach the row —
+    one of feature 18's four words, spelled once per row so the
+    *pairing* of route to scope is as greppable and as drift-proof as
+    the pairing of route to component above.  It is the same "spelled
+    once" law this module exists for, lifted to the authorization
+    surface: a scope written here and checked in the dispatch could
+    otherwise disagree about which credential reaches
+    ``POST /risk/halt``, and that disagreement would be a hole rather
+    than a bug report.  The rows below assign the four words along the
+    journey documents' own actor lines — the actor who reads a metric
+    holds ``metrics:read``, the researcher holds ``research``, the
+    frozen evaluator service holds ``evaluator`` and the risk
+    supervisor holds ``risk`` — so the token a journey's precondition
+    names is the token its steps use.
+
+    ``scope`` carries **no default**, deliberately, and it sits between
+    the required fields and the defaulted ones for exactly that reason:
+    an authorization gate whose unstated value is a working credential
+    is one a future row can widen by omission.  Every row states its
+    scope, so adding a route to the table is also a decision about who
+    may reach it, and the missing-argument error is the reminder.
     """
 
     path: str
     verb: str
     component: str
+    scope: str
     wrap: str | None = None
     configuration: str = _DATABASE_URL
 
@@ -91,21 +135,28 @@ class ApiRoute:
 #: as the index the spec's later features serve at ``GET /``) reads
 #: deterministically regardless of who asks.
 API_ROUTES: tuple[ApiRoute, ...] = (
-    ApiRoute("/forward/decay", "GET", "forward-decay"),
-    ApiRoute("/forward/promote", "POST", "forward", wrap=PROMOTE_WRAP),
-    ApiRoute("/ledger/debit", "POST", "ledger-debit"),
-    ApiRoute("/ledger/k-effective", "GET", "ledger-k-effective"),
-    ApiRoute("/metrics/fdr-deploy", "GET", "ops-fdr-deploy"),
-    ApiRoute("/metrics/instrument-status", "GET", "ops-instrument-status"),
-    ApiRoute("/metrics/regime-coverage", "GET", "ops-regime-coverage"),
-    ApiRoute("/promotion/pre-register", "POST", "promotion", wrap=PRE_REGISTER_WRAP),
+    ApiRoute("/forward/decay", "GET", "forward-decay", RESEARCH),
+    ApiRoute("/forward/promote", "POST", "forward", RESEARCH, wrap=PROMOTE_WRAP),
+    ApiRoute("/ledger/debit", "POST", "ledger-debit", EVALUATOR),
+    ApiRoute("/ledger/k-effective", "GET", "ledger-k-effective", EVALUATOR),
+    ApiRoute("/metrics/fdr-deploy", "GET", "ops-fdr-deploy", METRICS_READ),
+    ApiRoute("/metrics/instrument-status", "GET", "ops-instrument-status", METRICS_READ),
+    ApiRoute("/metrics/regime-coverage", "GET", "ops-regime-coverage", METRICS_READ),
+    ApiRoute(
+        "/promotion/pre-register",
+        "POST",
+        "promotion",
+        RESEARCH,
+        wrap=PRE_REGISTER_WRAP,
+    ),
     ApiRoute(
         "/target",
         "POST",
         "nulloracle-target-route",
+        EVALUATOR,
         configuration="the null sidecar location (NULL_SIDECAR_PATH)",
     ),
-    ApiRoute("/risk/halt", "POST", "risk-halt"),
+    ApiRoute("/risk/halt", "POST", "risk-halt", RISK),
 )
 
 
