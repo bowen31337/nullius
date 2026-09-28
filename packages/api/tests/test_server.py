@@ -35,6 +35,7 @@ from nullius_api.server import (
     DEFAULT_ERROR_CLASS,
     DEFAULT_HOST,
     DEFAULT_PORT,
+    EXECUTION_ENGINE_UNBOUND_CLASS,
     HOST_ENV,
     INTERNAL_ERROR_CLASS,
     MALFORMED_REQUEST_CLASS,
@@ -86,6 +87,26 @@ class _DecayEndpoint:
     def get(self, node_id):
         self.asked_for.append(node_id)
         return _Figure(history=((node_id, 0.5),))
+
+
+class _HaltEndpoint:
+    """An endpoint shaped like the halt route: ``post(request)``.
+
+    Records the ``execution_engine`` each request carried — the one
+    field a caller's :class:`~risk.halt.HaltRequest` states — so a test
+    can assert the bound engine reached the endpoint without depending
+    on the real member's kill channel or flattener.
+    """
+
+    route = "/risk/halt"
+
+    def __init__(self, answer=None) -> None:
+        self._answer = answer if answer is not None else _Figure()
+        self.asked_with: list[object] = []
+
+    def post(self, request):
+        self.asked_with.append(request.execution_engine)
+        return self._answer
 
 
 # A member-flavoured refusal: the dispatch recognises a served member's
@@ -237,8 +258,8 @@ def test_a_post_route_without_an_adapter_answers_not_implemented(boot) -> None:
     """The table declares the route (so its verb answers 405 and its
     component resolves), and the serving lands with the per-route
     features — stated as a JSON refusal, never a dropped connection."""
-    server = boot({"risk-halt": object()})
-    status, _, body = _ask(server, "POST", "/risk/halt")
+    server = boot({"ledger-debit": object()})
+    status, _, body = _ask(server, "POST", "/ledger/debit")
     assert status == 501
     assert body["error"]["code"] == "route_not_implemented"
 
@@ -302,6 +323,68 @@ def test_the_decay_route_without_an_identity_is_refused_before_the_store(
     assert status == 400
     assert body["error"]["code"] == "missing_node_id"
     assert endpoint.asked_for == []
+
+
+# -- The halt route: the engine the entrypoint bound, never the request's own -------
+
+
+def test_the_halt_route_drives_the_endpoint_with_the_bound_engine(boot) -> None:
+    """The engine reaching the endpoint is the one the server was booted
+    with — the entrypoint's own bind of ``NULLIUS_EXECUTION_ENGINE`` —
+    never anything the request itself could state, and the answer is
+    the endpoint's own testimony, passed straight to the wire."""
+    engine = object()
+    answer = _Figure(figure=1.0)
+    endpoint = _HaltEndpoint(answer=answer)
+    server = boot({"risk-halt": endpoint}, execution_engine=engine)
+    status, headers, body = _ask(server, "POST", "/risk/halt")
+    assert status == 200
+    assert headers["content-type"] == "application/json"
+    assert body == {"history": [], "figure": 1.0}
+    assert endpoint.asked_with == [engine]
+
+
+def test_the_halt_route_refuses_execution_engine_unbound(boot) -> None:
+    """No engine bound at server start: 503, named by its own code —
+    and the endpoint is never asked, because a halt over no engine has
+    no book for the endpoint to flatten."""
+    endpoint = _HaltEndpoint()
+    server = boot({"risk-halt": endpoint})
+    status, _, body = _ask(server, "POST", "/risk/halt")
+    assert status == 503
+    assert body["error"]["code"] == "execution_engine_unbound"
+    assert endpoint.asked_with == []
+
+
+def test_the_halt_routes_unbound_refusal_carries_its_own_class(boot) -> None:
+    """The unbound refusal answers its own stable class — distinct from
+    the generic component-unconfigured refusal, because these are two
+    different deployment facts (no store bound vs. no engine bound)."""
+    endpoint = _HaltEndpoint()
+    server = boot({"risk-halt": endpoint})
+    _, _, body = _ask(server, "POST", "/risk/halt")
+    assert body["error"]["class"] == EXECUTION_ENGINE_UNBOUND_CLASS
+
+
+def test_the_halt_route_over_the_composed_application_flattens_a_real_engine(
+    boot, test_database_url: str
+) -> None:
+    """Against the factory's own composition: a real
+    :class:`~risk.halt.HaltEndpoint`, an in-memory paper engine bound as
+    the server would bind one from ``NULLIUS_EXECUTION_ENGINE``, and one
+    ``POST /risk/halt`` that sends the kill and flattens the book."""
+    from nullius_api.demo import InMemoryPaperEngine
+
+    engine = InMemoryPaperEngine(orders=("o-1",), positions=("ETHUSDT",))
+    application = create_app()
+    server = boot(application, execution_engine=engine)
+    status, _, body = _ask(server, "POST", "/risk/halt")
+    assert status == 200
+    assert body["instruction"]["instruction"] == "kill"
+    assert body["result"]["cancelled_orders"] == ["o-1"]
+    assert body["result"]["closed_positions"] == ["ETHUSDT"]
+    assert engine.open_orders() == []
+    assert engine.open_positions() == []
 
 
 # -- Refusals: whose message, and what never leaks ----------------------------------
@@ -434,8 +517,8 @@ def test_the_transports_own_doors_answer_their_stable_classes(boot) -> None:
     empty = boot({})
     _, _, unconfigured = _ask(empty, "GET", "/metrics/fdr-deploy")
     assert unconfigured["error"]["class"] == COMPONENT_UNCONFIGURED_CLASS
-    configured = boot({"risk-halt": object()})
-    _, _, not_impl = _ask(configured, "POST", "/risk/halt")
+    configured = boot({"ledger-debit": object()})
+    _, _, not_impl = _ask(configured, "POST", "/ledger/debit")
     assert not_impl["error"]["class"] == ROUTE_NOT_IMPLEMENTED_CLASS
 
 

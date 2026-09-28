@@ -75,6 +75,7 @@ __all__ = [
     "DEFAULT_HOST",
     "DEFAULT_PORT",
     "EXECUTION_ENGINE_ENV",
+    "EXECUTION_ENGINE_UNBOUND_CLASS",
     "HOST_ENV",
     "INTERNAL_ERROR_CLASS",
     "MALFORMED_REQUEST_CLASS",
@@ -106,6 +107,7 @@ COMPONENT_UNCONFIGURED_CLASS = "ComponentUnconfiguredError"
 ROUTE_NOT_IMPLEMENTED_CLASS = "RouteNotImplementedError"
 MALFORMED_REQUEST_CLASS = "MalformedRequestError"
 INTERNAL_ERROR_CLASS = "InternalServerError"
+EXECUTION_ENGINE_UNBOUND_CLASS = "ExecutionEngineUnboundError"
 
 #: The interface bound when no host is named — loopback only, so a
 #: server started casually on a workstation serves its operator and
@@ -238,12 +240,18 @@ class ApiRequest:
     spec's later features add extend this value with the body rather
     than reshaping the adapters' door.  ``query`` carries each
     parameter's first value (a repeated parameter is a client's
-    restatement of one ask).
+    restatement of one ask).  ``execution_engine`` is the one exception
+    to "nothing but the request states": it is the entrypoint's own
+    bind (:data:`EXECUTION_ENGINE_ENV`, read once at server start), not
+    anything this particular request carries, so it rides in on every
+    ``ApiRequest`` rather than reopening the adapter signature for the
+    one route that needs it.
     """
 
     verb: str
     path: str
     query: Mapping[str, str]
+    execution_engine: Any = None
 
 
 # -- The adapters ----------------------------------------------------------------
@@ -303,17 +311,69 @@ class _MalformedRequest(Exception):
         self.message = message
 
 
+class _ExecutionEngineUnbound(Exception):
+    """``POST /risk/halt`` reached with no execution engine bound.
+
+    A sibling of :class:`_MalformedRequest` in shape (code word plus an
+    operator-facing message, caught by the dispatch below), but a
+    different fact: the request itself is well-formed, and the
+    deployment is the thing with nothing to state — the entrypoint
+    started with no :data:`EXECUTION_ENGINE_ENV` naming an engine to
+    drive.  That is a 503, not a 400: no ask of the caller's would fix
+    it, only a deployment that binds an engine at server start.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def _risk_halt_post(endpoint: Any, request: ApiRequest) -> tuple[int, Any]:
+    """Serve ``POST /risk/halt``: send the kill, then flatten the book.
+
+    The engine the flatten drives is never one this request's body
+    could carry — it is the supervisor's own hold, bound once at server
+    start from :data:`EXECUTION_ENGINE_ENV` and read here off
+    :attr:`ApiRequest.execution_engine` (:attr:`ApiServer.
+    execution_engine`, threaded in by the dispatch).  Unbound is
+    answered by name, 503, *before* the composed :class:`~risk.halt.
+    HaltEndpoint` is ever asked — a halt request with no engine has no
+    book to flatten, and the endpoint's own :class:`~risk.errors.
+    RiskFlattenError` would say so a moment later in a less direct
+    place.  Bound, the endpoint does the whole of the halt — the kill
+    sent first, the book flattened second — and this adapter computes
+    nothing: the response is the endpoint's own testimony, passed
+    straight to the wire.
+    """
+    if request.execution_engine is None:
+        raise _ExecutionEngineUnbound(
+            "execution_engine_unbound",
+            f"POST /risk/halt has no execution engine bound: the server "
+            f"started with no {EXECUTION_ENGINE_ENV} naming one. The "
+            "repair is a module:attribute path to the engine the "
+            "deployment holds (for example my_package.execution:ENGINE), "
+            "bound at server start; a halt with no engine has no book to "
+            "flatten",
+        )
+    from risk import HaltRequest  # deferred: a cross-member import at call time
+
+    return 200, endpoint.post(HaltRequest(execution_engine=request.execution_engine))
+
+
 #: The adapters the transport core wires: ``(verb, path)`` → call.  The
-#: POST routes are declared in the table (so their paths answer the
-#: wrong-verb refusal and the index the later features serve) but carry
-#: no adapter here — their request construction is the spec's per-route
-#: features', layered onto this dispatch without reshaping it.
+#: remaining POST routes are declared in the table (so their paths
+#: answer the wrong-verb refusal and the index the later features
+#: serve) but carry no adapter here — their request construction is the
+#: spec's per-route features', layered onto this dispatch without
+#: reshaping it.
 HTTP_ADAPTERS: dict[tuple[str, str], Callable[[Any, ApiRequest], tuple[int, Any]]] = {
     ("GET", "/metrics/fdr-deploy"): _no_argument_get,
     ("GET", "/metrics/instrument-status"): _no_argument_get,
     ("GET", "/metrics/regime-coverage"): _no_argument_get,
     ("GET", "/ledger/k-effective"): _no_argument_get,
     ("GET", "/forward/decay"): _forward_decay_get,
+    ("POST", "/risk/halt"): _risk_halt_post,
 }
 
 
@@ -650,8 +710,11 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
+        request = ApiRequest(
+            verb, path, query, execution_engine=self.server.execution_engine
+        )
         try:
-            status, payload = adapter(resolved.endpoint, ApiRequest(verb, path, query))
+            status, payload = adapter(resolved.endpoint, request)
         except _MalformedRequest as exc:
             # The one refusal the transport owns: it carries its own code
             # word and the operator-facing message; the class is the
@@ -659,6 +722,16 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self._write_json(
                 400,
                 error_payload(exc.code, exc.message, error_class=MALFORMED_REQUEST_CLASS),
+            )
+            return
+        except _ExecutionEngineUnbound as exc:
+            # A deployment fact, not a malformed ask — the request is
+            # fine, the server simply bound no engine at start.
+            self._write_json(
+                503,
+                error_payload(
+                    exc.code, exc.message, error_class=EXECUTION_ENGINE_UNBOUND_CLASS
+                ),
             )
             return
         except Exception as exc:  # noqa: BLE001 - the member/500 split is the point
