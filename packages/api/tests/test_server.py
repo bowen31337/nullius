@@ -254,14 +254,54 @@ def test_an_unconfigured_component_is_named_in_the_refusal(boot) -> None:
     assert "DATABASE_URL" in body["error"]["message"]
 
 
-def test_a_post_route_without_an_adapter_answers_not_implemented(boot) -> None:
-    """The table declares the route (so its verb answers 405 and its
-    component resolves), and the serving lands with the per-route
-    features — stated as a JSON refusal, never a dropped connection."""
-    server = boot({"ledger-debit": object()})
-    status, _, body = _ask(server, "POST", "/ledger/debit")
+def test_a_route_without_an_adapter_answers_not_implemented(
+    boot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dispatch's own adapter lookup, exercised through a route for
+    which it is given none — stated as a JSON refusal, never a dropped
+    connection.  Every route the table declares now carries an adapter
+    (this feature wired the last POST one), so the law is pinned here
+    through the lookup itself rather than through a route that is
+    genuinely unwired: patching the table is what keeps the test about
+    the transport's behaviour instead of about which routes happen to
+    have landed."""
+    import nullius_api.server as server_module
+
+    monkey = {
+        key: value
+        for key, value in server_module.HTTP_ADAPTERS.items()
+        if key != ("POST", "/ledger/debit")
+    }
+    with monkeypatch.context() as patch:
+        patch.setattr(server_module, "HTTP_ADAPTERS", monkey)
+        server = boot({"ledger-debit": object()})
+        status, _, body = _ask(server, "POST", "/ledger/debit")
     assert status == 501
     assert body["error"]["code"] == "route_not_implemented"
+    assert body["error"]["class"] == ROUTE_NOT_IMPLEMENTED_CLASS
+
+
+def test_every_route_declared_carries_an_adapter() -> None:
+    """The dispatch's table and the adapters wired to it agree —
+    additions_spec_journeys.xml features 6-11 serve the ten routes
+    app_spec.xml's summary promises, and a row that landed without an
+    adapter would answer ``route_not_implemented`` to a caller the
+    spec's own index tells the route is served.
+
+    The law is stated as a covering rather than as a list, so a route
+    added later to either half alone is caught here rather than in a
+    caller's 501."""
+    from nullius_api import API_ROUTES
+    from nullius_api.server import HTTP_ADAPTERS
+
+    declared = {(row.verb, row.path) for row in API_ROUTES}
+    adapted = set(HTTP_ADAPTERS)
+    assert adapted <= declared, (
+        f"adapters serve routes the table does not declare: {adapted - declared}"
+    )
+    assert declared == adapted, (
+        f"declared routes without an adapter: {declared - adapted}"
+    )
 
 
 def test_the_unbound_engine_is_carried_not_fabricated(boot) -> None:
@@ -502,10 +542,15 @@ def test_the_member_refusal_carries_the_raised_class(boot) -> None:
     assert "/" not in body["error"]["class"]
 
 
-def test_the_transports_own_doors_answer_their_stable_classes(boot) -> None:
+def test_the_transports_own_doors_answer_their_stable_classes(
+    boot, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The transport's own refusals each answer the class they own, so a
     caller can tell an unknown route from a wrong verb from an
-    unconfigured component without reading the message."""
+    unconfigured component from an unwired route without reading the
+    message."""
+    import nullius_api.server as server_module
+
     server = boot({"ops-fdr-deploy": _GetEndpoint()})
     _, _, unknown = _ask(server, "GET", "/nowhere")
     assert unknown["error"]["class"] == UNKNOWN_ROUTE_CLASS
@@ -517,8 +562,19 @@ def test_the_transports_own_doors_answer_their_stable_classes(boot) -> None:
     empty = boot({})
     _, _, unconfigured = _ask(empty, "GET", "/metrics/fdr-deploy")
     assert unconfigured["error"]["class"] == COMPONENT_UNCONFIGURED_CLASS
-    configured = boot({"ledger-debit": object()})
-    _, _, not_impl = _ask(configured, "POST", "/ledger/debit")
+    # The not-implemented door, over a route the dispatch is given no
+    # adapter for — every declared route carries one today, so the law
+    # is pinned by removing one rather than by keeping a route unwired
+    # for the sake of a test.
+    without = {
+        key: value
+        for key, value in server_module.HTTP_ADAPTERS.items()
+        if key != ("POST", "/ledger/debit")
+    }
+    with monkeypatch.context() as patch:
+        patch.setattr(server_module, "HTTP_ADAPTERS", without)
+        configured = boot({"ledger-debit": object()})
+        _, _, not_impl = _ask(configured, "POST", "/ledger/debit")
     assert not_impl["error"]["class"] == ROUTE_NOT_IMPLEMENTED_CLASS
 
 

@@ -302,8 +302,13 @@ def _no_argument_get(endpoint: Any, request: ApiRequest) -> tuple[int, Any]:
     """Serve a GET whose endpoint answers ``get()`` with no arguments.
 
     The four no-argument reads — the three metrics routes and
-    ``/ledger/k-effective`` — where the whole of serving is asking the
-    composed endpoint and answering what it said, 200.
+    ``/ledger/k-effective`` (feature 94's per-epoch ``K_effective``,
+    the deflation input §10.3's term consumes) — where the whole of
+    serving is asking the composed endpoint and answering what it said,
+    200.  The route carries no argument because a GET over the
+    append-only log has no body and no filter to state; an empty ledger
+    answers the derivation's honest empty counts rather than a
+    fabricated ``0.0``, which is the members' own law passed through.
     """
     return 200, endpoint.get()
 
@@ -812,6 +817,180 @@ def _pre_register_post(endpoint: Any, request: ApiRequest) -> tuple[int, Any]:
     return _pre_registration_status(response), response
 
 
+def _debit_post(endpoint: Any, request: ApiRequest) -> tuple[int, Any]:
+    """Serve ``POST /ledger/debit``: append the charge, or answer the prior row.
+
+    Feature 95's whole act, relayed rather than re-decided.  The body's
+    terms — the two identities, the outcome, the budget directive, the
+    charge unit, the epoch and the provenance triple — are built into the
+    member's own :class:`~ledger.debit.DebitRequest` by
+    :func:`_debit_request`, which is also the one door that translates a
+    malformed term into the transport's 400, and the endpoint's answer is
+    passed straight to the wire with the status
+    :func:`_debit_status` derives from the member's own ``appended`` flag.
+
+    **The status is the feature's, and every clause of it is the
+    member's own testimony.**  A charge *this* call appended is an
+    appended charge — ``201 Created``.  A POST the store answered by
+    finding the node's standing row is an idempotent retry — ``200 OK``,
+    and the body carries the *same* sequence number the original POST
+    returned, because :attr:`~ledger.debit.DebitResponse.seq` is read off
+    the prior row rather than minted here; nothing was appended, so
+    nothing may claim to have been.  The two are one branch reading one
+    field, so a retry can never be answered as a creation: the flag *is*
+    the store's finding, not a guess the transport made about the body it
+    sent, and the sequence the caller accounted with cannot move between
+    the two calls.
+
+    **The refusals this route makes decidable are the member's own, and
+    this adapter translates none of them.**  An ask that cannot say what
+    it is charging — an unknown outcome, a malformed provenance term, a
+    naive stamp, an absent epoch or directive — is the member's
+    :class:`~ledger.errors.TrialRecordError`, already re-raised as the
+    transport's 400 by :func:`_debit_request` *before the store is
+    touched*, because that repair belongs to the caller.  A configured
+    store whose write failed, or a ``DATABASE_URL`` this member cannot
+    speak, is :class:`~ledger.errors.TrialStoreError`, which propagates
+    untouched to the generic member-refusal door's 503 — the right
+    escalation for a deployment that cannot serve.  Nothing here
+    computes, defaults, retries or re-derives anything the member did not
+    already decide; in particular the sequence on the wire is the
+    record's own ``seq``, never a second count kept here.
+    """
+    response = endpoint.post(_debit_request(request))
+    return _debit_status(response), response
+
+
+def _debit_request(request: ApiRequest) -> Any:
+    """Feature 95's body as the member's own request record.
+
+    Imported deferred, for the reason :func:`_risk_halt_post` names: a
+    module-scope cross-member import would make importing this package
+    depend on the sibling being importable first, which the workspace's
+    scan order never promises.
+
+    Built by the *member's* constructor, so every term is validated by
+    the module that owns the contract: the identities as UUIDs, the
+    outcome against feature 91's closed vocabulary, the directive as a
+    genuine bool (feature 90 — supplied by the caller, never derived
+    here), the unit as a positive finite real (feature 89), the epoch as
+    a name that names one (feature 88) and each provenance term as 64
+    hex characters (feature 87).  The document is passed through exactly
+    as the body spelled it: the member's own constructor is where that
+    law belongs, and a second spelling of the terms here could disagree
+    with the one that owns the row.
+
+    The one term the member defaults keeps *the member's* default: an
+    absent ``charge_units`` is filled from
+    :data:`~ledger.units.DEFAULT_CHARGE_UNITS` — the same ``1.0`` §8's
+    column declares — so the transport spells no presumption of its own.
+    A body that states the term as ``null`` is refused rather than
+    defaulted, because *absent* and *stated as nothing* are different
+    facts and a null unit is not a unit the caller stated.
+
+    A term that fails validation raises the member's
+    :class:`~ledger.errors.TrialRecordError` — the ask face, a body that
+    cannot say what it is charging — translated here to the transport's
+    own :class:`_MalformedRequest` (400) for the same reason
+    :func:`_target_request` translates ``TargetRouteError``: a body that
+    cannot say what it is asking for is the caller's to repair, and left
+    to the generic member-refusal door it would answer 503 — the wrong
+    escalation for a fixable ask.  The translation is deliberately the
+    *exact* class, never a refinement of it, so a refusal the store owns
+    can never be re-spelled as a malformed body.
+
+    Everything else the endpoint can raise — the store's own
+    :class:`~ledger.errors.TrialStoreError` — propagates untouched.
+    """
+    from ledger import DebitRequest  # deferred past module scope
+
+    body = request.body or {}
+    try:
+        return DebitRequest(
+            node_id=body.get("node_id"),
+            campaign_id=body.get("campaign_id"),
+            outcome=body.get("outcome"),
+            charges_budget=body.get("charges_budget"),
+            charge_units=body.get("charge_units", 1.0),
+            epoch_id=body.get("epoch_id"),
+            evaluator_hash=body.get("evaluator_hash"),
+            snapshot_hash=body.get("snapshot_hash"),
+            cost_model_hash=body.get("cost_model_hash"),
+            ts=body.get("ts"),
+        )
+    except Exception as exc:  # re-raised unless it is the ask class
+        if not _is_trial_record_refusal(exc):
+            raise
+        raise _MalformedRequest("malformed_body", str(exc)) from exc
+
+
+def _debit_status(response: Any) -> int:
+    """The status one debit answer carries: 201, or 200 on an idempotent retry.
+
+    Read off the member's own ``appended`` flag — duck-read by field name
+    for the reason every seam in this workspace gives: the factory's scan
+    imports the member under a synthetic module name, so the *composed*
+    answer is structurally a :class:`~ledger.debit.DebitResponse` but
+    never an instance of any class this module could name.  The contract
+    is the field.
+
+    A response that carries no boolean ``appended`` is refused rather
+    than guessed at: the transport has no way to tell an append from a
+    retry on a record whose own testimony it cannot read, and inventing a
+    201 would claim a charge was written that may not have been — the
+    fabricated answer this member exists not to serve.  The refusal is
+    the transport's *internal* fault — the composed endpoint is not what
+    the route table promised — so it is a :class:`TypeError`, answered by
+    the dispatch as the generic internal error with the class name in the
+    log and nothing on the wire.
+    """
+    appended = getattr(response, "appended", None)
+    if not isinstance(appended, bool):
+        raise TypeError(
+            f"the composed endpoint serving POST /ledger/debit answered a "
+            f"response whose appended flag is {appended!r} "
+            f"({type(appended).__name__}); the route's status is 201 for the "
+            "charge this call appended and 200 for the idempotent retry the "
+            "store answered with the node's standing row, and a record the "
+            "transport cannot read is a composition fault, not a status to "
+            "invent"
+        )
+    return 201 if appended else 200
+
+
+#: The ledger member's *malformed-ask* refusal — the body cannot say what
+#: it is charging (:class:`~ledger.errors.TrialRecordError`'s own
+#: docstring: a row contract violated at the write).  Checked by name for
+#: the reason :data:`_FORWARD_RECORD_REFUSAL_NAME` states: the factory's
+#: scan imports the member under a synthetic module alias, so a composed
+#: refusal is never an instance of the class a direct import yields.
+_TRIAL_RECORD_REFUSAL_NAME = "TrialRecordError"
+
+
+def _is_trial_record_refusal(exc: BaseException) -> bool:
+    """Whether ``exc`` is the ledger member's malformed-ask refusal.
+
+    The *exact* class, never a refinement of it: the store's own
+    :class:`~ledger.errors.TrialStoreError` and the immutability
+    refusal's :class:`~ledger.errors.TrialImmutableError` both subclass
+    the same base, so the check is ``==`` on the name rather than
+    ``issubclass`` — a store that cannot write must never be reported to
+    the caller as a malformed body.
+
+    Both halves are checked — the class name and the member segment in
+    the module path — so an unrelated exception sharing the name is not
+    silently re-spelled as a 400 either; a miss leaves it to the
+    dispatch's general handling, the safe direction.
+    """
+    if type(exc).__name__ != _TRIAL_RECORD_REFUSAL_NAME:
+        return False
+    module = type(exc).__module__ or ""
+    return any(
+        segment == "ledger" or segment.startswith("_nullius_scanned_")
+        for segment in module.split(".")
+    )
+
+
 def _pre_registration_request(request: ApiRequest) -> Any:
     """Feature 291's body as the member's own request record.
 
@@ -988,17 +1167,18 @@ def _is_promotion_parent_absent_refusal(exc: BaseException) -> bool:
     )
 
 
-#: The adapters the transport core wires: ``(verb, path)`` → call.  The
-#: remaining POST routes are declared in the table (so their paths
-#: answer the wrong-verb refusal and the index the later features
-#: serve) but carry no adapter here — their request construction is the
-#: spec's per-route features', layered onto this dispatch without
-#: reshaping it.
+#: The adapters the transport core wires: ``(verb, path)`` → call.  Every
+#: row of the table that has landed an adapter is listed here; a row
+#: declared but not yet wired (none today) answers the route-not-
+#: implemented refusal, because the table is what makes its path answer
+#: the wrong-verb refusal and the index, and the serving behaviour is
+#: said by the adapter rather than by the row.
 HTTP_ADAPTERS: dict[tuple[str, str], Callable[[Any, ApiRequest], tuple[int, Any]]] = {
     ("GET", "/metrics/fdr-deploy"): _no_argument_get,
     ("GET", "/metrics/instrument-status"): _no_argument_get,
     ("GET", "/metrics/regime-coverage"): _no_argument_get,
     ("GET", "/ledger/k-effective"): _no_argument_get,
+    ("POST", "/ledger/debit"): _debit_post,
     ("GET", "/forward/decay"): _forward_decay_get,
     ("POST", "/forward/promote"): _forward_promote_post,
     ("POST", "/promotion/pre-register"): _pre_register_post,
