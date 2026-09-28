@@ -86,3 +86,67 @@ browser journeys and are not claimed by this run.
 **Suites:** the api member suite is 388 passed (14:17), the root suite
 1579 passed (10:23), both with `-p no:randomly`. `ruff check` is clean
 over the member's `src`, its `tests` and `src/app/modules/api`.
+
+## Run 18 — 2026-09-29, HTTPS on a non-loopback bind (feature 21)
+
+- **Branch:** `feat/http-api-transp-system-refuses-to-bind-a-non-loo-d9228d`.
+- **Checker:** `packages/api/tests/test_tls.py`, 48 cases, run with the
+  whole api member suite.
+- **Certificate:** a self-signed PEM pair the suite *generates* through the
+  `cryptography` package the *nulloracle* member already brings into the
+  workspace — never a new dependency of the api member, and never a
+  checked-in file that could be mistaken for a deployment secret. The
+  client in these tests verifies the server against that exact
+  certificate, so *serves HTTPS* is proven by a handshake that would fail
+  against any other one.
+
+J14's steps 5 and 6 (the refusal and the upgrade) are pinned as tests
+rather than browser runs. What the cases establish:
+
+- **The classification is fail-closed.** `127.0.0.1`, `127.0.0.2`, `::1`,
+  `[::1]`, `localhost` (any case, trailing dot, surrounding whitespace)
+  and glibc's `ip6-*` aliases are loopback; `0.0.0.0`, `::`, a private
+  literal and a DNS name — *including* one that resolves to 127.0.0.1 on
+  this machine — are not. Nothing is resolved: no startup waits on a
+  resolver, and the safety of a bind does not depend on a record somebody
+  else controls.
+- **The loopback default is untouched.** `127.0.0.1` resolves to a
+  disabled posture, reads neither variable, and the server hands back the
+  very socket it was given — feature 4's cleartext server, bit for bit.
+  A loopback bind that *was* given a pair stays cleartext rather than
+  being silently upgraded.
+- **The refusal names the file.** Unset, empty, half-configured, a path
+  that does not exist, a directory, a file that is not PEM, and a key
+  that does not match its certificate all refuse by name, with exit
+  status 2 through the real `python -m nullius_api` as a subprocess, one
+  plain sentence on standard error and no traceback. The posture is
+  resolved *before* `super().__init__` binds, so a refused bind leaves no
+  socket behind — pinned by counting the process's file descriptors. The
+  sentence also agrees with what was in fact configured: both variables
+  unset reads "`NULLIUS_API_TLS_CERT` and `NULLIUS_API_TLS_KEY` name no
+  certificate and key", one of them set reads "`NULLIUS_API_TLS_CERT`
+  names no certificate" and names the half that *was* given beside it,
+  so the operator is never sent to look at a file they already set.
+- **HTTPS is the ssl module.** With the pair configured, `--host 0.0.0.0`
+  serves a real TLS handshake that the same test's verifying client
+  completes; a cleartext `http://` request to that port gets no answer at
+  all; the token gate answers 401 inside the tunnel exactly as outside.
+
+One deliberate change to the operator's console: a *failed* handshake is
+logged as one line rather than the base class's traceback, and there are
+two shapes of it. A cleartext probe fails during `accept`, where the base
+class's loop swallowed the `ssl.SSLError` entirely — without a line the
+event left no trace at all. A TLS 1.3 client that does not trust this
+certificate only says so *after* completing its handshake, so its abort
+arrives while the handler is reading the request line and the base class
+would print a stack naming this module and a thread for a fault entirely
+the caller's. That second shape was found by re-running the suite, not by
+reading it: it reproduced roughly one run in three. Every other fault
+keeps the base class's own reporting.
+
+**Suites:** the api member suite is 433 passed (14:18), the root suite
+1579 passed (10:25), both with `-p no:randomly`. `ruff check` reports
+only the two findings `__init__.py` and `__main__.py` already carried
+before this feature (`RUF022` on the deliberately grouped `__all__` and
+`RUF059` on the now-unused host unpack); the files this feature adds and
+the other lines it touches are clean.

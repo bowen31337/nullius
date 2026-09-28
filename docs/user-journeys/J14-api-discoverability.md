@@ -30,6 +30,17 @@ evidence: —
    Expect: `401`, `401`, `403`; no body ever carries a traceback or path.
    The `403` names the route, the scope it wants and the scope presented;
    neither refusal repeats the token.
+5. Start the server with `--host 0.0.0.0` and neither `NULLIUS_API_TLS_CERT`
+   nor `NULLIUS_API_TLS_KEY` set (feature 21).
+   Expect: exit status `2` and one plain sentence on standard error naming
+   both variables and the repair, with no traceback. Repeat with the
+   variables set to paths that do not exist — the sentence names the file.
+6. Start the server with `--host 0.0.0.0` and both variables naming a real
+   certificate and key.
+   Expect: it serves HTTPS. A plain `http://` request to that port fails the
+   handshake and gets no answer at all; an `https://` request with a
+   `metrics:read` token answers as in step 1. The bearer token therefore
+   never crosses a network in cleartext.
 
 ## Result
 

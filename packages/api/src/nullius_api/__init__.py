@@ -22,6 +22,16 @@ answers 401, a token outside the route's scope answers 403, and a
 deployment that names no token file is refused at startup rather than
 served open.
 
+A bearer token must never cross a network in cleartext, so the address
+is not the only thing the deployment states: a host that is not the
+loopback interface is served over HTTPS or refused at startup
+(:mod:`nullius_api.tls` — feature 21).  ``NULLIUS_API_TLS_CERT`` and
+``NULLIUS_API_TLS_KEY`` must name a readable PEM certificate and key
+for any other interface, a missing file is one plain sentence naming
+it, and when the pair is there the listening socket is wrapped
+server-side with the standard library's :mod:`ssl` — no cleartext
+fallback, no redirect, and the loopback default untouched.
+
 The member owns no endpoint and computes no figure.  Its whole law is
 the constraint additions_spec_journeys.xml states for it: standard
 library only for HTTP (``http.server``, ``json``) so the lockfile gains
@@ -87,6 +97,14 @@ from .server import (
     error_payload,
     resolve_execution_engine,
 )
+from .tls import (
+    LOOPBACK_NAMES,
+    TLS_CERT_ENV,
+    TLS_KEY_ENV,
+    TlsConfig,
+    TlsConfigError,
+    is_loopback_host,
+)
 
 __all__ = [
     "API_ROUTES",
@@ -102,6 +120,7 @@ __all__ = [
     "HOST_ENV",
     "INDEX_SCOPE",
     "INTERNAL_ERROR_CLASS",
+    "LOOPBACK_NAMES",
     "MALFORMED_REQUEST_CLASS",
     "MAX_BODY_BYTES",
     "METHOD_NOT_ALLOWED_CLASS",
@@ -117,7 +136,11 @@ __all__ = [
     "RISK",
     "ROUTE_NOT_IMPLEMENTED_CLASS",
     "TARGET_UNKNOWN_NODE_CLASS",
+    "TLS_CERT_ENV",
+    "TLS_KEY_ENV",
     "TOKENS_FILE_ENV",
+    "TlsConfig",
+    "TlsConfigError",
     "UNAUTHENTICATED_CLASS",
     "UNKNOWN_ROUTE_CLASS",
     "ApiConfig",
@@ -134,6 +157,7 @@ __all__ = [
     "build_server",
     "dumps",
     "error_payload",
+    "is_loopback_host",
     "load_tokens",
     "resolve_execution_engine",
     "resolve_routes",

@@ -9,7 +9,7 @@ ThreadingHTTPServer` and nothing else from the network stack, so the
 lockfile gains no third-party edge for the transport (the constraint the
 member's whole scaffold exists under).
 
-Three laws shape the design:
+Four laws shape the design:
 
 **Every response carries a JSON body.**  One door writes every body —
 :meth:`ApiRequestHandler._write_json`, through :func:`~nullius_api.
@@ -50,6 +50,19 @@ local-only stance the dashboard's launch configuration takes — with
 ``--host``/``--port`` flags overriding the ``NULLIUS_API_HOST`` /
 ``NULLIUS_API_PORT`` environment, and flags overriding both.
 
+**A non-loopback bind is HTTPS or no server.**  Naming another
+interface puts a bearer token on a network, and a bearer token on a
+network in cleartext is that credential disclosed — so the address
+resolves through :meth:`~nullius_api.tls.TlsConfig.resolve` *before*
+anything binds: a host that is not provably loopback demands
+``NULLIUS_API_TLS_CERT`` and ``NULLIUS_API_TLS_KEY`` naming a readable
+PEM certificate and key, the absence of either refuses the start by
+naming the file, and a pair that is there wraps the listening socket
+server-side with the standard library's :mod:`ssl` (:mod:`nullius_api.
+tls` — feature 21).  The loopback default resolves to a disabled
+posture and is untouched, so a local-only deployment is exactly the
+server feature 4 built.
+
 **The endpoints are the members', never re-implemented.**  The server
 holds the composed :class:`~app.module_loader.Application` and serves
 each route through the component the factory handed out
@@ -67,6 +80,8 @@ import json
 import logging
 import os
 import re
+import ssl
+import sys
 import time
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
@@ -82,6 +97,13 @@ from .auth import (
 )
 from .json_encoding import dumps
 from .routes import INDEX_SCOPE, ResolvedRoute, resolve_routes
+from .tls import (
+    TLS_CERT_ENV,
+    TLS_KEY_ENV,
+    TlsConfig,
+    TlsConfigError,
+    is_loopback_host,
+)
 
 __all__ = [
     "BODY_TOO_LARGE_CLASS",
@@ -103,6 +125,8 @@ __all__ = [
     "REQUEST_STALLED_CLASS",
     "ROUTE_NOT_IMPLEMENTED_CLASS",
     "TARGET_UNKNOWN_NODE_CLASS",
+    "TLS_CERT_ENV",
+    "TLS_KEY_ENV",
     "TOKENS_FILE_ENV",
     "UNAUTHENTICATED_CLASS",
     "UNKNOWN_ROUTE_CLASS",
@@ -113,9 +137,12 @@ __all__ = [
     "ApiTokenConfigError",
     "ApiTokens",
     "ExecutionEngineResolutionError",
+    "TlsConfig",
+    "TlsConfigError",
     "bearer_token",
     "build_server",
     "error_payload",
+    "is_loopback_host",
     "resolve_execution_engine",
 ]
 
@@ -259,6 +286,15 @@ class ApiConfig:
     loopback only when somebody said so, out loud, on the command line
     or in the environment.  Frozen, because the address a server bound
     is a fact about the process, not a knob to adjust mid-flight.
+
+    What this class does **not** decide is whether that address may be
+    served in cleartext: resolving the host here answers *which
+    interface*, and :meth:`~nullius_api.tls.TlsConfig.resolve` answers
+    *on what terms* — the one question feature 21 adds, asked by
+    :func:`build_server` and by the entrypoint against the host this
+    class resolved.  Keeping them apart is what lets the address rules
+    be tested without a certificate and the certificate rules without a
+    socket.
     """
 
     host: str = DEFAULT_HOST
@@ -1561,6 +1597,17 @@ class ApiServer(ThreadingHTTPServer):
     that, and the tests hand in their own set explicitly — so there is
     no construction path that reaches a bound socket with no
     credentials, and no default for a future caller to overlook.
+
+    ``tls`` is the second half of the same stance for the *interface*
+    rather than the credentials (feature 21).  Omitted, the posture is
+    derived from the address this call was handed
+    (:meth:`~nullius_api.tls.TlsConfig.resolve`), so this constructor
+    demands certificate and key for a non-loopback bind without its
+    caller remembering to — the address a caller gave is the only fact
+    needed, which is what keeps a hand-built server honest.  Given
+    explicitly, it is wrapped exactly as it states; a loopback address
+    with an enabled posture is therefore *upgraded* to HTTPS, which is
+    harmless by construction and is how the upgrade is tested.
     """
 
     daemon_threads = True
@@ -1571,8 +1618,23 @@ class ApiServer(ThreadingHTTPServer):
         application: Any,
         tokens: ApiTokens,
         execution_engine: Any = None,
+        tls: TlsConfig | None = None,
     ) -> None:
+        # The posture is resolved *before* the bind, so a non-loopback
+        # address whose certificate question is unanswered raises with
+        # no socket taken — not one bound and then abandoned.
+        posture = (
+            TlsConfig.resolve(address[0])
+            if tls is None
+            else tls
+        )
         super().__init__(address, ApiRequestHandler)
+        # ...and applied immediately *after* it, before ``serve_forever``
+        # (or any caller's own ``accept``) can reach the socket, so there
+        # is no window in which the address answers a cleartext request.
+        if posture.enabled:
+            self.socket = posture.wrap(self.socket)
+        self.tls = posture
         self.application = application
         self.tokens = tokens
         self.execution_engine = execution_engine
@@ -1606,6 +1668,84 @@ class ApiServer(ThreadingHTTPServer):
             len(tokens),
             ", ".join(tokens.scopes) or "none",
         )
+        # The transport, never the certificate: *this address serves TLS*
+        # is the fact an operator checks after a non-loopback bind, and
+        # the paths behind it are their own configuration rather than the
+        # log's business.  A cleartext bind says so too — an operator who
+        # expected HTTPS and read *cleartext* here has found the fault
+        # before a token was sent.
+        log.info(
+            "bound %s:%s over %s",
+            posture.host,
+            self.server_address[1],
+            "HTTPS" if posture.enabled else "cleartext",
+        )
+
+    #: The :class:`ssl` failures a *peer* causes, rather than faults of
+    #: this deployment's own.  An unknown certificate, a protocol
+    #: mismatch, an abruptly closed socket — a port scan, a health
+    #: checker still pointing at ``http://``, a client that does not
+    #: trust this certificate and hangs up — are all facts about the
+    #: caller, and none of them is actionable at this end.
+    _PEER_TLS_FAILURES = (
+        ssl.SSLError,
+        ConnectionError,
+        EOFError,
+        TimeoutError,
+    )
+
+    def get_request(self) -> tuple[Any, Any]:
+        """Accept one connection, reporting a failed handshake in a line.
+
+        The base class's accept loop swallows every :class:`OSError`
+        raised here — and :class:`ssl.SSLError` is one — so a handshake
+        that fails during ``accept`` leaves no trace at all and an
+        operator cannot tell a probed port from a quiet one.  The
+        failure is logged as one line and re-raised, so the base class
+        still disposes of the connection exactly as it did; nothing here
+        changes what is served.
+        """
+        try:
+            return super().get_request()
+        except self._PEER_TLS_FAILURES as exc:
+            log.warning(
+                "TLS handshake failed; the connection is closed: %s",
+                type(exc).__name__,
+            )
+            raise
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        """Report a peer's TLS failure as the routine event it is.
+
+        The base class prints the whole traceback of anything that
+        escapes a request thread.  On an HTTPS bind that is the *normal*
+        outcome of a mis-addressed caller — a port scan, a health
+        checker still pointing at ``http://`` — so feature 21's
+        deployment would answer every one of them with a stack in the
+        operator's console, which is noise where a line is the useful
+        thing, and is exactly the shape of output that teaches an
+        operator to ignore the log.
+
+        *Two* shapes reach here rather than one.  A cleartext probe
+        raises during ``accept`` and never produces a request at all
+        (:meth:`get_request`).  A TLS 1.3 client that does not trust this
+        certificate, on the other hand, only *says* so after its
+        handshake has completed — so the failure arrives while the
+        handler is reading the request line, and a fault that is equally
+        the caller's would otherwise print a stack naming this module
+        and a thread.  Both are one line; every other fault keeps the
+        base class's own reporting, because those are the ones a
+        traceback is for.
+        """
+        fault = sys.exc_info()[1]
+        if isinstance(fault, self._PEER_TLS_FAILURES):
+            log.warning(
+                "connection with %s ended without a request: %s",
+                client_address,
+                type(fault).__name__,
+            )
+            return
+        super().handle_error(request, client_address)
 
 
 def _component_count(application: Any) -> int:
@@ -1623,8 +1763,9 @@ def build_server(
     execution_engine: Any = None,
     env: Mapping[str, str] | None = None,
     tokens: ApiTokens | None = None,
+    tls: TlsConfig | None = None,
 ) -> ApiServer:
-    """Build the serving transport: load the tokens, compose, resolve, bind.
+    """Build the serving transport: tokens, address, TLS, compose, bind.
 
     The one construction path the entrypoint and the tests share.  With
     no ``application`` the factory composes it
@@ -1649,11 +1790,23 @@ def build_server(
     credentials were never read.  A caller that has already loaded its
     own set (the entrypoint, which wants the refusal earlier still;
     every test, which hands in a known one) passes it here.
+
+    ``tls`` follows the address, and it sits between the address and
+    composition for that reason: once the host is known, whether it may
+    be served in cleartext is answerable (:func:`~nullius_api.tls.
+    TlsConfig.resolve` — a refusal by name when the host is not loopback
+    and no certificate is configured), so a composition is never built
+    for an address that cannot lawfully be bound.  Omitted, it is
+    resolved here from the same ``env`` the address was, and the server
+    does it too over the address it was handed — so a caller cannot
+    reach the bind with the question unasked by simply not asking it.
     """
     if tokens is None:
         tokens = ApiTokens.from_env(env)
     if config is None:
         config = ApiConfig.resolve(env=env)
+    if tls is None:
+        tls = TlsConfig.resolve(config.host, env=env)
     if application is None:
         from app.module_loader import create_app  # deferred past module scope
 
@@ -1663,6 +1816,7 @@ def build_server(
         application,
         tokens,
         execution_engine=execution_engine,
+        tls=tls,
     )
 
 

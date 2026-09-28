@@ -13,4 +13,13 @@ of four scopes — ``metrics:read``, ``research``, ``evaluator``, ``risk``
 startup rather than served open, so this seat still registers nothing:
 the transport's whole configuration is the flag surface, that variable
 and the execution-engine path.
+
+Feature 21 adds two more variables to that surface and no component
+either: a bind other than the loopback interface must name a
+certificate and key in ``NULLIUS_API_TLS_CERT`` and
+``NULLIUS_API_TLS_KEY`` or the server refuses to start, and with them
+it serves HTTPS through the standard library's ``ssl`` module, so a
+bearer token never crosses a network in cleartext.  The seat registers
+nothing for this either — there is no endpoint behind it, only the
+address the transport is willing to take.
 """

@@ -25,6 +25,16 @@ are the whole vocabulary, `GET /healthz` is the one route that answers without
 one, and a server started with no token file configured refuses to start
 (additions_spec_journeys.xml feature 18).
 
+Those tokens never cross a network in cleartext (feature 21). The server binds
+`127.0.0.1` unless `--host` or `NULLIUS_API_HOST` names another interface, and
+any *other* interface must name a PEM certificate and key in
+`NULLIUS_API_TLS_CERT` and `NULLIUS_API_TLS_KEY` — without them the server
+refuses to start with one plain sentence naming the file, and with them it
+serves HTTPS through the standard library's `ssl` module. A non-loopback bind
+has no cleartext mode: there is no redirect from a plain port and no fallback,
+so a caller reaching an `/api` route from another machine is always inside TLS.
+The journeys below are run against `127.0.0.1`, which needs no certificate.
+
 ## Journeys
 
 | # | Journey | Actor | Surface |

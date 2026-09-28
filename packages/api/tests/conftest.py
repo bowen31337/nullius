@@ -26,13 +26,25 @@ file), mirroring the repository-level conftest and the ops member's
 own: the routes this transport serves write charges, registrations and
 kills, exactly the rows a stray inherited ``DATABASE_URL`` would land
 somewhere an operator reads.
+
+Feature 21's certificate pair is built here too
+(:func:`write_self_signed_certificate`), with the ``cryptography``
+package the *nulloracle* member already brings into the workspace —
+never a new dependency of this member's, and never a container on the
+tests' ``sys.path``: a certificate generated at test time is a real
+X.509 pair the standard library's ``ssl`` accepts and rejects for the
+right reasons, where a checked-in PEM would be a fixture that could go
+stale, expire, or be mistaken for a deployment's secret.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+import ssl
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -52,6 +64,7 @@ for _root in workspace_scan_roots():
         sys.path.insert(0, _entry)
 
 from nullius_api.auth import API_SCOPES, ApiTokens
+from nullius_api.tls import TLS_CERT_ENV, TLS_KEY_ENV
 
 DATABASE_URL_ENV = "DATABASE_URL"
 TEST_DATABASE_URL_ENV = "TEST_DATABASE_URL"
@@ -166,3 +179,136 @@ def authorized() -> dict[str, str]:
     return {
         scope: {"Authorization": f"Bearer {token_for(scope)}"} for scope in API_SCOPES
     }
+
+
+# -- The certificate and key a non-loopback bind requires (feature 21) -------------
+#
+# The pair is *generated* rather than checked in.  A real self-signed
+# X.509 certificate is what makes these tests worth having — the server
+# loads it with ``ssl.SSLContext.load_cert_chain``, so a fixture that
+# was not a real pair would prove nothing about the branch that serves
+# HTTPS — and generating one per session keeps a private key out of the
+# repository rather than committing a file that looks like a secret.
+#
+# ``cryptography`` is imported inside the helper, not at this module's
+# top level: it is a dependency of the *nulloracle* member (``uv.lock``
+# carries it for that member), not of this one, and an import at module
+# scope would make every test in this suite depend on a package this
+# member never declares.  A collection error on a machine where the
+# workspace was not installed would then look like a transport fault.
+
+#: The subject the fixture certificate carries.  A ``localhost`` common
+#: name rather than a deployment-shaped one: nothing here is pretending
+#: to be a real host's certificate, which is why no test verifies the
+#: peer's identity (the client trusts this exact file).
+CERTIFICATE_COMMON_NAME = "localhost"
+
+#: How far *before* the issuing moment the fixture certificate becomes
+#: valid.  X.509 times are absolute instants, and a clock in a timezone
+#: ahead of UTC is easily ahead of a certificate generated from UTC — so
+#: the window is opened a day in the past rather than at the instant of
+#: generation, which is what keeps *valid on every machine that runs
+#: this suite* a property of the fixture rather than of the machine's
+#: clock.
+CERTIFICATE_BACKDATE = timedelta(days=1)
+
+#: How long the fixture certificate is valid for.  Long enough that a
+#: slow suite never outlives it, short enough to read as a test fixture.
+CERTIFICATE_DAYS = 365
+
+
+def write_self_signed_certificate(
+    directory: Path, name: str = "api-tls"
+) -> tuple[str, str]:
+    """Write a self-signed certificate and key; return both paths.
+
+    ``(certificate, key)``, as PEM files under ``directory`` — the two
+    paths ``NULLIUS_API_TLS_CERT`` and ``NULLIUS_API_TLS_KEY`` name, in
+    that order, which is the order the feature sentence states them in.
+    """
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, CERTIFICATE_COMMON_NAME)]
+    )
+    issued_at = datetime.now(UTC) - CERTIFICATE_BACKDATE
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(issued_at)
+        .not_valid_after(issued_at + timedelta(days=CERTIFICATE_DAYS))
+        .add_extension(
+            x509.SubjectAlternativeName(
+                [
+                    x509.DNSName(CERTIFICATE_COMMON_NAME),
+                    # The tests reach the server over loopback, so the
+                    # certificate must name that *address* too: a client
+                    # with ``check_hostname`` on matches an IP against
+                    # the SAN's IP entries, never against a DNS name.
+                    x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+                ]
+            ),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    cert_path = directory / f"{name}.pem"
+    key_path = directory / f"{name}-key.pem"
+    cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    return str(cert_path), str(key_path)
+
+
+@pytest.fixture(scope="session")
+def certificate_pair(tmp_path_factory: pytest.TempPathFactory) -> tuple[str, str]:
+    """One self-signed pair for the whole session, and its two paths.
+
+    Session-scoped because generating an RSA key is the slow part and
+    nothing in this suite mutates the files; every test that needs a
+    *different* pair (a mismatched key, a file that is not a
+    certificate) writes its own on top of these.
+    """
+    return write_self_signed_certificate(tmp_path_factory.mktemp("api-tls"))
+
+
+@pytest.fixture
+def tls_env(
+    certificate_pair: tuple[str, str], monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, str]:
+    """Put the fixture pair in the two variables feature 21 reads.
+
+    Set through ``monkeypatch`` so a test that *wants* the unconfigured
+    case only has to delete one of them, and so no test leaks a
+    certificate path into the next one's environment.
+    """
+    certificate, key = certificate_pair
+    monkeypatch.setenv(TLS_CERT_ENV, certificate)
+    monkeypatch.setenv(TLS_KEY_ENV, key)
+    return certificate, key
+
+
+def ssl_client_context(certificate: str) -> ssl.SSLContext:
+    """A client context that trusts exactly the fixture certificate.
+
+    ``CERT_REQUIRED`` against the fixture's own CA, rather than the
+    default context: the point of the HTTPS tests is that the *server*
+    completed a real TLS handshake with the certificate it was
+    configured with, and a client that had switched verification off
+    would pass against a server serving the wrong key just as happily.
+    """
+    context = ssl.create_default_context(cafile=certificate)
+    context.check_hostname = True
+    return context
