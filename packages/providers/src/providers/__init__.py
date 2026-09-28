@@ -140,6 +140,23 @@ the file and the store that writes it:
 Those are separate features; this package contributes the backend, the key, the
 error, the code this one names, and the file store that ties them together.
 
+The interface's batch half mirrors the single call: :meth:`Provider.complete_batch`
+takes a :class:`BatchRequest` — an ordered tuple of :class:`Request` — and
+returns a :class:`BatchCompletion`, one :class:`Completion` per request in
+order, each carrying the model that served it.  The base class enforces the
+same contract around it that it enforces around the single call, and a
+batch-capable provider answers many requests through one batched transport
+call — the seam the depth role's batch routing (feature 201) pushes through,
+since §14.1's *"batch APIs halve rates"* lever has nothing to route without a
+batch shape on the seam.  A provider that serves no batch endpoint leaves the
+base :meth:`_complete_batch`, which refuses the batch by name
+(:class:`NotImplementedBatchError`) rather than silently answering one request
+at a time; the single path is untouched, so a non-batch call behaves exactly
+as before.  The batch records join the interface's as direct imports (see
+:mod:`providers._batch_completion`, which sits beside feature 201's
+:mod:`providers._batch` routing); the batch is an addition to the interface,
+not a replacement for it.
+
 Feature 198 — *"System rejects a depth model without a 1 million token
 context at flat pricing, because calls at depth 2 or greater carry a large
 history"* — is the depth role's selection criterion, and the reason the
@@ -495,6 +512,12 @@ from ._batch import (
     RoutedCall,
     route_depth_call,
 )
+from ._batch_completion import (
+    BatchCompletion,
+    BatchRequest,
+    NotImplementedBatchError,
+    require_batch_completion,
+)
 from ._batch_errors import (
     BatchRoutingError,
     UnknownProviderError,
@@ -725,8 +748,10 @@ __all__ = [
     "AgentSampling",
     "AgentSamplingMalformedError",
     "AgentWeights",
+    "BatchCompletion",
     "BatchEndpoint",
     "BatchPricing",
+    "BatchRequest",
     "BatchRoutingError",
     "CachePrice",
     "CachePricing",
@@ -762,6 +787,7 @@ __all__ = [
     "NodePin",
     "NodeProvenance",
     "NodeProvenanceError",
+    "NotImplementedBatchError",
     "PeakPricing",
     "PeakWindow",
     "PinColumnError",
@@ -818,6 +844,7 @@ __all__ = [
     "require_agent_ckpt_hash",
     "require_agent_model_id",
     "require_agent_sampling",
+    "require_batch_completion",
     "require_depth_model",
     "require_served_context",
     "rotation_digest",
