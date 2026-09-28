@@ -81,6 +81,8 @@ __all__ = [
     "INTERNAL_ERROR_CLASS",
     "MALFORMED_REQUEST_CLASS",
     "METHOD_NOT_ALLOWED_CLASS",
+    "PROMOTION_CONFLICT_CODE",
+    "PROMOTION_PARENT_ABSENT_CODE",
     "ROUTE_NOT_IMPLEMENTED_CLASS",
     "TARGET_UNKNOWN_NODE_CLASS",
     "UNKNOWN_ROUTE_CLASS",
@@ -755,6 +757,237 @@ def _target_unknown_node_payload(response: Any) -> dict[str, Any]:
     ) | {"node_id": node_id}
 
 
+def _pre_register_post(endpoint: Any, request: ApiRequest) -> tuple[int, Any]:
+    """Serve ``POST /promotion/pre-register``: fix the criteria, or answer
+    the standing row.
+
+    Feature 291's whole act, relayed rather than re-decided.  The body's
+    three terms (``node_id``, ``epoch_id``, the six-term ``criteria``
+    document) are built into the member's own
+    :class:`~promotion.pre_register.PreRegistrationRequest` by
+    :func:`_pre_registration_request` — which is also the one door that
+    translates a malformed term into the transport's 400 — and the
+    endpoint's answer is passed straight to the wire with the status
+    :func:`_pre_registration_status` derives from the member's own
+    ``created`` flag.
+
+    **The status is the feature's, and every clause of it is the
+    member's own testimony.**  A registration *this* call appended is a
+    new registration — ``201 Created``, the status the spec's J9 journey
+    names for the first call.  A registration the store answered with a
+    standing row is an identical retry — ``200 OK``, because the row
+    that comes back is the row that already existed and the response
+    says so with ``created`` false; nothing was created, so nothing may
+    claim to have been.  The two are one branch reading one field, so
+    the retry can never be answered as a creation: the flag *is* the
+    store's finding, not a guess the transport made about the body it
+    sent.
+
+    **The two refusals this route makes decidable are the members' own
+    subclasses, and this adapter translates neither.**  A node
+    re-registered with different criteria raises
+    :class:`~promotion.errors.PromotionConflictError` — ``409``,
+    because the body is well-formed and the conflict is with a row — and
+    a registration naming a ``node`` or ``epoch_ledger`` row the
+    database does not hold raises
+    :class:`~promotion.errors.PromotionParentAbsentError` — ``422``,
+    because the ask is syntactically fine and semantically unfulfillable.
+    Both propagate untouched to the dispatch, which recognises them by
+    class name (see :func:`_is_promotion_conflict_refusal` and
+    :func:`_is_promotion_parent_absent_refusal`) and answers with the
+    member's own message verbatim.  Every *other* refusal the endpoint
+    raises — the ask face's malformed document (already translated to
+    400 by the request builder), a ``DATABASE_URL`` this member cannot
+    speak or a row that did not land
+    (:class:`~promotion.errors.PromotionStoreError`) — falls to the
+    generic member-refusal door's 503, which is the right escalation for
+    a deployment that cannot serve.
+
+    **Nothing here computes, defaults or retries anything the member did
+    not already decide.**  In particular the adapter never re-derives the
+    criteria hash: the hash on the wire is the one the response's record
+    carries, which is the one the table holds.
+    """
+    response = endpoint.post(_pre_registration_request(request))
+    return _pre_registration_status(response), response
+
+
+def _pre_registration_request(request: ApiRequest) -> Any:
+    """Feature 291's body as the member's own request record.
+
+    Imported deferred, for the reason :func:`_risk_halt_post` names: a
+    module-scope cross-member import would make importing this package
+    depend on the sibling being importable first, which the workspace's
+    scan order never promises.
+
+    Built by the *member's* constructor, so both identities — the node
+    as a UUID and the epoch as non-empty text — and the criteria
+    document are validated by the module that owns the contract.  The
+    six-term document is passed through exactly as the body spelled it:
+    the member's own :func:`~promotion.pre_register.
+    _criteria_from_document` refuses a document missing a term or
+    carrying one that is not one of the six, which is where that law
+    belongs — a second spelling of the six terms here could disagree
+    with the one that owns the hash.
+
+    A term that fails validation raises the member's
+    :class:`~promotion.errors.PromotionError` (the ask face), translated
+    here to the transport's own :class:`_MalformedRequest` (400) for the
+    same reason :func:`_target_request` translates ``TargetRouteError``:
+    a body that cannot say what it is asking for is the caller's to
+    repair, and left to the generic member-refusal door it would answer
+    503 — the wrong escalation for a fixable ask.
+    """
+    from promotion import PreRegistrationRequest  # deferred past module scope
+
+    body = request.body or {}
+    try:
+        return PreRegistrationRequest(
+            node_id=body.get("node_id"),
+            epoch_id=body.get("epoch_id"),
+            criteria=body.get("criteria"),
+        )
+    except Exception as exc:  # re-raised unless it is the ask class
+        if not _is_promotion_ask_refusal(exc):
+            raise
+        raise _MalformedRequest("malformed_body", str(exc)) from exc
+
+
+def _pre_registration_status(response: Any) -> int:
+    """The status one pre-registration answer carries: 201, or 200 on a retry.
+
+    Read off the member's own ``created`` flag — duck-read by field name
+    for the reason every seam in this workspace gives: the factory's scan
+    imports the member under a synthetic module name, so the *composed*
+    answer is structurally a :class:`~promotion.pre_register.
+    PreRegistrationResponse` but never an instance of any class this
+    module could name.  The contract is the field.
+
+    A response that carries no boolean ``created`` is refused rather than
+    guessed at: the transport has no way to tell a creation from a retry
+    on a record whose own testimony it cannot read, and inventing a 201
+    would claim a row was written that may not have been.  The refusal is
+    the transport's *internal* fault — the composed endpoint is not what
+    the route table promised — so it is a :class:`TypeError`, answered by
+    the dispatch as the generic internal error with the class name in the
+    log and nothing on the wire.
+    """
+    created = getattr(response, "created", None)
+    if not isinstance(created, bool):
+        raise TypeError(
+            f"the composed endpoint serving POST /promotion/pre-register "
+            f"answered a response whose created flag is {created!r} "
+            f"({type(created).__name__}); the route's status is 201 for the "
+            "registration this call wrote and 200 for the retry the store "
+            "answered with a standing row, and a record the transport cannot "
+            "read is a composition fault, not a status to invent"
+        )
+    return 201 if created else 200
+
+
+#: The code word a 409 carries: the promotion member's own greppable word
+#: for *a node was re-registered with different criteria*
+#: (``promotion.errors.PROMOTION_CONFLICT_ERROR_CODE``).  Restated here
+#: rather than imported, for the reason the workspace states everywhere a
+#: member restates another's literal — no member imports another at module
+#: scope, and the transport's own door must be able to spell the word
+#: before any member is importable.  It is *the member's* word, not a
+#: second transport coinage: an operator greps one word and lands on both
+#: the refusal and the store that composed it, exactly as
+#: ``forward_record_absent`` does for the absence door above.
+PROMOTION_CONFLICT_CODE = "promotion_criteria_conflict"
+
+#: The code word a 422 carries: the promotion member's own greppable word
+#: for *the node or epoch row this registration names does not exist*
+#: (``promotion.errors.PROMOTION_PARENT_ABSENT_ERROR_CODE``), restated for
+#: the same reason and read the same way.
+PROMOTION_PARENT_ABSENT_CODE = "promotion_parent_absent"
+
+#: The promotion member's request-contract refusal, by the one name that
+#: survives the factory's scan — the same discipline
+#: :data:`_TARGET_ROUTE_REFUSAL_NAME` states: the endpoint is imported
+#: under a synthetic module alias, so a composed refusal is never an
+#: instance of the class a direct import yields, and the name is what is
+#: checked.  ``PromotionError`` is the ask face itself, and it is
+#: deliberately also the name of the base every refinement subclasses —
+#: but the *two* refinements this route must route on are checked first
+#: (see :func:`_is_promotion_conflict_refusal` and
+#: :func:`_is_promotion_parent_absent_refusal`), so a conflict raised
+#: from inside the request constructor can never be re-spelled as a 400.
+_PROMOTION_ASK_REFUSAL_NAME = "PromotionError"
+
+
+def _promotion_module_is_readable(exc: BaseException) -> bool:
+    """Whether ``exc``'s module path names the promotion member.
+
+    Both halves of every promotion duck check below: the class *name* and
+    the member segment in the module path, so an unrelated exception that
+    happens to share a name is never silently re-spelled.  ``promotion``
+    is the directly-imported spelling; ``_nullius_scanned_promotion`` is
+    the one the factory's scan produces (probed rather than assumed).
+    """
+    module = type(exc).__module__ or ""
+    return any(
+        segment == "promotion" or segment.startswith("_nullius_scanned_")
+        for segment in module.split(".")
+    )
+
+
+def _is_promotion_ask_refusal(exc: BaseException) -> bool:
+    """Whether ``exc`` is the promotion member's malformed-ask refusal.
+
+    The *exact* class, never a refinement of it: the conflict (409) and
+    the absent parent (422) are subclasses of the classes this route
+    translates to 400, so the check is ``==`` on the name rather than
+    ``issubclass`` — a caller posting criteria a node has already fixed
+    must never be told their body was malformed.
+    """
+    return (
+        type(exc).__name__ == _PROMOTION_ASK_REFUSAL_NAME
+        and _promotion_module_is_readable(exc)
+    )
+
+
+#: The promotion member's *conflict* refusal — a re-registration stating
+#: different criteria, and the class that makes it a 409.
+_PROMOTION_CONFLICT_REFUSAL_NAME = "PromotionConflictError"
+
+
+def _is_promotion_conflict_refusal(exc: BaseException) -> bool:
+    """Whether ``exc`` is the promotion member's criteria-conflict refusal.
+
+    Checked by name for the reason every duck check in this module gives:
+    the factory's scan imports the member under a synthetic module alias,
+    so a composed refusal is never an instance of the class a direct
+    import yields.  A miss leaves the refusal to the safer, more
+    conservative 503.
+    """
+    return (
+        type(exc).__name__ == _PROMOTION_CONFLICT_REFUSAL_NAME
+        and _promotion_module_is_readable(exc)
+    )
+
+
+#: The promotion member's *absent parent* refusal — the node or the
+#: epoch row the registration named does not exist, and the class that
+#: makes it a 422.
+_PROMOTION_PARENT_ABSENT_REFUSAL_NAME = "PromotionParentAbsentError"
+
+
+def _is_promotion_parent_absent_refusal(exc: BaseException) -> bool:
+    """Whether ``exc`` is the promotion member's absent-parent refusal.
+
+    The third of the promotion route's typed doors, and the one that
+    answers 422 — the ask is well-formed, the store is reachable, and
+    the row it references does not exist.  Checked by name, both halves,
+    for the same reason the two above are.
+    """
+    return (
+        type(exc).__name__ == _PROMOTION_PARENT_ABSENT_REFUSAL_NAME
+        and _promotion_module_is_readable(exc)
+    )
+
+
 #: The adapters the transport core wires: ``(verb, path)`` → call.  The
 #: remaining POST routes are declared in the table (so their paths
 #: answer the wrong-verb refusal and the index the later features
@@ -768,6 +1001,7 @@ HTTP_ADAPTERS: dict[tuple[str, str], Callable[[Any, ApiRequest], tuple[int, Any]
     ("GET", "/ledger/k-effective"): _no_argument_get,
     ("GET", "/forward/decay"): _forward_decay_get,
     ("POST", "/forward/promote"): _forward_promote_post,
+    ("POST", "/promotion/pre-register"): _pre_register_post,
     ("POST", "/risk/halt"): _risk_halt_post,
     ("POST", "/target"): _target_post,
 }
@@ -1304,6 +1538,57 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             )
             return
         except Exception as exc:  # noqa: BLE001 - the member/500 split is the point
+            if _is_promotion_conflict_refusal(exc):
+                # A decidable refusal about a *row*, not about the body: the
+                # node already holds a pre-registration and this request
+                # states different criteria, which §13 item 7 refuses.
+                # Answered 409 — the ask is well formed, the store is
+                # reachable, and the conflict is with the state of the
+                # registry — ahead of the generic member-refusal door below
+                # so it is never reported as a deployment that cannot serve.
+                log.debug(
+                    "promotion-conflict answering %s %s: %s",
+                    verb,
+                    path,
+                    type(exc).__name__,
+                )
+                self._write_json(
+                    409,
+                    error_payload(
+                        PROMOTION_CONFLICT_CODE,
+                        _publish(
+                            str(exc),
+                            served_paths=self.server.routes_by_path.keys(),
+                        ),
+                        error_class=type(exc).__name__,
+                    ),
+                )
+                return
+            if _is_promotion_parent_absent_refusal(exc):
+                # The third promotion door: the node or the epoch the
+                # registration named has no row, so the write has no parent
+                # to reference.  Answered 422 — the ask is well-formed and
+                # semantically unfulfillable against the state of the
+                # database — rather than a 404 (the *route* is known) or the
+                # generic 503 (nothing about the deployment is broken).
+                log.debug(
+                    "promotion-parent-absent answering %s %s: %s",
+                    verb,
+                    path,
+                    type(exc).__name__,
+                )
+                self._write_json(
+                    422,
+                    error_payload(
+                        PROMOTION_PARENT_ABSENT_CODE,
+                        _publish(
+                            str(exc),
+                            served_paths=self.server.routes_by_path.keys(),
+                        ),
+                        error_class=type(exc).__name__,
+                    ),
+                )
+                return
             if _is_forward_absent_refusal(exc):
                 # A decidable state of the world, not a fault: no forward
                 # record for this node, or a record nobody has observed
