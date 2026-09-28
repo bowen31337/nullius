@@ -186,7 +186,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     server = build_server(
         config, execution_engine=engine, tokens=tokens, tls=tls
     )
-    host, port = server.server_address[:2]
+    _host, port = server.server_address[:2]
     logging.getLogger("nullius_api.server").info(
         "nullius-api listening on %s", tls.url(port)
     )

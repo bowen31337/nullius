@@ -87,7 +87,7 @@ browser journeys and are not claimed by this run.
 1579 passed (10:23), both with `-p no:randomly`. `ruff check` is clean
 over the member's `src`, its `tests` and `src/app/modules/api`.
 
-## Run 18 — 2026-09-29, HTTPS on a non-loopback bind (feature 21)
+## Implementation note (not a browser run): HTTPS on a non-loopback bind, feature 21, 2026-09-29
 
 - **Branch:** `feat/http-api-transp-system-refuses-to-bind-a-non-loo-d9228d`.
 - **Checker:** `packages/api/tests/test_tls.py`, 48 cases, run with the
