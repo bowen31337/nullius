@@ -1,8 +1,14 @@
-# J3 — Start the dashboard with no metrics store configured
+---
+id: J03-dashboard-misconfigured
+title: Start the dashboard with no metrics store configured
+persona: Operator
+source: app_spec.xml feature 351 (DashboardRenderError)
+status: pass
+last_checked: run 2
+evidence: screenshots/run-2/J3-dashboard-no-database-url.png
+---
 
-**Actor:** Operator  
-**Goal:** Get told, plainly, that the dashboard cannot show a figure and what to fix — instead of a quiet default.  
-**Source:** app_spec.xml feature 351 (`DashboardRenderError`); ops `degrade, don't break` stance
+# J03 — Start the dashboard with no metrics store configured
 
 ## Preconditions
 
@@ -10,17 +16,13 @@
 
 ## Steps
 
-1. Start the dashboard.
-2. Open it in a browser.
+1. Start the dashboard and open it.
+   Expect: The page **refuses**: no numeral is rendered.
+2. Read the refusal.
+   Expect: One operator-facing message with the code word and the one repair (`point DATABASE_URL at the metrics store`).
+3. Look for leaks.
+   Expect: No Python traceback, no filesystem paths, no "Ask Google" / "Ask ChatGPT" buttons.
 
-## Expected result
+## Result
 
-- The page **refuses** — no numeral is rendered.
-- The refusal is presented as an operator-facing message: what is wrong, the code word, and the one repair (`point DATABASE_URL at the metrics store`).
-- No Python traceback, no filesystem paths, and no buttons that send the error text to a third-party service ("Ask Google" / "Ask ChatGPT").
-
-## Validation
-
-Browser: start with `DATABASE_URL` unset, read the page text, screenshot.
-
-Results and screenshots: see [RESULTS.md](RESULTS.md).
+See [_run-log.md](_run-log.md) for every run's verdict, failing step and evidence.

@@ -1,28 +1,30 @@
-# J8 — Read the three observability metrics over HTTP
+---
+id: J08-api-metrics
+title: Read the three observability metrics over HTTP
+persona: Operator
+source: api_endpoints_summary Observability; features 341-343
+status: untested
+last_checked: —
+evidence: —
+---
 
-**Actor:** Operator  
-**Goal:** Fetch the top-line figure, the instrument lamps and regime coverage as JSON, e.g. for alerting or a notebook.  
-**Source:** `<api_endpoints_summary>` Observability; features 341, 342, 343
+# J08 — Read the three observability metrics over HTTP
 
 ## Preconditions
 
-- The API server is running against a seeded metrics store.
+- `python -m nullius_api` running against a store populated by `python -m nullius_api.demo`; a `metrics:read` token.
 
 ## Steps
 
-1. `GET /metrics/fdr-deploy`
-2. `GET /metrics/instrument-status`
-3. `GET /metrics/regime-coverage`
+1. `GET /metrics/fdr-deploy` with the token.
+   Expect: `200` JSON: newest `fdr_deploy`, `campaign_id`, `computed_at` and the `history`.
+2. `GET /metrics/instrument-status`.
+   Expect: `200` JSON: `canary`, `ks_guard`, `ingest` (true/false, or null when absent) plus the readings.
+3. `GET /metrics/regime-coverage`.
+   Expect: `200` JSON `{stratum: count}`.
+4. Repeat without a token.
+   Expect: `401`.
 
-## Expected result
+## Result
 
-- `200` JSON for each. FDR: newest `fdr_deploy`, `campaign_id`, `computed_at`, and the `history`.
-- Instrument status: `canary`, `ks_guard`, `ingest` booleans (or `null` when absent) plus the readings.
-- Regime coverage: `{stratum: count}`.
-- An empty store answers `200` with nulls/empty — never a fabricated `0.0`. A broken store answers `503` with a code word.
-
-## Validation
-
-Browser: open each URL, read the JSON body, screenshot.
-
-Results and screenshots: see [RESULTS.md](RESULTS.md).
+See [_run-log.md](_run-log.md) for every run's verdict, failing step and evidence.

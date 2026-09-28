@@ -39,7 +39,7 @@ headless Chromium. Screenshots are saved under `screenshots/<run>/`.
 
 ## Validation runs
 
-The results of each run are recorded in [`RESULTS.md`](RESULTS.md).
+Each run is appended to [`_run-log.md`](_run-log.md).
 
 ## Reproducing a run
 

@@ -1,24 +1,26 @@
-# J6 — See the provenance triple beside the top-line figure
+---
+id: J06-dashboard-provenance
+title: See the provenance triple beside the top-line figure
+persona: Operator
+source: ui_layout; M5 ux; features 99, 348
+status: pass
+last_checked: run 2
+evidence: screenshots/run-2/J2-J4-J5-J6-dashboard-populated.png
+---
 
-**Actor:** Operator  
-**Goal:** Know exactly which evaluator, data snapshot and cost model produced the figure on screen.  
-**Source:** `<ui_layout>` ("The primary panel is FDR_deploy with its provenance triple"); M5 `<ux>` ("with its provenance triple visible"); features 99, 348
+# J06 — See the provenance triple beside the top-line figure
 
 ## Preconditions
 
-- A seeded store whose newest campaign's nodes carry an `evaluator_hash`, `snapshot_hash` and `cost_model_hash`.
+- A store populated by `python -m nullius_api.demo` (the newest campaign's node carries the triple).
 
 ## Steps
 
 1. Open the dashboard.
+   Expect: Under the figure: `provenance: evaluator …, snapshot …, cost model …` for the newest campaign.
+2. Compare against the store.
+   Expect: The three short hashes are prefixes of that campaign's node `evaluator_hash`, `snapshot_hash`, `cost_model_hash`.
 
-## Expected result
+## Result
 
-- The primary panel shows the newest campaign's `evaluator_hash`, `snapshot_hash` and `cost_model_hash` (short form, full on hover/expand).
-- A campaign with no recorded triple says *provenance unrecorded*; one whose nodes disagree is refused as mixed provenance, never averaged.
-
-## Validation
-
-Browser: seeded store, read the panel, screenshot.
-
-Results and screenshots: see [RESULTS.md](RESULTS.md).
+See [_run-log.md](_run-log.md) for every run's verdict, failing step and evidence.

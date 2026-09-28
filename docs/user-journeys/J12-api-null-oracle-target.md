@@ -1,26 +1,28 @@
-# J12 — Ask the null oracle for a target series
+---
+id: J12-api-null-oracle-target
+title: Ask the null oracle for a target series
+persona: Evaluator
+source: api_endpoints_summary Null Oracle; features 111-121; P2
+status: untested
+last_checked: —
+evidence: —
+---
 
-**Actor:** Evaluator  
-**Goal:** Obtain a node's target series plus an opaque budget directive, without learning whether the node is a planted null.  
-**Source:** `<api_endpoints_summary>` Null Oracle; features 111-121; P2 information barrier
+# J12 — Ask the null oracle for a target series
 
 ## Preconditions
 
-- The API server is running with a sealed sidecar configured.
+- API running with a sealed demo sidecar configured; an `evaluator` token.
 
 ## Steps
 
 1. `POST /target` for an unknown node.
-2. `POST /target` for a known node on a deployment without the evaluator's aligned-series supply wired.
+   Expect: `404` with detail, no payload.
+2. `POST /target` for a known null node and a known real node (no series supply wired).
+   Expect: Two `503` refusals, **byte-identical** apart from nothing the caller did not send.
+3. Start without a sidecar and ask again.
+   Expect: `503` naming the missing configuration.
 
-## Expected result
+## Result
 
-- Unknown node: `404` with detail, no payload.
-- Known node, no series supply: `503` with a code word — **identical for null and real nodes** (a refusal that differed would be the branch oracle §7.2 forbids).
-- No sidecar configured: `503` naming the missing configuration.
-
-## Validation
-
-Browser: drive the calls, render responses, screenshot.
-
-Results and screenshots: see [RESULTS.md](RESULTS.md).
+See [_run-log.md](_run-log.md) for every run's verdict, failing step and evidence.

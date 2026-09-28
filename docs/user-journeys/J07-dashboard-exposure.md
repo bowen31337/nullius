@@ -1,26 +1,28 @@
-# J7 — Run the dashboard safely: local only, no third-party links
+---
+id: J07-dashboard-exposure
+title: Run the dashboard safely: local only, no third-party links
+persona: Operator
+source: architecture §2; security hygiene
+status: pass
+last_checked: run 2
+evidence: screenshots/run-2/J2-J4-J5-J6-dashboard-populated.png, screenshots/run-2/J3-dashboard-no-database-url.png
+---
 
-**Actor:** Operator  
-**Goal:** Start the operator console without exposing it to the network or offering to publish it.  
-**Source:** architecture §2 trust zones ("Research compute and trading compute are different systems"); security hygiene
+# J07 — Run the dashboard safely: local only, no third-party links
 
 ## Preconditions
 
-- Streamlit started the documented way from the repository root.
+- Streamlit launched the documented way, from the repository root, with no extra flags.
 
 ## Steps
 
-1. Start the dashboard with no extra flags.
-2. Check the listening address and the page chrome.
+1. Check the listening socket.
+   Expect: `127.0.0.1:8501` only; the launch log prints no *External URL*.
+2. Look at the toolbar.
+   Expect: No **Deploy** (publish to Streamlit Cloud) button.
+3. Trigger a refusal (J3).
+   Expect: No error details or third-party links reach the browser.
 
-## Expected result
+## Result
 
-- It listens on `127.0.0.1` only — no `External URL`.
-- The toolbar has no **Deploy** (publish to Streamlit Cloud) button.
-- Error details are not shown to the browser; usage stats are not sent.
-
-## Validation
-
-Shell: `ss -ltn` for the bind address; Browser: page chrome text, screenshot.
-
-Results and screenshots: see [RESULTS.md](RESULTS.md).
+See [_run-log.md](_run-log.md) for every run's verdict, failing step and evidence.

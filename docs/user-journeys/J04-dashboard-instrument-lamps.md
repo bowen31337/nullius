@@ -1,24 +1,30 @@
-# J4 — See the three instrument lamps in permanent chrome
+---
+id: J04-dashboard-instrument-lamps
+title: See the three instrument lamps in permanent chrome
+persona: Operator
+source: app_spec.xml feature 342; ui_layout; M5 ux
+status: fail
+last_checked: run 2
+evidence: screenshots/run-2/J2-J4-J5-J6-dashboard-populated.png, screenshots/run-2/J4-lamps-with-threshold.png
+---
 
-**Actor:** Operator  
-**Goal:** Know at a glance whether the numbers can be trusted: the determinism canary, the KS detectability guard and ingest lag, as three binary lamps.  
-**Source:** app_spec.xml feature 342; `<ui_layout>` ("instrument status lamps and the remaining clean epoch count sit in permanent chrome"); M5 `<ux>` ("sees instrument status as three binary lamps")
+# J04 — See the three instrument lamps in permanent chrome
 
 ## Preconditions
 
-- A seeded metrics store: canary healthy, KS guard reading present, feed staleness recorded.
+- A store populated by `python -m nullius_api.demo` (canary healthy, a KS-guard reading, a feed-staleness reading).
 
 ## Steps
 
 1. Open the dashboard.
+   Expect: Three lamps — **canary**, **KS guard**, **ingest** — appear in the chrome above the epoch count.
+2. Read each lamp.
+   Expect: Each is lit (ok) or dark (failing) from its reading; a lamp with genuinely no reading says *no reading*.
+3. Start without `NULLIUS_FEED_STALENESS_THRESHOLD_S` while a staleness reading exists.
+   Expect: The ingest lamp names the missing threshold (unconfigured), not *no reading* — a reading exists.
+4. Reload.
+   Expect: The lamps render on every page load.
 
-## Expected result
+## Result
 
-- Three lamps — **canary**, **KS guard**, **ingest** — are visible in the chrome on every render, each lit (ok) or dark (failing).
-- A lamp with no reading is shown as *no reading*, never as lit.
-
-## Validation
-
-Browser: seeded store, read the chrome, screenshot.
-
-Results and screenshots: see [RESULTS.md](RESULTS.md).
+See [_run-log.md](_run-log.md) for every run's verdict, failing step and evidence.

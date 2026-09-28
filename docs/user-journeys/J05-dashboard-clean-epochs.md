@@ -1,24 +1,26 @@
-# J5 — Watch the remaining clean-epoch count
+---
+id: J05-dashboard-clean-epochs
+title: Watch the remaining clean-epoch count
+persona: Operator
+source: app_spec.xml features 297, 352
+status: pass
+last_checked: run 2
+evidence: screenshots/run-2/J2-J4-J5-J6-dashboard-populated.png, screenshots/run-2/J1-dashboard-empty-db.png
+---
 
-**Actor:** Operator  
-**Goal:** See the sequestered-epoch budget deplete long before it is exhausted.  
-**Source:** app_spec.xml features 297, 352
+# J05 — Watch the remaining clean-epoch count
 
 ## Preconditions
 
-- A seeded epoch ledger: three sealed epochs, one having served 2 promotion decisions (still under budget).
+- A store populated by `python -m nullius_api.demo` (three sealed epochs).
 
 ## Steps
 
 1. Open the dashboard.
+   Expect: The chrome reads `remaining clean epochs: 3` (clean = served < budget).
+2. Open it on an empty store.
+   Expect: It reads `0` — by design: an empty ledger is visible exhaustion (`promotion/remaining.py`); the gauge never raises.
 
-## Expected result
+## Result
 
-- The chrome reads `remaining clean epochs: 3` (a clean epoch is one with `served < budget`).
-- On an empty ledger it reads `0` — by design (`promotion/remaining.py`: an empty ledger is visible exhaustion, the gauge never raises).
-
-## Validation
-
-Browser: seeded store, read the chrome line, screenshot.
-
-Results and screenshots: see [RESULTS.md](RESULTS.md).
+See [_run-log.md](_run-log.md) for every run's verdict, failing step and evidence.
