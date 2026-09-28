@@ -14,6 +14,18 @@ page model that has nowhere for a lampless page to land, the render
 that puts the rail above the count on every page, and the refusal —
 never a lamp state nobody read — when the rail cannot be had.
 
+And the provenance triple rides them too (feature 15's addition,
+J06's gap — *"No triple is shown"*): the triple beside the figure is
+read from the newest campaign's own node rows (§9.1's three CHAR(64)
+columns, brought through the migrations' own ``apply`` the way the
+providers member's suite brings its trees — never a hand-written
+CREATE TABLE this suite would be inventing schema), the unrecorded
+words are pinned for every state that honestly carries nothing (no
+table, no columns, no stamp — including the backfilled tree whose
+NULL rows predate the stamp), disagreeing nodes are refused as mixed
+provenance with no triple displayed and none averaged, and a broken
+read refuses the render rather than wearing the unrecorded words.
+
 Streamlit is absent from this environment by design (the workspace
 lockfile carries no third-party edge for it), so the render is tested
 through a recording carrier duck-shaped like the module — which is
@@ -27,10 +39,13 @@ from __future__ import annotations
 import dataclasses
 import importlib.util
 import runpy
+import sqlite3
 import sys
 import types
 import uuid
+from contextlib import closing
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 import scoring
@@ -53,6 +68,11 @@ from ops import (
     require_streamlit,
 )
 from ops.chrome import InstrumentLampsChrome
+from ops.dashboard import (
+    PROVENANCE_UNRECORDED,
+    CampaignProvenance,
+    NodeProvenanceReader,
+)
 
 from app.module_loader import Application, Registration, create_app, scan_components
 from app.modules import ops as ops_seat
@@ -64,8 +84,9 @@ MEMBER_SRC = Path(__import__("ops").__file__).resolve().parent.parent
 #: transcript: page configuration, the title, the permanent chrome
 #: (three lamp captions — docs §5.4's rail at the top of the left
 #: rail — then feature 352's count strip), then the primary panel —
-#: headline, numeral, plate — and only then the one chart the
-#: dashboard draws.  Nothing renders above the numeral but the chrome.
+#: headline, numeral, plate, the campaign's provenance line — and only
+#: then the one chart the dashboard draws.  Nothing renders above the
+#: numeral but the chrome.
 RENDER_SEQUENCE = (
     "set_page_config",
     "title",
@@ -76,10 +97,200 @@ RENDER_SEQUENCE = (
     "header",
     "metric",
     "caption",
+    "caption",
     "line_chart",
 )
 
 STREAMLIT_INSTALLED = importlib.util.find_spec("streamlit") is not None
+
+# ── The node tree the triple is read from ──────────────────────────────────────
+#
+# The triple lives in §9.1's node-table columns (feature 99's, on feature
+# 97's table), and this suite brings them the way a deployment does —
+# through the migrations' own ``apply``, imported by file path exactly as
+# ``packages/providers/tests/conftest.py`` loads the same tree's
+# migrations (``migrations/`` is not a package and is not on sys.path).
+# Nothing here hand-writes a CREATE TABLE: a suite that spelled the node
+# schema itself would be pinning the dashboard's read against a schema
+# the suite invented.
+
+# conftest.py -> packages/ops/tests -> packages/ops -> packages -> root
+VERSIONS_DIR = MEMBER_SRC.parents[2] / "migrations" / "versions"
+
+#: The two revisions the triple's schema lives across, by id: the
+#: table's (0118, feature 97's five structural columns) and the trio's
+#: (0116, feature 99's three CHAR(64) columns).  Spelled as constants
+#: so a reader sees which two migrations the triple is about without
+#: reading the fixtures, and so a rename is one edit.
+NODE_MIGRATION = "0118_node_table"
+PROVENANCE_MIGRATION = "0116_provenance_trio"
+
+#: The newest campaign the persisted store closes — the one whose node
+#: rows the panel must read (the older campaign's rows are planted too,
+#: with a different triple, so a test that reads the newest campaign's
+#: rows is genuinely reading *that* campaign's and not whichever the
+#: reader stumbled on).
+NEWEST_CAMPAIGN = "22222222-2222-2222-2222-222222222222"
+OLDER_CAMPAIGN = "11111111-1111-1111-1111-111111111111"
+
+#: Two complete, distinct triples as 64-hex digests — two evaluators
+#: over the same snapshot and cost model, which is the disagreement a
+#: mixed campaign actually is: same data, different scorer.  Not real
+#: digests of anything, for the reason the providers suite gives: this
+#: suite is about which value lands in the reading and which is
+#: refused, and a constant that happened to hash some artifact would
+#: only invite a reader to think the suite was checking the artifact.
+EVALUATOR_A = "e1" * 32
+EVALUATOR_B = "b4" * 32
+SNAPSHOT_A = "a2" * 32
+COST_MODEL_A = "c3" * 32
+
+
+def _migration(revision: str) -> ModuleType:
+    """Import a migration by file path, as the schema's owner.
+
+    The same discipline ``packages/providers/tests/conftest.py``
+    states the reasoning for: ``migrations/`` is not a package and is
+    not on sys.path, and a migration is loaded by its runner the same
+    way — by path — so loading it by path here is the shape a
+    migration is *built* to be used in rather than a workaround.  A
+    missing file fails naming the revision, because the one failure a
+    test should never have to guess at is "the schema owner moved".
+    """
+    path = VERSIONS_DIR / f"{revision}.py"
+    if not path.is_file():
+        raise AssertionError(
+            f"{revision} is not at {path}; this suite runs the migrations "
+            "that own the triple's schema rather than hand-writing their "
+            "DDL, so it needs the schema's owner to be where the tree "
+            "keeps it"
+        )
+    spec = importlib.util.spec_from_file_location(
+        f"_ops_dashboard_test_{revision}", path
+    )
+    assert spec is not None and spec.loader is not None, path
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _bring_node_table(database_url: str) -> None:
+    """Bring the node table the way the chain does: 0118's table, then
+    0116's trio.
+
+    The table's migration runs first and the columns' second — 0116's
+    ``ALTER`` needs the table to exist — which is the order the node
+    tasks were renumbered into and the shape a deployment that ran the
+    migrations lands on: three CHAR(64) columns with the NOT NULL
+    constraints landed on the empty table, so every row planted after
+    carries the triple or is refused by the database itself.
+    """
+    _migration(NODE_MIGRATION).apply(database_url)
+    _migration(PROVENANCE_MIGRATION).apply(database_url)
+
+
+def _backfilled_node_table(database_url: str) -> None:
+    """Bring a populated tree whose trio accepts NULL — the backfill state.
+
+    0116 emits the trio's ``ADD COLUMN`` with a bare ``NOT NULL``, which
+    lands on an *empty* table and is refused on a populated one — its
+    own docstring calls the refusal correct and the repair *"a
+    backfill, not a spell"*.  This tree reaches the repair's first step
+    the way the repair does: 0118's table, rows planted, then the trio
+    added **without** the constraints — built from 0116's own
+    :data:`COLUMNS` and :data:`COLUMN_TYPE` rather than a spelling
+    written here, so the shape a test drives is one the schema's owner
+    describes.  It is the only tree on which a node row can predate the
+    stamp, which is why the NULL-row laws are tested here and not on
+    the chain-built tree.
+    """
+    _migration(NODE_MIGRATION).apply(database_url)
+    trio = _migration(PROVENANCE_MIGRATION)
+    assert trio.COLUMNS, "0116 adds no columns, so this tree has nothing to add"
+    path = Path(database_url.removeprefix("sqlite:///"))
+    with closing(sqlite3.connect(path)) as connection, connection:
+        for column in trio.COLUMNS:
+            connection.execute(
+                f"ALTER TABLE node ADD COLUMN {column} {trio.COLUMN_TYPE}"
+            )
+
+
+def _plant_node(
+    database_url: str,
+    campaign_id: str,
+    *,
+    evaluator: str | None = None,
+    snapshot: str | None = None,
+    cost_model: str | None = None,
+    node_id: str | None = None,
+) -> str:
+    """Insert one node row for ``campaign_id``, and answer its id.
+
+    Raw SQL against the table the migrations created rather than a call
+    into a node-writing feature: the point is to produce the *state*
+    the reading is about — a row exists for this campaign, carrying
+    whatever triple it carries — not to reproduce the stamping path.
+    The trio is supplied only where the tree has it (the PRAGMA
+    presence check ``plant_node`` in the providers suite uses), so one
+    helper plants on both trees: a chain-built one (where the NOT NULL
+    columns demand a value) and the 0118-only one (where naming a
+    column that does not exist would be an OperationalError about this
+    helper rather than about the reader under test).  ``parent_id``
+    stays NULL, which is what makes the row a root.
+    """
+    identifier = node_id or str(uuid.uuid4())
+    path = Path(database_url.removeprefix("sqlite:///"))
+    with closing(sqlite3.connect(path)) as connection, connection:
+        present = {
+            row[1] for row in connection.execute("PRAGMA table_info(node)")
+        }
+        columns = ["id", "parent_id", "campaign_id", "theme_root", "depth"]
+        values: list[object] = [identifier, None, campaign_id, "macro", 0]
+        for column, value in (
+            ("evaluator_hash", evaluator),
+            ("snapshot_hash", snapshot),
+            ("cost_model_hash", cost_model),
+        ):
+            if column in present:
+                columns.append(column)
+                values.append(value)
+        connection.execute(
+            f"INSERT INTO node ({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            values,
+        )
+    return identifier
+
+
+def _stamped_tree(test_database_url: str) -> str:
+    """A database holding the figures *and* both campaigns' node rows.
+
+    The scoring store's two campaigns (the older with the symmetric
+    pair, the newest with the 0.5 projection the render assertions
+    read) over a chain-built node tree whose older campaign carries
+    evaluator A and whose newest carries evaluator B — two distinct
+    triples, one per campaign, so the newest campaign's reading is a
+    question this tree genuinely answers: the panel must read *its*
+    rows, not the older campaign's and not whichever row the reader
+    stumbled on first.
+    """
+    _persisted_store(test_database_url)
+    _bring_node_table(test_database_url)
+    _plant_node(
+        test_database_url,
+        OLDER_CAMPAIGN,
+        evaluator=EVALUATOR_A,
+        snapshot=SNAPSHOT_A,
+        cost_model=COST_MODEL_A,
+    )
+    _plant_node(
+        test_database_url,
+        NEWEST_CAMPAIGN,
+        evaluator=EVALUATOR_B,
+        snapshot=SNAPSHOT_A,
+        cost_model=COST_MODEL_A,
+    )
+    return test_database_url
 
 
 class _Pair:
@@ -174,15 +385,19 @@ def _rail(test_database_url: str) -> InstrumentStatusEndpoint:
 
 
 def _dashboard(test_database_url: str) -> OperatorDashboard:
-    # The chrome's gauge and the lamps' rail both ride the same URL
-    # the route's store reads — the one-database law — the gauge
-    # reading the epoch ledger the promotion member owns (empty here,
-    # so the strip renders the honest 0) and the rail reading the
-    # instruments the deployment's members measured.
+    # The chrome's gauge, the lamps' rail and the provenance reader
+    # all ride the same URL the route's store reads — the one-database
+    # law — the gauge reading the epoch ledger the promotion member
+    # owns (empty here, so the strip renders the honest 0), the rail
+    # reading the instruments the deployment's members measured, and
+    # the reader reading whatever node rows the tree carries (none
+    # here, so the panel renders the unrecorded words — the states are
+    # the dedicated provenance tests' to plant).
     return OperatorDashboard(
         FdrDeployEndpoint(_persisted_store(test_database_url)),
         EpochCountGauge(test_database_url),
         _rail(test_database_url),
+        NodeProvenanceReader(test_database_url),
     )
 
 
@@ -333,7 +548,426 @@ def test_the_page_is_frozen_testimony(test_database_url: str) -> None:
         page.primary = page.primary  # type: ignore[misc]
 
 
-# -- the honest absence ----------------------------------------------------------
+# -- the provenance triple beside the figure --------------------------------------
+
+
+def _tree_without_a_table(database_url: str) -> None:
+    """The figures landed, and no node table at all — the deployment
+    whose migrations have not brought the tree yet (0118 has not run)."""
+    _persisted_store(database_url)
+
+
+def _tree_without_the_columns(database_url: str) -> None:
+    """The figures and the node table, and none of the trio's columns —
+    the chain-ordering state 0116's own docstring names (the table's
+    migration has run, the column features have not)."""
+    _persisted_store(database_url)
+    _migration(NODE_MIGRATION).apply(database_url)
+    _plant_node(database_url, NEWEST_CAMPAIGN)
+
+
+def _tree_of_unstamped_rows(database_url: str) -> None:
+    """The figures and a backfilled tree whose rows predate the stamp —
+    the state 0116 calls the repair (*"a backfill, not a spell"*):
+    rows exist, the trio exists, and no row carries a value in it."""
+    _persisted_store(database_url)
+    _backfilled_node_table(database_url)
+    _plant_node(database_url, NEWEST_CAMPAIGN)
+
+
+def test_the_triple_is_read_from_the_newest_campaigns_own_node_rows(
+    test_database_url: str,
+) -> None:
+    # J06's line, made literal: the newest campaign's
+    # evaluator_hash, snapshot_hash and cost_model_hash — read from
+    # *that* campaign's node rows.  The older campaign carries a
+    # different triple in the same tree, so a reader that fetched
+    # whichever rows it stumbled on (no campaign filter) would answer
+    # the older campaign's evaluator for the newest campaign's figure —
+    # the misattribution the join on campaign_id exists to prevent.
+    _stamped_tree(test_database_url)
+    provenance = _dashboard(test_database_url).page().primary.provenance
+    assert provenance.triple == (EVALUATOR_B, SNAPSHOT_A, COST_MODEL_A)
+    assert provenance.stamped == ((EVALUATOR_B, SNAPSHOT_A, COST_MODEL_A),)
+    assert EVALUATOR_A not in provenance.stamped[0]
+    assert not provenance.unrecorded
+    assert not provenance.mixed
+
+
+def test_the_triple_renders_beside_the_figure_short_form_full_on_the_value(
+    test_database_url: str,
+) -> None:
+    # J06's acceptance: *"short form, full on hover/expand"* — the
+    # caption beside the numeral carries each term's first twelve
+    # characters under its own label, and the value the caller expands
+    # (:attr:`triple`) carries the whole digest, so an operator can
+    # read the triple at a glance and an audit can replay it in full.
+    _stamped_tree(test_database_url)
+    st = _RecordingStreamlit()
+    page = _dashboard(test_database_url).render(st)
+    line = page.primary.provenance.line
+    assert line.startswith("provenance:")
+    assert f"evaluator {EVALUATOR_B[:12]}…" in line
+    assert f"snapshot {SNAPSHOT_A[:12]}…" in line
+    assert f"cost model {COST_MODEL_A[:12]}…" in line
+    # The short form is short: no full digest renders in the caption —
+    # the expand holds it, not the line.
+    for digest in (EVALUATOR_B, SNAPSHOT_A, COST_MODEL_A):
+        assert digest not in line
+    assert page.primary.provenance.triple == (
+        EVALUATOR_B,
+        SNAPSHOT_A,
+        COST_MODEL_A,
+    )
+    assert st.of("caption")[5][0][0] == line
+
+
+@pytest.mark.parametrize(
+    "tree",
+    [
+        pytest.param(_tree_without_a_table, id="no-node-table"),
+        pytest.param(_tree_without_the_columns, id="no-trio-columns"),
+        pytest.param(_tree_of_unstamped_rows, id="unstamped-rows"),
+    ],
+)
+def test_no_recorded_triple_says_provenance_unrecorded(
+    test_database_url: str, tree
+) -> None:
+    # The other two states of the journey's own line: *"A campaign
+    # with no recorded triple says provenance unrecorded"* — the exact
+    # words, for every tree that honestly carries nothing: no table
+    # (the migrations have not brought it), no columns (the chain's
+    # own ordering state), or rows that predate the stamp (the NULL
+    # the backfill leaves, the same spelling the ledger's read gives a
+    # row that predates feature 87's).  Never a hash nobody recorded,
+    # and never a zero-length Franken-triple either.
+    tree(test_database_url)
+    dashboard = _dashboard(test_database_url)
+    provenance = dashboard.page().primary.provenance
+    assert provenance.unrecorded
+    assert provenance.triple is None
+    assert not provenance.mixed
+    st = _RecordingStreamlit()
+    dashboard.render(st)
+    assert st.of("caption")[5][0][0] == PROVENANCE_UNRECORDED
+
+
+def test_disagreeing_nodes_render_the_mixed_provenance_refusal(
+    test_database_url: str,
+) -> None:
+    # The journey's third state: *"one whose nodes disagree is refused
+    # as mixed provenance, never averaged"* — the message names the
+    # disagreement, displays no triple and averages none.  Picking
+    # either evaluator would attribute the figure to one scorer the
+    # campaign ran under while the rows say it ran under two, and an
+    # averaged hash names an artifact nobody ever built.
+    _stamped_tree(test_database_url)
+    _plant_node(
+        test_database_url,
+        NEWEST_CAMPAIGN,
+        evaluator=EVALUATOR_A,
+        snapshot=SNAPSHOT_A,
+        cost_model=COST_MODEL_A,
+    )
+    provenance = _dashboard(test_database_url).page().primary.provenance
+    assert provenance.mixed
+    assert provenance.triple is None
+    message = provenance.line
+    assert message.startswith("mixed provenance:")
+    assert "2 distinct triples" in message
+    assert "none is displayed and none is averaged" in message
+    # No hash renders — neither of the two the rows carry, nor any
+    # prefix of either: the refusal displays the disagreement, not a
+    # contested attribution.
+    for digest in (EVALUATOR_A, EVALUATOR_B, SNAPSHOT_A, COST_MODEL_A):
+        assert digest[:12] not in message
+    st = _RecordingStreamlit()
+    _dashboard(test_database_url).render(st)
+    assert st.of("caption")[5][0][0] == message
+
+
+def test_a_row_that_predates_the_stamp_cannot_disagree(
+    test_database_url: str,
+) -> None:
+    # The join is over *complete* triples: a row with a NULL term
+    # states no triple, and a statement nobody made cannot contradict
+    # one somebody did.  So a campaign with one stamped row and one
+    # pre-stamp row answers the stamped triple — recorded, not mixed —
+    # exactly as the ledger's provenance read treats a row that
+    # predates feature 87's stamp.
+    _persisted_store(test_database_url)
+    _backfilled_node_table(test_database_url)
+    _plant_node(
+        test_database_url,
+        NEWEST_CAMPAIGN,
+        evaluator=EVALUATOR_B,
+        snapshot=SNAPSHOT_A,
+        cost_model=COST_MODEL_A,
+    )
+    _plant_node(test_database_url, NEWEST_CAMPAIGN)
+    provenance = _dashboard(test_database_url).page().primary.provenance
+    assert provenance.triple == (EVALUATOR_B, SNAPSHOT_A, COST_MODEL_A)
+    assert provenance.stamped == ((EVALUATOR_B, SNAPSHOT_A, COST_MODEL_A),)
+    assert not provenance.mixed
+    assert provenance.line.startswith("provenance:")
+
+
+@pytest.mark.parametrize(
+    "not_a_digest",
+    [
+        "sha256:" + "e1" * 32,  # the image-reference spelling
+        "deadbeef",  # not 64 characters
+        "",  # blank is not NULL
+    ],
+)
+def test_a_hash_that_is_not_the_digests_own_spelling_is_refused(
+    test_database_url: str, not_a_digest: str
+) -> None:
+    # A hash is the one value whose whole meaning is naming an
+    # artifact, and a term that names nothing rendered beside the
+    # figure would be provenance no audit can replay.  The blank is
+    # the important third case: a NULL term is the pre-stamp reading
+    # and passes, but a blank string is a write somebody made — the
+    # chain-built tree's NOT NULL columns admit it — and it is
+    # refused rather than folded into the unrecorded words.
+    _persisted_store(test_database_url)
+    _bring_node_table(test_database_url)
+    _plant_node(
+        test_database_url,
+        NEWEST_CAMPAIGN,
+        evaluator=not_a_digest,
+        snapshot=SNAPSHOT_A,
+        cost_model=COST_MODEL_A,
+    )
+    with pytest.raises(DashboardRenderError) as raised:
+        _dashboard(test_database_url).page()
+    assert isinstance(raised.value, OpsError)
+    message = str(raised.value)
+    assert "evaluator_hash" in message
+    assert "repair" in message
+    # And the refusal never carries the value it refused: a malformed
+    # hash is not displayed on its way to being rejected.  (The blank
+    # case is checked by length, not containment — every string
+    # contains the empty one.)
+    if not_a_digest:
+        assert not_a_digest not in message
+
+
+def test_uppercase_hex_folds_to_the_one_artifact(test_database_url: str) -> None:
+    # The ledger's canonicalization law, held at the panel: uppercase
+    # and lowercase hex name the same digest, so a row stamped in
+    # uppercase and one stamped in lowercase are one triple, not a
+    # mixed campaign — the fold happens before the disagreement is
+    # judged, never after.
+    _persisted_store(test_database_url)
+    _bring_node_table(test_database_url)
+    _plant_node(
+        test_database_url,
+        NEWEST_CAMPAIGN,
+        evaluator=EVALUATOR_B.upper(),
+        snapshot=SNAPSHOT_A,
+        cost_model=COST_MODEL_A,
+    )
+    _plant_node(
+        test_database_url,
+        NEWEST_CAMPAIGN,
+        evaluator=EVALUATOR_B,
+        snapshot=SNAPSHOT_A,
+        cost_model=COST_MODEL_A,
+    )
+    provenance = _dashboard(test_database_url).page().primary.provenance
+    assert not provenance.mixed
+    assert provenance.triple == (EVALUATOR_B, SNAPSHOT_A, COST_MODEL_A)
+
+
+def test_a_provenance_read_leaves_the_tree_untouched(
+    test_database_url: str,
+) -> None:
+    # The reader is a reader: the node table is the migrations' and
+    # the rows the discovery loop's, so a render — recorded,
+    # unrecorded or mixed — leaves the raw rows byte-identical.
+    _stamped_tree(test_database_url)
+    path = Path(test_database_url.removeprefix("sqlite:///"))
+    with closing(sqlite3.connect(path)) as connection:
+        before = connection.execute(
+            "SELECT id, campaign_id, evaluator_hash, snapshot_hash, "
+            "cost_model_hash FROM node ORDER BY id"
+        ).fetchall()
+    _dashboard(test_database_url).render(_RecordingStreamlit())
+    with closing(sqlite3.connect(path)) as connection:
+        after = connection.execute(
+            "SELECT id, campaign_id, evaluator_hash, snapshot_hash, "
+            "cost_model_hash FROM node ORDER BY id"
+        ).fetchall()
+    assert after == before
+
+
+def test_the_reader_refuses_a_campaign_that_names_nothing(
+    test_database_url: str,
+) -> None:
+    # The join is on node.campaign_id, and an id that names nothing
+    # would select no rows — rendering *unrecorded* for a campaign
+    # that may carry the triple: the quiet wrong answer, refused
+    # loudly instead.  The blank and the non-string are both refused.
+    reader = NodeProvenanceReader(test_database_url)
+    for campaign_id in ("", "   ", None):
+        with pytest.raises(DashboardRenderError) as raised:
+            reader.reading(campaign_id)
+        assert isinstance(raised.value, OpsError)
+        assert "campaign" in str(raised.value)
+
+
+def test_a_broken_node_read_aborts_the_render_path_free(tmp_path: Path) -> None:
+    # A read that cannot be made refuses the render — in the render
+    # vocabulary, chained, and carrying no filesystem path (the
+    # member's own constraint on every refusal it answers).  A URL
+    # that names a directory is the honest way to break an sqlite
+    # read: the open itself refuses, and the refusal that reaches the
+    # operator names the reader and the repair, never the directory.
+    reader = NodeProvenanceReader(f"sqlite:///{tmp_path}")
+    with pytest.raises(DashboardRenderError) as raised:
+        reader.reading(NEWEST_CAMPAIGN)
+    assert isinstance(raised.value, OpsError)
+    message = str(raised.value)
+    assert "provenance reader" in message
+    assert "node" in message
+    assert str(tmp_path) not in message  # no filesystem path, ever
+    assert raised.value.__cause__ is not None  # sqlite's own words, chained
+
+
+def test_a_refusing_provenance_read_aborts_the_page_before_the_rail(
+    test_database_url: str,
+) -> None:
+    # The ordering law, held for the fourth figure: the primary seat —
+    # figure and triple together — is asked first, so a refusing
+    # triple read aborts the page before the rail is ever asked (and
+    # the rail, one seat over, before the gauge).  A failing route
+    # read, a failing triple read, a failing rail read and a failing
+    # ledger read stay distinguishable by vocabulary and by order.
+    class _RefusingProvenance:
+        def reading(self, campaign_id):
+            raise DashboardRenderError("the reader's own words")
+
+    class _NeverAskedRail:
+        def get(self):
+            raise AssertionError(
+                "the rail was asked after the provenance read refused"
+            )
+
+    dashboard = OperatorDashboard(
+        FdrDeployEndpoint(_persisted_store(test_database_url)),
+        EpochCountGauge(test_database_url),
+        _NeverAskedRail(),
+        _RefusingProvenance(),
+    )
+    with pytest.raises(DashboardRenderError, match="the reader's own words"):
+        dashboard.page()
+    with pytest.raises(DashboardRenderError, match="the reader's own words"):
+        dashboard.render(_RecordingStreamlit())
+
+
+def test_the_provenance_carrier_is_duck_checked(test_database_url: str) -> None:
+    # The contract is the reader's reading() — the reading value
+    # itself is not enough (it answers one campaign, not a read a page
+    # can re-ask on every render), the same split the route's and the
+    # rail's carriers take, and the refusal names what the triple
+    # needs.
+    with pytest.raises(TypeError, match="reading"):
+        OperatorDashboard(
+            FdrDeployEndpoint(_persisted_store(test_database_url)),
+            EpochCountGauge(test_database_url),
+            _rail(test_database_url),
+            CampaignProvenance(),
+        )
+
+
+def test_the_provenance_reader_refuses_a_url_that_names_nothing() -> None:
+    # The reader renders on every populated page, so a reader pointed
+    # at nothing is refused at wiring rather than silently rendering a
+    # triple nobody read — the same stance the gauge takes toward its
+    # own URL, restated for the triple's seat.
+    with pytest.raises(DashboardRenderError) as raised:
+        NodeProvenanceReader("   ")
+    assert isinstance(raised.value, OpsError)
+    assert "non-empty database URL" in str(raised.value)
+
+
+def test_the_provenance_reader_wires_lazily_over_the_routes_url(
+    test_database_url: str,
+) -> None:
+    # The three-argument construction from before the triple landed
+    # keeps composing over exactly the database it always did: the
+    # reader wires itself over the route's own carried URL on first
+    # use — the one-database law, held for the fourth surface without
+    # a second resolution the figure and its triple could drift apart
+    # on.
+    route = FdrDeployEndpoint(_persisted_store(test_database_url))
+    dashboard = OperatorDashboard(
+        route,
+        EpochCountGauge(test_database_url),
+        _rail(test_database_url),
+    )
+    assert dashboard.provenance.database_url == route.store.database_url
+
+
+def test_the_provenance_seat_judges_the_contract_not_the_class(
+    test_database_url: str,
+) -> None:
+    # The factory's scan imports members under synthetic names, so the
+    # seat duck-checks the display contract — and the provenance seat
+    # is the panel's own field, judged one level down: a carrier that
+    # answers the provenance contract *is* the reading for every
+    # purpose the render has, and a panel whose provenance answers
+    # nothing is refused by name with J06's own reason carried in the
+    # words.
+    real = _dashboard(test_database_url).page().primary
+
+    class _DuckProvenance:
+        triple = real.provenance.triple
+        unrecorded = real.provenance.unrecorded
+        mixed = real.provenance.mixed
+        line = real.provenance.line
+
+    class _DuckPanel:
+        figure = real.figure
+        trend = real.trend
+        qualifier = real.qualifier
+        headline = real.headline
+        numeral = real.numeral
+        plate = real.plate
+        series = real.series
+        provenance = _DuckProvenance()
+
+    page = DashboardPage(
+        primary=_DuckPanel(),  # type: ignore[arg-type]
+        chrome=EpochCountChrome(count=0),
+        lamps=_lamps(),
+    )
+    assert page.primary.provenance.line == real.provenance.line
+
+    class _PanelWithoutAReading:
+        figure = real.figure
+        trend = real.trend
+        qualifier = real.qualifier
+        headline = real.headline
+        numeral = real.numeral
+        plate = real.plate
+        series = real.series
+        provenance = None  # a seat that cannot state its reading
+
+    with pytest.raises(DashboardRenderError) as raised:
+        DashboardPage(
+            primary=_PanelWithoutAReading(),  # type: ignore[arg-type]
+            chrome=EpochCountChrome(count=0),
+            lamps=_lamps(),
+        )
+    assert isinstance(raised.value, OpsError)
+    message = str(raised.value)
+    assert "provenance" in message
+    assert "triple" in message
+
+
+
 
 
 def test_an_empty_trend_renders_no_numeral_ever_a_flawless_one(
@@ -385,10 +1019,11 @@ def test_the_render_emits_the_primary_panel_first(test_database_url: str) -> Non
     # title, the permanent chrome — the rail first (docs §5.4 draws
     # the lamps at the top of the left rail, so they are the first
     # thing beneath the title), then feature 352's count strip — then
-    # the primary panel — headline, numeral, plate — and only then the
-    # one chart the dashboard draws, over the panel's own FDR_deploy
-    # trend.  Nothing renders above the numeral but the chrome, and
-    # the only series ever charted is the trend's figures.
+    # the primary panel — headline, numeral, plate, the campaign's
+    # provenance line — and only then the one chart the dashboard
+    # draws, over the panel's own FDR_deploy trend.  Nothing renders
+    # above the numeral but the chrome, and the only series ever
+    # charted is the trend's figures.
     st = _RecordingStreamlit()
     page = _dashboard(test_database_url).render(st)
 
@@ -403,14 +1038,16 @@ def test_the_render_emits_the_primary_panel_first(test_database_url: str) -> Non
     # The header is the panel's headline — the qualifier beside the
     # figure's name, §16's own line.
     assert st.one("header")[0][0] == page.primary.headline
-    # Five captions, in order: the three lamp lines (permanent, above
+    # Six captions, in order: the three lamp lines (permanent, above
     # the count), the count strip (permanent, above the panel), then
-    # the provenance plate beneath the numeral.
+    # the provenance plate beneath the numeral and the campaign's
+    # provenance line completing it.
     captions = st.of("caption")
-    assert len(captions) == 5
+    assert len(captions) == 6
     assert [call[0][0] for call in captions[:3]] == list(page.lamps.lines)
     assert captions[3][0][0] == page.chrome.line
     assert captions[4][0][0] == page.primary.plate
+    assert captions[5][0][0] == page.primary.provenance.line
     # The one chart is the trend, and nothing else is charted.
     chart_args, _kwargs = st.one("line_chart")
     assert chart_args[0] == list(page.primary.series)
@@ -445,18 +1082,24 @@ def test_the_model_has_nowhere_for_an_equity_curve_to_land() -> None:
     # holds a primary seat, its chrome and its lamps (feature 352's
     # count and the rail's response — the two fields the page grew,
     # carrying figures and bits and nothing a curve could occupy), the
-    # panel holds the route's response, the response holds the
-    # per-campaign FDR_deploy history — and that is the whole surface,
-    # top to bottom.  A returns series, a NAV curve or a Sharpe has no
-    # field anywhere on this path to occupy, so the substitution
-    # cannot be represented, let alone rendered.
+    # panel holds the route's response and the campaign's provenance
+    # reading (the two facts the panel attributes the figure by), the
+    # response holds the per-campaign FDR_deploy history, the reading
+    # holds the node rows — and that is the whole surface, top to
+    # bottom.  A returns series, a NAV curve or a Sharpe has no field
+    # anywhere on this path to occupy, so the substitution cannot be
+    # represented, let alone rendered.
     assert [f.name for f in dataclasses.fields(DashboardPage)] == [
         "primary",
         "chrome",
         "lamps",
     ]
-    assert [f.name for f in dataclasses.fields(FdrDeployPanel)] == ["response"]
+    assert [f.name for f in dataclasses.fields(FdrDeployPanel)] == [
+        "response",
+        "provenance",
+    ]
     assert [f.name for f in dataclasses.fields(FdrDeployResponse)] == ["history"]
+    assert [f.name for f in dataclasses.fields(CampaignProvenance)] == ["rows"]
     assert [f.name for f in dataclasses.fields(EpochCountChrome)] == ["count"]
     assert [f.name for f in dataclasses.fields(InstrumentLampsChrome)] == [
         "response"
@@ -532,6 +1175,7 @@ def test_the_primary_seat_judges_the_contract_not_the_class(
         numeral = real.numeral
         plate = real.plate
         series = real.series
+        provenance = real.provenance
 
     page = DashboardPage(
         primary=_DuckPanel(),  # type: ignore[arg-type]
@@ -753,9 +1397,9 @@ def test_from_env_composes_exactly_when_the_route_does(env) -> None:
     # The dashboard composes on the route's own decision — the same
     # unset spellings, the same resolved URL — with no second
     # resolution the two surfaces could drift apart on.  The chrome's
-    # gauge and the lamps' rail ride the URL the route carries, so all
-    # three compose on exactly the same decision and point at exactly
-    # the same database.
+    # gauge, the lamps' rail and the provenance reader all ride the URL
+    # the route carries, so all four compose on exactly the same
+    # decision and point at exactly the same database.
     route = FdrDeployEndpoint.from_env(env)
     dashboard = OperatorDashboard.from_env(env)
     if route is None:
@@ -765,6 +1409,7 @@ def test_from_env_composes_exactly_when_the_route_does(env) -> None:
         assert dashboard.route.store.database_url == route.store.database_url
         assert dashboard.gauge.database_url == route.store.database_url
         assert dashboard.rail.readings.database_url == route.store.database_url
+        assert dashboard.provenance.database_url == route.store.database_url
 
 
 def test_from_env_refuses_when_the_rail_will_not_compose(
@@ -799,13 +1444,14 @@ def test_the_dashboard_and_route_compose_over_one_database(
     test_database_url: str,
 ) -> None:
     # §16's "single Postgres metrics table" allowance, pinned at
-    # composition for all four surfaces: the route that answers the
+    # composition for all five surfaces: the route that answers the
     # figure, the dashboard that renders it, the gauge that counts the
-    # ledger and the rail that reads the instruments resolve the one
-    # database DATABASE_URL names — never two the numeral, its rows,
-    # its count or its lamps could drift apart on.  Feature 352's
-    # gauge and the rail ride the same carried URL, so both strips are
-    # drawn from the one database too.
+    # ledger, the rail that reads the instruments and the reader that
+    # reads the node rows resolve the one database DATABASE_URL names —
+    # never two the numeral, its rows, its count, its lamps or its
+    # triple could drift apart on.  Feature 352's gauge, the rail and
+    # the provenance reader ride the same carried URL, so both strips
+    # and the triple are drawn from the one database too.
     app = create_app(MEMBER_SRC, registry=Registration())
     route = app.get("ops-fdr-deploy")
     dashboard = app.get("ops-dashboard")
@@ -814,6 +1460,7 @@ def test_the_dashboard_and_route_compose_over_one_database(
     assert dashboard.route.store.database_url == test_database_url
     assert dashboard.gauge.database_url == test_database_url
     assert dashboard.rail.readings.database_url == test_database_url
+    assert dashboard.provenance.database_url == test_database_url
     assert "ops-dashboard" in app.order and "ops-fdr-deploy" in app.order
     assert ops_seat.OPS_INSTRUMENT_STATUS_COMPONENT_NAME in app.order
 

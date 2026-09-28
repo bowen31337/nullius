@@ -46,14 +46,67 @@ holds that law three ways, each concrete:
 The dashboard owns no figure of its own — the member's law, stated in
 its package docstring, is delegation — so :class:`FdrDeployPanel` is
 built from feature 341's response and derives every display read from
-it: the numeral is the response's newest campaign figure, the
-provenance visible beside it is the response's own triple (the
-campaign that measured it and the instant it was computed), and the
-trend drawn below the fold is the same history the numeral was drawn
-from — one answer, not two that could disagree.  prd §4.1.3's barred
-figure (the raw in-campaign rate) is unreachable here by the same
-delegation: the response cannot carry it, so no panel built from a
-response can display it.
+it: the numeral is the response's newest campaign figure, the plate
+beneath it the response's own attribution (the campaign that measured
+it and the instant it was computed), and the trend drawn below the
+fold is the same history the numeral was drawn from — one answer, not
+two that could disagree.  prd §4.1.3's barred figure (the raw
+in-campaign rate) is unreachable here by the same delegation: the
+response cannot carry it, so no panel built from a response can
+display it.
+
+**The triple beside the figure is read from the campaign's own node
+rows — the one read the panel does *not* take from the response.**
+app_spec.xml's ``ui_layout`` draws the primary panel whole: *"The
+primary panel is FDR_deploy with its provenance triple"*, and its M5
+success criteria state the acceptance (*"The operator reads
+FDR_deploy as the primary figure with its provenance triple visible"*).
+The browser validation of the user journeys found the page rendering
+the figure without the triple (docs/user-journeys/RESULTS.md, run 1,
+J06 — *"No triple is shown"*), and this module closes that gap the way
+J06's own line draws it: the newest campaign's ``evaluator_hash``,
+``snapshot_hash`` and ``cost_model_hash`` — §9.1's three ``CHAR(64)``
+columns on the ``node`` table, feature 99's, stamped by the writer the
+way feature 87 stamps the ledger's — are read from *that campaign's
+node rows* in the one database the route already carries, and rendered
+beside the numeral in short form with the full-width spelling held on
+the value (J06: *"short form, full on hover/expand"* — the value is
+the expand).  Three states, and only three:
+
+* **recorded** — the campaign's node rows all carry the same complete
+  triple, and that triple renders: the figure is attributed to the
+  evaluator that scored it, the snapshot it sliced and the cost model
+  that priced it, the reproducibility §16's structured-logging line
+  assumes (*"every evaluation emits one record carrying the full
+  provenance triple"*);
+* **provenance unrecorded** — no node row carries a complete triple,
+  whether because the campaign closed no node into the table, the
+  table or its columns have not been brought yet, or the rows predate
+  feature 99's stamp (the NULL the migrations' legacy repair leaves,
+  the same spelling the ledger's read gives a row that predates
+  feature 87's) — and the panel says *provenance unrecorded*, J06's
+  own words, never a hash nobody recorded;
+* **mixed provenance** — the campaign's node rows carry more than one
+  distinct triple, and the panel renders the error message that names
+  the disagreement, displays no triple and averages none (J06: *"one
+  whose nodes disagree is refused as mixed provenance, never
+  averaged"*): picking either triple would misattribute the figure to
+  one evaluator when the campaign ran under two, the quietly-wrong
+  attribution this family refuses everywhere it can.
+
+A row that predates the stamp states no triple and so cannot disagree
+— the join is over *complete* triples, and a statement nobody made
+cannot contradict one somebody did.  A term that is not the
+hexdigest's own 64-hex spelling is refused by name, because a hash
+that names nothing rendered beside the figure would be provenance no
+audit can replay.  And a *broken* read — a database that will not
+open, a row that will not read — refuses the render rather than
+folding into the unrecorded words: "provenance unrecorded" is reserved
+for the state where no node carries the triple, and a broken read
+wearing it would hide the break behind an honest-sounding absence.
+Only the schema-absent spellings (no ``node`` table, no trio columns —
+the discoverable states the migrations' own chain ordering names) fold
+into unrecorded, because there the rows honestly carry nothing.
 
 **The qualifier beside the figure is read from the one spelling.**
 §16 lists the research metric as *"``FDR_deploy`` at π₀ = 0.9"*, and
@@ -168,7 +221,10 @@ state at the moment of the rerun, not a fact about when the page was
 first opened.
 
 Stdlib-only, like the rest of the member: :mod:`dataclasses` for the
-page model, :mod:`typing` for ``Any``/``Optional`` — streamlit and the
+page model, :mod:`sqlite3` for the node-table read (the triple's own
+SELECT, translated through the workspace's one URL-to-path grammar),
+:mod:`contextlib`/:mod:`pathlib`/:mod:`urllib.parse` for the plumbing
+around it, :mod:`typing` for ``Any``/``Optional`` — streamlit and the
 scoring member are both deferred past module scope and past builder
 time, so importing this module (and composing the component it
 registers) performs no I/O and no sibling import.
@@ -191,9 +247,13 @@ if __package__ in (None, ""):  # pragma: no cover - the streamlit-run script pat
         _sys.path.insert(0, _member_src)
     __package__ = "ops"
 
+import sqlite3
 from collections.abc import Mapping
+from contextlib import closing
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import unquote, urlparse
 
 from app.module_loader import create_app
 from app.modules.ops import fdr_deploy_component, instrument_status_component
@@ -218,8 +278,12 @@ __all__ = [
     "DASHBOARD_PAGE_TITLE",
     "DASHBOARD_TITLE",
     "FDR_DEPLOY_LABEL",
+    "PROVENANCE_COLUMNS",
+    "PROVENANCE_UNRECORDED",
+    "CampaignProvenance",
     "DashboardPage",
     "FdrDeployPanel",
+    "NodeProvenanceReader",
     "OperatorDashboard",
     "main",
     "require_streamlit",
@@ -242,11 +306,30 @@ DASHBOARD_TITLE = "Nullius"
 #: because Streamlit only honours it as the first command on the page.
 DASHBOARD_PAGE_TITLE = "Nullius — deployment metrics"
 
+#: The provenance triple's three names, in §9.1's own order — the same
+#: spelling the ledger member carries as its
+#: :data:`ledger.provenance.PROVENANCE_COLUMNS` and migration 0116 adds
+#: to the ``node`` table, restated here because a member states its own
+#: contract: the SELECT the reader makes names its columns from this
+#: tuple, so the panel's read and the schema's columns cannot drift
+#: apart on which three terms are the triple.
+PROVENANCE_COLUMNS = ("evaluator_hash", "snapshot_hash", "cost_model_hash")
+
+#: The words the panel renders when the campaign's node rows carry no
+#: complete triple — J06's own spelling (*"A campaign with no recorded
+#: triple says provenance unrecorded"*), carried once so the render, the
+#: tests and the journey's acceptance line cannot drift apart on the
+#: words of the honest absence.  Never a hash nobody recorded, and never
+#: a broken read wearing these words (see :class:`CampaignProvenance`).
+PROVENANCE_UNRECORDED = "provenance unrecorded"
+
 #: The primary panel's display contract — the reads the render makes of
 #: whatever occupies the page's primary seat.  A carrier that does not
 #: answer them all is not an FDR_deploy panel, and the page refuses it
 #: (see :class:`DashboardPage`): the named, actionable spelling of the
-#: spec's "rejected at review".
+#: spec's "rejected at review".  ``provenance`` is the triple's seat —
+#: the read the render makes beside the numeral — and the carrier it
+#: answers is itself judged against :data:`_PROVENANCE_CONTRACT`.
 _PRIMARY_PANEL_CONTRACT = (
     "figure",
     "trend",
@@ -255,6 +338,7 @@ _PRIMARY_PANEL_CONTRACT = (
     "numeral",
     "plate",
     "series",
+    "provenance",
 )
 
 #: The permanent chrome's display contract — the reads the render makes
@@ -292,6 +376,26 @@ _LAMPS_CONTRACT = (
     "lines",
 )
 
+#: The provenance carrier's display contract — the reads the render (and
+#: the tests) make of whatever the primary panel holds in its
+#: ``provenance`` seat.  ``triple`` is the full-width spelling J06's
+#: *"full on hover/expand"* names (the value the caller expands);
+#: ``unrecorded`` and ``mixed`` are the two states the panel must be
+#: able to name; ``line`` is the one the render draws.  A carrier that
+#: does not answer them all cannot sit beside the figure, and the page
+#: refuses it (see :class:`DashboardPage`): app_spec.xml's ``ui_layout``
+#: draws the primary panel whole — *"The primary panel is FDR_deploy
+#: with its provenance triple"* — and a page that could be built with a
+#: provenance seat that cannot state its own reading would be a page on
+#: which the figure could render unattributed, the exact gap J06's
+#: validation found on the first render.
+_PROVENANCE_CONTRACT = (
+    "triple",
+    "unrecorded",
+    "mixed",
+    "line",
+)
+
 #: The Streamlit calls the render makes — the whole contract a render
 #: carrier must answer, spelled once so the duck-check, the render and
 #: the tests cannot drift apart on what "a streamlit" is here.
@@ -303,6 +407,29 @@ _RENDER_CARRIER_CONTRACT = (
     "caption",
     "line_chart",
 )
+
+#: The hash spelling every provenance term must already carry — 64 hex
+#: characters, the digest of the artifact the term names (§9.1's
+#: ``CHAR(64)`` columns; a sha256 digest rendered as hex is exactly 64
+#: characters, which is why the length is the schema's own spelling of
+#: "a hash" and not a tuning knob).
+_PROVENANCE_HASH_LENGTH = 64
+
+#: The alphabet of those 64 characters, lowercased — the fold the
+#: ledger's canonicalization performs, so a row stamped in uppercase
+#: and one stamped in lowercase name the same artifact.
+_PROVENANCE_HEX = frozenset("0123456789abcdef")
+
+#: How much of each hash the short form renders — J06's *"short form,
+#: full on hover/expand"*.  Twelve characters is the prefix a terminal
+#: and a tooltip both keep on one line; the value
+#: (:attr:`CampaignProvenance.triple`) carries the whole digest for
+#: the expand.
+_SHORT_HASH_CHARS = 12
+
+#: The labels the short form renders the three terms under — the
+#: column names' own words, spaced the way a caption reads.
+_PROVENANCE_LABELS = ("evaluator", "snapshot", "cost model")
 
 
 def require_streamlit() -> Any:
@@ -335,6 +462,384 @@ def require_streamlit() -> Any:
     return streamlit
 
 
+def _canonical_provenance_hash(value: Any, column: str) -> str | None:
+    """One provenance term as its canonical spelling, or ``None``.
+
+    The read-side half of the law the ledger's
+    :func:`ledger.provenance` canonicalization and this member's own
+    :func:`ops.evaluation_log._canonical_hash` both state: ``None``
+    passes untouched (it is the pre-stamp spelling, not a malformed
+    one), a ``str`` is stripped and lowercased — uppercase and
+    lowercase hex name the same artifact — and anything that is not 64
+    hex characters after the fold is *refused by name*, because a hash
+    is the one value whose whole meaning is naming an artifact, and a
+    term that names nothing rendered beside the figure would be
+    provenance no audit can replay.  The ``sha256:`` prefix gets its
+    own refusal because it is the honest mistake — an image-reference
+    spelling pasted where a bare digest belongs — and the message that
+    names it is the one that repairs it.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise DashboardRenderError(
+            f"the provenance term {column} on a node row is not a string "
+            f"(got {type(value).__name__}): the column is §9.1's "
+            f"CHAR(64) digest of the artifact it names, and a value that "
+            f"is not text cannot name one; repair the row's writer "
+            f"(feature 99's stamp) — never render the term (J06, docs §9.1)"
+        )
+    stripped = value.strip()
+    if stripped.startswith("sha256:"):
+        raise DashboardRenderError(
+            f"the provenance term {column} on a node row carries the "
+            f"sha256: image-reference prefix ({len(stripped)} "
+            f"characters): the column wants the bare hexdigest — 64 hex "
+            f"characters, uppercase folded, the spelling feature 87 "
+            f"stamps on the ledger and feature 99 on the node — and an "
+            f"image reference names a registry artifact, not the "
+            f"evaluator, snapshot or cost model the triple must name; "
+            f"the repair is the row's writer — strip the prefix at it "
+            f"and stamp the digest (J06, docs §9.1)"
+        )
+    folded = stripped.lower()
+    if len(folded) != _PROVENANCE_HASH_LENGTH or any(
+        character not in _PROVENANCE_HEX for character in folded
+    ):
+        raise DashboardRenderError(
+            f"the provenance term {column} on a node row is not a hash's "
+            f"own spelling ({len(folded)} characters, hex only): the "
+            f"column is §9.1's CHAR(64), and only a 64-character "
+            f"hexdigest names the artifact the term is provenance for — "
+            f"a shorter or non-hex value rendered beside the figure "
+            f"would be provenance no audit can replay; repair the row's "
+            f"writer (feature 99's stamp) rather than displaying it "
+            f"(J06, docs §9.1)"
+        )
+    return folded
+
+
+@dataclass(frozen=True, slots=True)
+class CampaignProvenance:
+    """One campaign's provenance reading — the node rows, judged.
+
+    Frozen testimony over the rows the reader fetched for one campaign,
+    each row the triple of §9.1's three ``CHAR(64)`` columns as the row
+    holds it (``None`` the spelling of a term nobody stamped).  The
+    judgement is the feature's own sentence, held where every caller
+    shares it:
+
+    * a row **carries** a triple only when all three terms are
+      non-``None`` — a row that predates feature 99's stamp states no
+      triple and so cannot disagree, the same read-side law the
+      ledger's provenance gives a row that predates feature 87's;
+    * :attr:`stamped` is the distinct complete triples the rows carry,
+      first-seen order — never assembled across rows (a triple is one
+      stamp on one row, and a Franken-triple of three rows' terms would
+      name an evaluator, snapshot and cost model that never co-occurred);
+    * **unrecorded** (:attr:`unrecorded`) is zero stamped triples, and
+      renders J06's own words (:data:`PROVENANCE_UNRECORDED`) — never a
+      hash nobody recorded;
+    * **mixed** (:attr:`mixed`) is more than one, and renders the error
+      message (:attr:`line`) that refuses the display and the average
+      both — J06: *"one whose nodes disagree is refused as mixed
+      provenance, never averaged"*;
+    * exactly one stamped triple is the recorded state, and
+      :attr:`triple` answers it whole (the full-width spelling J06's
+      *"full on hover/expand"* names — the value the caller expands),
+      with :attr:`line` carrying the short form beside the numeral.
+
+    There is deliberately no constructor door that *decides* which
+    triple a mixed campaign "really" ran under: the value holds the
+    rows and answers the judgement, and a caller that wanted the
+    average would have to build it in the open, where review finds it.
+    """
+
+    #: The campaign's node rows as the reader fetched them, each row
+    #: ``(evaluator_hash, snapshot_hash, cost_model_hash)`` in §9.1's
+    #: order, each term canonicalized or ``None``.  Empty when the
+    #: campaign closed no node into the table or the schema has not
+    #: been brought — both unrecorded, by the law above.
+    rows: tuple[tuple[str | None, str | None, str | None], ...] = ()
+
+    def __post_init__(self) -> None:
+        canonical: list[tuple[str | None, str | None, str | None]] = []
+        for row in self.rows:
+            try:
+                terms = tuple(row)
+            except TypeError as exc:
+                raise DashboardRenderError(
+                    f"a CampaignProvenance's rows are the node table's "
+                    f"(evaluator_hash, snapshot_hash, cost_model_hash) "
+                    f"triples, and one of them is not a triple at all "
+                    f"(got {type(row).__name__}): the reader fetches "
+                    f"three columns per row, so a row that is not one is "
+                    f"a read nobody made — repair the reader's SELECT, "
+                    f"never render the term (J06, docs §9.1)"
+                ) from exc
+            if len(terms) != len(PROVENANCE_COLUMNS):
+                raise DashboardRenderError(
+                    f"a CampaignProvenance's rows are the node table's "
+                    f"(evaluator_hash, snapshot_hash, cost_model_hash) "
+                    f"triples, and one of them carries {len(terms)} "
+                    f"terms: the triple is §9.1's three columns and a "
+                    f"row with any other width is a read nobody made — "
+                    f"repair the reader's SELECT, never render the term "
+                    f"(J06, docs §9.1)"
+                )
+            canonical.append(
+                tuple(
+                    _canonical_provenance_hash(term, column)
+                    for term, column in zip(terms, PROVENANCE_COLUMNS)
+                )
+            )
+        object.__setattr__(self, "rows", tuple(canonical))
+
+    @property
+    def stamped(self) -> tuple[tuple[str, str, str], ...]:
+        """The distinct complete triples the rows carry, first-seen
+        order — the join the judgement runs over, and never a triple
+        assembled across rows."""
+        distinct: list[tuple[str, str, str]] = []
+        for row in self.rows:
+            if any(term is None for term in row):
+                continue  # a row that predates the stamp states nothing
+            if row not in distinct:
+                distinct.append(row)
+        return tuple(distinct)
+
+    @property
+    def unrecorded(self) -> bool:
+        """Whether no node row carries a complete triple — the state
+        :data:`PROVENANCE_UNRECORDED` names, reserved for it."""
+        return not self.stamped
+
+    @property
+    def mixed(self) -> bool:
+        """Whether the rows carry more than one distinct triple — the
+        disagreement :attr:`line` refuses."""
+        return len(self.stamped) > 1
+
+    @property
+    def triple(self) -> tuple[str, str, str] | None:
+        """The campaign's one recorded triple, whole — the full-width
+        spelling J06's *"full on hover/expand"* names.  ``None`` for
+        the unrecorded and mixed states alike: neither has one triple
+        to answer, and picking one anyway is the misattribution the
+        mixed refusal exists to prevent."""
+        return self.stamped[0] if len(self.stamped) == 1 else None
+
+    @property
+    def line(self) -> str:
+        """The words the render draws beside the numeral — one line per
+        state, and only three states: the recorded short form (each
+        term's first :data:`_SHORT_HASH_CHARS` characters under its own
+        label), the unrecorded words exactly
+        (:data:`PROVENANCE_UNRECORDED`), or the mixed refusal, which
+        displays no triple and averages none."""
+        if self.unrecorded:
+            return PROVENANCE_UNRECORDED
+        if self.mixed:
+            carrying = sum(
+                1 for row in self.rows if all(term is not None for term in row)
+            )
+            return (
+                f"mixed provenance: {carrying} node rows carry "
+                f"{len(self.stamped)} distinct triples of "
+                f"{', '.join(PROVENANCE_COLUMNS)} for this campaign — "
+                f"none is displayed and none is averaged; the node rows "
+                f"must agree before the figure can be attributed "
+                f"(J06, docs §9.1)"
+            )
+        evaluator, snapshot, cost_model = self.stamped[0]
+        return (
+            "provenance: "
+            + ", ".join(
+                f"{label} {term[:_SHORT_HASH_CHARS]}…"
+                for label, term in zip(
+                    _PROVENANCE_LABELS, (evaluator, snapshot, cost_model)
+                )
+            )
+        )
+
+
+def _sqlite_path(database_url: str) -> Path:
+    """The SQLite file a ``sqlite:///`` URL names — the workspace's one
+    translation, spelled privately here because the reader must not
+    import the scoring member for three lines of grammar.
+
+    The same three refusals every store in this workspace documents
+    (the scoring member's :func:`~scoring._fdr._sqlite_path` is the
+    nearest spelling): only ``sqlite:///`` speaks, no host but
+    ``localhost`` admitted, and a URL with no path refused — each a
+    :class:`ValueError` the reader translates at its seam, so a
+    misrouted Postgres URL cannot hide behind a mysterious file.
+    """
+    parsed = urlparse(database_url)
+    if parsed.scheme != "sqlite":
+        raise ValueError(
+            f"unsupported database URL scheme {parsed.scheme!r}: the "
+            f"provenance reader speaks sqlite:/// (docs §16's "
+            f"single-machine allowance), the same refusal every store "
+            f"in this workspace documents"
+        )
+    if parsed.netloc not in ("", "localhost"):
+        raise ValueError(
+            f"the provenance reader's sqlite URL must not carry a host, "
+            f"got {parsed.netloc!r}"
+        )
+    path = unquote(parsed.path).removeprefix("/")
+    if not path:
+        raise ValueError("the provenance reader's sqlite URL carries no path")
+    return Path(path)
+
+
+def _names_absent_schema(error: sqlite3.Error) -> bool:
+    """Whether a refusal names the schema-absent states the migrations'
+    own chain ordering makes discoverable — no ``node`` table (the
+    table's migration has not run) or no trio columns (it has, feature
+    99's has not).  These two fold into unrecorded because there the
+    rows honestly carry nothing; every other refusal is a broken read
+    and refuses the render (see :meth:`NodeProvenanceReader.reading`)."""
+    message = str(error).lower()
+    return "no such table" in message or "no such column" in message
+
+
+class NodeProvenanceReader:
+    """The reader behind the primary panel's triple: one campaign's
+    node rows, over the one database the route carries.
+
+    The panel's other reads arrive through feature 341's response; this
+    one does not, because the response is the scoring member's
+    per-campaign figures and the triple lives one table over — §9.1's
+    ``node`` rows, feature 99's columns.  So the dashboard holds a
+    reader beside the route, and :meth:`reading` is a plain stdlib
+    ``SELECT`` of the three columns for one ``campaign_id``: no DDL
+    ever (the node table is the migrations'), no join, no aggregation —
+    the judgement over the rows is :class:`CampaignProvenance`'s, and
+    the reader's whole job is to fetch the rows honestly and hand them
+    over without editorializing.
+
+    Construction validates the URL the way the chrome's gauge does
+    (:class:`~ops.chrome.EpochCountGauge`'s wiring refusal): non-empty
+    string or the render vocabulary's own refusal, because a reader
+    pointed at nothing is a triple nobody can read.  The URL itself is
+    *held*, not opened — construction performs no I/O, so composing the
+    dashboard touches no disk, and the first :meth:`reading` is where
+    the database opens.  The URL is the one the route resolved, never
+    re-resolved from the environment: the figure and the triple it is
+    attributed by ride one database, or the page could attribute one
+    campaign's number to another campaign's evaluator.
+
+    A read that fails refuses (:class:`~ops.errors.DashboardRenderError`
+    — the render vocabulary, chained so the operator still sees
+    sqlite's own words, and carrying no filesystem path), with exactly
+    one fold: the schema-absent spellings (:func:`_names_absent_schema`)
+    answer the unrecorded reading, because a deployment whose migrations
+    have not brought the node table yet is the deployment's first page,
+    and "provenance unrecorded" is the honest words for it.
+    """
+
+    def __init__(self, database_url: Any) -> None:
+        if not isinstance(database_url, str) or not database_url.strip():
+            raise DashboardRenderError(
+                "the dashboard's provenance reader needs a non-empty "
+                "database URL: the primary panel attributes the figure "
+                "through the node table's triple (§9.1's evaluator_hash, "
+                "snapshot_hash and cost_model_hash), and a reader "
+                "pointed at nothing cannot read one. The reader rides "
+                "the URL the route already carries (its store's "
+                "database_url — the one-database law), so this refusal "
+                "names a route that carries no store, and the repair is "
+                "the route's: point DATABASE_URL at the metrics store "
+                "(J06, docs §9.1)"
+            )
+        self._database_url = database_url
+
+    @property
+    def database_url(self) -> str:
+        """The database this reader reads — the URL the route carried,
+        never re-resolved from the environment."""
+        return self._database_url
+
+    def reading(self, campaign_id: Any) -> CampaignProvenance:
+        """One campaign's node rows as a provenance reading.
+
+        ``campaign_id`` must be the non-empty id the response named —
+        the reader joins on ``node.campaign_id``, and an id that names
+        nothing selects no rows, which would render *unrecorded* for a
+        campaign that may have rows: the quiet wrong answer, refused
+        loudly instead.  The rows come back as the table holds them
+        (``None`` terms included), and the judgement over them is
+        :class:`CampaignProvenance`'s.
+        """
+        if not isinstance(campaign_id, str) or not campaign_id.strip():
+            raise DashboardRenderError(
+                "the dashboard's provenance reader reads a campaign's "
+                "node rows by id (the response's campaign_id — the "
+                "newest campaign, whose figure the panel renders), and "
+                f"it was handed {campaign_id!r}: an id that names "
+                "nothing would select no rows and render 'provenance "
+                "unrecorded' for a campaign that may carry the triple — "
+                "the quiet wrong answer this member refuses everywhere; "
+                "repair the caller's campaign id, never the reading "
+                "(J06, docs §9.1)"
+            )
+        try:
+            path = _sqlite_path(self._database_url)
+            with closing(sqlite3.connect(path)) as connection:
+                rows = connection.execute(
+                    f"SELECT {', '.join(PROVENANCE_COLUMNS)} FROM node "
+                    f"WHERE campaign_id = ?",
+                    (campaign_id,),
+                ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if _names_absent_schema(exc):
+                # The schema-absent fold: no node table (0118 has not
+                # run) or no trio columns (0116 has not) is a
+                # deployment state the chain's own ordering makes
+                # discoverable, and the rows honestly carry nothing —
+                # unrecorded, not broken.
+                return CampaignProvenance(rows=())
+            raise DashboardRenderError(
+                f"the dashboard's provenance reader could not read the "
+                f"node table for the campaign's triple: sqlite refused "
+                f"the read ({type(exc).__name__}: {exc}). The primary "
+                "panel attributes the figure through that triple, and "
+                "a read that cannot be made is surfaced rather than "
+                "answered around — 'provenance unrecorded' is reserved "
+                "for the state where no node carries the triple, and a "
+                "broken read wearing it would hide the break behind an "
+                "honest-sounding absence; the repair is the database's "
+                "(the original refusal is chained), never a fallback "
+                "triple (J06, docs §9.1)"
+            ) from exc
+        except (sqlite3.Error, OSError, ValueError) as exc:
+            # OSError detail through `strerror` only — the constraint
+            # is the member's own: no dashboard refusal carries a
+            # filesystem path, and an OSError's default text names the
+            # file it failed on.  sqlite's own text never does, so it
+            # carries; the ValueError from the URL grammar is static.
+            if isinstance(exc, OSError):
+                detail = getattr(exc, "strerror", None) or type(exc).__name__
+            else:
+                detail = str(exc)
+            raise DashboardRenderError(
+                f"the dashboard's provenance reader could not read the "
+                f"node table for the campaign's triple: the read refused "
+                f"({type(exc).__name__}: {detail}). The primary panel "
+                "attributes the figure through that triple, and a read "
+                "that cannot be made is surfaced rather than answered "
+                "around — 'provenance unrecorded' is reserved for the "
+                "state where no node carries the triple, and a broken "
+                "read wearing it would hide the break behind an "
+                "honest-sounding absence; the repair is the database's "
+                "(the original refusal is chained), never a fallback "
+                "triple (J06, docs §9.1)"
+            ) from exc
+        return CampaignProvenance(rows=tuple(tuple(row) for row in rows))
+
+
 @dataclass(frozen=True, slots=True)
 class FdrDeployPanel:
     """The dashboard's primary panel: §16's top-line figure, with its
@@ -352,31 +857,49 @@ class FdrDeployPanel:
     :data:`scoring.DEPLOYMENT_BASE_RATE`, at display time).
 
     The provenance the spec's ``ui_layout`` demands visible — *"The
-    primary panel is FDR_deploy with its provenance triple"* — is the
-    response's own: :attr:`figure` (the numeral), :attr:`campaign_id`
-    and :attr:`computed_at` (the plate that attributes it), with
-    :attr:`qualifier` beside them as §16's line carries it
-    (*"``FDR_deploy`` at π₀ = 0.9"*).  A top-line number an operator
-    cannot attribute to the campaign that measured it is a number
-    nobody can audit — the reasoning the route's own docstring gives
-    for identifying the figure it answers.
+    primary panel is FDR_deploy with its provenance triple"* — arrives
+    on two seats.  The response's own attribution is the plate:
+    :attr:`figure` (the numeral), :attr:`campaign_id` and
+    :attr:`computed_at` (the campaign that measured it and the instant
+    it was computed), with :attr:`qualifier` beside them as §16's line
+    carries it (*"``FDR_deploy`` at π₀ = 0.9"*).  And the *triple* —
+    the ``evaluator_hash``, ``snapshot_hash`` and ``cost_model_hash``
+    J06's acceptance names — is :attr:`provenance`: the reading the
+    dashboard took from that campaign's node rows (see
+    :class:`NodeProvenanceReader`), held beside the response so the
+    figure and the words that attribute it cannot drift apart between
+    the read and the render.  A top-line number an operator cannot
+    attribute to the campaign that measured it — or to the evaluator,
+    snapshot and cost model that produced it — is a number nobody can
+    audit; the reasoning the route's own docstring gives for
+    identifying the figure it answers, carried one seat further.
 
     There is deliberately no field an equity curve could occupy.  The
-    panel's whole surface is the FDR_deploy trend; a returns series,
-    a NAV curve or a Sharpe has nowhere to land on this type, which is
-    the structural half of the feature's *"rather than an equity
-    curve"* clause — the refusal half lives at
+    panel's whole surface is the FDR_deploy trend and its provenance; a
+    returns series, a NAV curve or a Sharpe has nowhere to land on this
+    type, which is the structural half of the feature's *"rather than
+    an equity curve"* clause — the refusal half lives at
     :class:`DashboardPage`, the ordering half in
     :meth:`OperatorDashboard.render`.
 
     An empty trend is the honest absence: falsy, every derived read
     ``None`` or empty — never ``0.0``, which would be a measurement no
-    campaign made.
+    campaign made — and :attr:`provenance` the empty reading (no
+    campaign closed, so no node rows were asked).
     """
 
     #: Feature 341's testimony — the validated per-campaign history the
     #: panel's every read derives from.
     response: FdrDeployResponse
+
+    #: The campaign's provenance reading — the node rows' triple,
+    #: judged: recorded (one unanimous triple), *provenance
+    #: unrecorded* (no node carries one) or *mixed provenance* (the
+    #: rows disagree, displayed as the refusal and never averaged).
+    #: Required, with no default: every panel states its reading, the
+    #: same "no chromeless construction" move the page's other seats
+    #: take.
+    provenance: CampaignProvenance
 
     @property
     def figure(self) -> Optional[float]:
@@ -488,6 +1011,17 @@ class DashboardPage:
     is a page on which every numeral below it could be read without
     the one bit that says whether it may be believed.
 
+    And the primary seat's *own* third check is the provenance one:
+    a panel that answers the FDR panel's reads must also answer a
+    ``provenance`` carrier that answers the provenance contract
+    (:data:`_PROVENANCE_CONTRACT`) — the spec's ``ui_layout`` draws
+    the primary panel whole (*"The primary panel is FDR_deploy with
+    its provenance triple"*), and a page that could be built with a
+    provenance seat that cannot state its reading would be a page on
+    which the figure could render unattributed — the exact gap J06's
+    validation found on the first render, refused at construction
+    rather than re-opened.
+
     All three checks are duck-typed, not ``isinstance``-guarded, for the
     reason every seam in this workspace gives: the factory's scan
     imports members under synthetic names, so a composed panel is
@@ -567,6 +1101,31 @@ class DashboardPage:
                 "be believed — the quiet abandonment §5.4's rail exists "
                 "to make impossible (docs §5.4)"
             )
+        provenance_missing = [
+            name
+            for name in _PROVENANCE_CONTRACT
+            if not hasattr(getattr(self.primary, "provenance", None), name)
+        ]
+        if provenance_missing:
+            raise DashboardRenderError(
+                f"a DashboardPage's primary panel carries its provenance "
+                f"triple (a {CampaignProvenance.__name__} over the "
+                f"campaign's node rows, or any carrier answering its "
+                f"display contract: "
+                f"{', '.join(_PROVENANCE_CONTRACT)}), and this panel's "
+                f"provenance does not answer: "
+                f"{', '.join(provenance_missing)}. app_spec.xml's "
+                "ui_layout draws the primary panel whole — 'The primary "
+                "panel is FDR_deploy with its provenance triple' — and "
+                "the journeys' own acceptance names the three states "
+                "that seat must be able to state (the recorded triple, "
+                "provenance unrecorded, mixed provenance refused rather "
+                "than averaged); a page built with a provenance seat "
+                "that cannot state its reading is the page J06's "
+                "validation found rendering the figure with no triple "
+                "beside it — an unattributable top line, refused at "
+                "construction rather than re-opened (J06, docs §9.1)"
+            )
 
 
 class OperatorDashboard:
@@ -576,27 +1135,37 @@ class OperatorDashboard:
     Constructed over the route (:class:`~ops.fdr_route.FdrDeployEndpoint`
     or any carrier answering its ``get()``), the chrome's gauge
     (:class:`~ops.chrome.EpochCountGauge` or any carrier answering its
-    ``remaining()``) *and* the lamps' rail
+    ``remaining()``), the lamps' rail
     (:class:`~ops.instrument_status.InstrumentStatusEndpoint` or any
-    carrier answering its ``get()``) — three carriers, because the page
-    reads its content from three owners: §16's top-line number from the
+    carrier answering its ``get()``) *and* the primary panel's
+    provenance reader (:class:`NodeProvenanceReader` or any carrier
+    answering its ``reading()``) — four carriers, because the page
+    reads its content from four owners: §16's top-line number from the
     scoring member's rows, §13 item 4's remaining clean epoch count from
-    the promotion member's ledger, and docs §5.4's three lamps from
-    feature 342's own route, each bit the owning member's own verdict.
+    the promotion member's ledger, docs §5.4's three lamps from
+    feature 342's own route (each bit the owning member's own verdict),
+    and the triple that attributes the figure from §9.1's node rows.
     The gauge and the rail are required arguments, not options: a
     dashboard without either would be a dashboard whose chrome could
     quietly go missing, and "permanent" is a fact the constructor
-    states rather than a behaviour it hopes for.
+    states rather than a behaviour it hopes for.  The reader is
+    optional in *signature* only (``provenance=None`` wires it lazily
+    over the route's own carried URL — the one-database law, so a
+    three-argument construction from before the triple landed keeps
+    composing over exactly the database it always did); a carrier
+    handed in that cannot answer ``reading()`` is refused by name,
+    the same duck-check every other seat takes.
 
-    Every render is a fresh read of all three — the dashboard holds no
+    Every render is a fresh read of all four — the dashboard holds no
     cache of a previous page, for the reason the endpoint holds none:
     a campaign closed between two renders must move the second numeral,
     an epoch spent between two renders must move the second chrome
-    strip, and a lamp that goes out between two renders must darken the
-    second rail, because a cached figure of any of the three kinds
-    would make the page a fact about when it was first opened rather
-    than about what the system measured, what it has left, and whether
-    any of it may be believed.
+    strip, a lamp that goes out between two renders must darken the
+    second rail, and a triple stamped between two renders must appear
+    beside the second figure, because a cached figure of any of the
+    four kinds would make the page a fact about when it was first
+    opened rather than about what the system measured, what it has
+    left, whether any of it may be believed, and who produced it.
 
     Two construction doors, one law each:
 
@@ -605,7 +1174,8 @@ class OperatorDashboard:
       unconfigured store is a discoverable deployment state, and the
       composed application simply carries no dashboard, exactly as it
       carries no route — and no chrome without a dashboard, because
-      both strips ride the same URL the route resolved);
+      both strips ride the same URL the route resolved; nor a reader,
+      for the same reason);
     * :meth:`composed` — the operator's door, through the seat in the
       app package namespace; a composed application that carries no
       route is *refused*, because a render asked for by name is a
@@ -615,7 +1185,13 @@ class OperatorDashboard:
       is a page whose lamps went missing rather than dark.
     """
 
-    def __init__(self, route: Any, gauge: Any, rail: Any) -> None:
+    def __init__(
+        self,
+        route: Any,
+        gauge: Any,
+        rail: Any,
+        provenance: Any = None,
+    ) -> None:
         if not callable(getattr(route, "get", None)):
             raise TypeError(
                 "OperatorDashboard renders over the composed fdr-deploy "
@@ -654,9 +1230,31 @@ class OperatorDashboard:
                 "draws the rail to prevent — everything below it read "
                 "as if the instruments were healthy (docs §5.4)"
             )
+        if provenance is not None and not callable(
+            getattr(provenance, "reading", None)
+        ):
+            raise TypeError(
+                "OperatorDashboard renders the newest campaign's "
+                "provenance triple beside the figure on the primary "
+                "panel (evaluator_hash, snapshot_hash and "
+                "cost_model_hash, §9.1's node-table columns), and the "
+                "triple is read through a reader — something with a "
+                "reading() answering one campaign's node rows; got "
+                f"{type(provenance).__name__}. app_spec.xml's ui_layout "
+                "draws the primary panel whole ('The primary panel is "
+                "FDR_deploy with its provenance triple'), and a carrier "
+                "that cannot answer the reading cannot name the triple "
+                "the figure is attributed by: leave the argument unset "
+                "and the dashboard wires its own reader over the URL "
+                "the route carries, or hand it a reader — there is no "
+                "tripleless construction to fall back to, because the "
+                "page it would render is the unattributed top line "
+                "J06's validation found (J06, docs §9.1)"
+            )
         self._route = route
         self._gauge = gauge
         self._rail = rail
+        self._provenance = provenance
 
     @property
     def route(self) -> Any:
@@ -676,6 +1274,22 @@ class OperatorDashboard:
         held duck-typed across the seam the way the route and the gauge
         are: each lamp the owning member's own verdict, read whole."""
         return self._rail
+
+    @property
+    def provenance(self) -> Any:
+        """The reader this dashboard's triple reads — §9.1's node rows
+        for the campaign the response names.  Wired lazily over the
+        route's own carried URL when the constructor was handed none:
+        the one-database law, held for the fourth surface (the figure,
+        the count, the lamps and the triple all read one database), so
+        a three-argument construction keeps composing over exactly the
+        database it always did and a later environment cannot move the
+        triple without moving the store it attributes."""
+        if self._provenance is None:
+            store = getattr(self._route, "store", None)
+            url = getattr(store, "database_url", None)
+            self._provenance = NodeProvenanceReader(url)
+        return self._provenance
 
     # -- Construction -------------------------------------------------------
 
@@ -707,7 +1321,10 @@ class OperatorDashboard:
         same variable, so the split can only mean the environment
         changed between the two reads, and a dashboard that rendered
         without its lamps would be the lampless page the constructor
-        refuses — built anyway, at the one seam that could.
+        refuses — built anyway, at the one seam that could.  The
+        provenance reader is wired over the same carried URL, beside
+        the gauge: the figure, the count, the lamps and the triple
+        all point at the one database the deployment named.
         """
         route = FdrDeployEndpoint.from_env(env)
         if route is None:
@@ -727,7 +1344,12 @@ class OperatorDashboard:
                 "healthy; re-resolve the environment and compose again "
                 "(docs §5.4)"
             )
-        return cls(route, EpochCountGauge(route.store.database_url), rail)
+        return cls(
+            route,
+            EpochCountGauge(route.store.database_url),
+            rail,
+            NodeProvenanceReader(route.store.database_url),
+        )
 
     @classmethod
     def composed(cls, app: Any = None) -> "OperatorDashboard":
@@ -755,12 +1377,13 @@ class OperatorDashboard:
         rather than dark — a shorter rail than the design draws, which
         is the one screen where an instrument's state could go
         unasked.
-        The chrome's gauge is wired over the composed route's own
-        carried URL, the same ride :meth:`from_env` takes; a composed
-        route that will not name its database (not the member's
-        endpoint, a hand-registered stand-in) is refused by the
-        gauge's own wiring refusal rather than crashing the
-        composition on an attribute it never promised.
+        The chrome's gauge and the provenance reader are both wired
+        over the composed route's own carried URL, the same ride
+        :meth:`from_env` takes; a composed route that will not name
+        its database (not the member's endpoint, a hand-registered
+        stand-in) is refused by the gauge's — and the reader's — own
+        wiring refusal rather than crashing the composition on an
+        attribute it never promised.
         """
         application = app if app is not None else create_app()
         route = fdr_deploy_component(application)
@@ -793,36 +1416,52 @@ class OperatorDashboard:
             )
         store = getattr(route, "store", None)
         url = getattr(store, "database_url", None)
-        return cls(route, EpochCountGauge(url), rail)
+        return cls(route, EpochCountGauge(url), rail, NodeProvenanceReader(url))
 
     # -- The page and its render ---------------------------------------------
 
     def page(self) -> DashboardPage:
-        """One fresh page over the route's answer, the rail's and the
-        gauge's.
+        """One fresh page over the route's answer, the triple's, the
+        rail's and the gauge's.
 
         The whole content read is the route's ``get()`` — the store's
         own history, figures already rebuilt from the pair each row
-        carries — and the page's content is built from the response
-        alone.  The lamps' rail is read *after* it and the chrome's
-        count *after* that, in the order the strips render: the
-        primary seat is the page's first and defining content, asked
-        first, and a route that refuses aborts the page before the
-        rail is ever asked, and a rail that refuses before the gauge
-        is — the load in the ordering law, and the reason a failing
-        route read, a failing rail read and a failing ledger read
-        stay distinguishable (the route's arrives as feature 341's
+        carries — and the page's figure content is built from the
+        response alone.  The one read that is *not* the response's is
+        the triple's: when the response names a campaign (it is
+        truthy exactly when one closed), the campaign's node rows are
+        read through :attr:`provenance` and held on the panel beside
+        the response, so the figure and the words that attribute it
+        are one page's facts rather than two reads that could
+        disagree; when no campaign has closed there is no campaign
+        whose rows to read, and the panel carries the empty reading
+        rather than asking for an id the response never named.  The
+        lamps' rail is read *after* those two and the chrome's count
+        *after* that, in the order the page renders: the primary seat
+        — figure and triple together — is the page's first and
+        defining content, asked first, and a route that refuses
+        aborts the page before a node row is ever read, a refusing
+        triple before the rail is ever asked, and a rail that refuses
+        before the gauge is — the load in the ordering law, and the
+        reason a failing route read, a failing triple read, a failing
+        rail read and a failing ledger read stay distinguishable (the
+        route's arrives as feature 341's
         :class:`~ops.errors.FdrDeployMetricError`, the rail's as
         feature 342's :class:`~ops.errors.InstrumentStatusError` —
         each already this member's vocabulary, each propagated
         untranslated for the same reason: re-wrapping would only bury
-        the surface that refused; the gauge's arrives as the render
-        vocabulary's own :class:`~ops.errors.DashboardRenderError`,
-        translated at the chrome's seam).  None is ever caught into
-        an answer, and none is cached: the next page re-asks all
-        three.
+        the surface that refused; the triple's and the gauge's arrive
+        as the render vocabulary's own
+        :class:`~ops.errors.DashboardRenderError`, translated at
+        their seams).  None is ever caught into an answer, and none
+        is cached: the next page re-asks all four.
         """
         response = self._route.get()
+        provenance = (
+            self.provenance.reading(response.campaign_id)
+            if response
+            else CampaignProvenance()
+        )
         rail = self._rail.get()
         promotion = require_promotion()
         try:
@@ -853,7 +1492,7 @@ class OperatorDashboard:
                 "never a fallback figure (feature 352, prd §13 item 4)"
             ) from exc
         return DashboardPage(
-            primary=FdrDeployPanel(response=response),
+            primary=FdrDeployPanel(response=response, provenance=provenance),
             chrome=EpochCountChrome(count=count),
             lamps=InstrumentLampsChrome(response=rail),
         )
@@ -878,14 +1517,19 @@ class OperatorDashboard:
         on every page including the one where no campaign has closed
         — then the primary panel: its headline (the qualifier beside
         the figure's name), its numeral (no delta: the figure has no
-        green-up direction), its provenance plate, and only then the
+        green-up direction), its provenance plate, the campaign's
+        provenance line (the triple beside the figure — short form,
+        the state words, or the mixed refusal), and only then the
         one chart the dashboard draws, the panel's own FDR_deploy
         trend.  The chrome is the one thing that renders above the
         numeral — furniture beside content, never a second metric
         competing with the top line — and nothing but the trend is
-        ever charted.  The page answered is the page that rendered,
-        so a caller (or a test) can read exactly what the operator
-        saw.
+        ever charted.  The provenance line renders on the populated
+        page only, beneath the plate it completes: the page with no
+        campaign closed has no campaign whose triple could be read,
+        and its words are the ones that say why there is no numeral.
+        The page answered is the page that rendered, so a caller (or
+        a test) can read exactly what the operator saw.
         """
         carrier = require_streamlit() if st is None else st
         missing = [
@@ -913,6 +1557,7 @@ class OperatorDashboard:
         carrier.metric(label=FDR_DEPLOY_LABEL, value=panel.numeral or "—")
         if panel:
             carrier.caption(panel.plate or "")
+            carrier.caption(panel.provenance.line)
             carrier.line_chart(list(panel.series))
         else:
             carrier.caption(
