@@ -21,9 +21,9 @@ import pytest
 import regime
 import scoring
 from nullius_api.demo import (
+    PAPER_ENGINE,
     DemoSeedReport,
     InMemoryPaperEngine,
-    PAPER_ENGINE,
     main,
     seed_demo_store,
 )
@@ -243,6 +243,7 @@ def test_python_dash_m_nullius_api_demo_seeds_the_named_database(
         capture_output=True,
         text=True,
         timeout=60,
+        check=False,
     )
     assert completed.returncode == 0, completed.stderr
     assert "seeded" in completed.stdout

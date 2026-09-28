@@ -77,19 +77,17 @@ import importlib.util
 import os
 import sqlite3
 import sys
-from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any
 from urllib.parse import unquote, urlparse
 
 __all__ = [
     "DATABASE_URL_ENV",
+    "PAPER_ENGINE",
     "DemoSeedReport",
     "InMemoryPaperEngine",
-    "PAPER_ENGINE",
     "main",
     "seed_demo_store",
 ]
@@ -233,8 +231,7 @@ def _sqlite_path(database_url: str) -> Path:
             "is a sqlite:///path/to/store.db URL"
         )
     path = unquote(parsed.path)
-    if path.startswith("/"):
-        path = path[1:]
+    path = path.removeprefix("/")
     if not path:
         raise ValueError(f"{DATABASE_URL_ENV} names no database path")
     return Path(path)
