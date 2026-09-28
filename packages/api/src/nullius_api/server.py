@@ -18,12 +18,17 @@ json_encoding.dumps` — and the inherited HTML error path
 for protocol-level refusals like an unreadable request line) is
 overridden to the same JSON envelope, so there is no code path left
 that can answer in anything else.  An unknown path, a wrong verb, an
-unconfigured component, a member's refusal and the server's own
-unexpected faults all answer the same shape — the structured error
-envelope of :func:`error_payload` — and the envelope never carries a
-traceback or a filesystem path: an unexpected fault answers a generic
-internal error (the detail goes to the server's log, class name only),
-because a body an operator reads is not a place to leak a stack.
+unconfigured component, a member's refusal, the server's own unexpected
+faults, an oversized body and a request that stalls all answer the same
+shape — the structured error envelope of :func:`error_payload` — and
+the envelope never carries a traceback or a filesystem path: an
+unexpected fault answers a generic internal error (the detail goes to
+the server's log, class name only), because a body an operator reads is
+not a place to leak a stack.  The reader also caps what it will spend
+on one request — a body over :data:`MAX_BODY_BYTES` is refused unread
+and a read that outlives :data:`READ_TIMEOUT_SECONDS` is abandoned
+(feature 19) — and both refusals pass the same door, so no caller,
+however large or slow, can hold a worker the halt route needs.
 
 **Every refusal carries its class.**  The envelope :func:`error_payload`
 returns is ``{"error": {"code", "class", "message"}}`` — the code word
@@ -62,6 +67,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -72,6 +78,7 @@ from .json_encoding import dumps
 from .routes import ResolvedRoute, resolve_routes
 
 __all__ = [
+    "BODY_TOO_LARGE_CLASS",
     "COMPONENT_UNCONFIGURED_CLASS",
     "DEFAULT_ERROR_CLASS",
     "DEFAULT_HOST",
@@ -81,9 +88,12 @@ __all__ = [
     "HOST_ENV",
     "INTERNAL_ERROR_CLASS",
     "MALFORMED_REQUEST_CLASS",
+    "MAX_BODY_BYTES",
     "METHOD_NOT_ALLOWED_CLASS",
     "PROMOTION_CONFLICT_CODE",
     "PROMOTION_PARENT_ABSENT_CODE",
+    "READ_TIMEOUT_SECONDS",
+    "REQUEST_STALLED_CLASS",
     "ROUTE_NOT_IMPLEMENTED_CLASS",
     "TARGET_UNKNOWN_NODE_CLASS",
     "UNKNOWN_ROUTE_CLASS",
@@ -113,6 +123,36 @@ ROUTE_NOT_IMPLEMENTED_CLASS = "RouteNotImplementedError"
 MALFORMED_REQUEST_CLASS = "MalformedRequestError"
 INTERNAL_ERROR_CLASS = "InternalServerError"
 EXECUTION_ENGINE_UNBOUND_CLASS = "ExecutionEngineUnboundError"
+
+#: The class names the reader's cap refusals carry (feature 19) — the
+#: same greppable, route-without-message-parsing stance the classes
+#: above take, for the two facts about a *request's* size and pace the
+#: reader owns: a body too large for the transport to read (413) and a
+#: body that did not finish arriving inside the read deadline (408).
+BODY_TOO_LARGE_CLASS = "BodyTooLargeError"
+REQUEST_STALLED_CLASS = "RequestStalledError"
+
+#: The most request-body bytes the reader will read: 1 MiB, the number
+#: feature 19's sentence states.  A ``Content-Length`` over this cap is
+#: refused *unread* — the size is a fact the header already states, and
+#: reading bytes the reader has already refused would spend the very
+#: socket time the cap exists to bound.
+MAX_BODY_BYTES = 1024 * 1024
+
+#: How long the reader will wait for one request's body to finish
+#: arriving: 10 seconds, the other number feature 19's sentence states.
+#: One deadline covers the whole read (see
+#: :meth:`ApiRequestHandler._read_capped_body` for why it is not one
+#: timeout per receive), because the cap exists so a slow caller cannot
+#: hold a worker the halt route needs — a deadline a caller could extend
+#: by dripping bytes would not be that cap.
+READ_TIMEOUT_SECONDS = 10.0
+
+#: How many body bytes one loop iteration of the capped read asks the
+#: buffered reader for — small enough that the deadline between
+#: iterations is re-checked as a body arrives, large enough that a fast
+#: body is a handful of underlying receives rather than one per byte.
+_READ_CHUNK_BYTES = 64 * 1024
 
 #: The status the null oracle's ``POST /target`` answers for a node the
 #: sidecar does not hold: §7.2's route reports *unknown node* as a fact
@@ -582,12 +622,57 @@ class _MalformedRequest(Exception):
     bytes are fine and whose ask omits or misstates a term the route
     cannot do without.  Both are the caller's to repair, which is what
     makes them one class and one status rather than two.
+
+    The reader's caps (feature 19) raise their own classes —
+    :class:`_BodyTooLarge` and :class:`_RequestStalled` — because 413 and
+    408 are facts about a request's *size* and *pace* rather than its
+    shape: a caller told *your body was too large* or *your send stalled*
+    has a different repair from one told *your body was not JSON*, which
+    is what keeps them three doors rather than one.
     """
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+class _BodyCapRefusal(Exception):
+    """A request the reader refuses on its caps — too large, or too slow.
+
+    Carries the code word and the operator-facing message exactly as
+    :class:`_MalformedRequest` does, but is deliberately not that class,
+    for the reason that class's docstring states: a cap's refusal is a
+    fact about the request's size or pace, not about its shape, and it
+    answers 413 or 408 rather than 400 — so a caller never reads
+    *malformed* about a body that was merely big, or merely slow.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class _BodyTooLarge(_BodyCapRefusal):
+    """A declared body over :data:`MAX_BODY_BYTES` — answered 413, unread.
+
+    The refusal is made on the ``Content-Length`` declaration alone: the
+    size is a fact the header already states, so the reader spends no
+    socket time on bytes it has already refused — reading them, only to
+    refuse them a moment later, would hold exactly the worker the cap
+    exists to free.
+    """
+
+
+class _RequestStalled(_BodyCapRefusal):
+    """A body that did not finish arriving within the read deadline — 408.
+
+    The read is abandoned mid-body, so the socket is left somewhere no
+    next request begins; the dispatch answers the 408 and closes the
+    connection rather than leaving the leftovers to be parsed as a
+    request line.
+    """
 
 
 class _ExecutionEngineUnbound(Exception):
@@ -1398,9 +1483,13 @@ class ApiServer(ThreadingHTTPServer):
     Threading — the spec's own choice, and the load-bearing one: an
     operator's metrics read must not queue behind a caller's slow POST,
     and a worker a halt route needs cannot be held by one stalled
-    request.  Each request is answered on its own thread; the members'
-    stores open their connections per operation, so threads never
-    share a database connection through this server.
+    request — a hold the reader's caps bound (feature 19): a body over
+    :data:`MAX_BODY_BYTES` is refused unread and a read that outlives
+    :data:`READ_TIMEOUT_SECONDS` is answered 408 and closed, so a
+    stalled caller's thread ends at the cap rather than when the
+    caller's own clock says.  Each request is answered on its own
+    thread; the members' stores open their connections per operation, so
+    threads never share a database connection through this server.
 
     Holds the composed :class:`~app.module_loader.Application`, the
     resolved route bindings (:func:`~nullius_api.routes.resolve_routes`
@@ -1535,13 +1624,20 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         nothing a caller sent can reach the log or the body through this
         door (feature 20's law, held here before the access log exists).
 
-        **The size and time caps are this feature's other half**, and this
-        method is where they land: a declared ``Content-Length`` over the
-        cap answers 413, and a read that exceeds the deadline answers 408,
-        both raised as the transport's own refusal so the body-resolution
-        feature adds caps without reshaping this door.  Until those
-        constants arrive the read is unbounded, which is the honest state
-        of a build that has not yet been given the cap.
+        **The size and time caps are feature 19's, and they are this
+        reader's own law.**  A declared ``Content-Length`` over
+        :data:`MAX_BODY_BYTES` (1 MiB) is refused *unread* — 413 —
+        because the size is a fact the header already states and reading
+        the bytes would spend the very window the cap exists to bound;
+        and the read itself runs under one
+        :data:`READ_TIMEOUT_SECONDS` (10 s) deadline through
+        :meth:`_read_capped_body`, so a request that stalls mid-body
+        answers 408 rather than holding its worker until the caller's own
+        clock says.  Both refusals name the caller's repair — a smaller
+        body, an unstalled send — and both close the connection (the
+        dispatch's doors for them sit beside this method's own), because
+        a body the reader refused or abandoned leaves the socket
+        somewhere no next request begins.
         """
         length = self.headers.get("Content-Length")
         if length is None:
@@ -1557,7 +1653,17 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             ) from exc
         if size <= 0:
             return None
-        raw = self.rfile.read(size)
+        if size > MAX_BODY_BYTES:
+            raise _BodyTooLarge(
+                "body_too_large",
+                f"the request declares a body of {size} bytes, over the "
+                f"{MAX_BODY_BYTES // 1024 // 1024} MiB ({MAX_BODY_BYTES}-byte) "
+                "cap this transport reads. The repair is a body under the "
+                "cap; the declared bytes are never read, the connection is "
+                "closed, and the body is not echoed back and is not written "
+                "to a log",
+            )
+        raw = self._read_capped_body(size)
         if not raw.strip():
             return None
         try:
@@ -1577,6 +1683,73 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 "own terms, and the body is not echoed back",
             )
         return parsed
+
+    def _read_capped_body(self, size: int) -> bytes:
+        """Read ``size`` body bytes under one :data:`READ_TIMEOUT_SECONDS`
+        deadline, or refuse the request as stalled.
+
+        The socket's own timeout is the instrument, set to the deadline's
+        *remaining* time before every read, and the reads are
+        single-receive reads (``read1``) so the deadline is re-checked
+        between them.  Both halves are load-bearing: one ``read(size)``
+        under one timeout would let a caller that drips a byte every nine
+        seconds hold the worker forever — every individual receive
+        succeeds, and the one read never finishes — and the purpose
+        clause is exactly that caller (*so one slow caller cannot hold a
+        worker the halt route needs*).  The cap the sentence states is
+        *a socket read at 10 seconds*: the read as one act, not the byte.
+
+        A timeout is this reader's own 408 refusal
+        (:class:`_RequestStalled`); every other fault a socket can raise
+        — a reset, a half-close — propagates exactly as the uncapped read
+        would have raised it, so the dispatch's belt answers those the
+        way it always has.  An end of stream before the declared size
+        breaks the loop and returns what did arrive — the same short read
+        ``self.rfile.read(size)`` gives — a truncation the JSON decoder
+        (or the no-body branch above) refuses as its own 400, never as
+        this reader's.
+
+        The socket's prior timeout — ``None`` today; whatever a later
+        feature sets — is restored in a ``finally``, so a completed read
+        leaves the connection as it found it.  Without the restore, the
+        deadline's stale remainder would sit on the socket and silently
+        close a kept-alive connection that idled past it.
+        """
+
+        def _stalled() -> _RequestStalled:
+            return _RequestStalled(
+                "request_stalled",
+                f"the request body did not finish arriving within "
+                f"{READ_TIMEOUT_SECONDS:g} seconds, so the read was "
+                "abandoned. The repair is a caller that sends its whole "
+                "body without stalling; the bytes that did arrive are not "
+                "echoed back and are not written to a log, and the "
+                "connection is closed",
+            )
+
+        deadline = time.monotonic() + READ_TIMEOUT_SECONDS
+        previous_timeout = self.connection.gettimeout()
+        chunks: list[bytes] = []
+        remaining = size
+        try:
+            while remaining > 0:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise _stalled()
+                self.connection.settimeout(left)
+                chunk = self.rfile.read1(min(remaining, _READ_CHUNK_BYTES))
+                if not chunk:  # end of stream before the declared size
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+        except TimeoutError as exc:
+            # socket.timeout is TimeoutError's own name, so one except
+            # clause covers both spellings; anything else a socket can
+            # raise is not a stall and keeps propagating.
+            raise _stalled() from exc
+        finally:
+            self.connection.settimeout(previous_timeout)
+        return b"".join(chunks)
 
     # -- The one writing door ---------------------------------------------------
 
@@ -1746,10 +1919,38 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         A body the transport cannot read is refused before any of those
         checks: feature 5 makes it a 400, the caller's own repair, and it
         is the same refusal whether or not a route lives at the path the
-        body was posted to.
+        body was posted to.  The reader's caps (feature 19) are refused
+        here too, ahead of every one of those decisions for the same
+        reason — a body over the cap answers 413 and a stalled read
+        answers 408, whatever path the request named — and both close the
+        connection, because a body the reader refused or abandoned leaves
+        the socket somewhere no next request begins.
         """
         try:
             body = self._read_json_body()
+        except _BodyTooLarge as exc:
+            # Refused on the declaration, so the declared bytes are still
+            # on the socket: the connection closes (and the response says
+            # so), because a kept-alive connection would parse the refused
+            # body as its own next request line.
+            self.close_connection = True
+            self._write_json(
+                413,
+                error_payload(exc.code, exc.message, error_class=BODY_TOO_LARGE_CLASS),
+                extra_headers={"Connection": "close"},
+            )
+            return
+        except _RequestStalled as exc:
+            # A read abandoned mid-body leaves the socket just as
+            # unreadable for a next request, and the caller may be gone
+            # entirely; answer the 408 and close.
+            self.close_connection = True
+            self._write_json(
+                408,
+                error_payload(exc.code, exc.message, error_class=REQUEST_STALLED_CLASS),
+                extra_headers={"Connection": "close"},
+            )
+            return
         except _MalformedRequest as exc:
             self._write_json(
                 400,
