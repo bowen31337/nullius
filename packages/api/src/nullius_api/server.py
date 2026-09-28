@@ -56,6 +56,7 @@ fabricated here, so an empty store reaches the wire as the honest
 
 from __future__ import annotations
 
+import html
 import importlib
 import json
 import logging
@@ -254,6 +255,104 @@ def error_payload(
     bare base — so a caller never reads an absent field.
     """
     return {"error": {"code": code, "class": error_class, "message": message}}
+
+
+# -- The discoverability surface ---------------------------------------------------
+#
+# Two routes sit outside the ten-route table app_spec.xml's summary
+# promises and :data:`API_ROUTES` spells: ``GET /`` and ``GET /healthz``
+# (additions_spec_journeys.xml feature 12).  They are *meta* routes —
+# the transport describing its own surface, and a liveness probe — not
+# a composed component's answer, so they are not rows in the table and
+# not entries in HTTP_ADAPTERS: a row in the table would break the
+# "ten routes, ten adapters" law the route and server suites pin, and
+# an adapter would imply a composed endpoint behind it.  They are
+# served by the dispatch directly, from the resolved route table the
+# server already holds.
+
+#: The path of the HTML index of every served route.
+INDEX_PATH = "/"
+
+#: The path of the liveness probe, which answers 200 with no token.
+HEALTHZ_PATH = "/healthz"
+
+#: The status the liveness probe answers — a bare 200, the honest
+#: "the process is up and answering", never a figure.
+HEALTHZ_STATUS = "ok"
+
+
+def _index_html(routes: Collection[ResolvedRoute]) -> str:
+    """The HTML index of every route, its verb and its configured state.
+
+    The transport describing its own surface: one row per resolved
+    route, in the table's own deterministic order, each naming the path,
+    the verb and whether the composed component is configured — the
+    ``endpoint is not None`` fact the dispatch already computes for the
+    served routes.  The component is looked up from the route, never
+    re-derived, so the index says exactly what a request to the route
+    would find.
+
+    Every value is HTML-escaped before it reaches the page, so a path or
+    a component name can never inject markup; the page carries no
+    external resource, no stylesheet link and no script, so it opens
+    from any origin with nothing to fetch, and it answers both light and
+    dark themes through ``prefers-color-scheme`` — the same self-
+    contained, theme-aware stance the workspace's own docs pages take.
+    """
+    def _row(route: ResolvedRoute) -> str:
+        configured = route.endpoint is not None
+        state = "configured" if configured else "unconfigured"
+        spec = route.route
+        return (
+            "      <tr>"
+            f"<td><code>{html.escape(spec.verb)}</code></td>"
+            f"<td><code>{html.escape(spec.path)}</code></td>"
+            f"<td><code>{html.escape(spec.component)}</code></td>"
+            f"<td class='{state}'>{html.escape(state)}</td></tr>"
+        )
+
+    rows = "\n".join(_row(route) for route in routes)
+    configured = sum(1 for route in routes if route.endpoint is not None)
+    return (
+        "<!doctype html>\n"
+        '<html lang="en">\n'
+        "<head>\n"
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        "<title>nullius-api — routes</title>\n"
+        "<style>\n"
+        "body{font:15px/1.5 system-ui,sans-serif;margin:2rem;max-width:60rem}\n"
+        "h1{font-size:1.3rem}\n"
+        "table{border-collapse:collapse;width:100%;margin-top:1rem}\n"
+        "th,td{border:1px solid #8885;padding:0.4rem 0.6rem;text-align:left;"
+        "vertical-align:top}\n"
+        "th{background:#f2f2ef}\n"
+        "code{font-family:ui-monospace,monospace}\n"
+        ".configured{color:#0a6d0a}\n"
+        ".unconfigured{color:#9a7a00}\n"
+        "summary{cursor:pointer;color:#4a4a46}\n"
+        ".count{color:#4a4a46}\n"
+        "@media (prefers-color-scheme: dark){body{background:#1b1b19;color:#e7e7e2}"
+        "th{background:#2a2a27}code{color:#e7e7e2}.configured{color:#6fce6f}"
+        ".unconfigured{color:#d8c26a}summary{color:#b9b9b2}}\n"
+        "</style>\n"
+        "</head>\n"
+        "<body>\n"
+        "<h1>nullius-api</h1>\n"
+        f"<p class='count'>{len(routes)} routes declared, "
+        f"{configured} configured.</p>\n"
+        "<table>\n"
+        "  <thead>\n"
+        "    <tr><th>Verb</th><th>Path</th><th>Component</th>"
+        "<th>Configured</th></tr>\n"
+        "  </thead>\n"
+        "  <tbody>\n"
+        f"{rows}\n"
+        "  </tbody>\n"
+        "</table>\n"
+        "</body>\n"
+        "</html>\n"
+    )
 
 
 # -- The request the adapters see ------------------------------------------------
@@ -1522,6 +1621,47 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
+    def _write_html(self, status: int, html_body: str) -> None:
+        """Write one HTML response: status and body, with a length.
+
+        The one door the meta-routes' HTML leaves through, parallel to
+        :meth:`_write_json`. The body is already a complete HTML
+        document (:func:`_index_html`), so there is nothing here to
+        encode — a string is written as UTF-8 with the exact
+        Content-Length, the same length discipline the JSON door keeps.
+        """
+        body = html_body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _method_not_allowed(self, path: str, allowed: Collection[str]) -> None:
+        """Answer a known meta-route path asked with the wrong verb.
+
+        The meta-routes own one verb each (GET); a POST to ``/`` or
+        ``/healthz`` is the same wrong-verb refusal a POST to a GET
+        route is, answered 405 with the same envelope and an ``Allow``
+        header naming the verb the path answers — the same shape the
+        table routes answer, so the transport's own surface is
+        consistent whether the route is a composed component's or the
+        transport's.
+        """
+        allowed_sorted = sorted(allowed)
+        self._write_json(
+            405,
+            error_payload(
+                "method_not_allowed",
+                f"{self.command or 'GET'} {path} is not served; the route "
+                f"answers {', '.join(allowed_sorted)}. The repair is the "
+                "route's own verb",
+                error_class=METHOD_NOT_ALLOWED_CLASS,
+            ),
+            extra_headers={"Allow": ", ".join(allowed_sorted)},
+        )
+
     def send_error(
         self, code: int, message: str | None = None, explain: str | None = None
     ) -> None:
@@ -1624,6 +1764,33 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             name: values[0]
             for name, values in parse_qs(parts.query, keep_blank_values=True).items()
         }
+
+        # The two meta-routes the transport serves directly, not through
+        # the composed component table: the liveness probe answers a
+        # bare 200, and the index describes the transport's own surface.
+        # Both are served only for the verb they own.  They are answered
+        # from the resolved table the server already holds, ahead of the
+        # table lookup — the probe's openness (it needs no token, unlike
+        # every other route) is exactly the property a later token gate
+        # keys off this same ``path == HEALTHZ_PATH`` test.
+        if path == HEALTHZ_PATH:
+            if verb != "GET":
+                self._method_not_allowed(path, ("GET",))
+                return
+            self._write_json(
+                200,
+                {"status": HEALTHZ_STATUS},
+            )
+            return
+        if path == INDEX_PATH:
+            if verb != "GET":
+                self._method_not_allowed(path, ("GET",))
+                return
+            self._write_html(
+                200,
+                _index_html(self.server.routes),
+            )
+            return
 
         grouped = self.server.routes_by_path.get(path)
         if not grouped:
