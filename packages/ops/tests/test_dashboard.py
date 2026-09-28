@@ -32,6 +32,16 @@ through a recording carrier duck-shaped like the module — which is
 the whole contract, the same way the route's store is tested through
 duck-typed carriers — and the real module is reached only through the
 deferred door, whose repair words the absent case pins.
+
+And the entrypoint's own two journey gaps ride here too (the refusal
+display and the trend's labels, from run 1's findings): a refusal
+``main`` catches is *displayed* as the operator's error message — the
+code word, the refusal's own words (what is wrong, the one repair),
+one line, no traceback and no filesystem path, nothing else on the
+page (J03) — and each point of the trend the one chart draws is
+labelled by its campaign's ``computed_at`` instant, never a bare
+index (J02: *"its axis says which campaign/when each point is (not a
+bare 0, 1, 2 index)"*).
 """
 
 from __future__ import annotations
@@ -59,9 +69,11 @@ from ops import (
     EpochCountChrome,
     EpochCountGauge,
     FdrDeployEndpoint,
+    FdrDeployMetricError,
     FdrDeployPanel,
     FdrDeployResponse,
     InstrumentStatusEndpoint,
+    InstrumentStatusError,
     OperatorDashboard,
     OpsError,
     main,
@@ -69,9 +81,12 @@ from ops import (
 )
 from ops.chrome import InstrumentLampsChrome
 from ops.dashboard import (
+    COMPUTED_AT_LABEL,
+    DASHBOARD_REFUSAL_CODE,
     PROVENANCE_UNRECORDED,
     CampaignProvenance,
     NodeProvenanceReader,
+    render_refusal,
 )
 
 from app.module_loader import Application, Registration, create_app, scan_components
@@ -447,6 +462,40 @@ def test_the_page_derives_every_read_from_the_routes_response(
     assert panel.computed_at == response.computed_at == "2026-02-01T00:00:00"
     assert panel.trend == response.history
     assert panel.series == tuple(figure for _c, figure, _i in response.history)
+
+
+def test_each_trend_point_is_labelled_by_its_campaigns_computed_at(
+    test_database_url: str,
+) -> None:
+    # J02's acceptance, answered by the date half its clause leaves a
+    # choice of: *"its axis says which campaign/when each point is (not
+    # a bare 0, 1, 2 index)"* — and the run-1 validation found the axis
+    # carrying exactly that bare index.  Each point is the campaign's
+    # figure paired with the instant *that campaign* was computed (the
+    # label the trend's own order reads), oldest first, derived from
+    # the response's history alone — and the chart the render draws is
+    # handed two named columns, the instant under COMPUTED_AT_LABEL as
+    # the x axis and the figure under FDR_DEPLOY_LABEL as the y, so
+    # the operator reading the falling sequence prd §12's M3 exit
+    # judges can ask *when* each point was measured.
+    panel = _dashboard(test_database_url).page().primary
+    labels, figures = zip(*panel.points)
+    assert labels == tuple(
+        instant for _campaign, _figure, instant in panel.trend
+    )
+    assert figures == pytest.approx((0.9, 0.5))
+    # The label is the instant, never a bare index: position is not
+    # one of the facts a point carries.
+    assert not any(isinstance(label, int) for label in labels)
+
+    st = _RecordingStreamlit()
+    page = _dashboard(test_database_url).render(st)
+    chart_args, chart_kwargs = st.one("line_chart")
+    assert chart_kwargs == {"x": COMPUTED_AT_LABEL, "y": FDR_DEPLOY_LABEL}
+    assert chart_args[0][COMPUTED_AT_LABEL] == [
+        instant for instant, _figure in page.primary.points
+    ]
+    assert chart_args[0][FDR_DEPLOY_LABEL] == list(page.primary.series)
 
 
 def test_the_provenance_triple_is_visible_beside_the_figure(
@@ -936,6 +985,7 @@ def test_the_provenance_seat_judges_the_contract_not_the_class(
         numeral = real.numeral
         plate = real.plate
         series = real.series
+        points = real.points
         provenance = _DuckProvenance()
 
     page = DashboardPage(
@@ -953,6 +1003,7 @@ def test_the_provenance_seat_judges_the_contract_not_the_class(
         numeral = real.numeral
         plate = real.plate
         series = real.series
+        points = real.points
         provenance = None  # a seat that cannot state its reading
 
     with pytest.raises(DashboardRenderError) as raised:
@@ -1048,9 +1099,15 @@ def test_the_render_emits_the_primary_panel_first(test_database_url: str) -> Non
     assert captions[3][0][0] == page.chrome.line
     assert captions[4][0][0] == page.primary.plate
     assert captions[5][0][0] == page.primary.provenance.line
-    # The one chart is the trend, and nothing else is charted.
-    chart_args, _kwargs = st.one("line_chart")
-    assert chart_args[0] == list(page.primary.series)
+    # The one chart is the trend, and nothing else is charted — each
+    # point labelled by its campaign's computed_at instant (the x
+    # column), never a bare index (J02).
+    chart_args, chart_kwargs = st.one("line_chart")
+    assert chart_kwargs == {"x": COMPUTED_AT_LABEL, "y": FDR_DEPLOY_LABEL}
+    assert chart_args[0][COMPUTED_AT_LABEL] == [
+        instant for instant, _figure in page.primary.points
+    ]
+    assert chart_args[0][FDR_DEPLOY_LABEL] == list(page.primary.series)
     assert st.one("set_page_config")[1]["page_title"] == DASHBOARD_PAGE_TITLE
     assert st.one("title")[0][0] == DASHBOARD_TITLE
 
@@ -1175,6 +1232,7 @@ def test_the_primary_seat_judges_the_contract_not_the_class(
         numeral = real.numeral
         plate = real.plate
         series = real.series
+        points = real.points
         provenance = real.provenance
 
     page = DashboardPage(
@@ -1224,11 +1282,164 @@ def test_composed_refuses_when_the_rail_is_absent() -> None:
     assert "worthless" in message  # §5.4's own reason, carried
 
 
-def test_main_refuses_when_the_route_is_absent() -> None:
-    # The entrypoint inherits the same law: nothing renders when the
-    # figure cannot be had honestly.
-    with pytest.raises(DashboardRenderError):
-        main(app=Application(), st=_RecordingStreamlit())
+def test_main_displays_the_refusal_as_the_operators_error_message() -> None:
+    # J03's own ask, made literal: the misconfigured deployment's page
+    # refuses, and the refusal "is presented as an operator-facing
+    # message: what is wrong, the code word, and the one repair" —
+    # with "no Python traceback, no filesystem paths, and no buttons
+    # that send the error text to a third-party service".  A
+    # composition with no ops route (the journey's own
+    # misconfiguration) displays through main() as one error line: the
+    # code word first, the refusal's own words after it — words that
+    # already name what is wrong (no /metrics/fdr-deploy route) and
+    # the one repair (point DATABASE_URL at the metrics store) — and
+    # nothing else on the page: no numeral, no chrome, no chart,
+    # because the page is asked whole before anything emits.
+    st = _RecordingStreamlit()
+    assert main(app=Application(), st=st) is None  # no page drew
+    assert st.names == ["error"]
+    text = st.one("error")[0][0]
+    assert text.startswith(f"{DASHBOARD_REFUSAL_CODE}: ")
+    assert "/metrics/fdr-deploy" in text  # what is wrong
+    assert "point DATABASE_URL at the metrics store" in text  # the one repair
+    assert "Traceback" not in text
+    assert 'File "' not in text  # the traceback's own shape, not on the page
+    assert "\n" not in text  # one line — nothing a traceback could hide in
+
+
+@pytest.mark.parametrize(
+    "vocabulary, words",
+    [
+        pytest.param(
+            DashboardRenderError, "the render's own words", id="dashboard-render"
+        ),
+        pytest.param(
+            FdrDeployMetricError, "the route's own words", id="fdr-deploy-metric"
+        ),
+        pytest.param(
+            InstrumentStatusError, "the rail's own words", id="instrument-status"
+        ),
+    ],
+)
+def test_every_render_vocabulary_displays_under_the_one_code_word(
+    vocabulary, words: str
+) -> None:
+    # One ``except`` over OpsError catches every way the page can
+    # refuse to draw, and one code word labels every vocabulary it
+    # catches: the display answers "the dashboard refused; what repair
+    # does its own message name?", and the message's own words carry
+    # which surface refused.  The words pass through verbatim — a
+    # paraphrase at this seam could drop the repair on the floor.
+    st = _RecordingStreamlit()
+    render_refusal(st, vocabulary(words))
+    assert st.names == ["error"]
+    assert st.one("error")[0][0] == f"{DASHBOARD_REFUSAL_CODE}: {words}"
+
+
+def test_main_displays_a_refusing_route_as_the_operators_error_message(
+    test_database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The same display through the page's own refusal path, not just
+    # the composition door's: a route that refuses aborts the page
+    # before anything emits, and main() displays feature 341's own
+    # vocabulary — untranslated, so the words that reach the operator
+    # are the surface's own — under the one code word.  The gauge and
+    # the rail fail the test if they are ever asked: the primary seat
+    # is asked first, and a refusing route aborts the page.
+    from ops import dashboard as dashboard_module
+
+    class _RefusingRoute:
+        def get(self):
+            raise FdrDeployMetricError(
+                "the route refused: point DATABASE_URL at the metrics store"
+            )
+
+    class _NeverAsked:
+        def remaining(self) -> int:
+            raise AssertionError("the chrome was asked after the route refused")
+
+        def get(self):
+            raise AssertionError("the rail was asked after the route refused")
+
+    never = _NeverAsked()
+    monkeypatch.setattr(
+        dashboard_module.OperatorDashboard,
+        "composed",
+        classmethod(
+            lambda cls, app=None: OperatorDashboard(_RefusingRoute(), never, never)
+        ),
+    )
+    st = _RecordingStreamlit()
+    assert main(app=Application(), st=st) is None
+    assert st.names == ["error"]
+    text = st.one("error")[0][0]
+    assert text.startswith(f"{DASHBOARD_REFUSAL_CODE}: ")
+    assert "the route refused: point DATABASE_URL at the metrics store" in text
+    assert "Traceback" not in text
+
+
+def test_main_displays_a_refusing_rail_as_the_operators_error_message(
+    test_database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The third vocabulary, through the same door: a rail that refuses
+    # aborts the page after the route answered and before the gauge is
+    # asked, and its InstrumentStatusError displays under the one code
+    # word too — every way the page can refuse to draw is one display,
+    # because every one of them answers the same operator question.
+    from ops import dashboard as dashboard_module
+
+    class _RefusingRail:
+        def get(self):
+            raise InstrumentStatusError(
+                "the rail refused: point DATABASE_URL at the metrics store"
+            )
+
+    class _NeverAskedGauge:
+        def remaining(self) -> int:
+            raise AssertionError("the chrome was asked after the rail refused")
+
+    dashboard = OperatorDashboard(
+        FdrDeployEndpoint(_persisted_store(test_database_url)),
+        _NeverAskedGauge(),
+        _RefusingRail(),
+    )
+    monkeypatch.setattr(
+        dashboard_module.OperatorDashboard,
+        "composed",
+        classmethod(lambda cls, app=None: dashboard),
+    )
+    st = _RecordingStreamlit()
+    assert main(app=Application(), st=st) is None
+    assert st.names == ["error"]
+    text = st.one("error")[0][0]
+    assert text.startswith(f"{DASHBOARD_REFUSAL_CODE}: ")
+    assert "the rail refused" in text
+
+
+def test_the_refusal_carrier_is_duck_checked() -> None:
+    # The display goes through the carrier's error element — the one
+    # element that renders an operator-facing message rather than a
+    # traceback — and a carrier with no such element is refused by
+    # name rather than the refusal being swallowed: a refusal nobody
+    # can read is the quietly-broken page the display exists to
+    # prevent, the same duck-check discipline the render's own carrier
+    # contract takes.
+    with pytest.raises(TypeError, match="error"):
+        render_refusal(object(), DashboardRenderError("any refusal"))
+
+
+def test_main_does_not_display_a_fault_that_is_not_a_refusal(
+    test_database_url: str,
+) -> None:
+    # The except is over OpsError — the member's vocabulary — and
+    # nothing broader: a fault in the machinery (a carrier that cannot
+    # answer the render's calls) is a programmer's error and still
+    # raises, because displaying it as though it were a misconfigured
+    # deployment would tell the operator to repair the wrong thing.
+    _persisted_store(test_database_url)
+    app = create_app(MEMBER_SRC, registry=Registration())
+    with pytest.raises(TypeError, match="OperatorDashboard"):
+        main(app=app, st=object())
 
 
 def test_the_route_carrier_is_duck_checked() -> None:

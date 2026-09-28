@@ -108,6 +108,27 @@ Only the schema-absent spellings (no ``node`` table, no trio columns —
 the discoverable states the migrations' own chain ordering names) fold
 into unrecorded, because there the rows honestly carry nothing.
 
+**Each point of the trend is labelled by its campaign's
+``computed_at`` instant — never a bare index.**  The journey
+validation found the populated page's chart drawing its x-axis as a
+bare ``0, 1, 2`` (*"with no campaign or date"*, docs/user-journeys/
+RESULTS.md run 1, J02), and this module closes that gap the way the
+feature's own clause spells it: the panel answers the trend's
+*points* — each campaign's figure paired with the instant that
+campaign was computed, oldest first (:attr:`FdrDeployPanel.points`)
+— and the render hands the carrier each point labelled by its
+instant, the instant column named ``x=`` and the figure column
+``y=`` (the two column names the one spelling each already carries:
+:data:`COMPUTED_AT_LABEL`, the response's own field name for the
+instant, and :data:`FDR_DEPLOY_LABEL`, §16's name for the figure).
+The label is the instant rather than the campaign id because the
+instant is the fact the trend's own order reads — the store answers
+oldest-first *by ``computed_at``* — so the operator reading the
+figure across campaigns (prd §12's M3 exit, *"``FDR_deploy``
+improves"*, a falling sequence) can ask *when* each point was
+measured, which a chart whose x-axis carried only position could
+never answer.
+
 **The qualifier beside the figure is read from the one spelling.**
 §16 lists the research metric as *"``FDR_deploy`` at π₀ = 0.9"*, and
 the scoring member's own law is that *"the base rate travels in the
@@ -220,6 +241,36 @@ whole path: the route holds no cache, so the numeral is the store's
 state at the moment of the rerun, not a fact about when the page was
 first opened.
 
+**A refusal the entrypoint catches is displayed, never escaped as a
+traceback.**  The validation found the misconfigured deployment's
+page rendering the refusal as a raw Python traceback — absolute
+filesystem paths included, plus Streamlit's *Ask Google / Ask
+ChatGPT* buttons (docs/user-journeys/RESULTS.md run 1, J03) — and
+this module closes that gap at the one seam it lives on:
+:func:`main`, the door ``streamlit run`` lands on.  A traceback is a
+*programmer's* answer to a refusal this workspace already spells as
+an *operator's* one — every message in the render vocabulary names
+what is wrong and the one repair — so :func:`main` resolves the
+carrier *first* (a deployment without Streamlit still gets the
+deferred door's own repair words — the one refusal there is nothing
+to display it with), then runs compose-and-render inside a single
+``except`` over :class:`~ops.errors.OpsError`, the member's base, so
+every way the page can refuse to draw — the composition door's
+:class:`~ops.errors.DashboardRenderError`, the route's
+:class:`~ops.errors.FdrDeployMetricError`, the rail's
+:class:`~ops.errors.InstrumentStatusError` — displays as one
+:func:`render_refusal` line: the code word
+(:data:`DASHBOARD_REFUSAL_CODE`) beside the refusal's own words, one
+line, no traceback and no filesystem path (the member's standing
+constraint on every refusal it answers), and nothing else on the page
+— no numeral, no chrome, no chart, because :meth:`OperatorDashboard.
+render` asks the whole page before it emits anything and a refused
+page is refused whole.  The refusal is not swallowed into a page:
+:func:`main` answers ``None`` because no page drew, and a
+programmatic caller that wants the exception still composes and
+renders directly — :meth:`OperatorDashboard.render` raises, exactly
+as its own tests pin.
+
 Stdlib-only, like the rest of the member: :mod:`dataclasses` for the
 page model, :mod:`sqlite3` for the node-table read (the triple's own
 SELECT, translated through the workspace's one URL-to-path grammar),
@@ -265,7 +316,7 @@ from .chrome import (
     InstrumentLampsChrome,
     require_promotion,
 )
-from .errors import DashboardRenderError
+from .errors import DashboardRenderError, OpsError
 from .fdr_route import (
     FDR_DEPLOY_ROUTE,
     FdrDeployEndpoint,
@@ -275,7 +326,9 @@ from .fdr_route import (
 from .instrument_status import INSTRUMENT_STATUS_ROUTE, InstrumentStatusEndpoint
 
 __all__ = [
+    "COMPUTED_AT_LABEL",
     "DASHBOARD_PAGE_TITLE",
+    "DASHBOARD_REFUSAL_CODE",
     "DASHBOARD_TITLE",
     "FDR_DEPLOY_LABEL",
     "PROVENANCE_COLUMNS",
@@ -286,6 +339,7 @@ __all__ = [
     "NodeProvenanceReader",
     "OperatorDashboard",
     "main",
+    "render_refusal",
     "require_streamlit",
 ]
 
@@ -294,6 +348,16 @@ __all__ = [
 #: Sharpe"), carried once so the numeral's label, the panel's headline
 #: and the spec's figure cannot drift apart on the name.
 FDR_DEPLOY_LABEL = "FDR_deploy"
+
+#: The trend chart's label column — the name of the fact each point of
+#: the trend is labelled by: the response's own field name for the
+#: instant the campaign was computed (``computed_at``, the label the
+#: trend's own order reads), carried once so the panel's points, the
+#: chart's x column and the render's ``x=`` spelling cannot drift apart
+#: on what labels a point.  The label is the instant, never a bare
+#: index and never the campaign id beside it in the row (see
+#: :attr:`FdrDeployPanel.points` for the law whole).
+COMPUTED_AT_LABEL = "computed_at"
 
 #: The dashboard's visible title — one word, the deployment's name.
 #: Chrome, not content: it states whose metrics these are and nothing
@@ -323,6 +387,20 @@ PROVENANCE_COLUMNS = ("evaluator_hash", "snapshot_hash", "cost_model_hash")
 #: a broken read wearing these words (see :class:`CampaignProvenance`).
 PROVENANCE_UNRECORDED = "provenance unrecorded"
 
+#: The dashboard refusal's code word — the one greppable token every
+#: operator-facing refusal display carries, J03's own ask (*"what is
+#: wrong, the code word, and the one repair"*).  The refusal's own
+#: message already names what is wrong and the one repair (the
+#: workspace's law for every typed error this member raises); the code
+#: word is the token an operator greps the docs and the logs for, and
+#: it is one word for the whole display because the display answers one
+#: question — *the dashboard refused; what repair does its own message
+#: name?* — with the *which surface refused* half already carried by
+#: the message's own words.  Spelled once here so the display
+#: (:func:`render_refusal`), the tests and the journey's acceptance
+#: cannot drift apart on it.
+DASHBOARD_REFUSAL_CODE = "dashboard_refusal"
+
 #: The primary panel's display contract — the reads the render makes of
 #: whatever occupies the page's primary seat.  A carrier that does not
 #: answer them all is not an FDR_deploy panel, and the page refuses it
@@ -338,6 +416,7 @@ _PRIMARY_PANEL_CONTRACT = (
     "numeral",
     "plate",
     "series",
+    "points",
     "provenance",
 )
 
@@ -965,6 +1044,29 @@ class FdrDeployPanel:
         draws."""
         return tuple(figure for _campaign, figure, _instant in self.trend)
 
+    @property
+    def points(self) -> tuple[tuple[str, float], ...]:
+        """The trend's points, oldest first — each campaign's figure
+        paired with the instant that campaign was computed, the label
+        the chart draws the point under.
+
+        J02's own words for the gap this read closes: the trend's
+        x-axis rendered *"a bare ``0, 1, 2`` index with no campaign or
+        date"*, and the feature's clause picks the date — each point
+        labelled by its campaign's ``computed_at`` instant.  The label
+        is the instant, not the campaign id beside it in the row,
+        because the instant is the fact the trend's own order reads
+        (the store answers oldest-first *by* ``computed_at``), so two
+        points on the trend are two datable measurements and the
+        operator can ask *when* each figure was computed.  A
+        display-shaped read derived from the response's history alone
+        — one answer, not a second ordering — and empty exactly when
+        the trend is, so the honest-absence page still draws no chart
+        of an empty series."""
+        return tuple(
+            (instant, figure) for _campaign, figure, instant in self.trend
+        )
+
     def __bool__(self) -> bool:
         """Whether the deployment has closed a campaign at all — the
         same split the response pins: an absence (``False``, render no
@@ -1521,7 +1623,14 @@ class OperatorDashboard:
         provenance line (the triple beside the figure — short form,
         the state words, or the mixed refusal), and only then the
         one chart the dashboard draws, the panel's own FDR_deploy
-        trend.  The chrome is the one thing that renders above the
+        trend — each point labelled by its campaign's
+        ``computed_at`` instant (the chart handed two named
+        columns, ``x=`` the instant's :data:`COMPUTED_AT_LABEL`
+        and ``y=`` the figure's :data:`FDR_DEPLOY_LABEL`), never
+        a bare index: J02's acceptance (*"its axis says which
+        campaign/when each point is (not a bare 0, 1, 2
+        index)"*) is answered by the date half the clause leaves
+        a choice of.  The chrome is the one thing that renders above the
         numeral — furniture beside content, never a second metric
         competing with the top line — and nothing but the trend is
         ever charted.  The provenance line renders on the populated
@@ -1558,7 +1667,16 @@ class OperatorDashboard:
         if panel:
             carrier.caption(panel.plate or "")
             carrier.caption(panel.provenance.line)
-            carrier.line_chart(list(panel.series))
+            carrier.line_chart(
+                {
+                    COMPUTED_AT_LABEL: [
+                        instant for instant, _figure in panel.points
+                    ],
+                    FDR_DEPLOY_LABEL: list(panel.series),
+                },
+                x=COMPUTED_AT_LABEL,
+                y=FDR_DEPLOY_LABEL,
+            )
         else:
             carrier.caption(
                 "no campaign has closed, so no figure was measured"
@@ -1566,8 +1684,65 @@ class OperatorDashboard:
         return page
 
 
-def main(app: Any = None, st: Any = None) -> DashboardPage:
-    """The Streamlit entrypoint: compose, then render.
+def render_refusal(carrier: Any, exc: OpsError) -> None:
+    """Display one dashboard refusal as the operator's error message.
+
+    J03's own ask, stated as the function's shape: the misconfigured
+    deployment's page must answer the refusal with *"what is wrong,
+    the code word, and the one repair"* — and nothing else.  The
+    refusal's own message already carries the first and the third
+    (every typed error this member raises names what is wrong and the
+    one repair; the workspace's law, and the reason ``exc``'s words
+    are passed through verbatim rather than paraphrased here — a
+    paraphrase could drop the repair on the floor), so this function
+    adds the second, the code word (:data:`DASHBOARD_REFUSAL_CODE`),
+    as the line's first token: the greppable token an operator takes
+    to the docs and the logs, spelled once as a constant so the
+    display, the tests and the journey's acceptance line cannot drift
+    apart on it.
+
+    One line, no traceback and no filesystem path — the member's
+    standing constraint on every refusal it answers, held at the one
+    seam where a raw exception would otherwise reach the screen:
+    Streamlit's unhandled-exception page renders the interpreter's
+    own traceback, absolute paths included, plus the *Ask Google /
+    Ask ChatGPT* buttons that post the text to a third-party service
+    (the exact render docs/user-journeys/RESULTS.md run 1 found, J03)
+    — so the refusal is *displayed* through the carrier's ``error``
+    element instead of left to escape.  The element is duck-checked
+    (a callable ``error``, the same discipline the render's own
+    carrier contract takes) rather than ``isinstance``-guarded, for
+    the same reason: the factory's scan imports members under
+    synthetic names, and the contract — not the class — is what
+    crosses every seam in this workspace.  A carrier with no element
+    to be read through is refused by name rather than swallowed,
+    because a refusal nobody can see is the quietly-broken page this
+    whole member exists to rule out.
+
+    Called by :func:`main` for every :class:`~ops.errors.OpsError`
+    the compose-and-render path raises; callable on its own so the
+    display itself is testable and a future surface (the chrome's,
+    an adapter's) can show a refusal without re-spelling the code
+    word (J03, docs §16).
+    """
+    if not callable(getattr(carrier, "error", None)):
+        raise TypeError(
+            "a dashboard refusal is displayed through the render "
+            "carrier's error element (Streamlit's st.error — the one "
+            "element that renders an operator-facing message rather "
+            "than a traceback), and this carrier does not answer one "
+            f"(got {type(carrier).__name__}). A refusal nobody can "
+            "read is the quietly-broken page the display exists to "
+            "prevent: hand a carrier that answers error() — the same "
+            "duck-check discipline the render itself takes "
+            "(J03, docs §16)"
+        )
+    carrier.error(f"{DASHBOARD_REFUSAL_CODE}: {exc}")
+
+
+def main(app: Any = None, st: Any = None) -> DashboardPage | None:
+    """The Streamlit entrypoint: compose, render — and display a
+    refusal rather than escaping it.
 
     What ``streamlit run packages/ops/src/ops/dashboard.py`` lands on
     (through the ``__main__`` guard below).  The application is
@@ -1578,11 +1753,36 @@ def main(app: Any = None, st: Any = None) -> DashboardPage:
     ``app`` hands in an already-composed application, ``st`` a
     recording carrier.
 
+    A refusal on that path is *displayed*, never escaped: the carrier
+    is resolved *first* — before compose, before render — so a
+    deployment without Streamlit still gets the deferred door's own
+    repair words, the one refusal there is nothing to display it with
+    (it raises, as its own tests pin) — and then compose-and-render
+    runs inside a single ``except`` over :class:`~ops.errors.OpsError`,
+    the member's base, so every way the page can refuse to draw (the
+    composition door's :class:`~ops.errors.DashboardRenderError`, the
+    route's :class:`~ops.errors.FdrDeployMetricError`, the rail's
+    :class:`~ops.errors.InstrumentStatusError`) displays as one
+    :func:`render_refusal` line — the code word beside the refusal's
+    own words, no traceback and no filesystem path (J03's ask, and the
+    member's standing constraint).  Nothing else renders: the page is
+    asked whole before anything emits, so a refused page carries no
+    numeral, no chrome and no chart.  The answer is ``None`` because
+    no page drew — the refusal is not swallowed into one — and a
+    programmatic caller that wants the exception still composes and
+    renders directly (:meth:`OperatorDashboard.render` raises,
+    exactly as its own tests pin).
+
     Every rerun re-runs the whole path: compose, read, render.  There
     is no cache anywhere in it, by design — the numeral on the screen
     is the store's state at the moment of the rerun.
     """
-    return OperatorDashboard.composed(app).render(st)
+    carrier = require_streamlit() if st is None else st
+    try:
+        return OperatorDashboard.composed(app).render(st)
+    except OpsError as exc:
+        render_refusal(carrier, exc)
+        return None
 
 
 if __name__ == "__main__":  # pragma: no cover - the streamlit-run path
