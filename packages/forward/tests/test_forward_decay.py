@@ -37,9 +37,11 @@ import pytest
 from conftest import DECIDED_AT, FORWARD_DAYS, NODE_ID, code_of
 from forward import (
     DATABASE_URL_ENV,
+    FORWARD_ABSENT_ERROR_CODE,
     DecayCurve,
     DecayCurveEndpoint,
     DecayPoint,
+    ForwardAbsentError,
     ForwardDecayCurves,
     ForwardError,
     ForwardObservations,
@@ -188,9 +190,15 @@ def test_a_curve_refuses_a_point_whose_offset_disagrees_with_its_day(curves) -> 
 def test_a_curve_with_no_points_is_refused(curves) -> None:
     # An empty curve is refused, not carried: it is the absence the store
     # refuses by name, and carrying it would read as a signal that was
-    # measured and never moved.
+    # measured and never moved.  Asserted as the *base* store class rather than
+    # the absence subclass, and the distinction is the design: the absence
+    # class belongs to the store's ask — the node it names is the subject — so
+    # a value built by hand past the store is refused by the read contract, not
+    # by the state-of-the-world class a caller routes on.  The store's own
+    # unobserved record is the absence, and it is asserted below.
     with pytest.raises(ForwardStoreError) as raised:
         DecayCurve(node_id=NODE_ID, promoted_at=DECIDED, points=())
+    assert not isinstance(raised.value, ForwardAbsentError)
     assert "no measured point" in str(raised.value)
 
 
@@ -219,7 +227,7 @@ def test_a_signal_with_no_record_is_refused_naming_the_repair(
     # in order: open the record (POST /forward/promote, feature 332), then
     # observe, then read the curve.
     store = ForwardDecayCurves.over(promoted_signal)
-    with pytest.raises(ForwardStoreError) as raised:
+    with pytest.raises(ForwardAbsentError) as raised:
         store.curve(NODE_ID)
     message = str(raised.value)
     assert "forward_record_unwritable" in message
@@ -263,7 +271,7 @@ def test_a_record_with_no_observation_is_refused_not_emptied(curves, forward_row
     # job, never answered as an empty curve: an empty chart and a flat one read
     # alike in front of a planner, and the two must not be confused.
     assert forward_rows()  # the opening row is there
-    with pytest.raises(ForwardStoreError) as raised:
+    with pytest.raises(ForwardAbsentError) as raised:
         curves.curve(NODE_ID)
     message = str(raised.value)
     assert "forward_record_unwritable" in message
@@ -291,6 +299,94 @@ def test_a_stored_coefficient_that_is_not_a_correlation_is_refused(
     with pytest.raises(ForwardRecordError) as raised:
         curves.curve(NODE_ID)
     assert "information coefficient" in str(raised.value)
+
+
+# -- Absence, decided apart from store failure --------------------------------
+
+
+def test_the_absence_class_subclasses_the_store_class() -> None:
+    # The subclassing IS the compatibility contract: every caller guarding a
+    # forward read with ``except ForwardStoreError`` — and every test written
+    # before this class existed — keeps catching these refusals, while a caller
+    # that must decide something *on the difference* can ask the narrower
+    # question.  Both orders are asserted, because a class that were a sibling
+    # would satisfy neither.
+    assert issubclass(ForwardAbsentError, ForwardStoreError)
+    assert issubclass(ForwardAbsentError, ForwardError)
+
+
+def test_an_absent_record_is_an_absence_and_not_a_store_failure(
+    promoted_signal,
+) -> None:
+    # The decidable difference, from the caller's side: a signal with no
+    # forward record is a *state of the world* — the database answered
+    # perfectly and the row is not there — so the narrower ``except`` catches
+    # it.  The store is reachable and the node row exists; only the record is
+    # missing, which is why no retry of this call produces it.
+    store = ForwardDecayCurves.over(promoted_signal)
+    with pytest.raises(ForwardAbsentError) as raised:
+        store.curve(NODE_ID)
+    message = str(raised.value)
+    # The absence word — what the route's 404 turns on — and the store word
+    # every pre-existing caller already matches, both present and the absence
+    # one first, so neither audience is broken.
+    assert message.startswith(FORWARD_ABSENT_ERROR_CODE)
+    assert "forward_record_unwritable" in message
+    # The node is named in the ``node_id <id>`` form the other absences use, so
+    # a caller attributes the absence without parsing prose.
+    assert f"node_id {NODE_ID}" in message
+
+
+def test_an_unobserved_record_is_an_absence_not_a_store_failure(curves) -> None:
+    # The second face: the record is there and nobody has measured on it.  Also
+    # a state of the world rather than a fault — the row is the honest opening
+    # row 0108 declares, with its three NULL observation columns — so it is the
+    # absence class, and it names the node and the act that produces the rows.
+    with pytest.raises(ForwardAbsentError) as raised:
+        curves.curve(NODE_ID)
+    message = str(raised.value)
+    assert message.startswith(FORWARD_ABSENT_ERROR_CODE)
+    assert NODE_ID in message
+    assert "feature 333" in message
+
+
+def test_a_two_vintage_fault_is_a_store_failure_not_an_absence(
+    curves, promoted_signal
+) -> None:
+    # The line the class draws, asserted from the other side.  Rows carrying
+    # two promotion instants are a hand that reached past this member: the
+    # table is in a state no act of this member could have produced, no retry
+    # repairs it, and an operator has to go and look at the database.  That is
+    # a store failure, so the *absence* class must NOT catch it — otherwise a
+    # route would answer 404 for a corrupted table and send nobody to it.
+    observations = ForwardObservations.over(curves)
+    observations.append_observation(
+        NODE_ID, observed_on=FIRST_DAY, live_ic=0.30, forward_days=FORWARD_DAYS
+    )
+    connection = promoted_signal._connect()
+    try:
+        with connection:
+            connection.execute(
+                "UPDATE forward_record SET promoted_at = ? "
+                "WHERE observed_on != ?",
+                ("2026-03-09T09:00:00+00:00", "2026-03-01"),
+            )
+    finally:
+        connection.close()
+    with pytest.raises(ForwardStoreError) as raised:
+        curves.curve(NODE_ID)
+    assert not isinstance(raised.value, ForwardAbsentError)
+
+
+def test_an_unreachable_store_is_a_store_failure_not_an_absence(tmp_path) -> None:
+    # The third side of the same line: a store this member cannot speak is a
+    # *fault*, so a caller routing on absence must not swallow it as a 404.
+    # Refused at first use rather than at construction, so the refusal lands
+    # where the read would have happened.
+    store = ForwardDecayCurves("postgresql://localhost/records")
+    with pytest.raises(ForwardStoreError) as raised:
+        store.curve(NODE_ID)
+    assert not isinstance(raised.value, ForwardAbsentError)
 
 
 # -- The endpoint -------------------------------------------------------------

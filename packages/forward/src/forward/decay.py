@@ -48,13 +48,22 @@ is the opening row's ``observed_on`` — the same line feature 333's lower bound
 and feature 335's upper bound are measured against, so all three agree on
 where out-of-sample began.
 
-**No new error class.** The four refusals land in the two faces feature 333
-already established — :class:`~forward.errors.ForwardRecordError` for the
-malformed ask, :class:`~forward.errors.ForwardStoreError` for the read — so a
-caller that refuses forward work wholesale writes one ``except ForwardError``.
-The endpoint adds no fallback and catches nothing: a read that fails
-propagates, because the alternative — answering a decay curve this route did
-not read — is the error direction.
+**The refusals land in three faces, and the third is the point of the act.**
+:class:`~forward.errors.ForwardRecordError` is the malformed ask, settled
+before anything is opened. :class:`~forward.errors.ForwardStoreError` is the
+read face properly: a store that could not be reached, or rows carrying two
+promotion instants — a fault, which repeats until an operator fixes the
+database. And :class:`~forward.errors.ForwardAbsentError` — a *subclass* of
+that store class — is the two states where the database answered perfectly and
+the row is simply not there: **no record for the node**, or **a record nobody
+has observed yet**. Those are states of the world rather than faults, and the
+distinction is exactly what a route needs in order to answer 404 for a signal
+that was never promoted and 503 for a store failure; subclassing rather than
+sitting beside the store class is what keeps every existing ``except
+ForwardStoreError`` and ``except ForwardError`` catching them unchanged. The
+endpoint adds no fallback and catches nothing: a read that fails propagates,
+because the alternative — answering a decay curve this route did not read — is
+the error direction.
 
 **Neither an absent store nor a failed read is ever answered with a curve.**
 No ``DATABASE_URL`` composes no endpoint (:meth:`DecayCurveEndpoint.from_env`
@@ -86,7 +95,9 @@ from pathlib import Path
 from typing import Any
 
 from .errors import (
+    FORWARD_ABSENT_ERROR_CODE,
     FORWARD_RECORD_ERROR_CODE,
+    ForwardAbsentError,
     ForwardError,
     ForwardRecordError,
     ForwardStoreError,
@@ -531,10 +542,12 @@ class ForwardDecayCurves:
 
         Refuses, in this order, each naming what it is about: a malformed
         identity (:class:`~forward.errors.ForwardRecordError`, the ask face —
-        settled before anything is opened); and an absent record, a
-        two-vintage fault or an unobserved record
-        (:class:`~forward.errors.ForwardStoreError`, the read face — each
-        naming its one-call repair).
+        settled before anything is opened); an absent record or an unobserved
+        record (:class:`~forward.errors.ForwardAbsentError`, the *absence* face
+        — the database answered and the row is not there, each naming its
+        one-call repair); and a two-vintage fault
+        (:class:`~forward.errors.ForwardStoreError`, the fault face — rows a
+        hand reached past this member to write, which no retry repairs).
         """
         node = _validated_uuid(node_id, NODE_ID_COLUMN)
         with closing(self._connect()) as connection:
@@ -618,7 +631,7 @@ def _one_vintage(node: str, standing: list[ForwardRecord]) -> ForwardRecord:
     return standing[0]
 
 
-def _absent_record(node: str) -> ForwardStoreError:
+def _absent_record(node: str) -> ForwardAbsentError:
     """The absence refusal: no record, so no curve to draw.
 
     A decay curve is the signal's observed live-IC rows framed against the
@@ -627,9 +640,17 @@ def _absent_record(node: str) -> ForwardStoreError:
     fabricate the very thing the record exists to fix. The repair is the
     pipeline's, in the order the loop runs: promote first, then the record
     opens, then the job observes, then the curve can be read.
+
+    Raised as :class:`~forward.errors.ForwardAbsentError` — the *decidable*
+    half of the store vocabulary — so a caller serving this read over HTTP can
+    answer 404 for a signal that was simply never promoted, and reserve 503
+    for a database that could not be read at all. The node is named in the
+    message, so the caller does not have to parse prose to attribute the
+    absence to a signal.
     """
-    return ForwardStoreError(
-        f"{FORWARD_RECORD_ERROR_CODE}: {FORWARD_RECORD_TABLE} holds no row for "
+    return ForwardAbsentError(
+        f"{FORWARD_ABSENT_ERROR_CODE}: {FORWARD_RECORD_ERROR_CODE}: "
+        f"{FORWARD_RECORD_TABLE} holds no row for "
         f"{NODE_ID_COLUMN} {node}, so there is no curve to draw. The decay "
         "curve is the signal's observed live-IC rows framed against the "
         "boundary the record drew, and a signal with no record has no rows and "
@@ -640,17 +661,23 @@ def _absent_record(node: str) -> ForwardStoreError:
     )
 
 
-def _no_observation(node: str, opening: ForwardRecord) -> ForwardStoreError:
+def _no_observation(node: str, opening: ForwardRecord) -> ForwardAbsentError:
     """The unobserved refusal: a record with nothing measured on it yet.
 
     Answered rather than zeroed or returned empty. A curve of no points would
     read as a signal that was measured and never moved — while this record has
     not been measured at all, and the two must not read alike in front of a
     planner. The repair is feature 333's act, on schedule.
+
+    Raised as :class:`~forward.errors.ForwardAbsentError` for the reason
+    :func:`_absent_record` states: this too is a *state of the world* rather
+    than a fault — the database answered, and the row it answered with is the
+    honest opening row 0108 declares — so the route answers 404 and names the
+    observation job, never 503.
     """
-    return ForwardStoreError(
-        f"{FORWARD_RECORD_ERROR_CODE}: node {node}'s forward record (promoted "
-        f"at {opening.promoted_at.isoformat()}, day "
+    return ForwardAbsentError(
+        f"{FORWARD_ABSENT_ERROR_CODE}: {FORWARD_RECORD_ERROR_CODE}: node {node}'s "
+        f"forward record (promoted at {opening.promoted_at.isoformat()}, day "
         f"{opening.observed_on.isoformat()}) holds no row carrying a live_ic, "
         "so there is no curve to draw. A curve of no points would read as a "
         "signal that was measured and never moved, while this record has not "
@@ -746,11 +773,14 @@ class DecayCurveEndpoint:
         than from a second read.
 
         Refusals are the store's: a malformed identity raises
-        :class:`~forward.errors.ForwardRecordError` from the ask, and an absent
-        record, a two-vintage fault or an unobserved record raise
-        :class:`~forward.errors.ForwardStoreError` from the read. Nothing here
-        is caught, because the alternative — answering a decay curve this route
-        did not read — is the error direction.
+        :class:`~forward.errors.ForwardRecordError` from the ask; an absent
+        record or an unobserved one raise
+        :class:`~forward.errors.ForwardAbsentError` — the two states a 404
+        answers, both naming the node and the act that produces the row; and a
+        two-vintage fault raises its parent
+        :class:`~forward.errors.ForwardStoreError`, which is the 503. Nothing
+        here is caught, because the alternative — answering a decay curve this
+        route did not read — is the error direction.
         """
         return self._curves.curve(node_id)
 

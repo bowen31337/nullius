@@ -96,9 +96,11 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from .errors import (
+    FORWARD_ABSENT_ERROR_CODE,
     FORWARD_IDENTITY_ERROR_CODE,
     FORWARD_PROMOTION_ERROR_CODE,
     FORWARD_RECORD_ERROR_CODE,
+    ForwardAbsentError,
     ForwardError,
     ForwardIdentityError,
     ForwardPromotionError,
@@ -942,9 +944,11 @@ class ForwardRecords:
         identity or horizon (:class:`~forward.errors.ForwardRecordError`, the
         ask face); a promotion with no instant
         (:class:`~forward.errors.ForwardPromotionError`, the promotion's
-        repair); and a store this member cannot speak, an absent node row, a
-        record that already exists carrying a different promotion, or a row
-        that could not be read back
+        repair); an absent node row
+        (:class:`~forward.errors.ForwardAbsentError` — the database answered
+        and the row is not there, so no retry of this call will produce it);
+        and a store this member cannot speak, a record that already exists
+        carrying a different promotion, or a row that could not be read back
         (:class:`~forward.errors.ForwardStoreError` and
         :class:`~forward.errors.ForwardIdentityError`).
         """
@@ -1094,9 +1098,9 @@ class ForwardRecords:
         ``node`` is the row's one foreign key, and the repair is the caller's:
         the identity is wrong, or the discovery loop has not written the node
         yet.  SQLite's own ``IntegrityError`` names neither the column nor the
-        value, so this probe does, and the refusal is the *store's* class
-        rather than the ask's — the body is well-formed and the database is not
-        in the state the write needs.
+        value, so this probe does, and the refusal is a *store* class rather
+        than the ask's — the body is well-formed and the database is not in the
+        state the write needs.
 
         The node's existence is a genuinely separate fact from the promotion's,
         and it is checked separately for that reason: feature 300's read
@@ -1104,6 +1108,16 @@ class ForwardRecords:
         can outlive its node only by a hand on the table, and the foreign key
         is the one thing that makes the row joinable to the tree the whole
         category measures against.
+
+        Raised as :class:`~forward.errors.ForwardAbsentError` rather than its
+        parent, because the database answered and the row is simply not there:
+        the table is intact and reachable, and no retry of this call will
+        produce the node.  That is the difference a caller decides on — a
+        missing parent is a 404-shaped fact about a signal, a store fault is
+        not — and it is why this refusal carries the absence word beside the
+        one its parent's callers already grep for.  The message names the node,
+        in the ``NODE_ID_COLUMN <id>`` form the other absences use, so a caller
+        can attribute it without parsing prose.
         """
         cursor = connection.execute(_NODE_EXISTS_SQL, (node,))
         try:
@@ -1111,14 +1125,17 @@ class ForwardRecords:
         finally:
             cursor.close()
         if not present:
-            raise ForwardStoreError(
-                f"{FORWARD_RECORD_ERROR_CODE}: node holds no row for "
-                f"{NODE_ID_COLUMN} {node!r}, so this forward record has no "
-                "signal to be the boundary of. "
+            raise ForwardAbsentError(
+                f"{FORWARD_ABSENT_ERROR_CODE}: {FORWARD_RECORD_ERROR_CODE}: node "
+                f"holds no row for {NODE_ID_COLUMN} {node}, so this forward "
+                "record has no signal to be the boundary of. "
                 f"{FORWARD_RECORD_TABLE}.{NODE_ID_COLUMN} is a foreign key: a "
                 "record must be joinable to the hypothesis it measures, and a "
                 "record naming a row the database does not hold is a record no "
-                "later reader can attribute to anything (feature 332)"
+                "later reader can attribute to anything. Nothing is wrong with "
+                "the store: the repair is to write the node the discovery loop "
+                "produces (feature 232's campaign record), or to correct the "
+                "identity if it was simply mistyped (feature 332)"
             )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid only

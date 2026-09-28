@@ -159,6 +159,8 @@ neighbouring member's vocabulary.
 from __future__ import annotations
 
 __all__ = [
+    "FORWARD_ABSENT_ERROR_CODE",
+    "ForwardAbsentError",
     "ForwardBetaFourError",
     "ForwardDecayPriorError",
     "ForwardError",
@@ -240,6 +242,30 @@ FORWARD_DECAY_PRIOR_ERROR_CODE = "forward_decay_prior_unrevised"
 #: goes to ``plan_grid``; the coefficient goes to the dreaming loop's β).
 FORWARD_BETA_FOUR_ERROR_CODE = "forward_beta_four_unrevised"
 
+#: The greppable word that opens every :class:`ForwardAbsentError` message:
+#: the row is *not there*.  A decay curve was asked for a node whose forward
+#: record was never opened (:meth:`forward.decay.ForwardDecayCurves.curve`), a
+#: decay curve was asked for a record nobody has observed yet, or a promotion
+#: names a node the tree does not hold
+#: (:meth:`forward.record.ForwardRecords.open_record`).
+#:
+#: **One word for three absences because they are one repair.**  Each message
+#: names the row that is missing and the act that produces it — promote, then
+#: observe, then read the curve — so a caller reading the word knows it is
+#: looking at a *state of the world* rather than at a broken database.
+#:
+#: **Deliberately not ``forward_record_unwritable``.**  That word is what every
+#: one of these refusals says beside the new one, because ``ForwardAbsentError``
+#: subclasses :class:`ForwardStoreError` and existing callers and tests match
+#: on it; the absence word is what a caller that knows to look for it greps
+#: instead.  The two words are one message apart on purpose: the old word is
+#: still true (nothing could be served), and the new one is the *decidable*
+#: statement the ``/forward/decay`` route's 404 turns on — the difference
+#: between *this node has no record* and *the store could not be read*, which
+#: the HTTP layer must map to two different statuses.  Landing on the wrong one
+#: wastes the one thing a 90-day loop cannot give back — the day it happened on.
+FORWARD_ABSENT_ERROR_CODE = "forward_record_absent"
+
 
 class ForwardError(Exception):
     """Base class for every failure of the forward-test path.
@@ -301,6 +327,79 @@ class ForwardStoreError(ForwardError):
     component at all: a discoverable state rather than an exception, the same
     stance every store in this workspace takes.  The caller that must open a
     record is the caller that must not find itself in it.
+    """
+
+
+class ForwardAbsentError(ForwardStoreError):
+    """A row the ask names is simply not there — no record, or nothing measured.
+
+    A **subclass** of :class:`ForwardStoreError` rather than a sibling, and the
+    subclassing is the whole design: every caller today guards a forward act
+    with ``except ForwardStoreError`` (or the member-wide ``except
+    ForwardError``), and those clauses keep catching these refusals unchanged.
+    What changes is that a caller who needs to *decide* something on the
+    difference can now ask a narrower question:
+
+    .. code-block:: python
+
+        try:
+            curve = endpoint.get(node_id)
+        except ForwardAbsentError:      # 404 — name the repair
+            ...
+        except ForwardStoreError:       # 503 — go and look at the database
+            ...
+
+    **Why the distinction is worth a class.**  The two states are answered on
+    two different days by two different people.  A store failure — a URL this
+    member cannot speak, a database that would not open, a row no record can be
+    rebuilt as — sends an operator to the database, and the same request will
+    fail again until they get there; it is a *fault*.  An absence means the
+    database answered perfectly and the row genuinely is not there: the
+    observation job has not run yet, or the promotion's record was never
+    opened, or the node was never written.  That is a **state of the world**,
+    the request is well formed, and the repair is a different act in the
+    pipeline — promote (feature 332), observe (feature 333), then read.  The
+    HTTP layer these features are for turns exactly this difference into a 404
+    against a 503, so the class is what makes that decidable at all, rather
+    than by matching on the wording of a message.
+
+    **The three faces, one per act that can find the row missing:**
+
+    * :meth:`forward.decay.ForwardDecayCurves.curve` — the node holds no
+      ``forward_record`` row at all.  The curve reads the record's own rows, so
+      a signal with no record has no boundary to measure an offset from.  The
+      repair is named in order: ``POST /forward/promote``, then observe, then
+      ask for the curve.
+    * the same read — the record is there and **nobody has measured on it**.
+      An opening row with three NULL observation columns is the honest state
+      0108's comment describes, and a curve over it is refused rather than
+      answered empty: an empty chart and a flat one read alike in front of a
+      planner, and a flat curve would read as *measured, and it never moved*.
+      The repair is the observation job (feature 333).
+    * :meth:`forward.record.ForwardRecords.open_record` — the promotion names a
+      node the ``node`` table does not hold.  The row's one foreign key has no
+      parent, so the record would be unjoinable to the tree the whole category
+      measures against.  The repair is the discovery loop's, or the caller's,
+      if the identity is simply wrong.
+
+    **What is deliberately *not* this class.**  A malformed identity is
+    :class:`ForwardRecordError` (the ask, settled before any I/O).  A record
+    whose rows carry **two promotion instants** is a plain
+    :class:`ForwardStoreError`: rows that disagree are a hand that reached past
+    this member, which is a fault rather than an absence — no retry and no
+    later pipeline step produces the single vintage those rows should carry.
+    An *absent store* (no ``DATABASE_URL``) is not this class either: it
+    composes no component at all.
+
+    **The message names the node and the missing row**, in that order, so a
+    caller can attribute the absence to a signal without parsing prose, and
+    opens with the two words the two audiences grep:
+    :data:`FORWARD_ABSENT_ERROR_CODE` (``forward_record_absent`` — the
+    decidable statement) followed by :data:`FORWARD_RECORD_ERROR_CODE`
+    (``forward_record_unwritable`` — the word every existing caller and test
+    already matches on, kept so those clauses and assertions are untouched).
+    It carries no traceback and no filesystem path, because it is rendered
+    into a response body.
     """
 
 

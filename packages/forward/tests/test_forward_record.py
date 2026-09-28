@@ -32,7 +32,9 @@ from conftest import (
 )
 from forward import (
     DATABASE_URL_ENV,
+    FORWARD_ABSENT_ERROR_CODE,
     FORWARD_PROMOTE_ROUTE,
+    ForwardAbsentError,
     ForwardIdentityError,
     ForwardPromotionError,
     ForwardRecord,
@@ -398,10 +400,25 @@ def test_an_absent_node_row_is_refused_naming_the_column(tmp_path: Path) -> None
         connection.close()
 
     store = ForwardRecords(f"sqlite:///{database}")
-    with pytest.raises(ForwardStoreError) as raised:
+    # The refusal is the *absence* class — a subclass of the store class, so
+    # every caller and assertion that predates it keeps working, while a caller
+    # that must decide can ask the narrower question.  The database answered
+    # and the row is simply not there: the table is intact and reachable, so no
+    # retry of this call produces the node, and that is what separates this
+    # from a store failure.
+    with pytest.raises(ForwardAbsentError) as raised:
         store.open_record(other_node, forward_days=FORWARD_DAYS)
-    assert "node_id" in str(raised.value)
-    assert other_node in str(raised.value)
+    message = str(raised.value)
+    assert message.startswith(FORWARD_ABSENT_ERROR_CODE)
+    assert "forward_record_unwritable" in message
+    assert "node_id" in message
+    assert other_node in message
+    # Named in the ``node_id <id>`` form the other absences use, so a caller
+    # attributes the absence without parsing prose, and carrying no traceback
+    # or filesystem path because it is rendered into a response body.
+    assert f"node_id {other_node}" in message
+    assert str(database) not in message
+    assert "Traceback" not in message
 
 
 # -- The row contract ---------------------------------------------------------
@@ -525,7 +542,39 @@ def test_the_module_level_spelling_refuses_a_deployment_that_names_no_database(
     monkeypatch.delenv(DATABASE_URL_ENV, raising=False)
     with pytest.raises(ForwardStoreError) as raised:
         forward_record(NODE_ID, forward_days=FORWARD_DAYS)
-    assert "forward_record_unwritable" in str(raised.value)
+    message = str(raised.value)
+    assert "forward_record_unwritable" in message
+    # A deployment naming no database is a *wiring fault*, not an absent row,
+    # so the narrower absence class must not catch it: a caller routing on
+    # absence would otherwise answer "there is no record for this node" about a
+    # deployment that could not have written one at all.
+    assert not isinstance(raised.value, ForwardAbsentError)
+
+
+def test_a_misrouted_store_is_refused_as_a_fault_not_an_absence() -> None:
+    # The same line drawn for the opening act: a URL this member cannot speak
+    # is a misrouted store — an operator's fault to fix, repeating on every
+    # retry — and never reads as "this node holds no record".  Refused at first
+    # use rather than at construction (composition-time work must not touch the
+    # disk), so the refusal is asserted at the store's own translation of the
+    # URL — the seam every operation reaches.
+    store = ForwardRecords("postgresql://localhost/records")
+    with pytest.raises(ForwardStoreError) as raised:
+        _ = store.path
+    assert not isinstance(raised.value, ForwardAbsentError)
+
+
+def test_a_signal_with_no_promotion_instant_is_its_own_face_not_an_absence(
+    store: ForwardRecords,
+) -> None:
+    # The third class, pinned so the absence one cannot creep over it: a signal
+    # whose promotion was never decided has no *instant* to open a record at,
+    # which is the promotion pipeline's repair rather than a missing row.  The
+    # store is never reached — the seam refuses first — so it must not arrive
+    # as an absence a caller would route to a 404.
+    with pytest.raises(ForwardPromotionError) as raised:
+        store.open_record(NODE_ID, forward_days=FORWARD_DAYS)
+    assert not isinstance(raised.value, ForwardAbsentError)
 
 
 def test_the_store_resolves_nothing_when_no_database_is_named(

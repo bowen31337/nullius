@@ -150,10 +150,15 @@ computes it, the value layer re-derives it, a caller only names the
 cycle.
 
 :mod:`forward.errors` is **what can go wrong**, split by the repair the caller
-must make: a malformed row, a store that is misrouted or broken, a promotion
-with no instant to open at, a reconciliation whose book, instant or figures
-state nothing measurable, a division whose operands do not support it, a
-revision whose half-lives cannot be dated or whose evidence does not blend,
+must make: a malformed row, a store that is misrouted or broken, **a row that
+is simply not there** (:class:`~forward.errors.ForwardAbsentError` — no forward
+record for the node, nothing observed on it yet, or a promotion naming a node
+the tree does not hold; a subclass of the store class, so existing ``except
+ForwardStoreError`` clauses keep catching it while a caller that must decide
+between a missing row and a broken database can ask the narrower question), a
+promotion with no instant to open at, a reconciliation whose book, instant or
+figures state nothing measurable, a division whose operands do not support it,
+a revision whose half-lives cannot be dated or whose evidence does not blend,
 a revision whose coefficient is not the blend of its own evidence, and a
 request that disagrees with a row an identity already holds — a second
 promotion instant, a day the boundary excludes, a second coefficient claiming
@@ -321,6 +326,7 @@ from .decay import (
     decay_curve,
 )
 from .errors import (
+    FORWARD_ABSENT_ERROR_CODE,
     FORWARD_BETA_FOUR_ERROR_CODE,
     FORWARD_DECAY_PRIOR_ERROR_CODE,
     FORWARD_IDENTITY_ERROR_CODE,
@@ -328,6 +334,7 @@ from .errors import (
     FORWARD_RECONCILIATION_ERROR_CODE,
     FORWARD_RECORD_ERROR_CODE,
     FORWARD_RETENTION_ERROR_CODE,
+    ForwardAbsentError,
     ForwardBetaFourError,
     ForwardDecayPriorError,
     ForwardError,
@@ -396,6 +403,7 @@ __all__ = [
     "BETA_FOUR_WEIGHT",
     "COMPONENT_NAME",
     "DATABASE_URL_ENV",
+    "FORWARD_ABSENT_ERROR_CODE",
     "FORWARD_BETA_FOUR_ERROR_CODE",
     "FORWARD_BETA_FOUR_SEAM",
     "FORWARD_BETA_FOUR_TABLE",
@@ -434,6 +442,7 @@ __all__ = [
     "DecayCurveEndpoint",
     "DecayPoint",
     "DecayPriorRevision",
+    "ForwardAbsentError",
     "ForwardBetaFourError",
     "ForwardBetaFourRevisions",
     "ForwardCostReconciliations",
