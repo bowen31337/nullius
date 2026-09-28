@@ -1,0 +1,176 @@
+"""The one JSON spelling: feature 4's codec, held to its own laws.
+
+These tests pin :mod:`nullius_api.json_encoding` to the vocabulary the
+transport promises — dataclasses as objects keyed by field name, dates
+and datetimes as ISO 8601, UUIDs and Decimals as their exact text,
+mappings with text keys, tuples as arrays — and to the refusals that
+make the envelope laws hold: a value the vocabulary cannot spell is
+refused by name rather than stringified, because ``str()`` of the wrong
+thing is exactly how a filesystem path or a repr would reach a body
+the spec promises carries neither.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import json
+import uuid
+from dataclasses import dataclass
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+from nullius_api import JsonEncodingError, dumps
+
+
+@dataclass(frozen=True)
+class _Row:
+    """A response-shaped value: the fields the members' answers carry."""
+
+    campaign_id: str
+    figure: float | None
+    computed_at: dt.datetime
+    identity: uuid.UUID
+    exact: Decimal
+
+
+@dataclass(frozen=True)
+class _Envelope:
+    """A nested response: a dataclass inside a dataclass."""
+
+    row: _Row
+    history: tuple
+
+
+class _Opaque:
+    """Something the vocabulary cannot spell — an arbitrary object."""
+
+
+def test_a_dataclass_answers_as_an_object_keyed_by_field_names() -> None:
+    """The members spell their values by field name; so does the body."""
+    instant = dt.datetime(2026, 9, 28, 12, 0, tzinfo=dt.UTC)
+    row = _Row(
+        campaign_id="campaign-1",
+        figure=0.5,
+        computed_at=instant,
+        identity=uuid.UUID("12345678-1234-5678-1234-567812345678"),
+        exact=Decimal("0.1"),
+    )
+    body = json.loads(dumps(row))
+    assert body == {
+        "campaign_id": "campaign-1",
+        "figure": 0.5,
+        "computed_at": "2026-09-28T12:00:00+00:00",
+        "identity": "12345678-1234-5678-1234-567812345678",
+        "exact": "0.1",
+    }
+
+
+def test_nested_dataclasses_and_tuples_encode_recursively() -> None:
+    """A response holding a response answers as deeply as it holds."""
+    instant = dt.datetime(2026, 1, 1, tzinfo=dt.UTC)
+    envelope = _Envelope(
+        row=_Row("c", None, instant, uuid.UUID(int=7), Decimal("2.50")),
+        history=(("c", 0.25, "2026-01-01T00:00:00+00:00"), ()),
+    )
+    body = json.loads(dumps(envelope))
+    assert body["row"]["exact"] == "2.50"
+    assert body["row"]["figure"] is None  # the honest absence, not 0.0
+    assert body["history"][0][1] == 0.25
+    assert body["history"][1] == []
+
+
+def test_an_empty_collection_and_none_stay_honest() -> None:
+    """An empty store answers empty and null — never a fabricated zero."""
+
+    @dataclass(frozen=True)
+    class _Answer:
+        history: tuple = ()
+        figure: float | None = None
+
+    body = json.loads(dumps(_Answer()))
+    assert body == {"history": [], "figure": None}
+
+
+def test_a_decimal_answers_its_exact_text_never_a_float() -> None:
+    """``float(Decimal("0.1"))`` is a different number; the body is not it."""
+    text = dumps({"figure": Decimal("0.1")})
+    assert text == '{"figure": "0.1"}'
+    # And the exactness generalises: a two-decimal figure a store
+    # measured crosses the wire as the text the store stated, not as
+    # the nearest binary float's seventeen-digit re-spelling of it.
+    assert json.loads(dumps({"figure": Decimal("2.50")}))["figure"] == "2.50"
+
+
+def test_a_non_finite_float_is_refused() -> None:
+    """NaN and the infinities are not figures anyone measured."""
+    for value in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(JsonEncodingError):
+            dumps({"figure": value})
+
+
+def test_dates_datetimes_and_times_answer_iso_8601() -> None:
+    """The one textual instant spelling the workspace already carries."""
+    assert dumps(dt.date(2026, 9, 28)) == '"2026-09-28"'
+    naive = dt.datetime(  # noqa: DTZ001 - the naive spelling is the point
+        2026, 9, 28, 1, 2, 3
+    )
+    assert dumps(naive) == '"2026-09-28T01:02:03"'
+    assert dumps(dt.time(1, 2, 3)) == '"01:02:03"'
+
+
+def test_a_mapping_with_text_keys_answers_an_object() -> None:
+    """``{stratum: count}`` — the shape the coverage route answers."""
+    assert json.loads(dumps({"crash": 0, "chop": 14})) == {"crash": 0, "chop": 14}
+
+
+def test_a_non_text_key_is_refused_by_name() -> None:
+    """The members key by campaign id and stratum name; coercion would
+    be a second spelling of a key the member chose."""
+    with pytest.raises(JsonEncodingError) as raised:
+        dumps({1: "count"})
+    assert "int" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"reading": b"\x00\x01"},
+        {"regimes": {"high", "low"}},
+        {"path": Path("/tmp/nowhere.db")},
+        {"engine": _Opaque()},
+        {"halt": print},
+    ],
+)
+def test_the_unspellable_is_refused_naming_the_type(value: dict) -> None:
+    """Bytes, sets, paths, objects and callables never reach a body.
+
+    This is the load-bearing refusal: each of these would otherwise
+    land in a body as a ``repr`` nobody chose to answer with — the
+    filesystem-path leak the spec's envelope law exists to prevent
+    among them.
+    """
+    with pytest.raises(JsonEncodingError) as raised:
+        dumps(value)
+    message = str(raised.value)
+    assert "refused" in message
+    # The message names the type (the repair's one glance) and carries
+    # neither the value's repr nor a path of its own.
+    assert "tmp" not in message
+
+
+def test_an_unknown_type_message_names_the_vocabulary() -> None:
+    """The refusal tells the encoder's author what the vocabulary is."""
+    with pytest.raises(JsonEncodingError) as raised:
+        dumps(object())
+    message = str(raised.value)
+    assert "object" in message
+    assert "dataclasses" in message
+    assert "ISO 8601" in message
+
+
+def test_bools_and_ints_stay_native() -> None:
+    """A lamp answers true or false — never 1 or 0 in disguise."""
+    assert dumps({"canary": True, "count": 3, "none": None}) == (
+        '{"canary": true, "count": 3, "none": null}'
+    )
