@@ -316,6 +316,13 @@ def _forward_decay_get(endpoint: Any, request: ApiRequest) -> tuple[int, Any]:
     with the one that owns the rows).  A missing identity is the one
     ask this adapter refuses itself: 400, because the request — not
     the store — failed to state who it is asking about.
+
+    Everything else — an absent record, an unobserved one, a store
+    that could not be read — is the store's own refusal
+    (:class:`~forward.errors.ForwardAbsentError` or its parent
+    :class:`~forward.errors.ForwardStoreError`), left to propagate
+    untouched; the dispatch's own doors turn the first into 404 and
+    the second into 503 (see :func:`_is_forward_absent_refusal`).
     """
     node_id = request.query.get("node_id")
     if node_id is None or not node_id.strip():
@@ -327,6 +334,126 @@ def _forward_decay_get(endpoint: Any, request: ApiRequest) -> tuple[int, Any]:
             "reaches the store it would read",
         )
     return 200, endpoint.get(node_id)
+
+
+def _forward_promote_post(endpoint: Any, request: ApiRequest) -> tuple[int, Any]:
+    """Serve ``POST /forward/promote``: open the signal's forward record.
+
+    Feature 332's whole act, relayed rather than re-decided: the body's
+    two terms (``node_id``, ``forward_days``) are built into the
+    member's own :class:`~forward.record.ForwardRecordRequest` by
+    :func:`_forward_record_request` — which is also the one door that
+    translates a malformed term into the transport's 400 — and the
+    endpoint's answer is passed straight to the wire, 200, whether this
+    call opened the row or found the standing one from an earlier
+    retry (:attr:`~forward.record.ForwardRecordResponse.created`
+    tells the two apart; there is no second status for a retry,
+    because the row it answers with is the same row either way).
+
+    Every other refusal the endpoint raises — no promotion instant to
+    open at (:class:`~forward.errors.ForwardPromotionError`), a node
+    the tree does not hold or a standing record that disagrees with
+    this ask (:class:`~forward.errors.ForwardAbsentError`,
+    :class:`~forward.errors.ForwardIdentityError`) — propagates
+    untouched to the dispatch, which answers the absent-node face 404
+    and everything else 503 (see :func:`_is_forward_absent_refusal`
+    and :func:`_is_member_refusal`).  Nothing here computes, defaults
+    or retries anything the member did not already decide.
+    """
+    return 200, endpoint.post(_forward_record_request(request))
+
+
+def _forward_record_request(request: ApiRequest) -> Any:
+    """Feature 332's body as the member's own request record.
+
+    Imported deferred, for the reason :func:`_risk_halt_post` names: a
+    module-scope cross-member import would make importing this package
+    depend on the sibling being importable first, which the workspace's
+    scan order never promises.
+
+    Built by the *member's* constructor, so both terms — the identity
+    as a UUID and the horizon as a positive count of days — are
+    validated by the module that owns the contract.  A term that fails
+    validation raises the member's
+    :class:`~forward.errors.ForwardRecordError`, translated here to the
+    transport's own :class:`_MalformedRequest` (400) for the same
+    reason :func:`_target_request` translates ``TargetRouteError``: a
+    body that cannot say what it is asking for is the caller's to
+    repair, and left to the generic member-refusal door it would
+    answer 503 — the wrong escalation for a fixable ask.  Every other
+    refusal the constructor cannot raise (there are only the two
+    terms), so nothing else is translated here.
+    """
+    from forward import ForwardRecordRequest  # deferred past module scope
+
+    body = request.body or {}
+    try:
+        return ForwardRecordRequest(
+            node_id=body.get("node_id"),
+            forward_days=body.get("forward_days"),
+        )
+    except Exception as exc:  # re-raised unless it is the ask class
+        if not _is_forward_record_refusal(exc):
+            raise
+        raise _MalformedRequest("malformed_body", str(exc)) from exc
+
+
+#: The member's request-contract class, by the one name that survives the
+#: factory's scan — the same discipline :data:`_TARGET_ROUTE_REFUSAL_NAME`
+#: states: the endpoint is imported under a synthetic module alias, so a
+#: composed refusal is never an instance of the class a direct import
+#: yields, and the name is what is checked.
+_FORWARD_RECORD_REFUSAL_NAME = "ForwardRecordError"
+
+
+def _is_forward_record_refusal(exc: BaseException) -> bool:
+    """Whether ``exc`` is the forward member's malformed-ask refusal.
+
+    Both halves are checked — the class name and the member segment in
+    the module path — so an unrelated exception sharing the name is not
+    silently re-spelled as a 400; a miss leaves it to the dispatch's
+    general handling, the safe direction.
+    """
+    if type(exc).__name__ != _FORWARD_RECORD_REFUSAL_NAME:
+        return False
+    module = type(exc).__module__ or ""
+    return any(
+        segment == "forward" or segment.startswith("_nullius_scanned_")
+        for segment in module.split(".")
+    )
+
+
+#: The forward member's *absence* refusal — a state of the world rather
+#: than a fault: no forward record for the node, or a record nobody has
+#: observed yet (:class:`~forward.errors.ForwardAbsentError`'s own
+#: docstring names both faces, across ``GET /forward/decay`` and ``POST
+#: /forward/promote`` alike).  Checked by name for the reason
+#: :data:`_FORWARD_RECORD_REFUSAL_NAME` states: the factory's scan
+#: imports the member under a synthetic module alias, so a composed
+#: refusal is never an instance of the class a direct import yields.
+_FORWARD_ABSENT_REFUSAL_NAME = "ForwardAbsentError"
+
+
+def _is_forward_absent_refusal(exc: BaseException) -> bool:
+    """Whether ``exc`` is the forward member's *absence* refusal.
+
+    ``ForwardAbsentError`` subclasses ``ForwardStoreError`` precisely so
+    every existing ``except ForwardStoreError`` keeps catching it — this
+    is the one door that must tell the two apart, so a signal simply not
+    yet promoted or not yet observed answers 404 rather than falling
+    into the generic member-refusal 503 (:func:`_is_member_refusal`).
+    Both halves are checked — the class name and the member segment in
+    the module path — for the same reason every duck check in this
+    module gives: a miss leaves the exception to the safer, more
+    conservative 503.
+    """
+    if type(exc).__name__ != _FORWARD_ABSENT_REFUSAL_NAME:
+        return False
+    module = type(exc).__module__ or ""
+    return any(
+        segment == "forward" or segment.startswith("_nullius_scanned_")
+        for segment in module.split(".")
+    )
 
 
 class _MalformedRequest(Exception):
@@ -640,6 +767,7 @@ HTTP_ADAPTERS: dict[tuple[str, str], Callable[[Any, ApiRequest], tuple[int, Any]
     ("GET", "/metrics/regime-coverage"): _no_argument_get,
     ("GET", "/ledger/k-effective"): _no_argument_get,
     ("GET", "/forward/decay"): _forward_decay_get,
+    ("POST", "/forward/promote"): _forward_promote_post,
     ("POST", "/risk/halt"): _risk_halt_post,
     ("POST", "/target"): _target_post,
 }
@@ -1176,6 +1304,33 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             )
             return
         except Exception as exc:  # noqa: BLE001 - the member/500 split is the point
+            if _is_forward_absent_refusal(exc):
+                # A decidable state of the world, not a fault: no forward
+                # record for this node, or a record nobody has observed
+                # yet (forward.errors.ForwardAbsentError's own docstring
+                # names both faces).  Answered 404 ahead of the generic
+                # member-refusal door below, so this signal is told apart
+                # from a store that could not be read at all — the class
+                # is still the member's own, carried the same way a
+                # member refusal's class is.
+                log.debug(
+                    "forward-absent answering %s %s: %s",
+                    verb,
+                    path,
+                    type(exc).__name__,
+                )
+                self._write_json(
+                    404,
+                    error_payload(
+                        "forward_record_absent",
+                        _publish(
+                            str(exc),
+                            served_paths=self.server.routes_by_path.keys(),
+                        ),
+                        error_class=type(exc).__name__,
+                    ),
+                )
+                return
             if _is_member_refusal(exc):
                 # A served member's own typed refusal — operator-facing
                 # by the workspace's law, answered with the member's
