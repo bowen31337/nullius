@@ -191,7 +191,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from .errors import DashboardRenderError
 from .instrument_status import LAMP_NAMES
@@ -199,12 +199,12 @@ from .instrument_status import LAMP_NAMES
 __all__ = [
     "DARK_STATE",
     "EPOCH_COUNT_LABEL",
-    "EpochCountChrome",
-    "EpochCountGauge",
-    "InstrumentLampsChrome",
     "LAMP_LABELS",
     "LIT_STATE",
     "NO_READING_STATE",
+    "EpochCountChrome",
+    "EpochCountGauge",
+    "InstrumentLampsChrome",
     "require_promotion",
 ]
 
@@ -252,7 +252,7 @@ LAMP_LABELS: dict[str, str] = {
 }
 
 
-def _lamp_state(bit: Optional[bool]) -> str:
+def _lamp_state(bit: bool | None) -> str:
     """The word one lamp's bit renders as — the three-state mapping.
 
     ``True`` is lit, ``False`` is dark, ``None`` is *no reading* — and
@@ -478,7 +478,7 @@ class InstrumentLampsChrome:
                 )
 
     @property
-    def lamps(self) -> dict[str, Optional[bool]]:
+    def lamps(self) -> dict[str, bool | None]:
         """docs §5.4's rail, one bit per lamp, in the design's order.
 
         A fresh dict per call (a caller cannot mutate this value's
@@ -488,7 +488,7 @@ class InstrumentLampsChrome:
         dark, ``None`` the absence of a reading, never folded into
         either of the others.
         """
-        rail = getattr(self.response, "lamps")
+        rail = self.response.lamps
         return {name: rail[name] for name in LAMP_NAMES}
 
     @property

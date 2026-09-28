@@ -43,6 +43,7 @@ import sys
 import types
 import uuid
 from pathlib import Path
+from typing import ClassVar
 
 import promotion
 import pytest
@@ -63,10 +64,10 @@ from ops import (
 )
 from ops.chrome import (
     DARK_STATE,
-    InstrumentLampsChrome,
     LAMP_LABELS,
     LIT_STATE,
     NO_READING_STATE,
+    InstrumentLampsChrome,
 )
 
 from app.module_loader import Registration, create_app
@@ -753,7 +754,11 @@ def test_a_chrome_carrier_that_cannot_answer_the_count_is_refused(
         """The rail's content posing as the count strip: three binary
         lamps, and no count anywhere — the seat refuses it by name."""
 
-        lamps = {"canary": True, "ks_guard": None, "ingest": False}
+        lamps: ClassVar[dict[str, bool | None]] = {
+            "canary": True,
+            "ks_guard": None,
+            "ingest": False,
+        }
 
     panel = _dashboard(test_database_url).page().primary
     with pytest.raises(DashboardRenderError) as raised:
