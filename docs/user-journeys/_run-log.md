@@ -51,14 +51,3 @@ These are specified for claw-forge in [`additions_spec_journeys.xml`](../../addi
 | J7 | Exposure | ✅ pass | Binds `127.0.0.1:8501` only, no External URL, no Deploy button, no error details. | same as J2, J3 |
 
 Note: on an empty store the canary lamp reads `ok`. That is by design: feature 342's canary lamp is never absent, and "no halt recorded" means healthy. It is not a finding.
-
-## Run 3 (API discoverability): 2026-09-28, after feature 12 of `additions_spec_journeys.xml`
-
-- **`main`:** `4496a19`.
-- **Surface:** the two meta-routes `GET /` and `GET /healthz`, served by the transport directly from its resolved route table — not rows in the ten-route table, not adapter entries.
-
-| # | Journey | Verdict | Failing step, expected vs observed | Evidence |
-|---|---|---|---|---|
-| J14 | API discoverability | ✅ pass | `GET /` answers an HTML index of every route, its verb and its configured/unconfigured state; `GET /healthz` answers `200` with no token; both are GET-only. Unit-tested in [`test_discoverability.py`](../../packages/api/tests/test_discoverability.py). | [packages/api/tests/test_discoverability.py](../../packages/api/tests/test_discoverability.py) |
-
-Note: J14 step 1 opens `/` *with a token*, and step 4 (the token gate, feature 18) is not yet wired. The probe is already served token-free and the dispatch keys the future gate off `path == HEALTHZ_PATH`, so feature 18 gates `/` and the table routes without touching the probe.

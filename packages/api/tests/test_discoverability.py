@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import pytest
 from nullius_api import API_ROUTES, ApiServer, ResolvedRoute
+from nullius_api.routes import ApiRoute
 from nullius_api.server import (
     HEALTHZ_PATH,
     HEALTHZ_STATUS,
@@ -32,9 +33,7 @@ from nullius_api.server import (
     METHOD_NOT_ALLOWED_CLASS,
     _index_html,
 )
-from nullius_api.routes import ApiRoute
-
-from test_server import _Boot, _GetEndpoint, _ask  # type: ignore[import-not-found]
+from test_server import _ask, _Boot, _GetEndpoint  # type: ignore[import-not-found]
 
 
 def _ask_raw(server: ApiServer, method: str, path: str) -> tuple[int, dict, str]:
@@ -184,7 +183,7 @@ def test_a_wrong_verb_on_healthz_answers_405(boot: _Boot) -> None:
     """``POST /healthz`` is refused the same way — the probe answers
     GET only."""
     server = boot({})
-    status, headers, body = _ask(server, "POST", HEALTHZ_PATH)
+    status, headers, _body = _ask(server, "POST", HEALTHZ_PATH)
     assert status == 405
     assert headers["allow"] == "GET"
 
