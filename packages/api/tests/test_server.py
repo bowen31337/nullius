@@ -29,8 +29,21 @@ import typing
 from dataclasses import dataclass
 
 import pytest
-from nullius_api import ApiServer, build_server
-from nullius_api.server import DEFAULT_HOST, DEFAULT_PORT, HOST_ENV, PORT_ENV, ApiConfig
+from nullius_api import ApiServer, build_server, error_payload
+from nullius_api.server import (
+    COMPONENT_UNCONFIGURED_CLASS,
+    DEFAULT_ERROR_CLASS,
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    HOST_ENV,
+    INTERNAL_ERROR_CLASS,
+    MALFORMED_REQUEST_CLASS,
+    METHOD_NOT_ALLOWED_CLASS,
+    PORT_ENV,
+    ROUTE_NOT_IMPLEMENTED_CLASS,
+    UNKNOWN_ROUTE_CLASS,
+    ApiConfig,
+)
 
 from app.module_loader import Application, create_app
 
@@ -362,6 +375,124 @@ def test_no_body_carries_a_traceback_or_a_filesystem_path(
     assert "Traceback" not in text
     assert str(tmp_path) not in text
     assert ".py" not in text
+
+
+# -- Every refusal carries its class -------------------------------------------------
+
+
+def test_every_refusal_shape_answers_a_class(boot) -> None:
+    """The envelope is ``{"error": {"code", "class", "message"}}`` —
+    every refusal answers a non-empty class alongside the code word and
+    the message, so a caller routes on the refusal's own name without
+    parsing the message."""
+    refusal = _MemberRefusal("fdr_deploy_metric: the store refused; the repair")
+    server = boot(
+        {"ops-fdr-deploy": _GetEndpoint(refusal=refusal)}
+    )
+    shapes = [
+        ("GET", "/nowhere"),
+        ("GET", "/ledger/debit"),
+        ("PUT", "/metrics/fdr-deploy"),
+        ("POST", "/risk/halt"),
+        ("GET", "/forward/decay"),
+        ("GET", "/target"),
+        ("GET", "/metrics/fdr-deploy"),  # the member refusal
+    ]
+    for method, path in shapes:
+        _, _, body = _ask(server, method, path)
+        assert body["error"]["class"], f"{method} {path} answered no class"
+        assert "code" in body["error"] and "message" in body["error"]
+
+
+def test_the_member_refusal_carries_the_raised_class(boot) -> None:
+    """The member-refusal door carries ``type(exc).__name__`` — the very
+    class the served member's own traceback would name, which is why
+    carrying it is not the leak the envelope law forbids."""
+    refusal = _MemberRefusal("fdr_deploy_metric: the store refused; the repair")
+    server = boot({"ops-fdr-deploy": _GetEndpoint(refusal=refusal)})
+    _, _, body = _ask(server, "GET", "/metrics/fdr-deploy")
+    assert body["error"]["code"] == "member_refusal"
+    assert body["error"]["class"] == "FdrDeployMetricError"
+    # The class is the name only — never a module path or a filesystem
+    # path smuggled in beside it.
+    assert "." not in body["error"]["class"]
+    assert "/" not in body["error"]["class"]
+
+
+def test_the_transports_own_doors_answer_their_stable_classes(boot) -> None:
+    """The transport's own refusals each answer the class they own, so a
+    caller can tell an unknown route from a wrong verb from an
+    unconfigured component without reading the message."""
+    server = boot({"ops-fdr-deploy": _GetEndpoint()})
+    _, _, unknown = _ask(server, "GET", "/nowhere")
+    assert unknown["error"]["class"] == UNKNOWN_ROUTE_CLASS
+    _, _, wrong = _ask(server, "GET", "/ledger/debit")
+    assert wrong["error"]["class"] == METHOD_NOT_ALLOWED_CLASS
+    # An unconfigured component is a route whose store resolved to
+    # nothing — a server with no components, so /metrics/fdr-deploy has
+    # no endpoint to serve.
+    empty = boot({})
+    _, _, unconfigured = _ask(empty, "GET", "/metrics/fdr-deploy")
+    assert unconfigured["error"]["class"] == COMPONENT_UNCONFIGURED_CLASS
+    configured = boot({"risk-halt": object()})
+    _, _, not_impl = _ask(configured, "POST", "/risk/halt")
+    assert not_impl["error"]["class"] == ROUTE_NOT_IMPLEMENTED_CLASS
+
+
+def test_a_malformed_ask_answers_the_malformed_class(boot) -> None:
+    """The one refusal the transport owns — a GET that states no signal
+    — answers the malformed-request class."""
+    endpoint = _DecayEndpoint()
+    server = boot({"forward-decay": endpoint})
+    _, _, body = _ask(server, "GET", "/forward/decay")
+    assert body["error"]["code"] == "missing_node_id"
+    assert body["error"]["class"] == MALFORMED_REQUEST_CLASS
+
+
+def test_an_unexpected_fault_answers_the_internal_error_class(boot) -> None:
+    """A fault that is nobody's typed refusal answers the generic
+    internal error — a stable class, the cause named in the log, never
+    in the body."""
+    server = boot({"ops-fdr-deploy": _GetEndpoint(refusal=RuntimeError("boom"))})
+    _, _, body = _ask(server, "GET", "/metrics/fdr-deploy")
+    assert body["error"]["code"] == "internal_error"
+    assert body["error"]["class"] == INTERNAL_ERROR_CLASS
+    assert "boom" not in json.dumps(body)
+
+
+def test_a_call_site_that_names_no_class_still_answers_a_class(boot) -> None:
+    """The class argument is keyword-only with a default, so the envelope
+    gains a field rather than reshaping — a caller that omits it still
+    reads a class, never an absent field."""
+    assert error_payload("c", "m")["error"]["class"] == DEFAULT_ERROR_CLASS
+    assert error_payload("c", "m")["error"] == {
+        "code": "c",
+        "class": DEFAULT_ERROR_CLASS,
+        "message": "m",
+    }
+    # The two original positional arguments are unchanged.
+    assert error_payload("c", "m")["error"]["code"] == "c"
+    assert error_payload("c", "m")["error"]["message"] == "m"
+
+
+def test_the_class_is_a_plain_string_never_a_traceback_or_a_path(boot, tmp_path) -> None:
+    """The class field does not become a second place a path could leak:
+    a member refusal whose message quotes a leaked store URL answers a
+    class that is a bare name, and no body carries a traceback, a
+    filesystem path or a ``.py`` suffix."""
+    server = boot(
+        {
+            "ops-fdr-deploy": _GetEndpoint(
+                refusal=RuntimeError(f"leaked {tmp_path / 'secret.db'}")
+            )
+        }
+    )
+    _, _, body = _ask(server, "GET", "/metrics/fdr-deploy")
+    text = json.dumps(body)
+    assert "Traceback" not in text
+    assert str(tmp_path) not in text
+    assert ".py" not in text
+    assert "/" not in body["error"]["class"]
 
 
 # -- The address -------------------------------------------------------------------

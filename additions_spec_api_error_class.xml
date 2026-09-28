@@ -1,0 +1,166 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — HTTP API transport: every refusal carries the error class</project_name>
+  <addition_summary>
+    Extend the api workspace member (packages/api, import name nullius_api) so
+    that every refusal it answers carries, alongside the code word and the
+    message feature 4 already puts in the envelope, the error class — the
+    greppable class name of the refusal that was raised, spelled by the member
+    that owns it. The transport already answers four refusal statuses through
+    one writing door (nullius_api.server.error_payload): 400 for a malformed
+    ask, 404 for an unknown path, 405 with an Allow header for a wrong verb, and
+    503 naming the missing configuration for an unconfigured component, a
+    member's typed refusal, or the server's own unexpected fault — plus 501 for
+    a route with no adapter yet and 500 for an unencodable payload. Today the
+    envelope is {"error": {"code": ..., "message": ...}}; this feature widens it
+    to {"error": {"code": ..., "class": ..., "message": ...}} at every one of
+    those doors, so a caller can route on the class the member raised without
+    parsing the message. The class is a name the member owns and would state in
+    a traceback (FdrDeployMetricError, CoverageError, DebitChargeError,
+    ForwardRecordError, PromotionRequestError, ...), so carrying it is not the
+    leak the law forbids — the law forbids a traceback or a filesystem path, and
+    a bare class name is neither. The work is one signature change to the
+    envelope factory and a class argument at each of its call sites, plus the
+    tests that pin that every refusal shape now carries the class and that no
+    body carries a traceback or a filesystem path. No route's status, no
+    message, no success behaviour, and no other member changes.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (members under packages/*, composed by
+      src/app/module_loader.create_app) / SQLite stores addressed by
+      DATABASE_URL / pytest (ruff conventions)</stack>
+    <test_baseline>workspace suite tests/ passing; member suites under
+      packages/*/tests (api, ops, promotion, forward, providers ...) all passing
+      on main. Measure the real numbers by running the suite before relying on
+      them.</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, stdlib-first
+      members (a member adds no third-party lockfile edge unless it must),
+      docstrings citing app_spec.xml feature numbers and
+      docs/nullius-tech-architecture.md sections, refusals raised as typed
+      errors whose message opens with a greppable code word and names the one
+      repair, degrade-don't-break composition (a builder returns None when its
+      environment is unconfigured), @register only in a package __init__,
+      cross-member imports deferred past module scope. Tests assert observed
+      behaviour with narrative docstrings. Member suites and the workspace
+      suite are run as separate pytest invocations. Feature 4 already built the
+      transport's one writing door: nullius_api.server._write_json writes every
+      body, error_payload(code, message) is the single envelope factory, and the
+      send_error override closes the base class's HTML protocol-error path to the
+      same envelope. Member refusals are recognised by module-path segment and
+      answered 503 with the member's message; unexpected faults answer a generic
+      500 naming nothing. The envelope never carries a traceback or a filesystem
+      path.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="HTTP API Transport">
+      <feature index="1" shape="plugin" plugin="api" depends_on=""
+               touches_files="packages/api/src/nullius_api/server.py,packages/api/tests/test_server.py">
+        System widens the one error envelope so every refusal returns an
+        error.class field naming the refusal's own class, alongside the code
+        word and the error message.
+      </feature>
+      <feature index="2" shape="plugin" plugin="api" depends_on="1"
+               touches_files="packages/api/src/nullius_api/server.py,packages/api/tests/test_server.py">
+        System returns the refusal's own class at each of the envelope's call
+        sites: the malformed-ask 400, the unknown-route 404, the wrong-verb 405,
+        the unconfigured-component 503, the member-refusal 503 (the raised
+        exception's own class name), the route-not-implemented 501, the generic
+        internal error, the unencodable-payload 500 and the base class's
+        protocol-error door.
+      </feature>
+      <feature index="3" shape="plugin" plugin="api" depends_on="2"
+               touches_files="packages/api/tests/test_server.py">
+        System passes an end-to-end sweep asserting every refusal shape answers
+        the widened envelope carrying a non-empty class, that the member-refusal
+        class names the refusal the member raised, and that no body carries a
+        traceback or a filesystem path.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    error_payload gains one keyword, class (defaulting to the bare base so a
+    call site that names no class still answers a class), and every refusal
+    branch in nullius_api.server passes the class it knows: the transport's own
+    refusals pass a stable class name they own (the malformed-ask, unknown-
+    route, wrong-verb, unconfigured, not-implemented and internal-error doors
+    each name their own class), and the member-refusal door passes the raised
+    exception's own class name (type(exc).__name__) — the same class a member's
+    traceback would name, which is why carrying it is not the leak the law
+    forbids. The class is spelled as a plain string in the envelope, never a
+    live object, so the codec and every caller read it the same way they read
+    code and message. No route's status, message, success behaviour, the
+    _write_json door, the send_error override, the route table, the entrypoint,
+    or any other member changes. Covered by packages/api/tests.
+  </integration_points>
+  <constraints>
+    - error_payload keeps its two positional arguments (code, message); the
+      class is a third, keyword-only argument with a default, so every existing
+      call site and every existing test keeps working unchanged and the envelope
+      gains a field rather than reshaping.
+    - The class is a name the refusal's own member would state (a bare class
+      name such as FdrDeployMetricError), never a traceback, a filesystem path,
+      a module path, or request-derived text. The member-refusal door carries
+      type(exc).__name__ only; it never echoes str(exc) into the class.
+    - No response body carries a traceback or a filesystem path, including a
+      member refusal whose message quotes a leaked store URL — the class field
+      does not become a second place a path could leak.
+    - No route's HTTP status, message, or success behaviour changes, and no
+      other member, the route table, the entrypoint, src/app/module_loader.py,
+      the root pyproject.toml, pytest.ini, migrations/** or settings changes.
+    - The api member uses only the standard library for HTTP; it adds no
+      third-party dependency to uv.lock.
+    - All existing workspace and member tests must stay green.
+  </constraints>
+  <implementation_steps>
+    <step>
+      Phase 1 — widen the envelope factory. Give error_payload a keyword-only
+      class argument (defaulting to a stable base name such as "Error" so a call
+      site that names no class still answers a class). The envelope becomes
+      {"error": {"code": ..., "class": ..., "message": ...}}. Update the
+      docstring: the class is the refusal's own name, carried so a caller routes
+      on it without parsing the message, and it is never a traceback or a
+      filesystem path.
+    </step>
+    <step>
+      Phase 2 — carry the class at every door. Each refusal branch in
+      _dispatch_by_table, the belt around it, _write_json's unencodable-payload
+      fallback, and the send_error override passes the class it owns: the
+      malformed ask, the unknown route, the wrong verb, the unconfigured
+      component, the route not implemented, the generic internal error, and the
+      protocol error each name their own stable class; the member-refusal door
+      names type(exc).__name__, the class the served member raised. Keep the
+      member-recognition logic and the 503/500 split exactly as feature 4 left
+      them — only the class field is added.
+    </step>
+    <step>
+      Phase 3 — the tests. Add a suite in packages/api/tests asserting: every
+      refusal shape (400, 404, 405, 503 unconfigured, 503 member refusal, 501,
+      500, and the base class's protocol error) answers an envelope that carries
+      a non-empty class; the member-refusal class names the raised exception's
+      own class (e.g. FdrDeployMetricError); the transport's own doors answer
+      their stable class names; no body carries a traceback, a filesystem path,
+      or a ".py" suffix — including a member refusal whose message quotes a
+      leaked store URL; and a call site that omits the class still answers a
+      class (the default). Feature 4's existing tests stay green unchanged
+      (they assert code and message, which are untouched).
+    </step>
+    <step>
+      Phase 4 — verify. Run the api member's own suite (uv run pytest
+      packages/api/tests) and the repository-level suite (uv run pytest tests/),
+      both, and confirm all pass. Lint only the changed files against a sibling
+      (the repo lint is red on main).
+    </step>
+  </implementation_steps>
+  <success_criteria>
+    Every refusal the api member answers — 400, 404, 405, 503 (unconfigured and
+    member), 501 and 500 — carries a non-empty error class alongside the code
+    word and the message
+    The member-refusal class names the refusal the served member raised, and the
+    transport's own doors answer their own stable class names
+    No response body carries a traceback, a filesystem path, or a module path
+    Feature 4's envelope (code, message) and every route's status and success
+    behaviour are unchanged; all existing workspace and member tests still green
+  </success_criteria>
+</project_specification>

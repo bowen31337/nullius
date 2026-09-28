@@ -25,6 +25,20 @@ traceback or a filesystem path: an unexpected fault answers a generic
 internal error (the detail goes to the server's log, class name only),
 because a body an operator reads is not a place to leak a stack.
 
+**Every refusal carries its class.**  The envelope :func:`error_payload`
+returns is ``{"error": {"code", "class", "message"}}`` — the code word
+to tell one refusal from another, the class to route on the refusal's
+own name without parsing the message, and the message for the repair.
+Each door passes the class it knows: the transport's own refusals pass
+a stable class name they own (a constant in this module), and the
+member-refusal door passes ``type(exc).__name__`` — the very class the
+served member's traceback would name.  A class name is a word the
+refusal's owner would state, never a stack, a module path or a
+filesystem path, so carrying it keeps the envelope's own law intact
+rather than opening a second place a path could leak; the class field
+is a plain string, never the live object, so the codec and every caller
+read it the same way they read the code and the message.
+
 **The server binds 127.0.0.1 unless told otherwise.**  A deployment
 that names no host serves on the loopback interface only — the same
 local-only stance the dashboard's launch configuration takes — with
@@ -56,11 +70,17 @@ from .json_encoding import dumps
 from .routes import ResolvedRoute, resolve_routes
 
 __all__ = [
+    "COMPONENT_UNCONFIGURED_CLASS",
+    "DEFAULT_ERROR_CLASS",
     "DEFAULT_HOST",
     "DEFAULT_PORT",
     "EXECUTION_ENGINE_ENV",
     "HOST_ENV",
-    "PORT_ENV",
+    "INTERNAL_ERROR_CLASS",
+    "MALFORMED_REQUEST_CLASS",
+    "METHOD_NOT_ALLOWED_CLASS",
+    "ROUTE_NOT_IMPLEMENTED_CLASS",
+    "UNKNOWN_ROUTE_CLASS",
     "ApiConfig",
     "ApiRequest",
     "ApiRequestHandler",
@@ -70,6 +90,22 @@ __all__ = [
     "error_payload",
     "resolve_execution_engine",
 ]
+
+#: The class a refusal carries when no more specific one is named — the bare
+#: base of the envelope, so every refusal answers a class even the transport's
+#: own generic faults, and a caller never reads an absent field.
+DEFAULT_ERROR_CLASS = "Error"
+
+#: The stable class names the transport's own refusals carry — the greppable
+#: class a caller routes on, parallel to the code word. They are names the
+#: transport owns, never a traceback or a filesystem path (a class name is
+#: neither), so carrying them keeps the envelope law intact.
+UNKNOWN_ROUTE_CLASS = "UnknownRouteError"
+METHOD_NOT_ALLOWED_CLASS = "MethodNotAllowedError"
+COMPONENT_UNCONFIGURED_CLASS = "ComponentUnconfiguredError"
+ROUTE_NOT_IMPLEMENTED_CLASS = "RouteNotImplementedError"
+MALFORMED_REQUEST_CLASS = "MalformedRequestError"
+INTERNAL_ERROR_CLASS = "InternalServerError"
 
 #: The interface bound when no host is named — loopback only, so a
 #: server started casually on a workstation serves its operator and
@@ -163,20 +199,31 @@ class ApiConfig:
 # -- The error envelope ----------------------------------------------------------
 
 
-def error_payload(code: str, message: str) -> dict[str, Any]:
-    """The structured error envelope: a code word and the message.
+def error_payload(
+    code: str, message: str, *, error_class: str = DEFAULT_ERROR_CLASS
+) -> dict[str, Any]:
+    """The structured error envelope: a code word, a class and the message.
 
     The one shape every refusal answers — feature 4's *"a JSON body for
     every response"* made decidable: a caller reads ``error.code`` to
-    tell one refusal from another and ``error.message`` for the repair,
-    and never a traceback or a filesystem path, because the messages
-    passed here are composed from names the operator can act on (the
-    path asked for, the component not configured, the member's own
-    operator-facing refusal text).  The spec's later features extend
-    the payload with the error class; the shape they extend is this
-    one.
+    tell one refusal from another, ``error.class`` to route on the
+    refusal's own class without parsing the message, and ``error.message``
+    for the repair, and never a traceback or a filesystem path, because
+    the messages and classes passed here are composed from names the
+    operator can act on (the path asked for, the component not
+    configured, the member's own operator-facing refusal text and the
+    class the member's own traceback would name).  A class name is a
+    word the refusal's owner would state — never a stack, a module path
+    or a filesystem path — so carrying it keeps the envelope's own law
+    intact rather than opening a second place a path could leak.
+
+    ``error_class`` is keyword-only with a default, so every call site
+    and every existing test that named only the code and the message
+    keeps working unchanged: the envelope *gains* a field, it is not
+    reshaped.  A call site that names no class still answers one — the
+    bare base — so a caller never reads an absent field.
     """
-    return {"error": {"code": code, "message": message}}
+    return {"error": {"code": code, "class": error_class, "message": message}}
 
 
 # -- The request the adapters see ------------------------------------------------
@@ -451,6 +498,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                     "internal_error",
                     "the response could not be encoded; the server log "
                     "names the cause",
+                    error_class=INTERNAL_ERROR_CLASS,
                 )
             ).encode("utf-8")
         self.send_response(status)
@@ -479,12 +527,11 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             self.send_response(code, message)
             self.send_header("Connection", "close")
             self.send_header("Content-Type", "application/json")
+            reason = self.responses[code][0] if code in self.responses else "Error"
             payload = error_payload(
-                _snake_case(
-                    self.responses[code][0] if code in self.responses else "Error"
-                ),
-                message
-                or (self.responses[code][0] if code in self.responses else "refused"),
+                _snake_case(reason),
+                message or reason,
+                error_class=_snake_case(reason),
             )
             body = dumps(payload).encode("utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -523,6 +570,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                         "internal_error",
                         "the request could not be answered; the server "
                         "log names the cause",
+                        error_class=INTERNAL_ERROR_CLASS,
                     ),
                 )
             except Exception:  # noqa: BLE001 - a broken socket cannot be told
@@ -548,6 +596,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                     "the routes app_spec.xml's api_endpoints_summary "
                     "states; the repair is a spelled route, not a "
                     "shorter or longer variant of one",
+                    error_class=UNKNOWN_ROUTE_CLASS,
                 ),
             )
             return
@@ -561,6 +610,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                     f"{verb} {path} is not served; the route answers "
                     f"{', '.join(allowed)}. The repair is the route's "
                     "own verb",
+                    error_class=METHOD_NOT_ALLOWED_CLASS,
                 ),
                 extra_headers={"Allow": ", ".join(allowed)},
             )
@@ -579,6 +629,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                     "that member resolves; an empty store is then "
                     "answered as the honest absence, never as a "
                     "fabricated figure",
+                    error_class=COMPONENT_UNCONFIGURED_CLASS,
                 ),
             )
             return
@@ -594,6 +645,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                     "serving behaviour lands with the spec's per-route "
                     "features; the composed component is configured and "
                     "was resolved for this request",
+                    error_class=ROUTE_NOT_IMPLEMENTED_CLASS,
                 ),
             )
             return
@@ -601,21 +653,35 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
         try:
             status, payload = adapter(resolved.endpoint, ApiRequest(verb, path, query))
         except _MalformedRequest as exc:
-            self._write_json(400, error_payload(exc.code, exc.message))
+            # The one refusal the transport owns: it carries its own code
+            # word and the operator-facing message; the class is the
+            # transport's own malformed-request class.
+            self._write_json(
+                400,
+                error_payload(exc.code, exc.message, error_class=MALFORMED_REQUEST_CLASS),
+            )
             return
         except Exception as exc:  # noqa: BLE001 - the member/500 split is the point
             if _is_member_refusal(exc):
                 # A served member's own typed refusal — operator-facing
                 # by the workspace's law, answered with the member's
                 # message verbatim (it names the code word and the one
-                # repair), never retried and never answered around.
+                # repair), never retried and never answered around.  The
+                # class is the refusal's own — ``type(exc).__name__``,
+                # the very class the member's traceback would name — so
+                # carrying it is not the leak the envelope law forbids: a
+                # class name is a word the member owns, never a stack, a
+                # module path or a filesystem path.
                 log.debug(
                     "member refusal serving %s %s: %s",
                     verb,
                     path,
                     type(exc).__name__,
                 )
-                self._write_json(503, error_payload("member_refusal", str(exc)))
+                self._write_json(
+                    503,
+                    error_payload("member_refusal", str(exc), error_class=type(exc).__name__),
+                )
                 return
             # An unexpected fault: the body stays generic (no traceback,
             # no filesystem path, no echoed detail), and the log carries
@@ -631,6 +697,7 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                     "internal_error",
                     "the request could not be answered; the server log "
                     "names the cause",
+                    error_class=INTERNAL_ERROR_CLASS,
                 ),
             )
             return
