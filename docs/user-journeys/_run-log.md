@@ -52,7 +52,7 @@ These are specified for claw-forge in [`additions_spec_journeys.xml`](../../addi
 
 Note: on an empty store the canary lamp reads `ok`. That is by design: feature 342's canary lamp is never absent, and "no halt recorded" means healthy. It is not a finding.
 
-## Run 17 — 2026-09-29, the bearer-token gate (feature 18)
+## Implementation note (not a browser run): the bearer-token gate, feature 18, 2026-09-29
 
 - **Branch:** `feat/http-api-transp-system-requires-a-bearer-token-o-08d2ad`.
 - **Checker:** `packages/api/tests/test_auth.py` (the token file's contract)
