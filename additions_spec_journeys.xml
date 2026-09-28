@@ -1,0 +1,202 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — user-journey gaps (HTTP API transport, status-decidable refusals, operator dashboard completeness)</project_name>
+  <addition_summary>
+    Close the gaps a browser validation of the system's user journeys found
+    (docs/user-journeys/RESULTS.md, run 1). app_spec.xml's
+    api_endpoints_summary promises ten HTTP routes — POST /target, POST
+    /ledger/debit, GET /ledger/k-effective, POST /promotion/pre-register, POST
+    /forward/promote, GET /forward/decay, POST /risk/halt, GET
+    /metrics/fdr-deploy, GET /metrics/instrument-status and GET
+    /metrics/regime-coverage — and every one exists only as an in-process
+    endpoint object (FdrDeployEndpoint, DebitEndpoint, HaltEndpoint, …) with a
+    route constant and a get/post method; nothing serves them over HTTP, so
+    every API journey ends in ERR_CONNECTION_REFUSED. This addition ships a new
+    `api` workspace member that serves the composed application's endpoints
+    over HTTP with JSON bodies and a decidable status for every outcome, gives
+    three endpoints the distinct refusal classes that make that status
+    decidable, and completes the Streamlit operator dashboard with the two
+    elements app_spec.xml's ui_layout and the M5 ux line require but the page
+    does not render — the three instrument lamps in permanent chrome and the
+    provenance triple beside FDR_deploy — plus an operator-facing refusal and a
+    local-only launch configuration.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (members under packages/*, composed by src/app/module_loader.create_app) / SQLite stores addressed by DATABASE_URL / pytest (ruff conventions)</stack>
+    <test_baseline>workspace suite tests/ 1579 passing; member suites under packages/*/tests (ops, promotion, forward, providers …) all passing on main</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, stdlib-first
+      members (a member adds no third-party lockfile edge unless it must),
+      docstrings citing app_spec.xml feature numbers and
+      docs/nullius-tech-architecture.md sections, refusals raised as typed
+      errors whose message opens with a greppable code word and names the one
+      repair, degrade-don't-break composition (a builder returns None when its
+      environment is unconfigured), @register only in a package __init__,
+      cross-member imports deferred past module scope. Tests assert observed
+      behaviour with narrative docstrings. Member suites and the workspace
+      suite are run as separate pytest invocations.
+    </conventions>
+  </existing_context>
+  <!-- uv-workspace makes plugin="api" resolve to packages/api/**, and
+       plugin="ops"/"forward"/"promotion" to their packages/<name>/** trees. -->
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Status-Decidable Refusals">
+      <feature index="1" shape="plugin" plugin="promotion" touches_files="packages/promotion/src/promotion/errors.py,packages/promotion/src/promotion/pre_register.py,packages/promotion/tests/test_promotion_pre_register.py">
+        <description>System raises PromotionConflictError, a subclass of PromotionError, when a node is re-registered with different criteria, which returns an error message naming both criteria hashes, so a caller can tell a conflict from a malformed request</description>
+      </feature>
+      <feature index="2" shape="plugin" plugin="promotion" depends_on="1" touches_files="packages/promotion/src/promotion/errors.py,packages/promotion/src/promotion/pre_register.py,packages/promotion/tests/test_promotion_pre_register.py">
+        <description>System raises PromotionParentAbsentError, a subclass of PromotionStoreError, when a pre-registration names a node or epoch row that does not exist, which returns an error message naming the absent row, so a caller can tell a missing parent from an unwritable store</description>
+      </feature>
+      <feature index="3" shape="plugin" plugin="forward" touches_files="packages/forward/src/forward/errors.py,packages/forward/src/forward/decay.py,packages/forward/src/forward/record.py,packages/forward/tests/test_forward_decay.py,packages/forward/tests/test_forward_record.py">
+        <description>System raises ForwardAbsentError, a subclass of ForwardStoreError, when a decay curve is asked for a node with no forward record or no observation yet, or a promotion names a node with no node row, which returns an error message naming the node, so a caller can tell an absence from a store failure</description>
+      </feature>
+    </category>
+    <category name="HTTP API Transport">
+      <feature index="4" shape="plugin" plugin="api" touches_files="packages/api/**,packages/api/pyproject.toml">
+        <description>System serves the composed application over HTTP from the api workspace member built on the standard library's ThreadingHTTPServer with python -m nullius_api, which returns a JSON body for every response and binds 127.0.0.1 by default</description>
+      </feature>
+      <feature index="5" shape="plugin" plugin="api" depends_on="4">
+        <description>System answers every refusal as a structured JSON error carrying the code word, the error class and the message, which returns 400 for a malformed body, 404 for an unknown path, 405 with an Allow header for a wrong verb and 503 naming the missing configuration for an unconfigured component, and never includes a traceback or a filesystem path</description>
+      </feature>
+      <feature index="18" shape="plugin" plugin="api" depends_on="5">
+        <description>System requires a bearer token on every route except GET /healthz, read from the token file NULLIUS_API_TOKENS_FILE names with each token scoped to metrics:read, research, evaluator or risk, which returns 401 for a missing or unknown token, 403 for a token outside the route's scope, and refuses to start when no token is configured</description>
+      </feature>
+      <feature index="19" shape="plugin" plugin="api" depends_on="5">
+        <description>System caps a request body at 1 MiB and a socket read at 10 seconds, which returns 413 for an oversized body and 408 for a request that stalls, so one slow caller cannot hold a worker the halt route needs</description>
+      </feature>
+      <feature index="20" shape="plugin" plugin="api" depends_on="18">
+        <description>System emits one structured access-log record per request carrying the token's scope name, verb, route, status and latency and never the request body or the token, which saves to the nullius_api.access logger</description>
+      </feature>
+      <feature index="21" shape="plugin" plugin="api" depends_on="18">
+        <description>System refuses to bind a non-loopback host unless NULLIUS_API_TLS_CERT and NULLIUS_API_TLS_KEY name a certificate and key, which returns a startup error message naming the missing file, and serves HTTPS through the standard library's ssl module when they do, so a bearer token never crosses a network in cleartext</description>
+      </feature>
+      <feature index="6" shape="plugin" plugin="api" depends_on="5">
+        <description>System serves GET /metrics/fdr-deploy, GET /metrics/instrument-status and GET /metrics/regime-coverage as JSON, which returns 200 with null or empty fields when the store holds no rows rather than a fabricated zero, and 503 with the code word for a store failure</description>
+      </feature>
+      <feature index="7" shape="plugin" plugin="api" depends_on="5">
+        <description>System serves POST /ledger/debit and GET /ledger/k-effective as JSON, which returns 201 for an appended charge and 200 with the same sequence number for an idempotent retry</description>
+      </feature>
+      <feature index="8" shape="plugin" plugin="api" depends_on="2,5">
+        <description>System serves POST /promotion/pre-register as JSON, which returns 201 for a new registration, 200 for an identical retry, 409 when the node is re-registered with different criteria and 422 when the node or epoch row is absent</description>
+      </feature>
+      <feature index="9" shape="plugin" plugin="api" depends_on="3,5">
+        <description>System serves POST /forward/promote and GET /forward/decay?node_id= as JSON, which returns 404 for a node with no forward record or no observation yet and 503 only for a store failure</description>
+      </feature>
+      <feature index="10" shape="plugin" plugin="api" depends_on="5">
+        <description>System serves POST /target as JSON, which returns 404 for a node the sidecar does not know and an identical 503 refusal for a known null node and a known real node when no target series supply is wired</description>
+      </feature>
+      <feature index="11" shape="plugin" plugin="api" depends_on="5">
+        <description>System serves POST /risk/halt against an execution engine bound at server start from NULLIUS_EXECUTION_ENGINE, which returns 200 with the kill instruction and flatten result, and returns 503 execution_engine_unbound when no engine is bound</description>
+      </feature>
+      <feature index="12" shape="plugin" plugin="api" depends_on="6,7,8,9,10,11">
+        <description>System serves GET / as an HTML index listing every route with its verb and whether its component is configured, and GET /healthz, which returns 200</description>
+      </feature>
+      <feature index="13" shape="plugin" plugin="api" depends_on="4">
+        <description>System seeds a demo metrics store through the members' public stores with python -m nullius_api.demo, which saves to the named database closed-campaign FDR rows, sealed epochs, regime coverage, instrument readings, a pre-registered and decided node with forward observations, trial-ledger charges and node rows carrying the provenance triple, and provides an in-memory paper execution engine for the halt route</description>
+      </feature>
+    </category>
+    <category name="Operator Dashboard Completeness">
+      <feature index="14" shape="plugin" plugin="ops" touches_files="packages/ops/src/ops/chrome.py,packages/ops/src/ops/dashboard.py,packages/ops/tests/test_chrome.py,packages/ops/tests/test_dashboard.py">
+        <description>System displays the canary, KS guard and ingest instrument lamps in the dashboard's permanent chrome on every render, which shows each lamp as lit or dark and a lamp with no reading as no reading rather than lit</description>
+      </feature>
+      <feature index="15" shape="plugin" plugin="ops" depends_on="14" touches_files="packages/ops/src/ops/dashboard.py,packages/ops/tests/test_dashboard.py">
+        <description>System displays the newest campaign's provenance triple of evaluator_hash, snapshot_hash and cost_model_hash beside FDR_deploy on the primary panel, read from that campaign's node rows, which shows provenance unrecorded when no node carries it and displays a mixed provenance error message when the campaign's nodes disagree</description>
+      </feature>
+      <feature index="16" shape="plugin" plugin="ops" depends_on="15" touches_files="packages/ops/src/ops/dashboard.py,packages/ops/tests/test_dashboard.py">
+        <description>System displays a dashboard refusal as an operator-facing error message naming the code word and the one repair with no traceback, and displays each point of the FDR_deploy trend labelled by its campaign's computed_at instant rather than a bare index</description>
+      </feature>
+    </category>
+    <category name="Journey Verification">
+      <feature index="17" shape="plugin" plugin="api" depends_on="12,13,16,18,19,20,21">
+        <description>System passes an end-to-end test that boots the HTTP server on an ephemeral port against a seeded demo store and asserts each route returns its documented HTTP status code for success, retry, absence, refusal, missing token and out-of-scope token, and that no response body contains a traceback</description>
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    New workspace member packages/api (import name nullius_api), joining the
+    workspace through the root packages/* glob with no edit to the root
+    pyproject.toml; its dependencies are the workspace members whose endpoints
+    it serves (ops, ledger, promotion, forward, nulloracle, risk)
+    The server composes the application with app.module_loader.create_app()
+    and looks components up with Application.get(name): ops-fdr-deploy,
+    ops-instrument-status, ops-regime-coverage, ledger-debit,
+    ledger-k-effective, nulloracle-target-route, risk-halt, forward-decay;
+    the promotion and forward components return stores, so the server wraps
+    them as PreRegisterEndpoint and PromoteEndpoint
+    Entrypoint python -m nullius_api (flags --host, --port; environment
+    NULLIUS_API_HOST, NULLIUS_API_PORT, NULLIUS_EXECUTION_ENGINE as a
+    module:attribute path to the engine bound to /risk/halt)
+    promotion/pre_register.py and forward/record.py, forward/decay.py gain the
+    new refusal subclasses; existing except clauses keep catching them because
+    each new class subclasses the class raised today
+    ops/dashboard.py and ops/chrome.py read the lamps through the member's
+    InstrumentStatusEndpoint and the triple from the node table; the
+    dashboard's streamlit-run entrypoint stays packages/ops/src/ops/dashboard.py
+    Covered by packages/api/tests, packages/promotion/tests,
+    packages/forward/tests and packages/ops/tests
+  </integration_points>
+  <constraints>
+    The api member uses only the standard library for HTTP (http.server,
+    json); it adds no third-party dependency to uv.lock
+    The api member scaffold (packages/api/pyproject.toml, its dependency
+    set, uv.lock and the src/app/modules/api seat) and the repository's
+    .streamlit/config.toml are already committed; no feature edits the
+    manifest, the lockfile or that configuration
+    Streamlit stays out of the workspace lockfile: the dashboard is run with
+    uv run --with streamlit, as packages/ops/pyproject.toml records
+    Must not modify src/app/module_loader.py, the root pyproject.toml,
+    pytest.ini, migrations/** or any existing endpoint's success behaviour;
+    the new refusal classes subclass the classes raised today so every
+    existing caller and test keeps passing
+    The server never fabricates a figure: an empty store answers null or an
+    empty collection, never 0.0
+    The POST /target refusal for a known node must be byte-identical for null
+    and real nodes (docs §7.2's information barrier)
+    No response body and no dashboard refusal contains a traceback or a
+    filesystem path
+    The server binds 127.0.0.1 unless a host is given explicitly, and it
+    never serves a route other than GET /healthz without a valid bearer
+    token; a missing token file is a refusal to start, not an open server
+    Tokens and request bodies are never written to a log
+    All existing workspace and member tests must stay green
+  </constraints>
+  <implementation_steps>
+    <phase name="Phase 1: Status-Decidable Refusals and HTTP API Transport core">
+      Add PromotionConflictError and PromotionParentAbsentError to promotion,
+      and ForwardAbsentError to forward, each subclassing the class raised
+      today
+      Add the api member: ThreadingHTTPServer, JSON encoding of dataclasses,
+      dates, datetimes, UUIDs and Decimals, route table, and the structured
+      error envelope with the status mapping
+    </phase>
+    <phase name="Phase 2: HTTP API Transport routes">
+      Serve the three metrics routes, the two ledger routes, pre-register,
+      forward promote and decay, target and halt, each through the composed
+      component
+      Serve the HTML index and /healthz; add the demo seed and the paper engine
+      Require scoped bearer tokens, cap body size and read time, and emit the
+      per-request access log
+    </phase>
+    <phase name="Phase 3: Operator Dashboard Completeness">
+      Add the instrument lamps to the permanent chrome and the provenance
+      triple to the primary panel; render refusals as an operator-facing panel;
+      label the trend by computed_at
+    </phase>
+    <phase name="Phase 4: Journey Verification">
+      Add the end-to-end test that boots the server against the seeded demo
+      store and exercises every route and status
+    </phase>
+  </implementation_steps>
+  <success_criteria>
+    Every route except /healthz refuses a request without a valid, in-scope
+    bearer token
+    Every route in app_spec.xml's api_endpoints_summary answers over HTTP with
+    a JSON body and the documented status for success, retry, absence and
+    refusal
+    The dashboard shows FDR_deploy with its provenance triple, three
+    instrument lamps and the remaining clean epoch count, and refuses without
+    a traceback
+    docs/user-journeys J1-J14 all pass in a browser run
+    All existing workspace and member tests still green; new tests green
+  </success_criteria>
+</project_specification>

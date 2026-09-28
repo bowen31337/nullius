@@ -15,6 +15,7 @@ members = [
     "forward",
     "ledger",
     "nullius",
+    "nullius-api",
     "nullius-contract",
     "nullius-feature-store",
     "nullius-ingest",
@@ -308,6 +309,31 @@ dev = [
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.0" }]
+
+[[package]]
+name = "nullius-api"
+version = "0.1.0"
+source = { editable = "packages/api" }
+dependencies = [
+    { name = "forward" },
+    { name = "ledger" },
+    { name = "nullius" },
+    { name = "nulloracle" },
+    { name = "ops" },
+    { name = "promotion" },
+    { name = "risk" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "forward", editable = "packages/forward" },
+    { name = "ledger", editable = "packages/ledger" },
+    { name = "nullius", editable = "." },
+    { name = "nulloracle", editable = "packages/nulloracle" },
+    { name = "ops", editable = "packages/ops" },
+    { name = "promotion", editable = "packages/promotion" },
+    { name = "risk", editable = "packages/risk" },
+]
 
 [[package]]
 name = "nullius-contract"

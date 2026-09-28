@@ -1,0 +1,37 @@
+# The "api" workspace member — the HTTP transport over the composed
+# application (additions_spec_journeys.xml; app_spec.xml's
+# <api_endpoints_summary>).
+#
+# Every route app_spec.xml promises already exists as an in-process
+# endpoint object owned by the member whose data it answers
+# (ops.FdrDeployEndpoint, ledger.DebitEndpoint, risk.HaltEndpoint, ...).
+# This member owns none of them: it composes the application with
+# app.module_loader.create_app(), looks each endpoint up by component
+# name, and serves it over HTTP with JSON bodies and a decidable status.
+#
+# Standard library only for HTTP (http.server, json), so the lockfile
+# gains no third-party edge; the dependencies below are all workspace
+# members, the ones whose endpoints this member serves.
+
+[project]
+name = "nullius-api"
+version = "0.1.0"
+description = "HTTP transport: serves the composed application's endpoints as JSON over the standard library's HTTP server."
+requires-python = ">=3.12"
+dependencies = ["nullius", "ops", "ledger", "promotion", "forward", "nulloracle", "risk"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+nullius = { workspace = true }
+ops = { workspace = true }
+ledger = { workspace = true }
+promotion = { workspace = true }
+forward = { workspace = true }
+nulloracle = { workspace = true }
+risk = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nullius_api"]

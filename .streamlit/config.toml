@@ -1,0 +1,26 @@
+# Streamlit settings for the operator dashboard
+# (packages/ops/src/ops/dashboard.py, app_spec.xml feature 351).
+# Streamlit reads this file when launched from the repository root:
+#
+#   DATABASE_URL=sqlite:////abs/path.db uv run --all-packages --with streamlit \
+#     streamlit run packages/ops/src/ops/dashboard.py
+#
+# See docs/user-journeys/J07-dashboard-exposure.md.
+
+[server]
+# Local only. Streamlit's default binds every interface and prints a public
+# "External URL"; an operator console is not a public page. To expose it,
+# pass --server.address explicitly (and put it behind authentication).
+address = "127.0.0.1"
+headless = true
+
+[client]
+# Tracebacks and source paths stay in the server log, not the browser. This
+# also removes the "Ask Google / Ask ChatGPT" links that would send error
+# text to third-party services.
+showErrorDetails = "none"
+# Hides the "Deploy" (publish to Streamlit Community Cloud) button.
+toolbarMode = "viewer"
+
+[browser]
+gatherUsageStats = false
