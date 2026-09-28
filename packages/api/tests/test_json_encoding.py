@@ -133,6 +133,71 @@ def test_a_non_text_key_is_refused_by_name() -> None:
 
 
 @pytest.mark.parametrize(
+    "key",
+    [1, 1.5, None, ("a", "b"), b"bytes", Path("/tmp/nowhere.db"), _Opaque(), print],
+)
+def test_a_key_outside_the_vocabulary_is_refused_rather_than_re_spelled(
+    key,
+) -> None:
+    """``str()`` of a key is how a repr nobody chose — a path, an object,
+    a tuple's punctuation — would reach a body one mapping key away from
+    the values the codec already refuses for the same reason."""
+    with pytest.raises(JsonEncodingError) as raised:
+        dumps({key: "value"})
+    assert "key" in str(raised.value)
+
+
+def test_a_date_key_spells_itself_as_the_value_of_the_same_date() -> None:
+    """§7.2's target series is keyed by rebalance date, and a JSON
+    object's keys are text — so the date spells itself exactly as the
+    same date spells *itself* as a value.  One rule, one spelling: a
+    body keyed by ``{"2026-01-05": …}`` is what the member's own request
+    record accepts back."""
+    day = dt.date(2026, 1, 5)
+    assert json.loads(dumps({day: 0.01})) == {"2026-01-05": 0.01}
+    assert dumps(day) == '"2026-01-05"'
+
+
+def test_a_uuid_and_a_decimal_key_spell_themselves_too() -> None:
+    """The other scalars the vocabulary already spells canonically — a
+    UUID's hyphenated text and a Decimal's exact text — spell their keys
+    the same way, because it is the same value under the same rule."""
+    identity = uuid.UUID("00000000-0000-0000-0000-000000000001")
+    assert json.loads(dumps({identity: 1})) == {
+        "00000000-0000-0000-0000-000000000001": 1
+    }
+    # The Decimal keeps its exact text as a key, never a float — the same
+    # reasoning the value rule gives.
+    assert list(json.loads(dumps({Decimal("0.1"): 1}))) == ["0.1"]
+
+
+def test_two_keys_that_would_spell_one_text_are_refused() -> None:
+    """A date and its own ISO string are one bar stated twice.  Merging
+    them would silently drop an entry the member wrote — the same "one
+    bar, one answer" rule the null oracle's own record states over the
+    same series."""
+    with pytest.raises(JsonEncodingError) as raised:
+        dumps({dt.date(2026, 1, 5): 0.01, "2026-01-05": 0.02})
+    assert "same JSON object key" in str(raised.value)
+
+
+def test_a_series_keyed_by_dates_answers_the_wire_spelling() -> None:
+    """The whole shape §7.2's payload takes: an object per rebalance date,
+    each row an object per symbol — the target series a caller parses."""
+    series = {
+        dt.date(2026, 1, 5): {"BTCUSDT": 0.01, "ETHUSDT": -0.02},
+        dt.date(2026, 1, 6): {"BTCUSDT": 0.03, "ETHUSDT": -0.04},
+    }
+    assert json.loads(dumps({"target_series": series, "charges_budget": True})) == {
+        "target_series": {
+            "2026-01-05": {"BTCUSDT": 0.01, "ETHUSDT": -0.02},
+            "2026-01-06": {"BTCUSDT": 0.03, "ETHUSDT": -0.04},
+        },
+        "charges_budget": True,
+    }
+
+
+@pytest.mark.parametrize(
     "value",
     [
         {"reading": b"\x00\x01"},

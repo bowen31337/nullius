@@ -34,6 +34,17 @@ The rules are the workspace's own, restated as encodings:
 * **``None`` answers ``null``, tuples answer arrays**, mappings answer
   objects.  An empty store therefore answers ``null`` fields and empty
   collections straight through — the honest-absence law, at the codec.
+* **A mapping key is text, or one of the scalars that spell themselves
+  as text.**  A JSON object's keys are strings, so the members' key
+  vocabulary has to reach the wire as text: the ones that already name
+  a canonical spelling do so through the rule above and nothing new —
+  §7.2's target series is keyed by ``{rebalance date: {symbol: return}}``,
+  and a calendar date spells itself exactly as an ISO date *value* does,
+  because it is the same date under the same rule.  Anything else (an
+  ``int`` key, a tuple, ``None``) is refused by name rather than
+  coerced, and two keys that would spell one text are refused rather
+  than silently collapsed — the same "one bar, one answer" rule
+  :func:`nulloracle.target.TargetResponse` states over the same series.
 
 And the refusals are as deliberate as the encodings.  A value the codec
 cannot spell — a ``set`` (no order to promise), ``bytes`` (no honest
@@ -94,6 +105,37 @@ def dumps(value: Any) -> str:
     return json.dumps(_encode(value), allow_nan=False)
 
 
+def _encode_key(key: Any) -> str:
+    """Spell one mapping key as the text a JSON object key must be.
+
+    A ``str`` is already the answer.  The scalars the value vocabulary
+    spells through their own text form (:data:`_TEXT_SCALARS` — a
+    ``date``, a ``datetime``, ``time``, ``UUID`` or ``Decimal``) spell
+    their *keys* the same way they spell their values, because a JSON
+    object's keys are strings and the alternative would be a second
+    spelling of one date: ``{date(2026, 1, 5): …}`` must reach the wire
+    as ``{"2026-01-05": …}``, which is exactly what that date answers as
+    a value and exactly what
+    :func:`nulloracle.target.TargetRequest` accepts back.
+
+    Everything else is refused by name.  ``str()`` of an ``int``, a
+    tuple, ``None`` or an arbitrary object is a re-spelling nobody chose
+    — and for a path or an object it is the repr leak this module exists
+    to close, one mapping key away from a body.
+    """
+    if isinstance(key, str):
+        return key
+    if isinstance(key, _TEXT_SCALARS):
+        return key.isoformat() if isinstance(key, dt.date) else str(key)
+    raise JsonEncodingError(
+        f"a JSON object key must be text (or a value that spells one "
+        f"canonically — a date, datetime, time, UUID or Decimal); got a "
+        f"key of type {type(key).__name__}. The members key their mappings "
+        "by campaign id, stratum name and §7.2's rebalance dates, so a key "
+        "outside that vocabulary is refused rather than re-spelled"
+    )
+
+
 def _encode(value: Any) -> Any:
     """Reduce ``value`` to JSON-native structures, or refuse by name."""
     # The natives pass straight through.  bool is checked before int is
@@ -133,21 +175,32 @@ def _encode(value: Any) -> Any:
         return value.isoformat() if isinstance(value, (dt.date,)) else str(value)
 
     if isinstance(value, Mapping):
-        # Keys must already be text.  Coercing a non-text key would be a
-        # second spelling of the key the member chose; the responses
-        # this member serves key by campaign id and stratum name, and a
-        # key that is not text is refused rather than re-spelled.
+        # Keys are spelled by the same rules the values are, so the
+        # members' key vocabulary reaches the wire unchanged: text stays
+        # itself, and a scalar that already names a canonical text form
+        # (§7.2's target series is keyed by calendar date) is spelled
+        # exactly as that same date is spelled as a value.  Coercing
+        # anything else — ``str(1)``, ``str(("a", "b"))``, ``str(None)``
+        # — would be a second spelling of a key the member chose, and
+        # ``str()`` of a path or an object is precisely how a repr nobody
+        # chose would reach a body.
         encoded: dict[str, Any] = {}
         for key, item in value.items():
-            if not isinstance(key, str):
+            text = _encode_key(key)
+            if text in encoded:
+                # Two keys spelling one text would silently collapse into
+                # one entry — the last writer winning a bar that the
+                # member stated twice.  Refused, for the same reason
+                # :class:`nulloracle.target.TargetResponse` refuses a
+                # series carrying one day under two spellings: one bar,
+                # one answer.
                 raise JsonEncodingError(
-                    f"a JSON object key must be text; got a key of type "
-                    f"{type(key).__name__} ({key!r}). The members key "
-                    "their mappings by campaign id and stratum name, so a "
-                    "non-text key is a value the transport refuses to "
-                    "re-spell rather than silently coercing"
+                    f"a mapping carries two keys that spell the same JSON "
+                    f"object key {text!r}; one entry would silently shadow "
+                    "the other and the reader would see one where the "
+                    "member stated two"
                 )
-            encoded[key] = _encode(item)
+            encoded[text] = _encode(item)
         return encoded
 
     if isinstance(value, (list, tuple)):

@@ -57,10 +57,11 @@ fabricated here, so an empty store reaches the wire as the honest
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import os
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -81,6 +82,7 @@ __all__ = [
     "MALFORMED_REQUEST_CLASS",
     "METHOD_NOT_ALLOWED_CLASS",
     "ROUTE_NOT_IMPLEMENTED_CLASS",
+    "TARGET_UNKNOWN_NODE_CLASS",
     "UNKNOWN_ROUTE_CLASS",
     "ApiConfig",
     "ApiRequest",
@@ -108,6 +110,30 @@ ROUTE_NOT_IMPLEMENTED_CLASS = "RouteNotImplementedError"
 MALFORMED_REQUEST_CLASS = "MalformedRequestError"
 INTERNAL_ERROR_CLASS = "InternalServerError"
 EXECUTION_ENGINE_UNBOUND_CLASS = "ExecutionEngineUnboundError"
+
+#: The status the null oracle's ``POST /target`` answers for a node the
+#: sidecar does not hold: §7.2's route reports *unknown node* as a fact
+#: about the world, and the feature's own clause is *which returns 404
+#: for a node the sidecar does not know*.  Named here rather than left as
+#: a bare literal because the adapter below is the one door that reads
+#: the member's status off a response, and the pair is the member's own
+#: closed vocabulary (:data:`nulloracle.target.STATUS_CODES`).
+TARGET_NOT_FOUND = 404
+
+#: The class a ``POST /target`` 404 carries.  The transport's own name
+#: for the one *answer* it relays — the member calls this state a fact
+#: rather than a failure (:class:`nulloracle.errors.TargetRouteError`'s
+#: docstring states the distinction), so the class says what the body is:
+#: an unknown node, not a refusal this server made.
+TARGET_UNKNOWN_NODE_CLASS = "TargetUnknownNodeError"
+
+#: The body field the null oracle's answer carries its payload under —
+#: §7.2's ``target_series``, and ``charges_budget`` beside it.  Spelled
+#: here as the wire names the member's own record already answers with
+#: (:class:`nulloracle.target.TargetResponse`'s field names), so the
+#: adapter recognises a payload by the names the contract uses.
+_TARGET_SERIES_FIELD = "target_series"
+_TARGET_BUDGET_FIELD = "charges_budget"
 
 #: The interface bound when no host is named — loopback only, so a
 #: server started casually on a workstation serves its operator and
@@ -245,13 +271,21 @@ class ApiRequest:
     bind (:data:`EXECUTION_ENGINE_ENV`, read once at server start), not
     anything this particular request carries, so it rides in on every
     ``ApiRequest`` rather than reopening the adapter signature for the
-    one route that needs it.
+    one route that needs it.  ``body`` is the parsed JSON object a POST
+    carried, or ``None`` for every request that carried none — read by
+    the dispatch through :meth:`ApiRequestHandler._read_json_body`
+    *before* the route is looked up, so the socket is left positioned at
+    the next request on this keep-alive connection and a body that
+    cannot be read is refused by the reader's own 400 rather than by
+    whichever adapter happened to be asked.  The size and time caps on
+    that read are the body-limit feature's half and land in the reader.
     """
 
     verb: str
     path: str
     query: Mapping[str, str]
     execution_engine: Any = None
+    body: Any = None
 
 
 # -- The adapters ----------------------------------------------------------------
@@ -296,13 +330,25 @@ def _forward_decay_get(endpoint: Any, request: ApiRequest) -> tuple[int, Any]:
 
 
 class _MalformedRequest(Exception):
-    """An ask the adapter refuses before any member is reached.
+    """A request the transport refuses before any member is reached.
 
     Carries the code word and the operator-facing message itself — the
     one refusal class the transport owns, for requests that failed to
     state what they are asking.  Members' refusals (a store that cannot
-    answer, an absent row) are their own classes, caught by the
-    dispatch below and answered with the member's message.
+    answer, an absent row, §7.2's ask failing its own record's
+    validation) are their own classes, caught by the dispatch below and
+    answered with the member's message.
+
+    Two doors raise it, and feature 5 names both as 400: the *body
+    reader* (:meth:`ApiRequestHandler._read_json_body`), for a request
+    whose bytes are not the JSON object the route reads — a malformed
+    spelling, a truncation, a ``Content-Length`` that is not a byte
+    count — raised at the top of the dispatch so an unread body never
+    survives onto a kept-alive connection; and an *adapter*
+    (``_forward_decay_get``, ``_target_request``), for a request whose
+    bytes are fine and whose ask omits or misstates a term the route
+    cannot do without.  Both are the caller's to repair, which is what
+    makes them one class and one status rather than two.
     """
 
     def __init__(self, code: str, message: str) -> None:
@@ -361,6 +407,227 @@ def _risk_halt_post(endpoint: Any, request: ApiRequest) -> tuple[int, Any]:
     return 200, endpoint.post(HaltRequest(execution_engine=request.execution_engine))
 
 
+def _target_post(endpoint: Any, request: ApiRequest) -> tuple[int, Any]:
+    """Serve ``POST /target``: §7.2's ask, whose status the member decides.
+
+    The route answers in two shapes — an *answer* and a *refusal* — and
+    this adapter relays each without deciding anything itself.
+
+    **The 404 is an answer, and it is relayed rather than refused.**  A
+    node the sidecar does not hold comes back from the endpoint as a
+    :class:`~nulloracle.target.TargetResponse` whose status is
+    :data:`TARGET_NOT_FOUND`; the adapter passes that status and the
+    record's own detail through, so the unknown-node body carries *who*
+    was asked for (:attr:`TargetResponse.node_id`) beside the reason.  It
+    is deliberately not routed through the envelope the transport's own
+    refusals use: §7.2's route reports an unknown node as a fact about
+    the world, and dressing it as a server refusal would tell a caller to
+    escalate a deployment that is answering correctly.  The 404 body's
+    class names that state (:data:`TARGET_UNKNOWN_NODE_CLASS`), so a
+    caller can still tell it from every other 404 the transport answers
+    (an unknown path) by class alone.
+
+    **A known node's refusal is the member's, and it is byte-identical
+    whichever branch asked.**  When no target series supply is wired the
+    endpoint raises :class:`~nulloracle.target.TargetPayloadError` —
+    *before* the branch is chosen, so a null node and a real node raise
+    the same class with a message naming the missing supply and the node,
+    never the branch (§7.2's information barrier, feature 114's
+    same-shape promise).  The adapter does nothing to that exception: it
+    neither catches, reshapes, retries nor augments it, and the dispatch
+    below answers it through the same member-refusal door as any other
+    member's typed error.  That is the whole of the byte-identity
+    guarantee — both branches take one path, and the path has no branch
+    in it.  The *class* the caller reads is the member's own
+    (``TargetPayloadError``), which is a word §7.2 already allows across
+    the barrier: it names a missing supply, which is a deployment fact,
+    and not which node the supply was missing for.
+
+    **The ask is built by the member's own record, never by a second
+    spelling of §7.2's terms here.**  The parsed body reaches this
+    adapter on :attr:`ApiRequest.body` — the dispatch reads it, out of
+    the transport's reader, before the route table is even consulted —
+    and :func:`_target_request` hands all six terms to
+    :class:`~nulloracle.target.TargetRequest`'s constructor, so the
+    identity, depth, horizon, cross-section and date range are validated
+    by the module that owns them.  That function also carries the one
+    translation this route makes (the member's malformed-ask refusal to
+    the transport's own 400) and states why it is narrow; the caps on
+    the reader itself — the 1 MiB/10 s body feature — are that reader's
+    half and land there without reshaping this adapter.
+
+    **Nothing is fabricated.**  The payload is the endpoint's own
+    ``target_series`` and ``charges_budget``, passed straight to the
+    wire; an empty store answers its honest absence, and this adapter
+    could not invent a figure if it wanted to — it never inspects the
+    values at all.  The one field it reads is the status, which is the
+    member's testimony about the world.
+    """
+    response = endpoint.post(_target_request(request))
+    status = _target_status(response)
+    if status == TARGET_NOT_FOUND:
+        return status, _target_unknown_node_payload(response)
+    return status, response
+
+
+def _target_request(request: ApiRequest) -> Any:
+    """§7.2's ask as the endpoint's own request record.
+
+    Imported deferred, for the reason :func:`_risk_halt_post` names:
+    a module-scope cross-member import would make importing this package
+    depend on the sibling being importable first, which the workspace's
+    scan order never promises.
+
+    The record is built by the *member's* constructor, so every term
+    §7.2 names is validated by the code that owns the contract — the
+    identity as a UUID, the depth as a non-negative integer, the horizon
+    against the five the spec aligns, the symbols as a non-empty
+    cross-section and the date range as a first-to-last pair.  The
+    transport does not re-validate any of them: a second spelling of
+    §7.2's terms could disagree with the one that owns them.
+
+    **The member's malformed-ask refusal is translated to the transport's
+    own 400 at this seam.**  A term that fails validation raises the
+    member's :class:`~nulloracle.errors.TargetRouteError`, whose own
+    docstring defines it as *a body that cannot say what it is asking
+    for* — which is, word for word, what :class:`_MalformedRequest` is
+    the transport's door for, and what feature 5 promises a caller as
+    ``400``.  So the refusal is re-raised as that class, carrying the
+    member's message unchanged (it names the offending term and the one
+    repair, which is the half a caller acts on) and the transport's own
+    class for the status.  Left to the generic member-refusal door it
+    would answer 503 — *the deployment cannot serve you* — for a request
+    the *caller* can fix, which is the wrong escalation and the wrong
+    status.
+
+    The translation is deliberately narrow: it fires for the null
+    oracle's request-contract class on this route alone, and it happens
+    **before the sidecar is opened**, so whether the ask was malformed is
+    a fact about the body and never about the node the body named.  A
+    node that does not exist and a node that does are refused this way
+    identically, which is what keeps this door from becoming a second
+    channel the branch could leak through.
+
+    Every other refusal the endpoint raises — the payload/supply class in
+    particular, which is *not* the caller's to repair — propagates
+    untouched to the dispatch's member-refusal door.
+    """
+    from nulloracle import TargetRequest  # deferred past module scope
+
+    body = request.body or {}
+    try:
+        return TargetRequest(
+            node_id=body.get("node_id"),
+            campaign_id=body.get("campaign_id"),
+            depth=body.get("depth"),
+            horizon=body.get("horizon"),
+            symbols=body.get("symbols"),
+            date_range=body.get("date_range"),
+        )
+    except Exception as exc:  # re-raised unless it is the ask class
+        if not _is_target_route_refusal(exc):
+            raise
+        raise _MalformedRequest("malformed_body", str(exc)) from exc
+
+
+#: The member's request-contract class, by the one name that survives the
+#: factory's scan: the endpoint is imported under a synthetic module alias
+#: (``_nullius_scanned_nulloracle.errors``, probed rather than assumed), so
+#: a composed refusal is never an instance of the class a direct import
+#: yields and an ``isinstance`` here would never fire.  The contract is the
+#: name, and the name is what is read — the same discipline the query
+#: route's duck checks and the codec's dataclass check follow.
+_TARGET_ROUTE_REFUSAL_NAME = "TargetRouteError"
+
+
+def _is_target_route_refusal(exc: BaseException) -> bool:
+    """Whether ``exc`` is the null oracle's malformed-ask refusal.
+
+    Both halves are checked: the class *name* (see
+    :data:`_TARGET_ROUTE_REFUSAL_NAME`) and the member segment in the
+    module path, so an unrelated exception that happens to share the name
+    is not silently re-spelled as a 400.  A miss leaves the exception to
+    the dispatch's general handling, which is the safe direction — the
+    refusal keeps its own class and its 503, rather than a caller being
+    told their body was malformed when it was not.
+    """
+    if type(exc).__name__ != _TARGET_ROUTE_REFUSAL_NAME:
+        return False
+    module = type(exc).__module__ or ""
+    return any(
+        segment == "nulloracle" or segment.startswith("_nullius_scanned_")
+        for segment in module.split(".")
+    )
+
+
+def _target_status(response: Any) -> int:
+    """The status the member's answer carries, as this transport's own int.
+
+    The endpoint's record is duck-read by field name rather than by
+    ``isinstance``, for the reason every seam in this workspace gives: the
+    factory's scan imports the member under a synthetic module name, so
+    the *composed* answer is structurally a ``TargetResponse`` but never
+    an instance of any class this module could name (probed, not assumed:
+    ``type(exc).__module__`` of a composed endpoint's refusal is
+    ``_nullius_scanned_nulloracle.errors``).  The contract is the fields.
+
+    A response that carries no integer status is refused rather than
+    guessed at: the transport has no way to answer a caller about a
+    record whose own testimony it cannot read, and inventing a 200 would
+    be the fabricated answer this member exists not to serve.  The
+    refusal is the transport's *internal* fault — the composed endpoint
+    is not what the route table promised — so it is a
+    :class:`TypeError`, answered by the dispatch as the generic internal
+    error with the class name in the log and nothing on the wire.
+    """
+    status = getattr(response, "status", None)
+    if isinstance(status, bool) or not isinstance(status, int):
+        raise TypeError(
+            f"the composed endpoint serving POST /target answered a "
+            f"response whose status is {status!r} "
+            f"({type(status).__name__}); the route's answer carries the "
+            "status it reports the world with, and a record the transport "
+            "cannot read is a composition fault, not a status to invent"
+        )
+    return status
+
+
+def _target_unknown_node_payload(response: Any) -> dict[str, Any]:
+    """The body for a known route's *unknown node* answer — a 404 carrying
+    who was asked for and why the sidecar answered nothing.
+
+    §7.2's route answers 404 with *everything it knows*, which is that the
+    sidecar holds no entry for the node named — so the body carries the
+    canonical ``node_id`` and the member's own ``detail`` sentence, both
+    of them the member's words rather than the transport's.  It is a
+    :func:`error_payload` without being one of the transport's own
+    refusals: the same envelope every other body uses (so a caller parses
+    one shape) and the class naming the state
+    (:data:`TARGET_UNKNOWN_NODE_CLASS`), so an unknown node and an unknown
+    path are told apart by class rather than by message.
+
+    The payload fields are not among the body's, and a ``detail`` that is
+    absent is left out rather than spelled as ``null``: an unknown node
+    answers with no series and no directive — the member's record refuses
+    to carry either, and this body must not put a ``None`` where the
+    contract says the field does not exist.  A series on this answer would
+    be the fabricated figure the whole member refuses to serve.
+    """
+    node_id = getattr(response, "node_id", None)
+    detail = getattr(response, "detail", None)
+    return error_payload(
+        "unknown_node",
+        detail
+        or (
+            f"the sidecar holds no entry for node {node_id}; §7.2's route "
+            "answers for the nodes a campaign assigned, and a node no "
+            "sidecar holds is unknown — a fact about the world, not a "
+            "failure of the oracle"
+        ),
+        error_class=TARGET_UNKNOWN_NODE_CLASS,
+    ) | {"node_id": node_id}
+
+
 #: The adapters the transport core wires: ``(verb, path)`` → call.  The
 #: remaining POST routes are declared in the table (so their paths
 #: answer the wrong-verb refusal and the index the later features
@@ -374,6 +641,7 @@ HTTP_ADAPTERS: dict[tuple[str, str], Callable[[Any, ApiRequest], tuple[int, Any]
     ("GET", "/ledger/k-effective"): _no_argument_get,
     ("GET", "/forward/decay"): _forward_decay_get,
     ("POST", "/risk/halt"): _risk_halt_post,
+    ("POST", "/target"): _target_post,
 }
 
 
@@ -402,6 +670,82 @@ def _is_member_refusal(exc: BaseException) -> bool:
         segment in _MEMBER_SEGMENTS or segment.startswith("_nullius_scanned_")
         for segment in module.split(".")
     )
+
+
+# -- The envelope's last law: nothing on the wire names the filesystem ------------
+#
+# "No response body contains a traceback or a filesystem path" is a law
+# about the *body*, not about the class that composed it, so it is
+# enforced at the door every body leaves through rather than trusted to
+# each member's message.  A member's typed refusal is operator-facing on
+# purpose — its message names the code word and the one repair, which is
+# what makes 503 actionable — and most of those messages are about
+# figures, rows and identities, so publishing them verbatim is the
+# behaviour the workspace wants.
+#
+# But not all of them are.  A store that cannot open names Where it
+# looked: ``nulloracle``'s :class:`~nulloracle.errors.SidecarStoreError`
+# says *"no sidecar exists at /srv/nullius/z0/null/sidecar.enc"*, and
+# ``SidecarAccessError`` names the file whose mode bits are too wide.
+# Those refusals are correct — an operator reading a log needs the path —
+# so the members keep composing them; the transport simply must not
+# publish them.  The repair a *caller* acts on is the configuration that
+# named the missing store, never the deployment's own directory layout,
+# and a body is not a log.
+#
+# So the substitution is by shape, not by member: any absolute path in a
+# message is replaced with the configuration it came from, and the rest
+# of the sentence — the code word and the one repair — is published
+# unchanged.  A message carrying no path is untouched, which is every
+# refusal this route has answered until a store went missing.
+#
+# The pattern is deliberately conservative: it matches a run of
+# path-shaped text starting at a root (``/``, or a Windows drive), and it
+# stops at whitespace, a quote, or a clause boundary.  Those boundaries
+# are excluded from the match so the *matched text* is the path alone —
+# without that, ``"could not answer GET /metrics/fdr-deploy: the store
+# refused"`` would match ``/metrics/fdr-deploy:`` and the trailing colon
+# would make a served route unrecognisable.  Erring towards a *shorter*
+# match is also the safe direction for the redaction itself: a missed
+# separator means a fragment of path survives in the body.
+#
+# **A route path is not a filesystem path, and the difference is not in
+# the shape.**  Member refusals very often name the route they were
+# answering — ``"could not answer GET /metrics/fdr-deploy: the store
+# refused"`` — and that path is the *caller's own ask* coming back, the
+# same way the unknown-route refusal names it.  Redacting it would break
+# the verbatim-message law for every one of those, and no amount of
+# pattern-tuning separates ``/metrics/fdr-deploy`` from ``/srv/null`` by
+# looking at the text: both are rooted, unspaced runs.  So the separator
+# is the transport's own knowledge — the paths it actually serves, which
+# it already holds in its route table — rather than a guess about what a
+# filesystem path looks like.
+
+_PATH_IN_MESSAGE = re.compile(r"(?:[A-Za-z]:)?/[^\s'\";:,)\]]+")
+
+
+def _publish(message: str, *, served_paths: Collection[str] = ()) -> str:
+    """``message`` as a response body may carry it: no filesystem path.
+
+    See the note above: the transport redacts paths rather than asking
+    every member to stop composing the operator-facing messages that
+    legitimately contain them.  ``served_paths`` is the route table's own
+    set (see :data:`_PATH_IN_MESSAGE` for why the caller's paths are
+    exempt), and a match naming one of them is left exactly as the member
+    wrote it.
+
+    A message with no path at all is returned unchanged and unexamined, so
+    the common refusal — a figure, a row, an identity, a missing supply, a
+    route — reaches the caller word for word.
+    """
+    def _spell(match: re.Match[str]) -> str:
+        found = match.group(0)
+        # A match may carry a query string (`/forward/decay?node_id=…`);
+        # the route is the part before it.
+        route = found.split("?", 1)[0].split("#", 1)[0]
+        return found if route in served_paths else "<path>"
+
+    return _PATH_IN_MESSAGE.sub(_spell, message)
 
 
 # -- The server and its handler --------------------------------------------------
@@ -527,6 +871,72 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # the base class's own spelling
         self._dispatch()
 
+    # -- The request body -------------------------------------------------------
+
+    def _read_json_body(self) -> Any:
+        """The parsed JSON object this request carried, or ``None``.
+
+        A POST's body is one JSON object (§7.2's ask is the only body this
+        build reads), read whole off the socket and parsed through the
+        standard library's decoder.  A request that declares no
+        ``Content-Length``, declares ``0``, or carries no body at all
+        answers ``None`` — *no body was sent*, which is a different fact
+        from *a body arrived that could not be read*, and the two are kept
+        apart here for the reason every seam in this workspace keeps them
+        apart: a caller told "you sent no body" and a caller told "your
+        body was not JSON" have different repairs.
+
+        A body that is not a JSON object — malformed text, a bare array, a
+        bare number — is refused as the transport's own malformed request,
+        the 400 feature 5 promises for a malformed body.  The reader never
+        coerces and never guesses: a body it cannot read is refused by
+        name, and the exception carries no part of the body itself, so
+        nothing a caller sent can reach the log or the body through this
+        door (feature 20's law, held here before the access log exists).
+
+        **The size and time caps are this feature's other half**, and this
+        method is where they land: a declared ``Content-Length`` over the
+        cap answers 413, and a read that exceeds the deadline answers 408,
+        both raised as the transport's own refusal so the body-resolution
+        feature adds caps without reshaping this door.  Until those
+        constants arrive the read is unbounded, which is the honest state
+        of a build that has not yet been given the cap.
+        """
+        length = self.headers.get("Content-Length")
+        if length is None:
+            return None
+        try:
+            size = int(length)
+        except (TypeError, ValueError) as exc:
+            raise _MalformedRequest(
+                "malformed_content_length",
+                f"the request's Content-Length {length!r} is not a number of "
+                "bytes. The repair is a decimal byte count, or no header at "
+                "all for a request that carries no body",
+            ) from exc
+        if size <= 0:
+            return None
+        raw = self.rfile.read(size)
+        if not raw.strip():
+            return None
+        try:
+            parsed = json.loads(raw)
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise _MalformedRequest(
+                "malformed_body",
+                "the request body is not JSON. The repair is one JSON object "
+                "carrying the route's own terms; the body is not echoed back "
+                "and is not written to a log",
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise _MalformedRequest(
+                "malformed_body",
+                f"the request body is a JSON {type(parsed).__name__}, not an "
+                "object. The repair is one JSON object carrying the route's "
+                "own terms, and the body is not echoed back",
+            )
+        return parsed
+
     # -- The one writing door ---------------------------------------------------
 
     def _write_json(
@@ -637,7 +1047,34 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 self.close_connection = True
 
     def _dispatch_by_table(self) -> None:
-        """The dispatch itself: find the row, check the verb, serve."""
+        """The dispatch itself: read the body, find the row, serve.
+
+        The body is read **first**, before the table is consulted, and
+        that ordering is load-bearing rather than tidy.  The handler
+        keeps connections alive (``protocol_version`` is HTTP/1.1 and
+        every body sets an accurate ``Content-Length``), so a body left
+        unread on the socket is not discarded — it is *re-parsed as the
+        next request line*, and a caller who posted to an unknown path and
+        then reused the connection would have its second request answered
+        as garbage or not at all.  Reading here means every path out of
+        this method — the 404, the wrong-verb 405, the unconfigured 503,
+        the not-implemented 501 — leaves the socket positioned at the next
+        request.
+
+        A body the transport cannot read is refused before any of those
+        checks: feature 5 makes it a 400, the caller's own repair, and it
+        is the same refusal whether or not a route lives at the path the
+        body was posted to.
+        """
+        try:
+            body = self._read_json_body()
+        except _MalformedRequest as exc:
+            self._write_json(
+                400,
+                error_payload(exc.code, exc.message, error_class=MALFORMED_REQUEST_CLASS),
+            )
+            return
+
         verb = self.command or ""
         parts = urlsplit(self.path or "/")
         path = parts.path or "/"
@@ -711,7 +1148,11 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
             return
 
         request = ApiRequest(
-            verb, path, query, execution_engine=self.server.execution_engine
+            verb,
+            path,
+            query,
+            execution_engine=self.server.execution_engine,
+            body=body,
         )
         try:
             status, payload = adapter(resolved.endpoint, request)
@@ -753,7 +1194,14 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 )
                 self._write_json(
                     503,
-                    error_payload("member_refusal", str(exc), error_class=type(exc).__name__),
+                    error_payload(
+                        "member_refusal",
+                        _publish(
+                            str(exc),
+                            served_paths=self.server.routes_by_path.keys(),
+                        ),
+                        error_class=type(exc).__name__,
+                    ),
                 )
                 return
             # An unexpected fault: the body stays generic (no traceback,
