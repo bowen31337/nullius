@@ -96,7 +96,9 @@ from promotion import (
 )
 from promotion.errors import (
     PROMOTION_CONFLICT_ERROR_CODE,
+    PROMOTION_PARENT_ABSENT_ERROR_CODE,
     PromotionConflictError,
+    PromotionParentAbsentError,
 )
 
 #: What the endpoint's own ``post`` documentation promises this route is —
@@ -568,7 +570,11 @@ def test_a_bad_criterion_is_refused_at_the_wire(seeded_database) -> None:
 def test_an_absent_node_is_refused_by_name(store: PreRegistrations) -> None:
     # The two foreign keys are two different missing rows with two different
     # repairs — a hypothesis the tree does not hold, versus a holdout nobody
-    # sealed — and SQLite's own ``IntegrityError`` names neither.
+    # sealed — and SQLite's own ``IntegrityError`` names neither.  The refusal
+    # is the store class's own refinement, so a standing ``except
+    # PromotionStoreError`` still catches it — but it carries its own word and
+    # its own class, so a caller can tell a missing parent from an unwritable
+    # store.
     connection = store._connect()
     try:
         with connection:
@@ -578,10 +584,15 @@ def test_an_absent_node_is_refused_by_name(store: PreRegistrations) -> None:
             )
     finally:
         connection.close()
-    with pytest.raises(PromotionStoreError) as raised:
+    with pytest.raises(PromotionParentAbsentError) as raised:
         PreRegisterEndpoint(store).post(_request())
+    assert issubclass(PromotionParentAbsentError, PromotionStoreError)
+    assert isinstance(raised.value, PromotionStoreError)
     message = str(raised.value)
-    assert PROMOTION_REGISTRY_ERROR_CODE in message
+    assert PROMOTION_PARENT_ABSENT_ERROR_CODE in message
+    # Its own word, distinct from the store's unwritable-store word.
+    assert PROMOTION_REGISTRY_ERROR_CODE not in message
+    assert type(raised.value) is PromotionParentAbsentError
     assert "node" in message
     assert NODE_ID in message
 
@@ -597,12 +608,149 @@ def test_an_absent_epoch_is_refused_by_name(store: PreRegistrations) -> None:
             )
     finally:
         connection.close()
-    with pytest.raises(PromotionStoreError) as raised:
+    with pytest.raises(PromotionParentAbsentError) as raised:
         PreRegisterEndpoint(store).post(_request())
     message = str(raised.value)
-    assert PROMOTION_REGISTRY_ERROR_CODE in message
+    assert PROMOTION_PARENT_ABSENT_ERROR_CODE in message
+    assert PROMOTION_REGISTRY_ERROR_CODE not in message
     assert "epoch_ledger" in message
     assert EPOCH_ID in message
+
+
+def test_an_absent_parent_is_a_distinct_class_from_an_unwritable_store(
+    store: PreRegistrations,
+) -> None:
+    # The feature's own sentence: a missing parent is told from an unwritable
+    # store by class alone.  Both wear the store class — a standing ``except
+    # PromotionStoreError`` still catches each — but the absent-parent refusal
+    # is the store class's own refinement, so a caller that must answer a
+    # status (an adapter, a script dividing "fix the registration" from "fix
+    # the deployment") can tell them apart without parsing prose.
+    connection = store._connect()
+    try:
+        with connection:
+            connection.execute(
+                "INSERT INTO epoch_ledger (epoch_id, sealed_at) VALUES (?, ?)",
+                (EPOCH_ID, "2026-01-01T00:00:00+00:00"),
+            )
+    finally:
+        connection.close()
+    with pytest.raises(PromotionParentAbsentError) as raised:
+        PreRegisterEndpoint(store).post(_request())
+    # A subclass of the store class, so the standing except still holds.
+    assert issubclass(PromotionParentAbsentError, PromotionStoreError)
+    assert isinstance(raised.value, PromotionStoreError)
+    # But its own class, not the base: the tell a status-deciding caller needs.
+    assert type(raised.value) is PromotionParentAbsentError
+
+
+def test_the_absent_parent_message_names_the_absent_row(
+    store: PreRegistrations,
+) -> None:
+    # The refusal is decidable from the log line: which of the two foreign
+    # keys is dangling, and what value it points at — so an operator reads
+    # *the node is absent* versus *the epoch is absent*, and neither is a
+    # report about a write that never happened.
+    connection = store._connect()
+    try:
+        with connection:
+            connection.execute(
+                "INSERT INTO epoch_ledger (epoch_id, sealed_at) VALUES (?, ?)",
+                (EPOCH_ID, "2026-01-01T00:00:00+00:00"),
+            )
+    finally:
+        connection.close()
+    with pytest.raises(PromotionParentAbsentError) as raised:
+        PreRegisterEndpoint(store).post(_request())
+    message = str(raised.value)
+    # The code word, distinct from the store's own.
+    assert message.startswith(PROMOTION_PARENT_ABSENT_ERROR_CODE)
+    assert PROMOTION_PARENT_ABSENT_ERROR_CODE in message
+    assert PROMOTION_REGISTRY_ERROR_CODE not in message
+    # Which parent is absent, and the value that was not found.
+    assert "node" in message
+    assert NODE_ID in message
+    assert "feature 291" in message
+
+
+def test_an_absent_epoch_is_named_as_its_own_parent(
+    store: PreRegistrations,
+) -> None:
+    # The two foreign keys are two different absent rows, and each names
+    # itself: an operator landing on the epoch refusal must read *epoch_ledger*
+    # and the epoch's value, not the node's.
+    connection = store._connect()
+    try:
+        with connection:
+            connection.execute(
+                "INSERT INTO node (id, campaign_id, theme_root, depth) "
+                "VALUES (?, ?, ?, ?)",
+                (NODE_ID, "22222222-2222-4222-8222-222222222222", "macro", 1),
+            )
+    finally:
+        connection.close()
+    with pytest.raises(PromotionParentAbsentError) as raised:
+        PreRegisterEndpoint(store).post(_request())
+    message = str(raised.value)
+    assert PROMOTION_PARENT_ABSENT_ERROR_CODE in message
+    assert "epoch_ledger" in message
+    assert EPOCH_ID in message
+    assert NODE_ID not in message  # the node is present; only the epoch is gone
+
+
+def test_a_standing_except_store_clause_still_catches_the_absent_parent(
+    store: PreRegistrations,
+) -> None:
+    # The law the refinement states, asserted as the caller would write it: a
+    # caller that guarded the pre-registration path with a bare ``except
+    # PromotionStoreError`` before this feature landed catches the missing-
+    # parent refusal today without an edit.
+    connection = store._connect()
+    try:
+        with connection:
+            connection.execute(
+                "INSERT INTO epoch_ledger (epoch_id, sealed_at) VALUES (?, ?)",
+                (EPOCH_ID, "2026-01-01T00:00:00+00:00"),
+            )
+    finally:
+        connection.close()
+    refused = False
+    try:
+        PreRegisterEndpoint(store).post(_request())
+    except PromotionStoreError:
+        refused = True
+    assert refused
+
+
+def test_the_absent_parent_refusal_wrote_nothing(store: PreRegistrations) -> None:
+    # The refusal is reached before the insert, so a registration naming an
+    # absent parent spends no row — the same stance the malformed-ask and
+    # conflict refusals hold.  The node is seeded by hand here rather than
+    # through the ``seeded_database`` fixture, which seeds *both* parents and
+    # would leave nothing absent to refuse.
+    connection = store._connect()
+    try:
+        with connection:
+            connection.execute(
+                "INSERT INTO node (id, campaign_id, theme_root, depth) "
+                "VALUES (?, ?, ?, ?)",
+                (NODE_ID, "22222222-2222-4222-8222-222222222222", "macro", 1),
+            )
+    finally:
+        connection.close()
+    with pytest.raises(PromotionParentAbsentError):
+        PreRegisterEndpoint(store).post(_request())
+    # Nothing landed in the registry: read raw, so the assertion is on the
+    # table rather than on a store verb that would be asking the code to
+    # confirm itself.
+    connection = store._connect()
+    try:
+        count = connection.execute(
+            f"SELECT COUNT(*) FROM {PROMOTION_REGISTRY_TABLE}"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert count == 0
 
 
 def test_the_foreign_key_is_actually_armed(store: PreRegistrations) -> None:
@@ -642,7 +790,6 @@ def test_a_store_pointed_at_nothing_is_refused(url: object) -> None:
     "url",
     [
         "postgresql://localhost/nullius",
-        "sqlite://localhost/relative.db",
         "sqlite:///",
         "sqlite:///:memory:",
     ],

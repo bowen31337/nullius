@@ -293,6 +293,7 @@ __all__ = [
     "PROMOTION_BLOCK_ERROR_CODE",
     "PROMOTION_CONFLICT_ERROR_CODE",
     "PROMOTION_DECISION_ERROR_CODE",
+    "PROMOTION_PARENT_ABSENT_ERROR_CODE",
     "PROMOTION_REGISTRY_ERROR_CODE",
     "PROMOTION_WINDOW_ERROR_CODE",
     "VOID_CALIBRATION_ERROR_CODE",
@@ -304,6 +305,7 @@ __all__ = [
     "PromotionConflictError",
     "PromotionDecisionError",
     "PromotionError",
+    "PromotionParentAbsentError",
     "PromotionStoreError",
     "PromotionWindowError",
     "VoidCalibrationError",
@@ -490,6 +492,75 @@ class PromotionStoreError(PromotionError):
     is refusable without a database at all, and a caller that gathered the two
     would read *the store refused me* where the truth is *the body was not the
     six terms*.  The split is the repair's, not the code path's.
+    """
+
+
+#: The greppable word that opens every :class:`PromotionParentAbsentError`
+#: message: a pre-registration named a ``node`` or ``epoch_ledger`` row that
+#: the database does not hold, so the registry row has no parent to reference.
+#: Spelled beside the store's own word (``promotion_registry_unwritable``) but
+#: not in its letter, because the two are two *states of the store* over one
+#: table: an operator greps the store's word for *the registry could not be
+#: written* and this one for *the row this registration would reference does
+#: not exist*, and landing on the wrong one sends them debugging a write that
+#: was never the problem.
+PROMOTION_PARENT_ABSENT_ERROR_CODE = "promotion_parent_absent"
+
+
+class PromotionParentAbsentError(PromotionStoreError):
+    """A pre-registration named a parent row the database does not hold.
+
+    Raised by :meth:`promotion.pre_register.PreRegistrations.pre_register` —
+    through its :meth:`~promotion.pre_register.PreRegistrations._require_parent`
+    probe — when the node or the epoch a registration names has no row in the
+    table its foreign key points at: a ``node`` the tree does not hold, or an
+    ``epoch_ledger`` row nobody sealed.  The body is well formed — six terms, a
+    real UUID, a real epoch name — and the store is reachable, and the write is
+    refused all the same, because a registry row that references nothing is a
+    row no deciding evaluation could ever complete.
+
+    **The tree's second subclass, and the reason it is not a sibling and not a
+    new face.**  The store class gathers three faces — the address, the schema
+    and the write — and this refusal's repair is unlike every one of them:
+
+    * not the *address* — :class:`PromotionStoreError`'s ``DATABASE_URL`` this
+      member cannot speak: the database is reachable here, and the refusal is
+      not about reaching it;
+    * not the *schema* — a database that cannot be brought to the revision the
+      row needs: the tables are all present and migrated, and the write would
+      succeed against any parent that existed;
+    * not the *write* — the row did not land, or the read-back disagreed:
+      nothing was attempted, because the parent was missing before the insert
+      was ever reached.
+
+    The repair for all three of those is to the deployment — the URL, the
+    migration, the database.  The repair for *this* one is to the
+    **registration state**: pre-register the node that was named, or seal the
+    epoch, or correct the identity to one that exists.  Gathering it into the
+    store's faces would let an operator read *the registry could not be
+    written* where the truth is *the thing this registration is about does not
+    exist yet* — and those are not the same phone call.
+
+    So the split is *downward*, inside the store class, for the same law the
+    conflict class states: **subclass the class raised today**.  The refusal
+    was raised as :class:`PromotionStoreError` from the day the store landed,
+    and a caller's standing ``except PromotionStoreError`` over the
+    pre-registration path has been catching it since; a subclass keeps every
+    existing caller's catch true, and a caller that must *answer a status* —
+    the HTTP adapter, a script dividing "fix the deployment" from "fix the
+    registration" — can now tell a missing parent from an unwritable store by
+    class alone, where before both wore one class and the only tell was
+    parsing the message.  Its one face names the absent parent table and the
+    value that was not found, because that is what makes the refusal
+    decidable: an operator reading the message sees *which* of the two foreign
+    keys is dangling and *what* name it points at, and knows the repair is to
+    the row, not to the database.
+
+    Every message opens with :data:`PROMOTION_PARENT_ABSENT_ERROR_CODE`,
+    spelled clear of the store's word in letter as in moment — that one names
+    a write that did not land, this one a row that does not exist — so an
+    operator greps one word for *the parent this pre-registration named is
+    absent* and finds neither a failed write nor a moved bar.
     """
 
 

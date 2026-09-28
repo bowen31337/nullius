@@ -160,9 +160,11 @@ from urllib.parse import unquote, urlparse
 from .criteria import CRITERIA_FIELDS, PromotionCriteria, criteria_hash
 from .errors import (
     PROMOTION_CONFLICT_ERROR_CODE,
+    PROMOTION_PARENT_ABSENT_ERROR_CODE,
     PROMOTION_REGISTRY_ERROR_CODE,
     PromotionConflictError,
     PromotionError,
+    PromotionParentAbsentError,
     PromotionStoreError,
 )
 from .schema import PROMOTION_REGISTRY_TABLE, bootstrap_schema
@@ -934,12 +936,18 @@ class PreRegistrations:
         own subclass — feature 292's ``criteria_mismatch`` is a *different*
         refusal at a different moment, the message names both criteria
         hashes so the conflict is decidable, and a caller's standing
-        ``except PromotionError`` catches this one exactly as before); and
-        a ``DATABASE_URL`` this member
-        cannot speak, an absent parent row, or a row that could not be read
-        back or is corrupt (:class:`~promotion.errors.PromotionStoreError`,
-        all three opening :data:`~promotion.errors.
-        PROMOTION_REGISTRY_ERROR_CODE`).
+        ``except PromotionError`` catches this one exactly as before); an
+        absent parent row — a ``node`` the tree does not hold, or an
+        ``epoch_ledger`` nobody sealed —
+        (:class:`~promotion.errors.PromotionParentAbsentError`, the store
+        class's own subclass, so a caller's standing ``except
+        PromotionStoreError`` catches it exactly as before while a caller can
+        tell a missing parent from an unwritable store by class alone, the
+        message naming the absent table and value and opening
+        :data:`~promotion.errors.PROMOTION_PARENT_ABSENT_ERROR_CODE`); and a
+        ``DATABASE_URL`` this member cannot speak, or a row that could not be
+        read back or is corrupt (:class:`~promotion.errors.PromotionStoreError`,
+        both opening :data:`~promotion.errors.PROMOTION_REGISTRY_ERROR_CODE`).
 
         ``pre_registered_at`` states the instant the criteria were fixed, and
         ``clock`` supplies the default when it is absent — tests and replays
@@ -1078,6 +1086,22 @@ class PreRegistrations:
         neither, so the probe names both the column and the value, and the
         refusal is the store's class rather than the ask's: the body is
         well-formed, and the database is not in the state the write needs.
+
+        **The refusal is the store's class's own refinement, and the reason is
+        the caller that must answer a status.**  The body is well formed and
+        the store is reachable, so this is not the ask face and not the
+        address; and nothing was written, so it is not the store's *write*
+        face either.  It is raised as :class:`~promotion.errors.
+        PromotionParentAbsentError`, a *subclass* of the store class rather
+        than a sibling beside it, so a caller's standing ``except
+        PromotionStoreError`` over the pre-registration path keeps catching
+        exactly what it caught — while a caller that must divide *fix the
+        registration* from *fix the deployment* can now tell a missing parent
+        from an unwritable store by class alone, where before both wore one
+        class and the only tell was parsing the message.  The message names
+        the absent parent table and the value that was not found, and opens
+        with :data:`~promotion.errors.PROMOTION_PARENT_ABSENT_ERROR_CODE`,
+        spelled clear of the store's own word in letter as in moment.
         """
         cursor = connection.execute(statement, (value,))
         try:
@@ -1085,9 +1109,9 @@ class PreRegistrations:
         finally:
             cursor.close()
         if not present:
-            raise PromotionStoreError(
-                f"{PROMOTION_REGISTRY_ERROR_CODE}: {parent_table} holds no row "
-                f"for {column} {value!r}, so this pre-registration has no "
+            raise PromotionParentAbsentError(
+                f"{PROMOTION_PARENT_ABSENT_ERROR_CODE}: {parent_table} holds no "
+                f"row for {column} {value!r}, so this pre-registration has no "
                 f"parent to reference. {PROMOTION_REGISTRY_TABLE}.{column} is "
                 "a foreign key: the criterion row must be joinable to what it "
                 "is about, and a registration naming a row the database does "
