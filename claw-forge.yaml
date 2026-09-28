@@ -117,7 +117,10 @@ agent:
     #     below to e.g. ``npx turbo run test`` to opt a monorepo in.
     scope: full
     # command: ""        # override; empty -> auto-detect (pytest/npm/cargo/go)
-    # timeout: 600       # seconds before the test run is killed (exit 124)
+    # The workspace suite takes ~630s (1579 tests, measured 2026-09-28), so
+    # the 600s default killed the baseline probe and reported main as RED,
+    # which disables the gate's test verdict for every task in the run.
+    timeout: 1200        # seconds before the test run is killed (exit 124)
   # Run-boundary assembly verification.  Every other gate runs inside a
   # worktree, which cannot see integration — integration is the property that
   # exists only BETWEEN tasks.  This one runs on target_branch after every
