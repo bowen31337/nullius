@@ -107,6 +107,30 @@ page's one ``metric``, the trend still the one chart, and the count
 is furniture — visible always, competing never.  See
 :mod:`ops.chrome`'s own docstring for the feature's law whole.
 
+**The instrument lamps hang there too — the second strip of the same
+chrome, and the rail is feature 342's own answer.**  app_spec.xml's
+``ui_layout`` names both strips in one clause (*"instrument status
+lamps and the remaining clean epoch count sit in permanent chrome"*)
+and its M5 success criteria state the acceptance a second time
+(*"sees instrument status as three binary lamps"*); the user-journey
+validation found the page rendering only the count (docs/user-journeys
+J04), and this module closes that gap by *reading the rail through the
+member's own route*: the dashboard holds the composed
+``ops-instrument-status`` endpoint (feature 342's
+:class:`~ops.instrument_status.InstrumentStatusEndpoint`, each lamp
+the owning member's own verdict) beside the route and the gauge, the
+page model requires its lamps so a lampless page cannot be
+represented, and the render emits one caption per lamp — canary, KS
+guard, ingest, in docs §5.4's order, above the count strip — on every
+page the dashboard draws.  Each lamp renders *lit* or *dark*, and a
+lamp with no reading renders *no reading*, never lit: the three
+states live in :mod:`ops.chrome` (the value, the state words, the
+strip's lines), and the whole law with them.  A rail read that fails
+arrives as feature 342's own
+:class:`~ops.errors.InstrumentStatusError` — already this member's
+vocabulary — and propagates untranslated, the same stance the route's
+own refusal enjoys one seat over.
+
 **Streamlit is the deployment's ambient dependency, not a workspace
 one.**  §16's stack line names Streamlit the way it names Postgres —
 an environment the operator runs, not a library the research loop
@@ -171,12 +195,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from app.modules.ops import fdr_deploy_component
+from app.module_loader import create_app
+from app.modules.ops import fdr_deploy_component, instrument_status_component
 
 from .chrome import (
     EPOCH_COUNT_LABEL,
     EpochCountChrome,
     EpochCountGauge,
+    InstrumentLampsChrome,
     require_promotion,
 )
 from .errors import DashboardRenderError
@@ -186,6 +212,7 @@ from .fdr_route import (
     FdrDeployResponse,
     require_scoring,
 )
+from .instrument_status import INSTRUMENT_STATUS_ROUTE, InstrumentStatusEndpoint
 
 __all__ = [
     "DASHBOARD_PAGE_TITLE",
@@ -244,6 +271,25 @@ _CHROME_CONTRACT = (
     "count",
     "numeral",
     "line",
+)
+
+#: The instrument lamps' display contract — the reads the render makes
+#: of whatever occupies the page's lamps seat (docs §5.4's rail, the
+#: second strip of the permanent chrome, named beside the count in
+#: app_spec.xml's ``ui_layout``: *"instrument status lamps and the
+#: remaining clean epoch count sit in permanent chrome"*).  A carrier
+#: that does not answer them all cannot sit in permanent chrome, and
+#: the page refuses it (see :class:`DashboardPage`): the spec's M5
+#: line — *"sees instrument status as three binary lamps"* — and the
+#: journeys addition's own clause — *"a lamp with no reading as no
+#: reading rather than lit"* — are one law, and a page that could be
+#: built without a carrier answering the rail would be a page on which
+#: the one question §5.4 says everything below it depends on (*"is any
+#: lamp out?"*) could go unasked.
+_LAMPS_CONTRACT = (
+    "lamps",
+    "states",
+    "lines",
 )
 
 #: The Streamlit calls the render makes — the whole contract a render
@@ -431,22 +477,36 @@ class DashboardPage:
     the depletion it exists to show would go unseen exactly when it
     mattered.
 
-    Both checks are duck-typed, not ``isinstance``-guarded, for the
+    The third seat is the instrument lamps', and it is the same move a
+    second time: docs §5.4's rail (*"three binary lamps at the top of
+    the left rail, because everything below them is worthless if any
+    is out"*) sits in the same permanent chrome the count does — the
+    spec's ``ui_layout`` names the two strips in one clause — so the
+    lamps are a *required* field too, and a carrier that does not
+    answer the lamps' display contract (:data:`_LAMPS_CONTRACT`) is
+    refused by name: a rail that could quietly go missing from a page
+    is a page on which every numeral below it could be read without
+    the one bit that says whether it may be believed.
+
+    All three checks are duck-typed, not ``isinstance``-guarded, for the
     reason every seam in this workspace gives: the factory's scan
     imports members under synthetic names, so a composed panel is
     structurally this member's without being the same class object a
     direct import yields.  The contract is the carrier's public reads —
     and a carrier that answers all of them *is* an FDR_deploy panel
-    (or an epoch-count chrome) for every purpose the render has.
+    (or an epoch-count chrome, or an instrument-lamps chrome) for
+    every purpose the render has.
 
     Later features of this category hang their own content off the
     page — 352's chrome landed here beside the primary seat without
-    moving the top line, which was the point of modelling the seats
-    explicitly: chrome grows, the top line does not.
+    moving the top line, and the lamps landed beside the chrome the
+    same way, which was the point of modelling the seats explicitly:
+    chrome grows, the top line does not.
     """
 
     primary: FdrDeployPanel
     chrome: EpochCountChrome
+    lamps: InstrumentLampsChrome
 
     def __post_init__(self) -> None:
         missing = [
@@ -486,6 +546,27 @@ class DashboardPage:
                 "not one to discover at the stop (feature 352, prd "
                 "§13 item 4)"
             )
+        lamps_missing = [
+            name for name in _LAMPS_CONTRACT if not hasattr(self.lamps, name)
+        ]
+        if lamps_missing:
+            raise DashboardRenderError(
+                f"a DashboardPage's lamps are the permanent chrome's "
+                f"instrument rail (an {InstrumentLampsChrome.__name__} "
+                f"over feature 342's GET {INSTRUMENT_STATUS_ROUTE} "
+                f"response, or any carrier answering its display "
+                f"contract: {', '.join(_LAMPS_CONTRACT)}), and this "
+                f"carrier does not answer: {', '.join(lamps_missing)}. "
+                f"Docs §5.4 draws three binary lamps at the top of the "
+                f"rail 'because everything below them is worthless if "
+                f"any is out', the spec's operator 'sees instrument "
+                f"status as three binary lamps' on every render, and a "
+                "page that could be built without a carrier answering "
+                "the rail would be a page on which the numerals could "
+                "be read without the one bit that says whether they may "
+                "be believed — the quiet abandonment §5.4's rail exists "
+                "to make impossible (docs §5.4)"
+            )
 
 
 class OperatorDashboard:
@@ -493,23 +574,29 @@ class OperatorDashboard:
     chrome, rendered over the composed route.
 
     Constructed over the route (:class:`~ops.fdr_route.FdrDeployEndpoint`
-    or any carrier answering its ``get()``) *and* the chrome's gauge
+    or any carrier answering its ``get()``), the chrome's gauge
     (:class:`~ops.chrome.EpochCountGauge` or any carrier answering its
-    ``remaining()``) — two carriers, because the page reads two
-    figures from two members: §16's top-line number from the scoring
-    member's rows, and §13 item 4's remaining clean epoch count from
-    the promotion member's ledger.  The gauge is a required argument,
-    not an option: a dashboard without one would be a dashboard whose
-    chrome could quietly go missing, and "permanent" is a fact the
-    constructor states rather than a behaviour it hopes for.
+    ``remaining()``) *and* the lamps' rail
+    (:class:`~ops.instrument_status.InstrumentStatusEndpoint` or any
+    carrier answering its ``get()``) — three carriers, because the page
+    reads its content from three owners: §16's top-line number from the
+    scoring member's rows, §13 item 4's remaining clean epoch count from
+    the promotion member's ledger, and docs §5.4's three lamps from
+    feature 342's own route, each bit the owning member's own verdict.
+    The gauge and the rail are required arguments, not options: a
+    dashboard without either would be a dashboard whose chrome could
+    quietly go missing, and "permanent" is a fact the constructor
+    states rather than a behaviour it hopes for.
 
-    Every render is a fresh read of both — the dashboard holds no
+    Every render is a fresh read of all three — the dashboard holds no
     cache of a previous page, for the reason the endpoint holds none:
     a campaign closed between two renders must move the second numeral,
-    and an epoch spent between two renders must move the second chrome
-    strip, because a cached figure of either kind would make the page
-    a fact about when it was first opened rather than about what the
-    system measured and what it has left.
+    an epoch spent between two renders must move the second chrome
+    strip, and a lamp that goes out between two renders must darken the
+    second rail, because a cached figure of any of the three kinds
+    would make the page a fact about when it was first opened rather
+    than about what the system measured, what it has left, and whether
+    any of it may be believed.
 
     Two construction doors, one law each:
 
@@ -518,15 +605,17 @@ class OperatorDashboard:
       unconfigured store is a discoverable deployment state, and the
       composed application simply carries no dashboard, exactly as it
       carries no route — and no chrome without a dashboard, because
-      the strip rides the same URL the route resolved);
+      both strips ride the same URL the route resolved);
     * :meth:`composed` — the operator's door, through the seat in the
       app package namespace; a composed application that carries no
       route is *refused*, because a render asked for by name is a
       caller that needs the figure and must not be shown a numeral
-      nobody measured.
+      nobody measured — and one that carries no instrument-status
+      route is refused the same way, because the page it would render
+      is a page whose lamps went missing rather than dark.
     """
 
-    def __init__(self, route: Any, gauge: Any) -> None:
+    def __init__(self, route: Any, gauge: Any, rail: Any) -> None:
         if not callable(getattr(route, "get", None)):
             raise TypeError(
                 "OperatorDashboard renders over the composed fdr-deploy "
@@ -550,8 +639,24 @@ class OperatorDashboard:
                 "there is no chromeless construction to fall back to "
                 "(feature 352, prd §13 item 4)"
             )
+        if not callable(getattr(rail, "get", None)):
+            raise TypeError(
+                "OperatorDashboard renders the instrument lamps in "
+                "permanent chrome on every page (docs §5.4's rail: "
+                "canary, KS guard, ingest), and the rail is read "
+                "through feature 342's own route — something with a "
+                f"get() answering the GET {INSTRUMENT_STATUS_ROUTE} "
+                f"response; got {type(rail).__name__}. Each lamp is the "
+                "owning member's own verdict, and a carrier that cannot "
+                "answer the route's response cannot name a single bit "
+                "of it: there is no lampless construction to fall back "
+                "to, because the page it would render is the page §5.4 "
+                "draws the rail to prevent — everything below it read "
+                "as if the instruments were healthy (docs §5.4)"
+            )
         self._route = route
         self._gauge = gauge
+        self._rail = rail
 
     @property
     def route(self) -> Any:
@@ -564,6 +669,13 @@ class OperatorDashboard:
         """The gauge this dashboard's chrome reads — feature 297's
         figure, held duck-typed across the seam the way the route is."""
         return self._gauge
+
+    @property
+    def rail(self) -> Any:
+        """The rail this dashboard's lamps read — feature 342's route,
+        held duck-typed across the seam the way the route and the gauge
+        are: each lamp the owning member's own verdict, read whole."""
+        return self._rail
 
     # -- Construction -------------------------------------------------------
 
@@ -582,34 +694,67 @@ class OperatorDashboard:
         The chrome's gauge is wired over the URL that route already
         resolved and carries (its store's ``database_url`` — the
         composition fact, read off the route rather than re-resolved
-        from the environment), so the top line and the count point at
-        the one database the deployment named, and a later
+        from the environment), and the lamps' rail is the
+        instrument-status route's own door over the same environment:
+        it composes on the same unset semantics and reads its own
+        band knob, so the top line, the count and the rail all point
+        at the one database the deployment named, and a later
         environment cannot move the chrome without moving the store
         it counts.
+
+        The rail door composing ``None`` while the route composed is
+        refused rather than answered around: the two doors read the
+        same variable, so the split can only mean the environment
+        changed between the two reads, and a dashboard that rendered
+        without its lamps would be the lampless page the constructor
+        refuses — built anyway, at the one seam that could.
         """
         route = FdrDeployEndpoint.from_env(env)
         if route is None:
             return None
-        return cls(route, EpochCountGauge(route.store.database_url))
+        rail = InstrumentStatusEndpoint.from_env(env)
+        if rail is None:
+            raise DashboardRenderError(
+                f"the dashboard cannot be built without its instrument "
+                f"rail: the fdr-deploy route composed over DATABASE_URL "
+                f"but the instrument-status route did not "
+                f"(GET {INSTRUMENT_STATUS_ROUTE} answers None over the "
+                f"same variable — an unset spelling a moment after the "
+                f"route read it set). The rail renders in permanent "
+                "chrome on every page, and a page built without it "
+                "would be the page docs §5.4 draws the rail to prevent: "
+                "everything below it read as if the instruments were "
+                "healthy; re-resolve the environment and compose again "
+                "(docs §5.4)"
+            )
+        return cls(route, EpochCountGauge(route.store.database_url), rail)
 
     @classmethod
     def composed(cls, app: Any = None) -> "OperatorDashboard":
         """The dashboard over the application's composed route.
 
-        Reached through the seat (:func:`app.modules.ops.
-        fdr_deploy_component`) — the accessor whose docstring names
-        this surface as its caller — so the operator surface never
-        imports the member's store directly and never grows a second
-        reader of the per-campaign rows.  With ``app`` given the
-        component is read from it; without one the application is
-        composed first (the full declared workspace, in the
-        environment the dashboard runs in).
+        Reached through the seats (:func:`app.modules.ops.
+        fdr_deploy_component` and :func:`app.modules.ops.
+        instrument_status_component`) — the accessors whose docstrings
+        name this surface as their caller — so the operator surface
+        never imports the member's stores directly and never grows a
+        second reader of the per-campaign rows or of the rail's
+        instruments.  With ``app`` given the components are read from
+        it; without one the application is composed first — once — and
+        both seats read from that one composition (the full declared
+        workspace, in the environment the dashboard runs in).
 
         A composition that carries no ``ops-fdr-deploy`` component is
         refused: :class:`~ops.errors.DashboardRenderError`, naming the
         route and the environment variable that would compose it.  The
         alternative — rendering on without the figure — is the
         quietly-defaulted number this category exists to rule out.
+        A composition that carries no ``ops-instrument-status``
+        component is refused the same way, for the rail's own reason:
+        the page it would render is a page whose lamps went missing
+        rather than dark — a shorter rail than the design draws, which
+        is the one screen where an instrument's state could go
+        unasked.
         The chrome's gauge is wired over the composed route's own
         carried URL, the same ride :meth:`from_env` takes; a composed
         route that will not name its database (not the member's
@@ -617,7 +762,8 @@ class OperatorDashboard:
         gauge's own wiring refusal rather than crashing the
         composition on an attribute it never promised.
         """
-        route = fdr_deploy_component(app)
+        application = app if app is not None else create_app()
+        route = fdr_deploy_component(application)
         if route is None:
             raise DashboardRenderError(
                 f"the dashboard cannot render: the composed application "
@@ -629,32 +775,55 @@ class OperatorDashboard:
                 f"numeral nobody measured; point DATABASE_URL at the "
                 f"metrics store and compose again (feature 351, docs §16)"
             )
+        rail = instrument_status_component(application)
+        if rail is None:
+            raise DashboardRenderError(
+                f"the dashboard cannot render: the composed application "
+                f"carries no {INSTRUMENT_STATUS_ROUTE} route (no "
+                f"ops-instrument-status component — most often no "
+                f"DATABASE_URL configured, or the ops member not "
+                f"scanned), so the instrument lamps have no route to be "
+                f"read through. Docs §5.4 draws canary, KS guard and "
+                f"ingest at the top of the rail 'because everything "
+                f"below them is worthless if any is out', and the one "
+                f"thing worse than a dark rail is the rail quietly "
+                f"absent while the numerals render on beneath where it "
+                f"should be; point DATABASE_URL at the metrics store "
+                f"and compose again (docs §5.4)"
+            )
         store = getattr(route, "store", None)
         url = getattr(store, "database_url", None)
-        return cls(route, EpochCountGauge(url))
+        return cls(route, EpochCountGauge(url), rail)
 
     # -- The page and its render ---------------------------------------------
 
     def page(self) -> DashboardPage:
-        """One fresh page over the route's answer and the gauge's.
+        """One fresh page over the route's answer, the rail's and the
+        gauge's.
 
         The whole content read is the route's ``get()`` — the store's
         own history, figures already rebuilt from the pair each row
         carries — and the page's content is built from the response
-        alone.  The chrome's count is read *after* it, from the
-        gauge's ``remaining()``: the primary seat is the page's first
-        and defining content, asked first, and a route that refuses
-        aborts the page before the chrome is ever asked — the load in
-        the ordering law, and the reason a failing route read and a
-        failing ledger read stay distinguishable (the route's arrives
-        as feature 341's :class:`~ops.errors.FdrDeployMetricError`,
-        already this member's vocabulary; the gauge's arrives as the
-        render vocabulary's own :class:`~ops.errors.
-        DashboardRenderError`, translated at the chrome's seam).
-        Neither is ever caught into an answer, and neither is cached:
-        the next page re-asks both.
+        alone.  The lamps' rail is read *after* it and the chrome's
+        count *after* that, in the order the strips render: the
+        primary seat is the page's first and defining content, asked
+        first, and a route that refuses aborts the page before the
+        rail is ever asked, and a rail that refuses before the gauge
+        is — the load in the ordering law, and the reason a failing
+        route read, a failing rail read and a failing ledger read
+        stay distinguishable (the route's arrives as feature 341's
+        :class:`~ops.errors.FdrDeployMetricError`, the rail's as
+        feature 342's :class:`~ops.errors.InstrumentStatusError` —
+        each already this member's vocabulary, each propagated
+        untranslated for the same reason: re-wrapping would only bury
+        the surface that refused; the gauge's arrives as the render
+        vocabulary's own :class:`~ops.errors.DashboardRenderError`,
+        translated at the chrome's seam).  None is ever caught into
+        an answer, and none is cached: the next page re-asks all
+        three.
         """
         response = self._route.get()
+        rail = self._rail.get()
         promotion = require_promotion()
         try:
             count = self._gauge.remaining()
@@ -686,6 +855,7 @@ class OperatorDashboard:
         return DashboardPage(
             primary=FdrDeployPanel(response=response),
             chrome=EpochCountChrome(count=count),
+            lamps=InstrumentLampsChrome(response=rail),
         )
 
     def render(self, st: Any = None) -> DashboardPage:
@@ -700,19 +870,22 @@ class OperatorDashboard:
         store.
 
         The order is the features' law, made literal: page
-        configuration, the title, the permanent chrome — feature
-        352's strip, the remaining clean epoch count as one caption
-        beneath the title, on every page including the one where no
-        campaign has closed — then the primary panel: its headline
-        (the qualifier beside the figure's name), its numeral (no
-        delta: the figure has no green-up direction), its provenance
-        plate, and only then the one chart the dashboard draws, the
-        panel's own FDR_deploy trend.  The chrome is the one thing
-        that renders above the numeral — furniture beside content,
-        never a second metric competing with the top line — and
-        nothing but the trend is ever charted.  The page answered is
-        the page that rendered, so a caller (or a test) can read
-        exactly what the operator saw.
+        configuration, the title, the permanent chrome — the three
+        lamp lines first (docs §5.4 draws the lamps *"at the top of
+        the left rail"*, one caption per lamp, in the rail's own
+        order, each carrying its own state word) and then feature
+        352's strip, the remaining clean epoch count as one caption —
+        on every page including the one where no campaign has closed
+        — then the primary panel: its headline (the qualifier beside
+        the figure's name), its numeral (no delta: the figure has no
+        green-up direction), its provenance plate, and only then the
+        one chart the dashboard draws, the panel's own FDR_deploy
+        trend.  The chrome is the one thing that renders above the
+        numeral — furniture beside content, never a second metric
+        competing with the top line — and nothing but the trend is
+        ever charted.  The page answered is the page that rendered,
+        so a caller (or a test) can read exactly what the operator
+        saw.
         """
         carrier = require_streamlit() if st is None else st
         missing = [
@@ -733,6 +906,8 @@ class OperatorDashboard:
         panel = page.primary
         carrier.set_page_config(page_title=DASHBOARD_PAGE_TITLE)
         carrier.title(DASHBOARD_TITLE)
+        for line in page.lamps.lines:
+            carrier.caption(line)
         carrier.caption(page.chrome.line)
         carrier.header(panel.headline)
         carrier.metric(label=FDR_DEPLOY_LABEL, value=panel.numeral or "—")

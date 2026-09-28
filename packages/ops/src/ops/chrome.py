@@ -1,19 +1,20 @@
-"""Feature 352's surface: the permanent chrome — the remaining clean
-epoch count.
+"""The dashboard's permanent chrome: the epoch count and the lamps.
 
-app_spec.xml, "Observability & Dashboards", feature 352: *System
-displays the remaining clean epoch count in permanent dashboard chrome,
-so depletion stays visible.*  The spec's ``ui_layout`` places it —
-*"The primary panel is FDR_deploy with its provenance triple;
-instrument status lamps and the remaining clean epoch count sit in
-permanent chrome"* — and its success criteria state the acceptance:
-*"The operator … sees the remaining clean epoch count at all times."*
-Feature 351 landed the page and modelled its primary seat explicitly so
-this content could hang beside it without moving the top line; this
-module is that content — not a panel, not a figure competing with
-§16's, but the page's *furniture*: the one strip that renders on every
-page the dashboard ever draws, carrying the one number that tells the
-operator how much system is left.
+Two strips render on every page the dashboard ever draws, and both
+live in this module — the page's *furniture*, not panels, not figures
+competing with §16's.
+
+The first is feature 352's: app_spec.xml, "Observability & Dashboards",
+feature 352 — *System displays the remaining clean epoch count in
+permanent dashboard chrome, so depletion stays visible.*  The spec's
+``ui_layout`` places it — *"The primary panel is FDR_deploy with its
+provenance triple; instrument status lamps and the remaining clean
+epoch count sit in permanent chrome"* — and its success criteria state
+the acceptance: *"The operator … sees the remaining clean epoch count
+at all times."*  Feature 351 landed the page and modelled its primary
+seat explicitly so this content could hang beside it without moving
+the top line; this module is that content — the one strip that carries
+the one number that tells the operator how much system is left.
 
 **The count is the promotion member's, read through its own gauge —
 never re-spelled here.**  Feature 297 already answers exactly this
@@ -91,6 +92,64 @@ system's primary number.  Depletion stays visible as a persistent line
 beneath the title, above the fold, on every render; it does not need
 to shout, and it must not compete.
 
+**The second strip is the instrument lamps — docs §5.4's rail, and it
+is feature 342's own answer, read whole.**  app_spec.xml's
+``ui_layout`` names both strips in one clause (*"instrument status
+lamps and the remaining clean epoch count sit in permanent chrome"*)
+and its M5 success criteria state the acceptance a second time
+(*"sees instrument status as three binary lamps"*); the browser
+validation of the user journeys found the page rendering only the
+count (docs/user-journeys/RESULTS.md, run 1, J04 — *"No lamps are
+rendered"*), and :class:`InstrumentLampsChrome` closes that gap.  The
+rail is not drawn here.  Feature 342's ``GET /metrics/instrument-status``
+answers it — canary, KS guard and ingest, one bit each, each the
+owning member's own read (§12's halt through the canary member's
+store, §7.4's reading through the nulloracle member's journal judged
+against that member's own level, the recorded silence through this
+member's own feature-350 row) — so the chrome holds that route's own
+:class:`~ops.instrument_status.InstrumentStatusResponse` and derives
+exactly the display-shaped reads a render needs: no second derivation
+of a bit, no second spelling of §7.4's level or §13.3's band, no
+second read of any store.  A chrome that re-derived a lamp would be a
+second place *"may the operator believe the numerals?"* could be
+answered two ways, and §5.4's whole purpose is that the rail is the
+one answer to that question — *"everything below them is worthless if
+any is out."*
+
+**Three states, never two — and no reading is never lit.**  A lamp is
+*lit* (``ok``, the state §5.4's own rail copy draws beside a healthy
+instrument), *dark* (``failing``, read and out), or *no reading* —
+and the third state is this feature's own clause: *"a lamp with no
+reading as no reading rather than lit."*  An unmeasured instrument is
+not a healthy one: an unguarded campaign is precisely the state §7.4's
+guard exists to catch, and a lamp that read ``ok`` off a ``None``
+would certify it.  The absence renders as words and is never folded
+into ``failing`` either — feature 342's own law, restated at the
+surface: *nobody measured* and *the instrument is out* are different
+states, and an operator chasing a dark rail needs them apart.
+
+**The lamps are permanent the same three ways the count is.**
+Structurally, the page model requires its lamps (the lamps' display
+contract, :data:`_LAMPS_CONTRACT` in the page module — a page is not
+constructible without a carrier answering it, so a lampless dashboard
+cannot be *represented*, let alone rendered); in order, the render
+emits the three lamp lines beneath the title on **every** page, above
+the count strip and the primary panel — docs §5.4 draws the lamps *"at
+the top of the left rail"*, so they are the first thing beneath the
+title, and the honest-absence page (no campaign closed, nothing
+measured at all) draws all three seats with their words rather than
+dropping the rail; by refusal, a carrier that cannot answer the lamps'
+reads is refused by name, and a rail read that fails aborts the render
+as feature 342's own :class:`~ops.errors.InstrumentStatusError` —
+already this member's vocabulary, propagated rather than re-wrapped
+for the same reason the route's
+:class:`~ops.errors.FdrDeployMetricError` is: re-wrapping would only
+bury the surface that refused.  And nothing is ever caught *into* a
+lamp — every fallback this strip could add is a lamp state nobody
+read, a green canary over a database that would not open being exactly
+the *"bad data quietly aging into good data"* §5.4 draws the rail to
+prevent.
+
 **One database, carried — never re-resolved.**  The gauge rides the
 URL the route already resolved at composition (the composition fact
 351 pinned: the route, the store component and the dashboard all point
@@ -117,23 +176,35 @@ that was clean is spent), so a promotion decision recorded between
 two Streamlit reruns moves the second strip.
 
 Stdlib-only at module scope, like the rest of the member:
-:mod:`dataclasses` for the chrome value, :mod:`typing` for ``Any`` —
-the promotion member is deferred past module scope and past builder
-time, so importing this package (and composing the component that
-renders it) performs no I/O and no sibling import.
+:mod:`dataclasses` for the chrome values, :mod:`collections.abc` for
+the ``Mapping`` check, :mod:`typing` for ``Any``/``Optional`` — and
+the one import beside them is this member's own instrument-status
+module, for the lamp names feature 342's rail fixes (a same-member
+relative import, not a sibling: the promotion member is deferred past
+module scope and past builder time, and the canary, nulloracle and
+scoring members the rail's lamps are read through are deferred by the
+route that owns them).  So importing this package (and composing the
+component that renders it) performs no I/O and no sibling import.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 from .errors import DashboardRenderError
+from .instrument_status import LAMP_NAMES
 
 __all__ = [
+    "DARK_STATE",
     "EPOCH_COUNT_LABEL",
     "EpochCountChrome",
     "EpochCountGauge",
+    "InstrumentLampsChrome",
+    "LAMP_LABELS",
+    "LIT_STATE",
+    "NO_READING_STATE",
     "require_promotion",
 ]
 
@@ -144,6 +215,55 @@ __all__ = [
 #: the spec cannot drift apart on the name of the thing depletion is
 #: counted in.
 EPOCH_COUNT_LABEL = "remaining clean epochs"
+
+#: The word a *lit* lamp renders — docs §5.4's own rail copy, which
+#: draws ``ok`` beside a healthy instrument (*"canary  ok  replay is
+#: deterministic"*).  Carried once so the state word, the strip, the
+#: tests and the design's rail cannot drift apart on what a healthy
+#: instrument is called.
+LIT_STATE = "ok"
+
+#: The word a *dark* lamp renders — read, and out.  The user journey's
+#: own pairing (J04: *"each lit (ok) or dark (failing)"*): a lamp that
+#: was read and failed is failing, and the word says so rather than
+#: hiding behind a colour the rail does not draw.
+DARK_STATE = "failing"
+
+#: The word a lamp with **no reading** renders — the feature's own
+#: clause: *"a lamp with no reading as no reading rather than lit."*
+#: ``None`` is feature 342's honest answer for an instrument nobody
+#: has measured, and this is that answer spelled for the operator: an
+#: unmeasured instrument is neither healthy nor broken, and the strip
+#: must not let the two-and-a-half states a boolean can draw collapse
+#: into two.
+NO_READING_STATE = "no reading"
+
+#: The label each lamp renders under — docs §5.4's own rail copy, in
+#: the rail's own order (``canary``, ``ks guard``, ``ingest``).  The
+#: keys are feature 342's :data:`~ops.instrument_status.LAMP_NAMES`
+#: (the response's field names, Python identifiers); the values are the
+#: design's spelling of the same three words, carried here so the strip
+#: reads as the rail the design draws — a second spelling of a label
+#: anywhere else would be a second place the rail's names could drift.
+LAMP_LABELS: dict[str, str] = {
+    "canary": "canary",
+    "ks_guard": "KS guard",
+    "ingest": "ingest",
+}
+
+
+def _lamp_state(bit: Optional[bool]) -> str:
+    """The word one lamp's bit renders as — the three-state mapping.
+
+    ``True`` is lit, ``False`` is dark, ``None`` is *no reading* — and
+    the third is deliberately not a spelling of either of the others:
+    a caller that needed two states would have stayed on the bit, and
+    the whole point of the word layer is that the operator reading the
+    strip can tell an instrument nobody measured from one that failed.
+    """
+    if bit is None:
+        return NO_READING_STATE
+    return LIT_STATE if bit else DARK_STATE
 
 
 def require_promotion() -> Any:
@@ -263,6 +383,142 @@ class EpochCountChrome:
         else, the way the title states whose metrics these are and
         nothing else."""
         return f"{EPOCH_COUNT_LABEL}: {self.numeral}"
+
+
+@dataclass(frozen=True, slots=True)
+class InstrumentLampsChrome:
+    """The permanent chrome's second strip: docs §5.4's three lamps.
+
+    Thin by design, exactly as thin as :class:`EpochCountChrome`: every
+    guarantee a lamp's bit enjoys was earned where the bit was read —
+    feature 342's route, which took each lamp from the member that
+    owns it, judged each against that member's own level or band, and
+    validated the rail it answered — and this value adds exactly the
+    display-shaped reads a render needs and re-spells nothing: no
+    second derivation of a bit, no threshold of its own, no second
+    read of a store.  It holds the route's own frozen
+    :class:`~ops.instrument_status.InstrumentStatusResponse` and reads
+    the rail off it, so the strip on the screen is the answer
+    ``GET /metrics/instrument-status`` serves, bit for bit.
+
+    Construction holds the carrier to the rail's law, in three steps:
+
+    * the carrier must answer a ``lamps`` mapping — a value with no
+      rail is not feature 342's answer and no strip can be drawn from
+      it;
+    * the mapping must hold a seat for **every** lamp the design draws
+      (:data:`~ops.instrument_status.LAMP_NAMES`) — a rail that dropped
+      an unmeasured lamp would draw a shorter rail than the design and
+      *hide* the missing instrument rather than showing it dark, the
+      one screen where *"is the instrument healthy?"* would go
+      unanswered; and
+    * every seat must be a genuine ``bool`` or ``None`` — ``int``
+      look-alikes refused first, the family's law, because ``True`` is
+      ``1`` in Python and a truthy look-alike where a lamp belongs is
+      the one substitution that would turn a dark rail green.
+
+    All three refusals are :class:`~ops.errors.DashboardRenderError`:
+    they abort a render, and a caller guarding one catches a single
+    vocabulary.
+
+    There is deliberately no field here but the response.  The strip's
+    whole surface is three lamps and their words — no per-lamp history,
+    no trend, no p-value re-rendered (the provenance behind the KS lamp
+    stays on feature 342's response, where the route that owns it put
+    it), and nothing a figure-shaped value could occupy, so the lamps
+    cannot grow into a content panel one careless edit at a time.
+    """
+
+    #: Feature 342's testimony — the frozen rail, each lamp already the
+    #: owning member's own verdict and each absence already held apart
+    #: from a failure by the response's own constructor.  Frozen
+    #: testimony, like every value the page holds: the next render
+    #: reads a fresh one.
+    response: Any
+
+    def __post_init__(self) -> None:
+        rail = getattr(self.response, "lamps", None)
+        if not isinstance(rail, Mapping):
+            raise DashboardRenderError(
+                f"a DashboardPage's lamps are the permanent chrome's "
+                f"instrument rail (an {InstrumentLampsChrome.__name__} "
+                f"over feature 342's "
+                f"InstrumentStatusResponse, or any carrier answering its "
+                f"lamps mapping), and this carrier answers no rail at all "
+                f"— got {type(self.response).__name__}. The spec's "
+                "operator sees instrument status as three binary lamps in "
+                "permanent chrome on every render, and a strip built from "
+                "a carrier with no rail would be lamps nobody read "
+                "(docs §5.4)"
+            )
+        missing = [name for name in LAMP_NAMES if name not in rail]
+        if missing:
+            raise DashboardRenderError(
+                f"a DashboardPage's instrument lamps must hold a seat for "
+                f"every lamp docs §5.4 draws — "
+                f"{', '.join(LAMP_NAMES)} — and this rail answers no seat "
+                f"for: {', '.join(missing)}. A rail that dropped a lamp "
+                "would draw a shorter rail than the design draws and hide "
+                "the missing instrument rather than showing it dark, and "
+                "the permanent chrome is the one screen where that "
+                "instrument's state must hold its seat (docs §5.4)"
+            )
+        for name in LAMP_NAMES:
+            bit = rail[name]
+            if bit is not None and not isinstance(bit, bool):
+                raise DashboardRenderError(
+                    f"the {name} lamp on the dashboard's instrument rail "
+                    f"must be a bool or None — the state docs §5.4 draws "
+                    f"is three *binary* lamps, each lit or dark, with "
+                    f"None the honest no-reading — got {bit!r} "
+                    f"({type(bit).__name__}). A truthy look-alike where a "
+                    "lamp belongs is the one substitution that would turn "
+                    "a dark rail green, which is the state the rail "
+                    "exists to prevent (docs §5.4)"
+                )
+
+    @property
+    def lamps(self) -> dict[str, Optional[bool]]:
+        """docs §5.4's rail, one bit per lamp, in the design's order.
+
+        A fresh dict per call (a caller cannot mutate this value's
+        answer) and a view *over* the response's own mapping, selected
+        by the three names the design draws — the bits are feature
+        342's, carried through as they arrived: ``True`` lit, ``False``
+        dark, ``None`` the absence of a reading, never folded into
+        either of the others.
+        """
+        rail = getattr(self.response, "lamps")
+        return {name: rail[name] for name in LAMP_NAMES}
+
+    @property
+    def states(self) -> dict[str, str]:
+        """The rail as the strip spells it — each lamp's state word.
+
+        The three-state mapping (:func:`_lamp_state`): ``ok`` for lit,
+        ``failing`` for dark, ``no reading`` for a lamp nobody
+        measured.  This is the feature's own clause made literal — the
+        absent lamp's word is *no reading*, never a spelling of *lit*,
+        because an unmeasured instrument is not a healthy one and the
+        strip is where an operator would read the difference.
+        """
+        return {name: _lamp_state(bit) for name, bit in self.lamps.items()}
+
+    @property
+    def lines(self) -> tuple[str, ...]:
+        """The three lamp lines the render emits, in rail order.
+
+        One line per lamp — ``"canary: ok"``, ``"KS guard: no
+        reading"``, ``"ingest: failing"`` — under the label the design
+        draws, each carrying its own seat in the strip the way each
+        lamp carries its own seat in the rail: a lamp that is absent
+        or out still renders its line, because the strip that dropped
+        it would be hiding the one instrument the operator is chasing.
+        """
+        return tuple(
+            f"{LAMP_LABELS[name]}: {state}"
+            for name, state in self.states.items()
+        )
 
 
 # -- The read seam -------------------------------------------------------------------
