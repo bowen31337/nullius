@@ -31,7 +31,14 @@ explicitly.**  Feature 292's ``criteria_mismatch`` is a *different* refusal at
 a *different* moment — a judgement over a promotion against a hash, at
 decision time — and the test here pins that this module never spells that
 word, so a later feature cannot find the ground already occupied by a
-near-identical message.
+near-identical message.  The refusal's *class* is the ask face's own
+refinement — :class:`~promotion.errors.PromotionConflictError`, a subclass
+of the class the refusal wore the day this module landed — and the tests
+around it pin the two halves of that spelling: a standing
+``except PromotionError`` still catches it, and a caller that must decide
+a status can tell it from a malformed ask by class alone, with both
+criteria hashes in the message so the conflict is decidable from the log
+line.
 
 **The convergence between the two creators is pinned from both directions.**
 The store brings a fresh database to the revision it needs by running the
@@ -66,6 +73,7 @@ from conftest import (
 )
 from promotion import (
     CRITERIA_HASH_COLUMN,
+    CRITERIA_MISMATCH_ERROR_CODE,
     DATABASE_URL_ENV,
     DECIDED_AT_COLUMN,
     EPOCH_ID_COLUMN,
@@ -85,6 +93,10 @@ from promotion import (
     PromotionStoreError,
     criteria_hash,
     utc_now,
+)
+from promotion.errors import (
+    PROMOTION_CONFLICT_ERROR_CODE,
+    PromotionConflictError,
 )
 
 #: What the endpoint's own ``post`` documentation promises this route is —
@@ -350,17 +362,86 @@ def test_a_re_registration_with_different_criteria_is_refused(
     # before the evaluation ran: §13 item 7's word *before* would still be
     # satisfied by both timestamps while its meaning was destroyed.
     endpoint = PreRegisterEndpoint(seeded_database)
-    endpoint.post(_request())
+    standing = endpoint.post(_request())
     before = registry_rows()
-    with pytest.raises(PromotionError) as raised:
+    with pytest.raises(PromotionConflictError) as raised:
         endpoint.post(_request(criteria={**DEFAULT_CRITERIA_DOCUMENT, "theta": 0.4}))
+    # A subclass of the class raised for it the day this module landed, so a
+    # caller's standing except clause over the ask face still catches it.
+    assert isinstance(raised.value, PromotionError)
     message = str(raised.value)
-    # The repair, the two hashes and the node — everything an operator needs
+    # The code word, the repair and the node — everything an operator needs
     # to see that this is a second question wearing the first one's node.
+    assert message.startswith(PROMOTION_CONFLICT_ERROR_CODE)
     assert NODE_ID in message
     assert "feature 291" in message
     assert "hypothesis" in message
     assert registry_rows() == before  # the refusal wrote nothing
+    assert standing.criteria_hash in message  # the row's digest, named
+
+
+def test_the_conflict_message_names_both_criteria_hashes(
+    seeded_database,
+) -> None:
+    # The feature's own sentence: the message names *both* criteria hashes,
+    # because two digests are what make the conflict decidable — the one the
+    # row holds is the bar the promotion will be judged under, and the one
+    # the request states is the ask that was refused.  A message naming only
+    # one side would leave an operator to guess which of the two the refusal
+    # was about, and a caller deciding a status from the log line with
+    # nothing to compare against.
+    endpoint = PreRegisterEndpoint(seeded_database)
+    standing = endpoint.post(_request())
+    asked = criteria_hash(
+        PromotionCriteria(**{**DEFAULT_CRITERIA_DOCUMENT, "theta": 0.4})
+    )
+    assert asked != standing.criteria_hash  # the two digests really are two
+    with pytest.raises(PromotionConflictError) as raised:
+        endpoint.post(_request(criteria={**DEFAULT_CRITERIA_DOCUMENT, "theta": 0.4}))
+    message = str(raised.value)
+    assert standing.criteria_hash in message
+    assert asked in message
+
+
+def test_a_caller_can_tell_a_conflict_from_a_malformed_request(
+    seeded_database,
+) -> None:
+    # The reason the class exists.  Both refusals wear the ask's face, and
+    # before the subclass they wore one class: a caller that had to answer
+    # one status per refusal — an adapter, a script dividing retryable from
+    # fatal — had to parse prose to tell a body nobody could accept from an
+    # ask a standing row refused.  The class is the tell now: the conflict
+    # is PromotionConflictError, and the malformed ask is the base and only
+    # the base.
+    endpoint = PreRegisterEndpoint(seeded_database)
+    endpoint.post(_request())
+    with pytest.raises(PromotionConflictError):
+        endpoint.post(_request(criteria={**DEFAULT_CRITERIA_DOCUMENT, "theta": 0.4}))
+    with pytest.raises(PromotionError) as raised:
+        endpoint.post(_request(criteria=42))
+    assert type(raised.value) is PromotionError
+    assert not isinstance(raised.value, PromotionConflictError)
+
+
+def test_a_standing_except_clause_keeps_catching_the_conflict(
+    seeded_database, registry_rows
+) -> None:
+    # The law the refinement states: the new class subclasses the class
+    # raised today, so nothing a caller already wrote changes.  A caller
+    # that guarded the pre-registration path with a bare ``except
+    # PromotionError`` the day feature 291 landed catches this refusal
+    # today without an edit — asserted as that caller would write it, with
+    # the clause itself rather than an isinstance probe.
+    endpoint = PreRegisterEndpoint(seeded_database)
+    endpoint.post(_request())
+    before = registry_rows()
+    refused = False
+    try:
+        endpoint.post(_request(criteria={**DEFAULT_CRITERIA_DOCUMENT, "theta": 0.4}))
+    except PromotionError:
+        refused = True
+    assert refused
+    assert registry_rows() == before  # and the refusal still wrote nothing
 
 
 def test_the_re_registration_refusal_is_not_feature_292s(seeded_database) -> None:
@@ -384,13 +465,15 @@ def test_the_re_registration_refusal_is_not_feature_292s(seeded_database) -> Non
     # feature 292's module — not because pre_register owns it.
     assert hasattr(member, "CriteriaMismatchError")
     assert member.CriteriaMismatchError is criteria_check_module.CriteriaMismatchError
-    # And the re-registration refusal itself is still a PromotionError, never a
-    # CriteriaMismatchError — the repair is to register, not to re-decide.
+    # And the re-registration refusal itself is still the ask face's own
+    # refinement, never a CriteriaMismatchError — the repair is to register,
+    # not to re-decide.
     endpoint = PreRegisterEndpoint(seeded_database)
     endpoint.post(_request())
-    with pytest.raises(PromotionError) as raised:
+    with pytest.raises(PromotionConflictError) as raised:
         endpoint.post(_request(criteria={**DEFAULT_CRITERIA_DOCUMENT, "theta": 0.4}))
     assert type(raised.value) is not criteria_check_module.CriteriaMismatchError
+    assert CRITERIA_MISMATCH_ERROR_CODE not in str(raised.value)
 
 
 # -- The ask's refusals ------------------------------------------------------------

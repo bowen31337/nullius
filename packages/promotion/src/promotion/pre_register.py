@@ -73,6 +73,21 @@ has already written.  This module judges a *registration request* against the
 write.  The two differ in when they run and in what they are about, so 292's
 ``criteria_mismatch`` remains its own to coin; nothing here spells that word.
 
+**The refusal's class is the ask face's own refinement.**  The refusal was
+raised as :class:`~promotion.errors.PromotionError` from the day this module
+landed, and it still is caught as one — raised now as
+:class:`~promotion.errors.PromotionConflictError`, a *subclass* of the ask
+face rather than a sibling beside it, so every caller whose
+``except PromotionError`` guards the pre-registration path keeps catching
+exactly what it caught.  What the subclass adds is the one thing a caller
+that must *answer a status* could not get from the message before: the ask
+here is well formed — six terms, a real node, a real epoch — and the
+conflict is with a row, not with the body, so a caller can tell this
+refusal from a malformed request by class alone.  The message names both
+criteria hashes — the standing row's and the ask's — and opens with
+:data:`~promotion.errors.PROMOTION_CONFLICT_ERROR_CODE`, spelled clear of
+feature 292's word in letter as in moment.
+
 **The node and the epoch must exist, and the schema is why.**  ``node_id``
 and ``epoch_id`` are foreign keys, and ``0108`` writes them as such — the
 node is the hypothesis being registered and the epoch is the sequestered
@@ -143,7 +158,13 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from .criteria import CRITERIA_FIELDS, PromotionCriteria, criteria_hash
-from .errors import PROMOTION_REGISTRY_ERROR_CODE, PromotionError, PromotionStoreError
+from .errors import (
+    PROMOTION_CONFLICT_ERROR_CODE,
+    PROMOTION_REGISTRY_ERROR_CODE,
+    PromotionConflictError,
+    PromotionError,
+    PromotionStoreError,
+)
 from .schema import PROMOTION_REGISTRY_TABLE, bootstrap_schema
 
 __all__ = [
@@ -908,9 +929,13 @@ class PreRegistrations:
         Refuses, in this order, each naming what it is about: a malformed
         identity, a malformed epoch or a malformed body
         (:class:`~promotion.errors.PromotionError`, the ask face); a
-        re-registration with different criteria (the same class, and this
-        feature's own — feature 292's ``criteria_mismatch`` is a *different*
-        refusal at a different moment); and a ``DATABASE_URL`` this member
+        re-registration with different criteria
+        (:class:`~promotion.errors.PromotionConflictError`, the ask face's
+        own subclass — feature 292's ``criteria_mismatch`` is a *different*
+        refusal at a different moment, the message names both criteria
+        hashes so the conflict is decidable, and a caller's standing
+        ``except PromotionError`` catches this one exactly as before); and
+        a ``DATABASE_URL`` this member
         cannot speak, an absent parent row, or a row that could not be read
         back or is corrupt (:class:`~promotion.errors.PromotionStoreError`,
         all three opening :data:`~promotion.errors.
@@ -1009,21 +1034,29 @@ class PreRegistrations:
         the hash.  Equal hashes are one registration arriving twice, which is
         not an error and must not move ``pre_registered_at``.  Different
         hashes are an attempt to revise criteria that §13 item 7 already
-        fixed, which the store refuses in the ask's own class: the caller's
-        repair is to stop asking, not to change the body or the store.
+        fixed, which the store refuses in
+        :class:`~promotion.errors.PromotionConflictError` — the ask face's
+        own subclass, so a caller's standing ``except PromotionError`` keeps
+        catching the refusal while a caller that must answer a status tells
+        it from a malformed ask by class alone.  The message names both
+        hashes, because two digests are what make the conflict decidable
+        rather than merely loud: the one the row holds is the bar the
+        promotion will be judged under, the one the request states is the
+        ask that was refused.
         """
         if standing.criteria_hash == digest:
             return standing
-        raise PromotionError(
-            f"node {node} was pre-registered with criteria "
-            f"{standing.criteria_hash} at {standing.pre_registered_at!r} and "
-            f"this request states {digest}. §13 item 7 fixes a promotion's "
-            "criteria before the evaluation that decides them, so a second "
-            "registration of the same node would replace the record of what "
-            "was expected with the record of what was asked for afterwards — "
-            "and the hash would no longer be evidence of anything. Register "
-            "the second criteria set against the hypothesis it is really "
-            "about, in its own node (feature 291)"
+        raise PromotionConflictError(
+            f"{PROMOTION_CONFLICT_ERROR_CODE}: node {node} was "
+            f"pre-registered with criteria {standing.criteria_hash} at "
+            f"{standing.pre_registered_at!r} and this request states "
+            f"{digest}. §13 item 7 fixes a promotion's criteria before the "
+            "evaluation that decides them, so a second registration of the "
+            "same node would replace the record of what was expected with "
+            "the record of what was asked for afterwards — and the hash "
+            "would no longer be evidence of anything. Register the second "
+            "criteria set against the hypothesis it is really about, in "
+            "its own node (feature 291)"
         )
 
     def _require_parent(
@@ -1176,8 +1209,9 @@ class PreRegisterEndpoint:
         a retry: nothing is written, and the response carries the standing row
         and ``created=False``, so the caller sees the ``pre_registered_at``
         the criteria were actually fixed at rather than the instant its retry
-        happened to fire.  A node that holds a *different* hash is refused —
-        see :meth:`PreRegistrations.pre_register`, where the argument is.
+        happened to fire.  A node that holds a *different* hash is refused as
+        :class:`~promotion.errors.PromotionConflictError`, naming both hashes
+        — see :meth:`PreRegistrations.pre_register`, where the argument is.
 
         ``clock`` overrides the default stamp the store would use when the
         request carries no ``pre_registered_at`` (tests and replays route
@@ -1187,7 +1221,9 @@ class PreRegisterEndpoint:
         unknown criterion, an absent epoch — never reaches the store), the
         registry's (a store that cannot be reached or brought to the revision
         the row needs), and the store's own on state (an absent parent row, a
-        re-registration with different criteria).
+        re-registration with different criteria —
+        :class:`~promotion.errors.PromotionConflictError`, which a caller
+        can tell from the malformed-ask refusals by class alone).
         """
         record, created = self._registry.pre_register(
             request.node_id,

@@ -40,6 +40,32 @@ refusal about a promotion's merits — a merits refusal is feature 292's, and
 naming this one after it would send a reader looking for a mismatch that never
 happened.
 
+**The ask face gains the tree's one subclass, and the reason is a caller
+that must decide a status.**  :class:`PromotionConflictError` refines
+:class:`PromotionError` itself — the pre-registration's ask face — for the
+one refusal in that class whose body is *not* malformed: a re-registration
+of a node that already holds a row, stating different criteria.  Feature
+291 raised that refusal as the ask's own class, and the category this class
+lands with — an HTTP adapter that must answer one status per refusal —
+needs to tell it from a malformed ask, because the two are not the same
+answer: a malformed body is the caller's to fix and re-send, while a
+conflict with a row §13 item 7 already fixed is nobody's to fix at all.
+The split is therefore *downward* where every other split in this module
+is sideways, and that is the third spelling of the discipline the closing
+paragraph states: a sibling would have changed what a caller's standing
+``except PromotionError`` catches, and the one law this refinement keeps
+is that nothing a caller already wrote changes — the new class subclasses
+the class raised today, so every existing clause keeps catching it, and a
+caller that must decide a status catches the subclass first.  Its one
+face names both criteria hashes — the one the row holds and the one the
+request states — because that is what makes the conflict *decidable*: an
+operator reading the message sees two digests and knows which row stands,
+and an adapter reading the class knows the ask was well formed.  Every
+message opens with :data:`PROMOTION_CONFLICT_ERROR_CODE`, spelled clear of
+feature 292's ``criteria_mismatch`` in letter as in moment: 292 judges a
+promotion against its recorded hash at decision time, while this refuses
+a registration before any evaluation has run.
+
 **Feature 299's block is the tree's first sibling, and it is gathered.**
 :class:`PromotionBlockError` carries feature 299's one act — *System persists a
 blocking reason for a promotion whose deployment regime coverage sits below
@@ -251,7 +277,10 @@ category's remaining features extend this module with siblings — feature
 292's ``criteria_mismatch`` verdict, 296's terminal state — and the
 discipline is the one stated above: a new class is a sibling when its
 repair differs, and a face of an existing one when the caller's position is
-the same.  Nothing here presumes which of the two any later feature is.
+the same — with the one third spelling the conflict class adds, a
+*subclass* of the class raised today when the refinement must not change
+what a caller's standing ``except`` catches.  Nothing here presumes which
+of the three any later feature is.
 """
 
 from __future__ import annotations
@@ -262,6 +291,7 @@ __all__ = [
     "EPOCH_SELECTION_ERROR_CODE",
     "NO_CLEAN_EPOCH_REMAINS_CODE",
     "PROMOTION_BLOCK_ERROR_CODE",
+    "PROMOTION_CONFLICT_ERROR_CODE",
     "PROMOTION_DECISION_ERROR_CODE",
     "PROMOTION_REGISTRY_ERROR_CODE",
     "PROMOTION_WINDOW_ERROR_CODE",
@@ -271,6 +301,7 @@ __all__ = [
     "EpochSelectionError",
     "PromotionBlockedError",
     "PromotionBlockError",
+    "PromotionConflictError",
     "PromotionDecisionError",
     "PromotionError",
     "PromotionStoreError",
@@ -281,6 +312,74 @@ __all__ = [
 
 class PromotionError(Exception):
     """Base class for every failure of the promotion member's path."""
+
+
+#: The greppable word that opens every :class:`PromotionConflictError`
+#: message: a node already holds a pre-registration and the request states
+#: different criteria.  Spelled clear of feature 292's
+#: ``criteria_mismatch`` in letter as in moment — that word names a
+#: *decision-time verdict* over a promotion, this one a *registration-time
+#: refusal* of a write — so an operator who greps either word lands on the
+#: act they are debugging: 292's comparison at the deciding evaluation, or
+#: 291's store refusing to revise a row §13 item 7 already fixed.  A second
+#: spelling that echoed 292's would send a reader looking for a judgement
+#: that has not run.
+PROMOTION_CONFLICT_ERROR_CODE = "promotion_criteria_conflict"
+
+
+class PromotionConflictError(PromotionError):
+    """A re-registration stated criteria that differ from the node's recorded ones.
+
+    The ask face's one refinement, for the caller that must decide a
+    status: *"System raises PromotionConflictError, a subclass of
+    PromotionError, when a node is re-registered with different criteria,
+    which returns an error message naming both criteria hashes, so a caller
+    can tell a conflict from a malformed request."*  Raised by
+    :meth:`promotion.pre_register.PreRegistrations._answer_standing` when
+    the node already holds a ``promotion_registry`` row whose
+    ``criteria_hash`` differs from the digest of the criteria this request
+    states — the body is well formed, the store is reachable, and the
+    write is refused all the same, because §13 item 7 fixed those criteria
+    the moment the first registration landed.
+
+    **The tree's one subclass, and the reason it is not a sibling.**  Every
+    other class in this module splits *sideways*, by the repair the caller
+    must make; this one splits *downward*, inside the ask face, because the
+    refinement's first law is compatibility itself:
+
+    * the refusal is not new — feature 291 raised it as
+      :class:`PromotionError` from the day the store landed, and a
+      caller's standing ``except PromotionError`` over the
+      pre-registration path has been catching it since.  A sibling would
+      have silently changed what that clause catches; a subclass keeps
+      every existing caller's catch true, which is the constraint this
+      class exists under: *subclass the class raised today*;
+    * the repair is not a new one either — the ask face already carries it
+      (*stop asking; register the second criteria set against the
+      hypothesis it is really about*), and what is new is only that a
+      caller which must *answer a status* — the HTTP adapter, an operator
+      script dividing retryable from fatal — can tell this refusal from a
+      malformed ask by class alone, where before both wore one class and
+      the only tell was parsing the message;
+    * not a face of :class:`PromotionStoreError` — nothing failed to
+      write or to read back: the store found the standing row cleanly and
+      refused on what it found.  The store's word is about a row that did
+      not land; this refusal is about a row that must not be replaced;
+    * not :class:`CriteriaMismatchError` — the closest in *subject* and
+      the farthest in *moment*.  Feature 292 judges a promotion against
+      its recorded hash when the deciding evaluation has run; this refuses
+      a registration before any evaluation has started.  292's word is
+      deliberately not spelled here, and
+      :mod:`promotion.pre_register` pins that by test.
+
+    **One face**, and its message names everything the decision needs:
+    both criteria hashes — the standing row's and the request's — so the
+    conflict is decidable from the log line alone (two digests, one row
+    that stands, one ask that was refused), the node, and the repair.
+    Every message opens with :data:`PROMOTION_CONFLICT_ERROR_CODE`, so an
+    operator greps one word for *the registry refused to rewrite fixed
+    criteria* and finds neither a failed write nor a moved bar.
+    """
 
 
 #: The greppable word that opens every :class:`CriteriaMismatchError` message:
