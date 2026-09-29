@@ -205,3 +205,24 @@ What the cases establish:
   dispatch the body provably travelled (read, parsed, delivered), not
   over one that refused it unread.
 
+
+## Run 2 (API half): 2026-09-29, after tasks 4-12 and 17-21 of `additions_spec_journeys.xml`
+
+- **Server:** `python -m nullius_api` on `127.0.0.1:8765` (`main` at `2b6e407`).
+- **Data and configuration:** a store from the shipped seeder `python -m nullius_api.demo`; a `NULLIUS_API_TOKENS_FILE` with one token per scope; `NULLIUS_EXECUTION_ENGINE=nullius_api.demo:PAPER_ENGINE`.
+- **J12:** an operator-sealed null sidecar (`NULL_SIDECAR_PATH` and `NULL_SIDECAR_KEY_REF=hex:…`, written through `NullSidecar.write`) with one null node and one real node.
+- **Browser:** each call is driven with `fetch()` from the API's own origin in headless Chromium via browser-harness ([`validate_api_journeys.py`](validate_api_journeys.py)). No response body contained a traceback or a filesystem path.
+
+| # | Journey | Verdict | Failing step, expected vs observed | Evidence |
+|---|---|---|---|---|
+| J8 | Metrics over HTTP | ❌ fail | **Step 1.** Expected the newest `fdr_deploy`, `campaign_id` and `computed_at` beside the `history`. Observed only `{"history": [[id, value, ts], …]}`. **Step 3.** Expected `{stratum: count}`. Observed `{"strata": [["crash", 0], …]}`, a list of pairs. Steps 2 and 4 pass (lamps JSON; `401` without a token). | [J08-api-metrics.png](screenshots/run-2/J08-api-metrics.png) |
+| J9 | Pre-register | ✅ pass | The seeded node was already registered identically, so step 1 took its documented `200`-retry branch. Then `200` retry, `409 promotion_criteria_conflict`, `422 promotion_parent_absent` and `400 malformed_body`. | [J09-api-pre-register.png](screenshots/run-2/J09-api-pre-register.png) |
+| J10 | Forward test | ✅ pass (with a filed defect) | Promote gives `200` (the seeded record was already open), the decay curve gives `200` with points, and an unknown node gives `404 forward_record_absent`. **Defect:** that `404`'s message reads `forward_record_absent: forward_record_unwritable: …`, which tells the caller the store is unwritable when the record simply does not exist. | [J10-api-forward-test.png](screenshots/run-2/J10-api-forward-test.png) |
+| J11 | Trial ledger | ❌ fail | **Step 4.** Expected per-epoch counts and a `total`. Observed `{"view": {"counts": [[epoch, n], …]}}` with no `total`. Steps 1-3 pass on a fresh node: `201` with `appended: true` and `seq 3`, then `200` with the same `seq 3`, then `400`. (The first attempt reused the seeded node, and the ledger is idempotent per node, so it returned that node's `seq 1`.) | [J11-api-trial-ledger-fresh-node.png](screenshots/run-2/J11-api-trial-ledger-fresh-node.png) |
+| J12 | Null-oracle target | ✅ pass | An unknown node gives `404 unknown_node`. A sealed null node and a sealed real node both give `503` with identical headers (excluding Date), and their bodies differ only in the node id the caller sent. Without a sidecar the route gives `503 component_unconfigured`. | [with sidecar](screenshots/run-2/J12-api-null-oracle-target-sidecar.png), [without sidecar](screenshots/run-2/J12-api-null-oracle-target.png) |
+| J13 | Risk halt | ✅ pass | `200` with `changed: true`, then `200` with `changed: false` (first write wins). With no engine bound: `503 execution_engine_unbound`. | [J13-api-risk-halt.png](screenshots/run-2/J13-api-risk-halt.png), [no engine](screenshots/run-2/J13-halt-no-engine.png) |
+| J14 | Discoverability | ✅ pass | With a token, `GET /` renders the index: 10 routes, all configured. Also observed: `/healthz` gives `200` without a token, an unknown path `404`, a wrong verb `405` with `Allow: POST`, and `401`, `401`, `403` for no token, an unknown token and a wrong scope. | [J14-api-discoverability.png](screenshots/run-2/J14-api-discoverability.png), [rendered index](screenshots/run-2/J14-index-rendered.png) |
+
+**Open decision (not filed):** the HTML index at `/` is aimed at browsers, but it requires a bearer token, and a browser cannot send one by navigating to the URL. A person who types the URL gets `401` ([screenshot](screenshots/run-2/J14-index-plain-navigation-401.png)). The auth feature gated it on purpose, because the index reveals which components are configured. Whether `/` should be public, perhaps with the configured column hidden, is a product decision for the owner.
+
+**Also seen:** the shipped demo seeder seals no null sidecar, so J12 needed operator configuration by hand to exercise the barrier.

@@ -3,9 +3,9 @@ id: J08-api-metrics
 title: Read the three observability metrics over HTTP
 persona: Operator
 source: api_endpoints_summary Observability; features 341-343
-status: untested
-last_checked: —
-evidence: —
+status: fail
+last_checked: run 2
+evidence: screenshots/run-2/J08-api-metrics.png
 ---
 
 # J08 — Read the three observability metrics over HTTP

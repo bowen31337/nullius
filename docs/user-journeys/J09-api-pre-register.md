@@ -3,9 +3,9 @@ id: J09-api-pre-register
 title: Pre-register promotion criteria before the deciding evaluation
 persona: Researcher
 source: api_endpoints_summary Promotion; features 290-293
-status: untested
-last_checked: —
-evidence: —
+status: pass
+last_checked: run 2
+evidence: screenshots/run-2/J09-api-pre-register.png
 ---
 
 # J09 — Pre-register promotion criteria before the deciding evaluation

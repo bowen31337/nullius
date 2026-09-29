@@ -3,9 +3,9 @@ id: J13-api-risk-halt
 title: Trigger the emergency halt
 persona: Risk supervisor
 source: api_endpoints_summary Risk; features 322-331
-status: untested
-last_checked: —
-evidence: —
+status: pass
+last_checked: run 2
+evidence: screenshots/run-2/J13-api-risk-halt.png, screenshots/run-2/J13-halt-no-engine.png
 ---
 
 # J13 — Trigger the emergency halt
