@@ -57,6 +57,42 @@ specificity pair (:data:`_OLDEST_FIGURES`, :data:`_MIDDLE_FIGURES`,
 :data:`_NEWEST_FIGURES`), never spelled as a raw figure this module
 invented.
 
+**The seed also seals §7.1's sidecar, because the database is not the whole
+world ``POST /target`` reads.**  ``nulloracle``'s route answers from a
+*file* — §7.1's ``sidecar.enc``, AES-GCM sealed, the one artifact in the
+system allowed to hold a node's null status — and the composed component
+exists only when ``NULL_SIDECAR_PATH`` and ``NULL_SIDECAR_KEY_REF`` name
+one (:meth:`nulloracle.sidecar.NullSidecar.resolve`).  So a demo that
+seeded only tables composed no ``nulloracle-target-route`` at all, and
+J12's ``POST /target`` answered 503 ``component_unconfigured`` for every
+node — the unknown-node 404 and the null/real information barrier could
+not be exercised from the shipped demo however carefully the journey's
+steps were followed.  :func:`_seal_null_sidecar` closes that: it seals one
+null node and one real node into ``<database directory>/null/sidecar.enc``
+through the member's own :meth:`~nulloracle.sidecar.NullSidecar.write`
+(which creates the ``0o700`` directory and writes the ``0o600`` file
+itself, so this module never spells those modes a second time), under a key
+generated for this seeding with :func:`os.urandom`.
+
+The two nodes are identities this module already seeds rather than new
+ones: the *real* node is :data:`_NODE_ID` — the node J10's forward curve
+and J11's charges already name, so the demo's world stays one world — and
+the *null* node is :data:`_NULL_NODE_ID`, the node whose bare, unbudgeted
+charge is already in the trial ledger (feature 93's filter needs a node
+that is charged but never counted, and a node planted as null is the
+honest owner of that charge).  Both get a ``node`` row, so every node the
+sidecar holds is a node the tree store holds.
+
+**The demo key is generated per seeding, printed, and never persisted.**
+Nothing on disk records it: the file is sealed *under* it, not beside it,
+so a second seeding re-seals the sidecar under a fresh key.  That is
+deliberate — a checked-in or reused demo key is a key in a repository, and
+constraint 7 of the bug report asks for exactly this — and it has one
+consequence the entrypoint states plainly: the two strings the summary
+prints must be exported *and* the sidecar re-sealed by the same run that
+printed them, because the run after this one will have replaced the file
+under a key it no longer knows.
+
 **The paper execution engine is stateless and in-memory, and it is not
 started by this module.**  :class:`InMemoryPaperEngine` is the four-verb
 face :mod:`risk.flatten` drives (``open_orders``, ``cancel_order``,
@@ -66,8 +102,8 @@ names, importable at ``nullius_api.demo:PAPER_ENGINE`` — the
 ``module:attribute`` spelling :data:`nullius_api.server.
 EXECUTION_ENGINE_ENV` (``NULLIUS_EXECUTION_ENGINE``) takes to bind an
 engine to ``POST /risk/halt`` at server start.  This module seeds a
-database; it does not open a socket and does not read that environment
-variable itself.
+database and seals a sidecar; it does not open a socket and does not read
+that environment variable itself.
 """
 
 from __future__ import annotations
@@ -126,6 +162,12 @@ _NODE_ID = "00000000-0000-4000-8000-0000000000a1"
 #: counted).  The trial ledger's own schema carries no foreign key on
 #: ``node_id``/``campaign_id`` (feature 95's row is an append-only fact,
 #: not a join), so this charge needs no parent row of its own.
+#:
+#: Since the demo also seals a sidecar, this is now the node that *is*
+#: planted as null there: a node charged without ever being counted is a
+#: node whose signal was never compared to real forward returns, which is
+#: what a null assignment means (§8), so the charge and the seal agree
+#: about one node rather than describing two.
 _NULL_NODE_ID = "00000000-0000-4000-8000-0000000000b2"
 _EPOCH_SERVING = "epoch-demo-2026-01"
 _EPOCH_CLEAN_A = "epoch-demo-2026-02"
@@ -176,6 +218,33 @@ _REGIME_COVERAGE = (
 )
 
 _FEED_STALENESS_SECONDS = 1.2
+
+#: The directory the demo's sidecar lives in, under the database's own
+#: directory, and the file's name — §7.1's own
+#: (:data:`nulloracle.SIDECAR_DIRECTORY`, :data:`nulloracle.SIDECAR_FILENAME`).
+#: A *literal* here rather than an import, because the two constants are
+#: read inside :func:`_sidecar_path` which the module resolves lazily; the
+#: one place they must agree with the member is :func:`_seal_null_sidecar`,
+#: which writes through the member with the member's own filename.
+_DEMO_SIDECAR_DIRECTORY = "null"
+_DEMO_SIDECAR_FILENAME = "sidecar.enc"
+
+#: The demo's two planted nodes, by the bit §7.1's schema carries.  The
+#: closure of the pair is what makes the information barrier *exerciseable*
+#: rather than merely implemented: an operator can post for a node the
+#: sidecar does not hold (the 404) and for two nodes it does (the identical
+#: refusal, or — once a series supply is wired — one 200 on each branch).
+#:
+#: The permutation seed each carries is *derived* rather than drawn, through
+#: the member's own :func:`nulloracle.perm_seed_for`, which is where a real
+#: campaign gets its seeds: a seed derived from ``(campaign_id, node_id)``
+#: is stable across processes and machines, so a demo replayed next year
+#: reproduces the same null series (§12) and two runs of the seeder cannot
+#: disagree about a node's world.
+_DEMO_NULL_NODES: tuple[tuple[str, bool], ...] = (
+    (_NODE_ID, False),
+    (_NULL_NODE_ID, True),
+)
 
 
 # -- Migrations, loaded by path, never edited --------------------------------
@@ -277,7 +346,7 @@ def _bootstrap_schema(database_url: str) -> None:
 
 
 def _seed_parent_rows(database_url: str) -> None:
-    """Insert the node row and the three epoch rows directly.
+    """Insert the node rows and the three epoch rows directly.
 
     Neither table has a public writer for exactly this row in this
     workspace today (see the module docstring): a node is ordinarily the
@@ -286,6 +355,11 @@ def _seed_parent_rows(database_url: str) -> None:
     is what makes a repeated seed leave a standing row untouched rather
     than refusing on the second run — the same idempotence every public
     store below states for its own upsert.
+
+    Both nodes the sealed sidecar holds get a row here (the real one and
+    the null one), because §7.1's file is *about* nodes and a demo whose
+    sidecar named a node no tree store held would be a world an operator
+    could not join.  The rows are one migration's own columns, nothing more.
     """
     path = _sqlite_path(database_url)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -293,18 +367,21 @@ def _seed_parent_rows(database_url: str) -> None:
     try:
         connection.execute("PRAGMA foreign_keys = ON")
         with connection:
-            connection.execute(
+            connection.executemany(
                 "INSERT OR IGNORE INTO node "
                 "(id, campaign_id, theme_root, depth, evaluator_hash, "
                 "snapshot_hash, cost_model_hash) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
-                    _NODE_ID,
-                    _CAMPAIGN_NEWEST,
-                    "macro",
-                    0,
-                    _EVALUATOR_HASH,
-                    _SNAPSHOT_HASH,
-                    _COST_MODEL_HASH,
+                    (
+                        node_id,
+                        _CAMPAIGN_NEWEST,
+                        "macro",
+                        0,
+                        _EVALUATOR_HASH,
+                        _SNAPSHOT_HASH,
+                        _COST_MODEL_HASH,
+                    )
+                    for node_id, _is_null in _DEMO_NULL_NODES
                 ),
             )
             connection.executemany(
@@ -319,6 +396,67 @@ def _seed_parent_rows(database_url: str) -> None:
             )
     finally:
         connection.close()
+
+
+# -- §7.1's sidecar, sealed beside the database -------------------------------
+
+
+def _sidecar_path(database_url: str) -> Path:
+    """Where the demo seals §7.1's sidecar: beside the database it describes.
+
+    ``<database directory>/null/sidecar.enc``.  Beside the database rather
+    than anywhere else, and for the same reason the two files are one
+    deployment: an operator who names one path has named the pair, and the
+    sidecar travels with the store it belongs to when a demo directory is
+    copied or removed.  Never inside the repository — the demo writes only
+    where the operator pointed ``DATABASE_URL``.
+    """
+    return (
+        _sqlite_path(database_url).parent
+        / _DEMO_SIDECAR_DIRECTORY
+        / _DEMO_SIDECAR_FILENAME
+    )
+
+
+def _seal_null_sidecar(database_url: str) -> tuple[str, str]:
+    """Seal the two demo nodes into §7.1's sidecar; answer ``(path, key)``.
+
+    The write goes through :meth:`nulloracle.sidecar.NullSidecar.write`,
+    which is the member's one door for this artifact: it creates the
+    directory ``0o700``, writes the file ``0o600`` through a temporary
+    file and an atomic ``os.replace``, and returns the envelope's digest.
+    This module therefore spells no mode bits, no temp-file dance and no
+    cipher — it hands the member a path, a key and §7.1's assignments and
+    lets the member own everything the artifact *is*.
+
+    The key is 32 fresh bytes from :func:`os.urandom`, and it is returned
+    raw so the entrypoint can print its ``hex:`` reference and nothing
+    else.  It is **not** persisted: nothing on disk records it, so a second
+    seeding re-seals the file under a key it alone holds.  That is the
+    constraint the bug report states (*"the demo key is generated per
+    seeding and is only ever printed for the demo; nothing is written into
+    the repository"*) and the reason the entrypoint's summary says the two
+    values it prints belong to the run that printed them.
+
+    The assignments carry the member's own
+    :func:`nulloracle.perm_seed_for` seeds rather than values invented
+    here — the demo's null node is reproducible from the sealed file alone
+    (§12), exactly as a campaign's would be.
+    """
+    import nulloracle
+
+    assignments = [
+        nulloracle.NullAssignment(
+            node_id=node_id,
+            is_null=is_null,
+            perm_seed=nulloracle.perm_seed_for(_CAMPAIGN_NEWEST, node_id),
+        )
+        for node_id, is_null in _DEMO_NULL_NODES
+    ]
+    material = os.urandom(nulloracle.SIDECAR_KEY_BYTES)
+    path = _sidecar_path(database_url)
+    nulloracle.NullSidecar(path, material).write(assignments)
+    return str(path), material.hex()
 
 
 # -- The paper execution engine -----------------------------------------------
@@ -380,18 +518,52 @@ PAPER_ENGINE = InMemoryPaperEngine(
 
 @dataclass(frozen=True)
 class DemoSeedReport:
-    """What one :func:`seed_demo_store` call put in the database.
+    """What one :func:`seed_demo_store` call put in the database — and on disk.
 
     A value, not a receipt to reinterpret: every field is an identity
     this run either created or reused, so a caller (the CLI's own
     summary, a test) can name exactly which rows to read back rather
     than re-deriving them from the constants above.
+
+    ``real_node_id``/``null_node_id`` are the pair §7.1's sidecar holds,
+    and they are *the same two identities* the database side of the seed
+    names: ``real_node_id`` is ``node_id`` — the pre-registered, decided,
+    forward-tracked node every earlier journey reads — and ``null_node_id``
+    is the node whose bare, unbudgeted charge is already in the trial
+    ledger.  Both are fields rather than aliases so a caller reads the
+    pair's meaning off the report instead of having to know which
+    constant played which part.
+
+    ``null_sidecar_key`` is the *demo key itself*, in lowercase hex — the
+    material, not a reference to it, which is why the field is named for
+    the hex the entrypoint prints.  A report is a value an operator holds
+    for the length of the demo they are running; nothing serialises it.
     """
 
     campaign_ids: tuple[str, str, str]
     node_id: str
     epoch_ids: tuple[str, str, str]
     forward_observed_on: tuple[str, str]
+    #: The two nodes §7.1's sidecar holds: the real one (the demo node) and
+    #: the null one (the bare charge's node).  Both have ``node`` rows.
+    real_node_id: str
+    null_node_id: str
+    #: Where the sealed sidecar is, and the hex key it is sealed under —
+    #: the two values ``NULL_SIDECAR_PATH`` and ``NULL_SIDECAR_KEY_REF``
+    #: must carry for the composed ``POST /target`` to serve this demo.
+    null_sidecar_path: str
+    null_sidecar_key: str
+
+    @property
+    def null_sidecar_key_ref(self) -> str:
+        """The key as the ``hex:`` reference ``NULL_SIDECAR_KEY_REF`` takes.
+
+        Derived from :attr:`null_sidecar_key` rather than stored beside it,
+        so the two can never disagree about which key this run sealed under
+        — the ``hex:`` scheme is :mod:`nulloracle.keyref`'s own closed
+        spelling, and this property is the one place the demo composes it.
+        """
+        return f"hex:{self.null_sidecar_key}"
 
 
 def seed_demo_store(database_url: str) -> DemoSeedReport:
@@ -402,13 +574,22 @@ def seed_demo_store(database_url: str) -> DemoSeedReport:
     owns (see the module docstring) — in the one order their foreign
     keys and read-time dependencies demand: the three campaigns before
     anything that names one (the KS guard's row, the node's
-    ``campaign_id``); the node row and the three epoch rows before the
+    ``campaign_id``); the node rows and the three epoch rows before the
     pre-registration that references both by foreign key; the decided
     promotion before the forward record that reads its ``decided_at``;
     the forward record before the observations appended onto it.  Safe
     to call more than once against the same database: every public
-    store's own write is idempotent on its key, and the two rows this
+    store's own write is idempotent on its key, and the rows this
     module writes directly are guarded by ``INSERT OR IGNORE``.
+
+    The sidecar is sealed **last**, after every row it is *about* stands:
+    a sealed assignment naming a node the tree store does not hold would
+    be a sidecar an audit could not join, and the nodes' rows are written
+    with the other parents partway through.  It is not idempotent in the
+    same way the rows are, and deliberately so — a fresh key per seeding
+    (see :func:`_seal_null_sidecar`) means a repeated run seals the same
+    assignments under a new key, which is the constraint's own shape: the
+    world is stable, the demo's secret is not.
     """
     if not isinstance(database_url, str) or not database_url.strip():
         raise ValueError(
@@ -525,11 +706,20 @@ def seed_demo_store(database_url: str) -> DemoSeedReport:
         ts=_NULL_CHARGE_TS,
     )
 
+    # Last, and after every row the sidecar is about: §7.1's file names two
+    # nodes, and both must already stand in the tree store for the sealed
+    # world to be one an operator can join.
+    sidecar_path, sidecar_key = _seal_null_sidecar(url)
+
     return DemoSeedReport(
         campaign_ids=(_CAMPAIGN_OLDEST, _CAMPAIGN_MIDDLE, _CAMPAIGN_NEWEST),
         node_id=_NODE_ID,
         epoch_ids=(_EPOCH_SERVING, _EPOCH_CLEAN_A, _EPOCH_CLEAN_B),
         forward_observed_on=(observed_on[0].isoformat(), observed_on[1].isoformat()),
+        real_node_id=_NODE_ID,
+        null_node_id=_NULL_NODE_ID,
+        null_sidecar_path=sidecar_path,
+        null_sidecar_key=sidecar_key,
     )
 
 
@@ -545,6 +735,14 @@ def main(argv: list[str] | None = None) -> int:
     misconfigurations, because an operator running a seed script is
     exactly the reader the structured refusals in every store below
     already write for.
+
+    The summary prints the two values the demo's ``POST /target`` needs
+    exported, spelled as the assignments an operator can paste: the path
+    §7.1's sidecar was sealed at and the ``hex:`` reference that opens it.
+    The key is printed here and **nowhere else** — it is held by no file
+    and by no store — so the summary says whose run those values belong to,
+    because the next seeding of the same store will have replaced the file
+    under a key only *that* run printed.
     """
     _ = argv  # no flags: the database is named by DATABASE_URL alone
     url = os.environ.get(DATABASE_URL_ENV, "").strip()
@@ -566,6 +764,19 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  pre-registered, decided node: {report.node_id}")
     print(f"  sealed epochs: {', '.join(report.epoch_ids)}")
     print(f"  forward observations on: {', '.join(report.forward_observed_on)}")
+    print(f"  sealed null sidecar: {report.null_sidecar_path}")
+    print(
+        "    one null node and one real node, so POST /target answers the "
+        "unknown-node 404 and the barrier:"
+    )
+    print(f"    null node: {report.null_node_id}")
+    print(f"    real node: {report.real_node_id}")
+    print(
+        "    export these two to serve POST /target (the key belongs to "
+        "THIS run; seeding again re-seals under a new one):"
+    )
+    print(f"      export NULL_SIDECAR_PATH={report.null_sidecar_path}")
+    print(f"      export NULL_SIDECAR_KEY_REF={report.null_sidecar_key_ref}")
     print(
         "  paper execution engine: nullius_api.demo:PAPER_ENGINE "
         "(bind with NULLIUS_EXECUTION_ENGINE to serve POST /risk/halt)"
