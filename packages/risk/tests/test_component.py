@@ -1,22 +1,16 @@
-"""The two seams: composition via the loader, and the app seat.
+"""The two seams: composition via the loader, and per-process resolution.
 
 Mirrors ``packages/router/tests/test_component.py``: the factory's scan
 composes the kill switch under the member's registered name, the halt
-event ledger under its own, and the flattener under its own, and
-``app.modules.risk`` answers *what is the risk supervisor's kill
-switch, what is its halt event ledger, and what is its flattener, for
-the process asking?* for a caller that holds the app namespace.
-``risk`` carries no hyphen, so both the member and the seat are plain
-dotted imports — no ``importlib.import_module`` trick needed (unlike the
-``cost-model`` seat).
-
-The seat's own law is pinned here too: it exposes exactly one accessor
-per member component, and every accessor takes no ``app`` argument — the
-channel, the ledger and the flattener are resolved from ``DATABASE_URL``
-for whichever process is asking, because the supervisor that sends, the
-order layer that reads, the process that records, the reconciler that
-sweeps and the supervisor that flattens are different processes and
-none of their compositions can answer for another.
+event ledger under its own, the flattener under its own and the halt door
+under its own.  The member also resolves each of them straight from
+``DATABASE_URL`` (``RiskKillSwitch.resolve()``,
+``RiskHaltEventStore.resolve()``, ``RiskFlattener.resolve()``,
+``HaltEndpoint.from_env()``) for whichever process is asking, because the
+supervisor that sends, the order layer that reads, the process that
+records, the reconciler that sweeps and the supervisor that flattens are
+different processes and none of their compositions can answer for
+another.
 """
 
 from __future__ import annotations
@@ -29,49 +23,6 @@ import pytest
 import risk as member
 
 from app.module_loader import create_app
-from app.modules import risk as seat
-from app.modules.risk import COMPONENT_NAME as SEAT_COMPONENT_NAME
-from app.modules.risk import (
-    risk_flattener,
-    risk_halt_endpoint,
-    risk_halt_event_store,
-    risk_kill_switch,
-)
-
-EXPECTED_EXPORTS = {
-    "COMPONENT_NAME",
-    "risk_flattener",
-    "risk_halt_endpoint",
-    "risk_halt_event_store",
-    "risk_kill_switch",
-}
-
-NOT_THE_SEATS_BUSINESS = (
-    "RiskKillSwitch",
-    "KillInstruction",
-    "RiskHaltEventStore",
-    "HaltEvent",
-    "RiskFlattener",
-    "FlattenResult",
-    "RiskError",
-    "RiskKillSwitchError",
-    "RiskHaltEventError",
-    "RiskFlattenError",
-    "RiskOrdersKilledError",
-    "RiskStoreError",
-    "send_kill",
-    "require_orders_allowed",
-    "orders_killed_error",
-    "record_halt",
-    "recorded_halt_events",
-    "flatten_positions",
-    "FLATTEN_STATUS_COMPLETED",
-    "RISK_ORDER_KILL_TABLE",
-    "RISK_HALT_EVENT_TABLE",
-    "HALT_EVENTS_COMPONENT_NAME",
-    "FLATTENER_COMPONENT_NAME",
-    "process_identity",
-)
 
 SENT = datetime(2026, 9, 25, 12, 0, 0, tzinfo=UTC)
 
@@ -111,10 +62,9 @@ def _assert_is_the_halt_endpoint(component: object) -> None:
 
 
 def test_the_member_registers_under_its_own_name() -> None:
-    assert member.COMPONENT_NAME == SEAT_COMPONENT_NAME == "risk"
+    assert member.COMPONENT_NAME == "risk"
     # The ledger's and the flattener's component names live in the member
-    # alone (the seat resolves rather than reflects them), but they are
-    # still spelled once per speaker — and the spec's kebab-case
+    # alone, but they are still spelled once per speaker — and the spec's kebab-case
     # convention for a member's second and third components holds.
     assert member.HALT_EVENTS_COMPONENT_NAME == "risk-halt-events"
     assert member.FLATTENER_COMPONENT_NAME == "risk-flattener"
@@ -239,90 +189,62 @@ def test_the_builders_never_raise_and_take_no_arguments(
     assert isinstance(member.build_risk_halt(), member.HaltEndpoint)
 
 
-# -- The seat -------------------------------------------------------------------
+# -- Per-process resolution ------------------------------------------------------
 
 
-def test_the_seat_exports_exactly_the_promised_names() -> None:
-    assert set(seat.__all__) == EXPECTED_EXPORTS
-    for name in EXPECTED_EXPORTS:
-        assert hasattr(seat, name), name
-    for leaked in NOT_THE_SEATS_BUSINESS:
-        assert leaked not in seat.__all__, leaked
-
-
-def test_the_seat_does_not_re_export_the_members_surface() -> None:
-    for name in NOT_THE_SEATS_BUSINESS:
-        assert not hasattr(seat, name), name
-
-
-def test_the_seats_accessors_take_no_app_argument() -> None:
-    # The channel's law, stated at the signature: the supervisor that
-    # sends and the order layer that reads compose nothing, so the seat
-    # accepting an application would suggest the answer depended on one.
-    # The ledger's accessor holds the same law for one process further:
-    # the reconciler is usually an operator's sweep, hours after the
-    # halting supervisor wrote.  The flattener's holds it at the limit:
-    # the one act that must run while another process on this seat is
-    # hung can be nobody's composition.
-    assert set(inspect.signature(risk_kill_switch).parameters) == set()
-    assert set(inspect.signature(risk_halt_event_store).parameters) == set()
-    assert set(inspect.signature(risk_flattener).parameters) == set()
-    assert set(inspect.signature(risk_halt_endpoint).parameters) == set()
-
-
-def test_the_seat_resolves_the_switch_for_this_process(
+def test_the_member_resolves_the_switch_for_this_process(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'seated.db'}")
-    switch = risk_kill_switch()
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'resolved.db'}")
+    switch = member.RiskKillSwitch.resolve()
     _assert_is_the_kill_switch(switch)
 
 
-def test_the_seat_resolves_the_ledger_for_this_process(
+def test_the_member_resolves_the_ledger_for_this_process(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'seated.db'}")
-    store = risk_halt_event_store()
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'resolved.db'}")
+    store = member.RiskHaltEventStore.resolve()
     _assert_is_the_halt_event_store(store)
 
 
-def test_the_seat_resolves_the_flattener_for_this_process(
+def test_the_member_resolves_the_flattener_for_this_process(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'seated.db'}")
-    flattener = risk_flattener()
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'resolved.db'}")
+    flattener = member.RiskFlattener.resolve()
     _assert_is_the_flattener(flattener)
 
 
-def test_the_seat_resolves_the_halt_door_for_this_process(
+def test_the_member_resolves_the_halt_door_for_this_process(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'seated.db'}")
-    door = risk_halt_endpoint()
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'resolved.db'}")
+    door = member.HaltEndpoint.from_env()
     _assert_is_the_halt_endpoint(door)
 
 
-def test_the_seat_answers_none_without_a_database(
+def test_the_member_resolves_none_without_a_database(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    assert risk_kill_switch() is None
-    assert risk_halt_event_store() is None
-    assert risk_flattener() is None
-    assert risk_halt_endpoint() is None
+    assert member.RiskKillSwitch.resolve() is None
+    assert member.RiskHaltEventStore.resolve() is None
+    assert member.RiskFlattener.resolve() is None
+    assert member.HaltEndpoint.from_env() is None
 
 
 def test_the_composed_reflection_and_the_resolved_switch_are_one_channel(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # The member's component and the seat's resolution construct the same
+    # The member's component and its own resolution construct the same
     # class over the same URL, and the row behind both is one: what the
     # supervisor sends through a resolved switch is what a caller holding
     # the composed reflection reads standing.
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'one-channel.db'}")
     app = create_app()
     composed = app.get(member.COMPONENT_NAME)
-    resolved = risk_kill_switch()
+    resolved = member.RiskKillSwitch.resolve()
     assert composed is not None and resolved is not None
     sent = resolved.send(sent_at=SENT)
     assert sent.changed is True
@@ -341,7 +263,7 @@ def test_the_composed_reflection_and_the_resolved_ledger_are_one_record(
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'one-record.db'}")
     app = create_app()
     composed = app.get(member.HALT_EVENTS_COMPONENT_NAME)
-    resolved = risk_halt_event_store()
+    resolved = member.RiskHaltEventStore.resolve()
     assert composed is not None and resolved is not None
     event = resolved.record(trigger_reason="manual_halt", triggered_at=SENT)
     assert event.sequence == 1
@@ -362,7 +284,7 @@ def test_the_composed_reflection_and_the_resolved_flattener_are_one_channel(
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'one-authority.db'}")
     app = create_app()
     composed = app.get(member.FLATTENER_COMPONENT_NAME)
-    resolved_switch = risk_kill_switch()
+    resolved_switch = member.RiskKillSwitch.resolve()
     assert composed is not None and resolved_switch is not None
     sent = resolved_switch.send(sent_at=SENT, supervisor_process_id="supervisor/4711")
     assert sent.changed is True

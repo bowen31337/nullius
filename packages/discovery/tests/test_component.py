@@ -1,9 +1,8 @@
-"""The two seams: composition via the loader, and the app seat.
+"""The composition seam: feature 232's store as the loader composes it.
 
-Feature 232's store is reached two ways — the factory's scan composes it under
-the member's registered name, and :mod:`app.modules.discovery` answers *what is
-the composed campaign store?* for a caller that holds the app namespace — and
-this file holds both halves of that wiring, the way
+Feature 232's store is reached through the factory's scan, which composes it
+under the member's registered name; a caller asks the composed application
+``create_app().get("discovery")`` for it.  This file holds that wiring, the way
 ``packages/bootstrap/tests/test_pool_component.py`` holds its own.
 
 **The loader's properties shape the composition half exactly.**  ``create_app``
@@ -28,7 +27,7 @@ database file absent after the composition and after reading the component, and
 present only after a campaign is actually created — the composition seam being
 where a store that helped itself to a database would be hardest to see.
 
-**The seat's ``None`` is about the deployment.**  ``Application()`` — no scan
+**The composed ``None`` is about the deployment.**  ``Application()`` — no scan
 at all — is the state where nothing was registered; a scanned application with
 no ``DATABASE_URL`` is the state where the component was registered and
 resolved no store.  A caller that must make feature 232's record has to refuse
@@ -45,27 +44,6 @@ import discovery as member
 import pytest
 
 from app.module_loader import Application, Registration, create_app, scan_components
-from app.modules import discovery as seat
-from app.modules.discovery import COMPONENT_NAME as SEAT_COMPONENT_NAME
-from app.modules.discovery import campaign_records_component
-
-#: The seat's whole public surface, asserted as an exact set for the same
-#: reason the other seats' are: the failure this guards against is the seat
-#: *growing* a re-export, and a membership check cannot see that.
-EXPECTED_EXPORTS = {"COMPONENT_NAME", "campaign_records_component"}
-
-#: The names a well-meaning re-export would add first — the record, the clip's
-#: band, the regimes and the module-level create are the member's public
-#: vocabulary, and the seat's job is to answer one question about composition.
-NOT_THE_SEATS_BUSINESS = (
-    "CampaignRecord",
-    "CampaignRecords",
-    "create_campaign",
-    "null_fraction",
-    "PHI_FLOOR",
-    "PHI_CEILING",
-    "REGIMES",
-)
 
 
 def _assert_is_the_campaign_store(component: object) -> None:
@@ -89,9 +67,9 @@ def _assert_is_the_campaign_store(component: object) -> None:
 
 def test_the_member_registers_under_its_own_name() -> None:
     # One component, unprefixed — the ``ledger`` / ``artifacts`` / ``canary``
-    # precedent for a member's first and only contribution.  The member, the
-    # seat and the spec's plugin vocabulary all spell the one name.
-    assert member.COMPONENT_NAME == SEAT_COMPONENT_NAME == "discovery"
+    # precedent for a member's first and only contribution.  The member and
+    # the spec's plugin vocabulary both spell the one name.
+    assert member.COMPONENT_NAME == "discovery"
 
 
 def test_the_scanned_application_carries_the_store(monkeypatch, tmp_path: Path) -> None:
@@ -240,35 +218,19 @@ def test_composing_writes_nothing_and_creating_is_on_demand(
         assert count() == 1  # the demand is what wrote
 
 
-# -- The seat ---------------------------------------------------------------------
+# -- The composed application -----------------------------------------------------
 
 
-def test_the_seat_exposes_nothing_but_the_composition_accessor() -> None:
-    assert set(seat.__all__) == EXPECTED_EXPORTS
-    for name in EXPECTED_EXPORTS:
-        assert hasattr(seat, name), name
-    for leaked in NOT_THE_SEATS_BUSINESS:
-        assert leaked not in seat.__all__, leaked
-
-
-def test_the_seat_returns_the_composed_store(monkeypatch, tmp_path: Path) -> None:
+def test_the_composed_application_answers_the_store(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'seated.db'}")
-    store = campaign_records_component()
+    store = create_app().get(member.COMPONENT_NAME)
     assert store is not None
     assert type(store).__name__ == "CampaignRecords"
     assert store.database_url == f"sqlite:///{tmp_path / 'seated.db'}"
 
 
-def test_the_seat_reads_the_application_it_is_handed(monkeypatch, tmp_path: Path) -> None:
-    # A caller that already holds an application gets *that* application's
-    # store — the seat must not compose its own behind the caller's back.
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'handed.db'}")
-    app = create_app()
-    assert campaign_records_component(app) is app.get(member.COMPONENT_NAME)
-
-
-def test_a_deployment_without_a_database_seats_none(monkeypatch) -> None:
-    # The seat's ``None`` means the component ran and resolved no store —
+def test_a_deployment_without_a_database_composes_none(monkeypatch) -> None:
+    # The composed ``None`` means the component ran and resolved no store —
     # a statement about the deployment.  A caller that must create a campaign
     # has to read it as a refusal to proceed, not as an empty store: an empty
     # store answers "never planned" about every id, while this says there is
@@ -276,35 +238,25 @@ def test_a_deployment_without_a_database_seats_none(monkeypatch) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
     app = create_app()
     assert member.COMPONENT_NAME in app  # registered
-    assert campaign_records_component(app) is None  # and resolved nothing
+    assert app.get(member.COMPONENT_NAME) is None  # and resolved nothing
 
 
 def test_an_absent_component_reads_as_none_rather_than_raising() -> None:
     # ``Application`` is a plain dataclass, so the absent case is constructible
-    # without depending on a scan having failed — and the seat answers ``None``
-    # rather than raising, which is what makes it safe to import in a workspace
-    # that does not carry this member.
-    assert campaign_records_component(Application()) is None
+    # without depending on a scan having failed — and the application answers
+    # ``None`` rather than raising.
+    assert Application().get(member.COMPONENT_NAME) is None
 
 
-def test_the_seat_composes_nothing_of_its_own() -> None:
-    # Reading the component must not *create* one: a seat that built a store
-    # behind the caller's back would report a store where the deployment holds
-    # none — and would have opened a database the process never asked for.
-    empty = Application()
-    assert campaign_records_component(empty) is None
-    assert empty.components == {}
-
-
-def test_an_empty_workspace_still_seats_only_the_absent_store(tmp_path) -> None:
+def test_an_empty_workspace_still_answers_only_the_absent_store(tmp_path) -> None:
     # The same fact through the real factory: a composition whose scan
-    # contributes nothing still builds, and the seat still answers ``None``.
+    # contributes nothing still builds, and it still answers ``None``.
     # Both halves of "contributed nothing" are needed — an empty root *and* a
     # fresh registry (the default registry is module-level and persists across
     # calls, so a second ``create_app`` would inherit the first one's scan).
     empty = create_app(tmp_path, registry=Registration())
     assert empty.components == {}
-    assert campaign_records_component(empty) is None
+    assert empty.get(member.COMPONENT_NAME) is None
 
 
 @pytest.mark.parametrize("absent", ["", "Discovery", "discovery-store", "campaign"])
@@ -317,8 +269,8 @@ def test_a_misspelled_component_key_is_absent_not_a_near_match(
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'keys.db'}")
     app = create_app()
     assert app.get(absent) is None
-    assert SEAT_COMPONENT_NAME in app
-    assert campaign_records_component(app) is not None
+    assert member.COMPONENT_NAME in app
+    assert app.get(member.COMPONENT_NAME) is not None
 
 
 # -- helpers ----------------------------------------------------------------------

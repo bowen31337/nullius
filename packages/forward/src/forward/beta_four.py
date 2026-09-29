@@ -1019,8 +1019,8 @@ class ForwardBetaFourRevisions:
         """The revision store over a composed forward-record store.
 
         The bridge from the seat to this act: a caller holding the
-        composed ``forward`` component (:func:`app.modules.forward.
-        forward_records_component`) asks this one question and holds the
+        composed ``forward`` component (``create_app().get("forward")``)
+        asks this one question and holds the
         writer for the same database the component points at — one URL,
         the records it reads and the chain it writes in one database.  The
         one thing read is the store's ``database_url``; there is no

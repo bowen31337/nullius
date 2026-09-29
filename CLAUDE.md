@@ -11,6 +11,36 @@
 ## Build & Test
 - Add your build/test/lint commands here
 
+## Workspace layout: members only, no seats
+
+Every component lives in exactly one place: its workspace member,
+`packages/<name>/` (with its own `pyproject.toml`). There is **no**
+`src/app/modules/` tree. The per-member "seats" that used to sit there were
+removed on 2026-09-29. Code that needs a component reads it from the composed
+application:
+
+```python
+from app.module_loader import create_app
+component = create_app().get("<component-name>")   # None when unconfigured
+```
+
+Do not recreate `src/app/modules/<name>/`, even when a claw-forge message
+suggests a "missing scaffold".
+
+**claw-forge specs.** The built-in `uv-workspace` layout profile treats
+`src/app/modules/{plugin}/**` as a required plugin root, and a repository
+cannot override it. So:
+
+- Keep `<layout profile="uv-workspace"/>`. It still supplies the shared-file
+  seams: `src/app/module_loader.py`, `pyproject.toml` and `migrations/**`.
+- **Never use `plugin="…"`.** Declare every feature or bug as
+  `shape="core" touches_files="packages/<name>/**"`, or name the exact files.
+  `plugin=` fails validation with "references nonexistent directory
+  src/app/modules/<name>/", and file-claim locking is silently disabled for
+  that path.
+- `claw-forge plan-bugs` ignores `<layout>` entirely, so bug specs need
+  explicit `touches_files` anyway.
+
 <!-- claw-forge:policy start -->
 ## How work reaches claw-forge
 

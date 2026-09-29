@@ -1,12 +1,10 @@
-"""The ledger member's registration, composition, and seat in the app namespace.
+"""The ledger member's registration and composition in the app.
 
 The implementation lives in the ``ledger`` workspace member
 (``packages/ledger``), which self-registers with the application factory
-under ``"ledger"``.  ``src/app/modules/ledger/`` is the member's seat in
-the ``app`` package namespace: it names the component and asks the
-factory for it without the ``app`` package depending on any member at
-import time.  These tests pin that chain — workspace declaration, scan,
-registration, composition, seat — so the member cannot silently fall out
+under ``"ledger"``; a caller reaches it as ``create_app().get("ledger")``.
+These tests pin that chain — workspace declaration, scan, registration,
+composition — so the member cannot silently fall out
 of the composed application, and so a composition without a configured
 ``DATABASE_URL`` degrades to "no ledger component" rather than breaking.
 """
@@ -24,7 +22,6 @@ from app.module_loader import (
     scan_components,
     workspace_scan_roots,
 )
-from app.modules import ledger as ledger_seat
 
 MEMBER_SRC = Path(ledger.__file__).resolve().parent.parent
 
@@ -83,25 +80,7 @@ def test_the_builder_contributes_nothing_without_a_store(
     assert app.get("ledger") is None
 
 
-def test_the_seat_exposes_the_composed_ledger_component(
-    test_database_url: str,
-) -> None:
-    assert ledger_seat.COMPONENT_NAME == "ledger"
-    app = create_app(MEMBER_SRC, registry=Registration())
-    component = ledger_seat.ledger_component(app)
-    assert component is app.get("ledger")
-    assert callable(component.append)
-
-
-def test_the_seat_reads_from_an_application_it_is_handed() -> None:
-    application = Application(
-        components={ledger_seat.COMPONENT_NAME: {"sentinel": True}},
-        order=(ledger_seat.COMPONENT_NAME,),
-    )
-    assert ledger_seat.ledger_component(application) == {"sentinel": True}
-
-
 def test_an_absent_component_is_none_rather_than_an_error() -> None:
-    # A module that cannot reach the component returns None rather than
-    # failing — mirroring the factory's stance toward absent components.
-    assert ledger_seat.ledger_component(Application()) is None
+    # An application that does not carry the component returns None rather
+    # than failing — the factory's stance toward absent components.
+    assert Application().get("ledger") is None

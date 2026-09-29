@@ -1,26 +1,17 @@
-"""The feature-store members' seat in the app namespace: the facade over the factory.
+"""The feature-store member's components as the application factory composes them.
 
 The implementation lives in the ``feature-store`` workspace member
 (``packages/feature-store``), which self-registers with the application
 factory under ``"feature-store"`` (feature 48), ``"feature-materialiser"``
 (feature 49), ``"regime-metrics"`` (feature 57), ``"dispersion-metrics"``
-(feature 56) and ``"volatility-metrics"`` (feature 55).
-``src/app/modules/feature-store/`` is the member's seat in the ``app``
-package namespace: it asks the factory for those components without the
-``app`` package depending on any member at import time.  These tests pin that
-chain — discovery, registration, composition, facade — so the member cannot
-silently fall out of the composed application.
-
-One wrinkle is inherent to the seat's directory name: ``feature-store``
-carries a hyphen, so it is not a valid dotted import path.  It is reached the
-way the application factory reaches it — ``importlib.import_module`` with the
-hyphenated name — which is exactly how a hyphenated package directory is
-loaded anywhere in this workspace.
+(feature 56) and ``"volatility-metrics"`` (feature 55); a caller reads each
+by name from the composed application (``create_app().get(<name>)``).  These
+tests pin that chain — discovery, registration, composition — so the member
+cannot silently fall out of the composed application.
 """
 
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 
 import feature_store
@@ -34,10 +25,6 @@ from app.module_loader import (
 )
 
 MEMBER_SRC = Path(feature_store.__file__).resolve().parent.parent
-
-# The seat's directory name is hyphenated, so it is not a valid dotted import
-# path; importlib.import_module loads it the way the factory's scan does.
-seat = importlib.import_module("app.modules.feature-store")
 
 
 def test_member_is_declared_in_the_scanned_workspace() -> None:
@@ -96,34 +83,25 @@ def test_composed_app_builds_all_five_components() -> None:
         assert name in app.order
 
 
-def test_app_seat_exposes_the_components() -> None:
-    # src/app/modules/feature-store is the member's seat in the app namespace:
-    # it names the components and asks the factory for them without the app
-    # package depending on any member at import time.
-    assert seat.FEATURE_STORE_COMPONENT == "feature-store"
-    assert seat.FEATURE_MATERIALISER_COMPONENT == "feature-materialiser"
-    assert seat.REGIME_METRICS_COMPONENT == "regime-metrics"
-    assert seat.DISPERSION_METRICS_COMPONENT == "dispersion-metrics"
-    assert seat.VOLATILITY_METRICS_COMPONENT == "volatility-metrics"
-
+def test_the_composed_components_answer_their_seams() -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
-    store = seat.feature_store_component(app)
+    store = app.get("feature-store")
     assert callable(getattr(store, "put", None))
-    materialiser = seat.feature_materialiser_component(app)
+    materialiser = app.get("feature-materialiser")
     assert callable(getattr(materialiser, "materialise", None))
-    regime = seat.regime_metrics_component(app)
+    regime = app.get("regime-metrics")
     assert callable(getattr(regime, "persist", None))
-    dispersion = seat.dispersion_metrics_component(app)
+    dispersion = app.get("dispersion-metrics")
     assert callable(getattr(dispersion, "persist", None))
-    volatility = seat.volatility_metrics_component(app)
+    volatility = app.get("volatility-metrics")
     assert callable(getattr(volatility, "persist", None))
 
 
-def test_seat_returns_none_when_nothing_registered() -> None:
+def test_the_application_returns_none_when_nothing_registered() -> None:
     # An application with no component registered is a discoverable state, not
     # an exception — mirroring the factory's stance.
-    assert seat.feature_store_component(Application()) is None
-    assert seat.feature_materialiser_component(Application()) is None
-    assert seat.regime_metrics_component(Application()) is None
-    assert seat.dispersion_metrics_component(Application()) is None
-    assert seat.volatility_metrics_component(Application()) is None
+    assert Application().get("feature-store") is None
+    assert Application().get("feature-materialiser") is None
+    assert Application().get("regime-metrics") is None
+    assert Application().get("dispersion-metrics") is None
+    assert Application().get("volatility-metrics") is None

@@ -36,8 +36,7 @@ pipeline the category is building, at the seam where feature 290's census
 output becomes 263's input.
 
 What these tests deliberately do not reach: composition (that is
-``test_component.py`` — 264 adds no component), the seat
-(``test_app_module.py`` — unchanged), the blend's own arithmetic
+``test_component.py`` — 264 adds no component), the blend's own arithmetic
 (``test_aggregate.py``) and the census that writes the labels (the regime
 member's ``test_census.py``).  The vocabulary is deliberately left open
 here — :func:`test_an_undeclared_regime_is_admitted` is the assertion that

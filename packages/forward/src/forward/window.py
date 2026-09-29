@@ -144,8 +144,9 @@ def _promotion_member() -> Any:
 
     Reached through ``importlib.import_module("promotion")`` — the way
     :mod:`replay.dependencies` reaches ``is_replaying``, **not** through
-    ``app.modules.promotion``, whose single question is *what is the composed
-    pre-registration registry?* and which answers nothing about a window.
+    the composed ``promotion`` component, whose single question is *what is
+    the composed pre-registration registry?* and which answers nothing about
+    a window.
     Resolved inside the function so this module stays import-cheap and the
     factory's scan — which imports this package to fire its ``@register`` —
     pays nothing for a module it may never use.

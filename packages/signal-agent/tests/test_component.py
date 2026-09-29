@@ -1,4 +1,4 @@
-"""Features 205, 206, 208, 209, 210, 211, 212 and 213's plugin seam: composition, and the seats.
+"""Features 205, 206, 208, 209, 210, 211, 212 and 213's plugin seam: composition, and reading.
 
 Three contracts, all held from the side this member owns:
 
@@ -22,33 +22,27 @@ Three contracts, all held from the side this member owns:
   the nine are asserted together and each law is checked *after* all nine
   fired.
 
-* **the seats** — ``app.modules.signal-agent`` answers *what is the composed
-  authoring law?*, and ``.anti_convergence``, ``.dead_territory``,
-  ``.diagnosis``, ``.guidance``, ``.history``, ``.mechanism`` and ``.themes``
-  answer it for the seven laws that follow, each importing the member only
-  under ``TYPE_CHECKING`` and answering ``None`` — not an exception — when
-  nothing is registered.  A seat's
-  ``None`` is a statement about *composition*, never about a proposal: the
-  verdicts are the laws' own returned values, and reading one ``None`` as "no
-  signal was adopted", "the agent opened in an illegal theme" or "the mechanism
-  is live" would collapse a deployment problem into a research result.  Three
-  of the seats' ``None`` values matter twice over, because a composed law that
-  answers *the opposite way* is the opposite complaint — feature 212's admits
-  nothing on a drifted artifact, so it refuses every proposal; feature 210's
-  applied half admits everything on an empty campaign; and feature 209's
-  answers *do not retry* every branch it is asked about, which the seat's
-  ``None`` must not be read as — and an operator who could not tell them apart
-  would not know whether to widen the document, fix the clause or re-prompt the
-  agent.
-
-Each seat's directory name carries a hyphen and so is not a valid dotted import
-path; they are reached the way the factory reaches such a package —
-``importlib.import_module`` with the hyphenated name.
+* **reading the components** — ``Application.get`` with the member's
+  ``COMPONENT_NAME`` answers *what is the composed authoring law?*, and the
+  anti-convergence, dead-territory, diagnosis, guidance, history,
+  stated-mechanism and themes names answer it for the seven laws that follow,
+  each answering ``None`` — not an exception — when nothing is registered.
+  That ``None`` is a statement about *composition*, never about a proposal:
+  the verdicts are the laws' own returned values, and reading one ``None`` as
+  "no signal was adopted", "the agent opened in an illegal theme" or "the
+  mechanism is live" would collapse a deployment problem into a research
+  result.  Three of those ``None`` values matter twice over, because a
+  composed law that answers *the opposite way* is the opposite complaint —
+  feature 212's admits nothing on a drifted artifact, so it refuses every
+  proposal; feature 210's applied half admits everything on an empty
+  campaign; and feature 209's answers *do not retry* every branch it is asked
+  about, which an absent component's ``None`` must not be read as — and an
+  operator who could not tell them apart would not know whether to widen the
+  document, fix the clause or re-prompt the agent.
 """
 
 from __future__ import annotations
 
-import importlib
 import inspect
 import uuid
 from pathlib import Path
@@ -64,19 +58,6 @@ from app.module_loader import (
 )
 
 MEMBER_SRC = Path(member.__file__).resolve().parent.parent
-
-# The seats' directory names are hyphenated, so importlib loads them the way
-# the factory's scan does.
-seat = importlib.import_module("app.modules.signal-agent")
-theme_seat = importlib.import_module("app.modules.signal-agent.themes")
-dead_seat = importlib.import_module("app.modules.signal-agent.dead_territory")
-mechanism_seat = importlib.import_module("app.modules.signal-agent.mechanism")
-anti_convergence_seat = importlib.import_module(
-    "app.modules.signal-agent.anti_convergence"
-)
-diagnosis_seat = importlib.import_module("app.modules.signal-agent.diagnosis")
-history_seat = importlib.import_module("app.modules.signal-agent.history")
-guidance_seat = importlib.import_module("app.modules.signal-agent.guidance")
 
 _CONFORMING = (
     "def signal(ctx, seed):\n"
@@ -1076,310 +1057,85 @@ def test_the_guidance_verdict_is_a_value_rather_than_a_raise() -> None:
         refusal.require()
 
 
-# -- The seats -----------------------------------------------------------------
+# -- Reading the components ------------------------------------------------------
 
 
-
-def test_the_seat_names_line_up() -> None:
-    assert seat.COMPONENT_NAME == member.COMPONENT_NAME == "signal-agent"
-
-
-def test_the_seat_answers_the_composed_law() -> None:
+def test_the_component_answers_the_composed_law() -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
-    law = seat.signal_agent_component(app)
+    law = app.get(member.COMPONENT_NAME)
     _assert_is_the_authoring_law(law)
 
 
-def test_the_seat_returns_none_when_nothing_is_registered() -> None:
+def test_the_component_returns_none_when_nothing_is_registered() -> None:
     # An absent component is a discoverable state, not an exception — and it is
     # a statement about composition, never about a proposal.
     empty = Application(components={}, order=())
-    assert seat.signal_agent_component(empty) is None
+    assert empty.get(member.COMPONENT_NAME) is None
 
 
-def test_the_seat_does_not_import_the_member_at_module_scope() -> None:
-    # The app package must not depend on any workspace member at import time;
-    # the member's type appears only under ``TYPE_CHECKING``, which the
-    # interpreter never evaluates.  Asserted on the *parse tree* rather than on
-    # the source text, because the seat's own docstring names the module it
-    # does not import, and the member's import must be *found* — under the
-    # guard, and nowhere else.
-    import ast
-    import inspect
-
-    tree = ast.parse(inspect.getsource(seat))
-    live: list[str] = []
-    guarded: list[str] = []
-
-    def _collect(nodes, into: list[str]) -> None:
-        for node in nodes:
-            if isinstance(node, ast.If) and "TYPE_CHECKING" in ast.dump(node.test):
-                for nested in node.body:
-                    _collect([nested], guarded)
-                continue
-            if isinstance(node, ast.Import):
-                into.extend(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                into.append(node.module or "")
-            for child in ast.iter_child_nodes(node):
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    _collect(child.body, into)
-
-    _collect(tree.body, live)
-
-    assert not any(name.startswith("signal_agent") for name in live), live
-    # The member's import is present, and it is under the guard: a reader and a
-    # type checker see the type, the interpreter never imports it.  Both halves
-    # are asserted, because a seat that dropped the import entirely would pass
-    # the first line while losing the typing the guard exists to provide.
-    assert "signal_agent" in guarded, guarded
-
-
-def test_the_seat_exports_only_the_component_accessor() -> None:
-    # Asserted as an exact set: the failure this guards against is the seat
-    # *growing* a re-export of the member's API, and a membership check cannot
-    # see that.
-    assert set(seat.__all__) == {"COMPONENT_NAME", "signal_agent_component"}
-
-
-def test_the_seat_is_reachable_by_its_hyphenated_name() -> None:
-    # Reached the way the factory reaches such a package.
-    assert seat.__name__ == "app.modules.signal-agent"
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("app.modules.signal_agent")
-
-
-def test_the_theme_seat_names_line_up() -> None:
-    assert theme_seat.COMPONENT_NAME == member.THEMES_COMPONENT_NAME == (
-        "signal-agent-themes"
-    )
-
-
-def test_the_theme_seat_answers_the_composed_gate() -> None:
+def test_the_theme_component_answers_the_composed_gate() -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
-    gate = theme_seat.theme_gate_component(app)
+    gate = app.get(member.THEMES_COMPONENT_NAME)
     _assert_is_the_theme_law(gate)
 
 
-def test_the_theme_seat_returns_none_when_nothing_is_registered() -> None:
+def test_the_theme_component_returns_none_when_nothing_is_registered() -> None:
     # An absent component is a discoverable state, not an exception — and it is
     # a statement about composition, never about a theme.  This is the
     # distinction that matters most here: a *composed* gate that admits nothing
     # is a present component refusing every proposal, which is the opposite
     # complaint and a different repair.
     empty = Application(components={}, order=())
-    assert theme_seat.theme_gate_component(empty) is None
+    assert empty.get(member.THEMES_COMPONENT_NAME) is None
 
 
-def test_the_theme_seat_does_not_import_the_member_at_module_scope() -> None:
-    # The same two-sided assertion the authoring seat gets, for the same
-    # reason: the app package must not depend on any workspace member at import
-    # time, and the member's type must still be *present* under the guard or
-    # the typing the guard exists for was lost.
-    import ast
-
-    tree = ast.parse(inspect.getsource(theme_seat))
-    live: list[str] = []
-    guarded: list[str] = []
-
-    def _collect(nodes, into: list[str]) -> None:
-        for node in nodes:
-            if isinstance(node, ast.If) and "TYPE_CHECKING" in ast.dump(node.test):
-                for nested in node.body:
-                    _collect([nested], guarded)
-                continue
-            if isinstance(node, ast.Import):
-                into.extend(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                into.append(node.module or "")
-            for child in ast.iter_child_nodes(node):
-                if isinstance(
-                    child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-                ):
-                    _collect(child.body, into)
-
-    _collect(tree.body, live)
-
-    assert not any(name.startswith("signal_agent") for name in live), live
-    assert "signal_agent" in guarded, guarded
-
-
-def test_the_theme_seat_exports_only_the_component_accessor() -> None:
-    # Asserted as an exact set: the failure this guards against is the seat
-    # growing a re-export of the member's set, admission value or reasons.
-    assert set(theme_seat.__all__) == {"COMPONENT_NAME", "theme_gate_component"}
-
-
-def test_the_theme_seat_is_reachable_by_its_hyphenated_path() -> None:
-    assert theme_seat.__name__ == "app.modules.signal-agent.themes"
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("app.modules.signal_agent.themes")
-
-
-# -- The dead-territory seat --------------------------------------------------
-
-
-def test_the_dead_territory_seat_names_line_up() -> None:
-    assert dead_seat.COMPONENT_NAME == member.DEAD_TERRITORY_COMPONENT_NAME == (
-        "signal-agent-dead-territory"
-    )
-
-
-def test_the_dead_territory_seat_answers_the_composed_law() -> None:
+def test_the_dead_territory_component_answers_the_composed_law() -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
-    gate = dead_seat.dead_territory_component(app)
+    gate = app.get(member.DEAD_TERRITORY_COMPONENT_NAME)
     _assert_is_the_dead_territory_law(gate)
 
 
-def test_the_dead_territory_seat_returns_none_when_nothing_is_registered() -> None:
+def test_the_dead_territory_component_returns_none_when_nothing_is_registered() -> None:
     # An absent component is a discoverable state, not an exception — and it is
     # a statement about composition, never about a mechanism.  This is the
     # distinction that matters most here: a *composed* gate that refuses nothing
     # (an empty denylist, which fails open) is a present component admitting
     # every proposal, which is the opposite complaint and a different repair.
     empty = Application(components={}, order=())
-    assert dead_seat.dead_territory_component(empty) is None
+    assert empty.get(member.DEAD_TERRITORY_COMPONENT_NAME) is None
 
 
-def test_the_dead_territory_seat_does_not_import_the_member_at_module_scope() -> None:
-    # The same two-sided assertion the authoring and theme seats get, for the
-    # same reason: the app package must not depend on any workspace member at
-    # import time, and the member's type must still be *present* under the guard
-    # or the typing the guard exists for was lost.
-    import ast
-
-    tree = ast.parse(inspect.getsource(dead_seat))
-    live: list[str] = []
-    guarded: list[str] = []
-
-    def _collect(nodes, into: list[str]) -> None:
-        for node in nodes:
-            if isinstance(node, ast.If) and "TYPE_CHECKING" in ast.dump(node.test):
-                for nested in node.body:
-                    _collect([nested], guarded)
-                continue
-            if isinstance(node, ast.Import):
-                into.extend(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                into.append(node.module or "")
-            for child in ast.iter_child_nodes(node):
-                if isinstance(
-                    child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-                ):
-                    _collect(child.body, into)
-
-    _collect(tree.body, live)
-
-    assert not any(name.startswith("signal_agent") for name in live), live
-    assert "signal_agent" in guarded, guarded
-
-
-def test_the_dead_territory_seat_exports_only_the_component_accessor() -> None:
-    # Asserted as an exact set: the failure this guards against is the seat
-    # growing a re-export of the member's list, verdict value or reasons.
-    assert set(dead_seat.__all__) == {"COMPONENT_NAME", "dead_territory_component"}
-
-
-def test_the_dead_territory_seat_is_reachable_by_its_hyphenated_path() -> None:
-    assert dead_seat.__name__ == "app.modules.signal-agent.dead_territory"
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("app.modules.signal_agent.dead_territory")
-
-
-# -- The mechanism seat -------------------------------------------------------
-
-
-def test_the_mechanism_seat_names_line_up() -> None:
-    assert mechanism_seat.COMPONENT_NAME == (
-        member.STATED_MECHANISM_COMPONENT_NAME
-    ) == "signal-agent-stated-mechanism"
-
-
-def test_the_mechanism_seat_answers_the_composed_law() -> None:
+def test_the_mechanism_component_answers_the_composed_law() -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
-    law = mechanism_seat.stated_mechanism_component(app)
+    law = app.get(member.STATED_MECHANISM_COMPONENT_NAME)
     _assert_is_the_mechanism_law(law)
 
 
-def test_the_mechanism_seat_returns_none_when_nothing_is_registered() -> None:
+def test_the_mechanism_component_returns_none_when_nothing_is_registered() -> None:
     # An absent component is a discoverable state, not an exception — and this
-    # seat's ``None`` is *narrower* than it looks, which is what this test says.
+    # ``None`` is *narrower* than it looks, which is what this test says.
     # It means the member was not scanned.  It does **not** mean the law has no
     # store: a composed law carrying ``store=None`` is a *present* component
     # whose barrier still answers, and reading this ``None`` as that one would
     # collapse a scan problem into a deployment problem.  The two have different
     # repairs and the module docstring states both.
     empty = Application(components={}, order=())
-    assert mechanism_seat.stated_mechanism_component(empty) is None
+    assert empty.get(member.STATED_MECHANISM_COMPONENT_NAME) is None
 
 
-def test_the_mechanism_seat_does_not_import_the_member_at_module_scope() -> None:
-    # The same two-sided assertion the other three seats get, for the same
-    # reason: the app package must not depend on any workspace member at import
-    # time, and the member's type must still be *present* under the guard or the
-    # typing the guard exists for was lost.
-    import ast
-
-    tree = ast.parse(inspect.getsource(mechanism_seat))
-    live: list[str] = []
-    guarded: list[str] = []
-
-    def _collect(nodes, into: list[str]) -> None:
-        for node in nodes:
-            if isinstance(node, ast.If) and "TYPE_CHECKING" in ast.dump(node.test):
-                for nested in node.body:
-                    _collect([nested], guarded)
-                continue
-            if isinstance(node, ast.Import):
-                into.extend(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                into.append(node.module or "")
-            for child in ast.iter_child_nodes(node):
-                if isinstance(
-                    child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-                ):
-                    _collect(child.body, into)
-
-    _collect(tree.body, live)
-
-    assert not any(name.startswith("signal_agent") for name in live), live
-    assert "signal_agent" in guarded, guarded
+def test_the_anti_convergence_component_name_is_spelled_once() -> None:
+    assert member.ANTI_CONVERGENCE_COMPONENT_NAME == "signal-agent-anti-convergence"
 
 
-def test_the_mechanism_seat_exports_only_the_component_accessor() -> None:
-    # Asserted as an exact set: the failure this guards against is the seat
-    # growing a re-export of the member's record, reasons, barrier verdict or
-    # store.
-    assert set(mechanism_seat.__all__) == {
-        "COMPONENT_NAME",
-        "stated_mechanism_component",
-    }
-
-
-def test_the_mechanism_seat_is_reachable_by_its_hyphenated_path() -> None:
-    assert mechanism_seat.__name__ == "app.modules.signal-agent.mechanism"
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("app.modules.signal_agent.mechanism")
-
-
-# -- The anti-convergence seat -------------------------------------------------
-
-
-def test_the_anti_convergence_seat_names_line_up() -> None:
-    assert anti_convergence_seat.COMPONENT_NAME == (
-        member.ANTI_CONVERGENCE_COMPONENT_NAME
-    ) == "signal-agent-anti-convergence"
-
-
-def test_the_anti_convergence_seat_answers_the_composed_law() -> None:
+def test_the_anti_convergence_component_answers_the_composed_law() -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
-    gate = anti_convergence_seat.anti_convergence_component(app)
+    gate = app.get(member.ANTI_CONVERGENCE_COMPONENT_NAME)
     _assert_is_the_anti_convergence_law(gate)
 
 
-def test_the_anti_convergence_seat_returns_none_when_nothing_is_registered() -> None:
+def test_the_anti_convergence_component_returns_none_when_nothing_is_registered() -> None:
     # An absent component is a discoverable state, not an exception — and this
-    # seat's ``None`` must not be read as feature 210's own answer, which is why
+    # ``None`` must not be read as feature 210's own answer, which is why
     # this module spells the confusion out twice.  A *present* gate with an
     # empty comparison set admits every proposal (a campaign that has proposed
     # nothing has converged on nothing), and a *present* gate whose clause
@@ -1387,153 +1143,35 @@ def test_the_anti_convergence_seat_returns_none_when_nothing_is_registered() -> 
     # each case, and both of them answers of a real component rather than of
     # this ``None``.
     empty = Application(components={}, order=())
-    assert anti_convergence_seat.anti_convergence_component(empty) is None
+    assert empty.get(member.ANTI_CONVERGENCE_COMPONENT_NAME) is None
 
 
-def test_the_anti_convergence_seat_does_not_import_the_member_at_module_scope() -> None:
-    # The same two-sided assertion the other four seats get, for the same
-    # reason: the app package must not depend on any workspace member at import
-    # time, and the member's type must still be *present* under the guard or the
-    # typing the guard exists for was lost.
-    import ast
-
-    tree = ast.parse(inspect.getsource(anti_convergence_seat))
-    live: list[str] = []
-    guarded: list[str] = []
-
-    def _collect(nodes, into: list[str]) -> None:
-        for node in nodes:
-            if isinstance(node, ast.If) and "TYPE_CHECKING" in ast.dump(node.test):
-                for nested in node.body:
-                    _collect([nested], guarded)
-                continue
-            if isinstance(node, ast.Import):
-                into.extend(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                into.append(node.module or "")
-            for child in ast.iter_child_nodes(node):
-                if isinstance(
-                    child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-                ):
-                    _collect(child.body, into)
-
-    _collect(tree.body, live)
-
-    assert not any(name.startswith("signal_agent") for name in live), live
-    assert "signal_agent" in guarded, guarded
-
-
-def test_the_anti_convergence_seat_exports_only_the_component_accessor() -> None:
-    # Asserted as an exact set: the failure this guards against is the seat
-    # growing a re-export of the member's clause, verdict value, reasons or
-    # compiler.
-    assert set(anti_convergence_seat.__all__) == {
-        "COMPONENT_NAME",
-        "anti_convergence_component",
-    }
-
-
-def test_the_anti_convergence_seat_is_reachable_by_its_hyphenated_path() -> None:
-    assert (
-        anti_convergence_seat.__name__
-        == "app.modules.signal-agent.anti_convergence"
-    )
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("app.modules.signal_agent.anti_convergence")
-
-
-# -- The diagnosis seat --------------------------------------------------------
-
-
-def test_the_diagnosis_seat_names_line_up() -> None:
-    assert diagnosis_seat.COMPONENT_NAME == (
-        member.DIAGNOSIS_COMPONENT_NAME
-    ) == "signal-agent-diagnosis"
-
-
-def test_the_diagnosis_seat_answers_the_composed_law() -> None:
+def test_the_diagnosis_component_answers_the_composed_law() -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
-    law = diagnosis_seat.mechanism_diagnosis_component(app)
+    law = app.get(member.DIAGNOSIS_COMPONENT_NAME)
     _assert_is_the_diagnosis_law(law)
 
 
-def test_the_diagnosis_seat_returns_none_when_nothing_is_registered() -> None:
+def test_the_diagnosis_component_returns_none_when_nothing_is_registered() -> None:
     # An absent component is a discoverable state, not an exception — and this
-    # seat's ``None`` must not be read as either of feature 209's two answers.
+    # ``None`` must not be read as either of feature 209's two answers.
     # Read as "do not retry" it closes a branch nobody diagnosed; read as
     # "retry" it spends a trial charge on the strength of a component that is
     # not there.  Both are the law's own returned values rather than this
     # ``None``, which is a statement about the scan.
     empty = Application(components={}, order=())
-    assert diagnosis_seat.mechanism_diagnosis_component(empty) is None
+    assert empty.get(member.DIAGNOSIS_COMPONENT_NAME) is None
 
 
-def test_the_diagnosis_seat_does_not_import_the_member_at_module_scope() -> None:
-    # The same two-sided assertion the other five seats get, for the same
-    # reason: the app package must not depend on any workspace member at import
-    # time, and the member's type must still be *present* under the guard or
-    # the typing the guard exists for was lost.
-    import ast
-
-    tree = ast.parse(inspect.getsource(diagnosis_seat))
-    live: list[str] = []
-    guarded: list[str] = []
-
-    def _collect(nodes, into: list[str]) -> None:
-        for node in nodes:
-            if isinstance(node, ast.If) and "TYPE_CHECKING" in ast.dump(node.test):
-                for nested in node.body:
-                    _collect([nested], guarded)
-                continue
-            if isinstance(node, ast.Import):
-                into.extend(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                into.append(node.module or "")
-            for child in ast.iter_child_nodes(node):
-                if isinstance(
-                    child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-                ):
-                    _collect(child.body, into)
-
-    _collect(tree.body, live)
-
-    assert not any(name.startswith("signal_agent") for name in live), live
-    assert "signal_agent" in guarded, guarded
-
-
-def test_the_diagnosis_seat_exports_only_the_component_accessor() -> None:
-    # Asserted as an exact set: the failure this guards against is the seat
-    # growing a re-export of the member's verdict, located defect or reasons.
-    assert set(diagnosis_seat.__all__) == {
-        "COMPONENT_NAME",
-        "mechanism_diagnosis_component",
-    }
-
-
-def test_the_diagnosis_seat_is_reachable_by_its_hyphenated_path() -> None:
-    assert diagnosis_seat.__name__ == "app.modules.signal-agent.diagnosis"
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("app.modules.signal_agent.diagnosis")
-
-
-# -- The history seat ----------------------------------------------------------
-
-
-def test_the_history_seat_names_line_up() -> None:
-    assert history_seat.COMPONENT_NAME == (
-        member.HISTORY_COMPONENT_NAME
-    ) == "signal-agent-history"
-
-
-def test_the_history_seat_answers_the_composed_law() -> None:
+def test_the_history_component_answers_the_composed_law() -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
-    law = history_seat.proposal_history_component(app)
+    law = app.get(member.HISTORY_COMPONENT_NAME)
     _assert_is_the_history_law(law)
 
 
-def test_the_history_seat_returns_none_when_nothing_is_registered() -> None:
+def test_the_history_component_returns_none_when_nothing_is_registered() -> None:
     # An absent component is a discoverable state, not an exception — and this
-    # seat's ``None`` must not be read as either of feature 206's two answers.
+    # ``None`` must not be read as either of feature 206's two answers.
     # Read as "the history is whole" it proposes from a partial history, which
     # is the exact failure the feature exists to refuse; read as "the history
     # is cut" it refuses a round on the strength of a component that is not
@@ -1541,128 +1179,25 @@ def test_the_history_seat_returns_none_when_nothing_is_registered() -> None:
     # ``history.admit(entries)`` — rather than this ``None``, which is a
     # statement about the scan.
     empty = Application(components={}, order=())
-    assert history_seat.proposal_history_component(empty) is None
+    assert empty.get(member.HISTORY_COMPONENT_NAME) is None
 
 
-def test_the_history_seat_does_not_import_the_member_at_module_scope() -> None:
-    # The same two-sided assertion the other six seats get, for the same
-    # reason: the app package must not depend on any workspace member at import
-    # time, and the member's type must still be *present* under the guard or
-    # the typing the guard exists for was lost.
-    import ast
-
-    tree = ast.parse(inspect.getsource(history_seat))
-    live: list[str] = []
-    guarded: list[str] = []
-
-    def _collect(nodes, into: list[str]) -> None:
-        for node in nodes:
-            if isinstance(node, ast.If) and "TYPE_CHECKING" in ast.dump(node.test):
-                for nested in node.body:
-                    _collect([nested], guarded)
-                continue
-            if isinstance(node, ast.Import):
-                into.extend(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                into.append(node.module or "")
-            for child in ast.iter_child_nodes(node):
-                if isinstance(
-                    child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-                ):
-                    _collect(child.body, into)
-
-    _collect(tree.body, live)
-
-    assert not any(name.startswith("signal_agent") for name in live), live
-    assert "signal_agent" in guarded, guarded
-
-
-def test_the_history_seat_exports_only_the_component_accessor() -> None:
-    # Asserted as an exact set: the failure this guards against is the seat
-    # growing a re-export of the member's verdict, reasons, codes or the
-    # ``PriorProposal`` an admitted history carries.
-    assert set(history_seat.__all__) == {
-        "COMPONENT_NAME",
-        "proposal_history_component",
-    }
-
-
-def test_the_history_seat_is_reachable_by_its_hyphenated_path() -> None:
-    assert history_seat.__name__ == "app.modules.signal-agent.history"
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("app.modules.signal_agent.history")
-
-
-# -- The guidance seat ----------------------------------------------------------
-
-
-def test_the_guidance_seat_names_line_up() -> None:
-    assert guidance_seat.COMPONENT_NAME == (
-        member.GUIDANCE_COMPONENT_NAME
-    ) == "signal-agent-guidance"
-
-
-def test_the_guidance_seat_answers_the_composed_law() -> None:
+def test_the_guidance_component_answers_the_composed_law() -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
-    gate = guidance_seat.prompt_guidance_component(app)
+    gate = app.get(member.GUIDANCE_COMPONENT_NAME)
     _assert_is_the_guidance_law(gate)
 
 
-def test_the_guidance_seat_returns_none_when_nothing_is_registered() -> None:
+def test_the_guidance_component_returns_none_when_nothing_is_registered() -> None:
     # An absent component is a discoverable state, not an exception — and this
-    # seat's ``None`` must not be read as either of feature 208's two answers.
+    # ``None`` must not be read as either of feature 208's two answers.
     # Read as "the prompt is unguided" it ships a prompt nobody screened,
     # which is PRD §C3's *"most implementations get it backwards"* arriving
-    # through the app package's own seam; read as "it carries guidance" it
+    # through the application's own seam; read as "it carries guidance" it
     # blocks a round on the strength of a component that is not there.  Both
     # are the law's own returned value — ``guidance.admit(prompt)`` — rather
     # than this ``None``, which is a statement about the scan.
     empty = Application(components={}, order=())
-    assert guidance_seat.prompt_guidance_component(empty) is None
+    assert empty.get(member.GUIDANCE_COMPONENT_NAME) is None
 
 
-def test_the_guidance_seat_does_not_import_the_member_at_module_scope() -> None:
-    # The same two-sided assertion the other seven seats get, for the same
-    # reason: the app package must not depend on any workspace member at
-    # import time, and the member's type must still be *present* under the
-    # guard or the typing the guard exists for was lost.
-    import ast
-
-    tree = ast.parse(inspect.getsource(guidance_seat))
-    live: list[str] = []
-    guarded: list[str] = []
-
-    def _collect(nodes, into: list[str]) -> None:
-        for node in nodes:
-            if isinstance(node, ast.If) and "TYPE_CHECKING" in ast.dump(node.test):
-                for nested in node.body:
-                    _collect([nested], guarded)
-                continue
-            if isinstance(node, ast.Import):
-                into.extend(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                into.append(node.module or "")
-            for child in ast.iter_child_nodes(node):
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    _collect(child.body, into)
-
-    _collect(tree.body, live)
-
-    assert not any(name.startswith("signal_agent") for name in live), live
-    assert "signal_agent" in guarded, guarded
-
-
-def test_the_guidance_seat_exports_only_the_component_accessor() -> None:
-    # Asserted as an exact set: the failure this guards against is the seat
-    # growing a re-export of the member's verdict, reasons, codes or the
-    # parts an admitted prompt carries.
-    assert set(guidance_seat.__all__) == {
-        "COMPONENT_NAME",
-        "prompt_guidance_component",
-    }
-
-
-def test_the_guidance_seat_is_reachable_by_its_hyphenated_path() -> None:
-    assert guidance_seat.__name__ == "app.modules.signal-agent.guidance"
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("app.modules.signal_agent.guidance")

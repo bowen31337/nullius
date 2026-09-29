@@ -436,9 +436,8 @@ __all__ = [
 #: composed application's ``order`` sorts this member's routes *beside*
 #: — never inside — another member's components, and the sibling routes
 #: this category's later features add (342's lamps, 343's coverage)
-#: land as its peers under the same prefix.  Spelled here, in the app
-#: package seat (:mod:`app.modules.ops`) and nowhere else; the member's
-#: suite asserts the spellings agree.
+#: land as its peers under the same prefix.  Spelled here and nowhere
+#: else, and read by name through the composed application.
 OPS_COMPONENT_NAME = "ops-fdr-deploy"
 
 
@@ -479,9 +478,8 @@ def build_fdr_deploy_route() -> FdrDeployEndpoint | None:
 #: (:data:`OPS_COMPONENT_NAME` above), so the category's surfaces sort
 #: beside each other in a composed application's ``order``: the route
 #: that answers the top-line figure, then the operator surface that
-#: renders it.  Spelled in the app package seat
-#: (:mod:`app.modules.ops`) as well, and the member's suite asserts the
-#: two agree.
+#: renders it.  Spelled here once, and read by name through the composed
+#: application.
 OPS_DASHBOARD_COMPONENT_NAME = "ops-dashboard"
 
 
@@ -520,9 +518,8 @@ def build_operator_dashboard() -> OperatorDashboard | None:
 #: the route and dashboard's peer under the same member-first prefix
 #: (:data:`OPS_COMPONENT_NAME`, :data:`OPS_DASHBOARD_COMPONENT_NAME`), so a
 #: composed application's ``order`` sorts this member's components *beside*
-#: — never inside — another member's.  Spelled in the app package seat
-#: (:mod:`app.modules.ops`) as well, and the member's suite asserts the two
-#: agree.  The growth was reserved by the member's own registration when
+#: — never inside — another member's.  Read by name through the composed
+#: application.  The growth was reserved by the member's own registration when
 #: feature 341 landed and the app-package seat reserved beside it (*"344-347's
 #: and 350's persisted metrics arrive as this member's own tables"*).
 @register(OPS_LIVE_METRIC_COMPONENT_NAME)
@@ -582,8 +579,7 @@ def build_meta_overfit_store() -> MetaOverfitGaps | None:
 #: :data:`OPS_LIVE_METRIC_COMPONENT_NAME`,
 #: :data:`OPS_META_OVERFIT_COMPONENT_NAME`), so a composed application's
 #: ``order`` sorts this member's components *beside* — never inside — another
-#: member's.  Spelled in the app package seat (:mod:`app.modules.ops`) as
-#: well, and the member's suite asserts the two agree.  The growth was
+#: member's.  Read by name through the composed application.  The growth was
 #: reserved by the member's own registration when feature 341 landed and the
 #: app-package seat reserved beside it (*"344-346's arrive as their own tables
 #: under the same allowance"*).  It is *defined* in
@@ -623,9 +619,8 @@ def build_discovery_rate_store() -> DiscoveryRates | None:
 #: :data:`OPS_META_OVERFIT_COMPONENT_NAME`,
 #: :data:`OPS_DISCOVERY_RATE_COMPONENT_NAME`), so a composed application's
 #: ``order`` sorts this member's components *beside* — never inside —
-#: another member's.  Spelled in the app package seat
-#: (:mod:`app.modules.ops`) as well, and the member's suite asserts the two
-#: agree.  The growth was reserved by the member's own registration when
+#: another member's.  Read by name through the composed application.  The
+#: growth was reserved by the member's own registration when
 #: feature 341 landed and the app-package seat reserved beside it (*"344's
 #: and 345's arrive as their own tables under the same allowance"*).  It is
 #: *defined* in :mod:`ops.type_b_depth` and imported above — the same
@@ -667,13 +662,12 @@ def build_type_b_depth_store() -> TypeBDepths | None:
 #: :data:`OPS_DISCOVERY_RATE_COMPONENT_NAME`,
 #: :data:`OPS_TYPE_B_DEPTH_COMPONENT_NAME`), so a composed application's
 #: ``order`` sorts this member's components *beside* — never inside — another
-#: member's.  Spelled in the app package seat (:mod:`app.modules.ops`) as
-#: well, and the member's suite asserts the two agree.  The growth was reserved
-#: by the member's own registration when feature 341 landed and the app-package
-#: seat reserved beside it (*"344's and 345's arrive as their own tables under
-#: the same allowance"*), and features 266's and 267's own docstrings reserved
-#: the row itself (*"the research-metrics row that carries 266's pair is the
-#: ops member's (feature 344)"*).  It is *defined* in
+#: member's.  Read by name through the composed application.  The growth was
+#: reserved by the member's own registration when feature 341 landed and the
+#: app-package seat reserved beside it (*"344's and 345's arrive as their own
+#: tables under the same allowance"*), and features 266's and 267's own
+#: docstrings reserved the row itself (*"the research-metrics row that carries
+#: 266's pair is the ops member's (feature 344)"*).  It is *defined* in
 #: :mod:`ops.null_calibration` and imported above — the same placement the
 #: other five stores' names take, so the constant lives beside the module whose
 #: component it names.
@@ -714,9 +708,8 @@ def build_null_calibration_store() -> NullCalibrations | None:
 #: distribution.  *Defined* in :mod:`ops.regime_coverage` and imported
 #: above — the placement the member's five store names take, so the
 #: constant lives beside the module whose component it names — and
-#: spelled in the app package seat (:mod:`app.modules.ops`) as well, with
-#: the member's suite asserting the two agree.  The seat reservation was
-#: already made when feature 341 landed (:data:`OPS_COMPONENT_NAME`'s own
+#: read by name through the composed application.  The seat reservation
+#: was already made when feature 341 landed (:data:`OPS_COMPONENT_NAME`'s own
 #: note names *"343's coverage"* among the sibling routes that *"land as
 #: its peers under the same prefix"*), and the route the spec's API
 #: summary writes at line ``GET /metrics/regime-coverage`` is now that
@@ -767,9 +760,8 @@ def build_regime_coverage_route() -> RegimeCoverageEndpoint | None:
 #: feature 343's distribution.  *Defined* in
 #: :mod:`ops.instrument_status` and imported above — the placement the
 #: member's other route names take, so the constant lives beside the
-#: module whose component it names — and spelled in the app package seat
-#: (:mod:`app.modules.ops`) as well, with the member's suite asserting
-#: the two agree.  The seat reservation was already made when feature 341
+#: module whose component it names — and read by name through the composed
+#: application.  The seat reservation was already made when feature 341
 #: landed (:data:`OPS_COMPONENT_NAME`'s own note names *"342's lamps"*
 #: among the sibling routes that *"land as its peers under the same
 #: prefix"*), and the route the spec's API summary writes at line ``GET

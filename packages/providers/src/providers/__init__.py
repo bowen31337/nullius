@@ -858,10 +858,8 @@ __all__ = [
 #: name plus what it contributes, following the ``bootstrap`` /
 #: ``artifacts`` / ``sandbox`` precedent for a member's *second* component (a
 #: member's first usually takes the bare plugin name — :data:`PROVIDERS_COMPONENT`
-#: below does).  Spelled here so the seat
-#: (``src/app/modules/providers``) and the composed application agree on the
-#: key, with the behaviour — a test, not a shared constant — as the thing
-#: that keeps them from drifting silently.
+#: below does).  Spelled here once, and read by name through the composed
+#: application.
 AGENT_MODEL_PIN_COMPONENT = "agent-model-pins"
 
 #: The component name feature 200's cache-rate store registers under.  The
@@ -869,20 +867,16 @@ AGENT_MODEL_PIN_COMPONENT = "agent-model-pins"
 #: ``depth-run-windows`` precedent for a member's later components: the
 #: interface took the bare plugin name first, the pin store and the
 #: run-window store spelled their own contributions, and this one spells
-#: its the same way.  Spelled here so the seat
-#: (``src/app/modules/providers``) and the composed application agree on the
-#: key, with the behaviour — a test, not a shared constant — as the thing
-#: that keeps them from drifting silently.
+#: its the same way.  Spelled here once, and read by name through the
+#: composed application.
 DEPTH_CACHE_RATE_COMPONENT = "depth-cache-rates"
 
 #: The component name feature 202's run-window store registers under.  The
 #: plugin name plus what it contributes, on the ``agent-model-pins``
 #: precedent for a member's *later* components: the interface took the bare
 #: plugin name first, the pin store spelled its own contribution second, and
-#: this one spells its the same way.  Spelled here so the seat
-#: (``src/app/modules/providers``) and the composed application agree on the
-#: key, with the behaviour — a test, not a shared constant — as the thing
-#: that keeps them from drifting silently.
+#: this one spells its the same way.  Spelled here once, and read by name
+#: through the composed application.
 DEPTH_RUN_WINDOW_COMPONENT = "depth-run-windows"
 
 #: The component name feature 192's interface seam registers under.  It
@@ -902,10 +896,8 @@ PROVIDERS_COMPONENT = "providers"
 #: ``root-rotation``, a different component under the same category) and not
 #: the calls themselves (which are feature 97's nodes).  A reader scanning the
 #: composed application's keys should be able to tell which of the three it is
-#: looking at without opening a docstring.  Spelled here so the seat
-#: (``src/app/modules/providers``) and the composed application agree on the
-#: key, with the behaviour — a test, not a shared constant — as the thing
-#: that keeps them from drifting silently.
+#: looking at without opening a docstring.  Spelled here once, and read by
+#: name through the composed application.
 ROOT_SERVING_PROVIDER_COMPONENT = "root-serving-provider"
 
 #: The component name feature 197's root-rotation store registers under.  The
@@ -921,10 +913,8 @@ ROOT_SERVING_PROVIDER_COMPONENT = "root-serving-provider"
 #: calls themselves (which are feature 97's nodes).  A reader scanning the
 #: composed application's keys should be able to tell which of the three it is
 #: looking at without opening a docstring."*  This is that third name, spelled
-#: as predicted rather than invented here.  Spelled so the seat
-#: (``src/app/modules/providers``) and the composed application agree on the
-#: key, with the behaviour — a test, not a shared constant — as the thing that
-#: keeps them from drifting silently.
+#: as predicted rather than invented here, and read by name through the
+#: composed application.
 ROOT_ROTATION_COMPONENT = "root-rotation"
 
 #: The component name feature 194's fixture store registers under.  The plugin
@@ -939,9 +929,7 @@ ROOT_ROTATION_COMPONENT = "root-rotation"
 #: backend).  A reader scanning the composed application's keys should be able
 #: to tell which of the three it is looking at without opening a docstring, the
 #: discipline :data:`ROOT_SERVING_PROVIDER_COMPONENT` states for its own name.
-#: Spelled here so the seat (``src/app/modules/providers``) and the composed
-#: application agree on the key, with the behaviour — a test, not a shared
-#: constant — as the thing that keeps them from drifting silently.
+#: Spelled here once, and read by name through the composed application.
 FIXTURE_STORE_COMPONENT = "fixture-store"
 
 

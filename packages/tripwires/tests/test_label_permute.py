@@ -897,8 +897,8 @@ def test_the_two_probes_agree_on_a_clean_candidate(
 
 
 def test_the_component_exposes_the_second_probe() -> None:
-    # The app seat's duck-checked seam: the probe is a *method* on feature
-    # 125's component rather than a component of its own, so the member's
+    # The composed component's duck-checked seam: the probe is a *method* on
+    # feature 125's component rather than a component of its own, so the member's
     # registered set is unchanged and a caller holding the composed probe has
     # both sentences of §6.1 step 10.
     component = TimeShuffleTripwire()

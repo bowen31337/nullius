@@ -7,7 +7,7 @@ deflation input* — and these tests hold it to each clause:
 * **exposes GET /ledger/k-effective**: the route is spelled once
   (:data:`KEFFECTIVE_ROUTE`), carried on the class, and the member
   registers a ``ledger-k-effective`` component that the factory composes
-  and the app-namespace seat hands out;
+  and the composed application hands out;
 * **returns K_effective per epoch**: the answer is a breakdown — one
   ``(epoch, count)`` pair per observed epoch, unnamed first then ascending
   — with the epoch dimension following feature 88's stamp exactly as
@@ -45,7 +45,6 @@ from app.module_loader import (
     create_app,
     scan_components,
 )
-from app.modules import ledger as ledger_seat
 from ledger import (
     DATABASE_URL_ENV,
     KEFFECTIVE_COMPONENT_NAME,
@@ -491,7 +490,7 @@ def test_from_env_composes_no_endpoint_without_a_store(
     assert KEffectiveEndpoint.from_env() is None
 
 
-# -- Registration, composition, seat -------------------------------------------
+# -- Registration, composition -------------------------------------------------
 
 
 def test_the_route_is_spelled_once_everywhere() -> None:
@@ -540,7 +539,7 @@ def test_the_route_the_debit_and_the_store_compose_over_one_database(
     # one table while deflating by another.
     app = create_app(MEMBER_SRC, registry=Registration())
     endpoint = app.get(KEFFECTIVE_COMPONENT_NAME)
-    debiter = app.get(ledger_seat.DEBIT_COMPONENT_NAME)
+    debiter = app.get(ledger.DEBIT_COMPONENT_NAME)
     store = app.get("ledger")
     assert endpoint.ledger.database_url == store.database_url
     assert endpoint.ledger.database_url == debiter.ledger.database_url
@@ -551,27 +550,8 @@ def test_the_route_the_debit_and_the_store_compose_over_one_database(
     assert store.count() == 2
 
 
-def test_the_seat_exposes_the_composed_k_effective_endpoint(
-    test_database_url: str,
-) -> None:
-    assert ledger_seat.KEFFECTIVE_COMPONENT_NAME == KEFFECTIVE_COMPONENT_NAME
-    app = create_app(MEMBER_SRC, registry=Registration())
-    component = ledger_seat.k_effective_component(app)
-    assert component is app.get(KEFFECTIVE_COMPONENT_NAME)
-    assert callable(component.get)
-    assert component.route == KEFFECTIVE_ROUTE
-
-
-def test_the_seat_reads_a_k_effective_component_from_an_application_it_is_handed() -> None:
-    application = Application(
-        components={KEFFECTIVE_COMPONENT_NAME: {"sentinel": True}},
-        order=(KEFFECTIVE_COMPONENT_NAME,),
-    )
-    assert ledger_seat.k_effective_component(application) == {"sentinel": True}
-
-
 def test_an_absent_k_effective_component_is_none_rather_than_an_error() -> None:
-    assert ledger_seat.k_effective_component(Application()) is None
+    assert Application().get(KEFFECTIVE_COMPONENT_NAME) is None
 
 
 def test_the_endpoint_duck_accepts_the_composed_component(
@@ -583,7 +563,7 @@ def test_the_endpoint_duck_accepts_the_composed_component(
     # endpoint and its response must take it anyway (the seam is the
     # contract, not the class identity).
     app = create_app(MEMBER_SRC, registry=Registration())
-    composed = ledger_seat.ledger_component(app)
+    composed = app.get("ledger")
     endpoint = KEffectiveEndpoint(composed)  # type: ignore[arg-type]
     composed.append(_node(), CAMPAIGN, OUTCOME, True, epoch_id=EPOCH, **PROVENANCE)
     response = endpoint.get()

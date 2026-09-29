@@ -1070,21 +1070,20 @@ def test_a_verdict_from_another_axis_is_refused_by_name(
         node_metric_store.record("not a verdict at all")
 
 
-# -- The seats: the composed application and the app namespace -------------------
+# -- The composed application ---------------------------------------------------
 
 
-def test_the_composed_component_is_the_store_the_seat_reaches(
+def test_the_composed_component_is_the_node_metric_store(
     monkeypatch: pytest.MonkeyPatch, node_metric_store: NodeMetricStore
 ) -> None:
     # The plugin seam from the persistence side: the factory's scan imports
     # the member, its @register fires, and a composed application carries the
-    # store for the deployment the process is running in — reachable by way
-    # of the app namespace, which is how the evaluation loop will ask for it.
+    # store for the deployment the process is running in — reachable by name
+    # from the composed application, which is how the evaluation loop will
+    # ask for it.
     import tripwires
 
     from app.module_loader import Application, Registration, create_app
-    from app.modules.tripwires.node_metric import COMPONENT_NAME as SEAT_NAME
-    from app.modules.tripwires.node_metric import node_metric_store_component
 
     monkeypatch.setenv(DATABASE_URL_ENV, node_metric_store.database_url)
     member_src = Path(tripwires.__file__).resolve().parent.parent
@@ -1092,15 +1091,14 @@ def test_the_composed_component_is_the_store_the_seat_reaches(
 
     composed = application.get(NODE_METRIC_COMPONENT_NAME)
     assert type(composed).__name__ == "NodeMetricStore"
-    assert node_metric_store_component(application) is composed
     # The sixth component, beside the fifth and not inside it: the two
     # stores persist the same verdict's figure into different places, and a
     # caller asking for one must not be handed the other.
     assert type(application.get("tripwires-stability")).__name__ == "StabilityStore"
-    assert SEAT_NAME == NODE_METRIC_COMPONENT_NAME == "tripwires-node-metric"
+    assert NODE_METRIC_COMPONENT_NAME == "tripwires-node-metric"
     # A store registered but not yet used: composition opens no database.
     assert not Path(composed.path).exists()
-    assert node_metric_store_component(Application(components={}, order=())) is None
+    assert Application(components={}, order=()).get(NODE_METRIC_COMPONENT_NAME) is None
 
 
 def test_an_unconfigured_deployment_composes_no_store_but_does_not_fail(

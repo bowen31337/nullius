@@ -7,8 +7,8 @@ one service account.*
 The member's own suite (``packages/nulloracle/tests``) pins each contract in
 isolation — the schema, the cipher, the file, the key.  This suite pins the
 sentence those contracts are *for*, through the assembled system: the
-sidecar composed by the application factory, reached from the ``app`` package
-namespace, resolved from the environment a deployment actually sets, sealing
+sidecar composed by the application factory, read through ``create_app().get``,
+resolved from the environment a deployment actually sets, sealing
 a campaign's assignments and reading them back.
 
 That distinction matters here more than for most features.  §7.1's file is
@@ -63,16 +63,13 @@ class TestTheComposedSystemCarriesTheSidecar:
         assert composed_sidecar is not None
         assert composed_sidecar.path == sidecar_path
 
-    def test_the_app_namespace_reaches_the_same_component(
+    def test_a_fresh_composition_reaches_the_same_sidecar(
         self, sidecar_path, key_ref: str
     ) -> None:
-        # The seat is how the rest of this category's features reach the
-        # labels, so it must resolve to the sidecar the factory composed.
-        from app.modules.nulloracle import COMPONENT_NAME as SEAT_NAME
-        from app.modules.nulloracle import null_sidecar_component
-
-        assert SEAT_NAME == COMPONENT_NAME
-        assert null_sidecar_component().path == sidecar_path
+        # ``create_app().get`` is how the rest of this category's features
+        # reach the labels, so it must resolve to the sidecar at the path the
+        # deployment named.
+        assert create_app().get(COMPONENT_NAME).path == sidecar_path
 
     def test_an_unconfigured_deployment_composes_no_sidecar(self) -> None:
         # Degrade, don't break: an absent sidecar is a discoverable state,

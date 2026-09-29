@@ -1,9 +1,9 @@
-"""The KS verdict's plugin seam and its seat in the ``app`` namespace.
+"""The KS verdict's plugin seam and its read through the composed application.
 
 ``test_component.py`` pins feature 109's registration and ``test_guard_component.py``
 pins feature 123's; this pins feature 124's, the member's *third* component
-and the one whose builder, like the guard's, resolves a database URL.  Two
-things make it worth its own suite rather than a section of the guard's:
+and the one whose builder, like the guard's, resolves a database URL.  It is
+worth its own suite rather than a section of the guard's because:
 
 * **the member now registers three components.**  All three ``@register``
   calls live in the package's ``__init__``, and the loader re-executes
@@ -12,13 +12,6 @@ things make it worth its own suite rather than a section of the guard's:
   then drops out" failure as the first two, and needs the same *second
   application* assertion.  A registration added in a submodule would pass a
   single-composition test.
-* **the seat is a third submodule.**  ``app/modules/nulloracle/`` was a single
-  ``__init__.py`` while the member contributed one component; the verdict's
-  seat lives beside the other two in ``app/modules/nulloracle/verdict.py``.
-  The older seats' export lists must stay exactly as they were, and the new
-  module must answer the same shape of question — *what is the composed X?* —
-  with the same ``None``-not-an-exception degradation and the same refusal to
-  become a second API.
 
 The load-bearing property is unchanged and restated because the consequence is
 sharper here: **the builder must never raise.**  This one resolves a database
@@ -31,9 +24,7 @@ can be unconfigured or misconfigured.
 
 from __future__ import annotations
 
-import ast
 import uuid
-from pathlib import Path
 
 import pytest
 from nulloracle import (
@@ -48,8 +39,6 @@ from nulloracle import (
 )
 
 from app.module_loader import Application, create_app, scan_components
-
-SEAT_MODULE = "app.modules.nulloracle.verdict"
 
 
 @pytest.fixture(autouse=True)
@@ -70,38 +59,6 @@ def database_url(tmp_path, monkeypatch: pytest.MonkeyPatch) -> str:
     url = f"sqlite:///{tmp_path / 'verdict.db'}"
     monkeypatch.setenv(DATABASE_URL_ENV, url)
     return url
-
-
-def _imported_names(path: str | None, *, runtime_only: bool = True) -> set[str]:
-    """The top-level modules ``path`` imports, optionally excluding typing blocks.
-
-    Parsed rather than scanned: a module's *docstring* discusses the members it
-    deliberately does not import — that is where the decision is argued — so a
-    substring search over the file reports imports that are not there.
-
-    With ``runtime_only`` (the default), names imported inside an
-    ``if TYPE_CHECKING:`` guard are left out, because the guard is exactly the
-    mechanism a module uses to name a type it does not depend on.  Which is the
-    question this suite is actually asking: what does importing the seat bind,
-    as opposed to what does it merely describe.
-    """
-    assert path is not None
-    tree = ast.parse(Path(path).read_text(encoding="utf-8"))
-    guarded: set[int] = set()
-    if runtime_only:
-        for node in ast.walk(tree):
-            if isinstance(node, ast.If) and "TYPE_CHECKING" in ast.dump(node.test):
-                for inner in ast.walk(node):
-                    guarded.add(id(inner))
-    found: set[str] = set()
-    for node in ast.walk(tree):
-        if id(node) in guarded:
-            continue
-        if isinstance(node, ast.Import):
-            found.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            found.add(node.module.split(".")[0])
-    return found
 
 
 def _assert_is_the_verdict(component: object) -> None:
@@ -266,58 +223,43 @@ def test_a_scheme_the_builder_cannot_speak_does_not_take_composition_down(
     assert "ledger" in app or "feature-store" in app
 
 
-# -- The seat ---------------------------------------------------------------------
+# -- Reading the composed component ---------------------------------------------
 
 
-class TestTheSeatInTheAppNamespace:
-    """``app/modules/nulloracle/verdict.py`` — the app package's way to the
-    composed verdict store, without the app package importing the member.
+class TestReadingTheComposedComponent:
+    """The component as ``create_app().get(...)`` hands it to a caller outside
+    the member.
     """
 
     def test_the_component_name_matches_the_member(self) -> None:
-        # Spelled twice on purpose — once in the member, once in the seat — so
-        # the two cannot drift apart silently.
         import nulloracle
 
-        from app.modules.nulloracle import verdict as verdict_seat
-
         assert (
-            verdict_seat.COMPONENT_NAME
-            == nulloracle.VERDICT_COMPONENT_NAME
+            nulloracle.VERDICT_COMPONENT_NAME
             == VERDICT_COMPONENT_NAME
         )
 
-    def test_the_seat_exposes_the_composed_verdict(self, database_url: str) -> None:
-        from app.modules.nulloracle.verdict import verdict_component
+    def test_the_application_exposes_the_composed_verdict(self, database_url: str) -> None:
+        _assert_is_the_verdict(create_app().get(VERDICT_COMPONENT_NAME))
 
-        _assert_is_the_verdict(verdict_component())
-
-    def test_the_seat_reads_from_an_application_it_is_handed(self) -> None:
-        from app.modules.nulloracle.verdict import verdict_component
-
+    def test_the_component_is_read_from_an_application_it_is_handed(self) -> None:
         application = Application(
             components={VERDICT_COMPONENT_NAME: "sentinel"},
             order=(VERDICT_COMPONENT_NAME,),
         )
-        assert verdict_component(application) == "sentinel"
+        assert application.get(VERDICT_COMPONENT_NAME) == "sentinel"
 
     def test_an_absent_component_is_none_rather_than_an_error(self) -> None:
-        from app.modules.nulloracle.verdict import verdict_component
-
-        assert verdict_component(Application(components={}, order=())) is None
+        assert Application(components={}, order=()).get(VERDICT_COMPONENT_NAME) is None
 
     def test_an_unconfigured_environment_yields_none_not_an_exception(self) -> None:
-        from app.modules.nulloracle.verdict import verdict_component
+        assert create_app().get(VERDICT_COMPONENT_NAME) is None
 
-        assert verdict_component() is None
-
-    def test_the_seat_can_pronounce_a_verdict(self, database_url: str) -> None:
-        # Feature 124 from the app namespace: composed verdict, a campaign with
+    def test_the_composed_component_can_pronounce_a_verdict(self, database_url: str) -> None:
+        # Feature 124 through the composition: composed verdict, a campaign with
         # a detectable p-value, the status advanced to VOID — the path an
         # assembled system takes.
-        from app.modules.nulloracle.verdict import verdict_component
-
-        verdict = verdict_component()
+        verdict = create_app().get(VERDICT_COMPONENT_NAME)
         campaign = str(uuid.uuid4())
         with verdict._connect() as connection:
             connection.execute(
@@ -333,12 +275,10 @@ class TestTheSeatInTheAppNamespace:
         assert result.voided is True
         assert verdict.load(campaign) == CALIBRATION_STATUS_VOID
 
-    def test_the_seat_can_leave_a_clean_campaign_ok(self, database_url: str) -> None:
+    def test_the_composed_component_can_leave_a_clean_campaign_ok(self, database_url: str) -> None:
         # The other half of the verdict: a campaign whose nulls are not
-        # detectable keeps its 'ok' default through the seat.
-        from app.modules.nulloracle.verdict import verdict_component
-
-        verdict = verdict_component()
+        # detectable keeps its 'ok' default through the composition.
+        verdict = create_app().get(VERDICT_COMPONENT_NAME)
         campaign = str(uuid.uuid4())
         with verdict._connect() as connection:
             connection.execute(
@@ -353,60 +293,10 @@ class TestTheSeatInTheAppNamespace:
         assert result.status == CALIBRATION_STATUS_OK
         assert verdict.load(campaign) == CALIBRATION_STATUS_OK
 
-    def test_the_seat_is_a_composition_read_and_not_a_second_api(self) -> None:
-        # The seat's export list, pinned: a caller who has the store reaches
-        # ``void_if_detectable``/``load`` on it, and a second spelling here
-        # would be a second thing to keep in sync. The one question this module
-        # answers is *what is the composed verdict store?* — and the answer is
-        # the component, not a re-exported store class or threshold.
-        from app.modules.nulloracle import verdict as seat
-
-        assert set(seat.__all__) == {"COMPONENT_NAME", "verdict_component"}
-        assert not hasattr(seat, "CampaignVerdict")
-        assert not hasattr(seat, "VOID_THRESHOLD")
-
-    def test_the_three_seats_are_distinct_modules(self) -> None:
-        import app.modules.nulloracle as sidecar_seat
-        import app.modules.nulloracle.ksguard as guard_seat
-        import app.modules.nulloracle.verdict as verdict_seat
-
-        assert verdict_seat is not guard_seat
-        assert verdict_seat is not sidecar_seat
-        assert verdict_seat.__name__ == SEAT_MODULE
-        assert verdict_seat.COMPONENT_NAME != guard_seat.COMPONENT_NAME
-        assert verdict_seat.COMPONENT_NAME != sidecar_seat.COMPONENT_NAME
-
-    def test_the_sidecar_seat_is_untouched_by_the_third_component(self) -> None:
-        # The verdict's seat is a *submodule* beside the other two, precisely so
-        # that the older seats' promises do not change: a caller that only wants
-        # the sidecar or the guard never imports the verdict's module and sees
-        # the same two names it always did.
-        from app.modules import nulloracle as sidecar_seat
-
-        assert set(sidecar_seat.__all__) == {"COMPONENT_NAME", "null_sidecar_component"}
-
-    def test_importing_the_seat_imports_no_member(self) -> None:
-        # The seat exists so the ``app`` package does not depend on a workspace
-        # member at import time. Asserted on the seat's own compiled form rather
-        # than on ``sys.modules`` — every other test in this suite has already
-        # imported the member, so the module cache cannot answer this — and on
-        # the *imports*, not on the text: the member's name appears in a
-        # ``TYPE_CHECKING`` block, which never executes.
-        import app.modules.nulloracle.verdict as module
-
-        imported = _imported_names(module.__file__)
-        assert "nulloracle" not in imported
-        assert "app" in imported
-        assert "nulloracle" in _imported_names(module.__file__, runtime_only=False)
-
-    def test_the_seat_answers_the_members_own_builder(self) -> None:
-        # The seat and the builder cannot disagree about what the component is:
-        # with ``DATABASE_URL`` unset both answer None, and with it set both
-        # hand back the same kind of object — which is the whole reason the seat
-        # reads the factory rather than resolving the store itself.
+    def test_the_composition_answers_the_members_own_builder(self) -> None:
+        # The composition and the builder cannot disagree about what the
+        # component is: unconfigured, both answer None.
         import nulloracle
 
-        from app.modules.nulloracle.verdict import verdict_component
-
         assert nulloracle.build_verdict() is None
-        assert verdict_component() is None
+        assert create_app().get(VERDICT_COMPONENT_NAME) is None

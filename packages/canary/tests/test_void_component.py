@@ -5,8 +5,7 @@ persists a void marker on every score produced after a detected determinism
 break, rather than letting bad data age into good data.*  :mod:`canary._void` is
 the mechanism in isolation; this suite pins it the way a deployment actually
 reaches it — composed by the application factory from the member's
-``@register`` builder, and reached from the ``app`` package namespace through
-its seat.
+``@register`` builder, and reached through ``create_app().get(...)``.
 
 A member that voided the affected window correctly against a bare store while
 the composed application carried no void-marker store at all would satisfy every
@@ -15,8 +14,8 @@ contract:
 
 * the factory composes a void-marker store for a deployment that names a
   ``DATABASE_URL`` — the store the nightly sweep's markers land in;
-* the store it composes is the same store the seat exposes, and it points at
-  the deployment's ``DATABASE_URL``;
+* a fresh composition reaches the same store, pointed at the deployment's
+  ``DATABASE_URL``;
 * the whole of feature 144, end to end, through the composed store: the nightly
   canary breaks against the recorded constant (feature 143, through the same
   composed graph), the pool is swept, every score produced after the break is
@@ -26,8 +25,7 @@ contract:
   degrade, don't break — while every other component still composes;
 * composing the store creates no database file, because the store resolves its
   path lazily and construction must not touch the disk;
-* the four stores are four components under four names, and the three older
-  seats keep exactly the surfaces they promised.
+* the four stores are four components under four names.
 
 The store is pinned by class name and by behaviour, not by ``isinstance``
 across the two copies the loader makes — the loader imports this member under a
@@ -176,18 +174,14 @@ class TestTheComposedSystemCarriesTheVoidMarkerStore:
         assert composed_store is not None
         assert composed_store.database_url == test_database_url
 
-    def test_the_app_namespace_seat_reaches_the_same_component(
+    def test_a_fresh_composition_reaches_the_same_component(
         self, composed_store, test_database_url: str
     ) -> None:
-        # The seat is how a replay or dreaming path reaches the refusal, so it
-        # must resolve to the component the factory composed.
-        from app.modules.canary.void import COMPONENT_NAME as SEAT_NAME
-        from app.modules.canary.void import void_marker_component
-
-        assert SEAT_NAME == VOID_COMPONENT_NAME
-        seat = void_marker_component()
-        assert seat is not None
-        assert seat.database_url == composed_store.database_url
+        # Every caller reaches the store through the application, so a fresh
+        # composition must resolve to a component pointed at the same database.
+        store = create_app().get(VOID_COMPONENT_NAME)
+        assert store is not None
+        assert store.database_url == composed_store.database_url
 
     def test_an_unconfigured_deployment_composes_no_void_marker_store(
         self, monkeypatch: pytest.MonkeyPatch

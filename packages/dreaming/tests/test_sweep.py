@@ -22,9 +22,10 @@ arranged around:
   :func:`dreaming.ceiling.rejects_uncapped_sweep` are pinned in;
 * **the row is the replay member's, and the sweep writes none of it itself.**
   Persistence is delegated to the composed replay component's own
-  ``persist_replay_score``, reached through the workspace **seat** without any
-  member importing another — so the store seam is exercised against a real
-  ``replay_score`` row, read back with ``PRAGMA table_info`` and a ``SELECT``;
+  ``persist_replay_score``, reached through the composed application
+  (``create_app().get("replay")``) without any member importing another — so
+  the store seam is exercised against a real ``replay_score`` row, read back
+  with ``PRAGMA table_info`` and a ``SELECT``;
 * **the two axes are validated separately and named separately**, because a
   sweep's asks are many: a candidate that is not a candidate module, a bare
   candidate where a set belongs, an empty set, two candidates under one
@@ -49,6 +50,7 @@ arranged around:
 
 from __future__ import annotations
 
+import ast
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -989,13 +991,25 @@ class TestTheSurfaceAndTheRestraint:
             "import pandas",
             "from replay",
             "import replay",
-            "from app",
             "from policy_runtime",
         ):
-            # ``import importlib`` inside the seat resolver is the one deferred
-            # import, and it is the *app namespace* it reaches — never a
-            # member's own import name.
             assert forbidden not in source, forbidden
+        # ``from app.module_loader import create_app`` inside the replay
+        # resolver is the one deferred import, and it is the *app namespace*
+        # it reaches — never a member's own import name.  At module level the
+        # app namespace is not imported at all.
+        top_level = [
+            node
+            for node in ast.parse(source).body
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+        ]
+        for node in top_level:
+            names = (
+                [node.module or ""]
+                if isinstance(node, ast.ImportFrom)
+                else [alias.name for alias in node.names]
+            )
+            assert all(name.split(".")[0] != "app" for name in names), ast.unparse(node)
         assert sys.modules["dreaming.sweep"] is module
 
     def test_the_module_creates_no_table_of_its_own(self):

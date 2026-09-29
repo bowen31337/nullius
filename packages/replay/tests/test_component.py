@@ -1,26 +1,23 @@
-"""Feature 245's component and its app seat — how the replay path composes.
+"""Feature 245's component — how the replay path composes.
 
 app_spec.xml, "Replay Engine", feature 245 carries ``plugin="replay"``, so the
-member registers one component under that name and the app namespace exposes a
-seat for it.  These tests pin the composition, not the law — the law is
-``test_transition.py``'s:
+member registers one component under that name and a caller reads it as
+``create_app().get("replay")``.  These tests pin the composition, not the law —
+the law is ``test_transition.py``'s:
 
 * **the component is registered under its name and composed by the factory** —
   the ``@register`` seam the factory discovers, so ``create_app()`` carries a
-  ``replay`` component among the components it composes and the seat fronts it;
+  ``replay`` component among the components it composes;
 * **the builder takes no arguments, returns the facade, and touches nothing** —
   the factory's protocol is ``builder() -> value``; this builder resolves no
   store, no tree and no file, which is the property that keeps the *pre-existing*
   resolution cycle (the policy-runtime tree builder reaching the artifact
-  store's seat, which composes the app again) from being widened into
+  store, which composes the app again) from being widened into
   ``create_app()`` recursing.  A builder that resolved the tree would hang
   composition, so this is pinned rather than assumed;
 * **the facade holds no state** — the composed value is a thing two callers can
   share without observing each other, and there is nothing about a deployment
-  it could have been misconfigured with;
-* **the app seat answers the component's name** — ``app.modules.replay``
-  exposes ``replay_component(app)`` over ``app.get("replay")``, and an absent
-  component is ``None`` rather than an error.
+  it could have been misconfigured with.
 
 **Nothing here asserts ``isinstance`` against the member's own class.**  The
 module loader imports each workspace member under a synthetic name
@@ -32,8 +29,6 @@ reason; the checks below name the behaviour instead.
 """
 
 from __future__ import annotations
-
-import importlib
 
 import pytest
 import replay
@@ -47,7 +42,23 @@ from replay import (
     replay_transition,
 )
 
-seat = importlib.import_module("app.modules.replay")
+
+def _compose_with_tree(monkeypatch: pytest.MonkeyPatch, tree: object) -> None:
+    """Make every ``create_app()`` answer ``tree`` as the ``policy-runtime`` component.
+
+    ``resolve_tree`` imports ``create_app`` from :mod:`app.module_loader` at call
+    time, so patching the loader's attribute substitutes the composed
+    application it reads the tree from.
+    """
+    import app.module_loader as loader
+
+    monkeypatch.setattr(
+        loader,
+        "create_app",
+        lambda *roots, **kwargs: loader.Application(
+            components={"policy-runtime": tree}, order=("policy-runtime",)
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -75,8 +86,8 @@ def test_builder_returns_the_facade() -> None:
 
 def test_builder_performs_no_io_and_resolves_no_tree() -> None:
     # The load-bearing property.  The campaign tree lives behind the
-    # policy-runtime seat, whose own resolution reaches the artifact store's
-    # seat, whose builder composes the application again — and since the factory
+    # policy-runtime component, whose own resolution reaches the artifact
+    # store, whose builder composes the application again — and since the factory
     # builds every registered component on every ``create_app()``, a builder
     # that resolved the tree here would walk that cycle from inside composition
     # and hang ``create_app()`` rather than return.  Pinned positively (the
@@ -143,7 +154,7 @@ def test_the_facade_refuses_by_name_when_the_deployment_holds_no_campaign() -> N
     # call time rather than in the builder: this environment names no committed
     # campaign, so a caller asking for the deployment's tree is refused by name
     # rather than handed ``None``.  A builder that resolved here would instead
-    # have walked the policy-runtime -> artifact-store seat -> ``create_app``
+    # have walked the policy-runtime -> artifact-store -> ``create_app``
     # cycle from inside composition and hung the factory.
     from replay import ReplayTreeError
 
@@ -165,35 +176,29 @@ def test_over_refuses_by_name_too(stored_tree: StoredTree) -> None:
         ReplayEngine().over()
 
 
-def test_resolution_reaches_the_policy_runtime_seat(
+def test_resolution_reads_the_composed_policy_runtime_component(
     stored_tree: StoredTree, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # `resolve_tree` reads the seat named in the spec's own plugin table — the
-    # hyphenated ``app.modules.policy-runtime``, reached by importlib because a
-    # hyphen is not an identifier.  Pinned by substituting the seat: whatever
-    # the seat answers is what a caller gets, which is what makes the two
-    # members agree about which campaign is the deployment's.
-    import importlib
-
+    # `resolve_tree` reads the component named in the spec's own plugin table —
+    # ``policy-runtime`` — from the composed application.  Pinned by
+    # substituting the composition: whatever the application answers under
+    # that name is what a caller gets, which is what makes the two members
+    # agree about which campaign is the deployment's.
     from replay import resolve_tree
 
-    seat = importlib.import_module("app.modules.policy-runtime")
-    monkeypatch.setattr(seat, "campaign_tree_component", lambda app=None: stored_tree)
+    _compose_with_tree(monkeypatch, stored_tree)
     assert resolve_tree() is stored_tree
 
 
 def test_a_resolved_tree_is_walked_at_its_roots(
     stored_tree: StoredTree, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The composed path end to end: a deployment whose seat answers a tree gets
-    # a transition opened at that tree's *roots* — §10.1's `revealed =
-    # {tree.root}` — so `over()` is one verb from "the deployment's campaign" to
-    # "a walk standing at its beginning", with no separate seed for a caller to
-    # spell wrongly.
-    import importlib
-
-    seat = importlib.import_module("app.modules.policy-runtime")
-    monkeypatch.setattr(seat, "campaign_tree_component", lambda app=None: stored_tree)
+    # The composed path end to end: a deployment whose composed application
+    # answers a tree gets a transition opened at that tree's *roots* —
+    # §10.1's `revealed = {tree.root}` — so `over()` is one verb from "the
+    # deployment's campaign" to "a walk standing at its beginning", with no
+    # separate seed for a caller to spell wrongly.
+    _compose_with_tree(monkeypatch, stored_tree)
 
     transition = ReplayEngine().over()
     assert transition.prefix() == ("r-event", "r-mom")
@@ -213,8 +218,7 @@ def test_the_facade_repr_names_itself() -> None:
 
 def test_component_name_is_the_plugin_name() -> None:
     # app_spec.xml feature 245 carries ``plugin="replay"``, and the component
-    # key, the app-namespace seat directory (``src/app/modules/replay``) and the
-    # spec are one spelling — so a later feature cannot register under a name
+    # key and the spec are one spelling — so a later feature cannot register under a name
     # the spec does not know, and the app cannot look up a component nothing
     # composed.
     assert COMPONENT_NAME == "replay"
@@ -282,50 +286,6 @@ def test_composition_carries_the_replay_component() -> None:
     app = create_app()
     assert COMPONENT_NAME in app.order
     assert app.get(COMPONENT_NAME) is not None
-
-
-# ---------------------------------------------------------------------------
-# The app seat
-# ---------------------------------------------------------------------------
-
-
-def test_app_seat_answers_the_component_name() -> None:
-    # The seat exposes ``replay_component(app)`` over ``app.get("replay")``, so
-    # a feature in this category reading the seat reads the component the
-    # factory composed, and the seat decides nothing about a replay itself.
-    from app.module_loader import create_app
-
-    app = create_app()
-    assert seat.replay_component(app) is app.get(seat.COMPONENT_NAME)
-
-
-def test_app_seat_composes_when_handed_no_application() -> None:
-    # ``replay_component()`` with no application composes one (scanning the
-    # declared workspace) rather than requiring the caller to hold it — the
-    # seat's convenience, and the reason it does not import the member.
-    assert seat.replay_component() is not None
-
-
-def test_app_seat_degrades_to_none_without_the_component() -> None:
-    # An absent component is a discoverable state, not an exception: the seat
-    # answers ``None`` over an application that holds none, mirroring the
-    # factory's "degrade, don't break" stance — the replay path being unscanned
-    # must not make an unrelated feature's seat raise.
-    class Bare:
-        __slots__ = ()
-
-        def get(self, name: object) -> None:  # pragma: no cover - trivial
-            return None
-
-    assert seat.replay_component(Bare()) is None
-
-
-def test_the_seat_and_the_member_agree_on_the_name() -> None:
-    # One constant, two spellings of it — the seat's and the member's — so the
-    # app namespace and the plugin cannot drift apart about what the component
-    # is called.
-    assert seat.COMPONENT_NAME == COMPONENT_NAME
-    assert seat.COMPONENT_NAME == "replay"
 
 
 # ---------------------------------------------------------------------------

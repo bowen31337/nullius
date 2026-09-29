@@ -1,4 +1,4 @@
-"""Feature 197's wiring: the rotation store is composed by convention, and seated.
+"""Feature 197's wiring: the rotation store is composed by convention.
 
 The same two halves :mod:`tests.test_root_component` states for feature 196's
 store, asked about feature 197's — and worth restating in this file's own
@@ -6,10 +6,9 @@ terms rather than by reference, because they are properties of *this*
 feature's landing.  The **registration** half asks whether ``import
 providers`` joins the application with a root-rotation store in it — no
 central registry, router, entry-points table or factory edited, which is what
-lets this feature land in parallel with every other one.  The **seat** half
-asks whether ``app.modules.providers`` hands that store back to a caller
-reaching the app package rather than the member, and whether the seat's name
-for it and the member's are still one name.
+lets this feature land in parallel with every other one.  The **composition**
+half asks whether ``create_app().get(...)`` hands that store back under the
+member's own component name.
 
 This is the member's **sixth** registration.  The second-composition test
 below is the live defect guard for the trap that fact creates: a ``@register``
@@ -21,27 +20,7 @@ error message anywhere.
 
 from __future__ import annotations
 
-import importlib
-import pathlib
-
 import providers
-import pytest
-
-#: The seat's module path, spelled the way the loader spells every seat.  The
-#: import happens inside the tests rather than at module scope for the reason
-#: :mod:`tests.test_pin_component` gives: the seat pulls in the ``app``
-#: package, and this member suite only reaches it once the repository root is
-#: on ``sys.path``.
-SEAT = "app.modules.providers"
-
-
-@pytest.fixture
-def app_on_the_path(monkeypatch):
-    """Make ``app`` importable, then hand back the seat module."""
-    root = str(pathlib.Path(__file__).resolve().parents[3])
-    monkeypatch.syspath_prepend(root)
-    return importlib.import_module(SEAT)
-
 
 # ── The registration: by convention, in the package __init__ ──────────────────
 
@@ -138,60 +117,24 @@ def test_the_builder_takes_no_arguments_as_the_registration_protocol_requires(
     assert builder() is None
 
 
-# ── The seat: the app package's way to the same store ─────────────────────────
+# ── The composition: the application's way to the same store ──────────────────
 
 
-def test_the_seat_names_the_same_component_the_member_registers(app_on_the_path):
-    # Two spellings of one component name, in two packages that must not
-    # import each other: the seat cannot import the member's constant without
-    # making the app package depend on a workspace member, so the two are
-    # pinned against each other here.  A drift would make the seat silently
-    # answer ``None`` for a component that *is* composed — the failure mode
-    # with no error message anywhere.  The stakes are higher for this name
-    # than for its sibling: the seat carries *two* root accessors, and a
-    # swapped constant would have one read the other's component.
-    assert (
-        app_on_the_path.ROOT_ROTATION_NAME == providers.ROOT_ROTATION_COMPONENT
-    )
-    assert (
-        app_on_the_path.ROOT_ROTATION_NAME
-        != app_on_the_path.ROOT_SERVING_PROVIDER_NAME
-    )
-
-
-def test_the_seat_carries_this_features_two_exports(app_on_the_path):
-    # The seat's shape for this feature, asserted by membership (the
-    # exhaustive what-else assertion lives in the pin suite's seat test, which
-    # this feature widened rather than replaced): a name and an accessor, and
-    # no re-export of the records or the error vocabulary — those are the
-    # member's one spelling.
-    assert "ROOT_ROTATION_NAME" in app_on_the_path.__all__
-    assert "root_rotation_component" in app_on_the_path.__all__
-    assert callable(app_on_the_path.root_rotation_component)
-    # ...and the records stay the member's: a seat that re-exported
-    # ``RootAssignment`` would be a second spelling of the member's surface.
-    assert not hasattr(app_on_the_path, "RootAssignment")
-    assert not hasattr(app_on_the_path, "RootRotationError")
-
-
-def test_the_seat_asks_the_factory_for_the_component_it_names(
-    app_on_the_path, monkeypatch, tmp_path
+def test_the_application_hands_back_the_store_the_factory_built(
+    monkeypatch, tmp_path
 ):
-    # The accessor's contract, on the seat's own terms: with an application in
-    # hand it reads that application, and what it hands back is the store the
-    # factory built for this deployment — the same object, not a copy.  It is
-    # a *different* object from the sibling accessor's store, which is the
-    # whole reason the seat spells two accessors rather than one.
+    # With an application in hand, a ``get`` under the member's component name
+    # hands back the store the factory built for this deployment — the same
+    # object, not a copy.  It is a *different* object from the sibling root
+    # store, because the two are two features' sentences.
     from app.module_loader import create_app
 
-    url = f"sqlite:///{tmp_path / 'seated-rotation.db'}"
+    url = f"sqlite:///{tmp_path / 'composed-rotation.db'}"
     monkeypatch.setenv("DATABASE_URL", url)
     application = create_app()
-    store = app_on_the_path.root_rotation_component(application)
-    assert store is application.get(app_on_the_path.ROOT_ROTATION_NAME)
-    assert store is not application.get(
-        app_on_the_path.ROOT_SERVING_PROVIDER_NAME
-    )
+    store = application.get(providers.ROOT_ROTATION_COMPONENT)
+    assert store is dict(application.components)[providers.ROOT_ROTATION_COMPONENT]
+    assert store is not application.get(providers.ROOT_SERVING_PROVIDER_COMPONENT)
     # By class *name*, not by ``isinstance``: the composed store is built by
     # the scanned copy of this member, so it is the same source file's class
     # and not this test module's import of it — the double-import the member's
@@ -202,7 +145,7 @@ def test_the_seat_asks_the_factory_for_the_component_it_names(
 
 
 def test_the_composed_store_raises_this_features_errors_by_name(
-    app_on_the_path, monkeypatch, tmp_path
+    monkeypatch, tmp_path
 ):
     # The composed store raises errors from the *scanned* copy of this member,
     # so ``pytest.raises(providers.RootRotationError)`` — the canonical class
@@ -215,7 +158,7 @@ def test_the_composed_store_raises_this_features_errors_by_name(
 
     url = f"sqlite:///{tmp_path / 'vocab-rotation.db'}"
     monkeypatch.setenv("DATABASE_URL", url)
-    store = create_app().get(app_on_the_path.ROOT_ROTATION_NAME)
+    store = create_app().get(providers.ROOT_ROTATION_COMPONENT)
 
     # A malformed campaign id is refused before any database is opened — which
     # is enough to see the class the composed copy raises, and that it is
@@ -231,14 +174,13 @@ def test_the_composed_store_raises_this_features_errors_by_name(
 
 
 def test_the_composed_stores_flagship_path_works_end_to_end(
-    app_on_the_path, monkeypatch, tmp_path
+    monkeypatch, tmp_path
 ):
     # Feature 197's sentence, driven through the *composed* store: composition
     # must hand back something that actually assigns a root, not merely
     # something with the right class name.  The node is planted through the
     # same raw statement the member suite's fixture uses, because the composed
-    # application is the only thing under test here — the seat carries no
-    # fixture for the tree.
+    # application is the only thing under test here.
     import sqlite3
     import uuid
     from contextlib import closing
@@ -262,7 +204,7 @@ def test_the_composed_stores_flagship_path_works_end_to_end(
             (node, None, campaign, "macro", 0),
         )
 
-    store = app_on_the_path.root_rotation_component(create_app())
+    store = create_app().get(providers.ROOT_ROTATION_COMPONENT)
     tier = providers.FrontierTier(
         providers=(
             providers.FrontierProvider(provider="anthropic", model="claude-opus-5"),

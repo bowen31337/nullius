@@ -79,16 +79,6 @@ def test_the_member_declares_the_component_name_the_feature_owns() -> None:
     assert sandbox.PAYLOAD_COMPONENT_NAME == "sandbox-payload"
 
 
-def test_the_seat_declares_the_same_component_name() -> None:
-    # The app namespace respells the member's constant rather than importing it
-    # (the seat must not depend on the member at import time), so the two
-    # spellings are pinned equal here: a drift would be a silent ``None`` at the
-    # seat rather than a failure, which is the worst shape a wiring bug can take.
-    import app.modules.sandbox as seat
-
-    assert seat.PAYLOAD_COMPONENT_NAME == sandbox.PAYLOAD_COMPONENT_NAME
-
-
 def test_scanning_the_member_registers_the_eleven_components_it_owns() -> None:
     # A fresh registry, not the process default: any earlier test that called a
     # bare ``create_app()`` has already imported every workspace member into the
@@ -210,48 +200,20 @@ def test_the_composed_law_refuses_bytes_with_no_channel() -> None:
     assert type(raised.value).__name__ == "PayloadChannelRequired"
 
 
-class TestTheSeat:
-    """src/app/modules/sandbox — the member's eleventh seat in the app namespace."""
+class TestTheComposedApplication:
+    """The component reached by name through the composed application."""
 
-    def test_the_seat_exposes_the_composed_component(self) -> None:
-        from app.modules.sandbox import (
-            PAYLOAD_COMPONENT_NAME,
-            sandbox_payload_component,
-        )
-
-        assert PAYLOAD_COMPONENT_NAME == "sandbox-payload"
+    def test_the_application_exposes_the_composed_component(self) -> None:
         app = create_app(MEMBER_SRC, registry=Registration())
-        _assert_is_the_payload_law(sandbox_payload_component(app))
+        _assert_is_the_payload_law(app.get("sandbox-payload"))
 
-    def test_the_seat_returns_none_when_nothing_registered(self) -> None:
+    def test_the_application_returns_none_when_nothing_registered(self) -> None:
         # An application with no component registered is a discoverable state,
-        # not an exception — mirroring the factory's stance and the other ten
-        # seats'.
-        from app.modules.sandbox import sandbox_payload_component
+        # not an exception — mirroring the factory's stance.
+        assert Application(components={}, order=()).get("sandbox-payload") is None
 
-        assert sandbox_payload_component(Application(components={}, order=())) is None
-
-    def test_the_seat_reads_from_an_application_it_is_handed(self) -> None:
-        from app.modules.sandbox import sandbox_payload_component
-
+    def test_the_component_is_read_from_the_application_it_is_asked_of(self) -> None:
         application = Application(
             components={"sandbox-payload": "sentinel"}, order=("sandbox-payload",)
         )
-        assert sandbox_payload_component(application) == "sentinel"
-
-    def test_the_seat_is_not_a_second_vocabulary(self) -> None:
-        # The seat answers questions — which component? — and does not re-export
-        # the law's types. A caller who has the component calls its verbs; a
-        # second spelling of the payload decision or the reason codes here would
-        # be a second thing to keep in sync.
-        import app.modules.sandbox as seat
-
-        for leaked in (
-            "SandboxPayload",
-            "PayloadDecision",
-            "PayloadReason",
-            "PayloadRun",
-            "authorize_payload_run",
-            "sandbox_payload",
-        ):
-            assert not hasattr(seat, leaked), leaked
+        assert application.get("sandbox-payload") == "sentinel"

@@ -958,7 +958,7 @@ def test_from_env_answers_none_without_a_database(monkeypatch, gate) -> None:
     assert resolved.select(EPOCH_ID).promotion_decisions_served == 0
 
 
-# -- The member's surface, the seat, and the spec ---------------------------------------------------
+# -- The member's surface and the spec --------------------------------------------------------
 
 
 def test_the_vocabulary_is_reachable_from_the_members_surface() -> None:
@@ -982,18 +982,6 @@ def test_the_member_still_exports_exactly_one_builder() -> None:
     assert [name for name in dir(member) if name.startswith("build_")] == [
         "build_promotion_registry"
     ]
-
-
-def test_the_seat_is_untouched_by_this_feature() -> None:
-    # The seat still answers one question, and it deliberately does not
-    # re-export the selection vocabulary: a caller who has the store
-    # constructs the gate, and a second spelling there would be a second
-    # thing to keep in sync.
-    from app.modules import promotion as seat
-
-    assert set(seat.__all__) == {"COMPONENT_NAME", "promotion_registry_component"}
-    assert not hasattr(seat, "EpochSelections")
-    assert not hasattr(seat, "EpochSelectionError")
 
 
 def test_the_specs_sentence_is_what_this_module_implements() -> None:

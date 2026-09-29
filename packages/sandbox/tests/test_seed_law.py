@@ -655,11 +655,6 @@ class TestTheVocabulary:
     def test_the_component_name_is_the_feature_s_own_seat(self) -> None:
         assert sandbox.SEED_COMPONENT_NAME == "sandbox-seed"
 
-    def test_the_seat_and_the_member_share_one_spelling(self) -> None:
-        from app.modules.sandbox import SEED_COMPONENT_NAME as seat_name
-
-        assert seat_name == sandbox.SEED_COMPONENT_NAME
-
     def test_the_law_is_reachable_without_the_component(self) -> None:
         """Every name the module's ``__all__`` promises is really there — the
         member's own ``__init__`` imports the law, and a name listed but not

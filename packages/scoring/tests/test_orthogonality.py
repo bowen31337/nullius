@@ -32,8 +32,8 @@ fixtures: the orthogonal book's correlation is a signed *zero* to the bit
 and the partial case is checked against ``1 − 1/√2`` computed once —
 every payment assertible with ``==``.  What these tests deliberately do
 not reach: composition (``test_component.py`` — the bonus needs no
-component, which is itself pinned here by the member's surface), the
-seat (``test_app_module.py``), and any persistence (the
+component, which is itself pinned here by the member's surface), and any
+persistence (the
 ``replay_score`` row is feature 255's, and it already carries the score
 and the β).
 """

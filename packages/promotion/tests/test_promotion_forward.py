@@ -301,17 +301,6 @@ def test_the_module_registers_nothing_and_adds_no_builder() -> None:
     assert [name for name in dir(module) if name.startswith("build_")] == []
 
 
-def test_the_seat_is_untouched_and_still_answers_one_question() -> None:
-    # Feature 300 adds a module, not a component: there is no
-    # ``src/app/modules/promotion/forward.py`` seat, because a seat answers *what
-    # is the composed registry?* and this feature composes nothing.  Pinned by
-    # the absence of the file rather than by reading the seat's contents, so the
-    # claim is about this feature's footprint.
-    seat = REPO_ROOT / "src" / "app" / "modules" / "promotion"
-    assert not (seat / "forward.py").exists()
-    assert not (seat / "forward_windows.py").exists()
-
-
 # -- The witness: the stamp is the row's, and the window reports that row -----------
 
 

@@ -1126,17 +1126,6 @@ def test_the_member_still_exports_exactly_one_builder() -> None:
     ]
 
 
-def test_the_seat_is_untouched_by_this_feature() -> None:
-    # The seat still answers one question, and it deliberately does not re-export
-    # the block vocabulary: a caller who has the store reaches ``record_block``
-    # on it, and a second spelling there would be a second thing to keep in sync.
-    from app.modules import promotion as seat
-
-    assert set(seat.__all__) == {"COMPONENT_NAME", "promotion_registry_component"}
-    assert not hasattr(seat, "PromotionBlocks")
-    assert not hasattr(seat, "PromotionBlockError")
-
-
 def test_the_specs_sentence_is_what_this_module_implements() -> None:
     # The feature's own line, quoted so a reader of this suite does not have to
     # go looking, and so a re-scoped feature would fail a test rather than

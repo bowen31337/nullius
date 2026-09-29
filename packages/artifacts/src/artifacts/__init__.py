@@ -577,8 +577,8 @@ __all__ = [
 
 #: The component name the artifacts member registers under — the plugin
 #: name the spec's features carry (``plugin="artifacts"``), so the
-#: component key, the app-namespace seat
-#: (``src/app/modules/artifacts``) and the spec cannot drift apart.
+#: component key the composed application is read by and the spec cannot
+#: drift apart.
 COMPONENT_NAME = "artifacts"
 
 #: The component name feature 179's dedup gate registers under.  A second

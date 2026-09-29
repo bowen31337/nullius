@@ -1,9 +1,8 @@
-"""The member's two seams: composition via the loader, and the app seat.
+"""The member's composition seam: its component as the loader composes it.
 
-Feature 270 contributes exactly one component, and this suite holds both halves
-of its wiring — the registration contract every member's component suite states
-for its own component, and the seat contract ``app.modules.dreaming`` states
-for that component's seat.
+Feature 270 contributes exactly one component, and this suite holds its wiring —
+the registration contract every member's component suite states for its own
+component, and what the composed application answers for it.
 
 The loader's two properties shape the composition half exactly as they shape
 every sibling member's: the scan imports each member under a synthetic name, so
@@ -23,10 +22,10 @@ dreaming cycle that never ends.  The test below holds the database file absent
 after composition and asserts no hold row exists in it, which is the closest a
 single process can come to proving a negative across a composition seam.
 
-**The seat's ``None`` is not "the pool is free".**  The seat answers ``None``
-when the component resolved no database — a statement about the *deployment*.
-A pool that is free is a database that exists with no open hold, which is
-``freeze.open_hold() is None`` against a freeze this seat *did* hand back.  The
+**The composed ``None`` is not "the pool is free".**  The application answers
+``None`` when the component resolved no database — a statement about the
+*deployment*.  A pool that is free is a database that exists with no open hold,
+which is ``freeze.open_hold() is None`` against a freeze it *did* hand back.  The
 tests keep the two apart by constructing each state deliberately: a scanned
 application without ``DATABASE_URL`` composes the component as ``None``, while
 an empty ``Application()`` — no scan at all — is the state where nothing was
@@ -35,20 +34,12 @@ registered.
 
 from __future__ import annotations
 
-import ast
 import inspect
 from pathlib import Path
 
 import dreaming as member
 
 from app.module_loader import Application, Registration, create_app, scan_components
-from app.modules import dreaming as seat
-
-#: The seat's whole public surface, asserted as an exact set for the same
-#: reason every sibling seat's is: the failure this guards against is the seat
-#: *growing* a re-export — a second spelling of the member's API — and a
-#: membership check cannot see that.
-EXPECTED_EXPORTS = {"COMPONENT_NAME", "cycle_freeze_component"}
 
 
 def _assert_is_the_cycle_freeze(component: object) -> None:
@@ -72,9 +63,9 @@ def _assert_is_the_cycle_freeze(component: object) -> None:
 
 def test_the_member_registers_under_its_own_name() -> None:
     # Unprefixed, following the ledger / artifacts / discovery precedent for a
-    # member's first and only component.  The member, the seat and the spec's
-    # plugin vocabulary all spell the one name.
-    assert member.COMPONENT_NAME == seat.COMPONENT_NAME == "dreaming"
+    # member's first and only component.  The member and the spec's plugin
+    # vocabulary both spell the one name.
+    assert member.COMPONENT_NAME == "dreaming"
 
 
 def test_the_scanned_application_carries_the_freeze(
@@ -176,10 +167,6 @@ def test_composition_acquires_no_hold_and_touches_no_database(
     assert not database.exists()  # composition created nothing
     assert freeze.path == database  # ...and the path was only ever computed
 
-    # The seat hands back the same object the application carries, so a caller
-    # reaching the freeze either way reaches one hold.
-    assert seat.cycle_freeze_component(app) is freeze
-
 
 def test_scanning_registers_the_component_exactly_once() -> None:
     # A duplicate registration of one name is silently overridden by the
@@ -192,43 +179,26 @@ def test_scanning_registers_the_component_exactly_once() -> None:
     assert names.count(member.COMPONENT_NAME) == 1
 
 
-# -- The seat --------------------------------------------------------------------
+# -- The composed application ---------------------------------------------------
 
 
-def test_the_seat_exports_exactly_two_names() -> None:
-    # The seat's discipline is that it answers one question and re-exports
-    # nothing of the member's API beyond the name — a caller who has the freeze
-    # reaches ``open()``, ``release()``, ``verify()``, ``guard()`` on it, and a
-    # second spelling here would be a second thing to keep in sync.
-    assert set(seat.__all__) == EXPECTED_EXPORTS
-
-
-def test_the_seat_names_the_same_component_the_member_does() -> None:
-    # The literal is repeated in the seat and in the member on purpose, and
-    # this is the assertion that keeps the repetition honest — the same test
-    # every sibling seat's suite carries for its own two spellings.
-    assert seat.COMPONENT_NAME == member.COMPONENT_NAME
-
-
-def test_the_seat_answers_none_for_an_application_without_the_component() -> None:
+def test_an_application_without_the_component_answers_none() -> None:
     # No scan at all — nothing was registered — which is a statement about
     # *composition*, and deliberately not the same fact as a deployment that
     # named no database.
-    assert seat.cycle_freeze_component(Application()) is None
+    assert Application().get(member.COMPONENT_NAME) is None
 
 
-def test_the_seat_composes_the_application_when_given_none(
-    monkeypatch, tmp_path: Path
-) -> None:
-    # Called with no application, the seat composes one via ``create_app`` —
-    # the same accessor shape every sibling seat takes.
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'seat.db'}")
+def test_the_default_composition_answers_the_freeze(monkeypatch, tmp_path: Path) -> None:
+    # With no explicit roots the factory scans the declared workspace — the
+    # production path.
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'default.db'}")
 
-    _assert_is_the_cycle_freeze(seat.cycle_freeze_component())
+    _assert_is_the_cycle_freeze(create_app().get(member.COMPONENT_NAME))
 
 
-def test_the_seat_degrades_to_none_without_a_database(monkeypatch) -> None:
-    # The seat's ``None`` is a statement about the deployment: the component
+def test_the_composed_freeze_degrades_to_none_without_a_database(monkeypatch) -> None:
+    # The composed ``None`` is a statement about the deployment: the component
     # *was* registered and resolved nothing.  A caller holding it must refuse
     # to run §C5's loop rather than run it while believing its history was
     # fixed — §12.1's *"the dreaming loop overfits its own replay pool"* is
@@ -237,67 +207,4 @@ def test_the_seat_degrades_to_none_without_a_database(monkeypatch) -> None:
     # wrong.
     monkeypatch.delenv("DATABASE_URL", raising=False)
 
-    assert seat.cycle_freeze_component() is None
-
-
-def test_the_seat_does_not_reach_the_member_at_import_time() -> None:
-    """The seat must not make ``app`` depend on a workspace member at import time.
-
-    The member is named only under ``TYPE_CHECKING``, so that importing the seat
-    — which the loader does on every scan — does not drag a workspace member
-    into the ``app`` package's import graph.
-
-    Parsed rather than line-scanned, deliberately: a string search for
-    ``from dreaming import`` cannot tell the guarded import apart from a
-    runtime one, and would either fail on the legitimate block or be written
-    loosely enough to miss a real top-level import.  The AST knows which
-    ``ImportFrom`` nodes are nested inside ``if TYPE_CHECKING`` and which stand
-    in the module body, which is precisely the distinction being pinned.
-    """
-    tree = ast.parse(Path(seat.__file__).read_text())
-
-    def _names_the_member(node: ast.AST) -> bool:
-        if isinstance(node, ast.ImportFrom):
-            return (node.module or "").split(".")[0] == "dreaming"
-        if isinstance(node, ast.Import):
-            return any(alias.name.split(".")[0] == "dreaming" for alias in node.names)
-        return False
-
-    guarded = {
-        id(node)
-        for guard in ast.walk(tree)
-        if isinstance(guard, ast.If)
-        and "TYPE_CHECKING" in ast.dump(guard.test)
-        for node in ast.walk(guard)
-    }
-    runtime = [
-        node
-        for node in ast.walk(tree)
-        if _names_the_member(node) and id(node) not in guarded
-    ]
-
-    assert not runtime, [
-        ast.unparse(node) for node in runtime  # type: ignore[attr-defined]
-    ]
-    # And the guarded import is really there, so the emptiness above is the
-    # right kind of empty rather than a seat that lost its typing reference.
-    assert any(_names_the_member(node) for node in ast.walk(tree))
-
-
-def test_the_composed_freeze_is_the_seats_answer_not_a_copy(
-    monkeypatch, tmp_path: Path
-) -> None:
-    """One hold per deployment, whichever door a caller comes through.
-
-    The seat and the composed application must hand back the *same* freeze:
-    two objects over one database would be two ``_path`` caches and — worse —
-    two objects a caller could each believe was the one holding the pool.
-    """
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'one.db'}")
-    app = create_app()
-
-    from_seat = seat.cycle_freeze_component(app)
-    from_app = app.get(member.COMPONENT_NAME)
-
-    assert from_seat is from_app
-    assert from_seat.database_url == from_app.database_url
+    assert create_app().get(member.COMPONENT_NAME) is None

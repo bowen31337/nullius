@@ -45,7 +45,7 @@ campaign tree a replay walks is the policy-runtime member's ``CampaignTree``
 (``(node_id, parent_id, depth, payload)``, feature 217) — the same node model
 the frozen evaluator and the nightly canary address — but this member owns no
 copy of it and names no sibling package.  The tree arrives through the app
-namespace (``app.modules.policy-runtime``, the seat feature 217 ships) and the
+namespace (the composed ``policy-runtime`` component feature 217 ships) and the
 transition validates what it *reads* — the tree's ``nodes``, a node's
 ``node_id`` and ``parent_id``, the tree's ``node`` — rather than
 ``isinstance``-ing it, because the module loader imports a member under a
@@ -396,12 +396,12 @@ __all__ = [
 ]
 
 #: The component name the replay member registers under — the plugin name the
-#: spec's features carry (``plugin="replay"``), so the component key, the
-#: app-namespace seat (``src/app/modules/replay``) and the spec cannot drift
-#: apart.  **One component per member name.**  A later feature in this category
-#: that needs one of its own registers under a ``replay-`` prefixed name beside
-#: this one, never under this name: registering two components under one name
-#: puts both in the registry and lets the later import silently win, the hazard
+#: spec's features carry (``plugin="replay"``), so the component key the
+#: composed application is read by and the spec cannot drift apart.  **One
+#: component per member name.**  A later feature in this category that needs
+#: one of its own registers under a ``replay-`` prefixed name beside this one,
+#: never under this name: registering two components under one name puts both
+#: in the registry and lets the later import silently win, the hazard
 #: ``app.module_loader`` documents and the ``artifacts-code-hash-dedup``
 #: precedent avoids.
 COMPONENT_NAME = "replay"

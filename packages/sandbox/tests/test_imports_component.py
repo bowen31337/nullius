@@ -157,75 +157,20 @@ def test_the_composed_law_refuses_a_module_importing_time() -> None:
     assert str(raised.value).startswith("disallowed_import")
 
 
-class TestTheSeat:
-    """src/app/modules/sandbox — the member's seat in the app namespace."""
+class TestTheComposedApplication:
+    """The component reached by name through the composed application."""
 
-    def test_the_seat_exposes_the_composed_component(self) -> None:
-        from app.modules.sandbox import (
-            IMPORTS_COMPONENT_NAME,
-            sandbox_imports_component,
-        )
-
-        assert IMPORTS_COMPONENT_NAME == "sandbox-imports"
+    def test_the_application_exposes_the_composed_component(self) -> None:
         app = create_app(MEMBER_SRC, registry=Registration())
-        _assert_is_the_import_law(sandbox_imports_component(app))
+        _assert_is_the_import_law(app.get("sandbox-imports"))
 
-    def test_the_seat_returns_none_when_nothing_registered(self) -> None:
-        # An application with no component registered is a discoverable
-        # state, not an exception — mirroring the factory's stance and the
-        # isolation seat's.
-        from app.modules.sandbox import sandbox_imports_component
+    def test_the_application_returns_none_when_nothing_registered(self) -> None:
+        # An application with no component registered is a discoverable state,
+        # not an exception — mirroring the factory's stance.
+        assert Application(components={}, order=()).get("sandbox-imports") is None
 
-        assert sandbox_imports_component(Application(components={}, order=())) is None
-
-    def test_the_seat_reads_from_an_application_it_is_handed(self) -> None:
-        from app.modules.sandbox import sandbox_imports_component
-
+    def test_the_component_is_read_from_the_application_it_is_asked_of(self) -> None:
         application = Application(
             components={"sandbox-imports": "sentinel"}, order=("sandbox-imports",)
         )
-        assert sandbox_imports_component(application) == "sentinel"
-
-    def test_the_seat_is_not_a_second_vocabulary(self) -> None:
-        # The seat answers questions — which component? — and does not
-        # re-export the law's types. A caller who has the component calls
-        # its verbs; a second spelling of the module decision or the reason
-        # codes here would be a second thing to keep in sync.
-        import app.modules.sandbox as seat
-
-        assert set(seat.__all__) == {
-            "BUDGET_COMPONENT_NAME",
-            "COMPONENT_NAME",
-            "FAIL_CLASS_COMPONENT_NAME",
-            "IMPORTS_COMPONENT_NAME",
-            "NETWORK_COMPONENT_NAME",
-            "PAYLOAD_COMPONENT_NAME",
-            "QUARANTINE_COMPONENT_NAME",
-            "SEED_COMPONENT_NAME",
-            "SYSCALLS_COMPONENT_NAME",
-            "THREADS_COMPONENT_NAME",
-            "TIMEOUT_COMPONENT_NAME",
-            "TRANSFER_COMPONENT_NAME",
-            "sandbox_budget_component",
-            "sandbox_fail_class_component",
-            "sandbox_imports_component",
-            "sandbox_isolation_component",
-            "sandbox_network_component",
-            "sandbox_payload_component",
-            "sandbox_quarantine_component",
-            "sandbox_seed_component",
-            "sandbox_syscalls_component",
-            "sandbox_threads_component",
-            "sandbox_timeout_component",
-            "sandbox_transfer_component",
-        }
-        for leaked in (
-            "ModuleDecision",
-            "ModuleReason",
-            "ImportsAllowlist",
-            "SandboxImports",
-            "SyscallDecision",
-            "SyscallReason",
-            "SandboxSyscalls",
-        ):
-            assert not hasattr(seat, leaked), leaked
+        assert application.get("sandbox-imports") == "sentinel"

@@ -127,7 +127,7 @@ QUARANTINE_COMPONENT_NAME: Final[str] = "sandbox-quarantine"
 Distinct from every sibling's, because the module loader's registry is keyed by
 name and a later registration of the same name *replaces* the earlier one: two
 laws sharing a name would leave one of them silently absent from a composed
-application.  The seat :mod:`app.modules.sandbox` reads the same spelling.
+application.  Callers read the component by this same spelling.
 """
 
 QUARANTINE_FAIL_CLASS: Final[str] = "sandbox_escape"

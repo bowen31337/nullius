@@ -987,10 +987,10 @@ __all__ = [
 __version__ = "0.1.0"
 
 #: The component name this member registers under — the plugin name
-#: app_spec.xml gives the category (``plugin="sandbox"``) and the name of the
-#: member's seat in the app namespace (``src/app/modules/sandbox``).  Kept here
-#: so anything asking the composed application for the isolation law — by way
-#: of the member, not by a hard-coded string — shares one spelling.
+#: app_spec.xml gives the category (``plugin="sandbox"``) and the key the
+#: composed application is read by (``create_app().get("sandbox")``).  Kept
+#: here so anything asking the composed application for the isolation law —
+#: by way of the member, not by a hard-coded string — shares one spelling.
 COMPONENT_NAME: str = "sandbox"
 
 #: The other eleven component names — ``IMPORTS_COMPONENT_NAME``,

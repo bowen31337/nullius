@@ -101,9 +101,8 @@ here — this journey's candidate is a *score panel* handed to the probes, not a
 :class:`~tripwires.TimeShuffleTripwire`'s own methods, the poisoning is feature
 131's store, the refusal is feature 132's pool, and the pool's rows are written
 by feature 255's own writer, :func:`~replay.persist_replay_score`.  The
-poisoning and the pool are reached through the ``app`` package's own seats
-(``app.modules.tripwires.poison``, ``app.modules.tripwires.excise``) from the
-*same* composed application, which is the deployment's wiring and not a
+poisoning and the pool are read by name (``tripwires-poison``,
+``tripwires-excise``) from the *same* composed application, which is the deployment's wiring and not a
 convenience: the factory's scan imports the member under a synthetic name, so
 the store and the pool it composes are a second class object of the same source
 file, and a journey that mixed a composed store with a canonically imported
@@ -157,8 +156,6 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 from app.module_loader import create_app
-from app.modules.tripwires.excise import replay_pool_component
-from app.modules.tripwires.poison import poison_store_component
 from discovery import TYPE_R_CAMPAIGN_TYPE, create_campaign
 from replay import persist_replay_score
 from tripwires import (
@@ -596,11 +593,11 @@ def journey(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_Journey]:
         _stand_up_pool_rows(store_path, tree, world_id)
 
         # Act 5 — the composed application, exactly as the factory builds it,
-        # and its two tripwire seats: the store a failure is persisted to and
-        # the pool a poisoned branch is refused from.
+        # and its two tripwire components: the store a failure is persisted to
+        # and the pool a poisoned branch is refused from.
         app = create_app()
-        store = poison_store_component(app)
-        pool = replay_pool_component(app)
+        store = app.get("tripwires-poison")
+        pool = app.get("tripwires-excise")
         assert store is not None, (
             "the tripwires-poison component composed None, so DATABASE_URL "
             "named no relational store and feature 131's failure could not be "
@@ -1165,7 +1162,7 @@ class TestThePoolReturnsZeroSurvivingNodes:
 
 
 class TestTheDoctrineTheSignalMustNotForfeit:
-    """§4.1.2's stationarity under the bundle, and the wiring under both seats."""
+    """§4.1.2's stationarity under the bundle, and the wiring under both components."""
 
     def test_the_target_bundle_aggregate_is_stationary(self, journey: _Journey) -> None:
         """§4.1.2's stationarity, measured on the bundle the panel is planted over.
@@ -1236,16 +1233,16 @@ class TestTheDoctrineTheSignalMustNotForfeit:
     ) -> None:
         """The branch's mark, record and refusal all read the same store.
 
-        The store and the pool are reached through the ``app`` package's own
-        seats from one ``create_app()`` call — the factory's scan imports the
+        The store and the pool are read by name from one ``create_app()``
+        call — the factory's scan imports the
         member under a synthetic name, so a journey that mixed a composed
         store with a canonically imported pool would be exercising two
         compositions rather than one.  Asserted by the classes' own identity
         rather than by ``isinstance``, which cannot hold across that seam.
         """
         app = create_app()
-        store = poison_store_component(app)
-        pool = replay_pool_component(app)
+        store = app.get("tripwires-poison")
+        pool = app.get("tripwires-excise")
         assert type(store).__name__ == "PoisonStore"
         assert type(pool).__name__ == "ReplayPool"
         assert type(store).__module__.startswith("_nullius_scanned_tripwires")
@@ -1258,13 +1255,13 @@ class TestTheDoctrineTheSignalMustNotForfeit:
 
         The tripwires member contributes the probe (``tripwires``), the store a
         failure is persisted to (``tripwires-poison``) and the pool a branch is
-        refused from (``tripwires-excise``); a seat that answered with another
+        refused from (``tripwires-excise``); a lookup that answered with another
         component's object would give a caller an object whose every method
         means a different feature's thing.
         """
         app = create_app()
-        store = poison_store_component(app)
-        pool = replay_pool_component(app)
+        store = app.get("tripwires-poison")
+        pool = app.get("tripwires-excise")
         assert store is not None and pool is not None
         assert type(store).__name__ != type(pool).__name__
         assert not hasattr(store, "survivors")

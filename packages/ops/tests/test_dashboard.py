@@ -91,7 +91,6 @@ from ops.dashboard import (
 )
 
 from app.module_loader import Application, Registration, create_app, scan_components
-from app.modules import ops as ops_seat
 
 MEMBER_SRC = Path(__import__("ops").__file__).resolve().parent.parent
 
@@ -421,11 +420,10 @@ def _dashboard(test_database_url: str) -> OperatorDashboard:
 
 
 def test_the_dashboard_component_name_is_spelled_once_everywhere() -> None:
-    # The member's constant, the app-seat's constant and the composed
-    # application's order are one string — three spellings of one name
-    # is exactly the kind of drift a test is cheaper than.
+    # The member's constant and the composed application's order are one
+    # string — two spellings of one name is exactly the kind of drift a
+    # test is cheaper than.
     assert OPS_DASHBOARD_COMPONENT_NAME == "ops-dashboard"
-    assert ops_seat.DASHBOARD_COMPONENT_NAME == OPS_DASHBOARD_COMPONENT_NAME
 
 
 def test_the_scan_registers_both_surfaces_exactly_once() -> None:
@@ -1293,11 +1291,11 @@ def test_the_primary_seat_judges_the_contract_not_the_class(
 
 
 def test_composed_refuses_when_the_route_is_absent() -> None:
-    # The seat's docstring names this surface as the caller that must
-    # refuse: "a caller that needs the top-line figure and resolves
-    # None must refuse to proceed rather than rendering a numeral
-    # nobody measured."  A composition with no ops route is refused
-    # naming the repair — never answered around with a fallback.
+    # This surface is the caller that must refuse: a caller that needs
+    # the top-line figure and resolves None must refuse to proceed rather
+    # than rendering a numeral nobody measured.  A composition with no
+    # ops route is refused naming the repair — never answered around
+    # with a fallback.
     with pytest.raises(DashboardRenderError) as raised:
         OperatorDashboard.composed(Application())
     assert isinstance(raised.value, OpsError)
@@ -1313,11 +1311,12 @@ def test_composed_refuses_when_the_rail_is_absent() -> None:
     # render is a page whose lamps went missing rather than dark, a
     # shorter rail than the design draws, which is the one screen
     # where an instrument's state could go unasked.  The application
-    # here is a duck carrier answering the one component — the seat's
-    # contract is the get(), the same duck-check the constructor takes.
+    # here is a duck carrier answering the one component — the
+    # application's contract is the get(), the same duck-check the
+    # constructor takes.
     class _AppWithOnlyTheRoute:
         def get(self, name: str):
-            return object() if name == ops_seat.COMPONENT_NAME else None
+            return object() if name == "ops-fdr-deploy" else None
 
     with pytest.raises(DashboardRenderError) as raised:
         OperatorDashboard.composed(_AppWithOnlyTheRoute())
@@ -1719,7 +1718,7 @@ def test_the_dashboard_and_route_compose_over_one_database(
     assert dashboard.rail.readings.database_url == test_database_url
     assert dashboard.provenance.database_url == test_database_url
     assert "ops-dashboard" in app.order and "ops-fdr-deploy" in app.order
-    assert ops_seat.OPS_INSTRUMENT_STATUS_COMPONENT_NAME in app.order
+    assert "ops-instrument-status" in app.order
 
 
 def test_the_builder_contributes_nothing_without_a_store(
@@ -1746,10 +1745,9 @@ def test_composing_the_dashboard_touches_no_disk(
     assert not database_path.exists()
 
 
-def test_the_seat_exposes_the_composed_dashboard(test_database_url: str) -> None:
+def test_the_application_exposes_the_composed_dashboard(test_database_url: str) -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
-    component = ops_seat.dashboard_component(app)
-    assert component is app.get("ops-dashboard")
+    component = app.get("ops-dashboard")
     assert component is not None
     assert callable(component.page)
 

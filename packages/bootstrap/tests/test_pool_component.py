@@ -1,10 +1,9 @@
-"""The pool's two seams: composition via the loader, and the app seat.
+"""The pool's two seams: composition via the loader, and reading the component.
 
 Feature 188 adds this member's *second* component, and this suite holds
 both halves of its wiring — the registration contract
 ``test_component.py`` states for the world, restated for the pool, and
-the seat contract ``test_app_module.py`` states for the world's seat,
-restated for the pool's (:mod:`app.modules.bootstrap.pool`).
+reading it back through ``Application.get``.
 
 The loader's two properties shape the composition half exactly as they
 shaped the world's (see ``test_component.py``'s docstring): the scan
@@ -26,9 +25,9 @@ holds the database file absent after composition and present only after
 the authoring call — the composition seam is where a pool that helped
 itself to the database would be hardest to see.
 
-**The seat's ``None`` is not the world seat's ``None``.**  The world
-seat answers ``None`` when no component was registered — a statement
-about composition.  The pool seat answers ``None`` when the component
+**The pool's ``None`` is not the world's ``None``.**  The world
+component reads ``None`` when no component was registered — a statement
+about composition.  The pool component reads ``None`` when the component
 *was* registered and resolved no database — a statement about the
 deployment.  A caller holding the first cannot label a node at all; a
 caller holding the second must refuse to author, not silently author
@@ -46,14 +45,6 @@ import bootstrap as member
 import pytest
 
 from app.module_loader import Application, Registration, create_app, scan_components
-from app.modules import bootstrap as world_seat
-from app.modules.bootstrap import pool as pool_seat
-
-#: The pool seat's whole public surface, asserted as an exact set for the
-#: same reason the world seat's is (see ``test_app_module.py``): the
-#: failure this guards against is the seat *growing* a re-export, and a
-#: membership check cannot see that.
-EXPECTED_EXPORTS = {"COMPONENT_NAME", "bootstrap_pool_component"}
 
 
 def _assert_is_the_bootstrap_pool(component: object) -> None:
@@ -81,9 +72,9 @@ def test_the_member_registers_the_pool_under_its_own_name() -> None:
     # world's — because the world is ready the instant it is built while
     # the pool is a deployment state that may legitimately be ``None``,
     # and a caller holding one ``None`` wants a fact the other never
-    # meant.  The member, the seat and the spec's plugin vocabulary all
-    # spell the one name.
-    assert member.POOL_COMPONENT_NAME == pool_seat.COMPONENT_NAME == "bootstrap-pool"
+    # meant.  The member and the spec's plugin vocabulary spell the one
+    # name.
+    assert member.POOL_COMPONENT_NAME == "bootstrap-pool"
     assert member.POOL_COMPONENT_NAME != member.COMPONENT_NAME
 
 
@@ -162,7 +153,7 @@ def test_scanning_registers_the_pool_exactly_once() -> None:
     assert len(named) == 1
     # And the member's components are the only bootstrap ones — four
     # since features 182-183's feature selection and symbolic regression
-    # worlds took their own seats beside the hyperparameter world's and
+    # worlds took their own components beside the hyperparameter world's and
     # the pool's, so a fifth bootstrap-prefixed name is a registration
     # nobody authored.
     assert sorted(
@@ -197,92 +188,71 @@ def test_composing_writes_nothing_and_authoring_is_on_demand(
     assert pool.world_count() == member.DEFAULT_POOL_SIZE
 
 
-# -- The seat ---------------------------------------------------------------------
+# -- Reading the component ---------------------------------------------------------
 
 
-def test_the_pool_seat_exposes_nothing_but_the_composition_accessor() -> None:
-    # See the world seat's twin test: the seat's job is to answer one
-    # question, and every extra name is a second thing to keep in sync
-    # with the member — the size band, the committed pool seed and the
-    # authoring entry point are the specific names a well-meaning
-    # re-export would add first.
-    assert set(pool_seat.__all__) == EXPECTED_EXPORTS
-    for name in EXPECTED_EXPORTS:
-        assert hasattr(pool_seat, name), name
-    for leaked in ("BootstrapPool", "persist_worlds", "POOL_SEED", "MIN_POOL_SIZE"):
-        assert leaked not in pool_seat.__all__
-
-
-def test_the_pool_seat_returns_the_composed_pool(
+def test_the_application_returns_the_composed_pool(
     monkeypatch, tmp_path: Path
 ) -> None:
     # The composition-level contract, checked by behaviour across the
     # loader's synthetic-name copy.
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'seated.db'}")
-    pool = pool_seat.bootstrap_pool_component()
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'composed.db'}")
+    pool = create_app().get(member.POOL_COMPONENT_NAME)
     assert pool is not None
     assert type(pool).__name__ == "BootstrapPool"
-    assert pool.database_url == f"sqlite:///{tmp_path / 'seated.db'}"
+    assert pool.database_url == f"sqlite:///{tmp_path / 'composed.db'}"
 
 
-def test_the_pool_seat_reads_the_application_it_is_handed(
+def test_an_application_in_hand_answers_its_own_pool(
     monkeypatch, tmp_path: Path
 ) -> None:
     # A caller that already holds an application gets *that*
-    # application's pool — the seat must not compose its own behind the
-    # caller's back, for the same reason the world seat must not.
+    # application's pool, not a second composition's.
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'handed.db'}")
     app = create_app()
-    assert pool_seat.bootstrap_pool_component(app) is app.get(member.POOL_COMPONENT_NAME)
+    pool = app.get(member.POOL_COMPONENT_NAME)
+    assert pool is dict(app.components)[member.POOL_COMPONENT_NAME]
+    assert pool.database_url == f"sqlite:///{tmp_path / 'handed.db'}"
 
 
 def test_an_absent_component_reads_as_none_rather_than_raising() -> None:
     # ``Application`` is a plain dataclass, so the absent case is
-    # constructible without depending on a scan having failed — and the
-    # seat answers ``None`` rather than raising, which is what makes it
-    # safe to import in a workspace that does not carry this member.
-    assert pool_seat.bootstrap_pool_component(Application()) is None
-
-
-def test_the_pool_seat_composes_nothing_of_its_own() -> None:
-    # Reading the component must not *create* one: a seat that built a
-    # pool behind the caller's back would report a pool where the
-    # deployment holds none — and would have opened a database the
-    # process never asked for.
+    # constructible without depending on a scan having failed — and it
+    # answers ``None`` rather than raising, and reading creates nothing.
     empty = Application()
-    assert pool_seat.bootstrap_pool_component(empty) is None
+    assert empty.get(member.POOL_COMPONENT_NAME) is None
     assert empty.components == {}
 
 
 def test_an_empty_workspace_still_composes_only_the_absent_pool(tmp_path) -> None:
     # The same fact through the real factory: a composition whose scan
-    # contributes nothing still builds, and the seat still answers
+    # contributes nothing still builds, and the pool still reads as
     # ``None``.  Both halves of "contributed nothing" are needed — an
     # empty root *and* a fresh registry (the default registry is
     # module-level and persists across calls, so a second ``create_app``
     # would inherit everything the first one's scan registered).
     empty = create_app(tmp_path, registry=Registration())
     assert empty.components == {}
-    assert pool_seat.bootstrap_pool_component(empty) is None
+    assert empty.get(member.POOL_COMPONENT_NAME) is None
 
 
-def test_the_two_seats_answer_different_questions(
+def test_the_two_components_answer_different_questions(
     monkeypatch, tmp_path: Path
 ) -> None:
-    # The world seat's ``None`` means no component was registered; the
-    # pool seat's means the component ran and resolved no database.  A
+    # The world's ``None`` means no component was registered; the pool's
+    # means the component ran and resolved no database.  A
     # deployment *with* a database and *without* one are pinned side by
     # side here so the two ``None``s cannot be conflated by accident.
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'deployed.db'}")
     deployed = create_app()
-    assert world_seat.hyperparameter_world_component(deployed) is not None
-    assert pool_seat.bootstrap_pool_component(deployed) is not None
+    assert deployed.get(member.COMPONENT_NAME) is not None
+    assert deployed.get(member.POOL_COMPONENT_NAME) is not None
     monkeypatch.delenv("DATABASE_URL", raising=False)
     bare = create_app()
     # The world composes whatever the deployment; the pool is the half
     # the deployment owns.
-    assert world_seat.hyperparameter_world_component(bare) is not None
-    assert pool_seat.bootstrap_pool_component(bare) is None
+    assert bare.get(member.COMPONENT_NAME) is not None
+    assert bare.get(member.POOL_COMPONENT_NAME) is None
 
 
 @pytest.mark.parametrize("absent", ["", "bootstrap-hpo", "bootstrap-pool-typo", "pool"])
@@ -298,6 +268,6 @@ def test_a_misspelled_component_key_is_absent_not_a_near_match(
     assert app.get(absent) is None
     # The real key works, and the member's *other* key is the world —
     # not a pool the near-miss could be handed instead.
-    assert pool_seat.COMPONENT_NAME in app
+    assert member.POOL_COMPONENT_NAME in app
     assert type(app.get(member.COMPONENT_NAME)).__name__ == "HyperparameterWorld"
-    assert pool_seat.bootstrap_pool_component(app) is not None
+    assert app.get(member.POOL_COMPONENT_NAME) is not None

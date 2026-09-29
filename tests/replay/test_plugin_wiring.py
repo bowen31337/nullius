@@ -1,4 +1,4 @@
-"""Feature 245 in the assembled system — the plugin, the seat, and the real tree.
+"""Feature 245 in the assembled system — the plugin, its composition, and the real tree.
 
 app_spec.xml, "Replay Engine", feature 245: *System rejects any attempt to
 generate a new child during replay, because a stored tree reveals only recorded
@@ -14,9 +14,6 @@ and the seam**, which is what a member's suite structurally cannot do:
   carries ``replay`` in ``order`` and in ``components``, so a deployment gets
   the replay path by being scanned: no central registry was edited and no
   entry-points table names this member;
-* **the app seat fronts it** — ``app.modules.replay.replay_component(app)``
-  answers ``app.get("replay")``, the one place a feature in this category asks
-  the composed application for the replay path;
 * **the duck-typed seam matches the document** — the transition is walked over
   the *real* ``policy_runtime.CampaignTree`` the deployment holds, which is the
   only test in the workspace where this member's restatement of the node model
@@ -41,11 +38,9 @@ persistence are where a deployment's own tree enters.
 
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 
 import pytest
-import replay
 
 from app.module_loader import (
     Registration,
@@ -54,8 +49,6 @@ from app.module_loader import (
     workspace_members,
     workspace_scan_roots,
 )
-
-seat = importlib.import_module("app.modules.replay")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REPLAY_SRC = REPO_ROOT / "packages" / "replay" / "src"
@@ -157,7 +150,7 @@ def test_the_composed_component_is_the_members_facade(app) -> None:
 def test_composition_is_not_widened_by_this_member(app) -> None:
     # The component is stateless and its builder resolves nothing, which is what
     # keeps the pre-existing resolution cycle (the policy-runtime tree builder
-    # reaching the artifact store's seat, which composes the app again) from
+    # reaching the artifact store, which composes the app again) from
     # being walked from inside composition.  If this member's builder had
     # resolved a tree, this test would not *fail* — it would hang, since the
     # factory builds every registered component on every ``create_app()``.
@@ -166,22 +159,6 @@ def test_composition_is_not_widened_by_this_member(app) -> None:
     component = app.get("replay")
     assert not hasattr(component, "__dict__"), "the facade must hold no instance state"
     assert getattr(component, "__slots__", None) == ()
-
-
-def test_the_app_seat_answers_the_component_name(app) -> None:
-    # The seat's single question — *what is the composed replay component?* —
-    # answered over the application the factory composed, so a feature in this
-    # category (246's and 247's dependency refusals, 248's round loop, 251's
-    # resident-array reads) can ask the app namespace without importing the
-    # member.  The seat decides nothing about a replay itself.
-    assert seat.replay_component(app) is app.get(seat.COMPONENT_NAME)
-    assert seat.COMPONENT_NAME == "replay"
-
-
-def test_the_seats_constant_is_the_members_constant() -> None:
-    # One name, two spellings — the app namespace's and the member's — so the
-    # seat and the plugin cannot drift apart about what the component is called.
-    assert seat.COMPONENT_NAME == replay.COMPONENT_NAME
 
 
 # ---------------------------------------------------------------------------

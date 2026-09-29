@@ -245,7 +245,7 @@ through :func:`~forward.record.forward_record`,
 no app.
 
 **The three sibling spellings, and which to reach for.**  A caller with a
-composed application asks the seat (``app.modules.forward``) for the store.  A
+composed application asks it for the ``forward`` component, the store.  A
 caller holding a store calls :meth:`~forward.record.ForwardRecords.open_record`
 and gets ``(record, created)``.  A caller holding only a URL calls
 :func:`~forward.record.forward_record` and gets the record.  Every one of them
@@ -484,9 +484,8 @@ __all__ = [
 
 #: The name this member registers its forward-record store under.  Unprefixed,
 #: following the precedent for a member's first and only component, and spelled
-#: here once so the seat (``src/app/modules/forward``) and the composed
-#: application agree on the key — the seat repeats the literal and its suite
-#: asserts the two match, so the pair cannot drift apart silently.
+#: here once, and read by name through the composed application
+#: (``create_app().get("forward")``).
 #: ``forward`` sorts between ``fixture-store`` and ``ingest``, clear of both.
 COMPONENT_NAME = "forward"
 

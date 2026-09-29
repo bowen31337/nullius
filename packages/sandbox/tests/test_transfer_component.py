@@ -167,50 +167,20 @@ def test_the_composed_law_refuses_a_return_for_another_window() -> None:
     assert str(raised.value).startswith("score_channel")
 
 
-class TestTheSeat:
-    """src/app/modules/sandbox — the member's seat in the app namespace."""
+class TestTheComposedApplication:
+    """The component reached by name through the composed application."""
 
-    def test_the_seat_exposes_the_composed_component(self) -> None:
-        from app.modules.sandbox import (
-            TRANSFER_COMPONENT_NAME,
-            sandbox_transfer_component,
-        )
-
-        assert TRANSFER_COMPONENT_NAME == "sandbox-transfer"
+    def test_the_application_exposes_the_composed_component(self) -> None:
         app = create_app(MEMBER_SRC, registry=Registration())
-        _assert_is_the_transfer_law(sandbox_transfer_component(app))
+        _assert_is_the_transfer_law(app.get("sandbox-transfer"))
 
-    def test_the_seat_returns_none_when_nothing_registered(self) -> None:
+    def test_the_application_returns_none_when_nothing_registered(self) -> None:
         # An application with no component registered is a discoverable state,
-        # not an exception — mirroring the factory's stance and the other two
-        # seats'.
-        from app.modules.sandbox import sandbox_transfer_component
+        # not an exception — mirroring the factory's stance.
+        assert Application(components={}, order=()).get("sandbox-transfer") is None
 
-        assert sandbox_transfer_component(Application(components={}, order=())) is None
-
-    def test_the_seat_reads_from_an_application_it_is_handed(self) -> None:
-        from app.modules.sandbox import sandbox_transfer_component
-
+    def test_the_component_is_read_from_the_application_it_is_asked_of(self) -> None:
         application = Application(
             components={"sandbox-transfer": "sentinel"}, order=("sandbox-transfer",)
         )
-        assert sandbox_transfer_component(application) == "sentinel"
-
-    def test_the_seat_is_not_a_second_vocabulary(self) -> None:
-        # The seat answers questions — which component? — and does not
-        # re-export the law's types. A caller who has the component calls its
-        # verbs; a second spelling of the score vector or the channel here
-        # would be a second thing to keep in sync.
-        import app.modules.sandbox as seat
-
-        for leaked in (
-            "ScoreVector",
-            "TransferChannel",
-            "WindowFacts",
-            "TransferLeg",
-            "SandboxTransfer",
-            "SCORE_MAGIC",
-            "SeedDecision",
-            "SandboxInvocation",
-        ):
-            assert not hasattr(seat, leaked), leaked
+        assert application.get("sandbox-transfer") == "sentinel"

@@ -1,13 +1,12 @@
-"""Feature 203's wiring: the pin store is composed by convention, and seated.
+"""Feature 203's wiring: the pin store is composed by convention.
 
 Two halves, and they answer different questions.  The **registration** half asks
 whether ``import providers`` joins the application — feature 203's store must
 appear in a composed application without any central registry, router,
 entry-points table or factory being edited, which is the property that lets this
-feature land in parallel with every other one.  The **seat** half asks whether
-``app.modules.providers`` hands that store back to a caller reaching the app
-package rather than the member, and whether the two names the seat and the member
-use for the component are still one name.
+feature land in parallel with every other one.  The **composition** half asks whether
+``create_app().get(...)`` hands that store back under the member's own
+component name.
 
 The registration half is run through the *scanning* path rather than by importing
 the member directly, because that is the path a deployment takes: the loader
@@ -32,32 +31,6 @@ import importlib
 import sys
 
 import providers
-import pytest
-
-#: The seat's module path, spelled the way the loader spells every seat.  The
-#: import is done inside the tests rather than at module scope because the seat
-#: pulls in the ``app`` package, which this suite — a member suite, running
-#: under the repository's pytest — can only reach once the repository root is on
-#: ``sys.path``.  The conftest puts the member's ``src`` there and the workspace
-#: root's own conftest puts the root there; an import at module scope would run
-#: before either, depending on collection order.
-SEAT = "app.modules.providers"
-
-
-@pytest.fixture
-def app_on_the_path(monkeypatch):
-    """Make ``app`` importable, then hand back the seat module.
-
-    The member suite does not depend on the ``app`` package — it must not, or
-    the member could not be tested on its own — so the seat is imported here
-    with the repository root spliced onto ``sys.path``, and the splice is undone
-    afterwards.  A test that could not import the seat would be a test of this
-    suite's environment rather than of the feature.
-    """
-    root = str(__import__("pathlib").Path(__file__).resolve().parents[3])
-    monkeypatch.syspath_prepend(root)
-    return importlib.import_module(SEAT)
-
 
 # ── The registration: by convention, in the package __init__ ──────────────────
 
@@ -111,8 +84,7 @@ def test_a_second_composition_in_the_same_process_still_holds_the_store():
 def test_the_builder_contributes_none_when_no_store_is_named(monkeypatch):
     # A deployment with no ``DATABASE_URL`` composes a ``None`` component rather
     # than an empty store or an exception: absent is a discoverable state, not a
-    # broken one.  A `None` here is what the seat's docstring distinguishes from
-    # its own `None`, and a caller that must record a triple treats either as a
+    # broken one.  A caller that must record a triple treats a `None` here as a
     # refusal to proceed.
     monkeypatch.delenv("DATABASE_URL", raising=False)
     assert providers.build_agent_model_pins() is None
@@ -155,20 +127,10 @@ def test_the_builder_takes_no_arguments_as_the_registration_protocol_requires(mo
     assert builder() is None
 
 
-# ── The seat: the app package's way to the same store ─────────────────────────
+# ── The composition: the application's way to the same store ──────────────────
 
 
-def test_the_seat_names_the_same_component_the_member_registers(app_on_the_path):
-    # Two spellings of one component name, in two packages that must not import
-    # each other: the seat cannot import the member's constant without making
-    # the app package depend on a workspace member at import time, so the two
-    # are pinned against each other here instead.  A drift between them would
-    # make the seat silently answer ``None`` for a component that *is* composed
-    # — the failure mode with no error message anywhere.
-    assert app_on_the_path.COMPONENT_NAME == providers.AGENT_MODEL_PIN_COMPONENT
-
-
-def test_the_composed_store_raises_this_features_errors_by_name(app_on_the_path, monkeypatch, tmp_path):
+def test_the_composed_store_raises_this_features_errors_by_name(monkeypatch, tmp_path):
     # The composed store raises errors from the *scanned* copy of this member, so
     # ``pytest.raises(providers.ModelPinConflictError)`` — the canonical class —
     # does not match them.  That is the wrinkle ``tests/nulloracle/conftest.py``
@@ -187,7 +149,7 @@ def test_the_composed_store_raises_this_features_errors_by_name(app_on_the_path,
 
     url = f"sqlite:///{tmp_path / 'vocab.db'}"
     monkeypatch.setenv("DATABASE_URL", url)
-    store = create_app().get(app_on_the_path.COMPONENT_NAME)
+    store = create_app().get(providers.AGENT_MODEL_PIN_COMPONENT)
 
     # The store refuses an alias without a database, which is enough to see the
     # class the composed copy raises — and it is the *same feature's* class, by
@@ -205,7 +167,7 @@ def test_the_composed_store_raises_this_features_errors_by_name(app_on_the_path,
     assert sqlite3 is not None  # the database was never opened: no file exists
 
 
-def test_the_scanned_member_is_a_second_module_object(app_on_the_path):
+def test_the_scanned_member_is_a_second_module_object():
     # The trap this suite has to work around, pinned as a fact rather than left
     # as a comment: the loader imports each member under a private name
     # (``_nullius_scanned_<dir>``) by file path, so the class a *scanned* store
@@ -226,15 +188,14 @@ def test_the_scanned_member_is_a_second_module_object(app_on_the_path):
     assert scanned.AgentModelPins.__name__ == direct.AgentModelPins.__name__
 
 
-def test_the_seat_hands_back_the_composed_store(app_on_the_path, monkeypatch, tmp_path):
-    # The seat's whole job: a caller reaching the *app* package gets feature
-    # 203's store.  Compared against the component the application itself holds
-    # — and by identity, not equality, so a seat that built a second equal store
-    # on the way past would fail here.  The class check is by name for the reason
-    # the test above records.
-    url = f"sqlite:///{tmp_path / 'seated.db'}"
+def test_the_application_hands_back_the_composed_store(monkeypatch, tmp_path):
+    # A caller reaching the composed application gets feature 203's store.  The
+    # class check is by name for the reason the test above records.
+    from app.module_loader import create_app
+
+    url = f"sqlite:///{tmp_path / 'composed.db'}"
     monkeypatch.setenv("DATABASE_URL", url)
-    store = app_on_the_path.agent_model_pins_component()
+    store = create_app().get(providers.AGENT_MODEL_PIN_COMPONENT)
 
     assert store is not None
     assert type(store).__name__ == "AgentModelPins"
@@ -245,37 +206,36 @@ def test_the_seat_hands_back_the_composed_store(app_on_the_path, monkeypatch, tm
     assert callable(store.persist) and callable(store.load)
 
 
-def test_the_seat_accepts_an_application_it_was_handed(app_on_the_path, monkeypatch, tmp_path):
-    # The seat's other entry point, and the one a caller inside a request has:
-    # with the application in hand, no second composition happens.  Asserted by
-    # composing once and checking the seat answers from *that* application's
-    # component map — so a seat that always composed its own would return an
-    # equal-but-different store and this would catch it.
+def test_an_application_in_hand_answers_from_its_own_component_map(monkeypatch, tmp_path):
+    # The entry point a caller inside a request has: with the application in
+    # hand, no second composition happens.  Asserted by composing once and
+    # checking the answer is *that* application's component, by identity.
     from app.module_loader import create_app
 
     url = f"sqlite:///{tmp_path / 'handed.db'}"
     monkeypatch.setenv("DATABASE_URL", url)
     application = create_app()
-    store = app_on_the_path.agent_model_pins_component(application)
+    store = application.get(providers.AGENT_MODEL_PIN_COMPONENT)
 
-    assert store is application.get(app_on_the_path.COMPONENT_NAME)
+    assert store is dict(application.components)[providers.AGENT_MODEL_PIN_COMPONENT]
     assert store.database_url == url
 
 
-def test_the_seat_answers_none_when_the_component_contributes_none(
-    app_on_the_path, monkeypatch, tmp_path
+def test_the_application_answers_none_when_the_component_contributes_none(
+    monkeypatch, tmp_path
 ):
     # The deployed shape of "no store": the component *is* registered and its
-    # builder contributed ``None``, so the seat answers ``None``.  This is the
-    # seat faithfully reporting the application, and it is deliberately not
-    # distinguishable here from the case below — a caller that needs them apart
-    # reads the component map, which is what the seat's docstring says.
+    # builder contributed ``None``, so the application answers ``None``.  It is
+    # deliberately not distinguishable here from the case below — a caller that
+    # needs them apart reads the component map.
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    assert app_on_the_path.agent_model_pins_component() is None
+    from app.module_loader import create_app
+
+    assert create_app().get(providers.AGENT_MODEL_PIN_COMPONENT) is None
 
 
-def test_the_seat_answers_none_for_an_empty_workspace(app_on_the_path, tmp_path):
-    # The factory's degrade-don't-break stance, seen from the seat: an
+def test_an_empty_workspace_answers_none(tmp_path):
+    # The factory's degrade-don't-break stance: an
     # application with no components at all answers ``None`` rather than raising,
     # so a module that reaches for the store during composition does not fail
     # import in a workspace where the member happens not to be scanned.
@@ -290,63 +250,20 @@ def test_the_seat_answers_none_for_an_empty_workspace(app_on_the_path, tmp_path)
 
     empty = create_app(tmp_path, registry=Registration())
     assert empty.order == ()
-    assert app_on_the_path.agent_model_pins_component(empty) is None
+    assert empty.get(providers.AGENT_MODEL_PIN_COMPONENT) is None
 
 
-def test_the_seat_exports_its_names_and_its_callers_and_nothing_else(app_on_the_path):
-    # The seat deliberately does not re-export the triple, the answer record or
-    # the error vocabulary: those are reached from the member, which is where
-    # their one spelling lives.  A seat that grew a second spelling of
-    # ``ModelPin`` would invite a caller to import the value type from the app
-    # package, and the two would drift.  Twelve exports, two per seated service:
-    # feature 202's run-window store joined 203's pin store under this seat,
-    # feature 200's cache-rate store joined them, feature 196's
-    # root-serving-provider store joined those, feature 197's
-    # root-rotation store joined *that*, and feature 194's fixture store joined
-    # those — each contributing its component name and its accessor, and nothing
-    # else.  The two root stores are two seats rather than one because they are
-    # two features' sentences: which provider served a root is 196's fact, which
-    # family the campaign's rotation assigned it is 197's, and a caller reading
-    # one must be able to say so.  The fixture store is the one pair whose
-    # resource is a directory rather than a table — which is why its accessor
-    # resolves ``PROVIDER_FIXTURE_DIR`` — and its name is in this list because
-    # the seat's job is *where the composed stores are*, not *which of them are
-    # databases*.
-    assert set(app_on_the_path.__all__) == {
-        "COMPONENT_NAME",
-        "agent_model_pins_component",
-        "DEPTH_RUN_WINDOWS_NAME",
-        "depth_run_windows_component",
-        "DEPTH_CACHE_RATES_NAME",
-        "depth_cache_rates_component",
-        "ROOT_SERVING_PROVIDER_NAME",
-        "root_serving_providers_component",
-        "ROOT_ROTATION_NAME",
-        "root_rotation_component",
-        "FIXTURE_STORE_NAME",
-        "fixture_store_component",
-    }
-
-
-def test_importing_the_member_does_not_import_its_own_seat():
-    # The direction of the dependency between the member and its seat, checked in
-    # a *fresh* interpreter because this one has long since imported both.
-    #
-    # The member does import ``app.module_loader`` — every member in this
+def test_importing_the_member_imports_the_loader():
+    # Checked in a *fresh* interpreter because this one has long since imported
+    # both.  The member imports ``app.module_loader`` — every member in this
     # workspace does, to get ``register``, and that is the convention this
-    # feature follows rather than an accident.  What it must not import is the
-    # **seat**: ``app.modules.providers`` imports the member, so a member that
-    # imported the seat would be a cycle, and the cycle would close only at
-    # composition time — where the failure would present as a half-initialised
-    # component rather than as an ImportError.  So the seat is the one thing this
-    # walk asserts is absent.
+    # feature follows rather than an accident.
     import subprocess
 
     root = __import__("pathlib").Path(__file__).resolve().parents[3]
     code = (
         "import sys; sys.path.insert(0, 'src'); sys.path.insert(0, "
         "'packages/providers/src'); import providers; "
-        "print([m for m in sys.modules if m.startswith('app.modules')]); "
         "print('loader' if 'app.module_loader' in sys.modules else 'no-loader')"
     )
     completed = subprocess.run(
@@ -356,10 +273,6 @@ def test_importing_the_member_does_not_import_its_own_seat():
         text=True,
         check=True,
     )
-    seats, loader = completed.stdout.split()
-    assert seats == "[]"
-    # ...and the loader *is* reachable from the member, which is the half of the
-    # direction that is real: the assertion above would pass trivially if the
-    # member imported nothing from ``app`` at all, which would mean this feature
+    # A member that imported nothing from ``app`` at all would mean this feature
     # had stopped registering by convention.
-    assert loader == "loader"
+    assert completed.stdout.split() == ["loader"]

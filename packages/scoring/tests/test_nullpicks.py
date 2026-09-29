@@ -36,8 +36,8 @@ so every charge is exact in binary and the law's own arithmetic is the
 only thing any ``==`` here is asserting — the whole suite is
 ``pytest.approx``-free on purpose.  What these tests deliberately do not
 reach: composition (``test_component.py`` — the penalty needs no
-component, which is itself pinned here by the member's surface), the seat
-(``test_app_module.py``), the *computation* of the rate (feature 265's
+component, which is itself pinned here by the member's surface), the
+*computation* of the rate (feature 265's
 scorer process, which holds the sidecar key; this seam is a function of
 the number it answers), and any persistence (the ``replay_score`` row is
 feature 255's, and it already carries the score and the β).

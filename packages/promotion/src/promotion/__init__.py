@@ -481,9 +481,8 @@ __all__ = [
 #: The name the promotion member registers its registry under.  Unprefixed,
 #: following the ``ledger`` / ``artifacts`` / ``canary`` / ``discovery`` /
 #: ``regime`` precedent for a member's first and only component, and spelled
-#: here once so the seat (``src/app/modules/promotion``) and the composed
-#: application agree on the key — the seat repeats the literal and its suite
-#: asserts the two match, so the pair cannot drift apart silently.
+#: here once, and read by name through the composed application
+#: (``create_app().get("promotion")``).
 #: ``promotion`` sorts between ``policy-runtime`` and ``providers``, clear of
 #: both.
 COMPONENT_NAME = "promotion"

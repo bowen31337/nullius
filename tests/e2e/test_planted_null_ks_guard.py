@@ -56,9 +56,9 @@ the shipped system's public seams, and none of it staged by hand:
     to forbid) would have been detectable where the block permutation is not.
 
 * **And the KS guard returns a p-value above 0.05.**  Feature 123's own verb —
-    the composed guard journal reached through the ``app.modules.nulloracle``
-    seat (:func:`~app.modules.nulloracle.ksguard.ks_guard_component`), the same
-    composition the deployment's guard job runs — takes the two populations of
+    the composed guard journal read by name from the composed application
+    (``create_app().get("nulloracle-ks-guard")``), the same composition the
+    deployment's guard job runs — takes the two populations of
     in-sample scores, null roots and real roots, and runs §7.4's two-sample
     Kolmogorov–Smirnov test over them.  The journey's whole claim is the number
     it returns: a p-value above 0.05, the figure at which the nulls are *not*
@@ -145,7 +145,6 @@ from nulloracle import (
 )
 
 from app.module_loader import create_app
-from app.modules.nulloracle.ksguard import ks_guard_component
 
 #: §7.1's sidecar schema, as the sealed entry carries it — ``is_null`` the bit,
 #: ``perm_seed`` and ``block_days`` the permutation parameters.  Spelled here
@@ -387,10 +386,10 @@ def journey(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Journey]:
         real_scores = _score_population(real_ids, null=False)
 
         # Act 4 — the KS guard runs §7.4's test, through the composed journal
-        # the deployment's guard job reaches (the app.modules.nulloracle seat).
-        # The application is composed once and passed to the component, so the
-        # guard is the assembled system's, not an imported store.
-        guard = ks_guard_component(create_app())
+        # the deployment's guard job reaches (the ``nulloracle-ks-guard``
+        # component).  The application is composed once and the component read
+        # from it, so the guard is the assembled system's, not an imported store.
+        guard = create_app().get("nulloracle-ks-guard")
         measurement = guard.guard(campaign, null_scores, real_scores)
 
         # The guard wrote its half onto the campaign row the orchestrator

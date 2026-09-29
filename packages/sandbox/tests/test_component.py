@@ -191,97 +191,20 @@ def test_the_composed_law_refuses_a_run_without_gvisor() -> None:
     assert str(raised.value).startswith("gvisor_isolation_required")
 
 
-def test_the_seat_exposes_the_composed_component() -> None:
-    # src/app/modules/sandbox is the member's seat in the app namespace: it
-    # names the component and asks the factory for it without the app package
-    # depending on any member at import time.
-    from app.modules.sandbox import (
-        COMPONENT_NAME,
-        sandbox_isolation_component,
-    )
-
-    assert COMPONENT_NAME == "sandbox"
+def test_the_application_exposes_the_composed_component() -> None:
+    # The member's component is reached by name through the composed
+    # application, without the app package depending on any member at import
+    # time.
     app = create_app(MEMBER_SRC, registry=Registration())
-    _assert_is_the_isolation_law(sandbox_isolation_component(app))
+    _assert_is_the_isolation_law(app.get("sandbox"))
 
 
-def test_the_seat_returns_none_when_nothing_registered() -> None:
+def test_the_application_returns_none_when_nothing_registered() -> None:
     # An application with no component registered is a discoverable state, not
     # an exception — mirroring the factory's stance.
-    from app.modules.sandbox import sandbox_isolation_component
-
-    assert sandbox_isolation_component(Application(components={}, order=())) is None
+    assert Application(components={}, order=()).get("sandbox") is None
 
 
-def test_the_seat_reads_from_an_application_it_is_handed() -> None:
-    from app.modules.sandbox import sandbox_isolation_component
-
+def test_the_component_is_read_from_the_application_it_is_asked_of() -> None:
     application = Application(components={"sandbox": "sentinel"}, order=("sandbox",))
-    assert sandbox_isolation_component(application) == "sentinel"
-
-
-def test_the_app_seat_is_not_a_second_vocabulary() -> None:
-    # The seat answers questions — which component? — and does not re-export
-    # the member's types. A caller who has the component calls its verbs; a
-    # second spelling of the run decision or the reason codes here would be a
-    # second thing to keep in sync. Feature 167 added its own name and
-    # accessor beside feature 157's, feature 166 a third, feature 165 a
-    # fourth, feature 164 a fifth, feature 163 a sixth, feature 168 the
-    # seventh, feature 162 the eighth and feature 160 the ninth, and nothing
-    # else.
-    import app.modules.sandbox as seat
-
-    assert set(seat.__all__) == {
-        "BUDGET_COMPONENT_NAME",
-        "COMPONENT_NAME",
-        "FAIL_CLASS_COMPONENT_NAME",
-        "IMPORTS_COMPONENT_NAME",
-        "NETWORK_COMPONENT_NAME",
-        "PAYLOAD_COMPONENT_NAME",
-        "QUARANTINE_COMPONENT_NAME",
-        "SEED_COMPONENT_NAME",
-        "SYSCALLS_COMPONENT_NAME",
-        "THREADS_COMPONENT_NAME",
-        "TIMEOUT_COMPONENT_NAME",
-        "TRANSFER_COMPONENT_NAME",
-        "sandbox_budget_component",
-        "sandbox_fail_class_component",
-        "sandbox_imports_component",
-        "sandbox_isolation_component",
-        "sandbox_network_component",
-        "sandbox_payload_component",
-        "sandbox_quarantine_component",
-        "sandbox_seed_component",
-        "sandbox_syscalls_component",
-        "sandbox_threads_component",
-        "sandbox_timeout_component",
-        "sandbox_transfer_component",
-    }
-    for leaked in (
-        "RunDecision",
-        "RunReason",
-        "SandboxRun",
-        "IsolationPolicy",
-        "ModuleDecision",
-        "ModuleReason",
-        "ImportsAllowlist",
-        "ScoreVector",
-        "TransferChannel",
-        "WindowFacts",
-        "SeedDecision",
-        "SeedReason",
-        "SandboxInvocation",
-        "SeedRecord",
-        "ThreadDecision",
-        "ThreadReason",
-        "ThreadPinningPolicy",
-        "SandboxThreads",
-        "SyscallDecision",
-        "SyscallReason",
-        "SyscallPolicy",
-        "SyscallAttempt",
-        "SyscallFilter",
-        "Commitment",
-        "SandboxSyscalls",
-    ):
-        assert not hasattr(seat, leaked), leaked
+    assert application.get("sandbox") == "sentinel"

@@ -90,16 +90,6 @@ def test_the_member_declares_the_component_name_the_feature_owns() -> None:
     assert sandbox.SYSCALLS_COMPONENT_NAME == "sandbox-syscalls"
 
 
-def test_the_seat_declares_the_same_component_name() -> None:
-    # The app namespace respells the member's constant rather than importing it
-    # (the seat must not depend on the member at import time), so the two
-    # spellings are pinned equal here: a drift would be a silent ``None`` at the
-    # seat rather than a failure, which is the worst shape a wiring bug can take.
-    import app.modules.sandbox as seat
-
-    assert seat.SYSCALLS_COMPONENT_NAME == sandbox.SYSCALLS_COMPONENT_NAME
-
-
 def test_the_component_name_is_not_any_earlier_laws() -> None:
     # The registry-replacement hazard at the constant: none of the eight earlier
     # names, and not the mechanism spelling either.
@@ -330,24 +320,20 @@ def test_the_component_carries_no_process_across_runs() -> None:
     assert sandbox.SandboxSyscalls.__slots__ == ("_policy",)
 
 
-def test_the_seat_answers_the_same_component() -> None:
-    # The app namespace's accessor, which is how everything outside the member
-    # reaches the law.  ``None`` here means *no such component was registered*,
-    # and never "registered but not yet configured" — the member's builder never
-    # returns ``None`` and never defers.
-    from app.modules.sandbox import sandbox_syscalls_component
-
+def test_the_application_answers_the_same_component() -> None:
+    # Asking the composed application by name is how everything outside the
+    # member reaches the law.  ``None`` here means *no such component was
+    # registered*, and never "registered but not yet configured" — the member's
+    # builder never returns ``None`` and never defers.
     application = Application(
         components={"sandbox-syscalls": "sentinel"}, order=("sandbox-syscalls",)
     )
-    assert sandbox_syscalls_component(application) == "sentinel"
+    assert application.get("sandbox-syscalls") == "sentinel"
 
 
-def test_the_seat_returns_none_for_an_application_without_the_component() -> None:
-    # The degrade-don't-break stance: a module that cannot reach the component
-    # returns ``None`` rather than failing import, so a workspace that did not
-    # scan this member still composes.
-    from app.modules.sandbox import sandbox_syscalls_component
-
+def test_the_application_returns_none_without_the_component() -> None:
+    # The degrade-don't-break stance: an application that did not scan this
+    # member answers ``None`` for the name rather than failing, so a workspace
+    # without it still composes.
     empty = Application(components={}, order=())
-    assert sandbox_syscalls_component(empty) is None
+    assert empty.get("sandbox-syscalls") is None

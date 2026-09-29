@@ -1,4 +1,4 @@
-"""Feature 118's plugin seam and its seat in the ``app`` namespace.
+"""Feature 118's plugin seam and its read through the composed application.
 
 ``test_component.py`` pins feature 109's registration, ``test_guard_component.py``
 feature 123's, ``test_phi_component.py`` feature 117's, ``test_flip_depth_component.py``
@@ -6,7 +6,7 @@ feature 119's, ``test_irprob_component.py`` feature 120's; this pins feature
 118's — the member's *eighth* component, and the first whose builder needs two
 things to resolve rather than one.
 
-Three things make it worth its own suite rather than a section of feature 120's:
+Two things make it worth its own suite rather than a section of feature 120's:
 
 * **the member now registers eight components, and the eighth is the one most
   exposed to the registration trap.**  All eight ``@register`` calls live in the
@@ -16,21 +16,14 @@ Three things make it worth its own suite rather than a section of feature 120's:
   silently drop out of every later one.  The second-application assertion below
   is what catches that, and a single-composition test would pass for it.
 
-* **the seat needs two composed halves.**  Every other seat answers for a
-  component that resolves from a single source.  This one's store reads the tree
+* **the component needs two composed halves.**  Every other component
+  resolves from a single source.  This one's store reads the tree
   and the campaign row from a relational database *and* seals the drawn status
   into §7.1's sidecar, so the composed component exists only where both resolve
   — and ``None`` therefore means *one of the two is unconfigured*, never *the
   campaign planted no nulls*.  The half-configured cases are pinned
   individually, because a builder that resolved only one half would compose a
   store that can draw but not persist, or persist but not draw.
-
-* **the seat is an eighth submodule.**  ``app/modules/nulloracle/`` was a single
-  ``__init__.py`` while the member contributed one component; the older seats'
-  export lists must stay exactly as they were, and the new module must answer
-  the same shape of question — *what is the composed X?* — with the same
-  ``None``-not-an-exception degradation and the same refusal to become a second
-  API.
 
 The load-bearing property is unchanged and restated because the consequence is
 sharper here: **the builder must never raise.**  It resolves ``DATABASE_URL``
@@ -41,7 +34,6 @@ parse would take composition down for every unrelated feature in the process.
 
 from __future__ import annotations
 
-import ast
 import inspect
 import uuid
 from pathlib import Path
@@ -66,8 +58,6 @@ from nulloracle import (
 )
 
 from app.module_loader import Application, create_app, scan_components
-
-SEAT_MODULE = "app.modules.nulloracle.selection"
 
 #: The 32-byte test key the member's conftest and suite use. Not a secret and
 #: not derived from anything: every assertion about "the right key opens it" is
@@ -116,45 +106,6 @@ def _assert_is_the_type_r_selection(component: object) -> None:
         assert callable(getattr(component, operation)), operation
 
 
-def _imported_names(path: str | None, *, runtime_only: bool = True) -> set[str]:
-    """The top-level modules ``path`` imports, optionally excluding typing blocks.
-
-    Parsed rather than scanned: a module's *docstring* discusses the members it
-    deliberately does not import — that is where the decision is argued — so a
-    substring search over the file reports imports that are not there.
-
-    With ``runtime_only`` (the default), names imported inside an
-    ``if TYPE_CHECKING:`` guard are left out, because the guard is exactly the
-    mechanism a module uses to name a type it does not depend on.  Which is the
-    question this suite is actually asking: what does importing the seat bind,
-    as opposed to what does it merely describe.
-    """
-    assert path is not None
-    tree = ast.parse(Path(path).read_text(encoding="utf-8"))
-    guarded: set[int] = set()
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.If)
-            and isinstance(node.test, ast.Name)
-            and node.test.id == "TYPE_CHECKING"
-        ):
-            guarded.update(
-                sub.lineno for sub in ast.walk(node) if hasattr(sub, "lineno")
-            )
-    imported: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if runtime_only and node.lineno in guarded:
-                    continue
-                imported.add(alias.name.split(".")[0])
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            if runtime_only and node.lineno in guarded:
-                continue
-            imported.add(node.module.split(".")[0])
-    return imported
-
-
 # -- The registration ---------------------------------------------------------------
 
 
@@ -165,7 +116,7 @@ class TestTheTypeRSelectionComponentRegisters:
 
     def test_the_component_name_is_the_expected_spelling(self) -> None:
         # The hyphen-free spelling is the plugin name the spec's features carry
-        # (plugin="nulloracle"), so the component key, the app-namespace seat and
+        # (plugin="nulloracle"), so the component key and
         # the spec cannot drift apart.  The ``type-r-`` prefix is feature 121's
         # convention, kept so the name-sorted ``app.order`` leaves feature 123's
         # guard immediately after the sidecar.
@@ -349,7 +300,7 @@ class TestTheTypeRSelectionComponentRegisters:
     ) -> None:
         # The prefix is not cosmetic: ``app.order`` is name-sorted, so the
         # selection landing before the ``true-ir-`` family would mean the family
-        # ordering the member's seats document had silently changed.
+        # ordering the member's components document had silently changed.
         app = create_app()
         order = list(app.order)
         assert order.index(TYPE_R_COMPONENT_NAME) > order.index(
@@ -357,77 +308,60 @@ class TestTheTypeRSelectionComponentRegisters:
         )
 
 
-# -- The seat -----------------------------------------------------------------------
+# -- Reading the composed component ---------------------------------------------
 
 
-class TestTheSeatInTheAppNamespace:
-    """``app/modules/nulloracle/selection.py`` — the app package's way to the
-    composed store, without the app package importing the member.
+class TestReadingTheComposedComponent:
+    """The component as ``create_app().get(...)`` hands it to a caller outside
+    the member.
     """
 
     def test_the_component_name_matches_the_member(self) -> None:
-        # Spelled twice on purpose — once in the member, once in the seat — so
-        # the two cannot drift apart silently.
         import nulloracle
 
-        from app.modules.nulloracle import selection as seat
-
         assert (
-            seat.COMPONENT_NAME
-            == nulloracle.TYPE_R_COMPONENT_NAME
+            nulloracle.TYPE_R_COMPONENT_NAME
             == TYPE_R_COMPONENT_NAME
         )
 
-    def test_the_seat_exposes_the_composed_store(
+    def test_the_application_exposes_the_composed_store(
         self, both_halves: tuple[str, Path]
     ) -> None:
-        from app.modules.nulloracle.selection import type_r_selection_component
+        _assert_is_the_type_r_selection(create_app().get(TYPE_R_COMPONENT_NAME))
 
-        _assert_is_the_type_r_selection(type_r_selection_component())
-
-    def test_the_seat_reads_from_an_application_it_is_handed(self) -> None:
-        from app.modules.nulloracle.selection import type_r_selection_component
-
+    def test_the_component_is_read_from_an_application_it_is_handed(self) -> None:
         application = Application(
             components={TYPE_R_COMPONENT_NAME: "sentinel"},
             order=(TYPE_R_COMPONENT_NAME,),
         )
-        assert type_r_selection_component(application) == "sentinel"
+        assert application.get(TYPE_R_COMPONENT_NAME) == "sentinel"
 
     def test_an_absent_component_is_none_rather_than_an_error(self) -> None:
-        from app.modules.nulloracle.selection import type_r_selection_component
-
         empty = Application(components={}, order=())
-        assert type_r_selection_component(empty) is None
+        assert empty.get(TYPE_R_COMPONENT_NAME) is None
 
     def test_an_unconfigured_environment_yields_none_not_an_exception(self) -> None:
-        from app.modules.nulloracle.selection import type_r_selection_component
-
-        assert type_r_selection_component() is None
+        assert create_app().get(TYPE_R_COMPONENT_NAME) is None
 
     def test_a_half_configured_environment_yields_none(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # This seat is the one whose ``None`` carries a second meaning worth
+        # This component is the one whose ``None`` carries a second meaning worth
         # stating: *one of the store's two halves is unconfigured*.  It must
         # never be read as *the campaign's roots are all real* — that is a fact
         # about a world, and the member's error taxonomy exists to keep the two
         # apart.
-        from app.modules.nulloracle.selection import type_r_selection_component
-
         monkeypatch.setenv(DATABASE_URL_ENV, f"sqlite:///{tmp_path / 'selection.db'}")
-        assert type_r_selection_component() is None
+        assert create_app().get(TYPE_R_COMPONENT_NAME) is None
 
-    def test_the_seat_can_draw_and_seal_a_selection(
+    def test_the_composed_component_can_draw_and_seal_a_selection(
         self, both_halves: tuple[str, Path]
     ) -> None:
-        # Feature 118 from the app namespace, end to end: composed store, a
+        # Feature 118 through the composition, end to end: composed store, a
         # campaign's wells in, the drawn roots sealed into §7.1's file and
         # inherited by a descendant — the path an assembled campaign loop takes.
-        from app.modules.nulloracle.selection import type_r_selection_component
-
         _url, sidecar_path = both_halves
-        store = type_r_selection_component()
+        store = create_app().get(TYPE_R_COMPONENT_NAME)
         with store._connect() as connection:
             connection.execute(
                 f"INSERT INTO {CAMPAIGN_TABLE} (id, campaign_type, workspace_count, "
@@ -446,15 +380,13 @@ class TestTheSeatInTheAppNamespace:
         assert store.null_status(selection.null_roots[0]) is True
         assert sidecar_path.is_file()
 
-    def test_the_seat_can_answer_a_descendants_status(
+    def test_the_composed_component_can_answer_a_descendants_status(
         self, both_halves: tuple[str, Path]
     ) -> None:
-        # The sentence's third claim, reached from the app namespace: a node one
+        # The sentence's third claim, reached through the composition: a node one
         # level below a root inherits the root's status — whichever way the draw
         # went, the descendant agrees with its root.
-        from app.modules.nulloracle.selection import type_r_selection_component
-
-        store = type_r_selection_component()
+        store = create_app().get(TYPE_R_COMPONENT_NAME)
         with store._connect() as connection:
             connection.execute(
                 f"INSERT INTO {CAMPAIGN_TABLE} (id, campaign_type, workspace_count, "
@@ -479,87 +411,10 @@ class TestTheSeatInTheAppNamespace:
         assert store.null_status(child) is True
         assert store.null_status(child) is store.null_status(root)
 
-    def test_the_seat_is_a_composition_read_and_not_a_second_api(self) -> None:
-        # The seat's export list, pinned: a caller who has the store reaches
-        # ``persist``/``load``/``null_status`` on it, and a second spelling here
-        # would be a second thing to keep in sync.  The one question this module
-        # answers is *what is the composed store?*
-        from app.modules.nulloracle import selection as seat
-
-        assert set(seat.__all__) == {
-            "COMPONENT_NAME",
-            "type_r_selection_component",
-        }
-        assert not hasattr(seat, "TypeRSelection")
-        assert not hasattr(seat, "RootSelection")
-        assert not hasattr(seat, "draw_null_roots")
-        assert not hasattr(seat, "persist_type_r_selection")
-
-    def test_the_sidecar_seat_is_untouched_by_the_eighth_component(self) -> None:
-        # This seat is a *submodule* beside feature 109's, precisely so that the
-        # older seat's promise does not change: a caller that only wants the
-        # sidecar never imports this module and sees the same two names it always
-        # did.
-        from app.modules import nulloracle as seat
-
-        assert set(seat.__all__) == {"COMPONENT_NAME", "null_sidecar_component"}
-        assert seat.COMPONENT_NAME == SIDECAR_COMPONENT_NAME
-
-    def test_the_other_seats_are_untouched_by_the_eighth_component(self) -> None:
-        # Every older seat's promise is exactly what it was: an eighth submodule
-        # beside them does not change what a caller importing any one of them
-        # sees.
-        from app.modules.nulloracle import flipdepth as flip_seat
-        from app.modules.nulloracle import irprob as irprob_seat
-        from app.modules.nulloracle import ksguard as guard_seat
-
-        assert set(flip_seat.__all__) == {"COMPONENT_NAME", "flip_depth_component"}
-        assert set(irprob_seat.__all__) == {
-            "COMPONENT_NAME",
-            "true_ir_flip_depth_component",
-        }
-        assert set(guard_seat.__all__) == {"COMPONENT_NAME", "ks_guard_component"}
-
-    def test_importing_the_seat_imports_no_member(self) -> None:
-        # The seat exists so the ``app`` package does not depend on a workspace
-        # member at import time.  Asserted on the seat's own compiled form
-        # rather than on ``sys.modules`` — every other test in this suite has
-        # already imported the member, so the module cache cannot answer this —
-        # and on the *imports*, not on the text: the member's name appears in a
-        # ``TYPE_CHECKING`` block, which never executes, and a substring scan
-        # over the file cannot tell that from a real import.
-        import app.modules.nulloracle.selection as module
-
-        imported = _imported_names(module.__file__)
-        assert "nulloracle" not in imported
-        assert "app" in imported
-        assert "nulloracle" in _imported_names(module.__file__, runtime_only=False)
-
-    def test_the_seats_are_distinct_modules(self) -> None:
-        import app.modules.nulloracle as sidecar_seat
-        import app.modules.nulloracle.flipdepth as flip_seat
-        import app.modules.nulloracle.irprob as irprob_seat
-        import app.modules.nulloracle.ksguard as guard_seat
-        import app.modules.nulloracle.phi as phi_seat
-        import app.modules.nulloracle.selection as selection_seat
-        import app.modules.nulloracle.verdict as verdict_seat
-
-        assert selection_seat is not sidecar_seat
-        assert selection_seat is not guard_seat
-        assert selection_seat is not phi_seat
-        assert selection_seat is not verdict_seat
-        assert selection_seat is not flip_seat
-        assert selection_seat is not irprob_seat
-        assert selection_seat.__name__ == SEAT_MODULE
-
-    def test_the_seat_answers_the_members_own_builder(self) -> None:
-        # The seat and the builder cannot disagree about what the component is:
-        # with neither half configured both answer None, and with both set both
-        # hand back the same kind of object — which is the whole reason the seat
-        # reads the factory rather than resolving the store itself.
+    def test_the_composition_answers_the_members_own_builder(self) -> None:
+        # The composition and the builder cannot disagree about what the
+        # component is: unconfigured, both answer None.
         import nulloracle
 
-        from app.modules.nulloracle.selection import type_r_selection_component
-
         assert nulloracle.build_type_r_selection() is None
-        assert type_r_selection_component() is None
+        assert create_app().get(TYPE_R_COMPONENT_NAME) is None

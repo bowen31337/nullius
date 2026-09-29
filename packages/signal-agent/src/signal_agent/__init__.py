@@ -338,9 +338,8 @@ prose distilled from history, and feature 208 makes refusing it a feature.
 **Composition is a plain registration.**  The ``@register("signal-agent")``
 builder at the foot of this file fires when the module loader scans the
 workspace members the root ``pyproject.toml`` declares — no registry, router,
-entry-points table or app factory is edited to wire this in, and the app
-package reaches the composed component through the seat at
-``src/app/modules/signal-agent/``.
+entry-points table or app factory is edited to wire this in, and a caller
+reads the composed component by name (``create_app().get("signal-agent")``).
 
 The registration lives **in** ``__init__.py`` rather than in a submodule, and
 that is load-bearing twice over.  A submodule's ``@register`` fires only on

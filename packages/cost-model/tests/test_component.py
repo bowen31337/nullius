@@ -1,15 +1,14 @@
-"""The cost-model member's registration and its seat in the app namespace.
+"""The cost-model member's registration and its composition in the app.
 
 Placement is the risky part of a plugin-shaped feature: a component that is
 never scanned passes its own suite and contributes nothing.  These tests
 assert the wiring rather than trusting it — that the root pyproject.toml's
 declared workspace resolves to this package, that ``create_app`` composes
-the service, and that the seat at ``src/app/modules/cost-model`` can reach
-it — going through the factory's public discovery functions rather than
-importing the package directly, because importing it would bypass the very
-mechanism under test.
+the service, and that the default composition reaches it — going through
+the factory's public discovery functions rather than importing the package
+directly, because importing it would bypass the very mechanism under test.
 
-Two traps are pinned here specifically, because both fail silently:
+One trap is pinned here specifically, because it fails silently:
 
 * **the double composition.**  ``app.module_loader._import_package``
   re-executes a package's ``__init__.py`` on every ``create_app()`` call,
@@ -19,9 +18,6 @@ Two traps are pinned here specifically, because both fail silently:
   of every later one.  A single-composition assertion passes vacuously once
   that happens; the test below composes twice and asserts on the *second*
   application.
-* **the seat's reach.**  The seat's directory name carries a hyphen and so
-  is not a valid dotted import path; it is loaded the way the factory loads
-  such a package, with ``importlib.import_module``.
 
 Neither the builder's no-I/O promise nor its zero-argument signature is
 decoration: the factory calls every builder during composition, so a
@@ -31,7 +27,6 @@ for every other member.
 
 from __future__ import annotations
 
-import importlib
 import inspect
 from pathlib import Path
 
@@ -50,11 +45,6 @@ from app.module_loader import (
 
 MEMBER_SRC = Path(cost_model.__file__).resolve().parent.parent
 MEMBER_ROOT = MEMBER_SRC.parent
-
-# The seat's directory name is hyphenated, so it is not a valid dotted
-# import path; importlib.import_module loads it the way the factory's scan
-# does a hyphenated package directory.
-seat = importlib.import_module("app.modules.cost-model")
 
 
 class TestTheMemberIsDiscovered:
@@ -167,19 +157,12 @@ class TestTheEnvironmentBinding:
         assert cost_model.CostModelService.from_env().config_path is None
 
 
-class TestTheSeat:
-    def test_the_seat_names_the_component_it_asks_for(self) -> None:
-        assert seat.COMPONENT_NAME == cost_model.COMPONENT_NAME == "cost-model"
+class TestTheComposedApplication:
+    def test_the_default_composition_answers_the_component(self) -> None:
+        # With no explicit roots the factory scans the declared workspace —
+        # the production path.
+        assert create_app().get("cost-model") is not None
 
-    def test_the_seat_returns_the_composed_component(self) -> None:
-        app = create_app(str(MEMBER_SRC), registry=Registration())
-        assert seat.cost_model_component(app) is app.get("cost-model")
-
-    def test_the_seat_composes_when_given_no_application(self) -> None:
-        # Without an app the seat composes one by scanning the declared
-        # workspace — the production path.
-        assert seat.cost_model_component() is not None
-
-    def test_the_seat_answers_none_for_an_absent_component(self) -> None:
+    def test_an_absent_component_answers_none(self) -> None:
         # An absent component is a discoverable state, not an exception.
-        assert seat.cost_model_component(Application(components={})) is None
+        assert Application(components={}).get("cost-model") is None

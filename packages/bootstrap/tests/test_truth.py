@@ -498,9 +498,8 @@ def test_ground_truth_accepts_the_composed_world() -> None:
     # seed) pair, its labels are the committed world's labels, to the
     # last field.
     from app.module_loader import create_app
-    from app.modules import bootstrap as seat
 
-    composed = seat.hyperparameter_world_component(create_app())
+    composed = create_app().get("bootstrap")
     assert composed is not None
     assert not isinstance(composed, HyperparameterWorld)  # the loader's copy
     truth = ground_truth(composed)

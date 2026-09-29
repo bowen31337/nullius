@@ -847,23 +847,12 @@ class TestTheErrorVocabulary:
 
 
 class TestTheMemberStillRegistersOneComponent:
-    """Feature 312 adds a module and a class — no component, no seat, no table."""
+    """Feature 312 adds a module and a class — no component, no table."""
 
     def test_exactly_one_builder(self) -> None:
         assert [name for name in dir(member) if name.startswith("build_")] == [
             "build_router_exchange_info_store"
         ]
-
-    def test_the_seat_is_untouched(self) -> None:
-        from app.modules import router as seat
-
-        assert set(seat.__all__) == {
-            "COMPONENT_NAME",
-            "router_exchange_info_component",
-            "router_submission_health_store",
-        }
-        assert not hasattr(seat, "RoundedOrder")
-        assert not hasattr(seat, "require_rounded_order")
 
     def test_the_member_exports_the_feature_312_names(self) -> None:
         # Both halves, the code token and the class: one without the

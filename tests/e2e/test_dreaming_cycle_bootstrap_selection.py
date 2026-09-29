@@ -35,7 +35,7 @@ order the deployment runs them in:
     dreaming member's :func:`~dreaming.sweep_candidates` drives a replay
     evaluator once per ``(candidate, world)`` and persists each answer as one
     ``replay_score`` row through the composed replay member's own writer,
-    reached through the ``app.modules.replay`` seat rather than imported.  The
+    read as ``create_app().get("replay")`` rather than imported.  The
     coverage law is the feature: ``M`` candidates and ``n`` worlds is exactly
     ``M × n`` rows, no pair skipped and none taken twice.  The evidence is
     written **after the hold is released** — feature 270's guards refuse every
@@ -256,7 +256,7 @@ def journey(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_Journey]:
     # The hold fixes the input; the evidence is written once it is released.
     released = freeze.release(hold)
 
-    # One replay_score row per (candidate, world) pair, through the replay seat.
+    # One replay_score row per (candidate, world) pair, through the composed replay.
     report = sweep_candidates(
         candidates,
         evaluator=_evaluator,

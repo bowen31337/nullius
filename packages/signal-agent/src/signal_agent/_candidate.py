@@ -130,9 +130,7 @@ the tree it lives in).  So it is a free function beside them, reached as
 ``tree_diversity`` sits beside the history store and 214's
 ``mechanism_discrimination`` sits beside this one.  A tenth ``signal-agent-*``
 registration would put a name in the registry for a question that composes
-nothing, and ``src/app/modules/signal-agent/`` gains no seat file for the same
-reason: that directory's convention is one seat per *composed component*, and
-this feature has none.
+nothing, and this feature has no *composed component* to read.
 
 Stdlib only (plus this member's own modules), and import-cheap: no third-party
 import at module scope, so the factory's scan — which imports this member to fire

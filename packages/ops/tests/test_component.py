@@ -1,18 +1,14 @@
-"""The ops member's registration, composition, and seat in the app
-namespace.
+"""The ops member's registration and composition.
 
 The implementation lives in the ``ops`` workspace member
 (``packages/ops``), which self-registers with the application factory
 under ``"ops-fdr-deploy"`` and ``"ops-dashboard"`` (feature 351's
-operator surface, pinned in its own suite).  ``src/app/modules/ops/``
-is the member's seat in the app package namespace: it names the
-components and asks the factory for them without the ``app`` package
-depending on any member at import time.  These tests pin that chain —
-workspace declaration,
-scan, registration, composition, seat — so the member cannot silently
-fall out of the composed application, and so a composition without a
-configured ``DATABASE_URL`` degrades to "no ops route" rather than
-breaking.
+operator surface, pinned in its own suite), and callers reach each
+component as ``create_app().get("<component-name>")``.  These tests pin
+that chain — workspace declaration, scan, registration, composition — so
+the member cannot silently fall out of the composed application, and so
+a composition without a configured ``DATABASE_URL`` degrades to "no ops
+route" rather than breaking.
 
 The member's third component is feature 350's live-metrics store
 (``ops-live-metric``), its fourth is feature 347's meta-overfit gap
@@ -57,36 +53,9 @@ from app.module_loader import (
     scan_components,
     workspace_scan_roots,
 )
-from app.modules import ops as ops_seat
 
 MEMBER_SRC = Path(ops.__file__).resolve().parent.parent
 SCORING_SRC = Path(scoring.__file__).resolve().parent.parent
-
-#: The seat's whole public surface.  Asserted as an exact set rather
-#: than as a membership check, because the failure this guards against
-#: is the seat *growing* a re-export, and a membership check cannot
-#: see that.
-EXPECTED_EXPORTS = {
-    "COMPONENT_NAME",
-    "DASHBOARD_COMPONENT_NAME",
-    "OPS_DISCOVERY_RATE_COMPONENT_NAME",
-    "OPS_INSTRUMENT_STATUS_COMPONENT_NAME",
-    "OPS_LIVE_METRIC_COMPONENT_NAME",
-    "OPS_META_OVERFIT_COMPONENT_NAME",
-    "OPS_NULL_CALIBRATION_COMPONENT_NAME",
-    "OPS_REGIME_COVERAGE_COMPONENT_NAME",
-    "OPS_TYPE_B_DEPTH_COMPONENT_NAME",
-    "dashboard_component",
-    "discovery_rate_component",
-    "fdr_deploy_component",
-    "instrument_status_component",
-    "live_metric_component",
-    "meta_overfit_component",
-    "null_calibration_component",
-    "regime_coverage_component",
-    "type_b_depth_component",
-}
-
 
 def test_member_is_declared_in_the_scanned_workspace() -> None:
     # The member's own pyproject.toml is what makes it a workspace
@@ -169,11 +138,11 @@ def test_the_route_and_the_store_compose_over_one_database(
     assert store.database_url == route.store.database_url == test_database_url
 
 
-def test_the_seat_names_line_up() -> None:
-    # The seat's constant, the member's constant and the spec's route
-    # row are one string.  Three spellings of one name is exactly the
-    # kind of drift a test is cheaper than.
-    assert ops_seat.COMPONENT_NAME == ops.OPS_COMPONENT_NAME == "ops-fdr-deploy"
+def test_the_names_line_up() -> None:
+    # The member's constant and the spec's route row are one string.  Two
+    # spellings of one name is exactly the kind of drift a test is cheaper
+    # than.
+    assert ops.OPS_COMPONENT_NAME == "ops-fdr-deploy"
 
 
 def test_scan_registers_the_live_metric_store() -> None:
@@ -223,23 +192,19 @@ def test_the_live_metric_store_builder_contributes_nothing_without_a_store(
     assert app.get(ops.OPS_LIVE_METRIC_COMPONENT_NAME) is None
 
 
-def test_the_seat_names_line_up_live_metric() -> None:
-    # The seat's constant, the member's constant and the spec's store
-    # name are one string.  Three spellings of one name is exactly the
-    # kind of drift a test is cheaper than.
-    assert (
-        ops_seat.OPS_LIVE_METRIC_COMPONENT_NAME
-        == ops.OPS_LIVE_METRIC_COMPONENT_NAME
-        == "ops-live-metric"
-    )
+def test_the_names_line_up_live_metric() -> None:
+    # The member's constant and the spec's spelling of the name are one
+    # string.  Two spellings of one name is exactly the kind of drift a
+    # test is cheaper than.
+    assert ops.OPS_LIVE_METRIC_COMPONENT_NAME == "ops-live-metric"
 
 
-def test_the_seat_exposes_the_composed_live_metric_store(
+def test_the_application_exposes_the_composed_live_metric_store(
     test_database_url: str,
 ) -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
-    component = ops_seat.live_metric_component(app)
-    assert component is app.get(ops.OPS_LIVE_METRIC_COMPONENT_NAME)
+    component = app.get(ops.OPS_LIVE_METRIC_COMPONENT_NAME)
+    assert component is not None
     assert component.database_url == test_database_url
 
 
@@ -290,15 +255,11 @@ def test_the_meta_overfit_builder_contributes_nothing_without_a_store(
     assert app.get(ops.OPS_META_OVERFIT_COMPONENT_NAME) is None
 
 
-def test_the_seat_names_line_up_meta_overfit() -> None:
-    # The seat's constant, the member's constant and the spec's feature
-    # sentence are one name.  Three spellings of one name is exactly the kind
-    # of drift a test is cheaper than.
-    assert (
-        ops_seat.OPS_META_OVERFIT_COMPONENT_NAME
-        == ops.OPS_META_OVERFIT_COMPONENT_NAME
-        == "ops-meta-overfit"
-    )
+def test_the_names_line_up_meta_overfit() -> None:
+    # The member's constant and the spec's spelling of the name are one
+    # string.  Two spellings of one name is exactly the kind of drift a
+    # test is cheaper than.
+    assert ops.OPS_META_OVERFIT_COMPONENT_NAME == "ops-meta-overfit"
 
 
 def test_the_meta_overfit_store_and_the_route_compose_over_one_database(
@@ -318,12 +279,12 @@ def test_the_meta_overfit_store_and_the_route_compose_over_one_database(
     assert live.database_url == gaps.database_url
 
 
-def test_the_seat_exposes_the_composed_meta_overfit_store(
+def test_the_application_exposes_the_composed_meta_overfit_store(
     test_database_url: str,
 ) -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
-    component = ops_seat.meta_overfit_component(app)
-    assert component is app.get(ops.OPS_META_OVERFIT_COMPONENT_NAME)
+    component = app.get(ops.OPS_META_OVERFIT_COMPONENT_NAME)
+    assert component is not None
     assert component.database_url == test_database_url
 
 
@@ -377,15 +338,11 @@ def test_the_discovery_rate_builder_contributes_nothing_without_a_store(
     assert app.get(ops.OPS_DISCOVERY_RATE_COMPONENT_NAME) is None
 
 
-def test_the_seat_names_line_up_discovery_rate() -> None:
-    # The seat's constant, the member's constant and the spec's feature
-    # sentence are one name.  Three spellings of one name is exactly the
-    # kind of drift a test is cheaper than.
-    assert (
-        ops_seat.OPS_DISCOVERY_RATE_COMPONENT_NAME
-        == ops.OPS_DISCOVERY_RATE_COMPONENT_NAME
-        == "ops-discovery-rate"
-    )
+def test_the_names_line_up_discovery_rate() -> None:
+    # The member's constant and the spec's spelling of the name are one
+    # string.  Two spellings of one name is exactly the kind of drift a
+    # test is cheaper than.
+    assert ops.OPS_DISCOVERY_RATE_COMPONENT_NAME == "ops-discovery-rate"
 
 
 def test_the_discovery_rate_store_and_the_route_compose_over_one_database(
@@ -405,12 +362,12 @@ def test_the_discovery_rate_store_and_the_route_compose_over_one_database(
     assert gaps.database_url == rates.database_url
 
 
-def test_the_seat_exposes_the_composed_discovery_rate_store(
+def test_the_application_exposes_the_composed_discovery_rate_store(
     test_database_url: str,
 ) -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
-    component = ops_seat.discovery_rate_component(app)
-    assert component is app.get(ops.OPS_DISCOVERY_RATE_COMPONENT_NAME)
+    component = app.get(ops.OPS_DISCOVERY_RATE_COMPONENT_NAME)
+    assert component is not None
     assert component.database_url == test_database_url
 
 
@@ -464,15 +421,11 @@ def test_the_type_b_depth_builder_contributes_nothing_without_a_store(
     assert app.get(ops.OPS_TYPE_B_DEPTH_COMPONENT_NAME) is None
 
 
-def test_the_seat_names_line_up_type_b_depth() -> None:
-    # The seat's constant, the member's constant and the spec's feature
-    # sentence are one name.  Three spellings of one name is exactly the
-    # kind of drift a test is cheaper than.
-    assert (
-        ops_seat.OPS_TYPE_B_DEPTH_COMPONENT_NAME
-        == ops.OPS_TYPE_B_DEPTH_COMPONENT_NAME
-        == "ops-type-b-depth"
-    )
+def test_the_names_line_up_type_b_depth() -> None:
+    # The member's constant and the spec's spelling of the name are one
+    # string.  Two spellings of one name is exactly the kind of drift a
+    # test is cheaper than.
+    assert ops.OPS_TYPE_B_DEPTH_COMPONENT_NAME == "ops-type-b-depth"
 
 
 def test_the_type_b_depth_store_and_the_route_compose_over_one_database(
@@ -491,12 +444,12 @@ def test_the_type_b_depth_store_and_the_route_compose_over_one_database(
     assert rates.database_url == depths.database_url
 
 
-def test_the_seat_exposes_the_composed_type_b_depth_store(
+def test_the_application_exposes_the_composed_type_b_depth_store(
     test_database_url: str,
 ) -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
-    component = ops_seat.type_b_depth_component(app)
-    assert component is app.get(ops.OPS_TYPE_B_DEPTH_COMPONENT_NAME)
+    component = app.get(ops.OPS_TYPE_B_DEPTH_COMPONENT_NAME)
+    assert component is not None
     assert component.database_url == test_database_url
 
 
@@ -552,15 +505,11 @@ def test_the_null_calibration_builder_contributes_nothing_without_a_store(
     assert app.get(ops.OPS_NULL_CALIBRATION_COMPONENT_NAME) is None
 
 
-def test_the_seat_names_line_up_null_calibration() -> None:
-    # The seat's constant, the member's constant and the spec's feature
-    # sentence are one name.  Three spellings of one name is exactly the kind
-    # of drift a test is cheaper than.
-    assert (
-        ops_seat.OPS_NULL_CALIBRATION_COMPONENT_NAME
-        == ops.OPS_NULL_CALIBRATION_COMPONENT_NAME
-        == "ops-null-calibration"
-    )
+def test_the_names_line_up_null_calibration() -> None:
+    # The member's constant and the spec's spelling of the name are one
+    # string.  Two spellings of one name is exactly the kind of drift a
+    # test is cheaper than.
+    assert ops.OPS_NULL_CALIBRATION_COMPONENT_NAME == "ops-null-calibration"
 
 
 def test_the_null_calibration_store_and_the_route_compose_over_one_database(
@@ -581,12 +530,12 @@ def test_the_null_calibration_store_and_the_route_compose_over_one_database(
     assert depths.database_url == calibration.database_url
 
 
-def test_the_seat_exposes_the_composed_null_calibration_store(
+def test_the_application_exposes_the_composed_null_calibration_store(
     test_database_url: str,
 ) -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
-    component = ops_seat.null_calibration_component(app)
-    assert component is app.get(ops.OPS_NULL_CALIBRATION_COMPONENT_NAME)
+    component = app.get(ops.OPS_NULL_CALIBRATION_COMPONENT_NAME)
+    assert component is not None
     assert component.database_url == test_database_url
 
 
@@ -649,15 +598,11 @@ def test_the_regime_coverage_builder_contributes_nothing_without_a_store(
     assert app.get(ops.OPS_REGIME_COVERAGE_COMPONENT_NAME) is None
 
 
-def test_the_seat_names_line_up_regime_coverage() -> None:
-    # The seat's constant, the member's constant and the spec's API summary
-    # row are one name.  Three spellings of one name is exactly the kind of
-    # drift a test is cheaper than.
-    assert (
-        ops_seat.OPS_REGIME_COVERAGE_COMPONENT_NAME
-        == ops.OPS_REGIME_COVERAGE_COMPONENT_NAME
-        == "ops-regime-coverage"
-    )
+def test_the_names_line_up_regime_coverage() -> None:
+    # The member's constant and the spec's spelling of the name are one
+    # string.  Two spellings of one name is exactly the kind of drift a
+    # test is cheaper than.
+    assert ops.OPS_REGIME_COVERAGE_COMPONENT_NAME == "ops-regime-coverage"
 
 
 def test_the_regime_coverage_route_and_the_route_compose_over_one_database(
@@ -675,12 +620,12 @@ def test_the_regime_coverage_route_and_the_route_compose_over_one_database(
     assert coverage.store.database_url == route.store.database_url == test_database_url
 
 
-def test_the_seat_exposes_the_composed_regime_coverage_route(
+def test_the_application_exposes_the_composed_regime_coverage_route(
     test_database_url: str,
 ) -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
-    component = ops_seat.regime_coverage_component(app)
-    assert component is app.get(ops.OPS_REGIME_COVERAGE_COMPONENT_NAME)
+    component = app.get(ops.OPS_REGIME_COVERAGE_COMPONENT_NAME)
+    assert component is not None
     assert component.route == "/metrics/regime-coverage"
 
 
@@ -743,15 +688,11 @@ def test_the_instrument_status_builder_contributes_nothing_without_a_store(
     assert app.get(ops.OPS_INSTRUMENT_STATUS_COMPONENT_NAME) is None
 
 
-def test_the_seat_names_line_up_instrument_status() -> None:
-    # The seat's constant, the member's constant and the spec's API summary
-    # row are one name.  Three spellings of one name is exactly the kind of
-    # drift a test is cheaper than.
-    assert (
-        ops_seat.OPS_INSTRUMENT_STATUS_COMPONENT_NAME
-        == ops.OPS_INSTRUMENT_STATUS_COMPONENT_NAME
-        == "ops-instrument-status"
-    )
+def test_the_names_line_up_instrument_status() -> None:
+    # The member's constant and the spec's spelling of the name are one
+    # string.  Two spellings of one name is exactly the kind of drift a
+    # test is cheaper than.
+    assert ops.OPS_INSTRUMENT_STATUS_COMPONENT_NAME == "ops-instrument-status"
 
 
 def test_the_instrument_status_route_and_the_route_compose_over_one_database(
@@ -775,12 +716,12 @@ def test_the_instrument_status_route_and_the_route_compose_over_one_database(
     )
 
 
-def test_the_seat_exposes_the_composed_instrument_status_route(
+def test_the_application_exposes_the_composed_instrument_status_route(
     test_database_url: str,
 ) -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
-    component = ops_seat.instrument_status_component(app)
-    assert component is app.get(ops.OPS_INSTRUMENT_STATUS_COMPONENT_NAME)
+    component = app.get(ops.OPS_INSTRUMENT_STATUS_COMPONENT_NAME)
+    assert component is not None
     assert component.route == "/metrics/instrument-status"
 
 
@@ -804,89 +745,15 @@ def test_the_composed_instrument_status_route_reaches_the_sibling_members(
     assert response.absent == ("ks_guard", "ingest")
 
 
-def test_the_seat_exposes_nothing_but_the_composition_accessor(
-    test_database_url: str,
-) -> None:
-    # See the seat's docstring: its job is to answer one question, and
-    # every extra name is a second thing to keep in sync with the
-    # member — as well as a way for a later feature to accidentally
-    # depend on the seat for a value type it should reach through the
-    # member.
-    assert set(ops_seat.__all__) == EXPECTED_EXPORTS
-    for name in EXPECTED_EXPORTS:
-        assert hasattr(ops_seat, name), name
-    # And the member's own API is *not* among the exports — the
-    # specific names a well-meaning re-export would add first.
-    for leaked in (
-        "FdrDeployEndpoint",
-        "FdrDeployResponse",
-        "FDR_DEPLOY_ROUTE",
-        "OpsError",
-        "FdrDeployMetricError",
-        "OperatorDashboard",
-        "DashboardPage",
-        "FdrDeployPanel",
-        "DashboardRenderError",
-        "EpochCountChrome",
-        "EpochCountGauge",
-        "EPOCH_COUNT_LABEL",
-        "require_promotion",
-        "LiveMetricsStore",
-        "LiveMetric",
-        "LiveMetricError",
-        "LIVE_METRICS",
-        "LIVE_METRIC_TABLE",
-        "MetaOverfitGaps",
-        "MetaOverfitGap",
-        "MetaOverfitGapError",
-        "META_OVERFIT_TABLE",
-        "DiscoveryRates",
-        "DiscoveryRate",
-        "DiscoveryRateError",
-        "DISCOVERY_RATE_TABLE",
-        "TypeBDepths",
-        "TypeBDepth",
-        "TypeBDepthError",
-        "TYPE_B_DEPTH_TABLE",
-        "NullCalibrations",
-        "NullCalibration",
-        "NullCalibrationError",
-        "NULL_CALIBRATION_TABLE",
-        "RegimeCoverageEndpoint",
-        "RegimeCoverageResponse",
-        "RegimeCoverageMetricError",
-        "REGIME_COVERAGE_ROUTE",
-        "require_regime",
-        "InstrumentStatusEndpoint",
-        "InstrumentStatusResponse",
-        "InstrumentStatusError",
-        "INSTRUMENT_STATUS_ROUTE",
-        "LAMP_NAMES",
-        "FEED_STALENESS_METRIC",
-        "FEED_STALENESS_THRESHOLD_ENV",
-        "require_canary",
-        "require_nulloracle",
-    ):
-        assert leaked not in ops_seat.__all__
-
-
-def test_the_seat_exposes_the_composed_route(test_database_url: str) -> None:
+def test_the_application_exposes_the_composed_route(test_database_url: str) -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
-    component = ops_seat.fdr_deploy_component(app)
-    assert component is app.get(ops.OPS_COMPONENT_NAME)
+    component = app.get(ops.OPS_COMPONENT_NAME)
+    assert component is not None
     assert component.route == "/metrics/fdr-deploy"
 
 
-def test_the_seat_reads_from_an_application_it_is_handed() -> None:
-    application = Application(
-        components={ops_seat.COMPONENT_NAME: {"sentinel": True}},
-        order=(ops_seat.COMPONENT_NAME,),
-    )
-    assert ops_seat.fdr_deploy_component(application) == {"sentinel": True}
-
-
 def test_an_absent_component_is_none_rather_than_an_error() -> None:
-    # A module that cannot reach the component returns None rather
-    # than failing — mirroring the factory's stance toward absent
+    # An application that does not carry the component answers None
+    # rather than failing — the factory's stance toward absent
     # components.
-    assert ops_seat.fdr_deploy_component(Application()) is None
+    assert Application().get(ops.OPS_COMPONENT_NAME) is None

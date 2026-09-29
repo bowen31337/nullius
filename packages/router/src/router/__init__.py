@@ -455,8 +455,8 @@ def build_router_exchange_info_store() -> RouterExchangeInfoStore | None:
 #: is what *"persists ... independently"* requires: a reading a composed
 #: application could hand out would be a reading the application's own
 #: lifetime bounds, and a process that has hung cannot answer through a
-#: component it is no longer running.  The seat in ``app.modules.router``
-#: exposes the accessor this module documents for it, and no second
+#: component it is no longer running.  Callers reach it through
+#: :meth:`~router.RouterSubmissionHealthStore.resolve`, and no second
 #: ``@register`` builder is added here — the member still registers exactly
 #: one component (feature 310's exchangeInfo store).  Feature 318's limiter is
 #: the third table reached the same way, and the note above it states why its

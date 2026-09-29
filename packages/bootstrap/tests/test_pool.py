@@ -313,7 +313,7 @@ def test_worlds_is_ordered_by_world_id(pool: BootstrapPool) -> None:
 
 def test_an_empty_pool_reads_as_zero_and_not_as_an_error(pool: BootstrapPool) -> None:
     # An empty pool is a statement about what has been *authored*, not
-    # about composition (the seat's ``None``) — feature 186's count is
+    # about composition (the component's ``None``) — feature 186's count is
     # the caller that reports it against the financial half, and it
     # needs zero to be readable.
     assert pool.world_count() == 0
@@ -389,7 +389,7 @@ def test_resolve_answers_none_when_nothing_names_a_database(unset: str | None) -
     # discoverable state, not an exception: the degrade-don't-break
     # stance every store in this workspace takes.  The operator who
     # means to author the 40-50 worlds is the caller that must not find
-    # itself in it, which is the seat's refusal and not this method's.
+    # itself in it, which is the caller's refusal and not this method's.
     env = {} if unset is None else {"DATABASE_URL": unset}
     assert BootstrapPool.resolve(env) is None
 

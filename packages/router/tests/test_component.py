@@ -1,11 +1,10 @@
-"""The two seams: composition via the loader, and the app seat.
+"""The composition seam, and feature 320's health store resolved beside it.
 
 Mirrors ``packages/regime/tests/test_component.py``: the factory's scan
 composes the store under the member's registered name, and
-``app.modules.router`` answers *what is the composed exchangeInfo version
-store?* for a caller that holds the app namespace.  ``router`` carries no
-hyphen, so both the member and the seat are plain dotted imports — no
-``importlib.import_module`` trick needed (unlike the ``cost-model`` seat).
+``create_app().get("router")`` answers *what is the composed exchangeInfo
+version store?*.  The submission-health store is not a component: it is
+resolved from ``DATABASE_URL`` by ``RouterSubmissionHealthStore.resolve()``.
 """
 
 from __future__ import annotations
@@ -20,36 +19,6 @@ import pytest
 import router as member
 
 from app.module_loader import Application, Registration, create_app, scan_components
-from app.modules import router as seat
-from app.modules.router import COMPONENT_NAME as SEAT_COMPONENT_NAME
-from app.modules.router import (
-    router_exchange_info_component,
-    router_submission_health_store,
-)
-
-EXPECTED_EXPORTS = {
-    "COMPONENT_NAME",
-    "router_exchange_info_component",
-    "router_submission_health_store",
-}
-
-NOT_THE_SEATS_BUSINESS = (
-    "RouterExchangeInfoVersion",
-    "RouterSymbolFilters",
-    "resolve_router_filters",
-    "RouterError",
-    "RouterFilterError",
-    "RouterStoreError",
-    # Feature 320 adds names too, and they are the member's, not the seat's:
-    # the seat hands back the *store* and the *identity*, and a caller holds
-    # ``record()``/``health()``/``latest_for_process()`` on the first without
-    # this module re-spelling any of them.
-    "RouterSubmissionHealthStore",
-    "SubmissionObservation",
-    "SubmissionHealth",
-    "RouterSubmissionHealthError",
-    "ORDER_SUBMISSION_HEALTH_TABLE",
-)
 
 
 def _assert_is_the_exchange_info_store(component: object) -> None:
@@ -64,7 +33,7 @@ def _assert_is_the_exchange_info_store(component: object) -> None:
 
 
 def test_the_member_registers_under_its_own_name() -> None:
-    assert member.COMPONENT_NAME == SEAT_COMPONENT_NAME == "router"
+    assert member.COMPONENT_NAME == "router"
 
 
 def test_the_member_exports_exactly_one_builder() -> None:
@@ -155,58 +124,42 @@ def test_composing_writes_nothing_and_persisting_is_on_demand(
     assert count[0] == 1
 
 
-# -- The seat ---------------------------------------------------------------------
+# -- Reading the composition -----------------------------------------------------
 
 
-def test_the_seat_exposes_nothing_but_the_composition_accessor() -> None:
-    assert set(seat.__all__) == EXPECTED_EXPORTS
-    for name in EXPECTED_EXPORTS:
-        assert hasattr(seat, name), name
-    for leaked in NOT_THE_SEATS_BUSINESS:
-        assert leaked not in seat.__all__, leaked
-
-
-def test_the_seat_returns_the_composed_store(
+def test_the_composed_application_returns_the_store(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'seated.db'}")
-    store = router_exchange_info_component()
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'composed.db'}")
+    store = create_app().get("router")
     assert store is not None
     assert type(store).__name__ == "RouterExchangeInfoStore"
-    assert store.database_url == f"sqlite:///{tmp_path / 'seated.db'}"
+    assert store.database_url == f"sqlite:///{tmp_path / 'composed.db'}"
 
 
-def test_the_seat_reads_the_application_it_is_handed(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'handed.db'}")
-    app = create_app()
-    assert router_exchange_info_component(app) is app.get(member.COMPONENT_NAME)
-
-
-def test_a_deployment_without_a_database_seats_none(
+def test_a_deployment_without_a_database_composes_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
     app = create_app()
     assert member.COMPONENT_NAME in app  # registered
-    assert router_exchange_info_component(app) is None  # and resolved nothing
+    assert app.get(member.COMPONENT_NAME) is None  # and resolved nothing
 
 
 def test_an_absent_component_reads_as_none_rather_than_raising() -> None:
-    assert router_exchange_info_component(Application()) is None
+    assert Application().get(member.COMPONENT_NAME) is None
 
 
-def test_the_seat_composes_nothing_of_its_own() -> None:
+def test_reading_an_absent_component_composes_nothing() -> None:
     empty = Application()
-    assert router_exchange_info_component(empty) is None
+    assert empty.get(member.COMPONENT_NAME) is None
     assert empty.components == {}
 
 
-def test_an_empty_workspace_still_seats_only_the_absent_store(tmp_path: Path) -> None:
+def test_an_empty_workspace_composes_only_the_absent_store(tmp_path: Path) -> None:
     empty = create_app(tmp_path, registry=Registration())
     assert empty.components == {}
-    assert router_exchange_info_component(empty) is None
+    assert empty.get(member.COMPONENT_NAME) is None
 
 
 @pytest.mark.parametrize(
@@ -218,11 +171,11 @@ def test_a_misspelled_component_key_is_absent_not_a_near_match(
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'keys.db'}")
     app = create_app()
     assert app.get(absent) is None
-    assert SEAT_COMPONENT_NAME in app
-    assert router_exchange_info_component(app) is not None
+    assert member.COMPONENT_NAME in app
+    assert app.get(member.COMPONENT_NAME) is not None
 
 
-# -- Feature 320's health accessor -----------------------------------------
+# -- Feature 320's health store ---------------------------------------------
 
 
 def test_the_health_store_is_not_a_component(
@@ -258,33 +211,25 @@ def test_the_health_store_is_not_a_component(
         if component.name == member.COMPONENT_NAME
     ] == [member.COMPONENT_NAME]
     # The store is reachable without the registry, which is the point.
-    assert router_submission_health_store() is not None
+    assert member.RouterSubmissionHealthStore.resolve() is not None
 
 
-def test_the_seat_resolves_the_health_store_from_the_database(
+def test_the_health_store_resolves_from_the_database(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    url = f"sqlite:///{tmp_path / 'seated-health.db'}"
+    url = f"sqlite:///{tmp_path / 'resolved-health.db'}"
     monkeypatch.setenv("DATABASE_URL", url)
-    store = router_submission_health_store()
+    store = member.RouterSubmissionHealthStore.resolve()
     assert store is not None
     assert type(store).__name__ == "RouterSubmissionHealthStore"
     assert store.database_url == url
-
-
-def test_the_health_accessor_needs_no_application(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    # No ``app`` parameter at all, because there is no registry to consult:
-    # accepting one would suggest the answer depended on it.
-    assert list(inspect.signature(router_submission_health_store).parameters) == []
 
 
 def test_a_deployment_without_a_database_resolves_no_health_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    assert router_submission_health_store() is None
+    assert member.RouterSubmissionHealthStore.resolve() is None
 
 
 def test_resolving_the_health_store_opens_no_database(
@@ -295,7 +240,7 @@ def test_resolving_the_health_store_opens_no_database(
     # feature cannot afford.
     database = tmp_path / "unopened.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database}")
-    store = router_submission_health_store()
+    store = member.RouterSubmissionHealthStore.resolve()
     assert store is not None
     assert not database.exists()
     assert store.record(outcome="accepted").outcome == "accepted"
@@ -309,12 +254,12 @@ def test_the_health_accessor_reads_what_another_process_wrote(
 
     url = f"sqlite:///{tmp_path / 'shared.db'}"
     monkeypatch.setenv("DATABASE_URL", url)
-    writer = router_submission_health_store()
+    writer = member.RouterSubmissionHealthStore.resolve()
     writer.record(
         outcome="rejected", observed_at=datetime(2026, 9, 24, 12, 0, tzinfo=UTC),
         process_id="other-host/7",
     )
-    reader = router_submission_health_store()
+    reader = member.RouterSubmissionHealthStore.resolve()
     health = reader.health(
         now=datetime(2026, 9, 24, 12, 1, tzinfo=UTC), process_id="other-host/7"
     )
@@ -326,14 +271,14 @@ def test_the_health_accessor_reads_what_another_process_wrote(
 def test_the_identity_is_the_stores_own_derivation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # The seat adds no identity accessor: a caller holding the store already
-    # holds the label its rows are filed under, and a pass-through beside it
-    # would be a second spelling of the one fact "in its own process" is
+    # There is no separate identity accessor: a caller holding the store
+    # already holds the label its rows are filed under, and a pass-through
+    # beside it would be a second spelling of the one fact "in its own process" is
     # about -- free to disagree with what the store writes.
     import os
     import socket
 
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'identity.db'}")
-    store = router_submission_health_store()
+    store = member.RouterSubmissionHealthStore.resolve()
     assert store.process_id == f"{socket.gethostname()}/{os.getpid()}"
     assert store.record(outcome="accepted").process_id == store.process_id

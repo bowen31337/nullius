@@ -75,7 +75,6 @@ from ops.chrome import (
 )
 
 from app.module_loader import Registration, create_app
-from app.modules import ops as ops_seat
 
 MEMBER_SRC = Path(__import__("ops").__file__).resolve().parent.parent
 
@@ -1041,7 +1040,7 @@ def test_the_composed_chrome_reads_the_one_database(
         computed_at="2026-02-01T00:00:00",
     )
     app = create_app(MEMBER_SRC, registry=Registration())
-    dashboard = ops_seat.dashboard_component(app)
+    dashboard = app.get("ops-dashboard")
     assert dashboard is not None
     assert dashboard.gauge.database_url == test_database_url
     assert dashboard.rail.readings.database_url == test_database_url

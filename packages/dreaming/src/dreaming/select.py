@@ -50,15 +50,15 @@ sweep's evidence back from the pool's own ``replay_score`` table — a
 ``sqlite3`` connection opened against the resolved path, the same read-time
 seam :func:`dreaming.paired._pool_arm` takes — because the composed replay
 component exposes only the *writer* ``persist_replay_score`` and no reader of
-the score rows, so there is no carrier to hand in and no ``app.modules.replay``
-seat to resolve one through: the evidence read is a read, and the member that
+the score rows, so there is no carrier to hand in and no composed ``replay``
+reader to resolve one through: the evidence read is a read, and the member that
 owns the rows owns no reader of them.  It groups each candidate's rows into the
 regime strata the caller hands in — the same strata-keyed mapping feature
 263's ``aggregate_objective`` takes — and aggregates each candidate over its
 worlds under §7 with feature 263's ``aggregate_objective``, reached the way
 the policy-runtime member's free seams reach a sibling — through the scoring
 member's own namespace, ``importlib.import_module("scoring")``, **not** the
-composed ``app.modules.scoring`` seat, which answers only the per-world
+composed ``scoring`` component, which answers only the per-world
 objective (:func:`scoring.world_objective_component`) and not the blend.  It
 takes :func:`select_argmax`'s winner and persists one row into
 ``policy_revision`` (migration ``0109``) **directly**: feature 274 is the
@@ -857,7 +857,7 @@ def _scoring_member() -> Any:
 
     Reached through ``importlib.import_module("scoring")`` — the way the
     policy-runtime member's free seams reach a sibling, **not** the composed
-    ``app.modules.scoring`` seat, which answers only the per-world objective
+    ``scoring`` component, which answers only the per-world objective
     (:func:`scoring.world_objective_component`) and not the blend.  Resolved
     inside the function so this module stays import-cheap and the factory's
     scan — which imports this package to fire its ``@register`` — pays nothing

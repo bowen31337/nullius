@@ -641,17 +641,16 @@ __all__ = [
 ]
 
 #: The component name this member registers under — the plugin name the
-#: spec's features carry (``plugin="bootstrap"``), so the component key, the
-#: app-namespace seat (``src/app/modules/bootstrap``) and the spec cannot
-#: drift apart.  Deliberately *not* ``bootstrap-hpo``: the name predates
-#: the sibling domains, and renaming a composed key that callers already
-#: hold is the one change a new domain must not require of them.  A domain
-#: that grows its own world takes its own component beside this one —
-#: features 182-183's feature selection and symbolic regression worlds
-#: register as :data:`FEATSEL_COMPONENT_NAME` and
-#: :data:`SYMREG_COMPONENT_NAME` — while the pool stays one pool with one
-#: seat, because the worlds are many and the replay pool they persist into
-#: is a single store.
+#: spec's features carry (``plugin="bootstrap"``), so the component key the
+#: composed application is read by and the spec cannot drift apart.
+#: Deliberately *not* ``bootstrap-hpo``: the name predates the sibling
+#: domains, and renaming a composed key that callers already hold is the one
+#: change a new domain must not require of them.  A domain that grows its own
+#: world takes its own component beside this one — features 182-183's feature
+#: selection and symbolic regression worlds register as
+#: :data:`FEATSEL_COMPONENT_NAME` and :data:`SYMREG_COMPONENT_NAME` — while the
+#: pool stays one pool with one seat, because the worlds are many and the
+#: replay pool they persist into is a single store.
 COMPONENT_NAME = "bootstrap"
 
 #: The world id the composed application carries.  A stable, human-readable

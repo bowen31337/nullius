@@ -1,4 +1,4 @@
-"""Feature 182's plugin seam: composition, and the app-namespace seat.
+"""Feature 182's plugin seam: composition, and reading the component.
 
 Two contracts, both held from the side this member owns:
 
@@ -15,17 +15,15 @@ Two contracts, both held from the side this member owns:
   builder lives in ``__init__.py`` and the test asserts on the *second*
   application or it passes vacuously).
 
-* **the seat** — :mod:`app.modules.bootstrap.featsel` answers exactly
-  one question (*what is the composed feature selection world?*),
-  imports the member only under ``TYPE_CHECKING``, and answers
-  ``None`` — not an exception — when nothing is registered.  Its
-  ``None`` is the world seats' ``None`` (a statement about
-  composition), never the pool seat's (a statement about the
+* **reading the component** — ``create_app().get("bootstrap-featsel")``
+  answers the composed feature selection world, and ``None`` — not an
+  exception — when nothing is registered.  That ``None`` is a statement
+  about composition, never the pool's (a statement about the
   deployment); the two must not be read through each other.
 
 The fourth component joins three without disturbing them: the
-hyperparameter world keeps its own name, the symbolic world its own
-seat, the pool its own, and the growth is additive — a new domain takes
+hyperparameter world keeps its own name, the symbolic world its own,
+the pool its own, and the growth is additive — a new domain takes
 its own component rather than renaming a key every caller already
 holds.
 """
@@ -38,8 +36,7 @@ import os
 import bootstrap as member
 import pytest
 
-from app.module_loader import create_app
-from app.modules.bootstrap import featsel as seat
+from app.module_loader import Application, create_app
 
 
 def _assert_is_the_featsel_world(component: object) -> None:
@@ -136,7 +133,7 @@ def test_the_component_survives_a_second_composition() -> None:
 def test_the_growth_leaves_the_first_three_components_untouched() -> None:
     # The additive rule a shared registry imposes: the hyperparameter
     # world keeps its name and its world, the symbolic world keeps its
-    # seat, and the pool keeps its own — a caller composed before this
+    # own, and the pool keeps its own — a caller composed before this
     # domain existed reads the same answers after it ships.
     app = create_app()
     assert "bootstrap" in app
@@ -190,40 +187,23 @@ def test_the_alias_is_an_ordinary_function_not_a_component() -> None:
     assert member.build_feature_selection_world is member.feature_selection_world
 
 
-# -- The app-namespace seat --------------------------------------------------------
+# -- Reading the component ---------------------------------------------------------
 
 
-def test_the_seats_names_line_up() -> None:
-    # The seat's constant, the member's constant and one spelling: two
-    # spellings of one name is exactly the drift a test is cheaper
-    # than.
-    assert seat.COMPONENT_NAME == member.FEATSEL_COMPONENT_NAME == "bootstrap-featsel"
-
-
-def test_the_seat_exposes_nothing_but_the_composition_accessor() -> None:
-    assert set(seat.__all__) == {"COMPONENT_NAME", "featsel_world_component"}
-    for leaked in ("FeatureSelectionWorld", "FeatureSupport", "featsel_question_for"):
-        assert leaked not in seat.__all__
-
-
-def test_the_seat_returns_the_composed_world() -> None:
-    world = seat.featsel_world_component()
+def test_the_application_returns_the_composed_world() -> None:
+    world = create_app().get("bootstrap-featsel")
     assert world is not None
     assert type(world).__name__ == "FeatureSelectionWorld"
     assert type(world).__module__.endswith("bootstrap._featsel")
     assert world.world_id == member.FEATSEL_WORLD_ID
 
 
-def test_the_seat_answers_none_when_nothing_is_registered() -> None:
+def test_the_application_answers_none_when_nothing_is_registered() -> None:
     # An absent component is a discoverable state, not an exception —
-    # and this ``None`` is the world seats' ``None`` (composition), not
-    # the pool seat's (deployment): nothing about it says a database.
-    class Empty:
-        def get(self, name: str) -> None:
-            return None
-
-    assert seat.featsel_world_component(Empty()) is None  # type: ignore[arg-type]
-    # With an application handed in, the seat reads that application and
-    # composes nothing of its own.
+    # and this ``None`` is a statement about composition, not the pool's
+    # (deployment): nothing about it says a database.
+    assert Application().get("bootstrap-featsel") is None
+    # With an application handed in, the answer is that application's
+    # component.
     app = create_app()
-    assert seat.featsel_world_component(app) is app.get("bootstrap-featsel")
+    assert app.get("bootstrap-featsel") is dict(app.components)["bootstrap-featsel"]

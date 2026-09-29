@@ -240,16 +240,16 @@ def test_the_composed_application_carries_the_process(
     # The integration the app namespace exists for: a deployment that
     # names its sidecar composes, through the factory's scan, an
     # application whose ``scoring-null-pick-rate`` component is a process
-    # that answers the rate — reached here through the seat, the way a
-    # member that needs β₂ reaches it without importing this one.
+    # that answers the rate — reached here by name through the composed
+    # application, the way a member that needs β₂ reaches it without
+    # importing this one.
     from app.module_loader import create_app
-    from app.modules.scoring import scorer as scorer_seat
 
     sidecar = _sealed_campaign(tmp_path, _CAMPAIGN)
     monkeypatch.setenv("NULL_SIDECAR_PATH", str(sidecar.path))
     monkeypatch.setenv("NULL_SIDECAR_KEY_REF", "hex:" + _KEY.hex())
     app = create_app()
-    process = scorer_seat.null_pick_scorer_component(app)
+    process = app.get("scoring-null-pick-rate")
     assert process is not None
     assert callable(getattr(process, "null_pick_rate", None))
     assert process.null_pick_rate(_PICKS) == 0.5

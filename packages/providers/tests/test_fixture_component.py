@@ -1,4 +1,4 @@
-"""Feature 194's wiring: the fixture store is composed by convention, and seated.
+"""Feature 194's wiring: the fixture store is composed by convention.
 
 The same two halves :mod:`tests.test_cache_component` states for feature 200's
 store and :mod:`tests.test_rotation_component` for feature 197's, asked about
@@ -7,12 +7,11 @@ because they are properties of *this* feature's landing.  The **registration**
 half asks whether ``import providers`` joins the application with a fixture
 store in it, with no central registry, router, entry-points table or factory
 edited — which is what lets this feature land in parallel with every other one.
-The **seat** half asks whether ``app.modules.providers`` hands that store back
-to a caller reaching the app package rather than the member, and whether the
-seat's name for it and the member's are still one name.
+The **composition** half asks whether ``create_app().get(...)`` hands that
+store back under the member's own component name.
 
 Two things are particular to this feature rather than transposed, and both come
-from the store being a *directory* where every other seated service in this
+from the store being a *directory* where every other composed service in this
 member is a *table*:
 
 * the builder resolves ``PROVIDER_FIXTURE_DIR``, not ``DATABASE_URL``, so the
@@ -42,27 +41,6 @@ import pathlib
 
 import providers
 import pytest
-
-#: The seat's module path, spelled the way the loader spells every seat.  The
-#: import happens inside the tests rather than at module scope for the reason
-#: :mod:`tests.test_cache_component` gives: the seat pulls in the ``app``
-#: package, and this member suite only reaches it once the repository root is
-#: on ``sys.path``.
-SEAT = "app.modules.providers"
-
-
-@pytest.fixture
-def app_on_the_path(monkeypatch):
-    """Make ``app`` importable, then hand back the seat module.
-
-    The member suite does not depend on the ``app`` package — it must not, or
-    the member could not be tested on its own — so the seat is imported here
-    with the repository root spliced onto ``sys.path``, and the splice is
-    undone afterwards.
-    """
-    root = str(pathlib.Path(__file__).resolve().parents[3])
-    monkeypatch.syspath_prepend(root)
-    return importlib.import_module(SEAT)
 
 
 @pytest.fixture
@@ -184,33 +162,11 @@ def test_the_builder_takes_no_arguments_as_the_registration_protocol_requires(
     assert builder().root == fixture_dir
 
 
-# ── The seat: the app package's way to the same store ─────────────────────────
-
-
-def test_the_seat_names_the_same_component_the_member_registers(app_on_the_path):
-    # Two spellings of one component name, in two packages that must not import
-    # each other: the seat cannot import the member's constant without making
-    # the app package depend on a workspace member, so the two are pinned
-    # against each other here.  A drift would make the seat silently answer
-    # ``None`` for a component that *is* composed — the failure mode with no
-    # error message anywhere.
-    assert (
-        app_on_the_path.FIXTURE_STORE_NAME == providers.FIXTURE_STORE_COMPONENT
-    )
-
-
-def test_the_seat_carries_this_features_two_exports(app_on_the_path):
-    # The seat's shape for this feature, asserted by membership (the exhaustive
-    # what-else assertion lives in the pin suite's seat test, which this feature
-    # widened rather than replaced): a name and an accessor, and no re-export of
-    # the records or the error vocabulary — those are the member's one spelling.
-    assert "FIXTURE_STORE_NAME" in app_on_the_path.__all__
-    assert "fixture_store_component" in app_on_the_path.__all__
-    assert callable(app_on_the_path.fixture_store_component)
+# ── The composition: the application's way to the same store ──────────────────
 
 
 def test_the_composed_store_raises_this_features_errors_by_name(
-    app_on_the_path, fixture_dir
+    fixture_dir,
 ):
     # The composed store raises errors from the *scanned* copy of this member,
     # so ``pytest.raises(providers.FixtureStoreError)`` — the canonical class —
@@ -221,7 +177,7 @@ def test_the_composed_store_raises_this_features_errors_by_name(
     # vocabulary.
     from app.module_loader import create_app
 
-    store = create_app().get(app_on_the_path.FIXTURE_STORE_NAME)
+    store = create_app().get(providers.FIXTURE_STORE_COMPONENT)
 
     # A blank root is refused before anything is opened — which is enough to see
     # the class the composed copy raises, and that it is *this feature's* class
@@ -238,7 +194,7 @@ def test_the_composed_store_raises_this_features_errors_by_name(
     assert type(raised).__module__.startswith("_nullius_scanned_providers")
 
 
-def test_the_composed_store_files_the_members_exchanges(app_on_the_path, fixture_dir):
+def test_the_composed_store_files_the_members_exchanges(fixture_dir):
     # The double-import remedy, exercised at the composed seam: an Exchange built
     # from the *directly imported* member is not made of the scanned copy's
     # Request class — ``isinstance`` across the two is False for one and the same
@@ -248,7 +204,7 @@ def test_the_composed_store_files_the_members_exchanges(app_on_the_path, fixture
     # two classes, which is the whole defect the recognition seam exists for.
     from app.module_loader import create_app
 
-    store = create_app().get(app_on_the_path.FIXTURE_STORE_NAME)
+    store = create_app().get(providers.FIXTURE_STORE_COMPONENT)
     request = providers.Request(
         messages=(providers.Message(role="user", content="q"),), model="m"
     )
@@ -274,7 +230,7 @@ def test_the_composed_store_files_the_members_exchanges(app_on_the_path, fixture
     assert filed.request.messages[0].content == "q"
 
 
-def test_the_scanned_member_is_a_second_module_object(app_on_the_path):
+def test_the_scanned_member_is_a_second_module_object():
     # The trap this suite works around, pinned as a fact: the loader imports
     # each member under a private name by file path, so the class a *scanned*
     # store is an instance of is not the class the directly-imported
@@ -289,12 +245,13 @@ def test_the_scanned_member_is_a_second_module_object(app_on_the_path):
     assert scanned.FixtureStore.__name__ == direct.FixtureStore.__name__
 
 
-def test_the_seat_hands_back_the_composed_store(app_on_the_path, fixture_dir):
-    # The seat's whole job: a caller reaching the *app* package gets feature
-    # 194's store.  The class check is by name for the reason the scanned-module
+def test_the_application_hands_back_the_composed_store(fixture_dir):
+    # A caller reaching the composed application gets feature 194's store.  The class check is by name for the reason the scanned-module
     # test records; the identity check is real, because the store is compared
     # against the application's own component.
-    store = app_on_the_path.fixture_store_component()
+    from app.module_loader import create_app
+
+    store = create_app().get(providers.FIXTURE_STORE_COMPONENT)
 
     assert store is not None
     assert type(store).__name__ == "FixtureStore"
@@ -306,33 +263,34 @@ def test_the_seat_hands_back_the_composed_store(app_on_the_path, fixture_dir):
     assert not fixture_dir.exists()
 
 
-def test_the_seat_accepts_an_application_it_was_handed(app_on_the_path, fixture_dir):
-    # The seat's other entry point, the one a caller inside a request has: with
-    # the application in hand, no second composition happens — asserted by
-    # composing once and checking the seat answers from *that* application's
-    # component map.
+def test_an_application_in_hand_answers_from_its_own_component_map(fixture_dir):
+    # The entry point a caller inside a request has: with the application in
+    # hand, no second composition happens — asserted by composing once and
+    # checking the answer is *that* application's component.
     from app.module_loader import create_app
 
     application = create_app()
-    store = app_on_the_path.fixture_store_component(application)
+    store = application.get(providers.FIXTURE_STORE_COMPONENT)
 
-    assert store is application.get(app_on_the_path.FIXTURE_STORE_NAME)
+    assert store is dict(application.components)[providers.FIXTURE_STORE_COMPONENT]
     assert store.root == fixture_dir
 
 
-def test_the_seat_answers_none_when_the_component_contributes_none(
-    app_on_the_path, monkeypatch
+def test_the_application_answers_none_when_the_component_contributes_none(
+    monkeypatch,
 ):
     # The deployed shape of "no store": the component *is* registered and its
-    # builder contributed ``None``, so the seat answers ``None`` — faithfully
+    # builder contributed ``None``, so the application answers ``None`` — faithfully
     # reporting the application, and indistinguishable here (by design) from the
     # unregistered case below.
     monkeypatch.delenv(providers.FIXTURE_DIR_ENV, raising=False)
-    assert app_on_the_path.fixture_store_component() is None
+    from app.module_loader import create_app
+
+    assert create_app().get(providers.FIXTURE_STORE_COMPONENT) is None
 
 
-def test_the_seat_answers_none_for_an_empty_workspace(app_on_the_path, tmp_path):
-    # The factory's degrade-don't-break stance, seen from the seat: an
+def test_an_empty_workspace_answers_none(tmp_path):
+    # The factory's degrade-don't-break stance: an
     # application with no components at all answers ``None`` rather than
     # raising.  Composed into a *fresh* registry — the module-level one already
     # holds every component this process imported, so scanning an empty root
@@ -341,14 +299,12 @@ def test_the_seat_answers_none_for_an_empty_workspace(app_on_the_path, tmp_path)
 
     empty = create_app(tmp_path, registry=Registration())
     assert empty.order == ()
-    assert app_on_the_path.fixture_store_component(empty) is None
+    assert empty.get(providers.FIXTURE_STORE_COMPONENT) is None
 
 
-def test_importing_the_member_does_not_import_its_own_seat():
+def test_importing_the_member_imports_the_loader():
     # The direction of the dependency, checked in a fresh interpreter: the
-    # member imports the loader (for ``register``) but must not import the seat
-    # — ``app.modules.providers`` imports the member, so a member that imported
-    # the seat would be a cycle closing only at composition time.
+    # member imports the loader (for ``register``) on its own import.
     import subprocess
     import sys
 
@@ -356,7 +312,6 @@ def test_importing_the_member_does_not_import_its_own_seat():
     code = (
         "import sys; sys.path.insert(0, 'src'); sys.path.insert(0, "
         "'packages/providers/src'); import providers; "
-        "print([m for m in sys.modules if m.startswith('app.modules')]); "
         "print('loader' if 'app.module_loader' in sys.modules else 'no-loader')"
     )
     completed = subprocess.run(
@@ -366,6 +321,4 @@ def test_importing_the_member_does_not_import_its_own_seat():
         text=True,
         check=True,
     )
-    seats, loader = completed.stdout.split()
-    assert seats == "[]"
-    assert loader == "loader"
+    assert completed.stdout.split() == ["loader"]

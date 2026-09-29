@@ -323,8 +323,8 @@ component the eight β-laws never needed: :data:`~scoring.SCORER_COMPONENT_NAME`
 (``scoring-null-pick-rate``), composing to the process or ``None``
 (deployment state — where no sidecar is configured there is no rate to
 compute, and the caller that needs one refuses to proceed rather than
-scoring rateless), reached from the app package through the sibling seat
-:mod:`app.modules.scoring.scorer`.  The barrier is the answer's type, not
+scoring rateless), read by name through the composed application.
+The barrier is the answer's type, not
 a promise: no accessor for the held sidecar, no label cache, a ``repr``
 that names the class and nothing it holds, and refusals that name the
 *pick* and never the *branch* — which nodes are null is the one fact this
@@ -422,8 +422,8 @@ for a campaign that made none, and unknown is not zero.  Unlike the
 eleven laws before it this one owns state — one row per campaign — so
 it takes the component the objective never needed:
 :data:`~scoring.FDR_COMPONENT_NAME` (``scoring-fdr-deploy``), composing
-to the store or ``None`` (no ``DATABASE_URL`` named), reached from the
-app package through the sibling seat :mod:`app.modules.scoring.fdr`.
+to the store or ``None`` (no ``DATABASE_URL`` named), read by name
+through the composed application.
 It charges nothing — no β-term reads a base-rate projection, for the
 reason 258's docstring states: a term over a projection would steer the
 loop on what the policy *would* do rather than the error it made — and
@@ -439,9 +439,9 @@ carries 266's pair is the ops member's (feature 344); the eleven free
 laws persist nothing and never will — that is the law that keeps the
 arithmetic pure.  The category's two state-bound features have each
 landed their own component beside :data:`COMPONENT_NAME` — 265's scorer
-process, 267's FDR store — the growth pattern ``app.modules.bootstrap``
-took for its pool: another component name, another sibling seat, this
-module's surface otherwise untouched.
+process, 267's FDR store — the growth pattern the bootstrap member
+took for its pool: another component name, this module's surface
+otherwise untouched.
 """
 
 from __future__ import annotations
@@ -553,9 +553,9 @@ __all__ = [
 __version__ = "0.1.0"
 
 #: The component name this member registers under — the plugin name the
-#: spec's features carry (``plugin="scoring"``), so the component key, this
-#: member's seat (:mod:`app.modules.scoring`) and the spec cannot drift
-#: apart.  The features of this category that own their own deployment
+#: spec's features carry (``plugin="scoring"``), so the component key the
+#: composed application is read by and the spec cannot drift apart.  The
+#: features of this category that own their own deployment
 #: state (265's scorer process and 267's FDR store, below) register their
 #: own names beside this one rather than widening this one, the way
 #: ``bootstrap-pool`` sits beside ``bootstrap``.
@@ -592,15 +592,13 @@ def build_world_objective() -> Callable[..., WorldScore]:
 
 #: The component name the scorer process registers under — feature 265's
 #: own, beside :data:`COMPONENT_NAME` the way ``bootstrap-pool`` sits
-#: beside ``bootstrap``.  Spelled here, in the law module
+#: beside ``bootstrap``.  Spelled here and in the law module
 #: (:data:`scoring._scorer.SCORER_COMPONENT_NAME`, for a caller importing
-#: the process without the package surface) and in the sibling seat
-#: (:data:`app.modules.scoring.scorer.COMPONENT_NAME`, for a caller
-#: reaching through the app package) — three spellings of one name, and
-#: the member's suite asserts they agree so they cannot drift apart
-#: silently.  Prefixed with the member's own name because a composed
-#: application's ``order`` is name-sorted and the process must sort
-#: beside — never inside — the member's other component.
+#: the process without the package surface) — two spellings of one name,
+#: which must agree so they cannot drift apart silently.  Prefixed with
+#: the member's own name because a composed application's ``order`` is
+#: name-sorted and the process must sort beside — never inside — the member's
+#: other component.
 SCORER_COMPONENT_NAME = "scoring-null-pick-rate"
 
 
@@ -644,10 +642,8 @@ def build_null_pick_scorer() -> NullPickScorer | None:
 # ``bootstrap``.  Spelled once, in the law module and imported above
 # (:data:`scoring._fdr.FDR_COMPONENT_NAME`) rather than restated here,
 # so the member's surface and its law cannot drift apart the way two
-# literals could — and spelled a second time, independently, in the
-# sibling seat (:data:`app.modules.scoring.fdr.COMPONENT_NAME`, for a
-# caller reaching through the app package), which the member's suite
-# asserts agrees.  Prefixed with the member's own name because a
+# literals could — and read by name through the composed application.
+# Prefixed with the member's own name because a
 # composed application's ``order`` is name-sorted and the store must
 # sort beside — never inside — the member's other components.
 @register(FDR_COMPONENT_NAME)

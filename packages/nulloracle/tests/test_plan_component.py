@@ -1,4 +1,4 @@
-"""Feature 122's plugin seam and its seat in the ``app`` namespace.
+"""Feature 122's plugin seam and its read through the composed application.
 
 ``test_component.py`` pins feature 109's registration, ``test_guard_component.py``
 feature 123's, ``test_phi_component.py`` feature 117's, ``test_flip_depth_component.py``
@@ -19,9 +19,8 @@ Three things make it worth its own suite rather than a section of feature
   below is what catches that, and a single-composition test would pass for
   it.
 
-* **the seat needs two composed halves, like the selection's.**  Most seats
-  answer for a component that resolves from a single source.  This one's
-  store reads the campaign row and the tree's flip depths from a relational
+* **the component needs two composed halves, like the selection's.**  Most
+  components resolve from a single source.  This one's store reads the campaign row and the tree's flip depths from a relational
   database *and* the root selections from §7.1's sidecar, so the composed
   component exists only where both resolve — and ``None`` therefore means
   *one of the two is unconfigured*, never *the tree is homogeneous*, which is
@@ -31,7 +30,7 @@ Three things make it worth its own suite rather than a section of feature
   would answer ``homogeneous`` for worlds it never looked at, which is
   precisely the failure feature 122 exists to rule out.
 
-* **the seat is a ninth submodule, and its name had to be chosen.**
+* **the component's name had to be chosen.**
   ``app.order`` is name-sorted, and feature 123's guard must stay immediately
   after the sidecar in it; a ``c...``-prefixed component name would have
   sorted between them and silently broken that adjacency.  The ``plan-``
@@ -49,7 +48,6 @@ unrelated feature in the process.
 
 from __future__ import annotations
 
-import ast
 import inspect
 import uuid
 from pathlib import Path
@@ -75,8 +73,6 @@ from nulloracle import (
 )
 
 from app.module_loader import Application, create_app, scan_components
-
-SEAT_MODULE = "app.modules.nulloracle.plan"
 
 #: The 32-byte test key the member's conftest and suites use. Not a secret
 #: and not derived from anything: every assertion about "the right key opens
@@ -123,45 +119,6 @@ def _assert_is_the_campaign_plan_gate(component: object) -> None:
     assert type(component).__name__ == "CampaignPlanGate"
     assert type(component).__module__.endswith("nulloracle.plan")
     assert callable(component.review)
-
-
-def _imported_names(path: str | None, *, runtime_only: bool = True) -> set[str]:
-    """The top-level modules ``path`` imports, optionally excluding typing blocks.
-
-    Parsed rather than scanned: a module's *docstring* discusses the members it
-    deliberately does not import — that is where the decision is argued — so a
-    substring search over the file reports imports that are not there.
-
-    With ``runtime_only`` (the default), names imported inside an
-    ``if TYPE_CHECKING:`` guard are left out, because the guard is exactly the
-    mechanism a module uses to name a type it does not depend on.  Which is the
-    question this suite is actually asking: what does importing the seat bind,
-    as opposed to what does it merely describe.
-    """
-    assert path is not None
-    tree = ast.parse(Path(path).read_text(encoding="utf-8"))
-    guarded: set[int] = set()
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.If)
-            and isinstance(node.test, ast.Name)
-            and node.test.id == "TYPE_CHECKING"
-        ):
-            guarded.update(
-                sub.lineno for sub in ast.walk(node) if hasattr(sub, "lineno")
-            )
-    imported: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if runtime_only and node.lineno in guarded:
-                    continue
-                imported.add(alias.name.split(".")[0])
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            if runtime_only and node.lineno in guarded:
-                continue
-            imported.add(node.module.split(".")[0])
-    return imported
 
 
 # -- The registration ---------------------------------------------------------------
@@ -380,7 +337,7 @@ class TestThePlanGateComponentRegisters:
     ) -> None:
         # The other direction, pinned with it: the ``plan-`` family lands
         # before ``true-ir-*`` and ``type-*``, so the relative order the
-        # member's seats document — null families, then the planning gate,
+        # member's components document — null families, then the planning gate,
         # then the regime writers — is the order the composed application
         # actually carries.
         app = create_app()
@@ -393,77 +350,61 @@ class TestThePlanGateComponentRegisters:
         )
 
 
-# -- The seat -----------------------------------------------------------------------
+# -- Reading the composed component ---------------------------------------------
 
 
-class TestTheSeatInTheAppNamespace:
-    """``app/modules/nulloracle/plan.py`` — the app package's way to the
-    composed gate, without the app package importing the member.
+class TestReadingTheComposedComponent:
+    """The component as ``create_app().get(...)`` hands it to a caller outside
+    the member.
     """
 
     def test_the_component_name_matches_the_member(self) -> None:
-        # Spelled twice on purpose — once in the member, once in the seat —
-        # so the two cannot drift apart silently.
         import nulloracle
 
-        from app.modules.nulloracle import plan as seat
-
         assert (
-            seat.COMPONENT_NAME
-            == nulloracle.PLAN_COMPONENT_NAME
+            nulloracle.PLAN_COMPONENT_NAME
             == PLAN_COMPONENT_NAME
         )
 
-    def test_the_seat_exposes_the_composed_gate(
+    def test_the_application_exposes_the_composed_gate(
         self, both_halves: tuple[str, Path]
     ) -> None:
-        from app.modules.nulloracle.plan import plan_gate_component
+        _assert_is_the_campaign_plan_gate(create_app().get(PLAN_COMPONENT_NAME))
 
-        _assert_is_the_campaign_plan_gate(plan_gate_component())
-
-    def test_the_seat_reads_from_an_application_it_is_handed(self) -> None:
-        from app.modules.nulloracle.plan import plan_gate_component
-
+    def test_the_component_is_read_from_an_application_it_is_handed(self) -> None:
         application = Application(
             components={PLAN_COMPONENT_NAME: "sentinel"},
             order=(PLAN_COMPONENT_NAME,),
         )
-        assert plan_gate_component(application) == "sentinel"
+        assert application.get(PLAN_COMPONENT_NAME) == "sentinel"
 
     def test_an_absent_component_is_none_rather_than_an_error(self) -> None:
-        from app.modules.nulloracle.plan import plan_gate_component
-
         empty = Application(components={}, order=())
-        assert plan_gate_component(empty) is None
+        assert empty.get(PLAN_COMPONENT_NAME) is None
 
     def test_an_unconfigured_environment_yields_none_not_an_exception(
         self,
     ) -> None:
-        from app.modules.nulloracle.plan import plan_gate_component
-
-        assert plan_gate_component() is None
+        assert create_app().get(PLAN_COMPONENT_NAME) is None
 
     def test_a_half_configured_environment_yields_none(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # This seat's ``None`` carries a second meaning worth stating: *one
+        # This component's ``None`` carries a second meaning worth stating: *one
         # of the gate's two halves is unconfigured*.  It must never be read
         # as *the tree is homogeneous* — that is a fact about a world, and
         # reading it off a deployment would let a mixed world through
         # believing it had been reviewed.
-        from app.modules.nulloracle.plan import plan_gate_component
-
         monkeypatch.setenv(DATABASE_URL_ENV, f"sqlite:///{tmp_path / 'plan.db'}")
-        assert plan_gate_component() is None
+        assert create_app().get(PLAN_COMPONENT_NAME) is None
 
-    def test_the_seat_can_review_a_homogeneous_world(
+    def test_the_composed_component_can_review_a_homogeneous_world(
         self, both_halves: tuple[str, Path]
     ) -> None:
-        # Feature 122 from the app namespace, the quiet half: a Type-R
+        # Feature 122 through the composition, the quiet half: a Type-R
         # campaign whose selection is sealed reviews to the plan its writers
         # left behind — the path an assembled campaign loop takes after a
         # lawful planting.
-        from app.modules.nulloracle.plan import plan_gate_component
 
         # Both stores from the one composed application — feature 118's
         # selection plants, feature 122's gate reviews — because the two
@@ -472,7 +413,7 @@ class TestTheSeatInTheAppNamespace:
         # sidecar on an ``isinstance`` check, being from a different module
         # object, and an assembled campaign loop holds exactly this pairing.
         app = create_app()
-        gate = plan_gate_component(app)
+        gate = app.get(PLAN_COMPONENT_NAME)
         selection_store = app.get(TYPE_R_COMPONENT_NAME)
         assert gate is not None and selection_store is not None
         with gate._connect() as connection:
@@ -492,16 +433,14 @@ class TestTheSeatInTheAppNamespace:
         assert len(plan.root_selections) == 12
         assert plan.flip_branches == ()
 
-    def test_the_seat_can_refuse_a_mixed_world(
+    def test_the_composed_component_can_refuse_a_mixed_world(
         self, both_halves: tuple[str, Path]
     ) -> None:
-        # The sentence's own path, end to end from the app namespace: a flip
+        # The sentence's own path, end to end through the composition: a flip
         # depth drawn onto a Type-R campaign's tree — the state feature 119's
         # writer does not type-check — and the composed gate pronouncing the
         # ``heterogeneous_world`` refusal on it.
-        from app.modules.nulloracle.plan import plan_gate_component
-
-        gate = plan_gate_component()
+        gate = create_app().get(PLAN_COMPONENT_NAME)
         assert gate is not None
         root = str(uuid.uuid4())
         with gate._connect() as connection:
@@ -525,96 +464,10 @@ class TestTheSeatInTheAppNamespace:
         assert type(raised.value).__name__ == "HeterogeneousWorldError"
         assert str(raised.value).startswith("heterogeneous_world")
 
-    def test_the_seat_is_a_composition_read_and_not_a_second_api(self) -> None:
-        # The seat's export list, pinned: a caller who has the gate reaches
-        # ``review`` on it, and a second spelling here would be a second
-        # thing to keep in sync.  The one question this module answers is
-        # *what is the composed planning gate?*
-        from app.modules.nulloracle import plan as seat
-
-        assert set(seat.__all__) == {
-            "COMPONENT_NAME",
-            "plan_gate_component",
-        }
-        assert not hasattr(seat, "CampaignPlan")
-        assert not hasattr(seat, "CampaignPlanGate")
-        assert not hasattr(seat, "review_campaign_plan")
-        assert not hasattr(seat, "HETEROGENEOUS_WORLD")
-
-    def test_the_sidecar_seat_is_untouched_by_the_ninth_component(self) -> None:
-        # This seat is a *submodule* beside feature 109's, precisely so that
-        # the older seat's promise does not change: a caller that only wants
-        # the sidecar never imports this module and sees the same two names
-        # it always did.
-        from app.modules import nulloracle as seat
-
-        assert set(seat.__all__) == {"COMPONENT_NAME", "null_sidecar_component"}
-        assert seat.COMPONENT_NAME == SIDECAR_COMPONENT_NAME
-
-    def test_the_other_seats_are_untouched_by_the_ninth_component(self) -> None:
-        # Every older seat's promise is exactly what it was: a ninth
-        # submodule beside them does not change what a caller importing any
-        # one of them sees.
-        from app.modules.nulloracle import flipdepth as flip_seat
-        from app.modules.nulloracle import irprob as irprob_seat
-        from app.modules.nulloracle import ksguard as guard_seat
-        from app.modules.nulloracle import selection as selection_seat
-
-        assert set(flip_seat.__all__) == {"COMPONENT_NAME", "flip_depth_component"}
-        assert set(irprob_seat.__all__) == {
-            "COMPONENT_NAME",
-            "true_ir_flip_depth_component",
-        }
-        assert set(guard_seat.__all__) == {"COMPONENT_NAME", "ks_guard_component"}
-        assert set(selection_seat.__all__) == {
-            "COMPONENT_NAME",
-            "type_r_selection_component",
-        }
-
-    def test_importing_the_seat_imports_no_member(self) -> None:
-        # The seat exists so the ``app`` package does not depend on a
-        # workspace member at import time.  Asserted on the seat's own
-        # compiled form rather than on ``sys.modules`` — every other test in
-        # this suite has already imported the member, so the module cache
-        # cannot answer this — and on the *imports*, not on the text: the
-        # member's name appears in a ``TYPE_CHECKING`` block, which never
-        # executes, and a substring scan over the file cannot tell that from
-        # a real import.
-        import app.modules.nulloracle.plan as module
-
-        imported = _imported_names(module.__file__)
-        assert "nulloracle" not in imported
-        assert "app" in imported
-        assert "nulloracle" in _imported_names(module.__file__, runtime_only=False)
-
-    def test_the_seats_are_distinct_modules(self) -> None:
-        import app.modules.nulloracle as sidecar_seat
-        import app.modules.nulloracle.flipdepth as flip_seat
-        import app.modules.nulloracle.irprob as irprob_seat
-        import app.modules.nulloracle.ksguard as guard_seat
-        import app.modules.nulloracle.phi as phi_seat
-        import app.modules.nulloracle.plan as plan_seat
-        import app.modules.nulloracle.selection as selection_seat
-        import app.modules.nulloracle.verdict as verdict_seat
-
-        assert plan_seat is not sidecar_seat
-        assert plan_seat is not guard_seat
-        assert plan_seat is not phi_seat
-        assert plan_seat is not verdict_seat
-        assert plan_seat is not flip_seat
-        assert plan_seat is not irprob_seat
-        assert plan_seat is not selection_seat
-        assert plan_seat.__name__ == SEAT_MODULE
-
-    def test_the_seat_answers_the_members_own_builder(self) -> None:
-        # The seat and the builder cannot disagree about what the component
-        # is: with neither half configured both answer None, and with both
-        # set both hand back the same kind of object — which is the whole
-        # reason the seat reads the factory rather than resolving the gate
-        # itself.
+    def test_the_composition_answers_the_members_own_builder(self) -> None:
+        # The composition and the builder cannot disagree about what the
+        # component is: unconfigured, both answer None.
         import nulloracle
 
-        from app.modules.nulloracle.plan import plan_gate_component
-
         assert nulloracle.build_campaign_plan_gate() is None
-        assert plan_gate_component() is None
+        assert create_app().get(PLAN_COMPONENT_NAME) is None

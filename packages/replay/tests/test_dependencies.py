@@ -465,7 +465,7 @@ def test_an_absent_canary_member_leaves_the_path_unmarked(
     # A deployment where the canary member was not scanned has no replay path
     # marked at all.  The honest answer is *not marked* — the same "an absent
     # component is a discoverable state, not an exception" stance the member's
-    # builders and its seat take — rather than inventing a mark no other guard
+    # builders take — rather than inventing a mark no other guard
     # shares, which would let this wall refuse calls in an extent no replay
     # entered.
     from replay import dependencies

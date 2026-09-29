@@ -65,9 +65,7 @@ tree it lives in).  So it is a free function beside them, reached as
 :func:`bootstrap.world_census` sits beside the bootstrap pool and feature 215's
 ``tree_diversity`` sits beside this one.  A tenth ``signal-agent-*``
 registration would put a name in the registry for a question that composes
-nothing, and ``src/app/modules/signal-agent/`` gains no seat file for the same
-reason: that directory's convention is one seat per *composed component*, and
-this feature has none.
+nothing, and this feature has no *composed component* to read.
 
 **One file, one handle — and that is a decision.**  The figure joins
 ``node_proposal`` (207's table) to ``replay_score`` (``0109``'s) inside one

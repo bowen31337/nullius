@@ -903,20 +903,18 @@ def test_a_database_url_this_member_cannot_speak_is_refused_in_the_pool_s_terms(
         ReplayPool("   ")
 
 
-def test_the_composed_component_is_the_pool_the_seat_reaches(
+def test_the_composed_component_is_the_replay_pool(
     monkeypatch: pytest.MonkeyPatch, pool
 ) -> None:
     # The plugin seam from the refusal side: the factory's scan imports the
     # member, its @register fires, and a composed application carries the pool for
-    # the deployment the process is running in — reachable by way of the app
-    # namespace, which is how §C5's dreaming loop will ask for it.
+    # the deployment the process is running in — reachable by name from the
+    # composed application, which is how §C5's dreaming loop will ask for it.
     from pathlib import Path
 
     import tripwires
 
     from app.module_loader import Application, Registration, create_app
-    from app.modules.tripwires.excise import COMPONENT_NAME as SEAT_NAME
-    from app.modules.tripwires.excise import replay_pool_component
 
     monkeypatch.setenv(DATABASE_URL_ENV, pool.database_url)
     member_src = Path(tripwires.__file__).resolve().parent.parent
@@ -924,15 +922,14 @@ def test_the_composed_component_is_the_pool_the_seat_reaches(
 
     composed = application.get(EXCISE_COMPONENT_NAME)
     assert type(composed).__name__ == "ReplayPool"
-    assert replay_pool_component(application) is composed
-    # The three seats answer three different questions, and the newest is a
+    # The three components answer three different questions, and the newest is a
     # component rather than an accessor on an older one.
     assert type(application.get("tripwires")).__name__ == "TimeShuffleTripwire"
     assert type(application.get("tripwires-poison")).__name__ == "PoisonStore"
-    assert SEAT_NAME == EXCISE_COMPONENT_NAME == "tripwires-excise"
+    assert EXCISE_COMPONENT_NAME == "tripwires-excise"
     # A pool registered but not yet used: composition opens no database.
     assert not Path(composed.path).exists()
-    assert replay_pool_component(Application(components={}, order=())) is None
+    assert Application(components={}, order=()).get(EXCISE_COMPONENT_NAME) is None
 
 
 def test_the_composed_pool_reads_its_marks_through_the_composed_store(
@@ -941,7 +938,7 @@ def test_the_composed_pool_reads_its_marks_through_the_composed_store(
     # The two components are two halves of one §C6 sentence, so a caller holding
     # the pool must be able to read the mark that condemned a row without
     # composing a second object graph. `marks` is that seam, and it names the same
-    # database as the store feature 131's own seat hands back.
+    # database as the store feature 131's own component hands back.
     from pathlib import Path
 
     import tripwires
@@ -1064,6 +1061,6 @@ def test_the_probe_suite_still_needs_no_database() -> None:
     assert verdict.outcome == "ok"
     # Both stores compose beside it, or do not — the point is that the probe's
     # path does not care which. An unconfigured deployment is the case this
-    # asserts on, so both seats answering `None` is the expected outcome.
+    # asserts on, so both components answering `None` is the expected outcome.
     assert application.get("tripwires-poison") is None
     assert application.get(EXCISE_COMPONENT_NAME) is None

@@ -23,7 +23,7 @@ hold it to each clause:
 
 The store seam (``TrialLedger.debit``) is pinned alongside the endpoint,
 because that is where the check-and-insert is one transaction; and the
-registration chain — member, factory, seat — is pinned so the route
+registration chain — member, factory, composition — is pinned so the route
 cannot silently fall out of the composed application.
 """
 
@@ -43,7 +43,6 @@ from app.module_loader import (
     create_app,
     scan_components,
 )
-from app.modules import ledger as ledger_seat
 from ledger import (
     DATABASE_URL_ENV,
     DEBIT_COMPONENT_NAME,
@@ -439,7 +438,7 @@ def test_the_endpoint_duck_accepts_the_composed_component(
     # same class object a direct import yields — the endpoint must take
     # it anyway (the seam is the contract, not the class identity).
     app = create_app(MEMBER_SRC, registry=Registration())
-    composed = ledger_seat.ledger_component(app)
+    composed = app.get("ledger")
     endpoint = DebitEndpoint(composed)  # type: ignore[arg-type]
     assert endpoint.post(DebitRequest(NODE_A, CAMPAIGN, OUTCOME, CHARGES_BUDGET, epoch_id=EPOCH, **PROVENANCE)).seq == 1
 
@@ -468,7 +467,7 @@ def test_from_env_reads_a_handed_environment_over_the_process_one() -> None:
     assert endpoint.ledger.database_url == "sqlite:///handed.db"
 
 
-# -- Registration, composition, seat ----------------------------------------------
+# -- Registration, composition ----------------------------------------------------
 
 
 def test_the_route_is_spelled_once_everywhere() -> None:
@@ -521,23 +520,5 @@ def test_the_endpoint_and_the_store_compose_over_one_database(
     assert store.get(response.seq) == response.record
 
 
-def test_the_seat_exposes_the_composed_debit_endpoint(
-    test_database_url: str,
-) -> None:
-    assert ledger_seat.DEBIT_COMPONENT_NAME == DEBIT_COMPONENT_NAME
-    app = create_app(MEMBER_SRC, registry=Registration())
-    component = ledger_seat.debit_component(app)
-    assert component is app.get(DEBIT_COMPONENT_NAME)
-    assert callable(component.post)
-
-
-def test_the_seat_reads_a_debit_component_from_an_application_it_is_handed() -> None:
-    application = Application(
-        components={DEBIT_COMPONENT_NAME: {"sentinel": True}},
-        order=(DEBIT_COMPONENT_NAME,),
-    )
-    assert ledger_seat.debit_component(application) == {"sentinel": True}
-
-
 def test_an_absent_debit_component_is_none_rather_than_an_error() -> None:
-    assert ledger_seat.debit_component(Application()) is None
+    assert Application().get(DEBIT_COMPONENT_NAME) is None

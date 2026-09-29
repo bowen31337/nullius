@@ -1,10 +1,10 @@
-"""Feature 120's plugin seam and its seat in the ``app`` namespace.
+"""Feature 120's plugin seam and its read through the composed application.
 
 ``test_component.py`` pins feature 109's registration, ``test_guard_component.py``
 feature 123's, ``test_phi_component.py`` feature 117's, ``test_flip_depth_component.py``
 feature 119's; this pins feature 120's — the member's *seventh* component, and
 the second whose builder resolves a database URL for the flip-depth family.
-Two things make it worth its own suite rather than a section of feature 119's:
+It is worth its own suite rather than a section of feature 119's because:
 
 * **the member now registers seven components.**  All seven ``@register`` calls
   live in the package's ``__init__``, and the loader re-executes ``__init__`` on
@@ -12,14 +12,6 @@ Two things make it worth its own suite rather than a section of feature 119's:
   is exactly as exposed to the "fires once per process and then drops out"
   failure as the first six, and needs the same *second application* assertion.
   A registration added in a submodule would pass a single-composition test.
-
-* **the seat is a seventh submodule.**  ``app/modules/nulloracle/`` was a single
-  ``__init__.py`` while the member contributed one component; this feature's seat
-  lives beside the other six in ``app/modules/nulloracle/irprob.py``.  The older
-  seats' export lists must stay exactly as they were, and the new module must
-  answer the same shape of question — *what is the composed X?* — with the same
-  ``None``-not-an-exception degradation and the same refusal to become a second
-  API.
 
 Two feature-120-specific properties get their own tests, because they are what
 separates this component from feature 119's:
@@ -46,7 +38,6 @@ unconfigured or misconfigured.
 
 from __future__ import annotations
 
-import ast
 import inspect
 import uuid
 from pathlib import Path
@@ -67,8 +58,6 @@ from nulloracle import (
 )
 
 from app.module_loader import Application, create_app, scan_components
-
-SEAT_MODULE = "app.modules.nulloracle.irprob"
 
 #: A campaign id that is a canonical UUID, so a test about the *seam* is never
 #: accidentally about id validation.
@@ -95,45 +84,6 @@ def database_url(tmp_path, monkeypatch: pytest.MonkeyPatch) -> str:
     return url
 
 
-def _imported_names(path: str | None, *, runtime_only: bool = True) -> set[str]:
-    """The top-level modules ``path`` imports, optionally excluding typing blocks.
-
-    Parsed rather than scanned: a module's *docstring* discusses the members it
-    deliberately does not import — that is where the decision is argued — so a
-    substring search over the file reports imports that are not there.
-
-    With ``runtime_only`` (the default), names imported inside an
-    ``if TYPE_CHECKING:`` guard are left out, because the guard is exactly the
-    mechanism a module uses to name a type it does not depend on.  Which is the
-    question this suite is actually asking: what does importing the seat bind,
-    as opposed to what does it merely describe.
-    """
-    assert path is not None
-    tree = ast.parse(Path(path).read_text(encoding="utf-8"))
-    guarded: set[int] = set()
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.If)
-            and isinstance(node.test, ast.Name)
-            and node.test.id == "TYPE_CHECKING"
-        ):
-            guarded.update(
-                sub.lineno for sub in ast.walk(node) if hasattr(sub, "lineno")
-            )
-    imported: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if runtime_only and node.lineno in guarded:
-                    continue
-                imported.add(alias.name.split(".")[0])
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            if runtime_only and node.lineno in guarded:
-                continue
-            imported.add(node.module.split(".")[0])
-    return imported
-
-
 def _assert_is_the_true_ir_flip_depth(component: object) -> None:
     assert type(component).__name__ == "TrueIRFlipDepth"
     assert type(component).__module__.endswith("nulloracle.irprob")
@@ -151,8 +101,8 @@ class TestTheTrueIRFlipDepthComponentRegisters:
 
     def test_the_component_name_is_hyphen_free(self) -> None:
         # The hyphen-free spelling is the plugin name the spec's features carry
-        # (plugin="nulloracle"), so the component key, the app-namespace seat and
-        # the spec cannot drift apart.
+        # (plugin="nulloracle"), so the component key and the spec cannot drift
+        # apart.
         assert TRUE_IR_FLIP_DEPTH_COMPONENT_NAME == "nulloracle-true-ir-flip-depth"
 
     def test_the_seven_component_names_are_distinct(self) -> None:
@@ -257,73 +207,53 @@ class TestTheTrueIRFlipDepthComponentRegisters:
         assert order.index(KS_GUARD_COMPONENT_NAME) == order.index(SIDECAR_COMPONENT_NAME) + 1
 
 
-# -- The seat -----------------------------------------------------------------------
+# -- Reading the composed store ----------------------------------------------------
 
 
-class TestTheSeatInTheAppNamespace:
-    """``app/modules/nulloracle/irprob.py`` — the app package's way to the
-    composed store, without the app package importing the member.
+class TestReadingTheComposedStore:
+    """``create_app().get("nulloracle-true-ir-flip-depth")`` — the way to the
+    composed store from outside the member.
     """
 
     def test_the_component_name_matches_the_member(self) -> None:
-        # Spelled twice on purpose — once in the member, once in the seat — so
-        # the two cannot drift apart silently.
         import nulloracle
 
-        from app.modules.nulloracle import irprob as seat
+        assert nulloracle.TRUE_IR_FLIP_DEPTH_COMPONENT_NAME == TRUE_IR_FLIP_DEPTH_COMPONENT_NAME == "nulloracle-true-ir-flip-depth"
 
-        assert (
-            seat.COMPONENT_NAME
-            == nulloracle.TRUE_IR_FLIP_DEPTH_COMPONENT_NAME
-            == TRUE_IR_FLIP_DEPTH_COMPONENT_NAME
-        )
+    def test_the_application_exposes_the_composed_store(self, database_url: str) -> None:
+        _assert_is_the_true_ir_flip_depth(create_app().get(TRUE_IR_FLIP_DEPTH_COMPONENT_NAME))
 
-    def test_the_seat_exposes_the_composed_store(self, database_url: str) -> None:
-        from app.modules.nulloracle.irprob import true_ir_flip_depth_component
-
-        _assert_is_the_true_ir_flip_depth(true_ir_flip_depth_component())
-
-    def test_the_seat_reads_from_an_application_it_is_handed(self) -> None:
-        from app.modules.nulloracle.irprob import true_ir_flip_depth_component
-
+    def test_the_component_is_read_from_an_application_it_is_handed(self) -> None:
         application = Application(
             components={TRUE_IR_FLIP_DEPTH_COMPONENT_NAME: "sentinel"},
             order=(TRUE_IR_FLIP_DEPTH_COMPONENT_NAME,),
         )
-        assert true_ir_flip_depth_component(application) == "sentinel"
+        assert application.get(TRUE_IR_FLIP_DEPTH_COMPONENT_NAME) == "sentinel"
 
     def test_an_absent_component_is_none_rather_than_an_error(self) -> None:
-        from app.modules.nulloracle.irprob import true_ir_flip_depth_component
-
-        assert true_ir_flip_depth_component(Application(components={}, order=())) is None
+        assert Application(components={}, order=()).get(TRUE_IR_FLIP_DEPTH_COMPONENT_NAME) is None
 
     def test_an_unconfigured_environment_yields_none_not_an_exception(self) -> None:
-        from app.modules.nulloracle.irprob import true_ir_flip_depth_component
+        assert create_app().get(TRUE_IR_FLIP_DEPTH_COMPONENT_NAME) is None
 
-        assert true_ir_flip_depth_component() is None
-
-    def test_the_seat_can_report_a_distribution_with_no_database(
+    def test_the_composed_store_can_report_a_distribution_with_no_database(
         self, database_url: str, tmp_path: Path
     ) -> None:
-        # Feature 120 from the app namespace, and the property that separates
-        # this component from feature 119's: the campaign's shift is a function
-        # of its id, so *what does this campaign draw?* is answerable from a
-        # composed component whose file has never been opened.
-        from app.modules.nulloracle.irprob import true_ir_flip_depth_component
-
-        store = true_ir_flip_depth_component()
+        # The property that separates this component from feature 119's: the
+        # campaign's shift is a function of its id, so *what does this campaign
+        # draw?* is answerable from a composed component whose file has never
+        # been opened.
+        store = create_app().get(TRUE_IR_FLIP_DEPTH_COMPONENT_NAME)
         distribution = store.distribution(CAMPAIGN, 1.0)
         assert 0.0 < distribution.probability < 1.0
         assert distribution.campaign_id == CAMPAIGN
         assert not (tmp_path / "irprob.db").exists()
 
-    def test_the_seat_can_draw_a_depth(self, database_url: str) -> None:
-        # Feature 120 from the app namespace, end to end: composed store, a
+    def test_the_composed_store_can_draw_a_depth(self, database_url: str) -> None:
+        # Feature 120 through the composition, end to end: composed store, a
         # branch's true IR in, the drawn depth on the node's column — the path an
         # assembled campaign loop takes.
-        from app.modules.nulloracle.irprob import true_ir_flip_depth_component
-
-        store = true_ir_flip_depth_component()
+        store = create_app().get(TRUE_IR_FLIP_DEPTH_COMPONENT_NAME)
         node = str(uuid.uuid4())
         with store._connect() as connection:
             connection.execute(
@@ -341,77 +271,10 @@ class TestTheSeatInTheAppNamespace:
         assert depth >= 1
         assert store.draw(node, 0.9) == depth
 
-    def test_the_seat_is_a_composition_read_and_not_a_second_api(self) -> None:
-        # The seat's export list, pinned: a caller who has the store reaches
-        # ``draw``/``distribution``/``distribution_for_node`` on it, and a second
-        # spelling here would be a second thing to keep in sync.  The one
-        # question this module answers is *what is the composed store?*
-        from app.modules.nulloracle import irprob as seat
-
-        assert set(seat.__all__) == {
-            "COMPONENT_NAME",
-            "true_ir_flip_depth_component",
-        }
-        assert not hasattr(seat, "TrueIRFlipDepth")
-        assert not hasattr(seat, "probability_from_true_ir")
-        assert not hasattr(seat, "FlipDepthDistribution")
-
-    def test_the_sidecar_seat_is_untouched_by_the_seventh_component(self) -> None:
-        # This seat is a *submodule* beside feature 109's, precisely so that the
-        # older seat's promise does not change: a caller that only wants the
-        # sidecar never imports this module and sees the same two names it always
-        # did.
-        from app.modules import nulloracle as seat
-
-        assert set(seat.__all__) == {"COMPONENT_NAME", "null_sidecar_component"}
-        assert seat.COMPONENT_NAME == SIDECAR_COMPONENT_NAME
-
-    def test_the_flip_depth_seat_is_untouched_by_the_seventh_component(self) -> None:
-        from app.modules.nulloracle import flipdepth as flip_seat
-
-        assert set(flip_seat.__all__) == {
-            "COMPONENT_NAME",
-            "flip_depth_component",
-        }
-
-    def test_the_seats_are_distinct_modules(self) -> None:
-        import app.modules.nulloracle as sidecar_seat
-        import app.modules.nulloracle.flipdepth as flip_seat
-        import app.modules.nulloracle.irprob as irprob_seat
-        import app.modules.nulloracle.ksguard as guard_seat
-        import app.modules.nulloracle.phi as phi_seat
-        import app.modules.nulloracle.verdict as verdict_seat
-
-        assert irprob_seat is not sidecar_seat
-        assert irprob_seat is not guard_seat
-        assert irprob_seat is not phi_seat
-        assert irprob_seat is not verdict_seat
-        assert irprob_seat is not flip_seat
-        assert irprob_seat.__name__ == SEAT_MODULE
-
-    def test_importing_the_seat_imports_no_member(self) -> None:
-        # The seat exists so the ``app`` package does not depend on a workspace
-        # member at import time.  Asserted on the seat's own compiled form rather
-        # than on ``sys.modules`` — every other test in this suite has already
-        # imported the member, so the module cache cannot answer this — and on
-        # the *imports*, not on the text: the member's name appears in a
-        # ``TYPE_CHECKING`` block, which never executes, and a substring scan
-        # over the file cannot tell that from a real import.
-        import app.modules.nulloracle.irprob as module
-
-        imported = _imported_names(module.__file__)
-        assert "nulloracle" not in imported
-        assert "app" in imported
-        assert "nulloracle" in _imported_names(module.__file__, runtime_only=False)
-
-    def test_the_seat_answers_the_members_own_builder(self) -> None:
-        # The seat and the builder cannot disagree about what the component is:
-        # with ``DATABASE_URL`` unset both answer None, and with it set both hand
-        # back the same kind of object — which is the whole reason the seat reads
-        # the factory rather than resolving the store itself.
+    def test_the_composition_answers_the_members_own_builder(self) -> None:
+        # The composition and the builder cannot disagree about what the
+        # component is: with ``DATABASE_URL`` unset both answer None.
         import nulloracle
 
-        from app.modules.nulloracle.irprob import true_ir_flip_depth_component
-
         assert nulloracle.build_true_ir_flip_depth() is None
-        assert true_ir_flip_depth_component() is None
+        assert create_app().get(TRUE_IR_FLIP_DEPTH_COMPONENT_NAME) is None

@@ -255,11 +255,9 @@ FREEZE_TABLE = "pool_freeze"
 
 #: The component name this member registers under.  Unprefixed, following the
 #: ``discovery`` / ``ledger`` / ``artifacts`` precedent for a member's first and
-#: only component, and spelled here once so the seat
-#: (``src/app/modules/dreaming``) and the composed application agree on the
-#: key — the seat repeats the literal and its suite asserts the two match, so
-#: the pair cannot drift apart silently.  ``dreaming`` sorts after
-#: ``discovery`` and before ``evaluator``, so every existing adjacency
+#: only component, and spelled here once, and read by name through the
+#: composed application (``create_app().get("dreaming")``).  ``dreaming`` sorts
+#: after ``discovery`` and before ``evaluator``, so every existing adjacency
 #: assertion over the name-sorted ``app.order`` is untouched.
 POOL_FREEZE_COMPONENT_NAME = "dreaming"
 

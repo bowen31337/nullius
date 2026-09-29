@@ -19,7 +19,7 @@ These tests pin the four halves of that sentence:
 * **GET /forward/decay** — the route is a thin seam over the store: it takes
   the signal identity a GET *for a signal* must state, delegates the whole
   read to the store, propagates the store's refusals untouched, and composes
-  as the ``forward-decay`` satellite component the seat reads back;
+  as the ``forward-decay`` satellite component the application reads back;
 * **returns** — the curve is the store's answer passed through, not a second
   computation, and neither an absent store nor a failed read is ever answered
   with a curve.
@@ -491,7 +491,7 @@ def test_the_module_level_spelling_is_refused_by_name_without_a_database(
     assert "forward_record_unwritable" in str(raised.value)
 
 
-# -- The component and the seat -------------------------------------------------
+# -- The component ---------------------------------------------------------------
 
 
 def test_the_route_composes_under_the_documented_name(
@@ -527,18 +527,17 @@ def test_the_route_component_degrades_without_a_database(monkeypatch) -> None:
     assert loader.create_app().get(FORWARD_DECAY_COMPONENT_NAME) is None
 
 
-def test_the_seat_answers_the_composed_route(
+def test_the_application_answers_the_same_composed_route(
     monkeypatch, tmp_path
 ) -> None:
-    # The seat's whole job for the route, asked once: given the application,
-    # answer *the* composed endpoint — not a second one constructed beside it,
-    # which would be two routes over one database.
+    # Asked twice, the application answers *the* composed endpoint — not a
+    # second one constructed beside it, which would be two routes over one
+    # database.
     import app.module_loader as loader
-    from app.modules.forward import decay_component
 
-    monkeypatch.setenv(DATABASE_URL_ENV, f"sqlite:///{tmp_path / 'seat.db'}")
+    monkeypatch.setenv(DATABASE_URL_ENV, f"sqlite:///{tmp_path / 'composed.db'}")
     application = loader.create_app()
-    endpoint = decay_component(application)
+    endpoint = application.get("forward-decay")
     assert endpoint is application.get("forward-decay")
     # Duck-checked, not `isinstance`-checked: the composed endpoint is a
     # `_nullius_scanned_forward.decay` copy, never the direct-import class.
@@ -583,40 +582,6 @@ def test_a_rerun_over_the_same_record_answers_an_equal_curve(
     second = curves.curve(NODE_ID)
     assert first == second
     assert first is not second  # a fresh framing, not a memo
-
-
-def test_the_seat_reaches_the_member_only_under_type_checking() -> None:
-    # The seat reaches the endpoint through the *application*, never through a
-    # runtime import: a static import would be the app package depending on a
-    # member's installed layout at runtime.  The one allowance is the
-    # ``TYPE_CHECKING`` block, erased at runtime.
-    import ast
-
-    from conftest import APP_SRC
-
-    seat = APP_SRC / "app" / "modules" / "forward" / "__init__.py"
-    tree = ast.parse(seat.read_text(encoding="utf-8"))
-    guarded: set[int] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.If) and (
-            isinstance(node.test, ast.Name)
-            and node.test.id == "TYPE_CHECKING"
-            or isinstance(node.test, ast.Attribute)
-            and node.test.attr == "TYPE_CHECKING"
-        ):
-            guarded.update(id(child) for child in ast.walk(node))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            names = [alias.name.split(".")[0] for alias in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            names = [(node.module or "").split(".")[0]]
-        else:
-            continue
-        if "forward" in names:
-            assert id(node) in guarded, (
-                "the seat imports the forward member outside a TYPE_CHECKING "
-                "guard"
-            )
 
 
 # -- The member's own laws ------------------------------------------------------

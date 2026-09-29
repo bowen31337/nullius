@@ -256,31 +256,9 @@ def test_the_composed_probe_exposes_the_audit_seam() -> None:
     assert probe.threshold(verdict.dates, level=verdict.level) == verdict.threshold
 
 
-def test_the_seat_exposes_the_composed_component() -> None:
-    # src/app/modules/tripwires is the member's seat in the app namespace: it
-    # names the component and asks the factory for it without the app package
-    # depending on any member at import time.
-    from app.modules.tripwires import COMPONENT_NAME, tripwires_component
-
-    assert COMPONENT_NAME == "tripwires"
-    app = create_app(MEMBER_SRC, registry=Registration())
-    _assert_is_the_tripwire_component(tripwires_component(app))
-
-
-def test_the_seat_returns_none_when_nothing_registered() -> None:
+def test_the_application_returns_none_when_nothing_registered() -> None:
     # An application with no component registered is a discoverable state, not
     # an exception — mirroring the factory's stance. And for this member
     # ``None`` means exactly one thing: nothing registered, never "registered
     # but not yet configured", because the probe resolves no environment.
-    from app.modules.tripwires import tripwires_component
-
-    assert tripwires_component(Application(components={}, order=())) is None
-
-
-def test_the_seat_reads_from_an_application_it_is_handed() -> None:
-    from app.modules.tripwires import tripwires_component
-
-    application = Application(
-        components={"tripwires": "sentinel"}, order=("tripwires",)
-    )
-    assert tripwires_component(application) == "sentinel"
+    assert Application(components={}, order=()).get("tripwires") is None

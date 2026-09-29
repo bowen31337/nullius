@@ -69,9 +69,9 @@ def test_advertised_abi_name_resolves_to_the_class():
 
 def test_scanning_the_package_registers_exactly_one_component():
     # A fresh registry, not the process default: any earlier test that called
-    # a bare ``create_app()`` (the seat tests do) has already imported every
-    # workspace member into the current registry, so reading it back here
-    # would assert accumulated process state, not this package's contribution.
+    # a bare ``create_app()`` has already imported every workspace member
+    # into the current registry, so reading it back here would assert
+    # accumulated process state, not this package's contribution.
     # The question under test is exactly "what does *this* member register?".
     components = scan_components(CONTRACT_SRC, registry=Registration())
     assert [component.name for component in components] == ["contract"]

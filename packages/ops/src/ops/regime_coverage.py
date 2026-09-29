@@ -209,9 +209,7 @@ REGIME_COVERAGE_ROUTE = "/metrics/regime-coverage"
 #: beside the module whose component it names, and imported by the
 #: member's ``__init__`` where the ``@register`` lives — the placement
 #: feature 350's live-metrics store name and features 344-347's store
-#: names already take.  Spelled in the app package seat
-#: (:mod:`app.modules.ops`) as well, and the member's suite asserts the
-#: two agree.
+#: names already take.  Read by name through the composed application.
 OPS_REGIME_COVERAGE_COMPONENT_NAME = "ops-regime-coverage"
 
 

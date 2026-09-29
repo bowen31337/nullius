@@ -50,13 +50,28 @@ episode_commit = policy_runtime.episode_commit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-seat = importlib.import_module("app.modules.policy-runtime")
-
 
 def create_app():
     from app.module_loader import create_app
 
     return create_app()
+
+
+def _compose_with_tree(monkeypatch, tree):
+    """Make ``create_app()`` answer the real composition with ``tree`` as ``policy-runtime``.
+
+    ``resolve_tree`` imports ``create_app`` from :mod:`app.module_loader` at
+    call time, so patching the loader's attribute substitutes the application
+    the tree is read from; every other component is the real composition's.
+    """
+    import app.module_loader as loader
+
+    real = loader.create_app()
+    composed = loader.Application(
+        components={**real.components, "policy-runtime": tree}, order=real.order
+    )
+    monkeypatch.setattr(loader, "create_app", lambda *roots, **kwargs: composed)
+    return composed
 
 
 @pytest.fixture(scope="module")
@@ -178,7 +193,7 @@ def test_the_full_replay_shape_loop_then_terminal_pick(
     # it was handed and the revealed set it closed over, which is the whole
     # shape of `score(pick, book, epoch, revealed, rounds)` minus the pieces
     # later features own.
-    monkeypatch.setattr(seat, "campaign_tree_component", lambda app=None: campaign_tree)
+    _compose_with_tree(monkeypatch, campaign_tree)
     question = PolicyQuestion(campaign_tree)
     record = episode_commit(question)
     record.commit("m1x")

@@ -149,7 +149,7 @@ def test_the_builder_takes_no_arguments_and_resolves_nothing() -> None:
 
 def test_the_builder_never_returns_none() -> None:
     # The honest shape for a *law* rather than a store — and here the stronger
-    # of the two readings the seat's docstring distinguishes: the component is
+    # of the two readings a component can carry: the component is
     # backed by the committed budget artifact, so a non-None value proves a file
     # compiled rather than merely that the law is loaded.
     app = create_app(MEMBER_SRC, registry=Registration())
@@ -233,56 +233,20 @@ def test_the_composed_law_reads_the_committed_artifact() -> None:
     assert law.exceeds(WITHIN_S) is False
 
 
-class TestTheSeat:
-    """src/app/modules/sandbox — the member's seat in the app namespace."""
+class TestTheComposedApplication:
+    """The component reached by name through the composed application."""
 
-    def test_the_seat_exposes_the_composed_component(self) -> None:
-        from app.modules.sandbox import (
-            TIMEOUT_COMPONENT_NAME,
-            sandbox_timeout_component,
-        )
-
-        assert TIMEOUT_COMPONENT_NAME == "sandbox-timeout"
+    def test_the_application_exposes_the_composed_component(self) -> None:
         app = create_app(MEMBER_SRC, registry=Registration())
-        _assert_is_the_timeout_law(sandbox_timeout_component(app))
+        _assert_is_the_timeout_law(app.get("sandbox-timeout"))
 
-    def test_the_seat_returns_none_when_nothing_registered(self) -> None:
+    def test_the_application_returns_none_when_nothing_registered(self) -> None:
         # An application with no component registered is a discoverable state,
-        # not an exception — mirroring the factory's stance and the other five
-        # seats'.
-        from app.modules.sandbox import sandbox_timeout_component
+        # not an exception — mirroring the factory's stance.
+        assert Application(components={}, order=()).get("sandbox-timeout") is None
 
-        assert sandbox_timeout_component(Application(components={}, order=())) is None
-
-    def test_the_seat_reads_from_an_application_it_is_handed(self) -> None:
-        from app.modules.sandbox import sandbox_timeout_component
-
+    def test_the_component_is_read_from_the_application_it_is_asked_of(self) -> None:
         application = Application(
             components={"sandbox-timeout": "sentinel"}, order=("sandbox-timeout",)
         )
-        assert sandbox_timeout_component(application) == "sentinel"
-
-    def test_the_seat_is_not_a_second_vocabulary(self) -> None:
-        # The seat answers questions — which component? — and does not re-export
-        # the law's types.  A caller who has the component calls its verbs; a
-        # second spelling of the policy, the decision, the kill or the reason
-        # codes here would be a second thing to keep in sync.
-        import app.modules.sandbox as seat
-
-        for leaked in (
-            "SandboxTimeout",
-            "TimeoutDecision",
-            "TimeoutKill",
-            "TimeoutPolicy",
-            "TimeoutReason",
-            "TimeoutRecord",
-            "TimeoutRun",
-            "DEFAULT_WALL_S",
-            "TIMEOUT_FAIL_CLASS",
-            "NODE_FAIL_CLASSES",
-            "classify_duration",
-            "kill_timeout",
-            "exceeded_budget",
-            "timed_out_record",
-        ):
-            assert not hasattr(seat, leaked), leaked
+        assert application.get("sandbox-timeout") == "sentinel"

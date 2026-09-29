@@ -139,8 +139,8 @@ registered surface stays feature 291's one store, for the reason the
 member's own docstring gives this feature: the count is a function of
 evidence the factory does not hold — a decision has to have been recorded
 somewhere else first — so the store is constructed from a URL by the
-caller that has one, exactly as its three writer siblings are.  The seat
-(``src/app/modules/promotion``) is untouched and still answers one
+caller that has one, exactly as its three writer siblings are.  The composed
+``promotion`` component is untouched and still answers one
 question.
 
 **Stdlib only, and import-cheap.**  ``sqlite3``, ``os``,

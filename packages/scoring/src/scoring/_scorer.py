@@ -184,8 +184,8 @@ __all__ = [
 
 #: The component name this member's scorer process registers under — the
 #: key a composed :class:`~app.module_loader.Application` carries the
-#: process at, and the name the sibling seat in the app namespace
-#: (``src/app/modules/scoring/scorer.py``) asks for.  A second name rather
+#: process at, and the name a caller reads it by
+#: (``create_app().get("scoring-null-pick-rate")``).  A second name rather
 #: than a second component under ``"scoring"`` because the two are
 #: different things on different lifecycles: the objective is arithmetic
 #: that never degrades, the scorer process is deployment state that

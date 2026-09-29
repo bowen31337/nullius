@@ -11,7 +11,8 @@ composed application actually produces — the policy-runtime member's real
 structurally cannot do:
 
 * **the loop drives the composed transition** — the component's ``run``
-  resolves the deployment's tree through the policy-runtime seat and opens
+  resolves the deployment's tree through the composed ``policy-runtime``
+  component and opens
   feature 245's transition over the real ``CampaignTree``, the only test in the
   workspace where this member's restatement of the node model is checked
   against the class that actually carries it;
@@ -28,11 +29,12 @@ structurally cannot do:
   on; over the real question this is the difference between a walk that
   terminates and one that drifts.
 
-The component's ``run`` resolves the tree through the policy-runtime seat
-(``app.modules.policy-runtime``'s ``campaign_tree_component``), not from a
-passed argument — the call-time resolution feature 245 argues.  This
-environment names no committed campaign, so the seat is substituted with the
-fixture's tree, the way ``packages/replay/tests/test_component.py`` does; the
+The component's ``run`` resolves the tree by reading the composed
+application's ``policy-runtime`` component (``create_app().get(...)``), not
+from a passed argument — the call-time resolution feature 245 argues.  This
+environment names no committed campaign, so the composed application is
+substituted with one whose ``policy-runtime`` component is the fixture's tree,
+the way ``packages/replay/tests/test_component.py`` does; the
 question here is the seam between two members, not the store's.
 
 **Nothing here asserts ``isinstance`` or ``pytest.raises(<canonical class>)``
@@ -45,7 +47,6 @@ give for the same wrinkle.
 
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 
 import pytest
@@ -55,8 +56,6 @@ CampaignTree = policy_runtime.CampaignTree
 PolicyQuestion = policy_runtime.PolicyQuestion
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-
-seat = importlib.import_module("app.modules.policy-runtime")
 
 
 @pytest.fixture(scope="module")
@@ -82,15 +81,15 @@ def campaign_tree() -> CampaignTree:
 def run_over_tree(campaign_tree, monkeypatch):
     """Drive the composed component's ``run`` over the real campaign tree.
 
-    The component's ``run`` resolves the deployment's tree through the
-    policy-runtime seat; this environment names no committed campaign, so the
-    seat's ``campaign_tree_component`` is substituted with the fixture's tree —
-    the way ``packages/replay/tests/test_component.py`` pins the resolution.
-    The returned helper runs a stub policy over a fresh real ``PolicyQuestion``,
+    The component's ``run`` resolves the deployment's tree by reading the
+    composed application's ``policy-runtime`` component; this environment names
+    no committed campaign, so ``app.module_loader.create_app`` is substituted
+    with the real composition plus the fixture's tree under that name — the
+    way ``packages/replay/tests/test_component.py`` pins the resolution.  The
+    returned helper runs a stub policy over a fresh real ``PolicyQuestion``,
     so each call starts from a clean reveal set.
     """
-    monkeypatch.setattr(seat, "campaign_tree_component", lambda app=None: campaign_tree)
-    component = create_app().get("replay")
+    component = _compose_with_tree(monkeypatch, campaign_tree).get("replay")
 
     def run(select, round_cap):
         return component.run(select, PolicyQuestion(campaign_tree), round_cap=round_cap)
@@ -102,6 +101,23 @@ def create_app():
     from app.module_loader import create_app
 
     return create_app()
+
+
+def _compose_with_tree(monkeypatch, tree):
+    """Make ``create_app()`` answer the real composition with ``tree`` as ``policy-runtime``.
+
+    ``resolve_tree`` imports ``create_app`` from :mod:`app.module_loader` at
+    call time, so patching the loader's attribute substitutes the application
+    the tree is read from; every other component is the real composition's.
+    """
+    import app.module_loader as loader
+
+    real = loader.create_app()
+    composed = loader.Application(
+        components={**real.components, "policy-runtime": tree}, order=real.order
+    )
+    monkeypatch.setattr(loader, "create_app", lambda *roots, **kwargs: composed)
+    return composed
 
 
 def _frontier_select(question: PolicyQuestion) -> list[str]:
@@ -129,7 +145,8 @@ def test_the_composed_component_loops_over_the_real_tree_and_question(
     run_over_tree,
 ) -> None:
     # The whole chain, over the objects the composed application produces: the
-    # component's ``run`` resolves the deployment's tree through the seat, opens
+    # component's ``run`` resolves the deployment's tree through the composed
+    # application, opens
     # feature 245's transition over the real CampaignTree, and drives it with a
     # stub policy closing over prefix_view(the real PolicyQuestion).  The walk is
     # the conftest campaign's: r-mom -> m1 -> m1x (a leaf), r-event an
@@ -239,9 +256,10 @@ def test_a_malformed_tree_surfaces_as_a_tree_error_through_the_loop(
     # `ReplayRoundError`: the loop opens the transition and lets its refusal
     # propagate, because the tree's unfitness is a statement about the tree,
     # repaired at the store, not about the loop's arguments.  Reached through
-    # the composed component, which resolves the tree via the seat — and in this
-    # environment no campaign is committed, so `resolve_tree()` refuses.  The
-    # seat is *not* substituted here, so the resolution itself refuses: a
+    # the composed component, which resolves the tree via the composed
+    # application — and in this environment no campaign is committed, so
+    # `resolve_tree()` refuses.  The composition is *not* substituted here, so
+    # the resolution itself refuses: a
     # deployment with nothing to replay.
     component = create_app().get("replay")
     question = PolicyQuestion(campaign_tree)

@@ -109,8 +109,8 @@ outcome §13 item 7's *before* exists to stop.
 registered surface stays feature 291's one store, for the reason every sibling
 states: a builder takes no arguments and is built on every ``create_app()`` call,
 while *which criteria a promotion was decided against* is a fact about a row and
-a caller's document that no composition can supply.  The seat
-(``src/app/modules/promotion``) is untouched and still answers one question.
+a caller's document that no composition can supply.  The composed
+``promotion`` component is untouched and still answers one question.
 
 **Stdlib only, and import-cheap.**  ``sqlite3``, ``os``, ``contextlib`` and this
 member's own modules at module scope and nothing else: no third-party import and

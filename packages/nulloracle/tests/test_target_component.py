@@ -1,20 +1,10 @@
-"""Feature 112's seat inside the ``app`` package namespace.
+"""Feature 112's POST /target route as the composed application exposes it.
 
-``src/app/modules/nulloracle/target.py`` is where the composed POST
-/target route is reachable from the ``app`` package without the app
-package importing the member at module scope.  The member's suite owns
-this file (it lives at ``src/app/modules/nulloracle/``, which the task's
-file claim covers), so the seat is tested here rather than in a
-repository-level suite — the same arrangement the resolution's, the
-verdict's and the flip depth's seats state.
-
-The point of the seat is that composition stays the factory's job: this
-module asks the factory for the component, and answers ``None`` — not an
-exception — when there is none.  That degradation is pinned below, since a
-module that failed import because a member was absent would take the app
-package down with it.  The seat is also deliberately accessors only: a
-caller who has the endpoint reaches ``post`` on it, and a second spelling
-here would be a second thing to keep in sync.
+The composed route is reached through the factory:
+``create_app().get("nulloracle-target-route")``.  Composition stays the
+factory's job, and a read answers ``None`` — not an exception — when there is
+no component.  That degradation is pinned below.  A caller who has the
+endpoint reaches ``post`` on it.
 
 The composed half is pinned too: with a sidecar location and key named,
 the factory's scan imports the member, its ``@register`` fires, and the
@@ -30,7 +20,7 @@ from __future__ import annotations
 import pytest
 from nulloracle import TARGET_COMPONENT_NAME, NullAssignment
 
-from app.module_loader import Application
+from app.module_loader import Application, create_app
 
 
 @pytest.fixture(autouse=True)
@@ -60,8 +50,8 @@ class _Ask:
     and this stand-in pins that the composed component answers one.
 
     It carries the ``symbols`` term too, because feature 113's payload must
-    answer the cross-section the ask named: the seat test below drives a
-    *real* node through the route, and a real node's series is served
+    answer the cross-section the ask named: the composition test below drives
+    a *real* node through the route, and a real node's series is served
     unchanged — so the ask has to state what it asked for.
     """
 
@@ -94,8 +84,6 @@ def _targets(request) -> dict:
 
 
 def test_the_component_name_matches_the_member() -> None:
-    # Spelled twice on purpose — once in the member, once in the seat — so
-    # the two cannot drift apart silently.
     import nulloracle
 
     assert (
@@ -105,27 +93,21 @@ def test_the_component_name_matches_the_member() -> None:
     )
 
 
-def test_the_seat_reads_from_an_application_it_is_handed() -> None:
-    from app.modules.nulloracle.target import target_route_component
-
+def test_the_component_is_read_from_an_application_it_is_handed() -> None:
     application = Application(
         components={TARGET_COMPONENT_NAME: "sentinel"},
         order=(TARGET_COMPONENT_NAME,),
     )
-    assert target_route_component(application) == "sentinel"
+    assert application.get(TARGET_COMPONENT_NAME) == "sentinel"
 
 
 def test_an_absent_component_is_none_rather_than_an_error() -> None:
-    from app.modules.nulloracle.target import target_route_component
-
     empty = Application(components={}, order=())
-    assert target_route_component(empty) is None
+    assert empty.get(TARGET_COMPONENT_NAME) is None
 
 
 def test_an_unconfigured_environment_yields_none_not_an_exception() -> None:
-    from app.modules.nulloracle.target import target_route_component
-
-    assert target_route_component() is None
+    assert create_app().get(TARGET_COMPONENT_NAME) is None
 
 
 def test_a_configured_environment_composes_the_route(
@@ -134,9 +116,7 @@ def test_a_configured_environment_composes_the_route(
     # The factory's scan imports the member, the ``@register`` builder
     # fires, and the composed application carries a route over the sidecar
     # the deployment named — no registry, router or factory edit involved.
-    from app.modules.nulloracle.target import target_route_component
-
-    component = target_route_component()
+    component = create_app().get(TARGET_COMPONENT_NAME)
     assert type(component).__name__ == "TargetEndpoint"
     assert component.sidecar.path == sidecar_path
 
@@ -145,8 +125,6 @@ def test_a_configured_environment_composes_the_route(
     # two worlds.  The node below is *real*, so the route serves the series
     # unchanged and the component's own wired permutation is never reached —
     # which is what a composition with no step-4 supply can still serve.
-    from app.module_loader import create_app
-
     application = create_app()
     sidecar = application.get("nulloracle")
     route = application.get(TARGET_COMPONENT_NAME)
@@ -186,16 +164,12 @@ def test_the_composed_routes_own_permutation_moves_rows_across_dates(
     # So this test drives a *null* node through the route the factory built,
     # attaching only the series supply (step 4's, which is not this member's
     # to resolve) and leaving the permutation to the builder.
-    # The application is composed here once and handed to the seat, so the
-    # route and the sidecar below are read from one composition rather than
-    # two — ``target_route_component`` builds its own when given none.
-    from app.module_loader import create_app
-    from app.modules.nulloracle.target import target_route_component
-
+    #
+    # The application is composed here once, so the route and the sidecar
+    # below are read from one composition rather than two.
     application = create_app()
-    route = target_route_component(application)
+    route = application.get(TARGET_COMPONENT_NAME)
     sidecar = application.get("nulloracle")
-    assert route is application.get(TARGET_COMPONENT_NAME)
 
     # The builder's own wiring, asserted before it is used: the composed route
     # carries a permutation without anyone having supplied one.
@@ -263,9 +237,7 @@ def test_composing_the_route_creates_no_sidecar_file(
     # open it for every composition of every application in the process.
     # The endpoint holds its sidecar lazily; asking for the component
     # touches no file.
-    from app.modules.nulloracle.target import target_route_component
-
-    component = target_route_component()
+    component = create_app().get(TARGET_COMPONENT_NAME)
     assert component is not None
     assert not sidecar_path.exists()
 
@@ -289,16 +261,5 @@ def test_the_guard_still_composes_immediately_after_the_sidecar(
     # sorts after every ``ks-*`` and ``null-*`` name, so the tenth
     # component changes nothing about that adjacency — asserted here so a
     # future eleventh name cannot break it silently either.
-    from app.module_loader import create_app
-
     order = create_app().order
     assert order.index("nulloracle") + 1 == order.index("nulloracle-ks-guard")
-
-
-def test_the_seat_is_a_composition_read_and_not_a_second_api() -> None:
-    # The seat is deliberately accessors only: a caller who has the route
-    # reaches post on it, and a second spelling here would be a second
-    # thing to keep in sync.
-    import app.modules.nulloracle.target as seat
-
-    assert set(seat.__all__) == {"COMPONENT_NAME", "target_route_component"}

@@ -178,8 +178,6 @@ from evaluator import (
 # reachable as ``app.module_loader`` through that same conftest, which is the
 # declaration production reads.
 from app.module_loader import create_app
-from app.modules.evaluator import evaluator_component
-from app.modules.snapshot import snapshot_component
 
 # ---------------------------------------------------------------------------
 # The sealed world — §4.2's layout, and the universe the window resolves
@@ -445,7 +443,7 @@ def _seal_the_world(workdir: Path) -> tuple[Any, Any, dict[str, dict[dt.date, fl
     # lake's own staging root.
     os.environ["LAKE_ROOT"] = str(lake_root)
     application = create_app()
-    service = snapshot_component(application)
+    service = application.get("snapshot")
     sealed = service.seal(sealed_at=dt.datetime(2026, 11, 1, tzinfo=dt.UTC))
     return service, sealed, closes, staged
 
@@ -886,8 +884,8 @@ def journey(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Journey]:
             rerun_scores=rerun.scores,
             rerun_code_hash=rerun.execution.code_hash,
             database_url=database_url,
-            app_evaluator=evaluator_component(create_app()),
-            app_snapshot=snapshot_component(create_app()),
+            app_evaluator=create_app().get("evaluator"),
+            app_snapshot=create_app().get("snapshot"),
         )
     finally:
         if saved_lake is None:
@@ -1431,7 +1429,7 @@ class TestTheSystemKeepsTheNumber:
     ) -> None:
         # The assembled system, not an import: the snapshot service the seal went
         # through and the evaluator service the deployment composes are reachable
-        # through the app namespace's own seats, and both are the loader's scanned
+        # by name from the composed application, and both are the loader's scanned
         # components — reached the factory's way, through the package the loader
         # discovered rather than through a direct import that a different module
         # object would satisfy.

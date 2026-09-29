@@ -1,18 +1,16 @@
-"""Feature 265's composition: the second registration and its seat.
+"""Feature 265's composition: the second registration.
 
 The scorer process is the member's first component beside the objective,
 and this suite pins the growth from the member's side: the second
 ``@register`` in ``scoring/__init__.py`` (both builders fire from the one
 file, the convention the loader's synthetic-name re-execution demands),
-the name's three spellings agreeing, the composed application carrying
-the process, and the sibling seat in the app namespace
-(``src/app/modules/scoring/scorer.py``) answering *what is the composed
-scorer process?* — the same shape of question the objective's seat
-(:mod:`app.modules.scoring`) answers for feature 256, grown the way
-``app.modules.bootstrap`` grew its pool seat.
+the name's two spellings agreeing, and the composed application carrying
+the process — ``create_app().get("scoring-null-pick-rate")`` answers *what
+is the composed scorer process?*, the same shape of question
+``create_app().get("scoring")`` answers for feature 256's objective.
 
 **Why this component degrades where the objective never can.**  The
-objective's builder cannot fail and reads no environment, so its seat's
+objective's builder cannot fail and reads no environment, so its
 ``None`` can only mean the member was absent from the scan.  This
 builder composes *deployment state*: it resolves the sidecar the
 environment names, and where nothing names one it answers ``None`` —
@@ -29,7 +27,7 @@ What these tests deliberately do not reach: the verb's own laws
 (``test_scorer.py``), the real sealed sidecar and a non-``None``
 composition under a configured environment
 (``test_scorer_cross_member.py``, which writes one and resolves through
-it), and the objective's own seat contract (``test_app_module.py``).
+it), and the objective's own composition (``test_component.py``).
 """
 
 from __future__ import annotations
@@ -40,18 +38,16 @@ import pytest
 import scoring as member
 
 from app.module_loader import Application, create_app
-from app.modules.scoring import scorer as scorer_seat
 
 
-def test_the_three_spellings_of_the_name_agree() -> None:
-    # The member's registration constant, the law module's own (for a
-    # caller importing the process without the package surface) and the
-    # seat's are one string — three spellings of one name is exactly the
-    # kind of drift a test is cheaper than, and the prefix keeps the
-    # process sorting beside, never inside, the member's other component.
+def test_the_two_spellings_of_the_name_agree() -> None:
+    # The member's registration constant and the law module's own (for a
+    # caller importing the process without the package surface) are one
+    # string — two spellings of one name is exactly the kind of drift a
+    # test is cheaper than, and the prefix keeps the process sorting
+    # beside, never inside, the member's other component.
     assert member.SCORER_COMPONENT_NAME == "scoring-null-pick-rate"
     assert member._scorer.SCORER_COMPONENT_NAME == member.SCORER_COMPONENT_NAME
-    assert scorer_seat.COMPONENT_NAME == member.SCORER_COMPONENT_NAME
 
 
 def test_the_scanned_application_carries_the_process_key() -> None:
@@ -122,54 +118,28 @@ def test_a_key_that_cannot_resolve_degrades_too(
     assert member.build_null_pick_scorer() is None
 
 
-# -- the seat -------------------------------------------------------------------
+# -- reading the composed application ------------------------------------------
 
 
-def test_the_seat_exposes_nothing_but_the_composition_accessor() -> None:
-    # The seat answers one question, and every extra name is a second
-    # thing to keep in sync — as well as a second surface the label
-    # barrier would have to hold.  Asserted as an exact set, because the
-    # failure this guards against is the seat *growing* a re-export.
-    assert set(scorer_seat.__all__) == {"COMPONENT_NAME", "null_pick_scorer_component"}
-    # And the member's own API is *not* among the exports — the specific
-    # names a well-meaning re-export would add first, and the one that
-    # would matter most here: the process class, whose constructor is
-    # the way to hold a sidecar without the verb's barrier.
-    for leaked in ("NullPickScorer", "NullPickRateError", "SCORER_COMPONENT_NAME"):
-        assert leaked not in scorer_seat.__all__
-
-
-def test_the_seat_reads_the_application_it_is_handed() -> None:
-    # A caller that already holds an application must get *that*
-    # application's component, not a freshly composed one — otherwise two
-    # holders of one application could disagree about the process.
-    app = create_app()
-    assert scorer_seat.null_pick_scorer_component(app) is app.get(
-        scorer_seat.COMPONENT_NAME
-    )
-
-
-def test_the_seat_answers_none_when_the_component_is_absent() -> None:
+def test_the_application_answers_none_when_the_component_is_absent() -> None:
     # An application composed without this member answers None, not an
-    # exception: the "degrade, don't break" stance every seat takes.
+    # exception: the "degrade, don't break" stance of the composition.
     # The application here is built directly over an unrelated component
     # so the absence is about composition, not configuration — the other
     # None is pinned above, where the environment is the absent thing.
     without = Application(components={"unrelated": object()}, order=("unrelated",))
-    assert scorer_seat.COMPONENT_NAME not in without
-    assert scorer_seat.null_pick_scorer_component(without) is None
+    assert member.SCORER_COMPONENT_NAME not in without
+    assert without.get(member.SCORER_COMPONENT_NAME) is None
 
 
-def test_the_seats_none_is_not_the_objective_seats_none() -> None:
-    # The two seats beside each other in the same package, and the two
-    # None facts they answer: an application that carries neither member
-    # refuses them both (composition), while an application that carries
-    # the member in an unconfigured environment still composes the
+def test_the_scorers_none_is_not_the_objectives_none() -> None:
+    # The two components beside each other in the same member, and the
+    # two None facts they answer: an application that carries neither
+    # member refuses them both (composition), while an application that
+    # carries the member in an unconfigured environment still composes the
     # objective (arithmetic cannot degrade) and declines the process
     # (deployment state did).  The distinction is the docstrings' own
     # law, and this is its one-test spelling.
-    from app.modules import scoring as objective_seat
-
     app = create_app()
-    assert objective_seat.world_objective_component(app) is not None
-    assert scorer_seat.null_pick_scorer_component(app) is None
+    assert app.get(member.COMPONENT_NAME) is not None
+    assert app.get(member.SCORER_COMPONENT_NAME) is None

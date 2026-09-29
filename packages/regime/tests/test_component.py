@@ -1,10 +1,10 @@
-"""The two seams: composition via the loader, and the app seat.
+"""The composition seam: the member's store as the loader composes it.
 
-Feature 283's store is reached two ways — the factory's scan composes it
-under the member's registered name, and :mod:`app.modules.regime` answers
-*what is the composed coverage ledger?* for a caller that holds the app
-namespace — and this file holds both halves of that wiring, the way
-``packages/discovery/tests/test_component.py`` holds its own.
+Feature 283's store is reached through the factory's scan, which composes
+it under the member's registered name, and ``create_app().get("regime")``
+answers *what is the composed coverage ledger?* — this file holds that
+wiring, the way ``packages/discovery/tests/test_component.py`` holds its
+own.
 
 **The loader's properties shape the composition half exactly.**
 ``create_app`` imports each member under a synthetic module name
@@ -29,7 +29,7 @@ so the on-demand test holds the database file absent after composition
 and after reading the component, and present only after a count is
 actually persisted.
 
-**The seat's ``None`` is about the deployment.**  ``Application()`` — no
+**A composed ``None`` is about the deployment.**  ``Application()`` — no
 scan at all — is the state where nothing was registered; a scanned
 application with no ``DATABASE_URL`` is the state where the component
 was registered and resolved no store.  A caller that must persist a
@@ -58,26 +58,6 @@ import pytest
 import regime as member
 
 from app.module_loader import Application, Registration, create_app, scan_components
-from app.modules import regime as seat
-from app.modules.regime import COMPONENT_NAME as SEAT_COMPONENT_NAME
-from app.modules.regime import regime_coverage_component
-
-#: The seat's whole public surface, asserted as an exact set for the same
-#: reason the other seats' are: the failure this guards against is the seat
-#: *growing* a re-export, and a membership check cannot see that.
-EXPECTED_EXPORTS = {"COMPONENT_NAME", "regime_coverage_component"}
-
-#: The names a well-meaning re-export would add first — the record, the
-#: store, the module-level persist and the three strata are the member's
-#: public vocabulary, and the seat's job is to answer one question about
-#: composition.
-NOT_THE_SEATS_BUSINESS = (
-    "CoverageCount",
-    "RegimeCoverage",
-    "persist_coverage",
-    "DEFAULT_STRATA",
-    "CoverageError",
-)
 
 
 def _assert_is_the_coverage_store(component: object) -> None:
@@ -103,9 +83,9 @@ def _assert_is_the_coverage_store(component: object) -> None:
 def test_the_member_registers_under_its_own_name() -> None:
     # One component, unprefixed — the ``ledger`` / ``artifacts`` /
     # ``canary`` / ``discovery`` precedent for a member's first and only
-    # contribution.  The member, the seat and the spec's plugin
-    # vocabulary all spell the one name.
-    assert member.COMPONENT_NAME == SEAT_COMPONENT_NAME == "regime"
+    # contribution.  The member and the spec's plugin vocabulary both
+    # spell the one name.
+    assert member.COMPONENT_NAME == "regime"
 
 
 def test_the_member_exports_exactly_one_builder() -> None:
@@ -214,7 +194,7 @@ def test_scanning_registers_the_component_exactly_once() -> None:
 def test_the_name_sorts_between_the_neighbours_the_composed_order_holds(
     monkeypatch, tmp_path: Path
 ) -> None:
-    # ``Application.order`` is name-sorted, and other members' seats
+    # ``Application.order`` is name-sorted, and other members' suites
     # carry adjacency assertions about their own neighbourhoods.  An
     # unprefixed ``regime`` lands after ``providers`` and before the
     # feature-store member's ``regime-labeler`` — the hyphenated names
@@ -228,7 +208,7 @@ def test_the_name_sorts_between_the_neighbours_the_composed_order_holds(
     # that insisted on the two neighbours by name would fail for a
     # sibling's correct change.  What matters is that this name sorts
     # clear of the hyphenated family it could be confused with — it must
-    # precede every ``regime-*`` seat — and that it carries no prefix at
+    # precede every ``regime-*`` name — and that it carries no prefix at
     # all.
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'order.db'}")
     order = create_app().order
@@ -265,36 +245,19 @@ def test_composing_writes_nothing_and_persisting_is_on_demand(
     assert count[0] == 1
 
 
-# -- The seat ---------------------------------------------------------------------
+# -- Reading the composition -----------------------------------------------------
 
 
-def test_the_seat_exposes_nothing_but_the_composition_accessor() -> None:
-    assert set(seat.__all__) == EXPECTED_EXPORTS
-    for name in EXPECTED_EXPORTS:
-        assert hasattr(seat, name), name
-    for leaked in NOT_THE_SEATS_BUSINESS:
-        assert leaked not in seat.__all__, leaked
-
-
-def test_the_seat_returns_the_composed_store(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'seated.db'}")
-    store = regime_coverage_component()
+def test_the_composed_application_returns_the_store(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'composed.db'}")
+    store = create_app().get("regime")
     assert store is not None
     assert type(store).__name__ == "RegimeCoverage"
-    assert store.database_url == f"sqlite:///{tmp_path / 'seated.db'}"
+    assert store.database_url == f"sqlite:///{tmp_path / 'composed.db'}"
 
 
-def test_the_seat_reads_the_application_it_is_handed(monkeypatch, tmp_path: Path) -> None:
-    # A caller that already holds an application gets *that*
-    # application's ledger — the seat must not compose its own behind the
-    # caller's back.
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'handed.db'}")
-    app = create_app()
-    assert regime_coverage_component(app) is app.get(member.COMPONENT_NAME)
-
-
-def test_a_deployment_without_a_database_seats_none(monkeypatch) -> None:
-    # The seat's ``None`` means the component ran and resolved no store —
+def test_a_deployment_without_a_database_composes_none(monkeypatch) -> None:
+    # A composed ``None`` means the component ran and resolved no store —
     # a statement about the deployment.  A caller that must persist a
     # count has to read it as a refusal to proceed, not as an empty
     # ledger: an empty ledger answers *this stratum holds zero worlds*
@@ -303,37 +266,36 @@ def test_a_deployment_without_a_database_seats_none(monkeypatch) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
     app = create_app()
     assert member.COMPONENT_NAME in app  # registered
-    assert regime_coverage_component(app) is None  # and resolved nothing
+    assert app.get(member.COMPONENT_NAME) is None  # and resolved nothing
 
 
 def test_an_absent_component_reads_as_none_rather_than_raising() -> None:
     # ``Application`` is a plain dataclass, so the absent case is
     # constructible without depending on a scan having failed — and the
-    # seat answers ``None`` rather than raising, which is what makes it
-    # safe to import in a workspace that does not carry this member.
-    assert regime_coverage_component(Application()) is None
+    # application answers ``None`` rather than raising.
+    assert Application().get(member.COMPONENT_NAME) is None
 
 
-def test_the_seat_composes_nothing_of_its_own() -> None:
-    # Reading the component must not *create* one: a seat that built a
+def test_reading_an_absent_component_composes_nothing() -> None:
+    # Reading the component must not *create* one: a read that built a
     # store behind the caller's back would report a ledger where the
     # deployment holds none — and would have opened a database the
     # process never asked for.
     empty = Application()
-    assert regime_coverage_component(empty) is None
+    assert empty.get(member.COMPONENT_NAME) is None
     assert empty.components == {}
 
 
-def test_an_empty_workspace_still_seats_only_the_absent_store(tmp_path) -> None:
+def test_an_empty_workspace_composes_only_the_absent_store(tmp_path) -> None:
     # The same fact through the real factory: a composition whose scan
-    # contributes nothing still builds, and the seat still answers
+    # contributes nothing still builds, and the application still answers
     # ``None``.  Both halves of "contributed nothing" are needed — an
     # empty root *and* a fresh registry (the default registry is
     # module-level and persists across calls, so a second ``create_app``
     # would inherit the first one's scan).
     empty = create_app(tmp_path, registry=Registration())
     assert empty.components == {}
-    assert regime_coverage_component(empty) is None
+    assert empty.get(member.COMPONENT_NAME) is None
 
 
 @pytest.mark.parametrize("absent", ["", "Regime", "regime-coverage", "regime-store", "coverage"])
@@ -348,5 +310,5 @@ def test_a_misspelled_component_key_is_absent_not_a_near_match(
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'keys.db'}")
     app = create_app()
     assert app.get(absent) is None
-    assert SEAT_COMPONENT_NAME in app
-    assert regime_coverage_component(app) is not None
+    assert member.COMPONENT_NAME in app
+    assert app.get(member.COMPONENT_NAME) is not None

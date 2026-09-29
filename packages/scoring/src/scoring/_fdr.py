@@ -233,9 +233,9 @@ DEPLOYMENT_BASE_RATE: float = 0.9
 #: process) the way ``bootstrap-pool`` sits beside ``bootstrap``.  The
 #: growth was reserved by the member's own registration when 265 landed
 #: ("267's FDR store when it lands ... another component name, another
-#: sibling seat"), and spelled here, in the member's ``__init__`` and in
-#: the app-package seat (:mod:`app.modules.scoring.fdr`) — three
-#: spellings of one name the member's suite asserts agree.  Prefixed
+#: sibling seat"), spelled here once, imported by the member's
+#: ``__init__``, and read by name through the composed application.
+#: Prefixed
 #: with the member's own name because a composed application's
 #: ``order`` is name-sorted and the store must sort *beside* — never
 #: inside — the member's other components.

@@ -1,20 +1,19 @@
-"""Feature 267's composition: the third registration and its seat.
+"""Feature 267's composition: the third registration.
 
 The FDR_deploy store is the member's second component beside the
 objective and its first store-bound one, and this suite pins the growth
 from the member's side: the third ``@register`` in ``scoring/__init__.py``
 (all builders fire from the one file, the convention the loader's
-synthetic-name re-execution demands), the name's three spellings
-agreeing, the composed application carrying the store key, and the
-sibling seat in the app namespace (``src/app/modules/scoring/fdr.py``)
-answering *what is the composed FDR_deploy store?* — the same shape of
-question the objective's seat (:mod:`app.modules.scoring`) answers for
-feature 256 and the scorer's (:mod:`app.modules.scoring.scorer`) for
-265, grown the way ``app.modules.bootstrap`` grew its pool seat: the
-growth this member's own registration reserved when 265 landed.
+synthetic-name re-execution demands), the name's two spellings
+agreeing, and the composed application carrying the store key —
+``create_app().get("scoring-fdr-deploy")`` answers *what is the composed
+FDR_deploy store?*, the same shape of question the objective's name
+(``scoring``) answers for feature 256 and the scorer's
+(``scoring-null-pick-rate``) for 265: the growth this member's own
+registration reserved when 265 landed.
 
 **Why this component degrades where the objective never can.**  The
-objective's builder cannot fail and reads no environment, so its seat's
+objective's builder cannot fail and reads no environment, so its
 ``None`` can only mean the member was absent from the scan.  This
 builder composes *deployment state*: it resolves the database the
 environment names, and where nothing names one it answers ``None`` —
@@ -30,7 +29,7 @@ what has been closed out, and absence is not.
 
 What these tests deliberately do not reach: the store's own laws
 (``test_fdr_store.py``), the free verb's (``test_fdr.py``), and the
-objective's seat contract (``test_app_module.py``).
+objective's own composition (``test_component.py``).
 """
 
 from __future__ import annotations
@@ -41,17 +40,15 @@ import pytest
 import scoring as member
 
 from app.module_loader import Application, create_app
-from app.modules.scoring import fdr as fdr_seat
 
 
-def test_the_three_spellings_of_the_name_agree() -> None:
-    # The member's surface, the law module's own (the one spelling,
+def test_the_two_spellings_of_the_name_agree() -> None:
+    # The member's surface and the law module's own (the one spelling,
     # imported into the surface rather than restated so the two cannot
-    # drift) and the seat's are one string — and the prefix keeps the
-    # store sorting beside, never inside, the member's other components.
+    # drift) are one string — and the prefix keeps the store sorting
+    # beside, never inside, the member's other components.
     assert member.FDR_COMPONENT_NAME == "scoring-fdr-deploy"
     assert member._fdr.FDR_COMPONENT_NAME == member.FDR_COMPONENT_NAME
-    assert fdr_seat.COMPONENT_NAME == member.FDR_COMPONENT_NAME
 
 
 def test_the_scanned_application_carries_the_store_key() -> None:
@@ -151,59 +148,28 @@ def test_the_builder_never_raises_on_a_url_it_cannot_speak(
         built.history()
 
 
-# -- the seat -------------------------------------------------------------------
+# -- reading the composed application ------------------------------------------
 
 
-def test_the_seat_exposes_nothing_but_the_composition_accessor() -> None:
-    # The seat answers one question, and every extra name is a second
-    # thing to keep in sync.  Asserted as an exact set, because the
-    # failure this guards against is the seat *growing* a re-export.
-    assert set(fdr_seat.__all__) == {"COMPONENT_NAME", "fdr_store_component"}
-    # And the member's own API is *not* among the exports — the specific
-    # names a well-meaning re-export would add first, and the one that
-    # would matter most here: the free verb, whose spelling beside the
-    # store's would be two ways to compute the figure.
-    for leaked in (
-        "FdrDeployStore",
-        "FdrDeployError",
-        "fdr_deploy",
-        "FDR_COMPONENT_NAME",
-    ):
-        assert leaked not in fdr_seat.__all__
-
-
-def test_the_seat_reads_the_application_it_is_handed(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    # A caller that already holds an application must get *that*
-    # application's component, not a freshly composed one — otherwise
-    # two holders of one application could disagree about the store.
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'handed.db'}")
-    app = create_app()
-    assert fdr_seat.fdr_store_component(app) is app.get(fdr_seat.COMPONENT_NAME)
-
-
-def test_the_seat_answers_none_when_the_component_is_absent() -> None:
+def test_the_application_answers_none_when_the_component_is_absent() -> None:
     # An application composed without this member answers None, not an
-    # exception: the "degrade, don't break" stance every seat takes.
+    # exception: the "degrade, don't break" stance of the composition.
     # The application here is built directly over an unrelated component
     # so the absence is about composition, not configuration — the other
     # None is pinned above, where the environment is the absent thing.
     without = Application(components={"unrelated": object()}, order=("unrelated",))
-    assert fdr_seat.COMPONENT_NAME not in without
-    assert fdr_seat.fdr_store_component(without) is None
+    assert member.FDR_COMPONENT_NAME not in without
+    assert without.get(member.FDR_COMPONENT_NAME) is None
 
 
-def test_the_seats_none_is_not_the_objective_seats_none() -> None:
-    # The three seats beside one another in the same package, and the
+def test_the_stores_none_is_not_the_objectives_none() -> None:
+    # The three components beside one another in the same member, and the
     # two None facts among them: an application that carries neither
     # member refuses them all (composition), while an application that
     # carries the member in an unconfigured environment still composes
     # the objective (arithmetic cannot degrade) and declines the store
     # (deployment state did).  The distinction is the docstrings' own
     # law, and this is its one-test spelling.
-    from app.modules import scoring as objective_seat
-
     app = create_app()
-    assert objective_seat.world_objective_component(app) is not None
-    assert fdr_seat.fdr_store_component(app) is None
+    assert app.get(member.COMPONENT_NAME) is not None
+    assert app.get(member.FDR_COMPONENT_NAME) is None

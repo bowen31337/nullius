@@ -49,7 +49,7 @@ powers of two, and the one cross-term composition test asserts with
 cannot reach, and said so here rather than pretended otherwise.  What
 these tests deliberately do not reach: composition (``test_component.py``
 — the penalty needs no component, which is itself pinned here by the
-member's surface), the seat (``test_app_module.py``), and any
+member's surface), and any
 persistence or any read of the trial ledger (the ``replay_score`` row is
 feature 255's, and the ledger's rows are the ledger member's data
 access — this seam is a function of the view it is handed, pinned

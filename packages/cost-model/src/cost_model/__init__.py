@@ -388,9 +388,9 @@ __version__ = "0.1.0"
 
 #: The component name this member registers under — the key a composed
 #: :class:`~app.module_loader.Application` carries the cost model service
-#: at, and the name the seat in the app namespace
-#: (``src/app/modules/cost-model``) asks for.  Spelled once here so the
-#: member, the factory's registry and the seat cannot drift apart.
+#: at, and the name a caller reads it by (``create_app().get("cost-model")``).
+#: Spelled once here so the member and the factory's registry cannot drift
+#: apart.
 COMPONENT_NAME = "cost-model"
 
 

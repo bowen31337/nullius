@@ -150,8 +150,8 @@ render emits a dash where the numeral would be and words that say why
 — no ``0.0``, which is a *measurement* (a campaign that projected to
 no false discoveries), and no chart of an empty series either.
 
-**An absent route is refused, never answered around.**  The seat's
-docstring (:mod:`app.modules.ops`) names this module as the caller
+**An absent route is refused, never answered around.**  The deleted
+ops seat's docstring named this module as the caller
 that must take exactly this stance: *"a caller that needs the
 top-line figure and resolves ``None`` must refuse to proceed rather
 than rendering a numeral nobody measured.  The dashboard this route
@@ -308,7 +308,6 @@ from typing import Any, Optional
 from urllib.parse import unquote, urlparse
 
 from app.module_loader import create_app
-from app.modules.ops import fdr_deploy_component, instrument_status_component
 
 from .chrome import (
     EPOCH_COUNT_LABEL,
@@ -1493,15 +1492,13 @@ class OperatorDashboard:
     def composed(cls, app: Any = None) -> "OperatorDashboard":
         """The dashboard over the application's composed route.
 
-        Reached through the seats (:func:`app.modules.ops.
-        fdr_deploy_component` and :func:`app.modules.ops.
-        instrument_status_component`) — the accessors whose docstrings
-        name this surface as their caller — so the operator surface
+        Reached through the composed application's ``ops-fdr-deploy``
+        and ``ops-instrument-status`` components, so the operator surface
         never imports the member's stores directly and never grows a
         second reader of the per-campaign rows or of the rail's
         instruments.  With ``app`` given the components are read from
         it; without one the application is composed first — once — and
-        both seats read from that one composition (the full declared
+        both components are read from that one composition (the full declared
         workspace, in the environment the dashboard runs in).
 
         A composition that carries no ``ops-fdr-deploy`` component is
@@ -1524,7 +1521,7 @@ class OperatorDashboard:
         attribute it never promised.
         """
         application = app if app is not None else create_app()
-        route = fdr_deploy_component(application)
+        route = application.get("ops-fdr-deploy")
         if route is None:
             raise DashboardRenderError(
                 f"the dashboard cannot render: the composed application "
@@ -1536,7 +1533,7 @@ class OperatorDashboard:
                 f"numeral nobody measured; point DATABASE_URL at the "
                 f"metrics store and compose again (feature 351, docs §16)"
             )
-        rail = instrument_status_component(application)
+        rail = application.get("ops-instrument-status")
         if rail is None:
             raise DashboardRenderError(
                 f"the dashboard cannot render: the composed application "

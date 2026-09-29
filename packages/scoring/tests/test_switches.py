@@ -34,8 +34,7 @@ composition test measures against a score whose every figure is dyadic
 (``_dyadic_score``, below) so both orderings of two terms land on the
 same scalar to the bit.  What these tests deliberately do not reach:
 composition (``test_component.py`` — the penalty needs no component,
-which is itself pinned here by the member's surface), the seat
-(``test_app_module.py``), and any persistence (the ``replay_score``
+which is itself pinned here by the member's surface), and any persistence (the ``replay_score``
 row is feature 255's, and it already carries the score and the β).
 """
 

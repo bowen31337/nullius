@@ -674,7 +674,7 @@ def test_the_composed_component_exposes_the_re_run(
 ) -> None:
     # The re-run is a *method on the probe component*, not a fifth one: it is
     # this probe taken twice, and it needs the statistic, the shuffle and the
-    # threshold that already live here. So the app seat's `tripwires` component
+    # threshold that already live here. So the composed `tripwires` component
     # carries it, and no new component name was invented.
     from pathlib import Path
 

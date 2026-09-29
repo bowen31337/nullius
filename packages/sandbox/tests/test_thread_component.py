@@ -122,7 +122,7 @@ def test_the_builder_takes_no_arguments_and_resolves_nothing() -> None:
 
 def test_the_builder_never_returns_none() -> None:
     # The honest shape for a *law* rather than a store — and here the stronger
-    # of the two readings the seat's docstring distinguishes: the component is
+    # of the two readings a component can carry: the component is
     # backed by the committed pinning artifact, so a non-None value proves a
     # file compiled rather than merely that the law is loaded.
     app = create_app(MEMBER_SRC, registry=Registration())
@@ -182,52 +182,20 @@ def test_the_composed_law_reads_the_committed_artifact() -> None:
     assert law.pins() == sandbox.sandbox_threads().pins()
 
 
-class TestTheSeat:
-    """src/app/modules/sandbox — the member's seat in the app namespace."""
+class TestTheComposedApplication:
+    """The component reached by name through the composed application."""
 
-    def test_the_seat_exposes_the_composed_component(self) -> None:
-        from app.modules.sandbox import (
-            THREADS_COMPONENT_NAME,
-            sandbox_threads_component,
-        )
-
-        assert THREADS_COMPONENT_NAME == "sandbox-threads"
+    def test_the_application_exposes_the_composed_component(self) -> None:
         app = create_app(MEMBER_SRC, registry=Registration())
-        _assert_is_the_thread_law(sandbox_threads_component(app))
+        _assert_is_the_thread_law(app.get("sandbox-threads"))
 
-    def test_the_seat_returns_none_when_nothing_registered(self) -> None:
+    def test_the_application_returns_none_when_nothing_registered(self) -> None:
         # An application with no component registered is a discoverable state,
-        # not an exception — mirroring the factory's stance and the other four
-        # seats'.
-        from app.modules.sandbox import sandbox_threads_component
+        # not an exception — mirroring the factory's stance.
+        assert Application(components={}, order=()).get("sandbox-threads") is None
 
-        assert sandbox_threads_component(Application(components={}, order=())) is None
-
-    def test_the_seat_reads_from_an_application_it_is_handed(self) -> None:
-        from app.modules.sandbox import sandbox_threads_component
-
+    def test_the_component_is_read_from_the_application_it_is_asked_of(self) -> None:
         application = Application(
             components={"sandbox-threads": "sentinel"}, order=("sandbox-threads",)
         )
-        assert sandbox_threads_component(application) == "sentinel"
-
-    def test_the_seat_is_not_a_second_vocabulary(self) -> None:
-        # The seat answers questions — which component? — and does not re-export
-        # the law's types.  A caller who has the component calls its verbs; a
-        # second spelling of the policy, the decision or the cap here would be a
-        # second thing to keep in sync.
-        import app.modules.sandbox as seat
-
-        for leaked in (
-            "SandboxThreads",
-            "ThreadDecision",
-            "ThreadReason",
-            "ThreadPinningPolicy",
-            "ThreadCap",
-            "REQUIRED_CAPS",
-            "SINGLE_THREADED",
-            "classify_cap",
-            "check_thread_pinning",
-            "THREAD_PINNING_CODE",
-        ):
-            assert not hasattr(seat, leaked), leaked
+        assert application.get("sandbox-threads") == "sentinel"

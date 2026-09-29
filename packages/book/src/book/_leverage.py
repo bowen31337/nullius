@@ -131,9 +131,9 @@ Sharpe is the evaluator's business, not this module's.
 **No new component, and the layering note.**  Feature 301's single ``book``
 component is the member's whole composition — the cap is reached the way
 feature 276's ceiling is reached beside feature 270's freeze, as a free
-function in its own module, and the seat (``src/app/modules/book``) goes on
+function in its own module, and the composed ``book`` component goes on
 answering exactly one question, *what is the composed book combiner?*  No
-table, no endpoint, no migration, no seat edit, and no third-party import:
+table, no endpoint, no migration, no new component, and no third-party import:
 ``math`` and the member's own ``.errors``, so the factory's scan — which
 imports this package to fire its ``@register`` — pays nothing for the cap and
 the replay path stays import-cheap.

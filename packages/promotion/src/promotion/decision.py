@@ -126,7 +126,7 @@ registered surface stays feature 291's one store, for the reason the member's
 own docstring states: a decision is evidence the factory does not hold — the
 evaluation has run, somewhere else, and its outcome is the caller's to bring —
 so the store is constructed from a URL by the caller that has one, exactly as
-its two siblings are.  The seat (``src/app/modules/promotion``) is untouched
+its two siblings are.  The composed ``promotion`` component is untouched
 and still answers one question.
 
 **Stdlib only, and import-cheap.**  ``sqlite3``, ``datetime`` and

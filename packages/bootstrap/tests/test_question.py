@@ -127,9 +127,8 @@ def test_question_for_accepts_the_composed_world() -> None:
     # both pools" at the composition seam. The question accepts it and answers
     # through it.
     from app.module_loader import create_app
-    from app.modules import bootstrap as seat
 
-    composed = seat.hyperparameter_world_component(create_app())
+    composed = create_app().get("bootstrap")
     assert composed is not None
     assert type(composed).__name__ == "HyperparameterWorld"
     assert not isinstance(composed, HyperparameterWorld)  # the loader's copy

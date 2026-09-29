@@ -241,56 +241,20 @@ def test_the_composed_law_reads_the_laws_own_vocabulary() -> None:
     assert law.sources() == sandbox.SOURCE_CLASSES
 
 
-class TestTheSeat:
-    """src/app/modules/sandbox — the member's seat in the app namespace."""
+class TestTheComposedApplication:
+    """The component reached by name through the composed application."""
 
-    def test_the_seat_exposes_the_composed_component(self) -> None:
-        from app.modules.sandbox import (
-            FAIL_CLASS_COMPONENT_NAME,
-            sandbox_fail_class_component,
-        )
-
-        assert FAIL_CLASS_COMPONENT_NAME == "sandbox-failclass"
+    def test_the_application_exposes_the_composed_component(self) -> None:
         app = create_app(MEMBER_SRC, registry=Registration())
-        _assert_is_the_fail_class_law(sandbox_fail_class_component(app))
+        _assert_is_the_fail_class_law(app.get("sandbox-failclass"))
 
-    def test_the_seat_returns_none_when_nothing_registered(self) -> None:
+    def test_the_application_returns_none_when_nothing_registered(self) -> None:
         # An application with no component registered is a discoverable state,
-        # not an exception — mirroring the factory's stance and the other six
-        # seats'.
-        from app.modules.sandbox import sandbox_fail_class_component
+        # not an exception — mirroring the factory's stance.
+        assert Application(components={}, order=()).get("sandbox-failclass") is None
 
-        assert sandbox_fail_class_component(Application(components={}, order=())) is None
-
-    def test_the_seat_reads_from_an_application_it_is_handed(self) -> None:
-        from app.modules.sandbox import sandbox_fail_class_component
-
+    def test_the_component_is_read_from_the_application_it_is_asked_of(self) -> None:
         application = Application(
-            components={"sandbox-failclass": "sentinel"},
-            order=("sandbox-failclass",),
+            components={"sandbox-failclass": "sentinel"}, order=("sandbox-failclass",)
         )
-        assert sandbox_fail_class_component(application) == "sentinel"
-
-    def test_the_seat_is_not_a_second_vocabulary(self) -> None:
-        # The seat answers questions — which component? — and does not re-export
-        # the law's types.  A caller who has the component calls its verbs; a
-        # second spelling of the table, the value or the reason codes here would
-        # be a second thing to keep in sync.
-        import app.modules.sandbox as seat
-
-        for leaked in (
-            "SandboxFailClass",
-            "FailClass",
-            "FailClassDecision",
-            "FailClassReason",
-            "FAIL_CLASS_TABLE",
-            "SOURCE_CLASSES",
-            "SANDBOX_RUNNER_CLASSES",
-            "SANDBOX_ESCAPE_CLASS",
-            "OK_FAIL_CLASS",
-            "ERROR_FAIL_CLASS",
-            "TRIPWIRE_FAIL_CLASS",
-            "classify_fail_class",
-            "classify_run",
-        ):
-            assert not hasattr(seat, leaked), leaked
+        assert application.get("sandbox-failclass") == "sentinel"

@@ -8,12 +8,12 @@ can check if a persisted reading says **which process** produced it.
 
 Why this is its own module rather than a function in
 :mod:`router.submission_health` is the same reason :mod:`router.errors`
-is its own module: the seat in ``app.modules.router`` answers a question
+is its own module: a reader of the submission-health store answers a question
 about *a process* — *is the router that is running right now the process
-whose record a reader holds?* — and a seat that re-derived the identity
+whose record a reader holds?* — and a reader that re-derived the identity
 with its own ``socket.gethostname()``/``os.getpid()`` pair would be a
 second spelling of one fact, free to drift from the one the store files
-rows under.  A store whose rows say ``host/41`` and a seat that answers
+rows under.  A store whose rows say ``host/41`` and a reader that answers
 ``host/42`` is exactly the confusion this feature's own sentence rules
 out, so the derivation lives once and both reach it here.
 

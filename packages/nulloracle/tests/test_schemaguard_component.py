@@ -1,4 +1,4 @@
-"""Feature 110's plugin seam and its seat in the ``app`` namespace.
+"""Feature 110's plugin seam and its read through the composed application.
 
 ``test_component.py`` pins feature 109's registration, ``test_guard_component.py``
 feature 123's, ``test_verdict_component.py`` feature 124's,
@@ -29,7 +29,7 @@ Three things make it worth its own suite rather than a section of another's:
   end-to-end tests below exercise both facts separately so the difference
   is pinned by behaviour rather than asserted in a docstring.
 
-* **the seat is a twelfth module, and its name had to be chosen.**
+* **the component's name had to be chosen.**
   ``app.order`` is name-sorted, and feature 123's guard must stay
   immediately after the sidecar in it; a component sorting between
   ``nulloracle`` and ``nulloracle-ks-guard`` would silently break that
@@ -50,7 +50,6 @@ audit existed, which is backwards.
 
 from __future__ import annotations
 
-import ast
 import inspect
 import sqlite3
 from contextlib import closing
@@ -78,8 +77,6 @@ from nulloracle import (
 )
 
 from app.module_loader import Application, create_app, scan_components
-
-SEAT_MODULE = "app.modules.nulloracle.schemaguard"
 
 #: The lawful five feature 97 names — the declaration a clean store carries.
 NODE_FIVE_CREATE = (
@@ -124,45 +121,6 @@ def _assert_is_the_tree_store_guard(component: object) -> None:
     assert type(component).__module__.endswith("nulloracle.schemaguard")
     assert callable(component.audit)
     assert callable(component.columns)
-
-
-def _imported_names(path: str | None, *, runtime_only: bool = True) -> set[str]:
-    """The top-level modules ``path`` imports, optionally excluding typing blocks.
-
-    Parsed rather than scanned: a module's *docstring* discusses the members it
-    deliberately does not import — that is where the decision is argued — so a
-    substring search over the file reports imports that are not there.
-
-    With ``runtime_only`` (the default), names imported inside an
-    ``if TYPE_CHECKING:`` guard are left out, because the guard is exactly the
-    mechanism a module uses to name a type it does not depend on.  Which is the
-    question this suite is actually asking: what does importing the seat bind,
-    as opposed to what does it merely describe.
-    """
-    assert path is not None
-    tree = ast.parse(Path(path).read_text(encoding="utf-8"))
-    guarded: set[int] = set()
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.If)
-            and isinstance(node.test, ast.Name)
-            and node.test.id == "TYPE_CHECKING"
-        ):
-            guarded.update(
-                sub.lineno for sub in ast.walk(node) if hasattr(sub, "lineno")
-            )
-    imported: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if runtime_only and node.lineno in guarded:
-                    continue
-                imported.add(alias.name.split(".")[0])
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            if runtime_only and node.lineno in guarded:
-                continue
-            imported.add(node.module.split(".")[0])
-    return imported
 
 
 # -- The registration ---------------------------------------------------------------
@@ -356,87 +314,70 @@ class TestTheTreeStoreGuardComponentRegisters:
         )
 
 
-# -- The seat -----------------------------------------------------------------------
+# -- Reading the composed component ---------------------------------------------
 
 
-class TestTheSeatInTheAppNamespace:
-    """``app/modules/nulloracle/schemaguard.py`` — the app package's way to
-    the composed guard, without the app package importing the member.
+class TestReadingTheComposedComponent:
+    """The component as ``create_app().get(...)`` hands it to a caller outside
+    the member.
     """
 
     def test_the_component_name_matches_the_member(self) -> None:
-        # Spelled twice on purpose — once in the member, once in the seat —
-        # so the two cannot drift apart silently.
         import nulloracle
 
-        from app.modules.nulloracle import schemaguard as seat
-
         assert (
-            seat.COMPONENT_NAME
-            == nulloracle.TREE_STORE_COMPONENT_NAME
+            nulloracle.TREE_STORE_COMPONENT_NAME
             == TREE_STORE_COMPONENT_NAME
         )
 
-    def test_the_seat_exposes_the_composed_guard(
+    def test_the_application_exposes_the_composed_guard(
         self, configured_store: tuple[str, Path]
     ) -> None:
-        from app.modules.nulloracle.schemaguard import tree_store_guard_component
+        _assert_is_the_tree_store_guard(create_app().get(TREE_STORE_COMPONENT_NAME))
 
-        _assert_is_the_tree_store_guard(tree_store_guard_component())
-
-    def test_the_seat_reads_from_an_application_it_is_handed(self) -> None:
-        from app.modules.nulloracle.schemaguard import tree_store_guard_component
-
+    def test_the_component_is_read_from_an_application_it_is_handed(self) -> None:
         application = Application(
             components={TREE_STORE_COMPONENT_NAME: "sentinel"},
             order=(TREE_STORE_COMPONENT_NAME,),
         )
-        assert tree_store_guard_component(application) == "sentinel"
+        assert application.get(TREE_STORE_COMPONENT_NAME) == "sentinel"
 
     def test_an_absent_component_is_none_rather_than_an_error(self) -> None:
-        from app.modules.nulloracle.schemaguard import tree_store_guard_component
-
         empty = Application(components={}, order=())
-        assert tree_store_guard_component(empty) is None
+        assert empty.get(TREE_STORE_COMPONENT_NAME) is None
 
     def test_an_unconfigured_environment_yields_none_not_an_exception(
         self,
     ) -> None:
-        from app.modules.nulloracle.schemaguard import tree_store_guard_component
+        assert create_app().get(TREE_STORE_COMPONENT_NAME) is None
 
-        assert tree_store_guard_component() is None
-
-    def test_the_seat_can_audit_a_lawful_store(
+    def test_the_composed_component_can_audit_a_lawful_store(
         self, configured_store: tuple[str, Path]
     ) -> None:
-        # Feature 110 from the app namespace, the quiet half: an operator
+        # Feature 110 through the composition, the quiet half: an operator
         # script or nightly job asks the composed application for the guard
         # and learns §7.1's rule holds over a store that declares the
         # lawful five.
-        from app.modules.nulloracle.schemaguard import tree_store_guard_component
-
         _url, path = configured_store
         with closing(sqlite3.connect(path)) as connection, connection:
             connection.execute(NODE_FIVE_CREATE)
-        guard = tree_store_guard_component()
+        guard = create_app().get(TREE_STORE_COMPONENT_NAME)
         assert guard is not None
         audit = guard.audit()
         assert audit.holds is True
         assert audit.columns == ("id", "parent_id", "campaign_id", "theme_root", "depth")
 
-    def test_the_seat_can_refuse_a_broken_store(
+    def test_the_composed_component_can_refuse_a_broken_store(
         self, configured_store: tuple[str, Path]
     ) -> None:
-        # The sentence's own path, end to end from the app namespace: the
+        # The sentence's own path, end to end through the composition: the
         # column added out-of-band — the path that skipped every review —
         # and the composed guard pronouncing the ``is_null_column``
         # refusal on the live store.
-        from app.modules.nulloracle.schemaguard import tree_store_guard_component
-
         _url, path = configured_store
         with closing(sqlite3.connect(path)) as connection, connection:
             connection.execute(NODE_FIVE_CREATE)
-        guard = tree_store_guard_component()
+        guard = create_app().get(TREE_STORE_COMPONENT_NAME)
         assert guard is not None and guard.audit().holds is True
         with closing(sqlite3.connect(path)) as connection, connection:
             connection.execute("ALTER TABLE node ADD COLUMN is_null BOOLEAN")
@@ -451,110 +392,10 @@ class TestTheSeatInTheAppNamespace:
         assert type(raised.value).__name__ == "IsNullColumnError"
         assert str(raised.value).startswith("is_null_column")
 
-    def test_the_seat_is_a_composition_read_and_not_a_second_api(self) -> None:
-        # The seat's export list, pinned: a caller who wants the reviews or
-        # the audit record imports the member, and a second spelling here
-        # would be a second thing to keep in sync.  The one question this
-        # module answers is *what is the composed tree-store guard?*
-        from app.modules.nulloracle import schemaguard as seat
-
-        assert set(seat.__all__) == {
-            "COMPONENT_NAME",
-            "tree_store_guard_component",
-        }
-        assert not hasattr(seat, "TreeStoreGuard")
-        assert not hasattr(seat, "SchemaAudit")
-        assert not hasattr(seat, "review_node_columns")
-        assert not hasattr(seat, "review_ddl")
-        assert not hasattr(seat, "audit_tree_store")
-        assert not hasattr(seat, "IsNullColumnError")
-
-    def test_the_sidecar_seat_is_untouched_by_the_twelfth_component(self) -> None:
-        # This seat is a *submodule* beside feature 109's, precisely so that
-        # the older seat's promise does not change: a caller that only wants
-        # the sidecar never imports this module and sees the same two names
-        # it always did.
-        from app.modules import nulloracle as seat
-
-        assert set(seat.__all__) == {"COMPONENT_NAME", "null_sidecar_component"}
-        assert seat.COMPONENT_NAME == SIDECAR_COMPONENT_NAME
-
-    def test_the_other_seats_are_untouched_by_the_twelfth_component(self) -> None:
-        # Every older seat's promise is exactly what it was: a twelfth
-        # submodule beside them does not change what a caller importing any
-        # one of them sees.
-        from app.modules.nulloracle import flipdepth as flip_seat
-        from app.modules.nulloracle import irprob as irprob_seat
-        from app.modules.nulloracle import keyalert as key_alert_seat
-        from app.modules.nulloracle import ksguard as guard_seat
-        from app.modules.nulloracle import plan as plan_seat
-        from app.modules.nulloracle import selection as selection_seat
-
-        assert set(flip_seat.__all__) == {"COMPONENT_NAME", "flip_depth_component"}
-        assert set(irprob_seat.__all__) == {
-            "COMPONENT_NAME",
-            "true_ir_flip_depth_component",
-        }
-        assert set(key_alert_seat.__all__) == {
-            "COMPONENT_NAME",
-            "key_alert_component",
-        }
-        assert set(guard_seat.__all__) == {"COMPONENT_NAME", "ks_guard_component"}
-        assert set(plan_seat.__all__) == {"COMPONENT_NAME", "plan_gate_component"}
-        assert set(selection_seat.__all__) == {
-            "COMPONENT_NAME",
-            "type_r_selection_component",
-        }
-
-    def test_importing_the_seat_imports_no_member(self) -> None:
-        # The seat exists so the ``app`` package does not depend on a
-        # workspace member at import time.  Asserted on the seat's own
-        # compiled form rather than on ``sys.modules`` — every other test in
-        # this suite has already imported the member, so the module cache
-        # cannot answer this — and on the *imports*, not on the text: the
-        # member's name appears in a ``TYPE_CHECKING`` block, which never
-        # executes, and a substring scan over the file cannot tell that from
-        # a real import.
-        import app.modules.nulloracle.schemaguard as module
-
-        imported = _imported_names(module.__file__)
-        assert "nulloracle" not in imported
-        assert "app" in imported
-        assert "nulloracle" in _imported_names(module.__file__, runtime_only=False)
-
-    def test_the_seats_are_distinct_modules(self) -> None:
-        import app.modules.nulloracle as sidecar_seat
-        import app.modules.nulloracle.flipdepth as flip_seat
-        import app.modules.nulloracle.irprob as irprob_seat
-        import app.modules.nulloracle.keyalert as key_alert_seat
-        import app.modules.nulloracle.ksguard as guard_seat
-        import app.modules.nulloracle.phi as phi_seat
-        import app.modules.nulloracle.plan as plan_seat
-        import app.modules.nulloracle.schemaguard as tree_store_seat
-        import app.modules.nulloracle.selection as selection_seat
-        import app.modules.nulloracle.target as target_seat
-        import app.modules.nulloracle.verdict as verdict_seat
-
-        assert tree_store_seat is not sidecar_seat
-        assert tree_store_seat is not guard_seat
-        assert tree_store_seat is not phi_seat
-        assert tree_store_seat is not verdict_seat
-        assert tree_store_seat is not flip_seat
-        assert tree_store_seat is not irprob_seat
-        assert tree_store_seat is not selection_seat
-        assert tree_store_seat is not plan_seat
-        assert tree_store_seat is not target_seat
-        assert tree_store_seat is not key_alert_seat
-        assert tree_store_seat.__name__ == SEAT_MODULE
-
-    def test_the_seat_answers_the_members_own_builder(self) -> None:
-        # The seat and the builder cannot disagree about what the component
-        # is: with nothing configured both answer None, which is the whole
-        # reason the seat reads the factory rather than resolving the guard
-        # itself.
+    def test_the_composition_answers_the_members_own_builder(self) -> None:
+        # The composition and the builder cannot disagree about what the
+        # component is: unconfigured, both answer None.
         import nulloracle
 
-        from app.modules.nulloracle.schemaguard import tree_store_guard_component
-
         assert nulloracle.build_tree_store_guard() is None
-        assert tree_store_guard_component() is None
+        assert create_app().get(TREE_STORE_COMPONENT_NAME) is None

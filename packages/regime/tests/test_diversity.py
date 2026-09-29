@@ -567,20 +567,17 @@ class TestTheModulesPlace:
             built for built in dir(regime) if built.startswith("build_")
         ] == ["build_regime_coverage"]
 
-    def test_the_seat_is_untouched_by_the_verdict(
+    def test_the_composed_ledger_feeds_the_verdict(
         self, monkeypatch, tmp_path: Path
     ) -> None:
-        # The app seat answers one question — *what is the composed
-        # coverage ledger?* — and the judgment is a caller of its answer
-        # rather than a second thing to compose: the seat still exposes
-        # exactly the composition accessor, and the reading it reaches
-        # is the reading the judgment takes.
-        from app.modules import regime as seat
+        # The composed coverage ledger answers one question — *what is the
+        # coverage ledger?* — and the judgment is a caller of its answer rather
+        # than a second thing to compose: the reading the composition
+        # reaches is the reading the judgment takes.
+        from app.module_loader import create_app
 
-        assert set(seat.__all__) == {"COMPONENT_NAME", "regime_coverage_component"}
-
-        monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'seated.db'}")
-        store = seat.regime_coverage_component()
+        monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'composed.db'}")
+        store = create_app().get("regime")
         assert store is not None
         store.record("crash", 1)
         with pytest.raises(DiversityClaimError):

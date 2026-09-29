@@ -1,23 +1,15 @@
-"""The KS guard's plugin seam and its seat in the ``app`` namespace.
+"""The KS guard's plugin seam and its read through the composed application.
 
 ``test_component.py`` pins feature 109's registration; this pins feature 123's,
 which is the member's *second* component and the first one whose builder is
-not about the sidecar file at all.  Two things make it worth its own suite
-rather than a section of that one:
-
-* **the member now registers two components.**  Both ``@register`` calls live
-  in the package's ``__init__``, and the loader re-executes ``__init__`` on
-  every ``create_app()`` while caching submodules — so the second registration
-  is exactly as exposed to the "fires once per process and then drops out"
-  failure as the first, and needs the same *second application* assertion.
-  A registration added in a submodule would pass a single-composition test.
-* **the seat is a submodule.**  ``app.modules.nulloracle`` was a single
-  ``__init__.py`` while the member contributed one component; the guard's seat
-  lives beside it in ``app/modules/nulloracle/ksguard.py``.  The old seat's
-  export list must stay exactly as it was, and the new module must answer the
-  same shape of question — *what is the composed X?* — with the same
-  ``None``-not-an-exception degradation and the same refusal to become a
-  second API.
+not about the sidecar file at all.  It is worth its own suite rather than a
+section of that one because **the member now registers two components.**  Both
+``@register`` calls live in the package's ``__init__``, and the loader
+re-executes ``__init__`` on every ``create_app()`` while caching submodules —
+so the second registration is exactly as exposed to the "fires once per
+process and then drops out" failure as the first, and needs the same *second
+application* assertion.  A registration added in a submodule would pass a
+single-composition test.
 
 The load-bearing property is unchanged and restated because the consequence is
 sharper here: **the builder must never raise.**  This one resolves a database
@@ -30,9 +22,7 @@ can be unconfigured or misconfigured.
 
 from __future__ import annotations
 
-import ast
 import uuid
-from pathlib import Path
 
 import pytest
 from nulloracle import (
@@ -44,8 +34,6 @@ from nulloracle import (
 )
 
 from app.module_loader import Application, create_app, scan_components
-
-SEAT_MODULE = "app.modules.nulloracle.ksguard"
 
 
 @pytest.fixture(autouse=True)
@@ -66,38 +54,6 @@ def database_url(tmp_path, monkeypatch: pytest.MonkeyPatch) -> str:
     url = f"sqlite:///{tmp_path / 'guard.db'}"
     monkeypatch.setenv(DATABASE_URL_ENV, url)
     return url
-
-
-def _imported_names(path: str | None, *, runtime_only: bool = True) -> set[str]:
-    """The top-level modules ``path`` imports, optionally excluding typing blocks.
-
-    Parsed rather than scanned: a module's *docstring* discusses the members it
-    deliberately does not import — that is where the decision is argued — so a
-    substring search over the file reports imports that are not there.
-
-    With ``runtime_only`` (the default), names imported inside an
-    ``if TYPE_CHECKING:`` guard are left out, because the guard is exactly the
-    mechanism a module uses to name a type it does not depend on. Which is the
-    question this suite is actually asking: what does importing the seat bind,
-    as opposed to what does it merely describe.
-    """
-    assert path is not None
-    tree = ast.parse(Path(path).read_text(encoding="utf-8"))
-    guarded: set[int] = set()
-    if runtime_only:
-        for node in ast.walk(tree):
-            if isinstance(node, ast.If) and "TYPE_CHECKING" in ast.dump(node.test):
-                for inner in ast.walk(node):
-                    guarded.add(id(inner))
-    found: set[str] = set()
-    for node in ast.walk(tree):
-        if id(node) in guarded:
-            continue
-        if isinstance(node, ast.Import):
-            found.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            found.add(node.module.split(".")[0])
-    return found
 
 
 def _assert_is_the_guard(component: object) -> None:
@@ -294,57 +250,39 @@ def test_a_scheme_the_builder_cannot_speak_does_not_take_composition_down(
     assert "ledger" in app or "feature-store" in app
 
 
-# -- The seat ---------------------------------------------------------------------
+# -- Reading the composed guard ---------------------------------------------------
 
 
-class TestTheSeatInTheAppNamespace:
-    """``app/modules/nulloracle/ksguard.py`` — the app package's way to the
-    composed journal, without the app package importing the member.
+class TestReadingTheComposedGuard:
+    """``create_app().get("nulloracle-ks-guard")`` — the way to the composed
+    journal from outside the member.
     """
 
     def test_the_component_name_matches_the_member(self) -> None:
-        # Spelled twice on purpose — once in the member, once in the seat —
-        # so the two cannot drift apart silently.
         import nulloracle
 
-        from app.modules.nulloracle import ksguard as guard_seat
+        assert nulloracle.KS_GUARD_COMPONENT_NAME == KS_GUARD_COMPONENT_NAME == "nulloracle-ks-guard"
 
-        assert (
-            guard_seat.COMPONENT_NAME
-            == nulloracle.KS_GUARD_COMPONENT_NAME
-            == KS_GUARD_COMPONENT_NAME
-        )
+    def test_the_application_exposes_the_composed_guard(self, database_url: str) -> None:
+        _assert_is_the_guard(create_app().get(KS_GUARD_COMPONENT_NAME))
 
-    def test_the_seat_exposes_the_composed_guard(self, database_url: str) -> None:
-        from app.modules.nulloracle.ksguard import ks_guard_component
-
-        _assert_is_the_guard(ks_guard_component())
-
-    def test_the_seat_reads_from_an_application_it_is_handed(self) -> None:
-        from app.modules.nulloracle.ksguard import ks_guard_component
-
+    def test_the_component_is_read_from_an_application_it_is_handed(self) -> None:
         application = Application(
             components={KS_GUARD_COMPONENT_NAME: "sentinel"},
             order=(KS_GUARD_COMPONENT_NAME,),
         )
-        assert ks_guard_component(application) == "sentinel"
+        assert application.get(KS_GUARD_COMPONENT_NAME) == "sentinel"
 
     def test_an_absent_component_is_none_rather_than_an_error(self) -> None:
-        from app.modules.nulloracle.ksguard import ks_guard_component
-
-        assert ks_guard_component(Application(components={}, order=())) is None
+        assert Application(components={}, order=()).get(KS_GUARD_COMPONENT_NAME) is None
 
     def test_an_unconfigured_environment_yields_none_not_an_exception(self) -> None:
-        from app.modules.nulloracle.ksguard import ks_guard_component
+        assert create_app().get(KS_GUARD_COMPONENT_NAME) is None
 
-        assert ks_guard_component() is None
-
-    def test_the_seat_can_persist_a_pvalue(self, database_url: str) -> None:
-        # Feature 123 from the app namespace: composed guard, two samples in,
+    def test_the_composed_guard_can_persist_a_pvalue(self, database_url: str) -> None:
+        # Feature 123 through the composition: composed guard, two samples in,
         # the number on the campaign row — the path an assembled system takes.
-        from app.modules.nulloracle.ksguard import ks_guard_component
-
-        journal = ks_guard_component()
+        journal = create_app().get(KS_GUARD_COMPONENT_NAME)
         campaign = str(uuid.uuid4())
         with journal._connect() as connection:
             connection.execute(
@@ -356,61 +294,10 @@ class TestTheSeatInTheAppNamespace:
         assert record.pvalue < 0.05
         assert journal.load(campaign) == record
 
-    def test_the_seat_is_a_composition_read_and_not_a_second_api(self) -> None:
-        # The seat's export list, pinned: a caller who has the journal reaches
-        # ``guard``/``load`` on it, and a second spelling here would be a
-        # second thing to keep in sync. The one question this module answers
-        # is *what is the composed KS guard?* — and the answer is the
-        # component, not a re-exported test or store class.
-        from app.modules.nulloracle import ksguard as seat
-
-        assert set(seat.__all__) == {"COMPONENT_NAME", "ks_guard_component"}
-        assert not hasattr(seat, "KsGuard")
-        assert not hasattr(seat, "ks_two_sample")
-
-    def test_the_sidecar_seat_is_untouched_by_the_second_component(self) -> None:
-        # The guard's seat is a *submodule* beside feature 109's, precisely so
-        # that the older seat's promise does not change: a caller that only
-        # wants the sidecar never imports the guard's module and sees the same
-        # two names it always did.
-        from app.modules import nulloracle as seat
-
-        assert set(seat.__all__) == {"COMPONENT_NAME", "null_sidecar_component"}
-        assert seat.COMPONENT_NAME == SIDECAR_COMPONENT_NAME
-
-    def test_the_two_seats_are_distinct_modules(self) -> None:
-        import app.modules.nulloracle as sidecar_seat
-        import app.modules.nulloracle.ksguard as guard_seat
-
-        assert guard_seat is not sidecar_seat
-        assert guard_seat.__name__ == SEAT_MODULE
-        assert guard_seat.COMPONENT_NAME != sidecar_seat.COMPONENT_NAME
-
-    def test_importing_the_seat_imports_no_member(self) -> None:
-        # The seat exists so the ``app`` package does not depend on a
-        # workspace member at import time. Asserted on the seat's own compiled
-        # form rather than on ``sys.modules`` — every other test in this suite
-        # has already imported the member, so the module cache cannot answer
-        # this — and on the *imports*, not on the text: the member's name
-        # appears in a ``TYPE_CHECKING`` block, which never executes, and a
-        # substring scan over the file cannot tell that from a real import.
-        import app.modules.nulloracle.ksguard as module
-
-        imported = _imported_names(module.__file__)
-        assert "nulloracle" not in imported
-        assert "app" in imported
-        # The member *is* named — in the typing guard, which is the point:
-        # the seat describes a ``KsGuard`` without depending on one.
-        assert "nulloracle" in _imported_names(module.__file__, runtime_only=False)
-
-    def test_the_seat_answers_the_members_own_builder(self) -> None:
-        # The seat and the builder cannot disagree about what the component
-        # is: with ``DATABASE_URL`` unset both answer None, and with it set
-        # both hand back the same kind of object — which is the whole reason
-        # the seat reads the factory rather than resolving the store itself.
+    def test_the_composition_answers_the_members_own_builder(self) -> None:
+        # The composition and the builder cannot disagree about what the
+        # component is: with ``DATABASE_URL`` unset both answer None.
         import nulloracle
 
-        from app.modules.nulloracle.ksguard import ks_guard_component
-
         assert nulloracle.build_ks_guard() is None
-        assert ks_guard_component() is None
+        assert create_app().get(KS_GUARD_COMPONENT_NAME) is None

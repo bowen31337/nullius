@@ -60,9 +60,8 @@ and the tree it lives in).  So it is a free function beside them, reached as
 and feature 222's ``episode_commit``, 223's ``prefix_view``, 226's
 ``read_beta`` and 227/228's threshold laws sit in theirs.  A tenth
 ``signal-agent-*`` registration would put a name in the registry for a
-question that composes nothing — and ``src/app/modules/signal-agent/`` gains no
-seat file for the same reason: that directory's convention is one seat per
-*composed component*, and this feature has none.
+question that composes nothing, and this feature has no *composed component*
+to read.
 """
 
 from __future__ import annotations

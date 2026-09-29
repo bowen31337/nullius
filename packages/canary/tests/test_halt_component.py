@@ -5,8 +5,7 @@ halts dreaming when the canary score differs from the recorded constant by more
 than 1e-12, which emits a determinism_broken alert.*  :mod:`canary._halt` is
 the decision in isolation; this suite pins it the way a deployment actually
 reaches it — composed by the application factory from the member's
-``@register`` builder, and reached from the ``app`` package namespace through
-its seat.
+``@register`` builder, and reached through ``create_app().get(...)``.
 
 A member that halted dreaming correctly against a bare store while the
 composed application carried no halt store at all would satisfy every halt
@@ -14,8 +13,8 @@ test and none of these.  The claims here are the composition contract:
 
 * the factory composes a halt store for a deployment that names a
   ``DATABASE_URL`` — the store the nightly runner's halt is written to;
-* the store it composes is the same store the seat exposes, and it points at
-  the deployment's ``DATABASE_URL``;
+* a fresh composition reaches the same store, pointed at the deployment's
+  ``DATABASE_URL``;
 * the whole of feature 143, end to end, through the composed store: the
   nightly replay breaks against the recorded constant, dreaming is halted
   (the row is on record), the alert is raised carrying the record, and the
@@ -126,18 +125,14 @@ class TestTheComposedSystemCarriesTheHaltStore:
         assert composed_store is not None
         assert composed_store.database_url == test_database_url
 
-    def test_the_app_namespace_seat_reaches_the_same_component(
+    def test_a_fresh_composition_reaches_the_same_component(
         self, composed_store, test_database_url: str
     ) -> None:
-        # The seat is how the dreaming entrypoint reaches the halt state, so
-        # it must resolve to the component the factory composed.
-        from app.modules.canary.halt import COMPONENT_NAME as SEAT_NAME
-        from app.modules.canary.halt import halt_store_component
-
-        assert SEAT_NAME == HALT_COMPONENT_NAME
-        seat = halt_store_component()
-        assert seat is not None
-        assert seat.database_url == composed_store.database_url
+        # Every caller reaches the store through the application, so a fresh
+        # composition must resolve to a component pointed at the same database.
+        store = create_app().get(HALT_COMPONENT_NAME)
+        assert store is not None
+        assert store.database_url == composed_store.database_url
 
     def test_an_unconfigured_deployment_composes_no_halt_store(
         self, monkeypatch: pytest.MonkeyPatch

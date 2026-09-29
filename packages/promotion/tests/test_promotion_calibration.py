@@ -1153,19 +1153,6 @@ def test_the_member_still_exports_exactly_one_builder() -> None:
     ]
 
 
-def test_the_seat_is_untouched_by_this_feature() -> None:
-    # The seat still answers one question, and it deliberately does not re-export
-    # the calibration vocabulary: a caller who has the gate constructs it, and a
-    # second spelling there would be a second thing to keep in sync.
-    from app.modules import promotion as seat
-
-    assert set(seat.__all__) == {"COMPONENT_NAME", "promotion_registry_component"}
-    assert not hasattr(seat, "PromotionCalibrations")
-    assert not hasattr(seat, "VoidCalibrationError")
-    assert not hasattr(seat, "rejects_void_promotion")
-    assert seat.COMPONENT_NAME == member.COMPONENT_NAME == "promotion"
-
-
 def test_the_error_is_a_sibling_and_not_a_face_of_the_block() -> None:
     # The taxonomy's split rule, asserted as data: both are merit refusals and both
     # are gathered internally, but they are *different findings about different

@@ -6,9 +6,9 @@ scores of null nodes against real nodes per campaign.*
 
 The member's own suite (``packages/nulloracle/tests``) pins each contract in
 isolation — the statistic, its two estimators, the refusals, the store, the
-read-back, the seat.  This suite pins the sentence those contracts are *for*,
+read-back, the component.  This suite pins the sentence those contracts are *for*,
 through the assembled system: the guard composed by the application factory,
-reached from the ``app`` package namespace, writing the campaign row that
+read through ``create_app().get``, writing the campaign row that
 ``migrations/versions/0111_campaign_table.py`` created for it.
 
 That distinction is the whole point here.  §7.4's p-value is the one number
@@ -25,8 +25,8 @@ integration question is not "does the arithmetic work" but:
 * does the campaign come out **still calibrated**, because the verdict is
   feature 124's and a guard that also decided would be a threshold nobody
   could audit;
-* and does the assembled system's `POST /target`-shaped read path — the seat
-  — hand a caller the same reading the store holds.
+* and does the assembled system's `POST /target`-shaped read path — the
+  composed component — hand a caller the same reading the store holds.
 
 A member that passed its unit suite while the composed application carried no
 guard at all would satisfy every requirement of the arithmetic tests and none
@@ -114,16 +114,13 @@ class TestTheComposedSystemCarriesTheGuard:
         assert composed_guard is not None
         assert composed_guard.database_url == test_database_url
 
-    def test_the_app_namespace_reaches_the_same_component(
+    def test_a_fresh_composition_reaches_the_same_store(
         self, composed_guard, test_database_url: str
     ) -> None:
-        # The seat is how the rest of this category's features reach the
-        # reading, so it must resolve to the component the factory composed.
-        from app.modules.nulloracle.ksguard import COMPONENT_NAME as SEAT_NAME
-        from app.modules.nulloracle.ksguard import ks_guard_component
-
-        assert SEAT_NAME == KS_GUARD_COMPONENT_NAME
-        assert ks_guard_component().database_url == composed_guard.database_url
+        # ``create_app().get`` is how the rest of this category's features
+        # reach the reading, so it must resolve to the store the factory
+        # composed.
+        assert create_app().get(KS_GUARD_COMPONENT_NAME).database_url == composed_guard.database_url
 
     def test_both_of_the_members_components_compose_together(
         self, sidecar_path, key_ref: str, composed_guard
@@ -131,9 +128,7 @@ class TestTheComposedSystemCarriesTheGuard:
         # §7.4's guard needs the labels (from the sidecar's file) and the
         # campaign (from the relational store). A deployment configured for
         # both gets both, which is what makes the guard job runnable at all.
-        from app.modules.nulloracle import null_sidecar_component
-
-        assert null_sidecar_component() is not None
+        assert create_app().get("nulloracle") is not None
         assert composed_guard is not None
 
     def test_an_unconfigured_deployment_composes_no_guard(

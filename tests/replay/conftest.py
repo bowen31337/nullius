@@ -21,9 +21,9 @@ What *cannot* be pinned there is the wiring: that the member is scanned, that
 ``create_app()`` composes the component under the spec's plugin name, and that
 the duck-typed seam matches the real ``CampaignTree`` the deployment holds.
 Those are the questions here, and each one is asked the way a deployment asks
-it — through the factory's public discovery functions and the app seat, never
-by importing the member directly (an import would bypass the mechanism under
-test).
+it — through the factory's public discovery functions and the composed
+application, never by importing the member directly (an import would bypass the
+mechanism under test).
 
 The path bootstrap is spelled once, at import, and there is nothing else to
 isolate: a replay is pure arithmetic over bytes that were already computed and

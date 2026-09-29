@@ -563,8 +563,8 @@ class ReplayEngine:
     def tree(self) -> Any:
         """The campaign tree the deployment's artifact store holds.
 
-        Resolved *at call time*, through the app namespace's policy-runtime
-        seat (``app.modules.policy-runtime``, the seat feature 217 ships) —
+        Resolved *at call time*, through the composed application's
+        ``policy-runtime`` component (the one feature 217 ships) —
         never at composition, for the recursion reason this class's docstring
         states.  Refuses with :class:`~replay.ReplayTreeError` naming the
         absence when the deployment's store holds no committed campaign,
@@ -806,17 +806,14 @@ def replay_transition(
 def resolve_tree() -> Any:
     """The campaign tree the deployment's artifact store holds, or a refusal.
 
-    Reached through the app namespace's policy-runtime seat, and resolved
+    Read by name from the composed application
+    (``create_app().get("policy-runtime")``), and resolved
     **lazily at call time** — never from a component builder, because the
-    seat's own resolution composes the application and a builder that called
-    it would recurse inside ``create_app()`` (see :class:`ReplayEngine`).
+    read composes the application and a builder that called it would recurse
+    inside ``create_app()`` (see :class:`ReplayEngine`).
 
-    The seat's name carries a hyphen — the plugin name the spec states — so it
-    is reached by :func:`importlib.import_module` rather than by an ``import``
-    statement, the shape this workspace's own seats document
-    (``app.modules.cost-model``, ``app.modules.signal-agent``).  Imported
-    inside the function so this module stays import-cheap and free of a hard
-    dependency at composition time.
+    The loader is imported inside the function so this module stays
+    import-cheap and free of a hard dependency at composition time.
 
     Refuses *by name* when there is no tree: a deployment whose store holds no
     committed campaign, or one where the policy-runtime member was not
@@ -825,10 +822,10 @@ def resolve_tree() -> Any:
     stateless precisely so that composing an application with no campaign is
     not an error.
     """
-    import importlib
+    from app.module_loader import create_app
 
-    seat = importlib.import_module("app.modules.policy-runtime")
-    tree = seat.campaign_tree_component()
+    # "policy-runtime" is the policy-runtime member's campaign-tree component.
+    tree = create_app().get("policy-runtime")
     if tree is None:
         raise ReplayTreeError(
             "no campaign tree is composed: the deployment's artifact store "

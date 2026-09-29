@@ -44,7 +44,7 @@ asserts all three names, because the growth pattern is the same
 convention each time: no central table says any of the components
 exists.  The two state-bound components' own composition laws (needing
 an environment to compose to a thing, degrading to ``None`` without
-one, their seats) are pinned in ``test_scorer_component.py`` and
+one) are pinned in ``test_scorer_component.py`` and
 ``test_fdr_component.py``, not duplicated here.
 """
 
@@ -81,8 +81,8 @@ def _fields(score: object) -> tuple[object, ...]:
 
 def test_the_member_registers_under_the_scoring_component_name() -> None:
     # The component name is the *plugin* name the spec's features carry
-    # (``plugin="scoring"``), so the component key, this member's seat and
-    # the spec cannot drift apart.
+    # (``plugin="scoring"``), so the component key and the spec cannot
+    # drift apart.
     assert member.COMPONENT_NAME == "scoring"
 
 

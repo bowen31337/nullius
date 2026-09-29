@@ -6,9 +6,9 @@ emits a heterogeneous_world error message.*
 
 The member's own suite (``packages/nulloracle/tests``) pins each contract in
 isolation — the plan as a value, the three shapes of the mix, the review, the
-sidecar states, the component, the seat.  This suite pins the sentence those
+sidecar states, the component.  This suite pins the sentence those
 contracts are *for*, through the assembled system: the planning gate composed
-by the application factory, reached from the ``app`` package namespace,
+by the application factory, read through ``create_app().get``,
 reading a campaign's declaration and its tree's flip depths from the
 relational store the root conftest supplies and its root selections from
 §7.1's sealed sidecar.
@@ -57,7 +57,6 @@ from nulloracle import (
 )
 
 from app.module_loader import create_app
-from app.modules.nulloracle.plan import plan_gate_component
 
 CAMPAIGN_TABLE = "campaign"
 
@@ -160,13 +159,12 @@ class TestTheGateComposes:
         assert composed_gate is not None
         assert type(composed_gate).__name__ == "CampaignPlanGate"
 
-    def test_the_seat_hands_back_the_composed_gate(
+    def test_the_application_hands_back_the_composed_gate(
         self, composed_app, composed_gate
     ) -> None:
-        # The app namespace's spelling reaches the same object the factory
-        # composed, and answers None — not an exception — where nothing is
-        # configured.
-        assert plan_gate_component(composed_app) is composed_gate
+        # Reading the application by the component's name reaches the same
+        # object the factory composed.
+        assert composed_app.get(PLAN_COMPONENT_NAME) is composed_gate
 
     def test_a_database_with_no_sidecar_composes_no_gate(self) -> None:
         # The root conftest names a database; this deployment names no

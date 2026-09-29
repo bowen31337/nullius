@@ -170,8 +170,8 @@ and is built on every ``create_app()`` call, while this store's acts are
 functions of evidence the factory does not hold — a gate's verdict, a reading, a
 count.  So the store is constructed from a URL by the caller that has one,
 exactly as every sibling act in this workspace is, and the member still exports
-exactly one ``build_*`` name.  The seat
-(``src/app/modules/promotion``) is untouched and still answers one question, and
+exactly one ``build_*`` name.  The composed
+``promotion`` component is untouched and still answers one question, and
 nothing here edits a registry, router table or app factory.
 
 **Stdlib only, and import-cheap.**  ``sqlite3``, ``datetime`` and

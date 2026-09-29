@@ -37,9 +37,9 @@ object out from under a replay.
 
 **The one name, and why it is the plugin's own.**  The component registers as
 ``"tripwires"`` (:data:`COMPONENT_NAME`) — the plugin name app_spec.xml gives
-the category and the name of this member's seat in the app package
-(``src/app/modules/tripwires``).  The *probe's* name is a different thing and
-stays where it is pinned: every verdict carries ``tripwire="time-shuffle"``
+the category and the key it is read by (``create_app().get("tripwires")``).
+The *probe's* name is a different thing and stays where it is pinned: every
+verdict carries ``tripwire="time-shuffle"``
 (:data:`~tripwires.time_shuffle.TIME_SHUFFLE_NAME`), which is how a persisted
 failure (feature 131) says *which* probe fired.  Naming the component after
 the probe would fuse the two meanings — the registry entry would churn as the
@@ -417,8 +417,8 @@ __all__ = [
 __version__ = "0.1.0"
 
 #: The component name this member registers under — the plugin name
-#: app_spec.xml gives the category (``plugin="tripwires"``) and the name of
-#: the member's seat in the app namespace (``src/app/modules/tripwires``).
+#: app_spec.xml gives the category (``plugin="tripwires"``) and the key the
+#: composed application is read by (``create_app().get("tripwires")``).
 #: Kept here so anything asking the composed application for the tripwire
 #: suite — by way of the member, not by hard-coded string — shares one
 #: spelling with the builder below.

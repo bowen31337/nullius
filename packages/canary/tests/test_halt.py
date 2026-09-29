@@ -644,14 +644,13 @@ class TestTheAlert:
         assert error.halt is None
 
 
-# -- The component name: one spelling, three places -----------------------------
+# -- The component name: one spelling, two places -------------------------------
 
 
 class TestTheComponentName:
     def test_the_store_component_name_is_spelled_once_here(self) -> None:
-        # The member's registration name, the store's constant and the app
-        # seat's constant must agree; this suite pins the member's spelling
-        # and ``test_app_module`` pins the seat's against it.
+        # The member's registration name and the store's constant must
+        # agree; this suite pins the member's spelling.
         assert HALT_STORE_COMPONENT_NAME == "canary-dream-halt"
 
     def test_the_table_is_the_members_own(self) -> None:

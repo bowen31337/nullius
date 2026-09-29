@@ -119,7 +119,7 @@ one the deployment already has.  That document exists — feature 167's
 ``sandbox.imports.compile_imports_allowlist`` — and §10.2 says *"the
 allowlist"*, singular, exactly as feature 167's own module observes of the two
 Z1 boxes.  So :class:`PolicyCeiling` is a **read** of that ceiling: it resolves
-it through the workspace seat (:mod:`app.modules.sandbox`) — a member reaches a
+it through the composed ``sandbox-imports`` component — a member reaches a
 sibling through ``app.*``, never through the sibling's import name — and
 answers membership by asking the compiled object feature 167 produced, so the
 prefix rule has one implementation in this workspace.
@@ -318,14 +318,14 @@ class PolicyCeiling:
 
 
 def _ceiling_from_seat(app: Any) -> PolicyCeiling:
-    """The configured allowlist as the workspace seat answers it.
+    """The configured allowlist as the composed application answers it.
 
-    Resolved through the workspace **seat** rather than through the sandbox
+    Resolved through the composed application rather than through the sandbox
     package's import name: a workspace member never imports another member, and
-    reaches a sibling's shared shapes through ``app.*``.  The seat
-    (``app.modules.sandbox.sandbox_imports_component``) is the composed
-    spelling of the ceiling, so what the policy runtime enforces is literally
-    the object the composed application carries.
+    reaches a sibling's shared shapes through ``app.*``.  The
+    ``sandbox-imports`` component (``create_app().get("sandbox-imports")``)
+    is the composed spelling of the ceiling, so what the policy runtime
+    enforces is literally the object the composed application carries.
 
     A deployment with no sandbox composed is not an error: the committed
     document is then read directly — still the same file, still the same
@@ -335,17 +335,18 @@ def _ceiling_from_seat(app: Any) -> PolicyCeiling:
     behind a guard that had quietly fallen back to a second reading of it.
 
     ``app`` is passed through rather than defaulted here, and the distinction is
-    the point: the seat's *bare* call composes the deployment's application
+    the point: a *bare* ``create_app()`` composes the deployment's application
     from scratch — a scan of every member and a build of every component — so a
     caller that already holds an application (the running system, for feature
     225's own case) must hand it over instead of paying for a second
     composition to read one configuration document.
     """
     try:  # pragma: no cover - the import path is the composed application's
-        from app.modules.sandbox import sandbox_imports_component
+        from app.module_loader import create_app
     except ImportError:
         return PolicyCeiling(terms=tuple(_committed_document_terms()))
-    component = sandbox_imports_component(app)
+    # "sandbox-imports" is the sandbox member's own component name.
+    component = (app if app is not None else create_app()).get("sandbox-imports")
     if component is None:
         return PolicyCeiling(terms=tuple(_committed_document_terms()))
     return PolicyCeiling(terms=tuple(component.terms()), compiled=component)

@@ -348,8 +348,8 @@ class ForwardObservations:
         """The observation store over a composed forward-record store.
 
         The bridge from the seat to this act: a caller holding the composed
-        ``forward`` component (:func:`app.modules.forward.
-        forward_records_component`) asks this one question and holds the
+        ``forward`` component (``create_app().get("forward")``) asks this
+        one question and holds the
         writer for the same database the component points at — one URL, one
         table, two acts.  The one thing read is the store's
         ``database_url``; there is no ``isinstance`` to defeat, and no

@@ -1,11 +1,11 @@
-"""Feature 111's seat: the alert journal as a composed component.
+"""Feature 111: the alert journal as a composed component.
 
-The member's seat modules (``src/app/modules/nulloracle/*.py``) are how the
-rest of this category reaches a composed component: the factory's workspace
-scan imports the member package, fires its ``@register`` decorators, and the
-seat is the named door onto what got built.  Feature 111 adds one component —
-the journal — and this file pins the three claims that make a seat correct
-rather than merely present.
+The rest of this category reaches a composed component through the factory:
+the workspace scan imports the member package, fires its ``@register``
+decorators, and ``create_app().get("nulloracle-sidecar-key-alert")`` is the
+named door onto what got built.  Feature 111 adds one component — the journal
+— and this file pins the three claims that make it correct rather than merely
+present.
 
 * **the builder is free.**  ``create_app()`` builds *every* registered
   component on *every* call, so a builder runs in deployments that never use
@@ -32,7 +32,6 @@ rather than merely present.
 
 from __future__ import annotations
 
-import ast
 import inspect
 from pathlib import Path
 
@@ -48,7 +47,6 @@ from nulloracle import (
 )
 
 COMPONENT_NAME = "nulloracle-sidecar-key-alert"
-SEAT = Path(__file__).resolve().parents[3] / "src" / "app" / "modules" / "nulloracle"
 
 pytestmark = pytest.mark.usefixtures("_no_database_url")
 
@@ -67,58 +65,16 @@ def configured_database_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     return url
 
 
-def _seat_module():
-    """Import the seat module by path, the way the factory's scan does not.
-
-    The seat lives in the *root* project rather than in the member package, so
-    it is imported normally.  The member's own suite runs with the member's
-    ``src`` on ``sys.path``; this helper adds the factory's when it is missing,
-    so the file works under both suites' conftest bootstraps.
-    """
-    import sys
-
-    factory_src = str(Path(__file__).resolve().parents[3] / "src")
-    if factory_src not in sys.path:
-        sys.path.insert(0, factory_src)
-    import app.modules.nulloracle.keyalert as seat
-
-    return seat
+# -- The name ---------------------------------------------------------------
 
 
-# -- The name and the seat's surface ----------------------------------------
-
-
-class TestTheSeat:
-    def test_the_package_exports_the_name_the_seat_declares(self) -> None:
-        # Two spellings of one string, in two files that a rename can desync.
+class TestTheName:
+    def test_the_package_exports_the_name_the_composition_is_read_by(self) -> None:
+        # Two spellings of one string — the member's constant and the literal a
+        # caller reads the composition by — that a rename can desync.
         # Pinned so the drift is a failure here rather than a `None` component
         # at runtime.
         assert KEY_ALERT_COMPONENT_NAME == COMPONENT_NAME
-
-    def test_the_seat_declares_the_same_name(self) -> None:
-        assert _seat_module().COMPONENT_NAME == COMPONENT_NAME
-
-    def test_the_seat_exports_exactly_its_two_names(self) -> None:
-        # The seat is a *door*, not a second home for the feature: the record,
-        # the error, the backends and the emission all live in the member, and
-        # a caller that wants them imports the member.  Re-exporting them here
-        # would give the feature two public front doors, and the one in the app
-        # namespace would be the one nobody updates.
-        assert set(_seat_module().__all__) == {"COMPONENT_NAME", "key_alert_component"}
-
-    def test_the_seat_imports_nothing_that_could_fail(self) -> None:
-        # A module-level import of boto3 or cryptography in the app namespace
-        # would make the *seat* unimportable in a deployment that had not
-        # installed a cloud SDK — and the factory imports every seat.
-        source = (_seat_module().__file__ or "")
-        tree = ast.parse(Path(source).read_text())
-        imported: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imported.update(alias.name.split(".")[0] for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imported.add(node.module.split(".")[0])
-        assert not imported & {"boto3", "botocore", "cryptography"}
 
 
 # -- The builder contract ----------------------------------------------------
@@ -138,7 +94,7 @@ class TestTheBuilder:
             in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
         ]
 
-    def test_the_builder_is_registered_under_the_name_the_seat_declares(self) -> None:
+    def test_the_builder_is_registered_under_the_component_name(self) -> None:
         from nulloracle import build_key_alert_journal
 
         # The decorator returns the function; the registration is the side
@@ -275,21 +231,19 @@ class TestComposition:
         with pytest.raises(Exception, match="UnrecoverableState values"):
             composed.record({"alert_kind": ALERT_KIND, "stage": SIDECAR_STAGE})
 
-    def test_the_seat_reaches_the_composed_component(
+    def test_the_application_holds_the_composed_component(
         self, configured_database_url: str
     ) -> None:
-        # The seat is the door the rest of the category uses, so it must
-        # resolve to the component the factory built.  Handed an application it
-        # must return *that* application's journal — not build a second one.
-        # (Called with no argument it composes its own, which is the correct
-        # convenience for a caller that has no app yet, and is why identity
-        # across two separate `create_app()` calls is not the claim.)
+        # ``application.get`` is the door the rest of the category uses, so it
+        # must resolve to the component the factory built: reading the same
+        # application twice returns *that* application's journal, not a second
+        # one.  (Identity across two separate `create_app()` calls is not the
+        # claim — each composition builds its own.)
         from app.module_loader import create_app
 
         app = create_app()
-        seat = _seat_module()
-        assert seat.key_alert_component(app) is app.get(COMPONENT_NAME)
-        assert seat.key_alert_component(app) is not None
+        assert app.get(COMPONENT_NAME) is not None
+        assert app.get(COMPONENT_NAME) is app.get(COMPONENT_NAME)
 
     def test_composition_survives_a_second_create_app(
         self, configured_database_url: str

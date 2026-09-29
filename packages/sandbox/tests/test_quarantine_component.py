@@ -86,13 +86,9 @@ def _assert_is_the_quarantine_law(component: object) -> None:
     assert "node_id" in component.columns()
 
 
-def test_the_seat_spells_the_component_name_the_member_registers() -> None:
-    # The pair cannot drift into a silent ``None`` at the seat: the member's
-    # constant is the spelling the builder registers under and the seat's is the
-    # spelling the app namespace reads it back with.
-    import app.modules.sandbox as seat
-
-    assert seat.QUARANTINE_COMPONENT_NAME == sandbox.QUARANTINE_COMPONENT_NAME
+def test_the_member_spells_the_component_name_it_registers() -> None:
+    # The member's constant is the spelling the builder registers under and the
+    # spelling a caller asks the composed application for.
     assert sandbox.QUARANTINE_COMPONENT_NAME == "sandbox-quarantine"
 
 
@@ -172,7 +168,7 @@ def test_the_builder_takes_no_arguments_and_never_raises() -> None:
 
 
 class TestTheComposedApplication:
-    """The seat read back from a composed app, by name."""
+    """The component read back from a composed app, by name."""
 
     def test_the_component_is_reachable_by_its_name(self) -> None:
         application = create_app(MEMBER_SRC, registry=Registration())
@@ -185,24 +181,17 @@ class TestTheComposedApplication:
 
         _assert_is_the_quarantine_law(application.get("sandbox-quarantine"))
 
-    def test_the_seat_accessor_reads_it_back(self) -> None:
-        from app.modules.sandbox import (
-            QUARANTINE_COMPONENT_NAME,
-            sandbox_quarantine_component,
-        )
-
+    def test_the_application_reads_it_back_by_name(self) -> None:
         application = Application(
-            components={QUARANTINE_COMPONENT_NAME: "sentinel"},
-            order=(QUARANTINE_COMPONENT_NAME,),
+            components={sandbox.QUARANTINE_COMPONENT_NAME: "sentinel"},
+            order=(sandbox.QUARANTINE_COMPONENT_NAME,),
         )
 
-        assert sandbox_quarantine_component(application) == "sentinel"
+        assert application.get(sandbox.QUARANTINE_COMPONENT_NAME) == "sentinel"
 
-    def test_the_seat_accessor_answers_none_for_an_absent_component(self) -> None:
+    def test_the_application_answers_none_for_an_absent_component(self) -> None:
         # An absent component is a discoverable state rather than an exception.
-        from app.modules.sandbox import sandbox_quarantine_component
-
-        assert sandbox_quarantine_component(Application()) is None
+        assert Application().get("sandbox-quarantine") is None
 
 
 class TestTheComposedLawAnswers:

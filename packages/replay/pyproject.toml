@@ -20,7 +20,7 @@
 # "No inference in the replay path" row, nothing here may grow one.
 #
 # A member never imports another member. The campaign tree a replay walks
-# arrives through the app namespace (`app.modules.policy-runtime`, the seat
+# arrives through the composed application (the `policy-runtime` component
 # feature 217 ships) and is duck-typed at the seam, so this package never
 # names `policy_runtime` and the two cannot drift into a cyclic dependency.
 

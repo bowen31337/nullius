@@ -8,8 +8,8 @@ against duck-typed carriers; what a member's suite structurally cannot pin is
 the alert's behaviour **in the deployment**:
 
 * **the composed application is unchanged** — 253 adds no component, so the
-  factory still carries exactly the one ``replay`` seat it carried before, and
-  composing the alert costs composition nothing;
+  factory still carries exactly the one ``replay`` component it carried before,
+  and composing the alert costs composition nothing;
 * **the composed replay path is the one the alert is about** — the duration the
   alert judges is measured off the *real* ``measure_replay`` clock around a walk
   of the *real* ``policy_runtime.CampaignTree``, performed by the component
@@ -33,7 +33,7 @@ the alert's behaviour **in the deployment**:
 loader imports a member under a synthetic name (``_nullius_scanned_<name>``) and
 re-executes it, so the class objects the composed application's path produced are
 *second* ones with the same names.  The alert itself is reached by import — it is
-per-replay state with no seat and no component — but the record a deployment
+per-replay state with no component — but the record a deployment
 holds may have come from either import path, which is exactly why 253's seam is
 duck-typed; the checks below name the behaviour and compare
 ``type(exc).__name__``, the answer every other suite under ``tests/`` gives for
@@ -42,7 +42,6 @@ the same wrinkle.
 
 from __future__ import annotations
 
-import importlib
 import time
 from pathlib import Path
 
@@ -50,8 +49,6 @@ import pytest
 import replay
 
 from app.module_loader import Registration, create_app, scan_components
-
-seat = importlib.import_module("app.modules.replay")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REPLAY_SRC = REPO_ROOT / "packages" / "replay" / "src"
@@ -97,15 +94,14 @@ def campaign_tree():
 # ---------------------------------------------------------------------------
 
 
-def test_the_composed_application_still_carries_one_replay_seat(app) -> None:
-    # Feature 253 adds no component: the seat the factory carries is still
+def test_the_composed_application_still_carries_one_replay_component(app) -> None:
+    # Feature 253 adds no component: the one the factory carries is still
     # feature 245's, reached by the plugin name the spec states.  A feature that
     # registered its own component would show up here as a second name — and in
     # every deployment as one more builder the factory runs inside
     # ``create_app()``, for a record and a raise that are per-replay state.
     assert "replay" in app.components
     assert "replay" in app.order
-    assert seat.replay_component(app) is app.get("replay")
 
 
 def test_scanning_the_member_still_registers_exactly_one_component() -> None:

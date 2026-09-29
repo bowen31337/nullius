@@ -149,8 +149,8 @@ sharpest case for that rule: a builder takes no arguments and is built on every
 no composition can supply.  A component pointed at a campaign status would have
 to be constructed per campaign, which is not what the factory's protocol can
 express.  So the gate is constructed from a URL by the caller that has one —
-exactly as this member's other act is — the seat
-(``src/app/modules/promotion``) still answers one question, and nothing here
+exactly as this member's other act is — the composed
+``promotion`` component still answers one question, and nothing here
 edits a registry, router table or app factory.
 
 **The DDL is the migrations', never this module's.**  The read names two tables

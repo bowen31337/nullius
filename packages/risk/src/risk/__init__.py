@@ -501,10 +501,9 @@ __version__ = "0.1.0"
 
 #: The component name this member's first component registers under —
 #: unprefixed, following the ``router`` / ``book`` / ``canary`` precedent
-#: for a member's first component, so the member, its seat in
-#: ``app.modules.risk`` and the spec's ``plugin="risk"`` share one
-#: spelling they cannot drift from silently.  The member's suite asserts
-#: the two agree.
+#: for a member's first component, so the member, the key the composed
+#: application is read by and the spec's ``plugin="risk"`` share one
+#: spelling they cannot drift from silently.
 COMPONENT_NAME = "risk"
 
 #: The component name the halt event ledger registers under — a second

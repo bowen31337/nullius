@@ -27,7 +27,7 @@ pick, so a world score may not counterfeit it — and the refusal message
 says whose number it is.
 
 What these tests deliberately do not reach: composition (that is
-``test_component.py``), the seat (``test_app_module.py``), and anything
+``test_component.py``), and anything
 about aggregating across worlds — a mean over worlds computed here would
 be the plain-mean aggregation feature 264 exists to reject.
 """

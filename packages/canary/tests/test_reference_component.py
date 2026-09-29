@@ -5,7 +5,7 @@ persists a frozen canary policy together with a frozen canary tree as the
 determinism reference pair.*  :mod:`canary._reference_store` is the store in
 isolation; this suite pins the store the way a deployment actually reaches it —
 composed by the application factory from the member's ``@register`` builder, and
-reached from the ``app`` package namespace through its seat.
+reached through ``create_app().get(...)``.
 
 A member that froze a pair correctly against a bare store while the composed
 application carried no store at all would satisfy every store test and none of
@@ -13,8 +13,8 @@ these. The claims here are the composition contract:
 
 * the factory composes a reference store for a deployment that names a
   ``DATABASE_URL`` — the path an assembled nightly runner takes;
-* the store it composes is the same store the seat exposes, and it points at the
-  deployment's ``DATABASE_URL``;
+* a fresh composition reaches the same store, pointed at the deployment's
+  ``DATABASE_URL``;
 * the composed store freezes and reads back a pair against the deployment's
   database — the whole of feature 141, end to end, through the application;
 * a deployment without a ``DATABASE_URL`` composes no store — degrade, don't
@@ -97,20 +97,14 @@ class TestTheComposedSystemCarriesTheStore:
         assert composed_store is not None
         assert composed_store.database_url == test_database_url
 
-    def test_the_app_namespace_seat_reaches_the_same_component(
+    def test_a_fresh_composition_reaches_the_same_component(
         self, composed_store, test_database_url: str
     ) -> None:
-        # The seat is how the rest of this category's features reach the store,
-        # so it must resolve to the component the factory composed.
-        from app.modules.canary.reference_store import (
-            COMPONENT_NAME as SEAT_NAME,
-        )
-        from app.modules.canary.reference_store import reference_store_component
-
-        assert SEAT_NAME == REFERENCE_STORE_COMPONENT_NAME
-        seat = reference_store_component()
-        assert seat is not None
-        assert seat.database_url == composed_store.database_url
+        # Every caller reaches the store through the application, so a fresh
+        # composition must resolve to a component pointed at the same database.
+        store = create_app().get(REFERENCE_STORE_COMPONENT_NAME)
+        assert store is not None
+        assert store.database_url == composed_store.database_url
 
     def test_an_unconfigured_deployment_composes_no_store(
         self, monkeypatch: pytest.MonkeyPatch

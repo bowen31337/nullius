@@ -22,7 +22,8 @@ mark; this suite pins the two things a member's suite structurally cannot:
   :class:`~contextvars.ContextVar` would make impossible;
 * **the composed facade carries the wall** — ``create_app()`` over the declared
   workspace hands out an engine whose ``dependencies`` property is the wall,
-  reached through the app seat rather than by importing the member.
+  read by name from the composed application rather than by importing the
+  member.
 
 **Nothing here asserts ``isinstance`` or ``pytest.raises(<canonical class>)``
 across the composition seam.**  The module loader imports each workspace member
@@ -48,8 +49,6 @@ import pytest
 import replay
 
 from app.module_loader import create_app
-
-seat = importlib.import_module("app.modules.replay")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REPLAY_SRC = REPO_ROOT / "packages" / "replay" / "src"
@@ -125,11 +124,11 @@ def test_composition_carries_the_replay_path(app) -> None:
     assert app.get(replay.COMPONENT_NAME) is not None
 
 
-def test_the_app_seat_fronts_the_wall(app) -> None:
+def test_the_composed_component_fronts_the_wall(app) -> None:
     # The one place a feature in this category asks the composed application
     # for the replay path — and the wall is on it, as a property rather than a
     # second ``replay-``prefixed component.
-    engine = seat.replay_component(app)
+    engine = app.get(replay.COMPONENT_NAME)
     wall = engine.dependencies
     assert type(wall).__name__ == "ReplayPathDependencies"
     assert wall.refuses("evaluator") is True
@@ -141,7 +140,7 @@ def test_the_composed_wall_is_the_members_own(app) -> None:
     # The property a deployment depends on: the wall reached through the
     # composed application answers what the member's own spelling answers, so
     # there is no route to a second implementation by holding the component.
-    engine = seat.replay_component(app)
+    engine = app.get(replay.COMPONENT_NAME)
     for name in ("evaluator", "sandbox", "artifacts", "artifact_store"):
         assert engine.dependencies.refuses(name) is replay.replay_path_forbids(name)
 
@@ -243,7 +242,7 @@ def test_a_granted_reach_is_delegated_inside_a_real_extent(canary, spy) -> None:
 
 
 def test_the_composed_wall_delegates_the_granted_reach(canary, spy, app) -> None:
-    engine = seat.replay_component(app)
+    engine = app.get(replay.COMPONENT_NAME)
     with canary.replaying():
         assert engine.dependencies.reach("artifact_store", spy) == "ran"
     assert spy.calls == [((), {})]
@@ -261,7 +260,7 @@ def test_the_composed_refusal_carries_the_code(canary, app, spy) -> None:
     # is the *canary member's* real one — the composed wall reads it through the
     # same one-fact seam the composed component's own module does — so this check
     # needs no substitution at all.
-    engine = seat.replay_component(app)
+    engine = app.get(replay.COMPONENT_NAME)
     with canary.replaying(), pytest.raises(Exception) as raised:
         engine.dependencies.evaluator(spy)
     assert type(raised.value).__name__ == "ForbiddenDependencyError"

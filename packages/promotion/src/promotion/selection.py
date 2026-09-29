@@ -147,8 +147,8 @@ sibling states: a builder takes no arguments and is built on every
 ``create_app()`` call, while *which epochs are still clean* is a fact about
 rows that move — a charge lands, an epoch spends — and no composition can
 supply it.  The gate is constructed from the charge store by the caller
-that has one (or from a URL through :func:`select_epoch`), and the seat
-(``src/app/modules/promotion``) is untouched and still answers one
+that has one (or from a URL through :func:`select_epoch`), and the composed
+``promotion`` component is untouched and still answers one
 question.
 
 **Stdlib only, and import-cheap.**  ``os``, ``collections.abc`` and

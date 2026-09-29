@@ -61,7 +61,7 @@ below is ``k/4`` and the duplicates make ``k/8`` — all dyadic, every
 ``==`` asserting the law's arithmetic and nothing about float luck; the
 suite is ``pytest.approx``-free on purpose.  What these tests
 deliberately do not reach: composition (``test_scorer_component.py``),
-the seat (``test_scorer_component.py``, beside the app-module pin), the
+the
 *real* sealed sidecar (``test_scorer_cross_member.py`` — this suite
 drives the duck-typed seam with the stand-in, which is the honest way to
 test what crosses it), and any persistence (the ``replay_score`` row is

@@ -107,8 +107,8 @@ def _assert_is_the_hyperparameter_world(component: object) -> None:
 
 def test_the_member_registers_under_the_bootstrap_component_name() -> None:
     # The component name is the *plugin* name the spec's features carry
-    # (``plugin="bootstrap"``), so the component key, this member's seat
-    # and the spec cannot drift apart.
+    # (``plugin="bootstrap"``), so the component key and the spec
+    # cannot drift apart.
     assert member.COMPONENT_NAME == "bootstrap"
     assert member.HYPERPARAMETER_WORLD_ID == member.DEFAULT_WORLD_ID
 
@@ -227,27 +227,9 @@ def test_the_build_helper_is_not_registered() -> None:
 def test_the_component_reads_from_a_handed_application() -> None:
     # ``Application`` is a plain dataclass, so a caller can hand a
     # deliberately incomplete one to check the absent case without
-    # depending on the scan having failed.  Here: the seat reads the
-    # component from whatever application it is given, rather than
-    # composing its own behind the caller's back.
-    #
-    # The seat's own suite is ``test_app_module.py``; this is the
-    # composition-level half of it, kept here because what it exercises is
-    # the loader's ``Application`` shape rather than the seat's API.
+    # depending on the scan having failed.  Here: the component is read
+    # from whatever application is given — the composed one carries the
+    # world, a bare one answers ``None``.
     app = create_app()
-    assert member_seat().hyperparameter_world_component(app) is app.get("bootstrap")
-    assert member_seat().hyperparameter_world_component(Application()) is None
-
-
-def member_seat():
-    """The app-package seat for this member, imported on demand.
-
-    Imported inside a helper rather than at module scope because the
-    ``app`` package is not a dependency of this member — the twin of the
-    seat's own ``TYPE_CHECKING`` import of ``bootstrap`` — and because the
-    conftest path bootstrap has already put ``src/`` on ``sys.path`` by
-    the time any test runs.
-    """
-    from app.modules import bootstrap as seat
-
-    return seat
+    assert app.get("bootstrap") is dict(app.components)["bootstrap"]
+    assert Application().get("bootstrap") is None

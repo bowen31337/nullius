@@ -181,9 +181,9 @@ LIVE_METRICS = (
 #: ``bootstrap-pool`` sits beside ``bootstrap``.  The growth was reserved by
 #: the member's own registration when feature 341 landed and the app-package
 #: seat reserved beside it (*"344-347's and 350's persisted metrics arrive as
-#: this member's own tables"*), and spelled here, in the member's ``__init__``
-#: and in the app-package seat (:mod:`app.modules.ops.live_metrics`) — two
-#: spellings of one name the member's suite asserts agree.  Prefixed with the
+#: this member's own tables"*), spelled here once, imported by the member's
+#: ``__init__``, and read by name through the composed application.  Prefixed
+#: with the
 #: member's own name because a composed application's ``order`` is name-sorted
 #: and the store must sort *beside* — never inside — the member's other
 #: components.

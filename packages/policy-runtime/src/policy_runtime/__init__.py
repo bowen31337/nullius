@@ -467,9 +467,8 @@ __all__ = [
 ]
 
 #: The component name this member registers under — the plugin name the
-#: spec's features carry (``plugin="policy-runtime"``), so the component key,
-#: the app-namespace seat (``src/app/modules/policy-runtime``) and the spec
-#: cannot drift apart.
+#: spec's features carry (``plugin="policy-runtime"``), so the component key
+#: the composed application is read by and the spec cannot drift apart.
 CAMPAIGN_TREE_COMPONENT = "policy-runtime"
 
 
@@ -1387,9 +1386,10 @@ def _resolve_tree() -> CampaignTree | None:
     resolves it explicitly and refuses against it.
     """
     try:  # pragma: no cover - exercised through the composed component
-        from app.modules.artifacts import artifact_store_component
+        from app.module_loader import create_app
 
-        store = artifact_store_component()
+        # "artifacts" is the artifacts member's own component name.
+        store = create_app().get("artifacts")
         if store is None:
             return None
         # Read the store's committed nodes into this member's own tree model.

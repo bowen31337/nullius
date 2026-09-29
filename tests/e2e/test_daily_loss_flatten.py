@@ -32,11 +32,12 @@ in the order the deployment runs them in:
   docstring: the end-to-end story drives that door from a breach exactly
   once, and a module that flattened on its own would be two features
   wearing one verb.  The door's two faces are resolved the way the
-  deployment resolves them — through the app seat
-  (:func:`app.modules.risk.risk_kill_switch`,
-  :func:`app.modules.risk.risk_flattener`) over ``DATABASE_URL`` —
-  because the supervisor is a process, not a composition, and the seat is
-  the assembled system's answer to a process asking for its channel.
+  deployment resolves them — through the risk member's own resolvers
+  (:meth:`risk.kill.RiskKillSwitch.resolve`,
+  :meth:`risk.flatten.RiskFlattener.resolve`) over ``DATABASE_URL`` —
+  because the supervisor is a process, not a composition, and the
+  resolvers are the assembled system's answer to a process asking for
+  its channel.
 * **While the strategy process is unresponsive.**  A real second
   interpreter — the strategy process — hangs mid-write on the shared
   store: an open ``BEGIN IMMEDIATE`` transaction holding an uncommitted
@@ -203,8 +204,8 @@ time.sleep(300)
 
 #: The supervisor process: the risk process the sentence names.  It
 #: judges the day (feature 325), resolves the door's two faces through
-#: the app seat the way the deployment resolves them, and drives feature
-#: 323's composed halt over its own hold on the execution engine.  The
+#: the member's resolvers the way the deployment resolves them, and drives
+#: feature 323's composed halt over its own hold on the execution engine.  The
 #: one choreographed seam is the switch the door sends through: it
 #: delegates the send to the real resolved switch and, once the kill has
 #: committed, stands by while the strategy process wedges the store — so
@@ -229,10 +230,10 @@ halt = halt_on_daily_loss(daily_loss=daily_loss, daily_loss_limit=daily_loss_lim
 assert halt is not None, "the day breached its configured limit; the halt must land"
 
 # The door's two faces, resolved the way the deployment resolves them.
-from app.modules.risk import risk_flattener, risk_kill_switch
+from risk import RiskFlattener, RiskKillSwitch
 
-switch = risk_kill_switch()
-flattener = risk_flattener()
+switch = RiskKillSwitch.resolve()
+flattener = RiskFlattener.resolve()
 assert switch is not None, "DATABASE_URL names no store for the door to act through"
 assert flattener is not None, "DATABASE_URL names no store to flatten under"
 

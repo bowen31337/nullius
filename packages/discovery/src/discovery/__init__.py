@@ -528,9 +528,8 @@ __all__ = [
 #: The name the discovery member registers its campaign store under.
 #: Unprefixed, following the ``ledger`` / ``artifacts`` / ``canary``
 #: precedent for a member's first and only component, and spelled here
-#: once so the seat (``src/app/modules/discovery``) and the composed
-#: application agree on the key — the seat repeats the literal and its
-#: suite asserts the two match, so the pair cannot drift apart silently.
+#: once, and read by name through the composed application
+#: (``create_app().get("discovery")``).
 COMPONENT_NAME = "discovery"
 
 

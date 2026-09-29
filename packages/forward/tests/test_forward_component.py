@@ -52,9 +52,6 @@ from forward import (
 )
 from forward.schema import migrations_dir
 
-APP_SEAT = REPO_ROOT / "src" / "app" / "modules" / "forward" / "__init__.py"
-
-
 # -- Discovery ----------------------------------------------------------------
 
 
@@ -86,29 +83,9 @@ def test_the_component_is_registered_under_the_documented_name() -> None:
     assert forward.build_forward_records.__name__ == "build_forward_records"
 
 
-def test_the_seat_spells_the_same_component_name() -> None:
-    # The name is spelled twice on purpose — once where it is registered, once
-    # where it is read — and this is the assertion that keeps the pair honest.
-    # Drift here would be a silent ``None`` from the seat in every deployment,
-    # which is exactly the failure that looks like an unconfigured database.
-    source = APP_SEAT.read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    found = [
-        node.value.value
-        for node in tree.body
-        if isinstance(node, ast.Assign)
-        and any(
-            isinstance(target, ast.Name) and target.id == "COMPONENT_NAME"
-            for target in node.targets
-        )
-        and isinstance(node.value, ast.Constant)
-    ]
-    assert found == ["forward"]
-
-
-def test_the_seat_answers_the_composed_store(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_application_answers_the_composed_component(monkeypatch: pytest.MonkeyPatch) -> None:
     # Composed end to end: the loader scans the declared workspace, imports the
-    # member, registers the builder, and the seat reads it back.  ``in``-style
+    # member, registers the builder, and the application reads it back.  ``in``-style
     # membership only, because the composed order is shared with every other
     # feature and an exhaustive assertion here would be this suite legislating
     # the whole application.
@@ -125,7 +102,7 @@ def test_the_component_is_registered_even_when_no_database_is_named(
 ) -> None:
     # Registered and absent are two different facts, and only one of them is
     # about the deployment.  A member that had stopped being scanned would leave
-    # no component at all, and the seat would answer ``None`` for a reason
+    # no component at all, and the application would answer ``None`` for a reason
     # nobody could tell apart from an unset ``DATABASE_URL``.  ``order`` is the
     # composed *names*, so its membership is the fact asked for.
     import app.module_loader as loader
@@ -153,18 +130,17 @@ def test_a_named_database_composes_a_store(
     assert not database.exists()
 
 
-def test_the_seat_reads_the_same_store_the_builder_registered(
+def test_the_application_answers_the_same_store_the_builder_registered(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # The seat's whole job, asked once: given the application, answer *the*
-    # store composed into it — not a second one constructed beside it, which
-    # would be two stores over one database and two things to keep consistent.
+    # Asked twice, the application answers *the* store composed into it — not
+    # a second one constructed beside it, which would be two stores over one
+    # database and two things to keep consistent.
     import app.module_loader as loader
-    from app.modules.forward import forward_records_component
 
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'seat.db'}")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'composed.db'}")
     application = loader.create_app()
-    store = forward_records_component(application)
+    store = application.get(COMPONENT_NAME)
     assert store is application.get(COMPONENT_NAME)
 
     # Duck-typed, **not** ``isinstance`` — and the assertion is written this way
@@ -476,46 +452,7 @@ def test_the_store_module_never_names_the_registry_table() -> None:
         assert "promotion_registry" not in code_of(module)
 
 
-def test_the_seat_reaches_the_member_only_under_type_checking() -> None:
-    # The seat reaches the store through the *application*, never through a
-    # runtime import: a static import would be the app package depending on a
-    # member's installed layout, and the composed store — imported by the loader
-    # under a synthetic name — is never the class a direct import yields.
-    #
-    # The one allowance is the ``TYPE_CHECKING`` block, and it is allowed
-    # because it is erased at runtime: it exists so the docstring's annotations
-    # resolve for a reader and a checker, and it cannot bind a name in the
-    # module's own namespace.  So the assertion walks every import and permits
-    # the member's name only inside that guard — a *runtime* ``import forward``
-    # is the fault, and this is what tells the two apart.
-    tree = ast.parse(APP_SEAT.read_text(encoding="utf-8"))
-    guarded: set[int] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.If) and _tests_type_checking(node.test):
-            guarded.update(id(child) for child in ast.walk(node))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            names = [alias.name.split(".")[0] for alias in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            names = [(node.module or "").split(".")[0]]
-        else:
-            continue
-        if "forward" in names:
-            assert id(node) in guarded, (
-                "the seat imports the forward member outside a TYPE_CHECKING "
-                "guard, so the app package now depends on the member's installed "
-                "layout at runtime"
-            )
 
-
-def _tests_type_checking(test: ast.expr) -> bool:
-    """Whether an ``if`` head is a ``TYPE_CHECKING`` guard."""
-    return (
-        isinstance(test, ast.Name)
-        and test.id == "TYPE_CHECKING"
-        or isinstance(test, ast.Attribute)
-        and test.attr == "TYPE_CHECKING"
-    )
 
 
 def test_an_unreachable_promotion_member_is_a_refusal_not_an_import_error(

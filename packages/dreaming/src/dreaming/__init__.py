@@ -387,7 +387,7 @@ the whole of what it contributes.  The name sorts after ``discovery`` and
 before ``evaluator``, so every name-sorted ``app.order`` adjacency in the
 existing suite is untouched.
 
-The seat is ``src/app/modules/dreaming``, which answers exactly one question —
+The composed ``dreaming`` component answers exactly one question —
 *what is the composed cycle freeze?* — and re-exports nothing of the member's
 API beyond that: a caller who has the freeze reaches ``open()``, ``release()``,
 ``verify()``, ``guard()`` and ``holds()`` on it, and a second spelling of those
@@ -652,9 +652,8 @@ __all__ = [
 
 #: The name this member registers under.  Re-exported from
 #: :mod:`dreaming.cycle` rather than respelled, and named ``COMPONENT_NAME``
-#: rather than the module-qualified spelling so the seat
-#: (``src/app/modules/dreaming``) can import it under the one name every seat
-#: in this workspace exports — the shape the loader's discovery expects.
+#: rather than the module-qualified spelling — the one name every member in
+#: this workspace exports for the key the composed application is read by.
 COMPONENT_NAME = POOL_FREEZE_COMPONENT_NAME
 
 #: The ladder floor's world count — §12.1's 20, the floor a dreaming run must

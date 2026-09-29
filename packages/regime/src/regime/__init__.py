@@ -272,11 +272,9 @@ __all__ = [
 #: The name the regime member registers its coverage ledger under.
 #: Unprefixed, following the ``ledger`` / ``artifacts`` / ``canary`` /
 #: ``discovery`` precedent for a member's first and only component, and
-#: spelled here once so the seat (``src/app/modules/regime``) and the
-#: composed application agree on the key — the seat repeats the literal
-#: and its suite asserts the two match, so the pair cannot drift apart
-#: silently.  ``regime`` sorts after ``providers`` and before the
-#: feature-store member's ``regime-labeler``, clear of both.
+#: spelled here once, and read by name through the composed application
+#: (``create_app().get("regime")``).  ``regime`` sorts after ``providers``
+#: and before the feature-store member's ``regime-labeler``, clear of both.
 COMPONENT_NAME = "regime"
 
 

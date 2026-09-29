@@ -202,11 +202,11 @@ __all__ = [
 #: the way ``bootstrap-pool`` sits beside ``bootstrap``.  The growth was
 #: reserved by the member's own registration when feature 341 landed and the
 #: app-package seat reserved beside it (*"344's … arrive as their own tables
-#: under the same allowance"*), and spelled here, in the member's ``__init__``
-#: and in the app-package seat (:mod:`app.modules.ops`) — two spellings of one
-#: name the member's suite asserts agree.  Prefixed with the member's own name
-#: because a composed application's ``order`` is name-sorted and the store
-#: must sort *beside* — never inside — the member's other components.
+#: under the same allowance"*), spelled here once, imported by the member's
+#: ``__init__``, and read by name through the composed application.
+#: Prefixed with the member's own name because a composed application's
+#: ``order`` is name-sorted and the store must sort *beside* — never inside —
+#: the member's other components.
 OPS_NULL_CALIBRATION_COMPONENT_NAME = "ops-null-calibration"
 
 #: The table the calibration rows live in — this member's own, in the

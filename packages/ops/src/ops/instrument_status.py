@@ -250,9 +250,8 @@ INSTRUMENT_STATUS_ROUTE = "/metrics/instrument-status"
 #: sibling routes that *"land as its peers under the same prefix"*.
 #: *Defined* here, beside the module whose component it names, and imported
 #: by the member's ``__init__`` where the ``@register`` lives — the placement
-#: feature 343's route name already takes.  Spelled in the app-package seat
-#: (:mod:`app.modules.ops`) as well, and the member's suite asserts the two
-#: agree.
+#: feature 343's route name already takes.  Read by name through the
+#: composed application.
 OPS_INSTRUMENT_STATUS_COMPONENT_NAME = "ops-instrument-status"
 
 #: The three lamps' names, in the order docs/design.md §5.4 draws them —

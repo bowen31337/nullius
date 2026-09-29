@@ -664,24 +664,19 @@ def test_the_module_level_entry_points_run_the_whole_feature(
     assert subtree.size == 3
 
 
-def test_the_composed_component_is_the_store_the_seat_reaches(
+def test_the_composed_component_is_the_poison_store(
     monkeypatch: pytest.MonkeyPatch, database_url: str
 ) -> None:
     # The plugin seam from the persistence side: the factory's scan imports the
     # member, its @register fires, and a composed application carries the store
-    # for the deployment the process is running in — reachable by way of the app
-    # namespace, which is how a later feature (132's excision) will ask for it.
+    # for the deployment the process is running in — reachable by name from the
+    # composed application, which is how a later feature (132's excision) will
+    # ask for it.
     from pathlib import Path
 
     import tripwires
 
     from app.module_loader import Application, Registration, create_app
-    from app.modules.tripwires.poison import (
-        COMPONENT_NAME as SEAT_NAME,
-    )
-    from app.modules.tripwires.poison import (
-        poison_store_component,
-    )
 
     monkeypatch.setenv("DATABASE_URL", database_url)
     member_src = Path(tripwires.__file__).resolve().parent.parent
@@ -689,14 +684,13 @@ def test_the_composed_component_is_the_store_the_seat_reaches(
 
     composed = application.get(POISON_COMPONENT_NAME)
     assert type(composed).__name__ == "PoisonStore"
-    assert poison_store_component(application) is composed
-    # The probe's seat still answers its own question, and the store's is a
+    # The probe's component still answers its own question, and the store's is a
     # second component rather than a second accessor on the first.
     assert type(application.get("tripwires")).__name__ == "TimeShuffleTripwire"
-    assert SEAT_NAME == POISON_COMPONENT_NAME == "tripwires-poison"
+    assert POISON_COMPONENT_NAME == "tripwires-poison"
     # A store registered but not yet used: composition opens no database.
-    assert not Path(poison_store_component(application).path).exists()
-    assert poison_store_component(Application(components={}, order=())) is None
+    assert not Path(composed.path).exists()
+    assert Application(components={}, order=()).get(POISON_COMPONENT_NAME) is None
 
 
 def test_an_unconfigured_deployment_composes_no_store_but_does_not_fail(
@@ -835,7 +829,7 @@ def test_the_probe_suite_still_needs_no_database() -> None:
     assert verdict.outcome == "ok"
     # The store composes beside it, or does not — the point is that the probe's
     # path does not care which. An unconfigured deployment is the case this
-    # asserts on (no DATABASE_URL is set for this test), so the second seat
+    # asserts on (no DATABASE_URL is set for this test), so the second component
     # answering `None` is the expected outcome and not a failure.
     assert application.get(POISON_COMPONENT_NAME) is None
 

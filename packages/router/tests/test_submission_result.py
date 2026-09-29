@@ -914,22 +914,12 @@ class TestTheErrorVocabulary:
 
 
 class TestTheMemberStillRegistersOneComponent:
-    """Feature 317 adds a table, a module and a class — no component, no seat."""
+    """Feature 317 adds a table, a module and a class — no component."""
 
     def test_exactly_one_builder(self) -> None:
         assert [name for name in dir(member) if name.startswith("build_")] == [
             "build_router_exchange_info_store"
         ]
-
-    def test_the_seat_is_untouched(self) -> None:
-        from app.modules import router as seat
-
-        assert set(seat.__all__) == {
-            "COMPONENT_NAME",
-            "router_exchange_info_component",
-            "router_submission_health_store",
-        }
-        assert not hasattr(seat, "RouterOrderPlacementStore")
 
     def test_the_member_exports_the_feature_317_names(self) -> None:
         for name in (

@@ -42,7 +42,7 @@ against a score whose every figure is dyadic (``_dyadic_score``, below) so
 both orderings of two terms land on the same scalar to the bit.  What
 these tests deliberately do not reach: composition (``test_component.py``
 — the penalty needs no component, which is itself pinned here by the
-member's surface), the seat (``test_app_module.py``), and any persistence
+member's surface), and any persistence
 or any read of the forward-test record (the ``replay_score`` row is
 feature 255's, and reaching the record is the forward-tracking member's
 data access — this seam is a function of the two figures it is handed).

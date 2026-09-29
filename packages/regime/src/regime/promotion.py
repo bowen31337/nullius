@@ -146,7 +146,7 @@ nothing.
 **No component, no table, no seat, no router.**  The member's registered
 surface stays feature 283's one store.  A block over a reading resolves
 no configuration of its own and composes nothing; feature 283's builder
-is the member's only ``@register``, and :mod:`app.modules.regime` still
+is the member's only ``@register``, and the composed ``regime`` component still
 answers one question.  The promotion plugin's own features (291–300,
 including 299's *persisting a blocking reason*) are another member's, and
 they reach this refusal the way every cross-member seam in this workspace

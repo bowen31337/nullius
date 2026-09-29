@@ -819,11 +819,11 @@ def sweep_candidates(
 
     ``replay`` is the composed replay component — the object
     ``application.get("replay")`` answers — reached without importing the
-    member.  ``None`` resolves it through the workspace **seat**
-    (``app.modules.replay``, the app-namespace spelling this workspace's own
-    seats document) at call time, exactly as
+    member.  ``None`` reads it by name from the composed application
+    (``create_app().get("replay")``) at call time, exactly as
     :func:`replay.transition.resolve_tree` resolves its campaign through the
-    policy-runtime seat and for the same reason: the member's module stays
+    composed ``policy-runtime`` component and for the same reason: the
+    member's module stays
     free of a hard dependency on a sibling, and a composed application carries
     the object the deployment actually built.  No composed replay path is a
     refusal rather than a silent success — a sweep whose evidence had nowhere
@@ -1046,16 +1046,17 @@ def _hold_refusal(refusal: BaseException, pair: SweepPair) -> PoolFrozenError | 
 
 
 def _replay_of(value: Any) -> Any:
-    """The composed replay component — the value handed in, or the seat's answer.
+    """The composed replay component — the value handed in, or the app's.
 
-    Resolved through the app namespace's ``app.modules.replay`` seat when none
-    is handed over, the same call-time resolution
-    :func:`replay.transition.resolve_tree` performs through the policy-runtime
-    seat: a member reaches a sibling through ``app.*`` and never through its
-    import name, and the resolution happens inside the function so this module
-    stays import-cheap and free of a hard dependency at composition time.
+    Read by name from the composed application (``create_app().get("replay")``)
+    when none is handed over, the same call-time resolution
+    :func:`replay.transition.resolve_tree` performs for the ``policy-runtime``
+    component: a member reaches a sibling through ``app.*`` and never through
+    its import name, and the resolution happens inside the function so this
+    module stays import-cheap and free of a hard dependency at composition
+    time.
 
-    ``None`` from the seat is a refusal, not a silent success: a deployment
+    ``None`` from the app is a refusal, not a silent success: a deployment
     with no composed replay path has nowhere for evidence to land, and a sweep
     that reported a clean run over rows nobody wrote is the failure mode
     :func:`discovery.campaign`'s own builder warns about for its store — the
@@ -1076,10 +1077,10 @@ def _replay_of(value: Any) -> Any:
                 "reach (feature 272)"
             )
         return value
-    import importlib
+    from app.module_loader import create_app
 
-    seat = importlib.import_module("app.modules.replay")
-    component = seat.replay_component()
+    # "replay" is the replay member's own component name (replay.COMPONENT_NAME).
+    component = create_app().get("replay")
     if component is None:
         raise SweepStoreError(
             f"{SWEEP_STORE_CODE}: no replay component is composed, so a "

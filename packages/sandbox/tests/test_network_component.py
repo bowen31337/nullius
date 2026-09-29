@@ -106,16 +106,6 @@ def test_the_component_name_is_not_any_earlier_laws() -> None:
     }
 
 
-def test_the_seat_declares_the_same_component_name() -> None:
-    # The app namespace respells the member's constant rather than importing it
-    # (the seat must not depend on the member at import time), so the two
-    # spellings are pinned equal here: a drift would be a silent ``None`` at the
-    # seat rather than a failure, which is the worst shape a wiring bug can take.
-    import app.modules.sandbox as seat
-
-    assert seat.NETWORK_COMPONENT_NAME == sandbox.NETWORK_COMPONENT_NAME
-
-
 def test_scanning_the_member_registers_the_twelve_components_it_owns() -> None:
     # A fresh registry, not the process default: any earlier test that called a
     # bare ``create_app()`` has already imported every workspace member into the
@@ -256,51 +246,20 @@ def test_the_composed_law_is_the_runtimes_specification_for_a_placed_box() -> No
     assert type(raised.value).__name__ == "NamespacePlacementError"
 
 
-class TestTheSeat:
-    """src/app/modules/sandbox — the member's twelfth seat in the app namespace."""
+class TestTheComposedApplication:
+    """The component reached by name through the composed application."""
 
-    def test_the_seat_exposes_the_composed_component(self) -> None:
-        from app.modules.sandbox import (
-            NETWORK_COMPONENT_NAME,
-            sandbox_network_component,
-        )
-
-        assert NETWORK_COMPONENT_NAME == "sandbox-network"
+    def test_the_application_exposes_the_composed_component(self) -> None:
         app = create_app(MEMBER_SRC, registry=Registration())
-        _assert_is_the_network_law(sandbox_network_component(app))
+        _assert_is_the_network_law(app.get("sandbox-network"))
 
-    def test_the_seat_returns_none_when_nothing_registered(self) -> None:
+    def test_the_application_returns_none_when_nothing_registered(self) -> None:
         # An application with no component registered is a discoverable state,
-        # not an exception — mirroring the factory's stance and the other eleven
-        # seats'.
-        from app.modules.sandbox import sandbox_network_component
+        # not an exception — mirroring the factory's stance.
+        assert Application(components={}, order=()).get("sandbox-network") is None
 
-        assert sandbox_network_component(Application(components={}, order=())) is None
-
-    def test_the_seat_reads_from_an_application_it_is_handed(self) -> None:
-        from app.modules.sandbox import sandbox_network_component
-
+    def test_the_component_is_read_from_the_application_it_is_asked_of(self) -> None:
         application = Application(
             components={"sandbox-network": "sentinel"}, order=("sandbox-network",)
         )
-        assert sandbox_network_component(application) == "sentinel"
-
-    def test_the_seat_is_not_a_second_vocabulary(self) -> None:
-        # The seat answers questions — which component? — and does not re-export
-        # the law's types.  A caller who has the component calls its verbs; a
-        # second spelling of the network decision, the namespace or the reason
-        # codes here would be a second thing to keep in sync.
-        import app.modules.sandbox as seat
-
-        for leaked in (
-            "SandboxNetwork",
-            "NetworkDecision",
-            "NetworkReason",
-            "NetworkNamespace",
-            "EgressPath",
-            "reject_egress",
-            "egress_rejected",
-            "isolated_namespace",
-            "sandbox_network",
-        ):
-            assert not hasattr(seat, leaked), leaked
+        assert application.get("sandbox-network") == "sentinel"

@@ -6,9 +6,9 @@ whole subtree.*
 
 The member's own suite (``packages/nulloracle/tests``) pins each contract in
 isolation — the draw, the count, the refusals, the record, the store, the
-walk, the seat.  This suite pins the sentence those contracts are *for*,
+walk, the component.  This suite pins the sentence those contracts are *for*,
 through the assembled system: the selection store composed by the application
-factory, reached from the ``app`` package namespace, reading a discovery tree
+factory, read through ``create_app().get``, reading a discovery tree
 from a relational store and sealing the drawn status into §7.1's sidecar.
 
 That distinction is the whole point here, and it is sharper for this feature
@@ -28,8 +28,8 @@ So the integration question is not "does the draw work" but:
   110);
 * is the status *inherited*: a descendant of a null root reads null, a
   descendant of a real root reads real, all the way down;
-* and does the assembled system's read path — the seat — hand a caller the
-  same selection the write sealed.
+* and does the assembled system's read path — the composed component —
+  hand a caller the same selection the write sealed.
 
 A member that passed its unit suite while the composed application carried no
 store at all would satisfy every requirement of the draw tests and none of
@@ -167,19 +167,16 @@ class TestTheComposedSystemCarriesTheSelectionStore:
         assert composed_selection is not None
         assert composed_selection.database_url == test_database_url
 
-    def test_the_app_namespace_reaches_the_same_component(
+    def test_a_fresh_composition_reaches_the_same_store(
         self, composed_selection, sidecar_path
     ) -> None:
-        # The seat is how the rest of this category's features reach the
-        # selection, so it must resolve to the component the factory composed.
-        from app.modules.nulloracle.selection import COMPONENT_NAME as SEAT_NAME
-        from app.modules.nulloracle.selection import type_r_selection_component
-
-        assert SEAT_NAME == TYPE_R_COMPONENT_NAME
-        seat = type_r_selection_component()
-        assert seat is not None
-        assert seat.database_url == composed_selection.database_url
-        assert seat.sidecar.path == sidecar_path
+        # ``create_app().get`` is how the rest of this category's features
+        # reach the selection, so it must resolve to the store the factory
+        # composed.
+        store = create_app().get(TYPE_R_COMPONENT_NAME)
+        assert store is not None
+        assert store.database_url == composed_selection.database_url
+        assert store.sidecar.path == sidecar_path
 
     def test_both_of_the_stores_halves_are_the_configured_ones(
         self, composed_selection, test_database_url: str, sidecar_path
@@ -411,16 +408,14 @@ class TestTheStatusIsInheritedAcrossTheAssembledSystem:
         assert set(first.null_roots) <= set(second.null_roots)
 
 
-class TestTheReadPathThroughTheSeat:
-    def test_the_seat_returns_the_selection_the_write_sealed(
+class TestTheReadPathThroughTheComposition:
+    def test_a_fresh_composition_returns_the_selection_the_write_sealed(
         self, composed_selection, planned_campaign
     ) -> None:
-        from app.modules.nulloracle.selection import type_r_selection_component
-
         plant_tree(composed_selection, planned_campaign)
         written = composed_selection.persist(planned_campaign)
-        seat = type_r_selection_component()
-        assert seat.load(planned_campaign) == written
+        store = create_app().get(TYPE_R_COMPONENT_NAME)
+        assert store.load(planned_campaign) == written
 
     def test_a_campaign_never_drawn_reads_as_none(
         self, composed_selection, planned_campaign
@@ -428,8 +423,6 @@ class TestTheReadPathThroughTheSeat:
         # None means *this campaign's roots are not in the file*. It must
         # never be read as "the campaign planted no nulls" — the distinction
         # the whole member's error taxonomy is built around.
-        from app.modules.nulloracle.selection import type_r_selection_component
-
         plant_tree(composed_selection, planned_campaign)
         composed_selection.persist(planned_campaign)
         undrawn = str(uuid.uuid4())
@@ -440,7 +433,7 @@ class TestTheReadPathThroughTheSeat:
                 (undrawn, *campaign_row()),
             )
         plant_tree(composed_selection, undrawn)
-        assert type_r_selection_component().load(undrawn) is None
+        assert create_app().get(TYPE_R_COMPONENT_NAME).load(undrawn) is None
 
     def test_a_type_d_campaign_is_refused_by_the_assembled_system(
         self, composed_selection
@@ -456,9 +449,7 @@ class TestTheReadPathThroughTheSeat:
                 (campaign, WORKSPACE_COUNT, NULL_FRACTION),
             )
         plant_tree(composed_selection, campaign)
-        from app.modules.nulloracle.selection import type_r_selection_component
-
         with pytest.raises(Exception) as raised:
-            type_r_selection_component().persist(campaign)
+            create_app().get(TYPE_R_COMPONENT_NAME).persist(campaign)
         assert type(raised.value).__name__ == "KsGuardError"
         assert "Type-D" in str(raised.value)

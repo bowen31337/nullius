@@ -126,7 +126,7 @@ surface stays feature 291's one store, for the reason :mod:`promotion.blocking` 
 :mod:`promotion.calibration` both state: a builder takes no arguments and is built
 on every ``create_app()`` call, while this act is a function of state the factory
 does not hold — a promotion that has been decided, and a horizon the caller
-registered.  The seat (``src/app/modules/promotion``) is untouched and still
+registered.  The composed ``promotion`` component is untouched and still
 answers one question.
 
 **Stdlib only, and import-cheap.**  ``datetime``, ``os`` and ``uuid`` at module

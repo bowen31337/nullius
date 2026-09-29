@@ -37,8 +37,7 @@ measured, which is worse than refusing.
 
 What these tests deliberately do not reach: composition (that is
 ``test_component.py`` — 263 adds no component, the composed ``scoring``
-callable stays the per-world objective), the seat (``test_app_module.py``
-— unchanged), and anything that names *which* strata exist or rejects a
+callable stays the per-world objective), and anything that names *which* strata exist or rejects a
 plain mean across them (feature 264's law over this seam).
 """
 

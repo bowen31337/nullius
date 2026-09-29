@@ -4,16 +4,14 @@ No central file names this package.  The root pyproject declares
 ``packages/*`` as the workspace; this member exists with its own
 ``pyproject.toml``; the factory scans the declared members, the import
 fires ``@register("ingest")``, and ``create_app`` composes the component.
-These tests pin that chain — discovery, registration, composition — and
-the app-package facade over it, so the plugin cannot silently fall out
-of the composed application.
+These tests pin that chain — discovery, registration, composition — so
+the plugin cannot silently fall out of the composed application.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import app.modules.ingest as ingest_facade
 from app.module_loader import (
     Application,
     Registration,
@@ -116,18 +114,7 @@ def test_composed_supervisor_isolates_a_registered_stream_failure() -> None:
     assert report.outcome_for(StreamClass.AGG_TRADES).rows_written == 25
 
 
-def test_app_modules_ingest_facade_exposes_the_component() -> None:
-    # src/app/modules/ingest is the member's seat in the app namespace:
-    # it asks the factory for the component without the app package
-    # depending on any member at import time.
-    assert ingest_facade.COMPONENT_NAME == "ingest"
-
-    app = create_app(MEMBER_SRC, registry=Registration())
-    component = ingest_facade.ingest_component(app)
-    assert callable(component.run_cycle)
-
-
-def test_facade_returns_none_when_nothing_registered() -> None:
+def test_the_application_returns_none_when_nothing_registered() -> None:
     # An application with no ingest component is a discoverable state,
     # not an exception — mirroring the factory's stance.
-    assert ingest_facade.ingest_component(Application()) is None
+    assert Application().get("ingest") is None

@@ -46,7 +46,6 @@ cannot be the value that clears the gate.
 from __future__ import annotations
 
 import importlib
-import pathlib
 from dataclasses import FrozenInstanceError, fields
 from types import SimpleNamespace
 
@@ -91,29 +90,6 @@ CLAUDE_HAIKU = ServedContextLimit("claude-haiku-4-5", 1_000_000, True)
 #: test's meaning does not hinge on the last digit, only on its being far under
 #: a wide campaign's history and comfortably over a narrow one's.
 ORNITH = ServedContextLimit("ornith-1.5-35b-a3b", 2**18, True)
-
-#: The seat's module path, spelled the way the loader spells every seat.  The
-#: import is done inside the test rather than at module scope because the seat
-#: pulls in the ``app`` package, which this suite — a member suite — can only
-#: reach once the repository root is on ``sys.path``.  (The test_pin_component
-#: pattern, kept identical so the two component suites reach the seat the same
-#: way.)
-SEAT = "app.modules.providers"
-
-
-@pytest.fixture
-def app_on_the_path(monkeypatch):
-    """Make ``app`` importable, then hand back the seat module.
-
-    The member suite does not depend on the ``app`` package — it must not, or
-    the member could not be tested on its own — so the seat is imported here
-    with the repository root spliced onto ``sys.path``, and the splice is undone
-    afterwards by monkeypatch rather than left behind for later tests.
-    """
-    root = str(pathlib.Path(__file__).resolve().parents[3])
-    monkeypatch.syspath_prepend(root)
-    return importlib.import_module(SEAT)
-
 
 # ── The sentence's core: provenance, not magnitude ────────────────────────────
 
@@ -742,7 +718,7 @@ def test_the_member_registers_no_component_for_this_feature():
     # Verification is a pure criterion: it persists nothing, owns no table,
     # resolves no DATABASE_URL and places no call — the stance feature 201
     # states for its own routing, and the reason 199 is imported directly
-    # rather than seated.  A component here would be a deployment-bound fact
+    # rather than composed.  A component here would be a deployment-bound fact
     # for a question that is asked with both facts in hand.
     import providers
 
@@ -761,36 +737,3 @@ def test_the_member_registers_no_component_for_this_feature():
     # And the store this feature does not have is not half-spelled anywhere.
     assert not hasattr(providers, "SERVED_CONTEXT_TABLE")
     assert not hasattr(providers, "build_served_context")
-
-
-def test_the_seat_answers_only_its_service_components_still(app_on_the_path):
-    # The seat (app.modules.providers) exposes the composed stores and
-    # deliberately not this feature's records: a seat that re-exported a
-    # criterion would be a second spelling of the member's surface, and it
-    # would invite a caller to reach a contract by way of the application.
-    # Feature 199 is absent from it — the criterion is imported directly from
-    # the member — and the seat's surface, widened since by feature 196's store,
-    # then by feature 197's, and then by feature 194's, is otherwise unchanged
-    # by this feature.
-    #
-    # The seat is reached through the same fixture the sibling component suites
-    # use, which splices the repository root onto sys.path for the duration of
-    # the test only.  The member suite must not depend on ``app`` — the member
-    # has to be testable on its own — so the splice is undone rather than left
-    # behind for every later test in the process.
-    assert set(app_on_the_path.__all__) == {
-        "COMPONENT_NAME",
-        "DEPTH_CACHE_RATES_NAME",
-        "DEPTH_RUN_WINDOWS_NAME",
-        "FIXTURE_STORE_NAME",
-        "ROOT_ROTATION_NAME",
-        "ROOT_SERVING_PROVIDER_NAME",
-        "agent_model_pins_component",
-        "depth_cache_rates_component",
-        "depth_run_windows_component",
-        "fixture_store_component",
-        "root_rotation_component",
-        "root_serving_providers_component",
-    }
-    assert not hasattr(app_on_the_path, "served_context_component")
-    assert not hasattr(app_on_the_path, "RootCallProvider")

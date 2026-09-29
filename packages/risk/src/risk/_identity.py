@@ -14,13 +14,13 @@ strategy process killed itself on its way down and called it the
 supervisor.
 
 Why this is its own module rather than a function in :mod:`risk.kill` is
-the same reason :mod:`router._identity` is its own module: the seat in
-``app.modules.risk`` answers a question about *a process* — *is the
-process that sent this kill the process now asking about it?* — and a seat
-that re-derived the identity with its own ``socket.gethostname()``/
+the same reason :mod:`router._identity` is its own module: a reader of
+the kill switch answers a question about *a process* — *is the
+process that sent this kill the process now asking about it?* — and a
+reader that re-derived the identity with its own ``socket.gethostname()``/
 ``os.getpid()`` pair would be a second spelling of one fact, free to drift
 from the one the switch files rows under.  A switch whose rows say
-``host/41`` and a seat that answers ``host/42`` is exactly the confusion
+``host/41`` and a reader that answers ``host/42`` is exactly the confusion
 feature 322's own sentence rules out, so the derivation lives once and
 both reach it here.
 

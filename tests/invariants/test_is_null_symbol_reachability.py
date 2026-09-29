@@ -91,9 +91,9 @@ exactly §7.1's one field, and that the scoring member exposes **none at
 all** — the scorer's barrier is its own design ("no accessor for the held
 sidecar, no label cache", feature 265's words), and this gate witnesses
 it as standing state.  The exemption is the declared member, not the
-string "scoring" on a path: the scorer's *app seat*
-(``src/app/modules/scoring/scorer.py``) is the application layer, ships
-no symbol of the name, and is refused the moment it grows one.
+string "scoring" on a path: an application-layer module under a path
+spelled ``scoring`` is still the application layer, and is refused the
+moment it grows a symbol of the name.
 
 **Why a binding audit over namespaces, and not a grep.**  A merge carries
 source, and reachability is a fact about the namespaces that source
@@ -179,10 +179,10 @@ LOADER = REPO_ROOT / "src" / "app" / "module_loader.py"
 from app.module_loader import workspace_members
 
 #: The application layer's own member identity — the ``src`` tree the factory
-#: and the module seats live in. It is a subject of this gate like any member,
-#: and never an exempt one: the seats compose the components, they are not the
-#: components (the scorer's app seat is pinned below to carry no symbol and to
-#: be refused the moment it grows one).
+#: lives in. It is a subject of this gate like any member, and never an exempt
+#: one: the factory composes the components, it is not the components (the
+#: shipped application layer is pinned below to carry no symbol, and an
+#: application-layer module is refused the moment it grows one).
 APP_MEMBER = "app"
 
 #: The members the bit's legitimate life spans — the sentence's "scorer
@@ -570,19 +570,16 @@ class TestTheGateReadsTheSourceTheMergeShips:
         assert SCORER_PACKAGES <= subject
 
     def test_the_app_tree_is_subject_and_never_exempt(self) -> None:
-        # The seats compose the components; they are not the components.
-        # The scorer's app seat sits under a path spelled "scoring" and is
-        # still judged: the exemption is the declared member, not a string
-        # on a path, and a gate keying on the path would wave the seat's
-        # own leak through.  The shipped seat carries no symbol — standing
-        # state — and the hostile line below is refused under the
-        # application layer's own member identity.
-        seat = "src/app/modules/scoring/scorer.py"
-        source = shipped_source(APP_MEMBER, seat)
-        assert module_refusal(APP_MEMBER, source, seat) == ()
+        # The factory composes the components; it is not the components.
+        # The shipped application layer carries no symbol — standing state —
+        # and the hostile line below is refused under the application
+        # layer's own member identity.
+        module = "src/app/module_loader.py"
+        source = shipped_source(APP_MEMBER, module)
+        assert module_refusal(APP_MEMBER, source, module) == ()
         line = source.count("\n") + 2  # the appended module-level flag's line
-        hostile = (APP_MEMBER, seat, source + "\nis_null = False  # for the dashboard\n")
-        assert merge_refusal([hostile]) == ((APP_MEMBER, seat, "module", IS_NULL, line),)
+        hostile = (APP_MEMBER, module, source + "\nis_null = False  # for the dashboard\n")
+        assert merge_refusal([hostile]) == ((APP_MEMBER, module, "module", IS_NULL, line),)
 
     def test_a_module_that_does_not_parse_is_refused(self) -> None:
         # A merge gate judges the code a merge ships; code it cannot read is
@@ -925,16 +922,19 @@ class TestAMergeThatShipsTheNameOutsideTheHomesIsRefused:
             (member, module, "module", IS_NULL, source.count("\n") + 2),
         )
 
-    def test_the_shipped_app_seat_plus_one_hostile_line_is_refused(self) -> None:
-        # The mirror of the homes' exemption, stated as a refusal: the
-        # scorer's app seat — a module whose path is spelled "scoring" — is
+    def test_an_app_module_under_a_scoring_path_is_refused(self) -> None:
+        # The mirror of the homes' exemption, stated as a refusal: an
+        # application-layer module whose path is spelled "scoring" is
         # refused the moment it grows the name, because the exemption is
-        # the declared member and the seat is the application layer.  A
-        # gate keyed on path substrings would wave this through.
-        member, module, source = shipped_module(APP_MEMBER, "src/app/modules/scoring/scorer.py")
-        hostile = (member, module, source + "\nis_null = None\n")
+        # the declared member and the module is the application layer.  A
+        # gate keyed on path substrings would wave this through.  The
+        # module's body is the shipped application layer's, so the hostile
+        # line is the only binding the gate can find.
+        _, _, source = shipped_module(APP_MEMBER, "src/app/module_loader.py")
+        module = "src/app/scoring/scorer.py"
+        hostile = (APP_MEMBER, module, source + "\nis_null = None\n")
         assert merge_refusal([hostile]) == (
-            (member, module, "module", IS_NULL, source.count("\n") + 2),
+            (APP_MEMBER, module, "module", IS_NULL, source.count("\n") + 2),
         )
 
 
