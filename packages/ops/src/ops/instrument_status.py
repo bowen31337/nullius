@@ -120,7 +120,15 @@ none of them is ever answered with a lit lamp:
   two halves stay distinguishable on the answer — a reading with no band
   still carries ``ingest_lag_seconds`` and ``ingest_read_at``, and a band
   with no reading still carries ``threshold_seconds`` — because an operator
-  whose watchdog is half-wired needs to see which half is missing.
+  whose watchdog is half-wired needs to see which half is missing.  And the
+  no-band half is *named*: a recorded silence with no band carries
+  :attr:`ingest_threshold_env`, the environment variable the deployment
+  would set (:data:`FEED_STALENESS_THRESHOLD_ENV`'s own spelling, read off
+  the module's one constant — never restated), so a render never has to
+  re-derive which knob is missing from the fields beside the lamp.  A
+  reading with no band is *unconfigured*; no reading at all is *no
+  reading* — the two states the J04 journey step 3 holds apart, answered
+  apart here so no surface downstream can collapse them.
 
 **The route reads no clock, and that is what keeps the lamps comparable.**
 Every lamp is a reading *of a store*, taken at the instant the store is
@@ -544,7 +552,12 @@ class InstrumentStatusResponse:
     the store it would be read from holds nothing to judge, and each carrying
     the provenance that makes its bit reconstructible: the campaign and
     p-value behind the KS lamp, the recorded silence and the configured band
-    behind the ingest lamp.  ``canary`` is never absent: a database that can
+    behind the ingest lamp.  The ingest lamp's absence keeps its two reasons
+    apart on the answer itself: no recorded reading is *no reading*, while a
+    recorded reading with no configured band carries
+    :attr:`ingest_threshold_env` naming the knob the deployment would set —
+    *unconfigured*, never to be mistaken for a feed nobody measured.
+    ``canary`` is never absent: a database that can
     be opened answers one bit, and a database that cannot is refused rather
     than answered.
 
@@ -586,7 +599,8 @@ class InstrumentStatusResponse:
     #: when half the watchdog is missing: no recorded reading, or no
     #: configured band.  The two halves stay distinguishable — a reading with
     #: no band still carries :attr:`ingest_lag_seconds` and
-    #: :attr:`ingest_read_at`, and a band with no reading still carries
+    #: :attr:`ingest_read_at` *and* names the missing knob through
+    #: :attr:`ingest_threshold_env`, and a band with no reading still carries
     #: :attr:`threshold_seconds` — because an operator whose watchdog is
     #: half-wired needs to see which half.
     ingest: Optional[bool] = None
@@ -625,6 +639,20 @@ class InstrumentStatusResponse:
     #: *the knob is set and nothing has been measured* is exactly the half a
     #: half-wired watchdog shows.
     threshold_seconds: Optional[float] = None
+
+    #: The band knob a recorded silence with no band names as missing —
+    #: :data:`FEED_STALENESS_THRESHOLD_ENV`'s own spelling, or ``None``.
+    #: This is the one absence on the rail whose repair is a *setting*
+    #: rather than a measurement, and the answer names the setting so the
+    #: operator is sent to the environment and not to the feed: a reading
+    #: with no threshold is *unconfigured*, while no reading at all is *no
+    #: reading*, and the two states must never render as one.  **Derived at
+    #: construction** from the halves it names — present exactly when
+    #: :attr:`ingest_lag_seconds` is present and :attr:`threshold_seconds`
+    #: is absent, the same re-derivation discipline that checks each
+    #: carried bit against the number beside it — so a hand-built rail and
+    #: the route's own answer cannot disagree about which knob is missing.
+    ingest_threshold_env: Optional[str] = None
 
     def __post_init__(self) -> None:
         # frozen+slots forbids plain assignment, so normalisation writes
@@ -724,6 +752,21 @@ class InstrumentStatusResponse:
         object.__setattr__(self, "ingest_lag_seconds", lag)
         object.__setattr__(self, "ingest_read_at", read_at)
         object.__setattr__(self, "threshold_seconds", threshold)
+        # The knob the no-band absence names, derived from the halves it
+        # names rather than carried, so no caller — route or hand-built —
+        # can state a missing setting the readings do not show missing.
+        # Reading present and band absent is *unconfigured*; anything else
+        # names no knob, because *no reading* and *judged* are not
+        # configuration states (J04 step 3's distinction).
+        object.__setattr__(
+            self,
+            "ingest_threshold_env",
+            (
+                FEED_STALENESS_THRESHOLD_ENV
+                if (lag is not None and threshold is None)
+                else None
+            ),
+        )
 
     # -- The rail, read back ------------------------------------------------
 

@@ -126,7 +126,15 @@ guard exists to catch, and a lamp that read ``ok`` off a ``None``
 would certify it.  The absence renders as words and is never folded
 into ``failing`` either — feature 342's own law, restated at the
 surface: *nobody measured* and *the instrument is out* are different
-states, and an operator chasing a dark rail needs them apart.
+states, and an operator chasing a dark rail needs them apart.  And the
+ingest seat's absence has two reasons the strip must not collapse: a
+recorded reading with no configured band renders *unconfigured* and
+names the missing threshold (the response's own
+``ingest_threshold_env``, feature 342's spelling, interpolated — never
+restated), while a lamp with no reading at all keeps *no reading*
+(J04 step 3: the two words send the operator to different repairs — a
+setting, or a feed).  An unconfigured lamp is still never lit: a
+silence nobody judged is not a silence inside the band.
 
 **The lamps are permanent the same three ways the count is.**
 Structurally, the page model requires its lamps (the lamps' display
@@ -191,7 +199,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 from .errors import DashboardRenderError
 from .instrument_status import LAMP_NAMES
@@ -202,6 +210,7 @@ __all__ = [
     "LAMP_LABELS",
     "LIT_STATE",
     "NO_READING_STATE",
+    "UNCONFIGURED_STATE",
     "EpochCountChrome",
     "EpochCountGauge",
     "InstrumentLampsChrome",
@@ -237,6 +246,21 @@ DARK_STATE = "failing"
 #: must not let the two-and-a-half states a boolean can draw collapse
 #: into two.
 NO_READING_STATE = "no reading"
+
+#: The word an **unconfigured** lamp renders — the ingest lamp's second
+#: absence, the one a reading exists for: the recorded silence is on the
+#: answer and no band is configured to judge it against, so the missing
+#: half is a *setting* and the lamp names it rather than claiming no
+#: reading was ever taken (J04 step 3: *"The ingest lamp names the
+#: missing threshold (unconfigured), not no reading — a reading
+#: exists"*).  Reached only on the ingest seat — the canary lamp is
+#: never absent and the KS guard's absence is always a missing
+#: measurement — and only when the response itself names the knob
+#: (:attr:`~ops.instrument_status.InstrumentStatusResponse.
+#: ingest_threshold_env`, feature 342's own spelling, carried rather
+#: than restated here).  A lamp in this state is still never lit: an
+#: unjudged silence is not an inside-band one.
+UNCONFIGURED_STATE = "unconfigured"
 
 #: The label each lamp renders under — docs §5.4's own rail copy, in
 #: the rail's own order (``canary``, ``ks guard``, ``ingest``).  The
@@ -491,34 +515,71 @@ class InstrumentLampsChrome:
         rail = self.response.lamps
         return {name: rail[name] for name in LAMP_NAMES}
 
+    def _missing_threshold(self) -> Optional[str]:
+        """The band knob the response names as unset, or ``None``.
+
+        The one absence on the rail whose repair is a setting, read off
+        the response the way the rail is — the route's
+        :attr:`~ops.instrument_status.InstrumentStatusResponse.
+        ingest_threshold_env` is feature 342's own naming of the knob,
+        and the strip interpolates it rather than spelling it: a second
+        spelling of the environment variable here would be a second
+        place the knob's name could drift from the one the route
+        refuses a bad value on.  A carrier that answers no knob renders
+        no *unconfigured* word — the minimal carrier keeps the three
+        states it always rendered, and the strip never guesses a
+        setting a response did not name.
+        """
+        knob = getattr(self.response, "ingest_threshold_env", None)
+        if isinstance(knob, str) and knob.strip():
+            return knob.strip()
+        return None
+
     @property
     def states(self) -> dict[str, str]:
         """The rail as the strip spells it — each lamp's state word.
 
-        The three-state mapping (:func:`_lamp_state`): ``ok`` for lit,
-        ``failing`` for dark, ``no reading`` for a lamp nobody
-        measured.  This is the feature's own clause made literal — the
-        absent lamp's word is *no reading*, never a spelling of *lit*,
-        because an unmeasured instrument is not a healthy one and the
-        strip is where an operator would read the difference.
+        The three-state mapping (:func:`_lamp_state`) — ``ok`` for lit,
+        ``failing`` for dark, ``no reading`` for a lamp nobody measured
+        — with the one refinement the ingest seat needs: an absent
+        ingest lamp whose response names a missing band knob renders
+        *unconfigured*, because a reading exists and the configuration
+        does not, and an operator reading *no reading* there would go
+        looking for a missing feed instead of a missing setting (J04
+        step 3).  The absent lamp's word is never a spelling of *lit*,
+        because an unmeasured — or unjudged — instrument is not a
+        healthy one.
         """
-        return {name: _lamp_state(bit) for name, bit in self.lamps.items()}
+        knob = self._missing_threshold()
+        words: dict[str, str] = {}
+        for name, bit in self.lamps.items():
+            if bit is None and name == "ingest" and knob is not None:
+                words[name] = UNCONFIGURED_STATE
+            else:
+                words[name] = _lamp_state(bit)
+        return words
 
     @property
     def lines(self) -> tuple[str, ...]:
         """The three lamp lines the render emits, in rail order.
 
         One line per lamp — ``"canary: ok"``, ``"KS guard: no
-        reading"``, ``"ingest: failing"`` — under the label the design
-        draws, each carrying its own seat in the strip the way each
-        lamp carries its own seat in the rail: a lamp that is absent
-        or out still renders its line, because the strip that dropped
-        it would be hiding the one instrument the operator is chasing.
+        reading"``, ``"ingest: unconfigured (set …)"`` — under the
+        label the design draws, each carrying its own seat in the strip
+        the way each lamp carries its own seat in the rail: a lamp that
+        is absent or out still renders its line, because the strip that
+        dropped it would be hiding the one instrument the operator is
+        chasing.  The unconfigured line names the knob the response
+        named, so the operator reads the repair in the lamp itself.
         """
-        return tuple(
-            f"{LAMP_LABELS[name]}: {state}"
-            for name, state in self.states.items()
-        )
+        knob = self._missing_threshold()
+        lines: list[str] = []
+        for name, word in self.states.items():
+            line = f"{LAMP_LABELS[name]}: {word}"
+            if word == UNCONFIGURED_STATE and knob is not None:
+                line = f"{line} (set {knob})"
+            lines.append(line)
+        return tuple(lines)
 
 
 # -- The read seam -------------------------------------------------------------------

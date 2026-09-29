@@ -617,6 +617,71 @@ def test_the_two_halves_of_the_watchdog_are_distinguishable(
     assert measured.ingest_lag_seconds == LAG_SECONDS
 
 
+def test_a_reading_with_no_band_names_the_knob_that_is_missing(
+    store_url: str, live: LiveMetricsStore
+) -> None:
+    # J04 step 3's distinction, answered by the response itself rather
+    # than left for the reader to cross-reference: a recorded silence
+    # with no configured band is *unconfigured* — the missing half is a
+    # setting, and the answer names the setting — so the null the
+    # ingest lamp answers can never be mistaken for a feed nobody
+    # measured.  Both directions over the same store and the same row:
+    # naming the knob without the band, and judging (no knob named)
+    # once the band arrives.
+    live.record(FEED_STALENESS_METRIC, LAG_SECONDS, logged_at=LAG_AT)
+    bare = InstrumentStatusEndpoint.from_env({"DATABASE_URL": store_url})
+    assert bare is not None
+    unconfigured = bare.get()
+    assert unconfigured.ingest is None
+    assert unconfigured.ingest_lag_seconds == LAG_SECONDS
+    assert unconfigured.ingest_read_at == LAG_AT
+    assert unconfigured.threshold_seconds is None
+    assert unconfigured.ingest_threshold_env == FEED_STALENESS_THRESHOLD_ENV
+
+    banded = InstrumentStatusEndpoint.from_env(
+        {"DATABASE_URL": store_url, FEED_STALENESS_THRESHOLD_ENV: str(BAND_SECONDS)}
+    )
+    assert banded is not None
+    configured = banded.get()
+    assert configured.ingest is True
+    assert configured.threshold_seconds == BAND_SECONDS
+    assert configured.ingest_threshold_env is None
+
+
+def test_no_reading_names_no_knob(store_url: str) -> None:
+    # The other direction of the distinction: a lamp with no reading
+    # at all keeps the no-reading absence even when no band is
+    # configured either, because the repair an operator needs first is
+    # a measurement, not a setting — naming the knob would send them
+    # configuring a threshold for a feed nothing has measured.
+    endpoint = InstrumentStatusEndpoint.from_env({"DATABASE_URL": store_url})
+    assert endpoint is not None
+    response = endpoint.get()
+    assert response.ingest is None
+    assert response.ingest_lag_seconds is None
+    assert response.ingest_threshold_env is None
+
+
+def test_the_knob_is_derived_from_the_halves_it_names() -> None:
+    # The derivation lives on the response, not on the route: any
+    # value carrying a recorded silence with no band names the knob
+    # the deployment would set, so a hand-built rail and the route's
+    # own answer cannot disagree — the same discipline that re-derives
+    # each carried bit from the number beside it.
+    half_wired = InstrumentStatusResponse(
+        canary=True, ingest_lag_seconds=LAG_SECONDS, ingest_read_at=LAG_AT
+    )
+    assert half_wired.ingest_threshold_env == FEED_STALENESS_THRESHOLD_ENV
+    judged = InstrumentStatusResponse(
+        canary=True,
+        ingest=True,
+        ingest_lag_seconds=LAG_SECONDS,
+        ingest_read_at=LAG_AT,
+        threshold_seconds=BAND_SECONDS,
+    )
+    assert judged.ingest_threshold_env is None
+
+
 def test_an_absent_lamp_is_not_a_failing_one(
     endpoint: InstrumentStatusEndpoint,
 ) -> None:

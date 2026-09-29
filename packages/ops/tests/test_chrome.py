@@ -50,6 +50,8 @@ import pytest
 import scoring
 from ops import (
     EPOCH_COUNT_LABEL,
+    FEED_STALENESS_METRIC,
+    FEED_STALENESS_THRESHOLD_ENV,
     LAMP_NAMES,
     DashboardPage,
     DashboardRenderError,
@@ -57,6 +59,7 @@ from ops import (
     EpochCountGauge,
     FdrDeployEndpoint,
     InstrumentStatusEndpoint,
+    LiveMetricsStore,
     OperatorDashboard,
     OpsError,
     main,
@@ -67,6 +70,7 @@ from ops.chrome import (
     LAMP_LABELS,
     LIT_STATE,
     NO_READING_STATE,
+    UNCONFIGURED_STATE,
     InstrumentLampsChrome,
 )
 
@@ -544,6 +548,102 @@ def test_an_unmeasured_deployment_renders_the_absences_as_words(
         "ks_guard": NO_READING_STATE,
         "ingest": NO_READING_STATE,
     }
+
+
+def test_a_reading_with_no_band_renders_unconfigured_naming_the_knob(
+    test_database_url: str,
+) -> None:
+    # J04 step 3, at the surface the operator reads: a staleness
+    # reading exists and NULLIUS_FEED_STALENESS_THRESHOLD_S is unset,
+    # so the ingest lamp renders *unconfigured* and names the missing
+    # threshold — never *no reading*, which is the word for a feed
+    # nobody measured and would send the operator hunting a missing
+    # feed instead of a missing setting.  The knob's name is the
+    # route's own spelling, carried on the response: the strip renders
+    # what the route states and spells no configuration of its own.
+    # The other two seats are untouched — canary reads its bit, the KS
+    # guard its absence — because only the ingest lamp has a
+    # configuration half to be missing.
+    LiveMetricsStore(test_database_url).record(
+        FEED_STALENESS_METRIC, 1.2, logged_at="2026-09-01T00:00:00Z"
+    )
+    page = OperatorDashboard(
+        FdrDeployEndpoint(scoring.FdrDeployStore(test_database_url)),
+        EpochCountGauge(test_database_url),
+        _rail(test_database_url),
+    ).page()
+    assert page.lamps.states["canary"] == LIT_STATE
+    assert page.lamps.states["ks_guard"] == NO_READING_STATE
+    assert page.lamps.states["ingest"] == UNCONFIGURED_STATE
+    (ingest_line,) = [
+        line for line in page.lamps.lines if line.startswith("ingest:")
+    ]
+    assert ingest_line.startswith(f"ingest: {UNCONFIGURED_STATE}")
+    assert FEED_STALENESS_THRESHOLD_ENV in ingest_line
+
+    st = _RecordingStreamlit()
+    rendered = OperatorDashboard(
+        FdrDeployEndpoint(scoring.FdrDeployStore(test_database_url)),
+        EpochCountGauge(test_database_url),
+        _rail(test_database_url),
+    ).render(st)
+    assert st.lamps() == list(rendered.lamps.lines)
+    assert any(
+        FEED_STALENESS_THRESHOLD_ENV in line for line in st.lamps()
+    )
+
+
+def test_no_reading_still_renders_no_reading_with_no_band(
+    test_database_url: str,
+) -> None:
+    # The boundary of the new word, held from the other side: with no
+    # recorded reading — and, as here, no band either — the ingest
+    # lamp keeps the no-reading word and names no knob, because the
+    # missing half is the measurement.  A lamp with no reading is
+    # never lit, and never dressed up as a setting either.
+    page = OperatorDashboard(
+        FdrDeployEndpoint(scoring.FdrDeployStore(test_database_url)),
+        EpochCountGauge(test_database_url),
+        _rail(test_database_url),
+    ).page()
+    assert page.lamps.states["ingest"] == NO_READING_STATE
+    assert all(
+        FEED_STALENESS_THRESHOLD_ENV not in line for line in page.lamps.lines
+    )
+
+
+def test_a_carrier_that_names_its_missing_knob_renders_it() -> None:
+    # The word layer reads the distinction off the carrier the way it
+    # reads the rail: duck-shaped, from the response's own field.  A
+    # carrier that names the knob renders it in the line's own words;
+    # one that answers no knob (the minimal carrier) renders the
+    # no-reading word it always did — the strip degrades to the three
+    # states it knows, never to a guess.
+    class _HalfWired:
+        lamps: ClassVar[dict[str, bool | None]] = {
+            "canary": True,
+            "ks_guard": None,
+            "ingest": None,
+        }
+        ingest_threshold_env = FEED_STALENESS_THRESHOLD_ENV
+
+    half_wired = InstrumentLampsChrome(response=_HalfWired())
+    assert half_wired.states["ingest"] == UNCONFIGURED_STATE
+    assert FEED_STALENESS_THRESHOLD_ENV in half_wired.lines[2]
+
+    bare = InstrumentLampsChrome(response=_RailCarrier())
+    bare.response.lamps["ingest"] = None
+    assert bare.states["ingest"] == NO_READING_STATE
+
+
+def test_unconfigured_is_its_own_word() -> None:
+    # The word layer's fourth word, and the one the distinction needs:
+    # *unconfigured* is not a spelling of any read state or of
+    # *no reading*, because a half-wired watchdog is none of those —
+    # the reading exists; the band does not.
+    assert UNCONFIGURED_STATE == "unconfigured"
+    assert len({LIT_STATE, DARK_STATE, NO_READING_STATE, UNCONFIGURED_STATE}) == 4
+    assert UNCONFIGURED_STATE not in (LIT_STATE, DARK_STATE, NO_READING_STATE)
 
 
 def test_the_rail_renders_in_the_designs_order_and_spellings(
