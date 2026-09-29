@@ -652,7 +652,7 @@ class InstrumentStatusResponse:
     #: is absent, the same re-derivation discipline that checks each
     #: carried bit against the number beside it — so a hand-built rail and
     #: the route's own answer cannot disagree about which knob is missing.
-    ingest_threshold_env: Optional[str] = None
+    ingest_threshold_env: str | None = None
 
     def __post_init__(self) -> None:
         # frozen+slots forbids plain assignment, so normalisation writes

@@ -199,7 +199,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from .errors import DashboardRenderError
 from .instrument_status import LAMP_NAMES
@@ -515,7 +515,7 @@ class InstrumentLampsChrome:
         rail = self.response.lamps
         return {name: rail[name] for name in LAMP_NAMES}
 
-    def _missing_threshold(self) -> Optional[str]:
+    def _missing_threshold(self) -> str | None:
         """The band knob the response names as unset, or ``None``.
 
         The one absence on the rail whose repair is a setting, read off
