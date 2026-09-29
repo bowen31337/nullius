@@ -185,15 +185,28 @@ ask = {
     "symbols": ["BTCUSDT"],
     "date_range": ["2026-01-01", "2026-01-31"],
 }
-report(
-    "J12-api-null-oracle-target",
-    "Ask the null oracle for a target series",
-    [
-        ("target, seeded node", "POST /target", call("POST", "/target", ask, "evaluator")),
-        ("target, unknown node", "POST /target",
-         call("POST", "/target", dict(ask, node_id=UNKNOWN), "evaluator")),
-    ],
-)
+j12 = [
+    ("target, seeded node", "POST /target", call("POST", "/target", ask, "evaluator")),
+    ("target, unknown node", "POST /target",
+     call("POST", "/target", dict(ask, node_id=UNKNOWN), "evaluator")),
+]
+NULL_NODE = os.environ.get("DEMO_NULL_NODE")
+if NULL_NODE:
+    # The barrier: the seeded null node must be refused exactly as the real
+    # one is, apart from the node id the caller itself sent.
+    real = j12[0][2]
+    null = call("POST", "/target", dict(ask, node_id=NULL_NODE), "evaluator")
+    j12.append(("target, seeded NULL node", "POST /target", null))
+    same = (
+        null["status"] == real["status"]
+        and {k: v for k, v in null["headers"].items() if k != "date"}
+        == {k: v for k, v in real["headers"].items() if k != "date"}
+        and null["body"].replace(NULL_NODE, "<node>") == real["body"].replace(NODE, "<node>")
+    )
+    verdict = {"status": 200 if same else 500, "headers": {}, "body": json.dumps(
+        {"null_vs_real_identical_apart_from_the_node_id": same})}
+    j12.append(("barrier check (computed, not a request)", "null vs real", verdict))
+report("J12-api-null-oracle-target", "Ask the null oracle for a target series", j12)
 
 report(
     "J13-api-risk-halt",
