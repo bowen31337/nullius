@@ -86,6 +86,7 @@ from ops.dashboard import (
     PROVENANCE_UNRECORDED,
     CampaignProvenance,
     NodeProvenanceReader,
+    _trend_tick,
     render_refusal,
 )
 
@@ -492,10 +493,52 @@ def test_each_trend_point_is_labelled_by_its_campaigns_computed_at(
     page = _dashboard(test_database_url).render(st)
     chart_args, chart_kwargs = st.one("line_chart")
     assert chart_kwargs == {"x": COMPUTED_AT_LABEL, "y": FDR_DEPLOY_LABEL}
+    # The chart's x column is the panel's instants folded to legible
+    # date-only ticks — the render's presentation, not the reader's raw
+    # label (the points reader stays faithful; the screen makes it short
+    # enough to read without clipping the year away).
     assert chart_args[0][COMPUTED_AT_LABEL] == [
-        instant for instant, _figure in page.primary.points
+        _trend_tick(instant) for instant, _figure in page.primary.points
     ]
     assert chart_args[0][FDR_DEPLOY_LABEL] == list(page.primary.series)
+
+
+def test_the_trend_ticks_are_legible_dates_that_keep_the_year(
+    test_database_url: str,
+) -> None:
+    # The J02 gap this fix closes: the trend's x ticks were the full
+    # ISO instants the store persists ("2026-02-01T00:00:00+00:00"),
+    # and Streamlit rotates and clips them at the default page width —
+    # the start truncated, the year lost ("-01-01T00:00…").  The render
+    # folds each instant to its calendar date ("2026-02-01"), the
+    # legible label the journey's acceptance names ("2026-03-01"): the
+    # operator can read *when* each campaign was computed, year and all.
+    st = _RecordingStreamlit()
+    _dashboard(test_database_url).render(st)
+    (chart,) = st.of("line_chart")  # (args, kwargs) for the one line_chart call
+    ticks = chart[0][0][COMPUTED_AT_LABEL]
+    # The year is present on every tick, not clipped away.
+    assert all(tick.startswith("2026-") for tick in ticks)
+    # Date-only, not the full instant: no time-of-day, no offset.
+    assert all("T" not in tick for tick in ticks)
+    assert ticks == ["2026-01-01", "2026-02-01"]
+    # The fold keeps the trend's order — oldest first, still by
+    # computed_at — so the axis reads chronologically.
+    assert ticks == sorted(ticks)
+
+
+def test_the_trend_tick_helper_folds_an_iso_instant_to_its_date() -> None:
+    # The presentation fold is a pure function, pinned on both the
+    # spellings the store produces: the explicit instant ("2026-03-01
+    # T00:00:00") and the default-now one with its UTC offset
+    # ("2026-09-29T02:36:32+00:00") both answer their calendar date.
+    assert _trend_tick("2026-03-01T00:00:00") == "2026-03-01"
+    assert _trend_tick("2026-09-29T02:36:32+00:00") == "2026-09-29"
+    # A value that is not a nameable instant passes through untouched —
+    # the label is a display convenience, and a malformed one surfaces
+    # as itself rather than crashing the render with a traceback.
+    assert _trend_tick("campaign 7") == "campaign 7"
+    assert _trend_tick(None) == "None"
 
 
 def test_the_provenance_triple_is_visible_beside_the_figure(
@@ -1104,8 +1147,11 @@ def test_the_render_emits_the_primary_panel_first(test_database_url: str) -> Non
     # column), never a bare index (J02).
     chart_args, chart_kwargs = st.one("line_chart")
     assert chart_kwargs == {"x": COMPUTED_AT_LABEL, "y": FDR_DEPLOY_LABEL}
+    # The one chart is the trend, each point labelled by its campaign's
+    # computed_at instant folded to a legible date-only tick — never a
+    # bare index (J02), and never the full instant that clips the year.
     assert chart_args[0][COMPUTED_AT_LABEL] == [
-        instant for instant, _figure in page.primary.points
+        _trend_tick(instant) for instant, _figure in page.primary.points
     ]
     assert chart_args[0][FDR_DEPLOY_LABEL] == list(page.primary.series)
     assert st.one("set_page_config")[1]["page_title"] == DASHBOARD_PAGE_TITLE

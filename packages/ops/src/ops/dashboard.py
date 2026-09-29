@@ -298,6 +298,7 @@ if __package__ in (None, ""):  # pragma: no cover - the streamlit-run script pat
         _sys.path.insert(0, _member_src)
     __package__ = "ops"
 
+import datetime as dt
 import sqlite3
 from collections.abc import Mapping
 from contextlib import closing
@@ -509,6 +510,41 @@ _SHORT_HASH_CHARS = 12
 #: The labels the short form renders the three terms under — the
 #: column names' own words, spaced the way a caption reads.
 _PROVENANCE_LABELS = ("evaluator", "snapshot", "cost model")
+
+
+def _trend_tick(instant: Any) -> str:
+    """One trend point's x-axis label — the instant as a legible date.
+
+    The panel's ``points`` carry the campaign's ``computed_at`` exactly
+    as the store persisted it — a full ISO 8601 UTC instant such as
+    ``"2026-03-01T00:00:00+00:00"`` (feature 267's :func:`~scoring._fdr.
+    _instant_of`, second resolution).  That is the faithful spelling the
+    reader owns; the *screen* that draws it needs the year, the month and
+    the day, not the time-of-day, and a full instant rendered as a
+    Streamlit x tick is rotated and clipped at the default page width —
+    the start (and with it the year) truncated, so the operator reads
+    ``-01-01T00:00…`` and cannot tell one campaign's season from another
+    (docs §J02).  The fix is a presentation one, and presentation is the
+    render's job, not the reader's: this function folds the instant to
+    its calendar date (``YYYY-MM-DD``), the legible label the journey's
+    acceptance names (*"2026-03-01"*).
+
+    The fold keeps the trend's law intact — the points are already
+    ordered oldest-first *by* ``computed_at`` (:attr:`FdrDeployPanel.
+    points`), and a date-only ISO label orders the same way its full
+    instant did (lexicographic on ``YYYY-MM-DD`` is chronological), so
+    the axis still reads oldest to newest and only the tick text is
+    shorter.  A value that is not a nameable instant is passed through
+    untouched rather than crashing the render: the label is a display
+    convenience, and a malformed one should surface as itself, not as a
+    traceback on the operator's screen.
+    """
+    if isinstance(instant, str):
+        try:
+            return dt.datetime.fromisoformat(instant).date().isoformat()
+        except ValueError:
+            return instant  # not an ISO instant — render it as-is, never crash
+    return str(instant)
 
 
 def require_streamlit() -> Any:
@@ -1670,7 +1706,8 @@ class OperatorDashboard:
             carrier.line_chart(
                 {
                     COMPUTED_AT_LABEL: [
-                        instant for instant, _figure in panel.points
+                        _trend_tick(instant)
+                        for instant, _figure in panel.points
                     ],
                     FDR_DEPLOY_LABEL: list(panel.series),
                 },
