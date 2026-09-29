@@ -4,8 +4,8 @@ title: Open the dashboard on a fresh install
 persona: Operator
 source: app_spec.xml feature 351; ui_layout; docs §16
 status: pass
-last_checked: run 2
-evidence: screenshots/run-2/J1-dashboard-empty-db.png
+last_checked: run 3
+evidence: screenshots/run-3/J1-dashboard-empty-db.png
 ---
 
 # J01 — Open the dashboard on a fresh install

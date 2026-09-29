@@ -4,8 +4,8 @@ title: Discover what the API serves, and get clean errors
 persona: Any
 source: api_endpoints_summary
 status: pass
-last_checked: run 2
-evidence: screenshots/run-2/J14-api-discoverability.png, screenshots/run-2/J14-index-rendered.png, screenshots/run-2/J14-index-plain-navigation-401.png
+last_checked: run 3
+evidence: screenshots/run-3/J14-api-discoverability.png, screenshots/run-3/J14-index-rendered.png
 ---
 
 # J14 — Discover what the API serves, and get clean errors

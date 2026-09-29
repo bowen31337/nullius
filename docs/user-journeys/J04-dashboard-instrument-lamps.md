@@ -3,9 +3,9 @@ id: J04-dashboard-instrument-lamps
 title: See the three instrument lamps in permanent chrome
 persona: Operator
 source: app_spec.xml feature 342; ui_layout; M5 ux
-status: fail
-last_checked: run 2
-evidence: screenshots/run-2/J2-J4-J5-J6-dashboard-populated.png, screenshots/run-2/J4-lamps-with-threshold.png
+status: pass
+last_checked: run 3
+evidence: screenshots/run-3/J2-J4-J5-J6-dashboard-populated.png, screenshots/run-3/J4-lamps-with-threshold.png
 ---
 
 # J04 — See the three instrument lamps in permanent chrome

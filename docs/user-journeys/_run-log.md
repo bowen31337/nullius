@@ -226,3 +226,29 @@ What the cases establish:
 **Open decision (not filed):** the HTML index at `/` is aimed at browsers, but it requires a bearer token, and a browser cannot send one by navigating to the URL. A person who types the URL gets `401` ([screenshot](screenshots/run-2/J14-index-plain-navigation-401.png)). The auth feature gated it on purpose, because the index reveals which components are configured. Whether `/` should be public, perhaps with the configured column hidden, is a product decision for the owner.
 
 **Also seen:** the shipped demo seeder seals no null sidecar, so J12 needed operator configuration by hand to exercise the barrier.
+
+## Run 3 (full sweep): 2026-09-29, after the five fixes of `bug_spec_journeys_run2.xml`
+
+- **`main`:** `901b996` plus lint fix `f8f2aec`.
+- **Setup:** every precondition came from shipped commands. The store came from `python -m nullius_api.demo`, and the sidecar came from the `export NULL_SIDECAR_…` lines that the seeder now prints. Tokens came from `NULLIUS_API_TOKENS_FILE`, the paper engine from `NULLIUS_EXECUTION_ENGINE`, and the dashboard was launched from the repository root, so `.streamlit/config.toml` applied.
+
+| # | Journey | Verdict | Notes | Evidence |
+|---|---|---|---|---|
+| J1 | Fresh install | ✅ pass | Shows `—` and *no campaign has closed…*. The KS-guard and ingest lamps read `no reading`. | [J1](screenshots/run-3/J1-dashboard-empty-db.png) |
+| J2 | Top-line FDR_deploy + trend | ✅ pass (was fail) | The x labels read `2026-01-01`, `2026-02-01`, `2026-03-01` under a `computed_at` axis title. The default capture crops at the viewport edge, so the chart was also captured with a taller viewport. | [tall viewport](screenshots/run-3/J2-trend-labels-tall-viewport.png) |
+| J3 | Misconfigured | ✅ pass | Shows `dashboard_refusal: …` with the repair, no traceback, no path and no third-party links. | [J3](screenshots/run-3/J3-dashboard-no-database-url.png) |
+| J4 | Instrument lamps | ✅ pass (was fail) | With the threshold unset the lamp reads `ingest: unconfigured (set NULLIUS_FEED_STALENESS_THRESHOLD_S)`. With the threshold set it reads `ingest: ok`. With no reading at all it reads `no reading`. | [unset](screenshots/run-3/J2-J4-J5-J6-dashboard-populated.png), [set](screenshots/run-3/J4-lamps-with-threshold.png) |
+| J5 | Clean epochs | ✅ pass | Shows `3` on the demo store and `0` on an empty one. | same |
+| J6 | Provenance triple | ✅ pass | Shows `provenance: evaluator 608a1ae37855…, snapshot 433368139601…, cost model 1cec44e2f806…`. | same |
+| J7 | Exposure | ✅ pass | Binds `127.0.0.1` only, with no Deploy button and no error details. | same |
+| J8 | Metrics over HTTP | ✅ pass (was fail) | `/metrics/fdr-deploy` now returns `fdr_deploy: 0.5`, `campaign_id: …0003` and `computed_at` next to `history`. `/metrics/regime-coverage` now returns a `counts` map. A request with no token gets `401`. | [J8](screenshots/run-3/J08-api-metrics.png) |
+| J9 | Pre-register | ✅ pass | `200` retry, `409`, `422` and `400`. | [J9](screenshots/run-3/J09-api-pre-register.png) |
+| J10 | Forward test | ✅ pass | Unknown node gives `404` with the message `forward_record_absent: forward_record holds no row…`. The word "unwritable" is gone. | [J10](screenshots/run-3/J10-api-forward-test.png) |
+| J11 | Trial ledger | ✅ pass (was fail) | With a fresh node: `201` with `appended: true` and `seq 3`, then `200` with the same `seq 3`, then `400`. k-effective now carries `total`. | [J11](screenshots/run-3/J11-api-trial-ledger-fresh-node.png) |
+| J12 | Null-oracle target | ✅ pass | Now reachable from the shipped demo with no hand-sealed sidecar. Unknown node gives `404 unknown_node`. The seeded null and real nodes both give `503`, identical apart from the node id the caller sent (computed barrier check: `true`). | [J12](screenshots/run-3/J12-api-null-oracle-target.png) |
+| J13 | Risk halt | ✅ pass | `changed: true`, then `changed: false`. With no engine bound: `503 execution_engine_unbound`. | [J13](screenshots/run-3/J13-api-risk-halt.png), [no engine](screenshots/run-3/J13-halt-no-engine.png) |
+| J14 | Discoverability | ✅ pass | The index reads "10 routes declared, 10 configured". `/healthz` gives `200`, then `404`, `405` (with `Allow`), `401`, `401` and `403`. | [J14](screenshots/run-3/J14-api-discoverability.png), [index](screenshots/run-3/J14-index-rendered.png) |
+
+**Result: 14 of 14 pass, none blocked.** Every Run 2 finding is fixed and verified in the browser.
+
+**Still open, a decision for the owner and not a defect:** the browser-oriented HTML index at `/` requires a bearer token, and a person who simply navigates to the URL gets `401` (see Run 2).

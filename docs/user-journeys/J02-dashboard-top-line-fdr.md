@@ -3,9 +3,9 @@ id: J02-dashboard-top-line-fdr
 title: Read the top-line FDR_deploy and its trend
 persona: Operator
 source: app_spec.xml features 341, 351; prd §4.1.3, §11
-status: fail
-last_checked: run 2
-evidence: screenshots/run-2/J2-J4-J5-J6-dashboard-populated.png
+status: pass
+last_checked: run 3
+evidence: screenshots/run-3/J2-trend-labels-tall-viewport.png, screenshots/run-3/J2-J4-J5-J6-dashboard-populated.png
 ---
 
 # J02 — Read the top-line FDR_deploy and its trend

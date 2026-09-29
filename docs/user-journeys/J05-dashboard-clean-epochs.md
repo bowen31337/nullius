@@ -4,8 +4,8 @@ title: Watch the remaining clean-epoch count
 persona: Operator
 source: app_spec.xml features 297, 352
 status: pass
-last_checked: run 2
-evidence: screenshots/run-2/J2-J4-J5-J6-dashboard-populated.png, screenshots/run-2/J1-dashboard-empty-db.png
+last_checked: run 3
+evidence: screenshots/run-3/J2-J4-J5-J6-dashboard-populated.png, screenshots/run-3/J1-dashboard-empty-db.png
 ---
 
 # J05 — Watch the remaining clean-epoch count
