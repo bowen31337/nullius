@@ -1,0 +1,111 @@
+<bug_spec>
+  <!-- Findings from the browser validation of docs/user-journeys, run 2
+       (docs/user-journeys/_run-log.md). Every bug quotes its journey, failing
+       step and screenshot. Shapes are core with explicit touches_files: the
+       bug-spec planner resolves plugin= against the single-package default
+       (src/plugins/<name>), which does not exist in this uv workspace. -->
+
+  <bug index="1" shape="core" severity="medium"
+       touches_files="packages/api/src/nullius_api/json_encoding.py,packages/api/src/nullius_api/server.py,packages/api/tests/test_metrics_routes.py,packages/api/tests/test_ledger_routes.py">
+    <title>The HTTP API's JSON bodies drop the responses' derived fields and render mappings as lists of pairs</title>
+    <symptoms>
+      Journey J8 step 1 (docs/user-journeys/J08-api-metrics.md): GET /metrics/fdr-deploy answers only {"history": [[campaign_id, fdr_deploy, computed_at], ...]}; the newest figure's fdr_deploy, campaign_id and computed_at, which FdrDeployResponse exposes as properties, are absent. Evidence: docs/user-journeys/screenshots/run-2/J08-api-metrics.png
+      Journey J8 step 3: GET /metrics/regime-coverage answers {"strata": [["crash", 0], ["high_vol_trend", 2], ["low_vol_chop", 14]]}, a list of pairs, not the {stratum: count} mapping RegimeCoverageResponse.counts exposes. Same evidence.
+      Journey J11 step 4 (docs/user-journeys/J11-api-trial-ledger.md): GET /ledger/k-effective answers {"view": {"counts": [["epoch-demo-2026-01", 1], ...]}} with no total, although KEffective.total exists. Evidence: docs/user-journeys/screenshots/run-2/J11-api-trial-ledger-fresh-node.png
+    </symptoms>
+    <reproduction_steps>
+      DATABASE_URL=sqlite:////tmp/demo.db uv run --all-packages python -m nullius_api.demo
+      Write a token file {"metrics:read": ["t1"], "evaluator": ["t2"]} and start: DATABASE_URL=sqlite:////tmp/demo.db NULLIUS_API_TOKENS_FILE=/tmp/tokens.json uv run --all-packages python -m nullius_api --port 8765
+      curl -H "Authorization: Bearer t1" localhost:8765/metrics/fdr-deploy
+      curl -H "Authorization: Bearer t1" localhost:8765/metrics/regime-coverage
+      curl -H "Authorization: Bearer t2" localhost:8765/ledger/k-effective
+    </reproduction_steps>
+    <expected>GET /metrics/fdr-deploy carries fdr_deploy, campaign_id and computed_at for the newest campaign (null on an empty store, never 0.0) beside the history; GET /metrics/regime-coverage carries the counts as a JSON object keyed by stratum; GET /ledger/k-effective carries per-epoch counts and a total (0 on an empty ledger).</expected>
+    <actual>Each body is the raw dataclass fields only: derived properties are dropped and tuple-of-pairs fields are emitted as nested arrays.</actual>
+    <constraints>
+      Existing keys stay (history, strata, view.counts) so current callers keep working; the new keys are additions
+      An empty store still answers null or an empty collection, never a fabricated 0.0
+      No response body carries a traceback or a filesystem path
+      Do not edit docs/user-journeys/ — journey verdicts are set only by browser runs
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="low"
+       touches_files="packages/forward/src/forward/decay.py,packages/forward/src/forward/record.py,packages/forward/tests/test_forward_decay.py,packages/forward/tests/test_forward_record.py">
+    <title>The forward decay 404 message tells the caller the record store is unwritable when the record is simply absent</title>
+    <symptoms>
+      Journey J10 step 3 (docs/user-journeys/J10-api-forward-test.md): GET /forward/decay?node_id=&lt;unknown&gt; correctly answers 404 with code forward_record_absent, but the message reads "forward_record_absent: forward_record_unwritable: forward_record ...", naming the store-failure code word inside an absence. Evidence: docs/user-journeys/screenshots/run-2/J10-api-forward-test.png
+    </symptoms>
+    <reproduction_steps>
+      Start the API on the demo store as in bug 1 with a research token
+      curl -H "Authorization: Bearer &lt;research&gt;" "localhost:8765/forward/decay?node_id=ffffffff-0000-4000-8000-000000000000"
+    </reproduction_steps>
+    <expected>A ForwardAbsentError message opens with forward_record_absent and names the node and the repair (promote it, or wait for its first observation); it does not contain forward_record_unwritable, which is reserved for a store the member cannot reach.</expected>
+    <actual>The absence message is built on top of the store-failure message, so both code words appear and the operator is pointed at the database.</actual>
+    <constraints>
+      ForwardAbsentError stays a subclass of ForwardStoreError and keeps the code word forward_record_absent
+      A genuine store failure still reports forward_record_unwritable
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="3" shape="core" severity="medium"
+       touches_files="packages/ops/src/ops/instrument_status.py,packages/ops/src/ops/chrome.py,packages/ops/tests/test_instrument_status.py,packages/ops/tests/test_chrome.py">
+    <title>The dashboard's ingest lamp says "no reading" when a reading exists but no staleness threshold is configured</title>
+    <symptoms>
+      Journey J4 step 3 (docs/user-journeys/J04-dashboard-instrument-lamps.md): with a recorded feed_staleness_s reading (1.2) and NULLIUS_FEED_STALENESS_THRESHOLD_S unset, the dashboard chrome shows "ingest: no reading". Evidence: docs/user-journeys/screenshots/run-2/J2-J4-J5-J6-dashboard-populated.png
+      With the threshold set to 60 the same store shows "ingest: ok" (docs/user-journeys/screenshots/run-2/J4-lamps-with-threshold.png), so the reading exists; what is missing is the configuration.
+      GET /metrics/instrument-status answers "ingest": null with "ingest_lag_seconds": 1.2 in the same body — the null is indistinguishable from a genuine absence.
+    </symptoms>
+    <reproduction_steps>
+      DATABASE_URL=sqlite:////tmp/demo.db uv run --all-packages python -m nullius_api.demo
+      DATABASE_URL=sqlite:////tmp/demo.db uv run --all-packages --with streamlit streamlit run packages/ops/src/ops/dashboard.py (NULLIUS_FEED_STALENESS_THRESHOLD_S unset)
+      Open http://127.0.0.1:8501/ and read the ingest lamp
+    </reproduction_steps>
+    <expected>A lamp that has a reading but no threshold to judge it against is shown as unconfigured and names the missing NULLIUS_FEED_STALENESS_THRESHOLD_S; "no reading" is kept for a lamp with no reading at all. The instrument-status response distinguishes the two states.</expected>
+    <actual>Both states render as "no reading", sending the operator to look for a missing feed instead of a missing setting.</actual>
+    <constraints>
+      A lamp with no reading is still never shown as lit
+      The canary and KS-guard lamps are unchanged
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="4" shape="core" severity="low"
+       touches_files="packages/ops/src/ops/dashboard.py,packages/ops/tests/test_dashboard.py">
+    <title>The dashboard's FDR_deploy trend clips its time labels so the year is lost</title>
+    <symptoms>
+      Journey J2 step 2 (docs/user-journeys/J02-dashboard-top-line-fdr.md): the trend's x labels are full ISO instants rotated 90 degrees and clipped to "-01-01T00:00…", "-02-01T00:00…", "-03-01T00:00…" — the year and the campaign are unreadable. Evidence: docs/user-journeys/screenshots/run-2/J2-J4-J5-J6-dashboard-populated.png
+    </symptoms>
+    <reproduction_steps>
+      Seed and launch the dashboard as in bug 3, open http://127.0.0.1:8501/ and read the chart's x axis
+    </reproduction_steps>
+    <expected>Each point's x label legibly shows when the campaign was computed, including the year (for example 2026-03-01), without clipping at the default page width.</expected>
+    <actual>The labels are truncated at the start, dropping the year.</actual>
+    <constraints>
+      The trend stays ordered oldest to newest by computed_at and is still labelled FDR_deploy on the y axis
+      No equity curve is introduced
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="5" shape="core" severity="low"
+       touches_files="packages/api/src/nullius_api/demo.py,packages/api/tests/test_demo.py">
+    <title>The demo seeder gives no way to exercise POST /target: it seals no null sidecar</title>
+    <symptoms>
+      Journey J12 (docs/user-journeys/J12-api-null-oracle-target.md): on a store produced by python -m nullius_api.demo, POST /target answers 503 component_unconfigured for every node, so the unknown-node 404 and the null/real barrier cannot be exercised from the shipped demo. Evidence: docs/user-journeys/screenshots/run-2/J12-api-null-oracle-target.png
+      The barrier itself works when an operator seals a sidecar by hand (docs/user-journeys/screenshots/run-2/J12-api-null-oracle-target-sidecar.png).
+    </symptoms>
+    <reproduction_steps>
+      DATABASE_URL=sqlite:////tmp/demo.db uv run --all-packages python -m nullius_api.demo
+      Start the API on that store with an evaluator token; POST /target for the demo node
+    </reproduction_steps>
+    <expected>The demo seeder also seals a demo null sidecar (one null node and one real node) through nulloracle.NullSidecar.write into a 0700 directory beside the database with a 0600 file and a generated hex: key, and prints the NULL_SIDECAR_PATH and NULL_SIDECAR_KEY_REF values to export, so the documented demo exercises POST /target end to end.</expected>
+    <actual>No sidecar is written and nothing tells the operator how to configure one.</actual>
+    <constraints>
+      The demo key is generated per seeding and is only ever printed for the demo; nothing is written into the repository
+      Existing demo rows and their identifiers are unchanged
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
