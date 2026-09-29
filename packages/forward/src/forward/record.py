@@ -1126,7 +1126,7 @@ class ForwardRecords:
             cursor.close()
         if not present:
             raise ForwardAbsentError(
-                f"{FORWARD_ABSENT_ERROR_CODE}: {FORWARD_RECORD_ERROR_CODE}: node "
+                f"{FORWARD_ABSENT_ERROR_CODE}: node "
                 f"holds no row for {NODE_ID_COLUMN} {node}, so this forward "
                 "record has no signal to be the boundary of. "
                 f"{FORWARD_RECORD_TABLE}.{NODE_ID_COLUMN} is a foreign key: a "

@@ -230,7 +230,11 @@ def test_a_signal_with_no_record_is_refused_naming_the_repair(
     with pytest.raises(ForwardAbsentError) as raised:
         store.curve(NODE_ID)
     message = str(raised.value)
-    assert "forward_record_unwritable" in message
+    # The absence word opens the message, and the store-failure word stays out
+    # of it: the database answered perfectly and the row is simply missing, so
+    # pointing the operator at the database would send them to a healthy one.
+    assert message.startswith(FORWARD_ABSENT_ERROR_CODE)
+    assert "forward_record_unwritable" not in message
     assert "/forward/promote" in message
     assert forward_rows() == []
 
@@ -274,7 +278,11 @@ def test_a_record_with_no_observation_is_refused_not_emptied(curves, forward_row
     with pytest.raises(ForwardAbsentError) as raised:
         curves.curve(NODE_ID)
     message = str(raised.value)
-    assert "forward_record_unwritable" in message
+    # The absence word opens the message, and the store-failure word stays out
+    # of it — the row is the honest opening row, just unobserved, so this is a
+    # state of the world, not a database fault.
+    assert message.startswith(FORWARD_ABSENT_ERROR_CODE)
+    assert "forward_record_unwritable" not in message
     assert "observe" in message
     assert "feature 333" in message
 
@@ -327,11 +335,12 @@ def test_an_absent_record_is_an_absence_and_not_a_store_failure(
     with pytest.raises(ForwardAbsentError) as raised:
         store.curve(NODE_ID)
     message = str(raised.value)
-    # The absence word — what the route's 404 turns on — and the store word
-    # every pre-existing caller already matches, both present and the absence
-    # one first, so neither audience is broken.
+    # The absence word — what the route's 404 turns on — opens the message, and
+    # the store-failure word is kept OUT of it: ``forward_record_unwritable``
+    # is reserved for a store the member cannot reach, and naming it inside an
+    # absence would point the operator at a healthy database.
     assert message.startswith(FORWARD_ABSENT_ERROR_CODE)
-    assert "forward_record_unwritable" in message
+    assert "forward_record_unwritable" not in message
     # The node is named in the ``node_id <id>`` form the other absences use, so
     # a caller attributes the absence without parsing prose.
     assert f"node_id {NODE_ID}" in message

@@ -649,8 +649,7 @@ def _absent_record(node: str) -> ForwardAbsentError:
     absence to a signal.
     """
     return ForwardAbsentError(
-        f"{FORWARD_ABSENT_ERROR_CODE}: {FORWARD_RECORD_ERROR_CODE}: "
-        f"{FORWARD_RECORD_TABLE} holds no row for "
+        f"{FORWARD_ABSENT_ERROR_CODE}: {FORWARD_RECORD_TABLE} holds no row for "
         f"{NODE_ID_COLUMN} {node}, so there is no curve to draw. The decay "
         "curve is the signal's observed live-IC rows framed against the "
         "boundary the record drew, and a signal with no record has no rows and "
@@ -676,7 +675,7 @@ def _no_observation(node: str, opening: ForwardRecord) -> ForwardAbsentError:
     observation job, never 503.
     """
     return ForwardAbsentError(
-        f"{FORWARD_ABSENT_ERROR_CODE}: {FORWARD_RECORD_ERROR_CODE}: node {node}'s "
+        f"{FORWARD_ABSENT_ERROR_CODE}: node {node}'s "
         f"forward record (promoted at {opening.promoted_at.isoformat()}, day "
         f"{opening.observed_on.isoformat()}) holds no row carrying a live_ic, "
         "so there is no curve to draw. A curve of no points would read as a "

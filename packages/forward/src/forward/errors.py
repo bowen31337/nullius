@@ -254,16 +254,21 @@ FORWARD_BETA_FOUR_ERROR_CODE = "forward_beta_four_unrevised"
 #: observe, then read the curve — so a caller reading the word knows it is
 #: looking at a *state of the world* rather than at a broken database.
 #:
-#: **Deliberately not ``forward_record_unwritable``.**  That word is what every
-#: one of these refusals says beside the new one, because ``ForwardAbsentError``
-#: subclasses :class:`ForwardStoreError` and existing callers and tests match
-#: on it; the absence word is what a caller that knows to look for it greps
-#: instead.  The two words are one message apart on purpose: the old word is
-#: still true (nothing could be served), and the new one is the *decidable*
-#: statement the ``/forward/decay`` route's 404 turns on — the difference
-#: between *this node has no record* and *the store could not be read*, which
-#: the HTTP layer must map to two different statuses.  Landing on the wrong one
-#: wastes the one thing a 90-day loop cannot give back — the day it happened on.
+#: **Deliberately not ``forward_record_unwritable`` — and not carrying it at
+#: all.**  ``ForwardAbsentError`` subclasses :class:`ForwardStoreError` so the
+#: existing callers and tests that match on the *class* keep catching these
+#: refusals, but its message opens with this word and this word alone: it does
+#: not embed :data:`FORWARD_RECORD_ERROR_CODE` (``forward_record_unwritable``)
+#: the way a genuine store fault does.  The two words name two different
+#: repairs — ``forward_record_unwritable`` sends an operator to the database,
+#: ``forward_record_absent`` tells them the row is simply missing and names the
+#: act that produces it — and a message that carried both would point the
+#: operator at a database that answered perfectly.  The distinction is the
+#: *decidable* statement the ``/forward/decay`` route's 404 turns on — the
+#: difference between *this node has no record* and *the store could not be
+#: read* — which the HTTP layer maps to two different statuses.  Landing on the
+#: wrong word wastes the one thing a 90-day loop cannot give back — the day it
+#: happened on.
 FORWARD_ABSENT_ERROR_CODE = "forward_record_absent"
 
 
@@ -391,15 +396,18 @@ class ForwardAbsentError(ForwardStoreError):
     An *absent store* (no ``DATABASE_URL``) is not this class either: it
     composes no component at all.
 
-    **The message names the node and the missing row**, in that order, so a
-    caller can attribute the absence to a signal without parsing prose, and
-    opens with the two words the two audiences grep:
-    :data:`FORWARD_ABSENT_ERROR_CODE` (``forward_record_absent`` — the
-    decidable statement) followed by :data:`FORWARD_RECORD_ERROR_CODE`
-    (``forward_record_unwritable`` — the word every existing caller and test
-    already matches on, kept so those clauses and assertions are untouched).
-    It carries no traceback and no filesystem path, because it is rendered
-    into a response body.
+    **The message opens with the absence word and names the node and the
+    missing row**, so a caller can attribute the absence to a signal without
+    parsing prose.  It carries :data:`FORWARD_ABSENT_ERROR_CODE`
+    (``forward_record_absent`` — the decidable statement) and nothing else
+    greppable: it does **not** embed :data:`FORWARD_RECORD_ERROR_CODE`
+    (``forward_record_unwritable``), because that word is reserved for a store
+    the member cannot reach and naming it inside an absence would point the
+    operator at a database that answered perfectly.  The subclassing — not the
+    message wording — is what keeps every existing ``except ForwardStoreError``
+    and ``except ForwardError`` catching these refusals.  It carries no
+    traceback and no filesystem path, because it is rendered into a response
+    body.
     """
 
 

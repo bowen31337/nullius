@@ -410,7 +410,10 @@ def test_an_absent_node_row_is_refused_naming_the_column(tmp_path: Path) -> None
         store.open_record(other_node, forward_days=FORWARD_DAYS)
     message = str(raised.value)
     assert message.startswith(FORWARD_ABSENT_ERROR_CODE)
-    assert "forward_record_unwritable" in message
+    # The store-failure word stays out of the absence message: the node row is
+    # simply missing and the database answered, so naming it would point the
+    # operator at a healthy table.
+    assert "forward_record_unwritable" not in message
     assert "node_id" in message
     assert other_node in message
     # Named in the ``node_id <id>`` form the other absences use, so a caller
