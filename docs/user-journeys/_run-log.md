@@ -252,3 +252,27 @@ What the cases establish:
 **Result: 14 of 14 pass, none blocked.** Every Run 2 finding is fixed and verified in the browser.
 
 **Still open, a decision for the owner and not a defect:** the browser-oriented HTML index at `/` requires a bearer token, and a person who simply navigates to the URL gets `401` (see Run 2).
+
+## Run 4 (full sweep, regression check): 2026-09-29, after removing the `src/app/modules` seats
+
+- **Code under test:** the working tree that removed all 61 seat modules. Components are now read with `create_app().get("<name>")`. The operator dashboard is the one surface whose code changed: it now reads `ops-fdr-deploy` and `ops-instrument-status` straight from the composed application.
+- **How it was run:** [`run_sweep.sh`](run_sweep.sh)` run-4 <scratch>` repeats Run 3's setup and checks in one step, using the shipped seeder and its printed sidecar exports, a token file, the paper engine, and the dashboard launched from the repository root. The x labels were read from the chart's SVG and captured with a 1440x1300 viewport.
+
+| # | Journey | Verdict | Observed |
+|---|---|---|---|
+| J1 | Fresh install | ✅ pass | Shows `—` and *no campaign has closed…*. The KS-guard and ingest lamps read `no reading`, and the epoch count is `0`. |
+| J2 | Top-line FDR_deploy + trend | ✅ pass | Shows `50.0%` for campaign `…003`. The x labels read `2026-01-01`, `2026-02-01`, `2026-03-01` under a `computed_at` axis title. |
+| J3 | Misconfigured | ✅ pass | Shows `dashboard_refusal: …` with the repair, no traceback and no third-party links. |
+| J4 | Instrument lamps | ✅ pass | Reads `ingest: unconfigured (set NULLIUS_FEED_STALENESS_THRESHOLD_S)`, then `ingest: ok` once the threshold is set. |
+| J5 | Clean epochs | ✅ pass | Shows `3` on the demo store and `0` on an empty one. |
+| J6 | Provenance triple | ✅ pass | Shows `provenance: evaluator 608a1ae37855…, snapshot 433368139601…, cost model 1cec44e2f806…`. |
+| J7 | Exposure | ✅ pass | All dashboards listen on `127.0.0.1`. No toolbar buttons appear, so there is no Deploy. |
+| J8 | Metrics over HTTP | ✅ pass | FDR returns `fdr_deploy: 0.5` with `campaign_id` and `computed_at`, coverage returns a `counts` map, instrument status returns `200`, and a request with no token gets `401`. |
+| J9 | Pre-register | ✅ pass | `200` retry, `409`, `422` and `400`. |
+| J10 | Forward test | ✅ pass | Promote gives `200` (retry) and the decay curve gives `200`. An unknown node gives `404 forward_record_absent` ("…holds no row…"). |
+| J11 | Trial ledger | ✅ pass | With a fresh node: `201` with `appended: true` and `seq 3`, then `200` with the same `seq`, then `400`. k-effective carries `total`. |
+| J12 | Null-oracle target | ✅ pass | Unknown node gives `404`. The seeded null and real nodes both give `503` and are identical apart from the node id (barrier check `true`). |
+| J13 | Risk halt | ✅ pass | `changed: true`, then `changed: false`. With no engine bound: `503 execution_engine_unbound`. |
+| J14 | Discoverability | ✅ pass | The index reads "10 routes declared, 10 configured". Also observed: `200`, `404`, `405`, `401`, `401` and `403`. |
+
+**Result: 14 of 14 pass, none blocked, no response carried a traceback.** Every verdict and status code is the same as Run 3, so the seat removal introduced no user-visible regression. Screenshots are in [`screenshots/run-4/`](screenshots/run-4/).

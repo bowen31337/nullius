@@ -56,7 +56,7 @@ The journeys below are run against `127.0.0.1`, which needs no certificate.
 
 ## Validation runs
 
-Each run is appended to [`_run-log.md`](_run-log.md).
+Each run is appended to [`_run-log.md`](_run-log.md). To repeat the full sweep in one command, run [`run_sweep.sh`](run_sweep.sh) `<run-name> <scratch-dir>`.
 
 ## Reproducing a run
 
