@@ -150,3 +150,58 @@ only the two findings `__init__.py` and `__main__.py` already carried
 before this feature (`RUF022` on the deliberately grouped `__all__` and
 `RUF059` on the now-unused host unpack); the files this feature adds and
 the other lines it touches are clean.
+
+## Implementation note (not a browser run): the structured access log, feature 20, 2026-09-29
+
+- **Branch:** `feat/http-api-transp-system-emits-one-structured-acce-9ebfcc`.
+- **Checker:** `packages/api/tests/test_access_log.py`, 40 cases, run
+  with the whole api member suite.
+- **Logger:** `nullius_api.access`, at INFO — dotted under `nullius_api`
+  so a deployment's one handler on the parent captures the access stream
+  and the server's own startup and fault lines together, one knob.
+
+The constraint this feature carries (*tokens and request bodies are
+never written to a log*) is pinned as tests rather than a browser run.
+What the cases establish:
+
+- **One record per request, whatever the outcome.** The emission sits in
+  `handle_one_request`'s `finally`, so an adapter's success, every
+  refusal (401, 403, 404, 405, 413), a 501 for an unsupported verb, a
+  414 for a request line over 64 KiB, the belt's own 500 and a socket
+  that broke before any response was written are each exactly one
+  record — and a connection that closes without sending a request line
+  emits none, because that is a caller leaving, not an ask.
+- **The five fields ride the record as attributes.** `scope`, `verb`,
+  `route`, `status` and `latency_ms` are passed as `extra`, so a
+  structured formatter reads them without parsing anything — `status` is
+  an `int`, so a pipeline's `status >= 500` is a comparison rather than
+  a substring match. The message is the derived `key=value` line, and
+  the base class's own unstructured line is *retired* rather than
+  doubled: still one line per request, now the structured one.
+- **The two absences are spelled `None`.** A request that presented no
+  credential this deployment accepted — `GET /healthz`, which needs
+  none, and every 401 — carries `scope=None`; a request no response
+  reached carries `status=None`. Never `""`, never a fabricated `0` or
+  `200`: an operator counting the log by scope can tell *nobody
+  identified themselves* from *somebody identified themselves as ""*.
+- **The latency is the request's, not the connection's.** The clock
+  starts when the request line arrives (`parse_request` refines a coarse
+  fallback whose only survivor is the 414 the framer refuses before
+  parsing), so a caller that opens a connection and idles half a second
+  before sending does not inflate the record; `latency_ms` is bounded
+  above by loopback reality in the cases, and a negative, NaN or
+  infinite interval is refused by the record's own construction — before
+  the logger is asked, so a refused ask puts nothing on the stream.
+- **`route` is the path, not the query.** A query string is
+  caller-authored text and is dropped — feature 9's `?node_id=` traffic
+  is the shape this is pinned against.
+- **Both prohibitions are tested the hard way.** The suite's real tokens
+  are presented in real headers on every branch that reads one —
+  admitted, wrong scope, unknown — and the *entire* stream, every
+  message **and** every structured field, is searched for each
+  credential, for the `Bearer` scheme and for a canary planted in a
+  body. The canary case is load-bearing: the adapter is swapped for one
+  that *keeps* what it was handed, so the prohibition is proven over a
+  dispatch the body provably travelled (read, parsed, delivered), not
+  over one that refused it unread.
+

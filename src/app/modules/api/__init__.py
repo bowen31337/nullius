@@ -22,4 +22,14 @@ it serves HTTPS through the standard library's ``ssl`` module, so a
 bearer token never crosses a network in cleartext.  The seat registers
 nothing for this either — there is no endpoint behind it, only the
 address the transport is willing to take.
+
+Feature 20 adds the transport's testimony and no component: one
+structured access-log record per request — whatever the outcome — on
+the ``nullius_api.access`` logger, carrying the token's scope *name*,
+the verb, the route, the status and the latency in milliseconds, and
+never the request body and never the token (feature 19 already refused
+to echo the body; this is the log-shaped half of the same law).  A
+deployment points one handler at ``nullius_api`` and receives the
+stream; the member persists nothing for it, because the sentence names
+a logger and not a store.
 """

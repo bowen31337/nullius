@@ -43,6 +43,13 @@ refusal statuses each endpoint's spec line promises — is layered on
 this dispatch by the spec's per-route features without reshaping it.
 """
 
+from .access_log import (
+    ACCESS_LOG_LEVEL,
+    ACCESS_LOG_LOGGER_NAME,
+    AccessLogError,
+    AccessLogRecord,
+    emit_access_log,
+)
 from .auth import (
     API_SCOPES,
     EVALUATOR,
@@ -107,6 +114,8 @@ from .tls import (
 )
 
 __all__ = [
+    "ACCESS_LOG_LEVEL",
+    "ACCESS_LOG_LOGGER_NAME",
     "API_ROUTES",
     "API_SCOPES",
     "BODY_TOO_LARGE_CLASS",
@@ -141,6 +150,8 @@ __all__ = [
     "TOKENS_FILE_ENV",
     "UNAUTHENTICATED_CLASS",
     "UNKNOWN_ROUTE_CLASS",
+    "AccessLogError",
+    "AccessLogRecord",
     "ApiConfig",
     "ApiRequest",
     "ApiRequestHandler",
@@ -156,6 +167,7 @@ __all__ = [
     "bearer_token",
     "build_server",
     "dumps",
+    "emit_access_log",
     "error_payload",
     "is_loopback_host",
     "load_tokens",

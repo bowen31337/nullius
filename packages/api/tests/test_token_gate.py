@@ -527,20 +527,36 @@ def test_the_access_log_carries_the_request_line_not_the_header(
 ) -> None:
     """*Tokens and request bodies are never written to a log.*
 
-    The base class logs one line per request — ``"GET /path HTTP/1.1"
-    200 -`` — which is the request line and the status.  This pins that
-    the transport adds nothing to it: no handler here logs the header,
-    the parsed token or the body, so the one log line the server writes
-    is one that cannot carry a credential.  The token is presented in
-    the header and asserted absent from everything written.
+    One line per request, carrying the request line and the status and
+    nothing else; this pins that the transport adds nothing to it.  No
+    handler here logs the header, the parsed token or the body, so the
+    one line the server writes is one that cannot carry a credential.
+    The token is presented in the header and asserted absent from
+    everything written.
+
+    Feature 20 replaced the base class's unstructured line with the
+    structured record — which is still one line per request, and still
+    the verb, the route and the status — so this assertion is unchanged
+    by that feature and is exactly the property the structured record
+    had to preserve: the credential travels nowhere near the stream.
     """
     import logging
+    import time
 
     server = boot()
     with caplog.at_level(logging.DEBUG):
         _ask(server, "GET", "/metrics/fdr-deploy", _bearer(METRICS_READ))
         _ask(server, "GET", "/metrics/fdr-deploy", "Bearer unknown-to-this-server")
         _ask(server, "GET", "/metrics/fdr-deploy")
+        # The record is emitted in the handler's own thread once the
+        # request's lifecycle ends, a moment after the client has read
+        # its response, so the capture is waited for rather than read on
+        # the instant the last request returned.
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and not any(
+            "/metrics/fdr-deploy" in record.getMessage() for record in caplog.records
+        ):
+            time.sleep(0.01)
     written = "\n".join(record.getMessage() for record in caplog.records)
     assert token_for(METRICS_READ) not in written
     assert "unknown-to-this-server" not in written

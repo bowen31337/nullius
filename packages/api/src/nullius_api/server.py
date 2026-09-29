@@ -89,6 +89,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from .access_log import (
+    ACCESS_LOG_LOGGER_NAME,
+    emit_access_log,
+)
 from .auth import (
     TOKENS_FILE_ENV,
     ApiTokenConfigError,
@@ -106,6 +110,7 @@ from .tls import (
 )
 
 __all__ = [
+    "ACCESS_LOG_LOGGER_NAME",
     "BODY_TOO_LARGE_CLASS",
     "COMPONENT_UNCONFIGURED_CLASS",
     "DEFAULT_ERROR_CLASS",
@@ -271,6 +276,13 @@ PORT_ENV = "NULLIUS_API_PORT"
 EXECUTION_ENGINE_ENV = "NULLIUS_EXECUTION_ENGINE"
 
 log = logging.getLogger("nullius_api.server")
+
+#: The base class's own spelling for a field the request line did not
+#: carry — ``verb="-"`` in an access record whose request line was
+#: refused before it named a method.  Kept rather than replaced by an
+#: empty string: ``"-"`` is what every HTTP log prints for an absent
+#: field, so a reader greps the same token here as anywhere else.
+_UNREAD_FIELD = "-"
 
 
 # -- Configuration ---------------------------------------------------------------
@@ -1846,11 +1858,166 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
     #: writing door always sets it), so a caller may hold a connection.
     protocol_version = "HTTP/1.1"
 
+    #: The status the response for the request in flight was written
+    #: with, or ``None`` while none has been written.  Set by
+    #: :meth:`log_request` — the one hook every response passes through,
+    #: whatever door wrote it — and read by :meth:`_emit_access_record`
+    #: when the request's lifecycle ends.  Reset at the top of every
+    #: :meth:`handle_one_request`, so a kept-alive connection's second
+    #: request can never report the first one's status.
+    _response_status: int | None = None
+
+    #: The scope name the request in flight presented, or ``None``.
+    #: Set by :meth:`_authenticate` when a token this deployment
+    #: configured resolved, and read by :meth:`_emit_access_record` —
+    #: the *name* of the credential's authority, never the credential,
+    #: which is why it is safe to hold for the length of the request.
+    _request_scope: str | None = None
+
+    #: When the request in flight began, as :func:`time.monotonic`.
+    #: Set to a coarse fallback at the top of
+    #: :meth:`handle_one_request` (before the request line is read) and
+    #: refined by :meth:`parse_request` to the instant the line actually
+    #: arrived.  Read by :meth:`_emit_access_record`.
+    #:
+    #: The refinement is the point.  A kept-alive connection idles
+    #: *inside* ``handle_one_request``, waiting for its next request
+    #: line, so a clock read only at the top would charge each request
+    #: for however long its caller waited between two of them — the
+    #: connection's latency, not the request's.  :meth:`parse_request`
+    #: reads the clock where the line has just been read, which is the
+    #: honest start for every request the base class frames.
+    #:
+    #: The coarse value is kept for the one request the base class never
+    #: frames: a request line over 64 KiB is answered 414 without
+    #: ``parse_request`` ever running (the base class checks the length
+    #: first), so without the fallback that request would produce a
+    #: response and no record — the one hole a per-response invariant
+    #: cannot have.  Its interval is the coarser one, and honestly so:
+    #: a line that was never framed has no framed instant to measure
+    #: from.
+    _request_started: float | None = None
+
     def do_GET(self) -> None:  # the base class's own spelling
         self._dispatch()
 
     def do_POST(self) -> None:  # the base class's own spelling
         self._dispatch()
+
+    # -- The access record (feature 20) -----------------------------------------
+
+    def handle_one_request(self) -> None:
+        """One request on the connection, bracketed by the access record.
+
+        The base class's per-request lifecycle is the *only* place this
+        handler can see a whole request begin and end, so it is where
+        feature 20's emission sits: every path through the base class —
+        an adapter's success, a refusal, a protocol-level answer, the
+        belt's own 500, and a socket that broke before any response was
+        written — leaves through the ``finally`` below, so none can be
+        answered without a record and none can be answered twice.
+
+        The per-request fields are cleared *before* the base class runs,
+        so a kept-alive connection's second request never reports the
+        first one's facts.  The clock is read here as well and then
+        *refined* by :meth:`parse_request` the instant the request line
+        arrives; the coarse value survives only for a request line the
+        base class refuses for length, which never reaches
+        :meth:`parse_request` but is a response like any other and so
+        must be a record like any other.
+
+        *Was there a request at all* is read off ``raw_requestline`` —
+        the base class's own signal, empty only when the peer closed the
+        connection — so a client that opens a connection and hangs up
+        emits nothing: that is a caller leaving, not an ask, and a
+        record for it would be traffic an operator never received.
+        """
+        self._response_status = None
+        self._request_scope = None
+        self._request_started = time.monotonic()
+        self.raw_requestline = b""
+        self.path = ""
+        try:
+            super().handle_one_request()
+        finally:
+            if self.raw_requestline:
+                self._emit_access_record()
+
+    def parse_request(self) -> bool:
+        """Remember the instant the request line arrived.
+
+        The base class calls this the moment it has read a request line
+        and parsed its framing, which is precisely *the request began* —
+        the earliest instant at which measuring this request's latency is
+        about the request rather than about the connection it rode in on.
+        The clock starts before the base class does its work (so the
+        framing's own cost is inside the interval) and before the
+        dispatch's first act.
+
+        The timing is set up *before* the parse runs and left alone
+        afterwards, so a request line the parser refuses is still timed
+        and still recorded: a malformed request that answers 400 is a
+        request the operator wants counted, and it is exactly the shape
+        whose record (``verb="-"``, the path as read) is otherwise
+        hardest to get.
+        """
+        # Read before the base class does anything: the request line has
+        # just been read off the socket, and this is the last instant
+        # that is still *the request's* rather than the framing's.  The
+        # coarse value :meth:`handle_one_request` set is replaced, never
+        # merged — one clock, one reading.
+        self._request_started = time.monotonic()
+        return super().parse_request()
+
+    def _emit_access_record(self) -> None:
+        """Emit this request's one structured access-log record.
+
+        The five fields feature 20 names, read from where they were
+        established rather than recomputed: the scope the gate resolved
+        (:attr:`_request_scope`), the verb and route the request line
+        carried (``self.command`` and the *parsed path* of ``self.path``
+        — the query string is dropped, because a route is a path and
+        because a query is one more place a caller could put something
+        that must not reach a log), the status every response was
+        written with (:attr:`_response_status`), and the interval
+        measured from :attr:`_request_started` to now.
+
+        The two absences are carried as absences.  ``scope = None`` is a
+        request that presented no credential this deployment accepted —
+        ``GET /healthz``, which needs none, and every 401 — not an
+        authority that named nothing.  ``status = None`` is a request no
+        response reached at all; nothing is defaulted to ``200``, which
+        is the member's *never fabricate a figure* constraint applied to
+        the log.
+
+        Nothing here can put a token or a body on the stream.  The scope
+        is the credential's name; the verb, the route and the status are
+        the transport's own facts; the latency is a duration.  The
+        request body is read by :meth:`_read_json_body` and reaches no
+        field of this record, which is the door features 5 and 19 held
+        closed (*"the body is not echoed back and is not written to a
+        log"*) and this method is the record that keeps it closed.
+
+        The verb is read defensively because a refused request line is
+        exactly the case this record exists for: the base class clears
+        ``self.command`` to ``None`` when the parse fails, so there is
+        no method to name and the honest spelling is the base class's
+        own ``"-"``.  The route falls back the same way, and further to
+        ``"/"`` when the line carried no path at all — never to an empty
+        string, which the record's own law would refuse and which no
+        reader could act on.
+        """
+        started = self._request_started
+        if started is None:  # pragma: no cover - the caller guards this
+            return
+        route = urlsplit(self.path or "/").path or "/"
+        emit_access_log(
+            scope=self._request_scope,
+            verb=getattr(self, "command", None) or _UNREAD_FIELD,
+            route=route,
+            status=self._response_status,
+            latency_ms=(time.monotonic() - started) * 1000.0,
+        )
 
     # -- The request body -------------------------------------------------------
 
@@ -2184,6 +2351,16 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
                 extra_headers=dict((AUTHENTICATE_HEADER,)),
             )
             return None
+        # Feature 20's second field: the authority's *name*, held for the
+        # length of the request so the access record can say which
+        # credential asked.  Recorded only here, where a token this
+        # deployment configures has actually resolved — a missing or
+        # unknown credential leaves the field at its reset ``None``, so
+        # the record answers *no accepted authority asked* rather than
+        # naming a scope the request never proved it held.  The name is
+        # not the token and cannot be turned back into one: the gate's
+        # own law, and the reason the record is safe to write.
+        self._request_scope = scope
         return scope
 
     def _require_scope(self, route: str, required: str, held: str) -> bool:
@@ -2630,16 +2807,60 @@ class ApiRequestHandler(BaseHTTPRequestHandler):
 
     # -- Logging ------------------------------------------------------------------
 
-    def log_message(self, format: str, *args: Any) -> None:  # the base class's own spelling
-        """Route the base class's request log to the access logger.
+    def log_request(  # the base class's own spelling
+        self, code: int | str = "-", size: int | str = "-"
+    ) -> None:
+        """Take the response's status; write no line of its own.
 
-        What the base class logs is the request line and the status —
-        never a header, never a body — so no bearer token and no
-        request payload can reach a log through this door.  The
-        structured per-request access record the spec's later features
-        add builds on the same logger name.
+        The base class's response hook, and feature 20's one chance to
+        read the status of *every* response — success, refusal, a
+        protocol-level answer, the belt's own 500 — because
+        ``send_response`` calls it from the single writing door every
+        body leaves through.  Feature 19's 413 and 408 leave through
+        that door too, so the caps are recorded with the same status
+        they answered with.
+
+        It **writes nothing**: the base class's own behaviour here is
+        one unstructured line per request (*"GET /path HTTP/1.1" 200 -*)
+        to the access logger, and this feature's sentence is *one
+        structured access-log record per request*.  Emitting both would
+        be two lines per request, one of them a strict subset of the
+        other and neither of them the schema a deployment's parser was
+        pointed at.  So the request line is *captured* here —
+        :meth:`_response_status` — and *written* once, by
+        :meth:`_emit_access_record` at the end of the request's
+        lifecycle, carrying the verb, the route and the status the base
+        class's line spelled plus the scope and the latency it could
+        not.
+
+        The code is stored rather than the base class's formatted line,
+        which is the point: the record's field is the *number*, so a
+        structured formatter reads an int and a query on it is a range
+        comparison rather than a substring match on a sentence.
         """
-        logging.getLogger("nullius_api.access").info(format, *args)
+        self._response_status = int(code)
+
+    def log_message(self, format: str, *args: Any) -> None:  # the base class's own spelling
+        """Route the base class's *diagnostic* messages to the access
+        logger.
+
+        Everything the base class reports through this door that is not
+        a request line: ``log_error``'s protocol complaints (a bad
+        request version, an unsupported method, an oversized URI) and
+        the entrypoint's own "request timed out".  Those are the lines
+        an operator diagnoses *with*, and they are one per fault rather
+        than one per request, so they stay — as one line each, on the
+        access logger, exactly where feature 4 put them.
+
+        What no longer comes through here is the per-request line:
+        :meth:`log_request` captures it for the structured record
+        instead, which is where feature 20's five fields are written.
+        Nothing routed here can carry a token or a body: the base
+        class's diagnostics are about the request *line* and the
+        protocol framing, and neither this method nor its callers is
+        handed a header, a parsed credential or a body to spell.
+        """
+        logging.getLogger(ACCESS_LOG_LOGGER_NAME).info(format, *args)
 
 
 def _snake_case(text: str) -> str:
