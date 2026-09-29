@@ -216,7 +216,14 @@ def test_python_dash_m_boots_and_serves_the_composed_application(
     try:
         status, body = _until_it_answers(port, "/metrics/fdr-deploy", "metrics:read")
         assert status == 200
-        assert body == {"history": []}  # empty store, honestly empty
+        # Empty store, honestly empty: the trend is empty and the
+        # top-line reads it draws are null, never a fabricated 0.0.
+        assert body == {
+            "history": [],
+            "campaign_id": None,
+            "fdr_deploy": None,
+            "computed_at": None,
+        }
 
         status, body = _until_it_answers(port, "/nope", "metrics:read")
         assert status == 404
@@ -250,7 +257,7 @@ def test_the_host_flag_overrides_the_loopback_default(
     try:
         status, body = _until_it_answers(port, "/ledger/k-effective", "evaluator")
         assert status == 200
-        assert body == {"view": {"counts": []}}
+        assert body == {"view": {"counts": []}, "counts": [], "total": 0}
     finally:
         process.terminate()
         try:

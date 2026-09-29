@@ -20,6 +20,30 @@ The rules are the workspace's own, restated as encodings:
   recursively; a frozen dataclass and a plain one spell identically,
   because the scan's synthetic module copies must encode exactly as the
   directly-imported classes do.
+* **The answer a dataclass spells carries its *derived reads* beside
+  its fields.**  The members state a response's derived figures as
+  ``@property`` reads over the fields — ``FdrDeployResponse.fdr_deploy``/
+  ``campaign_id``/``computed_at``, ``RegimeCoverageResponse.counts``,
+  ``KEffectiveResponse.total`` — precisely so a derived read cannot
+  drift from the fields it is drawn from.  A body carrying the fields
+  alone would drop the very reads the member's own docstring promises a
+  caller (the argument
+  :class:`~ledger.keffective_route.KEffectiveResponse` gives for its
+  ``total``), so the reads are spelled after the fields, in definition
+  order, under their own names.  This applies to the one value the
+  server was *handed* — the endpoint's answer, or the transport's own
+  envelope — and not to the member values nested inside it, which keep
+  exactly the shape their members define (the same "the existing keys
+  stay" law the route's own callers rely on; ``KEffectiveResponse.view``
+  is why the distinction is load-bearing: a member's own ``by_epoch`` is
+  keyed by the un-named epoch, a ``None`` no JSON object can hold).
+  A read that shadows a field name never occurs and is refused by the
+  field winning, and **a read the vocabulary below cannot spell is left
+  out rather than allowed to cost the body**: the fields are the
+  member's stated answer and the derived reads are additions to it, so
+  an addition must never turn a working answer into an internal error.
+  Nothing is coerced to rescue one (see the refusal rules below), so an
+  omission here is a *narrower* answer, never a wrong one.
 * **Dates and datetimes answer as ISO 8601** (``datetime.isoformat``),
   the one textual instant spelling the workspace already carries on its
   records.
@@ -98,11 +122,17 @@ def dumps(value: Any) -> str:
     Every response body the server writes passes through here
     (successes and refusals alike), which is what makes *"a JSON body
     for every response"* a fact about the transport rather than a habit
-    of each route.  Raises :class:`JsonEncodingError` for a value the
-    vocabulary above does not spell; the caller that cannot answer a
-    refusal body answers the internal-error envelope instead.
+    of each route.  The value handed in is the *answer* the server is
+    about to write — an endpoint's response dataclass, the error
+    envelope, or a plain collection one of those reads produced — so it
+    is the one position in which a dataclass's derived reads
+    (:func:`_derived_reads`) are spelled beside its fields.
+
+    Raises :class:`JsonEncodingError` for a value the vocabulary above
+    does not spell; the caller that cannot answer a refusal body answers
+    the internal-error envelope instead.
     """
-    return json.dumps(_encode(value), allow_nan=False)
+    return json.dumps(_encode(value, response=True), allow_nan=False)
 
 
 def _encode_key(key: Any) -> str:
@@ -136,8 +166,41 @@ def _encode_key(key: Any) -> str:
     )
 
 
-def _encode(value: Any) -> Any:
-    """Reduce ``value`` to JSON-native structures, or refuse by name."""
+def _derived_reads(cls: type) -> list[str]:
+    """The ``@property`` reads a value class exposes, in definition order.
+
+    The members state a *response*'s derived figures as properties over
+    its fields precisely so a derived read cannot drift from what it is
+    drawn from (:class:`~ops.fdr_route.FdrDeployResponse`'s
+    ``fdr_deploy``, :class:`~ops.regime_coverage.RegimeCoverageResponse`'s
+    ``counts``), and those reads are the member's own stated answer to a
+    caller — the same standing the field names have, which is why the
+    response's reads are spelled and a nested member *value* keeps its
+    fields alone (``KEffectiveResponse.view`` is the member's own
+    ``KEffective``, whose ``by_epoch`` is keyed by the un-named epoch —
+    a ``None`` no JSON object can hold).
+
+    Walked over the MRO so a subclass's own reads are found beside an
+    inherited one, derived class first, and deduplicated by name: one
+    read spells one key, the first definition winning.
+    """
+    names: dict[str, None] = {}
+    for klass in getattr(cls, "__mro__", (cls,)):
+        for name, member in vars(klass).items():
+            if isinstance(member, property):
+                names.setdefault(name, None)
+    return list(names)
+
+
+def _encode(value: Any, *, response: bool = False) -> Any:
+    """Reduce ``value`` to JSON-native structures, or refuse by name.
+
+    ``response`` marks the one value the transport was *handed*: an
+    endpoint's answer.  That value carries its derived reads
+    (:func:`_derived_reads`) beside its fields; everything nested inside
+    it spells its fields alone, so a member's own value keeps the shape
+    its members define.
+    """
     # The natives pass straight through.  bool is checked before int is
     # ever consulted (bool is an int subclass; JSON spells them
     # differently), and floats are refused when non-finite rather than
@@ -163,10 +226,53 @@ def _encode(value: Any) -> Any:
     # contract is the fields, and the fields are what is read.
     fields = getattr(value, "__dataclass_fields__", None)
     if fields is not None:
-        return {
+        encoded: dict[str, Any] = {
             field.name: _encode(getattr(value, field.name))
             for field in dataclasses.fields(value)
         }
+        # The answer's derived reads beside its fields — and only the
+        # answer's.  A response states its derived figures as properties
+        # over the fields so they cannot drift from what they are drawn
+        # from, and those reads are part of what the member's own
+        # docstring promises a caller: a body carrying the fields alone
+        # answers the trend but drops the top-line figure the trend exists
+        # to explain (feature 341's ``fdr_deploy``, feature 343's
+        # ``counts``, feature 94's ``total``).  The values *nested* inside
+        # it are the members' own value classes, and they keep the shape
+        # their members define — the law the constraint that the existing
+        # keys stay states.
+        for name in _derived_reads(type(value)) if response else ():
+            if name in encoded:
+                # A property cannot shadow a dataclass field the value
+                # actually holds: the field is the member's own declaration
+                # and wins, so the body never carries two entries for one
+                # name (JSON's last-key-wins would silently pick one).
+                continue
+            try:
+                derived = _encode(getattr(value, name))
+            except Exception:  # noqa: BLE001, S112 - a failing read is left out
+                # The fields are the member's stated answer; the derived
+                # reads are additions to it.  An addition the vocabulary
+                # cannot spell (a ``Path`` read off a dataclass, say) is
+                # *left out* rather than allowed to turn a working answer
+                # into the internal error — the same "the existing keys
+                # stay" law the route's own callers depend on.  Nothing is
+                # coerced to rescue it, so the omission is a narrower body,
+                # never a wrong one.
+                #
+                # The catch is deliberately every exception rather than
+                # :class:`JsonEncodingError` alone, because a property is
+                # arbitrary code: ``PreRegistrationResponse.open`` forwards
+                # to a record's own read, and a record that does not carry
+                # one raises ``AttributeError`` from *inside* the read the
+                # codec never wrote.  Reading a field cannot do this — the
+                # field names come from the class — so letting a derived
+                # read's failure escape would turn an answer the member
+                # stated in full into a 500, which is precisely the
+                # "existing keys stay" promise this loop exists to hold.
+                continue
+            encoded[name] = derived
+        return encoded
 
     if isinstance(value, _TEXT_SCALARS):
         # isoformat() for dates and datetimes, str() for UUID (the

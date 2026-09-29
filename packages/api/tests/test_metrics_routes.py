@@ -50,6 +50,7 @@ from typing import Any
 import pytest
 from conftest import TEST_TOKENS, token_for
 from nullius_api import ApiServer
+from nullius_api.demo import seed_demo_store
 
 from app.module_loader import create_app
 
@@ -115,12 +116,24 @@ def test_fdr_deploy_over_an_empty_store_answers_the_honest_absence(
 ) -> None:
     """A deployment that has closed no campaign out answers an empty
     trend — never a top-line ``0.0``, which would be a projection
-    nobody measured."""
+    nobody measured.
+
+    The top-line reads are present and ``None``, never merely absent: an
+    operator reading the body must be told *no campaign has closed* by the
+    same keys a populated deployment is read off, the discipline
+    :class:`~ops.fdr_route.FdrDeployResponse` states for its own ``None``.
+    """
     server = boot(create_app())
     status, headers, body = _get(server, "/metrics/fdr-deploy")
     assert status == 200
     assert headers["content-type"] == "application/json"
-    assert body == {"history": []}
+    assert body["history"] == []
+    assert body == {
+        "history": [],
+        "campaign_id": None,
+        "fdr_deploy": None,
+        "computed_at": None,
+    }
 
 
 def test_instrument_status_over_an_empty_store_answers_the_honest_absence(
@@ -151,7 +164,78 @@ def test_regime_coverage_over_an_empty_store_answers_the_honest_absence(
     server = boot(create_app())
     status, _, body = _get(server, "/metrics/regime-coverage")
     assert status == 200
-    assert body == {"strata": []}
+    assert body["strata"] == []
+    # §C7's own shape beside the rows it came from: an empty ledger is an
+    # empty *object*, not an absent key and not a zero.
+    assert body["counts"] == {}
+
+
+# -- The derived reads ride beside the fields ---------------------------------------
+#
+# The members state a response's derived figures as properties over its
+# fields, precisely so a derived read cannot drift from what it is drawn
+# from — so the body a caller parses must carry them, under the names the
+# member's own docstring uses.  These three cases are the recorded defect:
+# before the fix each body was the raw dataclass fields alone.
+
+
+def test_fdr_deploy_carries_the_newest_campaigns_top_line_reads(
+    boot, test_database_url: str
+) -> None:
+    """J8 step 1: ``fdr_deploy``, ``campaign_id`` and ``computed_at`` for
+    the newest campaign, beside the ``history`` they are drawn from.
+
+    The figure is the *newest* row's — the one §16 puts at the top line —
+    and it is read off the response's own property rather than re-derived
+    from the history here: a test that unpacked the trend itself would
+    pass even if the body omitted the key."""
+    seed_demo_store(test_database_url)
+    server = boot(create_app())
+    status, _, body = _get(server, "/metrics/fdr-deploy")
+    assert status == 200
+    assert body["history"], "the demo store closes three campaigns"
+    newest_campaign, newest_figure, newest_instant = body["history"][-1]
+    assert body["campaign_id"] == newest_campaign
+    assert body["fdr_deploy"] == newest_figure
+    assert body["computed_at"] == newest_instant
+    # Never a fabricated 0.0 standing in for a figure nobody measured.
+    assert isinstance(body["fdr_deploy"], float)
+
+
+def test_regime_coverage_carries_the_counts_as_a_stratum_keyed_object(
+    boot, test_database_url: str
+) -> None:
+    """J8 step 3: ``{stratum: count}`` — the ledger's own shape, keyed by
+    stratum rather than a list of pairs a caller has to fold itself.
+
+    ``strata`` stays beside it (the rows the mapping was derived from),
+    and the two agree: the mapping is a view over the pairs, never a
+    second answer."""
+    seed_demo_store(test_database_url)
+    server = boot(create_app())
+    status, _, body = _get(server, "/metrics/regime-coverage")
+    assert status == 200
+    counts = body["counts"]
+    assert isinstance(counts, dict), f"expected an object, got {counts!r}"
+    assert counts == {stratum: count for stratum, count in body["strata"]}
+    # A stratum the census counted and found empty stays present at 0 —
+    # never dropped, never confused with a stratum nobody named.
+    assert counts["crash"] == 0
+
+
+def test_regime_coverage_never_folds_an_absent_stratum_into_a_zero(
+    boot, test_database_url: str
+) -> None:
+    """The mapping distinguishes §C7's two states: a stratum present at
+    ``0`` was counted and found empty; one absent from the mapping was
+    never named.  A body that defaulted every stratum of the vocabulary
+    into the object would erase the difference feature 286's warning
+    fires on."""
+    seed_demo_store(test_database_url)
+    server = boot(create_app())
+    _, _, body = _get(server, "/metrics/regime-coverage")
+    named = set(body["counts"])
+    assert named == {stratum for stratum, _count in body["strata"]}
 
 
 # -- 503, member_refusal: a store failure is surfaced, never answered around ---------

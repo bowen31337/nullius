@@ -589,6 +589,66 @@ class _FakeResponse:
     record: Any
 
 
+@dataclass(frozen=True)
+class _FakeRecordWithoutSeq:
+    """A record carrying the *fields* the wire spells and no ``seq`` read.
+
+    The member's :class:`~ledger.debit.DebitResponse.seq` is a property
+    forwarding to ``record.seq``; this record answers the fields the
+    body carries and raises ``AttributeError`` for that one read, which
+    is exactly the shape a record the codec's own property walk must
+    survive.  Distinct from :class:`_FakeRecord`, which carries ``seq``
+    as a field because the *other* tests are about the body's content.
+    """
+
+    ts: str = "2026-04-01T00:00:00+00:00"
+    node_id: str = "node"
+    campaign_id: str = "campaign"
+    outcome: str = "ok"
+    charges_budget: bool = True
+    charge_units: float = 1.0
+    epoch_id: str = "epoch"
+
+    @property
+    def seq(self) -> int:
+        """The read the response promises and this record does not hold."""
+        raise AttributeError("no seq on this record")
+
+
+@dataclass(frozen=True)
+class _DerivedReadRaises:
+    """A :class:`~ledger.debit.DebitResponse`-shaped answer whose ``seq``
+    property raises.
+
+    The fields (``appended``, ``record``) are the member's own, and the
+    two reads the member states over them forward to the record — so a
+    record missing one makes the *property* raise, not the field walk.
+    """
+
+    appended: bool
+    record: Any
+
+    @property
+    def seq(self) -> int:
+        return self.record.seq
+
+    @property
+    def retry(self) -> bool:
+        return not self.appended
+
+
+class _DerivedReadRaisesEndpoint:
+    """An endpoint answering the response above — the derived-read fault."""
+
+    route = "/ledger/debit"
+
+    def __init__(self, answer: Any) -> None:
+        self._answer = answer
+
+    def post(self, request):  # pragma: no cover - the answer is the point
+        return self._answer
+
+
 class _UnreadableEndpoint:
     """An endpoint answering a response whose ``appended`` is not a bool.
 
@@ -640,6 +700,36 @@ def test_an_unreadable_response_is_a_composition_fault_not_a_status(boot) -> Non
     assert status == 500
     assert body["error"]["code"] == "internal_error"
     assert "yes" not in json.dumps(body)
+
+
+def test_a_derived_read_that_raises_leaves_the_answer_intact(boot) -> None:
+    """A response whose *derived read* raises still reaches the wire with
+    the fields it states in full.
+
+    The codec spells an answer's properties beside its fields, which is
+    what makes the top-line figure reach the body at all — but a property
+    is arbitrary code, and :class:`~ledger.debit.DebitResponse` states its
+    ``seq`` as one that forwards to the record's own.  A record that does
+    not carry the read the property promises raises from inside a
+    property the codec never wrote, and letting that escape would answer
+    500 for an answer the member stated in full: the fields are still the
+    member's own testimony, and the *addition* the read would have made is
+    the only thing lost.
+
+    This is the "existing keys stay" law at the codec: the fix that put
+    derived reads on the wire must never be able to break a working route.
+    """
+    response = _DerivedReadRaises(appended=True, record=_FakeRecordWithoutSeq())
+    server = _boot_with_ledger_component(boot, _DerivedReadRaisesEndpoint(response))
+    status, _, body = _post(server, "/ledger/debit", _charge())
+    assert status == 201, "a failing derived read must not become a 500"
+    # The fields are the member's stated answer, and they all arrived —
+    # the top-level flag, and every field of the nested record.
+    assert body["appended"] is True
+    assert body["record"]["node_id"] == "node"
+    assert body["record"]["outcome"] == "ok"
+    # The read that raised is simply absent — narrower, never wrong.
+    assert "seq" not in body
 
 
 def test_the_member_refusal_door_carries_the_members_own_class(boot) -> None:
@@ -709,11 +799,51 @@ def test_an_empty_ledger_answers_empty_counts_never_a_fabricated_zero(
     """An empty ledger has observed no epoch at all, so the honest answer
     is an empty breakdown — not ``0`` under an epoch nobody named, and
     certainly not a fabricated figure.  The same law the members' own
-    empty stores hold, passed straight through the transport."""
+    empty stores hold, passed straight through the transport.
+
+    ``total`` is ``0`` here, and that is a measurement rather than a
+    fabrication: the deflation input *is* zero for a ledger that charged
+    nothing, exactly as :class:`~ledger.keffective.KEffective` states for
+    its own sum.  (Contrast the FDR route, where ``0.0`` would stand in
+    for a projection nobody made — an absence has no sum to report, a
+    count of charges does.)"""
     server = boot(create_app())
     status, _, body = _get(server, "/ledger/k-effective")
     assert status == 200
-    assert body == {"view": {"counts": []}}
+    assert body == {"view": {"counts": []}, "counts": [], "total": 0}
+
+
+def test_k_effective_carries_the_per_epoch_counts_and_the_total(
+    boot, seeded
+) -> None:
+    """J11 step 4: the per-epoch counts *and* the ``total``, both read off
+    the response's own properties rather than re-summed here.
+
+    ``KEffectiveResponse.total`` is a property over ``view`` precisely so
+    the pooled figure cannot drift from the breakdown it sums, and the
+    route's own sentence asks for it — a body carrying ``view`` alone
+    answers half the ask and leaves the caller to re-derive the half that
+    was already derived."""
+    report, _url = seeded
+    server = boot(create_app())
+    status, _, body = _get(server, "/ledger/k-effective")
+    assert status == 200
+
+    # The per-epoch breakdown, both shapes: the view's own pairs (kept,
+    # so the callers that already fold them keep working) and the
+    # response's ``counts`` read beside it.
+    pairs = [(epoch, count) for epoch, count in body["view"]["counts"]]
+    assert [tuple(pair) for pair in body["counts"]] == pairs
+    counts = dict(pairs)
+
+    # The demo's two charges are one budget-charging real trial and one
+    # null node's — so K_effective is one while the ledger holds two rows.
+    assert body["total"] == 1
+    assert counts[report.epoch_ids[0]] == 1
+    # The null node's epoch is reported at 0 rather than omitted: the
+    # deflation term must be *told* the epoch contributed nothing.
+    assert counts[report.epoch_ids[1]] == 0
+    assert body["total"] == sum(counts.values())
 
 
 def test_a_charge_posted_over_http_moves_the_k_effective_answer(boot) -> None:

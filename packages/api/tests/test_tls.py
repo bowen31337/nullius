@@ -391,6 +391,8 @@ def test_the_listening_socket_is_wrapped_so_the_bind_serves_https(
 
     status, body = _https_get(server, certificate, "/metrics/fdr-deploy")
     assert status == 200
+    # The stand-in endpoint above answers this body; the composed
+    # application's own derived reads are pinned in test_metrics_routes.
     assert body == {"history": []}
 
 
@@ -716,7 +718,12 @@ def test_the_entrypoint_serves_https_when_the_pair_is_there(
     try:
         status, body = _poll_https(port, certificate, "/metrics/fdr-deploy")
         assert status == 200
-        assert body == {"history": []}
+        assert body == {
+            "history": [],
+            "campaign_id": None,
+            "fdr_deploy": None,
+            "computed_at": None,
+        }
         # …and the server is still serving, not exited after one answer.
         assert process.poll() is None
     finally:

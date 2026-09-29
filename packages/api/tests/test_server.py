@@ -752,7 +752,12 @@ def test_the_transport_serves_the_composed_application(
     status, headers, body = _ask(server, "GET", "/metrics/fdr-deploy")
     assert status == 200
     assert headers["content-type"] == "application/json"
-    assert body == {"history": []}
+    assert body == {
+        "history": [],
+        "campaign_id": None,
+        "fdr_deploy": None,
+        "computed_at": None,
+    }
 
     status, _, body = _ask(server, "GET", "/metrics/instrument-status")
     assert status == 200
@@ -761,7 +766,7 @@ def test_the_transport_serves_the_composed_application(
 
     status, _, body = _ask(server, "GET", "/metrics/regime-coverage")
     assert status == 200
-    assert body == {"strata": []}
+    assert body == {"strata": [], "counts": {}}
 
 
 def test_build_server_composes_when_given_no_application(
@@ -776,7 +781,7 @@ def test_build_server_composes_when_given_no_application(
         thread.start()
         status, _, body = _ask(server, "GET", "/ledger/k-effective")
         assert status == 200
-        assert body == {"view": {"counts": []}}
+        assert body == {"view": {"counts": []}, "counts": [], "total": 0}
     finally:
         server.shutdown()
         server.server_close()
