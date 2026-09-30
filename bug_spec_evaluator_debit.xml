@@ -1,0 +1,45 @@
+<bug_spec>
+  <!-- Found by the full regression after the seat removal (2026-09-29).
+       Shapes are core with explicit touches_files: plan-bugs ignores <layout>,
+       and plugin= needs the removed src/app/modules seats (see CLAUDE.md). -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/evaluator/src/evaluator/_debit.py,packages/evaluator/src/evaluator/__init__.py,packages/evaluator/tests/test_debit.py">
+    <title>The evaluator's debit_trial cannot charge the real trial ledger: it omits epoch_id and the provenance triple the ledger requires</title>
+    <symptoms>
+      4 tests in packages/evaluator/tests/test_debit.py fail against the real ledger, identically on main before and after the seat removal: test_the_real_ledger_satisfies_the_seam_with_no_adapter, test_a_failed_evaluation_lands_its_failure_outcome_in_the_real_ledger, test_a_retry_against_the_real_ledger_writes_nothing, test_a_uuid_spelling_is_compared_by_the_identity_it_names
+      Error: ledger.errors.TrialRecordError: epoch_id is required — §8's column is TEXT NOT NULL ('which sequestered epoch was charged') ... raised from packages/ledger/src/ledger/epoch.py:116 via packages/evaluator/src/evaluator/_debit.py:584 (debit_trial)
+      The evaluator member's suite reports 4 failed, 543 passed; no other suite fails
+    </symptoms>
+    <reproduction_steps>
+      UV_CACHE_DIR=&lt;cache&gt; uv run --all-packages pytest packages/evaluator/tests/test_debit.py -q -p no:cacheprovider
+    </reproduction_steps>
+    <expected>debit_trial charges the real TrialLedger: a completed or failed evaluation lands one trial_ledger row carrying the node, campaign, outcome, charges_budget, charge_units, the epoch_id of the sequestered epoch charged and the provenance triple (evaluator_hash, snapshot_hash, cost_model_hash); a retry of the same node writes nothing and answers the landed row. The seam stays duck-typed (this member imports no sibling), and a charge missing any required term is refused before the ledger is touched with the evaluator's own error.</expected>
+    <actual>Root cause: debit_trial calls ledger.debit(charge.node_id, charge.campaign_id, charge.outcome, charge.charges_budget) — four positional terms. Since commit abec95f (2026-09-20, feature 88 "System records epoch_id naming which sequestered epoch a trial charged") and the provenance feature, TrialLedger.debit (packages/ledger/src/ledger/store.py:1066) also requires epoch_id, evaluator_hash, snapshot_hash and cost_model_hash (validated with required=True at store.py:774-777), and TrialCharge (packages/evaluator/src/evaluator/_debit.py, class TrialCharge) carries none of them. Every charge through the real ledger is refused; only the evaluator's own tests exercise the path today, which is why it went unnoticed.</actual>
+    <constraints>
+      Do not change the ledger member or its required columns — the evaluator must supply the terms, not the ledger relax them
+      Keep the seam duck-typed: the evaluator member must not import the ledger member
+      Keep the (record, appended) answer contract and the idempotent-retry behaviour
+      The provenance values are 64-hex digests and the timestamp stays timezone-aware, as the ledger validates
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="low"
+       touches_files="packages/signal-agent/tests/test_discrimination.py">
+    <title>test_the_pairs_are_hashed_in_branch_id_order fails about 1 run in 24 because its random branch ids can already be sorted</title>
+    <symptoms>
+      packages/signal-agent/tests/test_discrimination.py::test_the_pairs_are_hashed_in_branch_id_order failed once in a full signal-agent run (2026-09-29) and passed on re-run; the file was unchanged
+      The failing assertion is `assert inserted != by_id, "the fixture must not already be id-sorted"`
+    </symptoms>
+    <reproduction_steps>
+      Run the test repeatedly: about 1 run in 24 fails
+      The cohort has 4 branches (_RISING / _STRONG have 4 entries) whose ids are minted with uuid.uuid4(); 4 random ids are already in sorted order with probability 1/4! = 1/24
+    </reproduction_steps>
+    <expected>The test is deterministic: the branch ids are fixed, known UUIDs deliberately minted in a non-sorted insertion order, so `inserted != by_id` always holds and the test still proves the digest imposes node-id order rather than insertion order.</expected>
+    <actual>The precondition the test asserts depends on the random ids it draws, so it fails by chance about 4% of the time with no change to the code under test.</actual>
+    <constraints>
+      Test-only fix: do not change packages/signal-agent/src
+      Keep the three assertions' intent (digest equals the id-ordered digest; the two orders differ; the insertion-order digest differs from the reading's)
+    </constraints>
+  </bug>
+</bug_spec>
