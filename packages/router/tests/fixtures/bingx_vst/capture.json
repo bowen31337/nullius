@@ -1,0 +1,19 @@
+{
+  "host": "open-api-vst.bingx.com",
+  "captured_at": "2026-09-30T09:04:46+00:00",
+  "requests": {
+    "contracts.json": "GET /openApi/swap/v2/quote/contracts",
+    "premium_index.json": "GET /openApi/swap/v2/quote/premiumIndex"
+  },
+  "authentication": "none (public market endpoints)",
+  "trimmed_to": [
+    "BTC-USDT",
+    "ETH-USDT",
+    "SOL-USDT",
+    "DOGE-USDT",
+    "1000PEPE-USDT",
+    "AGLD-USDT",
+    "NCFXUSD2ARS-USDT"
+  ],
+  "note": "Verbatim venue responses filtered to the listed symbols; no field edited. NCFXUSD2ARS-USDT has status 25 (not tradable) and no premiumIndex entry. VST filters differed from open-api.bingx.com for 570 of 1185 shared symbols at capture, so a VST mirror must read VST's own document."
+}

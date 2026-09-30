@@ -1,0 +1,30 @@
+{
+  "book_id": "synthetic-vst-0",
+  "rebalance_ts": "2026-09-30T00:00:00+00:00",
+  "account": "bingx-vst",
+  "margin_mode": "isolated",
+  "equity_usdt": "10000",
+  "expected_fill_seconds": 120,
+  "weights": {
+    "BTC-USDT": 0.2,
+    "ETH-USDT": -0.15,
+    "SOL-USDT": 0.1,
+    "DOGE-USDT": -0.05,
+    "1000PEPE-USDT": 0.03,
+    "AGLD-USDT": 0.0001,
+    "NCFXUSD2ARS-USDT": 0.02
+  },
+  "decay_horizon_seconds": {
+    "BTC-USDT": 14400,
+    "ETH-USDT": 14400,
+    "SOL-USDT": 14400,
+    "DOGE-USDT": 60,
+    "1000PEPE-USDT": 14400,
+    "AGLD-USDT": 14400,
+    "NCFXUSD2ARS-USDT": 14400
+  },
+  "positions": {
+    "BTC-USDT": "0.0100"
+  },
+  "note": "Synthetic, hand-written Stage 0 book. Not a promoted signal. Weights are signed fractions of equity; positions are signed contract quantities currently held."
+}

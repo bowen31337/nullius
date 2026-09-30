@@ -1,0 +1,209 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — Stage 0 BingX VST dry run: a synthetic book to would-send orders, no network</project_name>
+  <addition_summary>
+    Extend the router workspace member (packages/router, import name router)
+    with a Stage 0 dry run that mirrors a book onto BingX's VST (demo) perpetual
+    swap venue without touching the network. Everything upstream of the venue
+    already exists: the book member publishes FinalTargetWeights (feature 305),
+    and the router judges a submission against the venue's step and tick grids
+    (312, require_rounded_order), its notional floor (313, require_min_notional),
+    decides how it crosses (314, resolve_order_posture), settles it under
+    isolated margin (315, require_isolated_margin) and folds its client order
+    identifier (316, derive_client_order_id). What is missing is everything that
+    turns a weight into a BingX order: BingX's contract document is not
+    Binance's exchangeInfo (it carries quantityPrecision, pricePrecision,
+    tradeMinQuantity and tradeMinUSDT rather than LOT_SIZE / PRICE_FILTER /
+    NOTIONAL filters), nothing converts a target weight into a contract
+    quantity, BingX limits clientOrderID to 40 characters while feature 316
+    derives 64 hex characters, and nothing assembles the judged pieces into the
+    request BingX's POST /openApi/swap/v2/trade/order would receive. This
+    addition builds those pieces as pure functions over recorded VST responses
+    and a hand-written synthetic book, and ends in a command that prints the
+    would-send orders and the refused legs. It sends nothing, signs nothing,
+    reads no credential and opens no socket. Stage 1 (a signed VST client and
+    the live-submission gate) is a separate, later spec.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (members under packages/*, composed by
+      src/app/module_loader.create_app) / SQLite stores addressed by
+      DATABASE_URL / pytest (ruff conventions)</stack>
+    <test_baseline>workspace suite tests/ passing; member suites under
+      packages/*/tests passing on main, including packages/router/tests (13
+      modules). Measure the real numbers by running the suite before relying on
+      them.</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, stdlib-first
+      members (a member adds no third-party lockfile edge unless it must),
+      docstrings citing app_spec.xml feature numbers and
+      docs/nullius-tech-architecture.md sections, refusals raised as typed
+      errors whose message opens with a greppable code word and names the one
+      repair, reject-never-round at the router's gates (an order is sized onto
+      the grid where it is sized; 312 only judges it), @register only in a
+      package __init__, cross-member imports deferred past module scope.
+      Money and quantities are decimal.Decimal built from the venue's strings,
+      never float arithmetic. Tests assert observed behaviour with narrative
+      docstrings. Member suites and the workspace suite are run as separate
+      pytest invocations (PYTHONPATH=src:packages/router/src for the member).
+      The router's existing error vocabulary lives in router.errors
+      (RouterFilterError, RouterOrderRoundingError,
+      RouterBelowMinNotionalError, RouterOrderPostureError,
+      RouterCrossMarginError, RouterClientOrderIdError). This addition's new
+      refusals subclass router.errors.RouterError but are defined in the
+      module that raises them, so parallel features never edit router.errors
+      or router/__init__.py; callers import the new modules by full path.
+    </conventions>
+    <recorded_fixtures>
+      packages/router/tests/fixtures/bingx_vst/ holds verbatim responses
+      captured from open-api-vst.bingx.com (public endpoints, no key), trimmed
+      to seven symbols; capture.json records host, time and requests.
+      contracts.json is GET /openApi/swap/v2/quote/contracts: BTC-USDT,
+      ETH-USDT, SOL-USDT, DOGE-USDT, 1000PEPE-USDT and AGLD-USDT have status 1;
+      NCFXUSD2ARS-USDT has status 25 (not tradable) and no mark price.
+      premium_index.json is GET /openApi/swap/v2/quote/premiumIndex (markPrice
+      per symbol). synthetic_book.json is the hand-written Stage 0 book: book_id
+      synthetic-vst-0, rebalance_ts 2026-09-30T00:00:00+00:00, account
+      bingx-vst, margin_mode isolated, equity_usdt 10000, expected_fill_seconds
+      120, signed weights per symbol, decay_horizon_seconds per symbol, and
+      positions {BTC-USDT: 0.0100}. These files are inputs: never edit them.
+    </recorded_fixtures>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="BingX VST Dry Run">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/router/src/router/bingx_documents.py,packages/router/tests/test_bingx_documents.py">
+        System translates a BingX swap contracts document into
+        RouterSymbolFilters per symbol, taking the step size as ten to the
+        minus quantityPrecision, the tick size as ten to the minus
+        pricePrecision, min_qty from tradeMinQuantity and min_notional from
+        tradeMinUSDT, and returns a not_tradable refusal naming the symbol when
+        its status is not 1 or apiStateOpen is not "true". For the recorded
+        fixture it returns BTC-USDT step 0.0001 tick 0.1, ETH-USDT step 0.001
+        tick 0.01 min_qty 0.001, and a not_tradable refusal for
+        NCFXUSD2ARS-USDT.
+        It also reads a BingX premiumIndex document into a Decimal mark price
+        per symbol, returning a missing_mark_price refusal naming the symbol
+        when a symbol the book holds has no mark price. For the recorded
+        fixture it returns BTC-USDT 83137.3 and DOGE-USDT 0.09381.
+      </feature>
+      <feature index="2" shape="core" depends_on=""
+               touches_files="packages/router/src/router/sizing.py,packages/router/tests/test_sizing.py">
+        System sizes final target weights into signed contract quantity
+        deltas against RouterSymbolFilters and a Decimal mark per symbol:
+        equity times weight divided by mark price, truncated toward zero onto
+        the symbol's step grid, minus the position currently held.
+        For the synthetic book it returns BTC-USDT +0.0140, ETH-USDT -0.558,
+        SOL-USDT +8.44, DOGE-USDT -5329, 1000PEPE-USDT +69446 and AGLD-USDT
+        +4.84, and a zero delta produces no order.
+      </feature>
+      <feature index="3" shape="core" depends_on=""
+               touches_files="packages/router/src/router/bingx_client_order_id.py,packages/router/tests/test_bingx_client_order_id.py">
+        System projects the 64-hex client order identifier from feature 316
+        onto BingX's 40-character clientOrderID as the identifier's first 40
+        lowercase hex characters, returning the same projection for the same
+        book_id, rebalance_ts and symbol and a client_order_id refusal for any
+        value that is not a 64-hex identifier.
+      </feature>
+      <feature index="4" shape="core" depends_on="1,2,3"
+               touches_files="packages/router/src/router/bingx_order.py,packages/router/src/router/bingx_dry_run.py,packages/router/tests/test_bingx_order.py,packages/router/tests/test_bingx_dry_run.py">
+        System assembles each sized delta into the parameters of a BingX
+        POST /openApi/swap/v2/trade/order request by passing it through the
+        router's existing gates in a fixed order: posture (314), step and tick
+        grids (312), the notional floor (313), the minimum quantity, and
+        isolated margin (315). A passive leg returns type LIMIT, timeInForce
+        PostOnly and a price at the mark rounded onto the tick grid on the
+        passive side (down for BUY, up for SELL). An aggressive leg returns
+        type MARKET with no price, judged against the notional floor at the
+        mark. A refused leg returns its router code word and the symbol
+        instead of an order.
+        It prints a dry-run plan from `python -m router.bingx_dry_run
+        --book BOOK --contracts CONTRACTS --marks MARKS`, writing one JSON
+        object per would-send order and one per refused leg to stdout, and
+        exiting 0 while sending nothing. For the recorded fixtures and the
+        synthetic book it returns five orders (BTC-USDT BUY 0.0140 LIMIT
+        PostOnly 83137.3, ETH-USDT SELL 0.558 LIMIT PostOnly 2685.87, SOL-USDT
+        BUY 8.44 LIMIT PostOnly 118.392, DOGE-USDT SELL 5329 MARKET,
+        1000PEPE-USDT BUY 69446 LIMIT PostOnly 0.0043199), a
+        below_min_notional refusal for AGLD-USDT and a not_tradable refusal
+        for NCFXUSD2ARS-USDT. Every clientOrderID it prints is at most 40
+        characters and equals feature 3's projection, and with socket creation
+        patched to raise the command still exits 0, proving no connection is
+        opened and no environment variable or credential is read.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Five new modules under packages/router/: bingx_documents.py, sizing.py,
+    bingx_client_order_id.py, bingx_order.py and the bingx_dry_run.py entry
+    point in src/router/, each committed as an empty stub so its file claim
+    resolves, and their tests (also committed as empty stubs) beside the existing ones in
+    packages/router/tests/. The dry run reads the synthetic book, publishes it
+    through the book member's own book.final_target_weights so the weights
+    arrive through feature 305's seam rather than as a bare dict, and never
+    writes the rebalance store. Symbols keep BingX's hyphenated spelling
+    (BTC-USDT) end to end; nothing maps them to Binance's BTCUSDT. The
+    translator in feature 1 is a second, BingX-specific constructor of
+    RouterSymbolFilters; nullius_ingest.exchange_info and
+    router.exchange_info.resolve_router_filters stay Binance-shaped and
+    unchanged. Feature 3's projection is a separate function over a
+    ClientOrderId. router.client_order_id's 64-hex ClientOrderId,
+    CLIENT_ORDER_ID_LENGTH and derive_client_order_id are unchanged, and the
+    placement store's idempotency key stays the full 64-hex identifier.
+    Posture reads the book's decay_horizon_seconds per symbol and its
+    expected_fill_seconds. Margin settles under the book's isolated mode and
+    account label. The router's rate limiter, retry, placement store and
+    submission health are not called: nothing is placed.
+  </integration_points>
+  <constraints>
+    - Nothing in this addition opens a network connection, signs a request,
+      reads an API key or secret, reads 1Password, or reads any environment
+      variable. The new modules import no http.client, urllib.request,
+      socket, ssl, hmac, ccxt, httpx, requests or aiohttp.
+    - Stage 0 reads VST's own contract document. VST precisions and minimums
+      differed from open-api.bingx.com's for 570 of 1185 shared symbols at
+      capture, so a live-host document is never a stand-in for VST's.
+    - Never read the contract's size field as the quantity step: it differs
+      from ten to the minus quantityPrecision for ETH-USDT, SOL-USDT and five
+      other symbols.
+    - Quantities are truncated toward zero onto the step grid at sizing, so
+      an order never exceeds its target. The router's gates still judge every
+      order and never round one.
+    - The fixtures under packages/router/tests/fixtures/bingx_vst/ are inputs
+      and are never edited. Expected values are asserted exactly as Decimal
+      strings.
+    - router.client_order_id, router.exchange_info, router.rounding,
+      router.notional, router.posture and router.margin keep their public
+      behaviour. Their existing tests stay green unchanged.
+    - router.errors and router/__init__.py are not edited.
+    - No change to packages/ingest, packages/book's source,
+      src/app/module_loader.py, the root pyproject.toml, uv.lock,
+      migrations/** or settings. No new component is registered.
+    - Do not edit docs/user-journeys/: verdicts there are set only by browser
+      runs.
+    - All existing workspace and member tests must stay green.
+  </constraints>
+  <implementation_steps>
+    <step>
+      Phase 1 — venue documents. Build the contracts translator and the
+      mark-price reader (feature 1) in bingx_documents.py as pure functions
+      over parsed JSON (bytes, str or mapping), each with its own typed refusal carrying a
+      code word (not_tradable, missing_mark_price), tested against the
+      recorded fixtures and against small inline documents for the refusal
+      paths.
+    </step>
+    <step>
+      Phase 2 — sizing and identity. Build the weight-to-quantity sizer
+      (feature 2) over FinalTargetWeights, equity, marks, filters and current
+      positions, and the 40-character clientOrderID projection (feature 3)
+      over router.client_order_id.ClientOrderId.
+    </step>
+    <step>
+      Phase 3 — order assembly and the plan. Chain the existing gates in the
+      fixed order of feature 4, add the minimum-quantity check as a new
+      refusal (below_min_quantity) defined in bingx_order.py, emit BingX order
+      parameters (symbol, side, positionSide BOTH, type, quantity, price, timeInForce, clientOrderID) as
+      strings, and add the python -m router.bingx_dry_run entry point
+      with its socket-patched end-to-end test.
+    </step>
+  </implementation_steps>
+</project_specification>

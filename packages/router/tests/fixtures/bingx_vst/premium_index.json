@@ -1,0 +1,72 @@
+{
+  "code": 0,
+  "msg": "",
+  "data": [
+    {
+      "symbol": "BTC-USDT",
+      "markPrice": "83137.3",
+      "indexPrice": "83172.6",
+      "lastFundingRate": "0.00010000",
+      "nextFundingTime": 1790784000000,
+      "fundingIntervalHours": 8,
+      "minFundingRate": "-0.02",
+      "maxFundingRate": "0.02",
+      "updateTime": 1790755200000
+    },
+    {
+      "symbol": "ETH-USDT",
+      "markPrice": "2685.87",
+      "indexPrice": "2674.35",
+      "lastFundingRate": "0.00010000",
+      "nextFundingTime": 1790784000000,
+      "fundingIntervalHours": 8,
+      "minFundingRate": "-0.02",
+      "maxFundingRate": "0.02",
+      "updateTime": 1790755200000
+    },
+    {
+      "symbol": "SOL-USDT",
+      "markPrice": "118.392",
+      "indexPrice": "118.450",
+      "lastFundingRate": "0.00007780",
+      "nextFundingTime": 1790784000000,
+      "fundingIntervalHours": 8,
+      "minFundingRate": "-0.02",
+      "maxFundingRate": "0.02",
+      "updateTime": 1790755200000
+    },
+    {
+      "symbol": "DOGE-USDT",
+      "markPrice": "0.09381",
+      "indexPrice": "0.09375",
+      "lastFundingRate": "0.00010000",
+      "nextFundingTime": 1790784000000,
+      "fundingIntervalHours": 8,
+      "minFundingRate": "-0.02",
+      "maxFundingRate": "0.02",
+      "updateTime": 1790755200000
+    },
+    {
+      "symbol": "AGLD-USDT",
+      "markPrice": "0.2065",
+      "indexPrice": "0.2087",
+      "lastFundingRate": "0.00010000",
+      "nextFundingTime": 1790784000000,
+      "fundingIntervalHours": 8,
+      "minFundingRate": "-0.02",
+      "maxFundingRate": "0.02",
+      "updateTime": 1790755200000
+    },
+    {
+      "symbol": "1000PEPE-USDT",
+      "markPrice": "0.0043199",
+      "indexPrice": "0.0043199",
+      "lastFundingRate": "0.00010000",
+      "nextFundingTime": 1790784000000,
+      "fundingIntervalHours": 8,
+      "minFundingRate": "-0.02",
+      "maxFundingRate": "0.02",
+      "updateTime": 1790755200000
+    }
+  ]
+}
