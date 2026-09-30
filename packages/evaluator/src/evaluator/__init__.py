@@ -147,13 +147,21 @@ the whole step does: stdlib-only, with the scores arriving as a value — the
 Polars boundary stays at the edge of the package — so no member is imported
 and no normalization is restated. Feature 84 adds step 11:
 :func:`debit_trial` charges the trial ledger for the evaluation — one
-irreversible row, idempotently keyed by the node, carrying §8's four-way
-outcome and the budget directive step 7 forwarded — and it is deliberately
-shaped to run on the failure path, because §6.1's note is the feature:
-step 11 happens even when the node fails, a failed evaluation still
+irreversible row, idempotently keyed by the node, carrying the whole of §8's
+row: the node and campaign, §8's four-way outcome, the budget directive step
+7 forwarded, the cost unit (feature 89), the sequestered epoch the charge is
+booked against (feature 88) and feature 87's provenance triple
+(``evaluator_hash``, ``snapshot_hash``, ``cost_model_hash``) — and it is
+deliberately shaped to run on the failure path, because §6.1's note is the
+feature: step 11 happens even when the node fails, a failed evaluation still
 consumed a hypothesis, and :func:`failure_outcome` is the spelling that
 classifies the pipeline's own failures (a sandbox timeout, a crash, a
-raised step) into the outcome the charge carries. It stays stdlib-only:
+raised step) into the outcome the charge carries. The epoch and the triple
+are supplied, never derived — the evaluator that reaches step 11 already
+holds the frozen image digest, the sealed snapshot's hash and the loaded
+cost model's hash — and a charge that cannot name them is refused by this
+member's own error before the seam is touched, because a partial charge is a
+row no audit can place and no replay can reproduce. It stays stdlib-only:
 the ledger itself is an injected structural seam (the ledger member's
 ``TrialLedger`` satisfies it), so this member imports no sibling and owns
 no table — the honest ``K`` counter is the ledger's to keep, and this
@@ -347,6 +355,8 @@ from ._marginal_store import (
 )
 from ._debit import (
     DEBIT_STEP,
+    DEFAULT_CHARGE_UNITS,
+    PROVENANCE_HASH_LENGTH,
     TRIAL_OUTCOMES,
     DebitedTrial,
     TrialCharge,
@@ -461,8 +471,10 @@ __all__ = [
     "NodeMarginalIRStore",
     "load_marginal_ir",
     "persist_marginal_ir",
-    # Feature 84 — the trial charge
+    # Feature 84 — the trial charge (features 87-89's terms included)
     "DEBIT_STEP",
+    "DEFAULT_CHARGE_UNITS",
+    "PROVENANCE_HASH_LENGTH",
     "TRIAL_OUTCOMES",
     "DebitedTrial",
     "TrialCharge",
