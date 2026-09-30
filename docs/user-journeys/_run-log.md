@@ -276,3 +276,7 @@ What the cases establish:
 | J14 | Discoverability | ✅ pass | The index reads "10 routes declared, 10 configured". Also observed: `200`, `404`, `405`, `401`, `401` and `403`. |
 
 **Result: 14 of 14 pass, none blocked, no response carried a traceback.** Every verdict and status code is the same as Run 3, so the seat removal introduced no user-visible regression. Screenshots are in [`screenshots/run-4/`](screenshots/run-4/).
+
+## Decision: 2026-09-30, the HTML index stays token-gated
+
+The owner chose to keep `GET /` behind a bearer token. A plain browser visit answering `401` ([Run 2](screenshots/run-2/J14-index-plain-navigation-401.png)) is the intended behaviour, not a defect. J14's preconditions now state that step 1 uses a client that sends the header. The open decision recorded in Runs 2 and 3 is closed.

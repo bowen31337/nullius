@@ -12,6 +12,7 @@ evidence: screenshots/run-4/J14-api-discoverability.png, screenshots/run-4/J14-i
 
 ## Preconditions
 
+- **Decision (owner, 2026-09-30):** `/` stays token-gated, because the index reveals which components are configured. A plain browser visit gets `401` by design. The journey opens `/` with a client that sends `Authorization: Bearer <token>`, such as curl, a header extension, or the browser with extra headers set.
 - `python -m nullius_api` running against the demo store, with
   `NULLIUS_API_TOKENS_FILE` naming a token file that holds at least a
   `metrics:read` and a `risk` token (feature 18).
