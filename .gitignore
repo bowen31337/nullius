@@ -43,3 +43,4 @@ coverage/
 *.bak
 *.tmp
 *.orig
+.uv-cache/
