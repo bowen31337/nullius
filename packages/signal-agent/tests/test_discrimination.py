@@ -923,20 +923,47 @@ def test_the_pairs_are_hashed_in_branch_id_order(
     imposed\" from \"the order happens to match this fixture's\".  If the module
     were hashing in iteration order this case would pass only by accident, so it
     also constructs the two orders and asserts they differ as *lists*.
+
+    The branch ids are fixed literals here rather than ``_cohort_shape``'s usual
+    ``uuid.uuid4()`` mint: four random ids land in id-sorted order by chance
+    about 1 time in 24 (4!), which made ``inserted != by_id`` below fail for a
+    reason that had nothing to do with the order the digest imposes. Planting
+    these four out of id order by construction is what makes the case
+    deterministic rather than a 1-in-24 flake.
     """
     campaign = str(uuid.uuid4())
     plant_campaign(discrimination_database, campaign)
-    branches = _cohort_shape(discrimination_database, campaign, _RISING, _STRONG)
+    branches = [
+        "d0000000-0000-0000-0000-000000000001",
+        "a0000000-0000-0000-0000-000000000002",
+        "c0000000-0000-0000-0000-000000000003",
+        "b0000000-0000-0000-0000-000000000004",
+    ]
+    for index, (branch, is_gain, oos_gain) in enumerate(
+        zip(branches, _RISING, _STRONG)
+    ):
+        plant_modelled_node(
+            discrimination_database, _MODEL, node_id=branch, campaign_id=campaign
+        )
+        ProposalStore(discrimination_database).persist(
+            branch, _document(index), score=ScoreRecord(ir_marginal=is_gain)
+        )
+        plant_run(
+            discrimination_database,
+            committed_pick=branch,
+            score=oos_gain,
+            policy_version=_POLICY,
+        )
     reading = _measured(discrimination_database, campaign, branches)
 
     from signal_agent import _discrimination as module
 
-    # The gains belong to branches by *insertion* order — ``_cohort_shape``
-    # planted ``branches[i]`` with ``_RISING[i]`` — so the pairs are built by
-    # pairing first and sorting second.  Zipping the sorted ids against the
-    # unsorted gains would attribute each gain to the wrong branch, and the
-    # digest would then disagree with the module's for a reason that has nothing
-    # to do with the order claim.
+    # The gains belong to branches by *insertion* order — the loop above planted
+    # ``branches[i]`` with ``_RISING[i]`` — so the pairs are built by pairing
+    # first and sorting second.  Zipping the sorted ids against the unsorted
+    # gains would attribute each gain to the wrong branch, and the digest would
+    # then disagree with the module's for a reason that has nothing to do with
+    # the order claim.
     inserted = tuple(zip(branches, _RISING, _STRONG))
     by_id = tuple(sorted(inserted, key=lambda pair: pair[0]))
     assert reading.cohort_digest == module._cohort_digest(
