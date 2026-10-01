@@ -350,16 +350,19 @@ sed -n '/^stack:/,/^competency/p' spec_brief.yaml
 
 ### Raising the brief from documents — you answer the prompts
 
-> **You are the model. There is no credential to inherit.**
-> Claude Code holds its credential in the session process and strips it from
-> the environment of every tool subprocess, so a `claw-forge` command you run
-> from here sees no `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` however the
-> session itself is authenticated. A layer that needs a model will report
-> that it was skipped. That is not a spec defect and not something to work
-> around by hunting for a key — answer the prompt yourself, using the
-> `--emit-prompts` / `--responses` seam below. claw-forge keeps the
-> deterministic half: prompt rendering, span verification, provenance,
-> merging. You supply only the reply.
+> **You are usually the model — probe before assuming a credential.**
+> Claude Code holds its *own* credential in the session process and does not
+> pass it to tool subprocesses. Unless this machine's shell exports its own
+> `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` (some do — check with
+> `echo ${ANTHROPIC_API_KEY:+SET}${ANTHROPIC_AUTH_TOKEN:+SET}`), a
+> `claw-forge` command you run from here has no credential, and a layer that
+> needs a model will report that it was skipped. That is not a spec defect
+> and not something to work around by hunting for a key — answer the prompt
+> yourself, using the `--emit-prompts` / `--responses` seam below.
+> claw-forge keeps the deterministic half: prompt rendering, span
+> verification, provenance, merging. You supply only the reply. If the
+> probe printed `SET`, the credentialed path just works and the seam is
+> unnecessary.
 
 When the user has PRDs, architecture notes or transcripts, extraction can
 raise the brief's confidence before you ask anything. Emit the prompts,
@@ -1271,6 +1274,14 @@ Scanning" and trip the whole category. **Derive phase titles from your category 
 each category maps onto a phase: name the phase after the category (or include the category's
 key noun). This clears Gap 9 for every feature in the category at once — no `depends_on`
 surgery required.
+
+**Prefer the category's full name in the phase title, not just one of its words.** Matching is
+best-overlap: a category binds to the phase whose title shares the *most* words with it, so
+`Answer Generation` (phase 9) and `Answer Surface` (phase 13) each bind to their own phase even
+though they share "Answer". But a phase title carrying only the shared word (`Phase 9: Answers`)
+ties both categories to it, and a tie goes to the earliest phase — which binds the later
+category to the wrong predecessor. Naming the phase after the full category name makes the
+binding unambiguous.
 
 **But a matching phase title also *enables* inference for that category**, and inference
 makes every feature in phase N depend on every feature in phase N-1. If a feature in that

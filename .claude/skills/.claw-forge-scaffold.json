@@ -1,10 +1,10 @@
 {
   "note": "Written by claw-forge. Records the sha256 of what claw-forge scaffolded, so `init --refresh` can tell an unmodified older version from your own edits. Safe to delete: refresh then falls back to backing up anything that differs.",
-  "claw_forge_version": "1.22.0",
+  "claw_forge_version": "1.24.2",
   "files": {
     "claw-forge-bug/SKILL.md": "ce659d59a01494a151e70075d5478053c8ddeda232678d87bd935d4388f3c79a",
-    "claw-forge-feature/SKILL.md": "4db5920faa593eff5f5f446182a9295695f477e945f06b5614ca75b3e36925c8",
-    "claw-forge-ops/SKILL.md": "cb4e0abcefccc2c182e53256e07ac697004c8f802c064dc1aa650c3abe647896",
+    "claw-forge-feature/SKILL.md": "6732c2f1fd0ce62a146c81f30b7499a1627114a70f9a9958fe13972cec1b7899",
+    "claw-forge-ops/SKILL.md": "2d918fa93366992710e986f2a875ac4e6ad9d961d675ea5b97503340ae970b89",
     "claw-forge-verify/SKILL.md": "aa379cf097eec53e8b2af32e0d732678c121bb645f4608eb02cfc8b25b192f40"
   }
 }

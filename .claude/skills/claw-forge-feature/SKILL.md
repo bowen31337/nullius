@@ -63,9 +63,12 @@ clean_deterministic == true
   (2 and 5, which call a model). Two runs over a byte-identical spec have been
   measured at 31 warnings and then 5, so gating on `clean` could withhold
   `plan` from a spec no edit would improve.
-- `clean` (`error_count == 0 AND warning_count == 0`) is still the honest
-  whole-spec verdict and is still worth **reporting**. A Layer 5 finding is
-  often real. Report those warnings to the user; do not loop on them.
+- `clean` (`error_count == 0 AND warning_count == 0 AND
+  skipped_layers == []`) is still the honest whole-spec verdict and is
+  still worth **reporting**. A Layer 5 finding is often real. Report those
+  warnings to the user; do not loop on them. A skipped layer holds `clean`
+  false — that reads "not fully measured", never "broken", and no spec
+  edit clears it.
 - `passed` is **not** the gate — it counts errors only.
 - `info_count` is **never** a blocker. Gap 13 and Gap 17 are INFO-only
   advisories that fire on claw-forge's own reference specs; waiting for
@@ -76,11 +79,12 @@ clean_deterministic == true
   `--project <dir>` and re-run; a clean Layer 4 without it is not the same
   bill of health. `project_root` reports which tree the answer was measured
   against.
-- Check `skipped_layers`. A skipped layer is not a clean layer. Layers 2
-  and 5 need a model; Layer 6 needs a `spec_brief.yaml`. **You are a
-  model** — Claude Code strips credentials from tool subprocesses, so
-  claw-forge cannot make the call itself from here, but Layer 5 can be
-  answered by you (`validate-spec --emit-completeness-prompt` →
+- Check `skipped_layers`. A skipped layer is not a clean layer (and it
+  holds `clean` false). Layers 2 and 5 need a model; Layer 6 needs a
+  `spec_brief.yaml`. **You are usually the model** — Claude Code does not
+  pass its own credential to tool subprocesses, so unless the shell
+  exports one, claw-forge cannot make the call itself from here; Layer 5
+  can be answered by you (`validate-spec --emit-completeness-prompt` →
   `--completeness-response`; see `.claude/commands/fix-spec.md`). Layer 2
   is one call per category and stays skipped. Say
   which ones did not run rather than reporting a clean bill of health.
@@ -90,12 +94,14 @@ clean_deterministic == true
 Not clean? Read `.claude/commands/fix-spec.md` and execute it, then
 re-validate.
 
-**Exception — a missing input is not a spec defect.** If a warning's layer
+**Exception — a missing input is not a spec defect.** If a finding's layer
 also appears in `skipped_layers`, no spec edit can clear it: the layer never
-ran. A brownfield spec with no Anthropic credential is the common case — Layer
-2 reports its own skip as a WARNING, so `clean` is false forever. Say which
-input is missing (e.g. no Anthropic credential is set, so Layer 2 could not
-run) and move on to Step 6 instead of repairing. Layer 5 is the exception:
+ran. A spec with no Anthropic credential is the common case — the skip
+notice is a WARNING on brownfield (INFO on greenfield), and either way the
+layer lands in `skipped_layers`, which alone keeps `clean` false for as
+long as the input is missing. Say which input is missing (e.g. no Anthropic
+credential is set, so Layer 2 could not run) and move on to Step 6 instead
+of repairing. Layer 5 is the exception:
 you can answer it yourself, so a Layer 5 skip is worth one round-trip
 before you accept it.
 
@@ -117,7 +123,20 @@ yes.**
 Report first: how many tasks, how many waves, the configured concurrency,
 and anything that looks wrong. Then ask.
 
-## Step 8 — Run
+## Step 8 — Check the tree, then run
+
+Check `git status` before dispatching. Commit anything the run should
+build on — worktrees branch from HEAD, so uncommitted work is invisible
+to every agent, and restoring it after the run conflicts with the code
+the agents just wrote in those files. Everything else must **not** be
+committed to the target branch just to get clean: a broken commit turns
+the acceptance-gate baseline red, which (by default) silently disarms
+verification for the whole run. Park unrelated WIP on a branch of its
+own, or let startup's smart sweep handle it — dirty tracked files go to
+a `claw-forge-auto-<ts>` stash, untracked files are **archived to
+`.claw-forge/orphans/<ts>/`, not stashed**, and both are recorded in
+`.claw-forge/sweeps/<ts>.json` quoting the stash's commit SHA. The
+`claw-forge-ops` skill covers recovering them afterwards.
 
 ```bash
 claw-forge run

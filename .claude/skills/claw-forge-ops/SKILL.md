@@ -28,6 +28,22 @@ Other read commands: `claw-forge worktrees list`, `claw-forge stash list`.
 it against a project that already has one puts a second service on the same
 `state.db`, which is the two-process failure described below.
 
+## Recovering changes the startup sweep took
+
+Startup cleans the checkout before any worktree exists: dirty tracked
+files go to a `claw-forge-auto-<ts>` stash; untracked files are
+**archived to `.claw-forge/orphans/<ts>/`, not stashed** — do not hunt
+the stash stack for a file that was archived, and do not report it as
+data loss. `.claw-forge/sweeps/<ts>.json` records both halves, quoting
+the stash's commit SHA.
+
+Restore with `claw-forge stash apply <sha>` — the SHA from the sweep
+record or `claw-forge stash list`, never a `stash@{N}` index (the boot
+baseline and every mid-run leak capture push onto the same stack, so
+indices shift under you) and never `pop`. **Never restore while a run
+is live**: the leak watch keeps the checkout HEAD-clean and will
+re-sweep the dirt, attributing it to an innocent task.
+
 ## `DISPATCHER OFFLINE` is not proof
 
 If `status` reports the dispatcher offline, **confirm that reading belongs

@@ -101,16 +101,19 @@ If none found, ask the user: "Which spec file should I fix?"
 claw-forge validate-spec <spec-file> 2>&1
 ```
 
-> **You are the model. There is no credential to inherit.**
-> Claude Code holds its credential in the session process and strips it from
-> the environment of every tool subprocess, so a `claw-forge` command you run
-> from here sees no `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` however the
-> session itself is authenticated. A layer that needs a model will report
-> that it was skipped. That is not a spec defect and not something to work
-> around by hunting for a key — answer the prompt yourself, using the
-> `--emit-prompts` / `--responses` seam below. claw-forge keeps the
-> deterministic half: prompt rendering, span verification, provenance,
-> merging. You supply only the reply.
+> **You are usually the model — probe before assuming a credential.**
+> Claude Code holds its *own* credential in the session process and does not
+> pass it to tool subprocesses. Unless this machine's shell exports its own
+> `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` (some do — check with
+> `echo ${ANTHROPIC_API_KEY:+SET}${ANTHROPIC_AUTH_TOKEN:+SET}`), a
+> `claw-forge` command you run from here has no credential, and a layer that
+> needs a model will report that it was skipped. That is not a spec defect
+> and not something to work around by hunting for a key — answer the prompt
+> yourself, using the `--emit-prompts` / `--responses` seam below.
+> claw-forge keeps the deterministic half: prompt rendering, span
+> verification, provenance, merging. You supply only the reply. If the
+> probe printed `SET`, the credentialed path just works and the seam is
+> unnecessary.
 
 **Layer 5 (completeness) is the one worth delegating**, because it is the
 only layer that can name a capability the spec omits — everything else
