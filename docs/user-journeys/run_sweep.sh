@@ -23,17 +23,27 @@ export BU_CDP_URL=http://localhost:9222
 
 mkdir -p "$SCRATCH" "$OUT"
 cd "$REPO"
+# Every server starts in its own session (setsid), so its PID is also its
+# process-group ID. cleanup signals the whole group: killing only the
+# recorded PID left the `uv run` wrappers and the streamlit processes under
+# them running after the sweep (about 700 MB per dashboard).
 PIDS=()
-cleanup() { for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done; }
+bg() { setsid "$@" & PIDS+=($!); }
+cleanup() {
+  local p
+  for p in "${PIDS[@]:-}"; do kill -TERM -- "-$p" 2>/dev/null || true; done
+  sleep 2
+  for p in "${PIDS[@]:-}"; do kill -KILL -- "-$p" 2>/dev/null || true; done
+}
 trap cleanup EXIT
 
 wait_http() { for _ in $(seq 1 90); do curl -s -o /dev/null "$1" && return 0; sleep 1; done; echo "timeout: $1" >&2; return 1; }
 
 # Browser (headless; --no-sandbox because AppArmor blocks user namespaces).
 if ! curl -s localhost:9222/json/version >/dev/null; then
-  "$CHROME" --headless=new --no-sandbox --remote-debugging-port=9222 \
-    --user-data-dir="$SCRATCH/chrome-profile" --no-first-run about:blank >"$SCRATCH/chrome.log" 2>&1 &
-  PIDS+=($!); wait_http http://localhost:9222/json/version
+  bg "$CHROME" --headless=new --no-sandbox --remote-debugging-port=9222 \
+    --user-data-dir="$SCRATCH/chrome-profile" --no-first-run about:blank >"$SCRATCH/chrome.log" 2>&1
+  wait_http http://localhost:9222/json/version
 fi
 
 # Store, demo sidecar and tokens.
@@ -51,21 +61,19 @@ chmod 600 "$SCRATCH/tokens.json" "$SCRATCH/sidecar.env"
 DB="sqlite:///$SCRATCH/store/demo.db"
 
 # API with engine + sidecar (8765) and without engine (8766).
-( set -a; . "$SCRATCH/sidecar.env"; set +a
+DB="$DB" SCRATCH="$SCRATCH" bg bash -c 'set -a; . "$SCRATCH/sidecar.env"; set +a
   DATABASE_URL="$DB" NULLIUS_API_TOKENS_FILE="$SCRATCH/tokens.json" \
   NULLIUS_EXECUTION_ENGINE=nullius_api.demo:PAPER_ENGINE \
-  exec uv run --all-packages python -m nullius_api --port 8765 ) >"$SCRATCH/api.log" 2>&1 &
-PIDS+=($!)
+  exec uv run --all-packages python -m nullius_api --port 8765' >"$SCRATCH/api.log" 2>&1
 DATABASE_URL="$DB" NULLIUS_API_TOKENS_FILE="$SCRATCH/tokens.json" \
-  uv run --all-packages python -m nullius_api --port 8766 >"$SCRATCH/api-noengine.log" 2>&1 &
-PIDS+=($!)
+  bg uv run --all-packages python -m nullius_api --port 8766 >"$SCRATCH/api-noengine.log" 2>&1
 
 # Dashboards: demo store (8501), with threshold (8502), empty (8503), no DATABASE_URL (8504).
 st() { uv run --all-packages --with streamlit streamlit run packages/ops/src/ops/dashboard.py --server.port "$1"; }
-DATABASE_URL="$DB" st 8501 >"$SCRATCH/st1.log" 2>&1 & PIDS+=($!)
-NULLIUS_FEED_STALENESS_THRESHOLD_S=60 DATABASE_URL="$DB" st 8502 >"$SCRATCH/st2.log" 2>&1 & PIDS+=($!)
-DATABASE_URL="sqlite:///$SCRATCH/store/empty.db" st 8503 >"$SCRATCH/st3.log" 2>&1 & PIDS+=($!)
-env -u DATABASE_URL bash -c "$(declare -f st); st 8504" >"$SCRATCH/st4.log" 2>&1 & PIDS+=($!)
+DATABASE_URL="$DB" bg bash -c "$(declare -f st); st 8501" >"$SCRATCH/st1.log" 2>&1
+NULLIUS_FEED_STALENESS_THRESHOLD_S=60 DATABASE_URL="$DB" bg bash -c "$(declare -f st); st 8502" >"$SCRATCH/st2.log" 2>&1
+DATABASE_URL="sqlite:///$SCRATCH/store/empty.db" bg bash -c "$(declare -f st); st 8503" >"$SCRATCH/st3.log" 2>&1
+bg env -u DATABASE_URL bash -c "$(declare -f st); st 8504" >"$SCRATCH/st4.log" 2>&1
 wait_http http://127.0.0.1:8765/healthz; wait_http http://127.0.0.1:8766/healthz
 for p in 8501 8502 8503 8504; do wait_http "http://127.0.0.1:$p/_stcore/health"; done
 head -1 "$SCRATCH/api.log"
