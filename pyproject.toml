@@ -53,4 +53,7 @@ members = ["packages/*"]
 [dependency-groups]
 # Shared tooling for the repository-level tests/ tree (pytest.ini sets
 # minversion 8.0). uv installs the default `dev` group on `uv run`/`uv sync`.
-dev = ["pytest>=8.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-xdist>=3.6",
+]

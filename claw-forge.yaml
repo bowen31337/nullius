@@ -116,10 +116,16 @@ agent:
     #     turbo is not knowable, so it is left un-narrowed: set ``command``
     #     below to e.g. ``npx turbo run test`` to opt a monorepo in.
     scope: full
-    # command: ""        # override; empty -> auto-detect (pytest/npm/cargo/go)
-    # The workspace suite takes ~630s (1579 tests, measured 2026-09-28), so
-    # the 600s default killed the baseline probe and reported main as RED,
-    # which disables the gate's test verdict for every task in the run.
+    # The serial suite took 751s (1574 tests, measured 2026-10-02). With
+    # pytest-xdist (dev group) at 4 workers it takes ~215s, measured three
+    # times with 0 failures. --dist loadfile keeps each test file in one
+    # worker, so file-level state stays in one process. Each gate adds ~3.7 GB
+    # of RAM on this 15.6 GB host, so launch runs with --concurrency 2:
+    # three overlapping gates starve memory (-n auto was killed mid-run).
+    command: "uv run --all-packages pytest -n 4 --dist loadfile"
+    # The 600s default once killed the serial baseline probe and reported main
+    # as RED, which disables the gate's test verdict for every task in the
+    # run. Kept generous in case the gate falls back to a serial run.
     timeout: 1200        # seconds before the test run is killed (exit 124)
   # Run-boundary assembly verification.  Every other gate runs inside a
   # worktree, which cannot see integration — integration is the property that

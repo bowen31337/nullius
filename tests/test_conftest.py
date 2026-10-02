@@ -8,13 +8,12 @@ real tree store or trial ledger.
 import os
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-
-_seen: dict[str, str] = {}
 
 
 def test_lake_root_layout_and_env(lake_root: Path) -> None:
@@ -41,20 +40,43 @@ def test_isolation_applies_without_requesting_fixtures() -> None:
     assert os.environ["DATABASE_URL"].startswith("sqlite:///")
 
 
-def test_fresh_lake_and_database_per_test_first(
-    lake_root: Path, test_database_url: str
-) -> None:
-    (lake_root / "staging" / "marker.txt").write_text("first")
-    _seen["lake"] = str(lake_root)
-    _seen["db"] = test_database_url
-
-
-def test_fresh_lake_and_database_per_test_second(
-    lake_root: Path, test_database_url: str
-) -> None:
-    assert not (lake_root / "staging" / "marker.txt").exists()
-    assert str(lake_root) != _seen["lake"]
-    assert test_database_url != _seen["db"]
+def test_fresh_lake_and_database_per_test() -> None:
+    # Two tests in one child process: the second must not see the first's
+    # lake, marker or database. Run in a child so the pair shares a process
+    # even when this suite runs under pytest-xdist.
+    probe = REPO_ROOT / "tests" / f"test__fresh_probe_{uuid.uuid4().hex}_tmp.py"
+    probe.write_text(
+        "from pathlib import Path\n"
+        "\n"
+        "_seen = {}\n"
+        "\n"
+        "\n"
+        "def test_first(lake_root, test_database_url):\n"
+        "    (lake_root / 'staging' / 'marker.txt').write_text('first')\n"
+        "    _seen['lake'] = str(lake_root)\n"
+        "    _seen['db'] = test_database_url\n"
+        "\n"
+        "\n"
+        "def test_second(lake_root, test_database_url):\n"
+        "    assert _seen, 'test_first must run first, in this process'\n"
+        "    assert not (lake_root / 'staging' / 'marker.txt').exists()\n"
+        "    assert str(lake_root) != _seen['lake']\n"
+        "    assert test_database_url != _seen['db']\n"
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", str(probe)],
+            check=False,
+            cwd=REPO_ROOT,
+            env={k: v for k, v in os.environ.items() if k != "PYTEST_XDIST_WORKER"},
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    finally:
+        probe.unlink(missing_ok=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "2 passed" in result.stdout, result.stdout
 
 
 def test_test_database_url_override_is_honored() -> None:
