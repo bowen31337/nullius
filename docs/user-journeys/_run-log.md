@@ -307,3 +307,5 @@ The owner chose to keep `GET /` behind a bearer token. A plain browser visit ans
 **Result: 15 of 15 pass, none blocked, no response carried a traceback.** J1–J14 match Run 4 exactly. Screenshots and the J15 transcripts are in [`screenshots/run-5/`](screenshots/run-5/).
 
 **Observation, not a failure:** J15 step 5's refusal begins `bingx_dry_run: bingx_dry_run: the book document …`, with the program name printed twice. It is cosmetic, and the step's expectation still holds.
+
+*Follow-up, 2026-10-02:* the doubled `bingx_dry_run: bingx_dry_run:` prefix is fixed. The command now names itself once, whichever module refused, and `test_bingx_dry_run.py` pins this for both cases. J15 step 5 now reads `bingx_dry_run: the book document at '/nonexistent/book.json' cannot be read: …`.
