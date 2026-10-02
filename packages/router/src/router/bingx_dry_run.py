@@ -599,7 +599,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             marks=_read_document(arguments.marks, "the premiumIndex document"),
         )
     except RouterError as exc:
-        print(f"bingx_dry_run: {exc}", file=sys.stderr)
+        # This command's own refusals already open with its code word;
+        # the router's other refusals open with theirs. Name the program
+        # once either way.
+        message = str(exc)
+        prefix = f"{BINGX_DRY_RUN_CODE}: "
+        if not message.startswith(prefix):
+            message = prefix + message
+        print(message, file=sys.stderr)
         return 1
 
     for leg in plan:

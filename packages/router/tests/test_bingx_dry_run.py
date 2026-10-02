@@ -533,6 +533,7 @@ def test_a_path_that_will_not_read_exits_one_on_stderr(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.startswith("bingx_dry_run: ")
+    assert captured.err.count("bingx_dry_run:") == 1
 
     (tmp_path / "book.json").write_text("not json", encoding="utf-8")
     unparsable = main(
@@ -546,7 +547,36 @@ def test_a_path_that_will_not_read_exits_one_on_stderr(
         ]
     )
     assert unparsable == 1
-    assert "is not JSON" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "is not JSON" in err
+    assert err.count("bingx_dry_run:") == 1
+
+
+def test_a_refusal_from_another_router_module_keeps_one_program_prefix(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """stderr names the command once, whichever module refused.
+
+    This command's own refusals already open with its code word, and the
+    router's other refusals open with theirs. Either way the line starts
+    ``bingx_dry_run: `` exactly once, so a reader sees the program
+    without a doubled prefix.
+    """
+    (tmp_path / "contracts.json").write_text('{"code": 0}', encoding="utf-8")
+    refused = main(
+        [
+            "--book",
+            str(FIXTURES / "synthetic_book.json"),
+            "--contracts",
+            str(tmp_path / "contracts.json"),
+            "--marks",
+            str(FIXTURES / "premium_index.json"),
+        ]
+    )
+    assert refused == 1
+    err = capsys.readouterr().err
+    assert err.startswith("bingx_dry_run: ")
+    assert err.count("bingx_dry_run:") == 1
 
 
 def test_the_command_requires_its_three_paths() -> None:
