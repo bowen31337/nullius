@@ -1,0 +1,236 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — Stage 1 BingX VST mirror: place the dry-run plan on the demo venue</project_name>
+  <addition_summary>
+    Extend the router workspace member (packages/router, import name router)
+    so the Stage 0 dry-run plan can be placed on BingX's VST (demo) perpetual
+    swap venue. Stage 0 already turns a book into would-send orders without
+    touching the network: router.bingx_documents reads the contracts and mark
+    prices, router.sizing sizes weights into contract deltas,
+    router.bingx_client_order_id projects the 40-character clientOrderID, and
+    router.bingx_dry_run.dry_run_plan assembles the plan through the router's
+    gates. Stage 1 adds four pieces. A signed BingX client, written over the
+    standard library, can only reach open-api-vst.bingx.com: the live host is
+    refused in code, with no flag. A preflight checks the venue before
+    anything is placed. An order read-back reports status and cancels. A
+    mirror command places the plan through the router's existing idempotent
+    placement store, weight limiter and backoff, so a re-run never places an
+    order twice.
+
+    BingX facts this spec relies on, checked against BingX's published API
+    documentation (bingx-api.github.io/docs) and its sample code. A signed
+    request adds timestamp (milliseconds) and recvWindow to its parameters,
+    sorts them by key, URL-encodes them, computes HMAC-SHA256 of that query
+    string keyed by the secret, appends signature=hex, and sends the key in
+    the X-BX-APIKEY header. Responses are {"code": 0, "msg": "", "data": ...},
+    where a non-zero code is a refusal. HTTP 429 means the rate limit was
+    hit. clientOrderID is "a limit of characters from 1 to 40. Different
+    orders cannot use the same clientOrderID". timeInForce supports
+    PostOnly. Margin modes are ISOLATED and CROSSED. Endpoints (all under
+    https://open-api-vst.bingx.com) are:
+    - GET /openApi/swap/v2/server/time (public)
+    - GET /openApi/swap/v2/quote/contracts (public)
+    - GET /openApi/swap/v2/quote/premiumIndex (public)
+    - GET /openApi/swap/v2/user/balance
+    - GET /openApi/swap/v2/user/positions
+    - POST /openApi/swap/v2/trade/marginType
+    - POST /openApi/swap/v2/trade/leverage
+    - POST /openApi/swap/v2/trade/order
+    - GET /openApi/swap/v2/trade/order
+    - DELETE /openApi/swap/v2/trade/order
+    - GET /openApi/swap/v2/trade/openOrders
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (members under packages/*, composed by
+      src/app/module_loader.create_app) / SQLite stores addressed by
+      DATABASE_URL / pytest (ruff conventions)</stack>
+    <test_baseline>workspace suite tests/ and member suites under
+      packages/*/tests passing on main; packages/router/tests has 872
+      passing. Measure the real numbers by running the suites before relying
+      on them.</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, stdlib-first
+      members (the router adds no third-party dependency), docstrings citing
+      app_spec.xml feature numbers and docs/nullius-tech-architecture.md
+      sections, refusals raised as typed errors whose message opens with a
+      greppable code word and names the one repair, defined in the module that
+      raises them and subclassing router.errors.RouterError (router.errors and
+      router/__init__.py are not edited). Money and quantities are
+      decimal.Decimal built from the venue's strings. Cross-member imports
+      (book, risk) are deferred past module scope. Tests assert observed
+      behaviour with narrative docstrings and never reach the network: the
+      client takes an injected transport, and the end-to-end test serves a
+      BingX stand-in on 127.0.0.1. Member suites run with
+      PYTHONPATH=src:packages/router/src:packages/book/src:packages/ingest/src:packages/risk/src.
+      Existing pieces Stage 1 must reuse rather than reimplement:
+      - router.bingx_dry_run.dry_run_plan(book=, contracts=, marks=);
+      - router.bingx_documents.resolve_bingx_filters and resolve_bingx_mark_prices;
+      - router.submission_result.RouterOrderPlacementStore.place(order, place, now=),
+        which places once per client_order_id and returns the prior result
+        on a repeat;
+      - router.limiter.RouterRateLimiter.acquire(operation) with a
+        VenueWeightSchedule;
+      - router.retry.retry_rate_limited(request, retries=), which retries on
+        RouterRateLimitedError;
+      - risk.kill.require_orders_allowed, which refuses while a kill
+        instruction stands.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="BingX VST Mirror">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/router/src/router/bingx_client.py,packages/router/tests/test_bingx_client.py">
+        System delivers BingX swap requests only to open-api-vst.bingx.com,
+        each signed: a request carries timestamp and recvWindow,
+        its parameters sorted by key and URL-encoded, signature equal to the
+        HMAC-SHA256 hex of that query string keyed by the secret, and the key
+        in the X-BX-APIKEY header. A request addressed to any other host,
+        open-api.bingx.com included, returns a live_host_refused refusal
+        before anything is sent. A response whose code is not 0 returns a
+        bingx_refused error carrying that code and msg. HTTP 429 raises
+        router.errors.RouterRateLimitedError. Credentials are read from
+        BINGX_VST_API_KEY and BINGX_VST_SECRET_KEY; a missing one returns a
+        vst_credentials_missing refusal naming the variable, and neither
+        value appears in any repr, message or log line. The client exposes
+        server time, balance, positions, set margin type, set leverage,
+        place order, query order, cancel order and open orders.
+      </feature>
+      <feature index="2" shape="core" depends_on="1"
+               touches_files="packages/router/src/router/bingx_preflight.py,packages/router/tests/test_bingx_preflight.py">
+        System runs a VST preflight before any placement and returns a
+        PreflightReport, or the first refusal, in this order:
+        - orders_killed while risk.kill.require_orders_allowed refuses;
+        - clock_skew when the venue's server time differs from the local
+          clock by more than 1000 ms;
+        - hedge_mode when any position reports positionSide LONG or SHORT,
+          with the repair "switch the VST account to one-way mode";
+        - insufficient_balance when available USDT is below the book's
+          equity_usdt.
+        For each symbol the plan will order, it then sets margin type
+        ISOLATED and leverage 1, treating an already-set answer as success.
+        The report records the measured skew, the available balance and the
+        symbols prepared.
+      </feature>
+      <feature index="3" shape="core" depends_on="1"
+               touches_files="packages/router/src/router/bingx_orders.py,packages/router/tests/test_bingx_orders.py">
+        System returns each of the book's VST orders, looked up by
+        clientOrderID, with its status (NEW, PARTIALLY_FILLED, FILLED,
+        CANCELED, EXPIRED or not_found), its executed quantity and its
+        average price. Asked to cancel, it returns the identifiers of the
+        open orders it cancelled: only those whose clientOrderID belongs to
+        the book's rebalance. Orders from any other book or rebalance are
+        left untouched.
+      </feature>
+      <feature index="4" shape="core" depends_on="1,2,3"
+               touches_files="packages/router/src/router/bingx_mirror.py,packages/router/tests/test_bingx_mirror.py,packages/router/tests/test_bingx_mirror_e2e.py">
+        System mirrors a book onto VST from `python -m router.bingx_mirror
+        --book BOOK`. It fetches the contracts and premiumIndex documents
+        from VST, replaces the book's positions with the account's live VST
+        positions, and builds the plan with dry_run_plan.
+        - Without --place it prints the plan in Stage 0's JSON-lines format
+          and exits 0 while placing nothing.
+        - With --place it requires DATABASE_URL and runs the preflight. Then
+          it places each order through RouterOrderPlacementStore.place,
+          acquiring RouterRateLimiter weight and retrying 429s with
+          retry_rate_limited. It prints one JSON line per leg: placed, prior
+          (already placed), or refused with its code. It exits 0 when every
+          order was placed or was already placed, and 1 otherwise.
+        - When a POST /trade/order times out or its connection drops, the
+          outcome is unknown. The mirror then queries that clientOrderID
+          before doing anything else. A found order is recorded as placed,
+          and only a not_found answer is re-posted, so a blind retry never
+          meets BingX's duplicate-clientOrderID refusal for an order that
+          actually landed.
+        - --status prints feature 3's read-back, and --cancel cancels the
+          rebalance's open orders.
+        The end-to-end test runs the command against a BingX stand-in on
+        127.0.0.1 that verifies every signature. For the recorded fixtures
+        and the synthetic book with a flat account, a first --place sends
+        exactly five POST /trade/order requests and a second --place sends
+        none and prints prior for all five. A run whose transport targets
+        open-api.bingx.com returns live_host_refused with no socket opened,
+        and the API key and secret never appear in stdout, stderr or the
+        placement store.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    New modules under packages/router/src/router/: bingx_client.py,
+    bingx_preflight.py, bingx_orders.py and the bingx_mirror.py entry point.
+    Each is committed as an empty stub so its file claim resolves, and each
+    test module beside it in packages/router/tests/ is committed the same
+    way. The client takes an injected transport (a callable from method,
+    URL, headers and body to status and body) and defaults to a urllib
+    transport with a timeout. The host guard runs on the URL before the
+    transport is called, so a test can inject a loopback transport only
+    under the VST host name. There is no setting, environment variable or
+    CLI flag that changes the host. The mirror publishes the book through
+    book.final_target_weights exactly as Stage 0 does, and replaces only
+    its positions field with the VST positions. Orders reach the venue as
+    the Stage 0 BingXOrder parameters (symbol, side, positionSide BOTH,
+    type, quantity, price, timeInForce, clientOrderID). The placement
+    store's idempotency key stays the router's full 64-hex client order
+    identifier, while BingX receives the 40-character projection. The rate
+    limiter is built from a VenueWeightSchedule declared as a module
+    constant in bingx_mirror.py, with weight 1 per request and allowance 10
+    per second, conservative against BingX's limits; a real 429 is
+    absorbed by retry_rate_limited. Credentials reach the process as
+    environment variables injected by `op run` through run.sh. Wiring them
+    into .env.tpl is done by the operator after the dedicated VST key
+    exists, and is not part of this spec.
+  </integration_points>
+  <constraints>
+    - The only host the client can reach is open-api-vst.bingx.com. There is
+      no --live flag, no host setting, and no environment variable that
+      changes it. Feature 321's explicit live flag is out of scope for
+      Stage 1.
+    - No test or task opens a network connection to BingX or anywhere else.
+      Tests use injected transports or the 127.0.0.1 stand-in, with fake
+      credentials.
+    - No task reads 1Password, .env.tpl or any real credential, and none
+      edits .env.tpl, run.sh, claw-forge.yaml or claw-forge.local.yaml.
+    - The API key and secret never appear in a repr, exception message, log
+      line, stdout, stderr or any persisted row.
+    - Nothing is placed without --place, and --place refuses to start
+      without DATABASE_URL, so every placement is recorded and
+      idempotent.
+    - Signing uses the standard library (hmac, hashlib, urllib). The router
+      adds no third-party dependency, and pyproject.toml and uv.lock are not
+      edited.
+    - router.errors, router/__init__.py and the Stage 0 modules
+      (bingx_documents, sizing, bingx_client_order_id, bingx_order,
+      bingx_dry_run) keep their public behaviour, and their tests stay green
+      unchanged.
+    - The fixtures under packages/router/tests/fixtures/bingx_vst/ are
+      inputs and are never edited.
+    - No change to packages/ingest, packages/book's source, packages/risk's
+      source, src/app/module_loader.py, the root pyproject.toml,
+      migrations/** or settings. No new component is registered.
+    - Do not edit docs/user-journeys/: verdicts there are set only by
+      browser runs.
+    - All existing workspace and member tests must stay green.
+  </constraints>
+  <implementation_steps>
+    <step>
+      Phase 1 — the client (feature 1). Signing, the host guard, envelope
+      parsing, the 429 mapping, credential loading with redaction, and the
+      nine endpoint methods. Tests use an injected transport that records
+      requests, and pin the signature of a fixed parameter set, timestamp
+      and secret against a value computed independently in the test with
+      hmac.
+    </step>
+    <step>
+      Phase 2 — preflight and read-back (features 2 and 3), each over an
+      injected client double, with one test per refusal in the stated order.
+    </step>
+    <step>
+      Phase 3 — the mirror command and the end-to-end test (feature 4). The
+      stand-in is an http.server on 127.0.0.1 that serves the recorded
+      fixtures for the public endpoints, verifies each signed request's
+      signature, keeps a flat account, and counts POST /trade/order
+      requests. The mirror reaches it through the client's injected
+      transport, which rewrites the VST host to 127.0.0.1 inside the test
+      only.
+    </step>
+  </implementation_steps>
+</project_specification>
