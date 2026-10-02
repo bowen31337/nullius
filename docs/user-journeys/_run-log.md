@@ -280,3 +280,30 @@ What the cases establish:
 ## Decision: 2026-09-30, the HTML index stays token-gated
 
 The owner chose to keep `GET /` behind a bearer token. A plain browser visit answering `401` ([Run 2](screenshots/run-2/J14-index-plain-navigation-401.png)) is the intended behaviour, not a defect. J14's preconditions now state that step 1 uses a client that sends the header. The open decision recorded in Runs 2 and 3 is closed.
+
+## Run 5 (full sweep + J15): 2026-10-02, after the BingX Stage 0 dry run and two bug fixes
+
+- **Code under test:** `main` at `199c542`. It adds the BingX Stage 0 router modules (`5f7ff86`, `4681c66`, `fa90cd9`, `490d3a8`), the evaluator debit fix (`fb70c90`, which changes the path behind J11), the deterministic signal-agent test (`37c2aa1`) and the `UV_CACHE_DIR` settings fix.
+- **How it was run:** [`run_sweep.sh`](run_sweep.sh)` run-5 <scratch>` for J1–J14. Four Streamlit dashboards left over from Run 4 still held ports 8501–8504 and served stale code, so they were stopped first. Otherwise the sweep's readiness check would have accepted them. J15 is a shell command: its steps were run from the repository root, with each transcript saved as a `.txt` beside the screenshots and then rendered in headless Chromium for `J15-cli-bingx-dry-run.png`.
+
+| # | Journey | Verdict | Observed |
+|---|---|---|---|
+| J1 | Fresh install | ✅ pass | Shows `—` and *no campaign has closed…*. The KS-guard and ingest lamps read `no reading`, and the epoch count is `0`. |
+| J2 | Top-line FDR_deploy + trend | ✅ pass | Shows `50.0%` for campaign `…003`. The x labels read `2026-01-01`, `2026-02-01`, `2026-03-01` under `computed_at`. |
+| J3 | Misconfigured | ✅ pass | Shows `dashboard_refusal: …` with the repair and no traceback. |
+| J4 | Instrument lamps | ✅ pass | Reads `ingest: unconfigured (set NULLIUS_FEED_STALENESS_THRESHOLD_S)`, then `ingest: ok` once the threshold is set. |
+| J5 | Clean epochs | ✅ pass | Shows `3` on the demo store and `0` on an empty one. |
+| J6 | Provenance triple | ✅ pass | Shows `provenance: evaluator 608a1ae37855…, snapshot 433368139601…, cost model 1cec44e2f806…`. |
+| J7 | Exposure | ✅ pass | All six servers listen on `127.0.0.1`. No toolbar buttons appear. |
+| J8 | Metrics over HTTP | ✅ pass | `200` ×3, and a request with no token gets `401`. |
+| J9 | Pre-register | ✅ pass | `200`, `200` retry, `409`, `422`, `400`. |
+| J10 | Forward test | ✅ pass | `200`, `200` decay curve, `404 forward_record_absent`. |
+| J11 | Trial ledger | ✅ pass | With a fresh node: `201` with `appended: true` and `seq 3`, then `200` with the same `seq` and `retry: true`, then `400`. k-effective has `total: 2`. This is unchanged by the `fb70c90` debit fix. |
+| J12 | Null-oracle target | ✅ pass | `404` for an unknown node. The null and real nodes both give `503` and are identical apart from the node id (barrier check `true`). |
+| J13 | Risk halt | ✅ pass | `changed: true`, then `changed: false`. With no engine bound: `503 execution_engine_unbound`. |
+| J14 | Discoverability | ✅ pass | The index reads "10 routes declared, 10 configured". Also observed: `200`, `404`, `405`, `401`, `401`, `403`. |
+| J15 | BingX VST dry run | ✅ pass | Exit `0` with five orders (BTC BUY 0.0140 @ 83137.3, ETH SELL 0.558 @ 2685.87, SOL BUY 8.44 @ 118.392, DOGE SELL 5329 MARKET, 1000PEPE BUY 69446 @ 0.0043199, all LIMIT PostOnly except DOGE) and two refusals (`below_min_notional` AGLD, `not_tradable` NCFXUSD2ARS). Every `clientOrderID` is 40 hex characters and a prefix of the router's 64-hex identifier. A second run gives byte-identical output. With sockets patched to raise, the output is the same and exits `0`. A missing `--book` gives exit `1` with one line naming the file and no traceback. |
+
+**Result: 15 of 15 pass, none blocked, no response carried a traceback.** J1–J14 match Run 4 exactly. Screenshots and the J15 transcripts are in [`screenshots/run-5/`](screenshots/run-5/).
+
+**Observation, not a failure:** J15 step 5's refusal begins `bingx_dry_run: bingx_dry_run: the book document …`, with the program name printed twice. It is cosmetic, and the step's expectation still holds.

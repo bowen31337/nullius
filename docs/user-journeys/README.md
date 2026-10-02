@@ -53,6 +53,7 @@ The journeys below are run against `127.0.0.1`, which needs no certificate.
 | [J12](J12-api-null-oracle-target.md) | Ask the null oracle for a target series | Evaluator | HTTP API |
 | [J13](J13-api-risk-halt.md) | Trigger the emergency halt | Risk supervisor | HTTP API |
 | [J14](J14-api-discoverability.md) | Discover what the API serves, and get clean errors | Any | HTTP API |
+| [J15](J15-cli-bingx-dry-run.md) | Dry-run the book onto BingX VST (Stage 0, no network) | Operator | CLI |
 
 ## Validation runs
 

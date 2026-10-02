@@ -1,0 +1,9 @@
+$ (socket.socket + create_connection patched to raise) python -m router.bingx_dry_run --book packages/router/tests/fixtures/bingx_vst/synthetic_book.json --contracts packages/router/tests/fixtures/bingx_vst/contracts.json --marks packages/router/tests/fixtures/bingx_vst/premium_index.json
+{"symbol": "1000PEPE-USDT", "side": "BUY", "positionSide": "BOTH", "type": "LIMIT", "quantity": "69446", "price": "0.0043199", "timeInForce": "PostOnly", "clientOrderID": "44ee68f878d24b5b13a74433bd7be65a13a30371"}
+{"symbol": "AGLD-USDT", "refusal": "below_min_notional"}
+{"symbol": "BTC-USDT", "side": "BUY", "positionSide": "BOTH", "type": "LIMIT", "quantity": "0.0140", "price": "83137.3", "timeInForce": "PostOnly", "clientOrderID": "cd2a5cafc184c765919a0a3e923135ace3e43079"}
+{"symbol": "DOGE-USDT", "side": "SELL", "positionSide": "BOTH", "type": "MARKET", "quantity": "5329", "clientOrderID": "22bbd7f6edfadc4dc0ad4a5b34568711fe887d83"}
+{"symbol": "ETH-USDT", "side": "SELL", "positionSide": "BOTH", "type": "LIMIT", "quantity": "0.558", "price": "2685.87", "timeInForce": "PostOnly", "clientOrderID": "8d588535619636bcae4a9c663327019855da1577"}
+{"symbol": "NCFXUSD2ARS-USDT", "refusal": "not_tradable"}
+{"symbol": "SOL-USDT", "side": "BUY", "positionSide": "BOTH", "type": "LIMIT", "quantity": "8.44", "price": "118.392", "timeInForce": "PostOnly", "clientOrderID": "e32d227ac7024f1a6deb85ad880c29670d7625d5"}
+exit 0
