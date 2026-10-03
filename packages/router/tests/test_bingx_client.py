@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import urllib.parse
+from pathlib import Path
 
 import pytest
 from router.bingx_client import (
@@ -35,6 +37,7 @@ from router.bingx_client import (
     OPEN_ORDERS_PATH,
     ORDER_NOT_FOUND_CODE,
     ORDER_PATH,
+    POSITION_MODE_PATH,
     POSITIONS_PATH,
     SECRET_KEY_ENV,
     VST_BASE_URL,
@@ -53,6 +56,18 @@ from router.errors import RouterError, RouterRateLimitedError
 API_KEY = "vst-key-0123456789"
 SECRET_KEY = "vst-secret-abcdef"
 FIXED_MILLIS = 1_700_000_000_123
+
+#: The recorded live VST captures — inputs only, never edited.  The
+#: position-mode fixtures are the two answers the live smoke test took on
+#: one sub-account before and after switching it to one-way, and they pin
+#: the spelling ``position_mode`` reads (bug_spec_bingx_vst_smoke.xml,
+#: bug 2).
+LIVE_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "bingx_vst" / "live"
+
+
+def _live(name: str) -> object:
+    """One recorded live answer, as the venue sent it."""
+    return json.loads((LIVE_FIXTURES / name).read_text(encoding="utf-8"))
 
 
 def _envelope(data: object, *, code: int = 0, msg: str = "") -> bytes:
@@ -454,6 +469,69 @@ def test_positions_can_be_narrowed_to_one_symbol() -> None:
     client = _client(recorder)
     client.positions("BTC-USDT")
     assert "symbol=BTC-USDT" in recorder.last_url
+
+
+def test_position_mode_hits_its_own_endpoint_signed_like_every_account_read() -> None:
+    """The hedge question's one read: GET positionSide/dual, signed and keyed.
+
+    An account read like ``balance`` — signed parameters, the key in the
+    header, the host guard already run on the assembled URL — because the
+    answer names this account's own arrangement, not market data.
+    """
+    recorder = _Recorder((200, _envelope({"dualSidePosition": "false"})))
+    client = _client(recorder)
+
+    assert client.position_mode() is False
+
+    method, url, headers, body = recorder.requests[-1]
+    assert method == "GET"
+    assert url.startswith(f"{VST_BASE_URL}{POSITION_MODE_PATH}")
+    query = urllib.parse.urlsplit(url).query
+    assert "timestamp" in query and "recvWindow" in query
+    assert "signature" in query
+    assert headers["X-BX-APIKEY"] == API_KEY
+    assert body == b""
+
+
+def test_position_mode_answers_both_live_captures_and_the_boolean_spelling() -> None:
+    """The venue's own two answers — pinned on the live captures — read exactly.
+
+    The smoke test took both answers on one sub-account: ``"true"`` as a
+    fresh hedge-mode account, ``"false"`` after the switch to one-way.  A
+    JSON boolean is the same fact's other spelling, so both read; the
+    preflight's hedge refusal stands on this boolean, never on a
+    position's ``positionSide``.
+    """
+    for spelling, expected in (
+        (_live("position_mode_hedge.json")["data"], True),
+        (_live("position_mode_one_way.json")["data"], False),
+        ({"dualSidePosition": True}, True),
+        ({"dualSidePosition": False}, False),
+    ):
+        recorder = _Recorder((200, _envelope(spelling)))
+        client = _client(recorder)
+        assert client.position_mode() is expected, spelling
+
+
+def test_a_position_mode_answer_that_is_not_the_two_spellings_is_refused() -> None:
+    """A ``dualSidePosition`` this cannot judge is a response fault, not a guess.
+
+    The hedge-mode refusal must stand on the venue's own words: a value
+    that is neither of the spellings the document answers — nor a
+    missing field, nor ``null`` — is refused rather than read through
+    its truthiness, because a garbled answer must not pass for one-way.
+    """
+    for data in (
+        {"dualSidePosition": "maybe"},
+        {"dualSidePosition": None},
+        {"dualSidePosition": 1},
+        {},
+        {"dualSidePosition2": "true"},
+    ):
+        recorder = _Recorder((200, _envelope(data)))
+        client = _client(recorder)
+        with pytest.raises(RouterBingXResponseError):
+            client.position_mode()
 
 
 def test_set_margin_type_sends_isolated_by_default() -> None:

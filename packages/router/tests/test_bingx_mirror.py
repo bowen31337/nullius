@@ -144,6 +144,11 @@ class _MirrorClient:
         self.calls.append(("server_time",))
         return self._server_time
 
+    def position_mode(self) -> bool:
+        # One-way: the state every account these tests place on holds.
+        self.calls.append(("position_mode",))
+        return False
+
     def balance(self) -> object:
         self.calls.append(("balance",))
         return self._balance

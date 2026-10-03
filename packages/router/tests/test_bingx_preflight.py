@@ -1,16 +1,28 @@
 """Tests for :mod:`router.bingx_preflight` — the door before any placement.
 
-Feature 2 of additions_spec_bingx_vst_mirror.xml, held clause by clause:
+Feature 2 of additions_spec_bingx_vst_mirror.xml, held clause by clause,
+under the correction ``bug_spec_bingx_vst_smoke.xml`` bug 2 won from the
+first live VST run:
 *System runs a VST preflight before any placement and returns a
 PreflightReport, or the first refusal, in this order: orders_killed while
 risk.kill.require_orders_allowed refuses; clock_skew when the venue's
 server time differs from the local clock by more than 1000 ms; hedge_mode
-when any position reports positionSide LONG or SHORT, with the repair
+when the account's own position-mode answer is hedge, with the repair
 "switch the VST account to one-way mode"; insufficient_balance when
 available USDT is below the book's equity_usdt.  For each symbol the plan
 will order, it then sets margin type ISOLATED and leverage 1, treating an
 already-set answer as success.  The report records the measured skew, the
 available balance and the symbols prepared.*
+
+The hedge clause is the correction.  The Stage 1 spec prescribed inferring
+the mode from any position reporting ``positionSide`` LONG or SHORT, and
+the live smoke test caught that inference wrong in both directions: a
+flat hedge-mode account holds no rows to inspect (it passed, and the
+placement failed at the venue's leverage step with BingX code 109400),
+and BingX labels a one-way account's positions LONG and SHORT as well (a
+one-way DOGE short was refused here).  The mode is now asked of the
+account itself — ``position_mode()``, the boolean ``dualSidePosition``
+— and never inferred from the positions the account happens to hold.
 
 Every test drives the preflight over an injected client double — the
 suite never opens a socket, and one test patches ``socket.socket`` to
@@ -21,14 +33,16 @@ plant a standing kill through that member's own ``send_kill`` into a
 test-only SQLite URL rather than faking the seam the sentence names.
 The fixed clock pins the skew measurement, and the venue payloads are
 the document shapes BingX's own account endpoints answer (the v2 object
-under ``balance``, the v3 array keyed by ``asset``, the positions array
-with ``positionSide`` per entry).
+under ``balance``, the v3 array keyed by ``asset``, the live capture's
+position rows the corrected hedge check deliberately does not read).
 """
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from risk.kill import send_kill
@@ -64,6 +78,15 @@ KILL_SENDER = "supervisor-under-test"
 #: The moment the planted kill was sent, fixed for the same reason.
 KILL_SENT_AT = datetime(2026, 9, 30, 12, 0, 0, tzinfo=UTC)
 
+#: The live VST captures the corrected hedge law is pinned against —
+#: inputs only, never edited (the bug spec's own constraint).
+LIVE_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "bingx_vst" / "live"
+
+
+def _live(name: str) -> object:
+    """One recorded live answer, as the venue sent it."""
+    return json.loads((LIVE_FIXTURES / name).read_text(encoding="utf-8"))
+
 
 class _DoubleClient:
     """A stand-in for feature 1's client: canned answers, every call recorded.
@@ -73,7 +96,10 @@ class _DoubleClient:
     ``margin_refusals`` and ``leverage_refusals`` mappings let a test
     make one preparation write answer the way a venue answers a
     no-op — by refusing — so the already-set absorption is exercised
-    over the client's own exception type, not a fake one.
+    over the client's own exception type, not a fake one.  ``positions``
+    stays a face the double answers — the mirror's own plan read wants
+    it — while the preflight itself asks ``position_mode`` and never the
+    positions, the very distinction the corrected hedge law draws.
     """
 
     def __init__(
@@ -81,12 +107,14 @@ class _DoubleClient:
         *,
         server_time: int = LOCAL_MILLIS,
         positions: object = (),
+        dual_side_position: object = False,
         balance: object = None,
         margin_refusals: dict[str, Exception] | None = None,
         leverage_refusals: dict[str, Exception] | None = None,
     ) -> None:
         self._server_time = server_time
         self._positions = positions
+        self._dual_side_position = dual_side_position
         self._balance = balance
         self._margin_refusals = margin_refusals or {}
         self._leverage_refusals = leverage_refusals or {}
@@ -99,6 +127,10 @@ class _DoubleClient:
     def positions(self, symbol: str | None = None) -> object:
         self.calls.append(("positions", symbol))
         return self._positions
+
+    def position_mode(self) -> object:
+        self.calls.append(("position_mode",))
+        return self._dual_side_position
 
     def balance(self) -> object:
         self.calls.append(("balance",))
@@ -136,6 +168,10 @@ class _UntouchableClient:
         self.calls.append(("positions", symbol))
         raise AssertionError("a killed order layer asks the venue nothing")
 
+    def position_mode(self) -> object:
+        self.calls.append(("position_mode",))
+        raise AssertionError("a killed order layer asks the venue nothing")
+
     def balance(self) -> object:
         self.calls.append(("balance",))
         raise AssertionError("a killed order layer asks the venue nothing")
@@ -156,15 +192,16 @@ class _UntouchableClient:
 def _funded_client(**overrides: object) -> _DoubleClient:
     """A double over an account the book can be placed on.
 
-    A flat one-way account (no positions) with available USDT at or
-    above the equity the tests compare against, and the venue's v2
-    balance spelling — the document shape the client's own
-    ``BALANCE_PATH`` pins.  Every field is overridable, so a test
-    states only the fact it is exploring.
+    A flat one-way account (no positions, ``dualSidePosition`` false)
+    with available USDT at or above the equity the tests compare
+    against, and the venue's v2 balance spelling — the document shape the
+    client's own ``BALANCE_PATH`` pins.  Every field is overridable, so a
+    test states only the fact it is exploring.
     """
     terms: dict[str, object] = {
         "server_time": LOCAL_MILLIS,
         "positions": (),
+        "dual_side_position": False,
         "balance": {"balance": {"asset": "USDT", "availableMargin": "10000"}},
     }
     terms.update(overrides)
@@ -238,7 +275,7 @@ def test_preparation_sets_isolated_then_leverage_one_per_symbol() -> None:
     assert report.symbols == ("BTC-USDT", "SOL-USDT")
     assert client.calls == [
         ("server_time",),
-        ("positions", None),
+        ("position_mode",),
         ("balance",),
         ("set_margin_type", "BTC-USDT", "ISOLATED"),
         ("set_leverage", "BTC-USDT", PREFLIGHT_LEVERAGE, "BOTH"),
@@ -512,57 +549,57 @@ def test_a_clock_or_server_time_that_is_not_milliseconds_is_refused() -> None:
 # -- The third refusal: hedge_mode -------------------------------------------------
 
 
-def test_hedge_mode_refuses_the_first_long_or_short_position() -> None:
-    """Any position reporting LONG or SHORT refuses, with the spec's repair.
+def test_hedge_mode_refuses_when_the_account_answers_dual_side_position_true() -> None:
+    """The account's own answer refuses — even when it holds no positions.
 
-    A hedge-mode account holds positions per side while every order the
-    plan carries states positionSide BOTH — the venue refuses that
-    combination outright — so the first LONG or SHORT the account
-    reports closes the door, the refusal carries the position's own
-    symbol and side, its message quotes the repair the feature's
-    sentence quotes verbatim, and the balance is never read: the
-    account's shape closed the door before its size could be asked.
+    The live smoke test's first symptom: a fresh sub-account in hedge
+    mode (the capture in ``live/position_mode_hedge.json``) held nothing,
+    so the old inference had no row to inspect, the preflight passed,
+    and the placement failed at the venue's leverage step with BingX
+    code 109400 instead.  The mode is a fact of the account, and the
+    door asks the account: ``position_mode()`` answering true refuses
+    with the repair the spec quotes verbatim, the refusal carries the
+    answer it refused on, and the balance is never read — the account's
+    shape closed the door before its size could be asked.
     """
-    for side in ("LONG", "SHORT"):
-        client = _funded_client(
-            positions=(
-                {"symbol": "ETH-USDT", "positionSide": "BOTH"},
-                {"symbol": "BTC-USDT", "positionSide": side},
-            )
+    client = _funded_client(positions=(), dual_side_position=True)
+
+    with pytest.raises(RouterBingXHedgeModeError) as raised:
+        run_bingx_preflight(
+            client,
+            equity_usdt="10000",
+            symbols=["BTC-USDT"],
+            env={},
+            clock=lambda: LOCAL_MILLIS,
         )
 
-        with pytest.raises(RouterBingXHedgeModeError) as raised:
-            run_bingx_preflight(
-                client,
-                equity_usdt="10000",
-                symbols=["BTC-USDT"],
-                env={},
-                clock=lambda: LOCAL_MILLIS,
-            )
-
-        assert raised.value.symbol == "BTC-USDT"
-        assert raised.value.position_side == side
-        message = str(raised.value)
-        assert message.startswith(f"{HEDGE_MODE_CODE}: ")
-        assert ONE_WAY_REPAIR in message
-        assert client.calls == [("server_time",), ("positions", None)]
+    assert raised.value.dual_side_position is True
+    message = str(raised.value)
+    assert message.startswith(f"{HEDGE_MODE_CODE}: ")
+    assert ONE_WAY_REPAIR in message
+    assert client.calls == [("server_time",), ("position_mode",)]
 
 
-def test_one_way_positions_and_a_flat_account_pass() -> None:
-    """A one-way account — BOTH sides, no positions, or an absent array — passes.
+def test_a_one_way_account_passes_whatever_its_positions_label() -> None:
+    """The mode is never inferred from the positions the account holds.
 
-    The hedge test is membership among LONG and SHORT, not equality
-    with BOTH: an account whose positions all report BOTH, an account
-    holding none, and an account whose document answers no array at
-    all are each one-way or flat, and the hedge question is answered
-    no for each of them.
+    The live smoke test's second symptom: a one-way account (the capture
+    in ``live/position_mode_one_way.json``) holding the DOGE short of
+    ``live/positions_one_way_short.json`` was refused here, because
+    BingX labels one-way positions LONG and SHORT as well.  The
+    preflight asks the account, reads its positions not at all, and the
+    plan's symbols are prepared over the very rows the old inference
+    refused — flat, BOTH-labelled, or the live one-way capture's own
+    LONG/SHORT rows.
     """
+    one_way_rows = _live("positions_one_way_short.json")["data"]
     for positions in (
-        ({"symbol": "BTC-USDT", "positionSide": "BOTH"},),
         (),
         None,
+        ({"symbol": "BTC-USDT", "positionSide": "BOTH"},),
+        one_way_rows,
     ):
-        client = _funded_client(positions=positions)
+        client = _funded_client(positions=positions, dual_side_position=False)
 
         report = run_bingx_preflight(
             client,
@@ -573,18 +610,21 @@ def test_one_way_positions_and_a_flat_account_pass() -> None:
         )
 
         assert report.symbols == ("BTC-USDT",)
+        assert ("positions", None) not in client.calls
 
 
-def test_a_positions_document_that_is_not_the_array_is_refused() -> None:
-    """The hedge question cannot be asked of a value that is not the array.
+def test_a_position_mode_answer_that_is_not_the_boolean_is_refused() -> None:
+    """The hedge question cannot be asked of a value that is not the boolean.
 
-    The venue's position document answers an array; an object or a
-    string in its place is a payload this module cannot judge, refused
-    as a fault of the ask rather than read as a flat account — a
-    document that cannot be asked must not answer "no positions".
+    The client's ``position_mode`` answers the boolean the venue's
+    position-mode document carries; a double answering a string, a
+    number or ``None`` names no mode to read, and is refused as a fault
+    of the ask rather than read through its truthiness — an answer this
+    module cannot judge must not read as one-way, and must not refuse as
+    hedge on a value that is not the account's own answer either.
     """
-    for payload in ({"BTC-USDT": "LONG"}, "BTC-USDT:LONG", (1, 2)):
-        client = _funded_client(positions=payload)
+    for answer in ("true", "false", 1, 0, None):
+        client = _funded_client(dual_side_position=answer)
 
         with pytest.raises(RouterBingXPreflightError) as raised:
             run_bingx_preflight(
@@ -595,7 +635,9 @@ def test_a_positions_document_that_is_not_the_array_is_refused() -> None:
                 clock=lambda: LOCAL_MILLIS,
             )
 
-        assert str(raised.value).startswith(f"{BINGX_PREFLIGHT_CODE}: ")
+        message = str(raised.value)
+        assert message.startswith(f"{BINGX_PREFLIGHT_CODE}: ")
+        assert "position_mode" in message
 
 
 # -- The fourth refusal: insufficient_balance ---------------------------------------
@@ -627,7 +669,7 @@ def test_insufficient_balance_refuses_below_and_passes_at_equity() -> None:
     assert message.startswith(f"{INSUFFICIENT_BALANCE_CODE}: ")
     assert thin.calls == [
         ("server_time",),
-        ("positions", None),
+        ("position_mode",),
         ("balance",),
     ]
 
@@ -840,29 +882,35 @@ def test_the_client_face_is_required_up_front() -> None:
     """A client missing an endpoint is a fault of the ask, named before any check.
 
     The preflight reads the venue only through the five endpoints it
-    names, and re-implements none of them; a client missing one is
-    refused up front rather than unwinding an AttributeError from the
-    middle of the ordered checks.
+    names — ``position_mode`` among them since the corrected hedge law
+    — and re-implements none of them; a client missing one is refused
+    up front rather than unwinding an AttributeError from the middle of
+    the ordered checks.
     """
     from types import SimpleNamespace
 
-    incomplete = SimpleNamespace(
-        server_time=lambda: LOCAL_MILLIS,
-        positions=lambda symbol=None: (),
-        balance=lambda: {},
-        set_margin_type=lambda symbol, margin_type="ISOLATED": {},
-    )
-
-    with pytest.raises(RouterBingXPreflightError) as raised:
-        run_bingx_preflight(
-            incomplete,
-            equity_usdt="10000",
-            symbols=[],
-            env={},
-            clock=lambda: LOCAL_MILLIS,
+    faces = {
+        "server_time": lambda: LOCAL_MILLIS,
+        "position_mode": lambda: False,
+        "balance": lambda: {},
+        "set_margin_type": lambda symbol, margin_type="ISOLATED": {},
+        "set_leverage": lambda symbol, leverage=1, *, side="BOTH": {},
+    }
+    for missing in ("position_mode", "set_leverage"):
+        incomplete = SimpleNamespace(
+            **{name: face for name, face in faces.items() if name != missing}
         )
 
-    assert "set_leverage" in str(raised.value)
+        with pytest.raises(RouterBingXPreflightError) as raised:
+            run_bingx_preflight(
+                incomplete,
+                equity_usdt="10000",
+                symbols=[],
+                env={},
+                clock=lambda: LOCAL_MILLIS,
+            )
+
+        assert missing in str(raised.value)
 
 
 def test_symbols_that_name_nothing_are_refused() -> None:

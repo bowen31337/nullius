@@ -66,6 +66,7 @@ from router.bingx_client import (
     OPEN_ORDERS_PATH,
     ORDER_NOT_FOUND_CODE,
     ORDER_PATH,
+    POSITION_MODE_PATH,
     POSITIONS_PATH,
     PREMIUM_INDEX_PATH,
     SERVER_TIME_PATH,
@@ -155,6 +156,13 @@ class _StandIn:
     signature does not recompute is refused with the venue's own envelope
     and recorded as a failure, so a run that "succeeded" over a broken
     signature cannot pass silently.
+
+    The account's position mode is one-way by default — the state a
+    mirror-ready account holds — and a test flips ``dual_side_position``
+    to stage the hedge-mode account the live smoke test began on.  The
+    answer is served in the capture's own spelling, the fact as a
+    string, so the client's reading of it is exercised exactly as the
+    venue spells it.
     """
 
     def __init__(self) -> None:
@@ -162,6 +170,7 @@ class _StandIn:
         self.signature_failures: list[dict] = []
         self.orders: dict[str, dict] = {}
         self.open_orders: list[dict] = []
+        self.dual_side_position = False
         self._lock = threading.Lock()
 
     # -- introspection used by the tests -----------------------------------
@@ -209,6 +218,17 @@ class _StandIn:
             }
         if path == POSITIONS_PATH:
             return 200, {"code": 0, "msg": "", "data": []}
+        if path == POSITION_MODE_PATH:
+            # One-way by default; the live capture's string spelling.
+            return 200, {
+                "code": 0,
+                "msg": "",
+                "data": {
+                    "dualSidePosition": (
+                        "true" if self.dual_side_position else "false"
+                    )
+                },
+            }
         if path == MARGIN_TYPE_PATH:
             return 200, {"code": 0, "msg": "", "data": {}}
         if path == LEVERAGE_PATH:
@@ -493,6 +513,38 @@ def test_the_idempotency_key_in_the_store_is_the_full_sixty_four_hex(
         ]
     assert len(keys) == 5
     assert all(len(key) == 64 and key == key.lower() for key in keys)
+
+
+# -- The hedge-mode door --------------------------------------------------------
+
+
+def test_a_hedge_mode_account_refuses_before_any_order_leaves(
+    tmp_path, stand_in, book_path, database_url
+):
+    """The live smoke test's first symptom, replayed end to end.
+
+    A fresh sub-account in hedge mode holding no positions passed the
+    old preflight — the inference it prescribed had no position row to
+    inspect — and the placement failed at the venue's leverage step with
+    BingX code 109400 instead of at this door.  The account's own
+    dualSidePosition answer now refuses here: the mode question is asked
+    (the stand-in records the signed read), the run exits 1 naming
+    hedge_mode and the one-way repair, and not one order leaves.
+    """
+    _, venue, url = stand_in
+    venue.dual_side_position = True
+
+    result = _run(
+        ["--book", str(book_path), "--place"],
+        _child_env(tmp_path, url, database_url),
+    )
+
+    assert result.returncode == 1
+    assert "hedge_mode" in result.stderr
+    assert "one-way" in result.stderr
+    assert venue.signature_failures == []
+    assert any(r["path"] == POSITION_MODE_PATH for r in venue.requests)
+    assert venue.order_posts() == []
 
 
 # -- Credentials ---------------------------------------------------------------

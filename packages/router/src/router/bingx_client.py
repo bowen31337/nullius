@@ -92,6 +92,7 @@ __all__ = [
     "OPEN_ORDERS_PATH",
     "ORDER_NOT_FOUND_CODE",
     "ORDER_PATH",
+    "POSITION_MODE_PATH",
     "PREMIUM_INDEX_PATH",
     "RECV_WINDOW_MILLISECONDS",
     "SECRET_KEY_ENV",
@@ -153,6 +154,15 @@ MARGIN_TYPE_PATH = "/openApi/swap/v2/trade/marginType"
 LEVERAGE_PATH = "/openApi/swap/v2/trade/leverage"
 ORDER_PATH = "/openApi/swap/v2/trade/order"
 OPEN_ORDERS_PATH = "/openApi/swap/v2/trade/openOrders"
+
+#: The account's position mode — the one account read the live VST smoke
+#: test added (``bug_spec_bingx_vst_smoke.xml``, bug 2).  The hedge-mode
+#: question is asked here, never inferred from a position's
+#: ``positionSide``: a flat hedge-mode account holds no row to inspect,
+#: and BingX labels a one-way account's positions LONG and SHORT as well.
+#: v1, not the v2 family above — this is the path the venue itself
+#: answers for ``positionSide/dual``.
+POSITION_MODE_PATH = "/openApi/swap/v1/positionSide/dual"
 
 #: The venue's margin modes, as it spells them on the wire.  Feature 1's
 #: sentence lists exactly these two (``ISOLATED`` and ``CROSSED``); the book's
@@ -689,6 +699,28 @@ class BingXClient:
             "GET", POSITIONS_PATH, operation=OPERATION_ACCOUNT, parameters=parameters
         )
 
+    def position_mode(self) -> bool:
+        """GET the account's position mode — the boolean ``dualSidePosition``.
+
+        Signed, host-guarded and envelope-read exactly like every other
+        account read, because the answer names this account's own
+        arrangement.  The venue spells the fact as the strings
+        ``"true"``/``"false"`` (the live captures the smoke test took);
+        a JSON boolean is the same fact's other spelling and reads the
+        same.  Anything else is a response fault rather than a mode
+        guessed at — the preflight's hedge refusal stands on this
+        boolean, and a value this cannot judge must not pass for
+        one-way.
+        """
+        data = self._request(
+            "GET", POSITION_MODE_PATH, operation=OPERATION_ACCOUNT
+        )
+        if not isinstance(data, Mapping) or "dualSidePosition" not in data:
+            raise RouterBingXResponseError(
+                200, "the position-mode payload carried no 'dualSidePosition' field"
+            )
+        return _dual_side_position(data["dualSidePosition"])
+
     def set_margin_type(
         self,
         symbol: str,
@@ -805,6 +837,32 @@ def _require_order_id(value: Any) -> str:
             "by this field, so a blank value names no order"
         )
     return value.strip()
+
+
+def _dual_side_position(value: Any) -> bool:
+    """The venue's ``dualSidePosition`` as a boolean, or a response fault.
+
+    The live captures spell the fact as the strings ``"true"`` and
+    ``"false"`` (``fixtures/bingx_vst/live/position_mode_*.json``); a
+    JSON boolean is the same fact's other spelling.  Nothing else is
+    read, and no truthiness is guessed at — the preflight's hedge-mode
+    refusal stands on the venue's own words, so an answer this cannot
+    judge must not pass for one-way (nor refuse as hedge on a value the
+    account never sent).
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+    raise RouterBingXResponseError(
+        200,
+        f"'dualSidePosition' {value!r} is neither of the spellings the "
+        "venue's position-mode document answers",
+    )
 
 
 def _normalize_response(answer: Any) -> tuple[int, bytes]:

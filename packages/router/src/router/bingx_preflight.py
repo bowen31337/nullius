@@ -1,16 +1,31 @@
 """Stage 1's preflight: the door between a plan and any placement.
 
-``additions_spec_bingx_vst_mirror.xml``, "BingX VST Mirror", feature 2:
+``additions_spec_bingx_vst_mirror.xml``, "BingX VST Mirror", feature 2,
+under the correction ``bug_spec_bingx_vst_smoke.xml`` bug 2 won from the
+first live VST run:
 *System runs a VST preflight before any placement and returns a
 PreflightReport, or the first refusal, in this order: orders_killed while
 risk.kill.require_orders_allowed refuses; clock_skew when the venue's
 server time differs from the local clock by more than 1000 ms; hedge_mode
-when any position reports positionSide LONG or SHORT, with the repair
+when the account's own position-mode answer is hedge, with the repair
 "switch the VST account to one-way mode"; insufficient_balance when
 available USDT is below the book's equity_usdt.  For each symbol the plan
 will order, it then sets margin type ISOLATED and leverage 1, treating an
 already-set answer as success.  The report records the measured skew, the
 available balance and the symbols prepared.*
+
+**Why the hedge question is asked of the account, not its rows.**  The
+Stage 1 spec prescribed inferring the mode from any position reporting
+``positionSide`` ``LONG`` or ``SHORT``, and the live smoke test caught
+that inference wrong in both directions: a flat hedge-mode account holds
+no rows to inspect (it passed, and the placement failed at the venue's
+leverage step with BingX code 109400 "In the Hedge mode, the 'Side'
+field can only be set to LONG, SHORT or ALL"), and BingX labels a
+one-way account's positions ``LONG`` and ``SHORT`` as well (a one-way
+DOGE short was refused here).  The mode is therefore a fact the account
+answers about itself — the client's ``position_mode()``, the boolean
+``dualSidePosition`` of ``GET /openApi/swap/v1/positionSide/dual`` — and
+this module never reads it out of a position's ``positionSide``.
 
 **Why the refusals are raised, and why they are ordered.**  The four are
 answers a preflight exists to give *before* a single order leaves, so
@@ -96,7 +111,6 @@ __all__ = [
     "BINGX_PREFLIGHT_CODE",
     "CLOCK_SKEW_CODE",
     "HEDGE_MODE_CODE",
-    "HEDGE_POSITION_SIDES",
     "INSUFFICIENT_BALANCE_CODE",
     "MAX_CLOCK_SKEW_MILLISECONDS",
     "ONE_WAY_REPAIR",
@@ -144,13 +158,6 @@ MAX_CLOCK_SKEW_MILLISECONDS = 1000
 #: because the mirror's sizing assumes no leverage: equity times weight
 #: is the notional the account itself funds.
 PREFLIGHT_LEVERAGE = 1
-
-#: The two position sides only a hedge-mode account reports.  A one-way
-#: account answers ``BOTH`` (the side feature 3's own order parameters
-#: carry), so membership in this set — not equality with ``BOTH`` — is
-#: the test: a side this set does not name is one the mirror can place
-#: under.
-HEDGE_POSITION_SIDES = frozenset({"LONG", "SHORT"})
 
 #: The repair the feature's own sentence quotes for ``hedge_mode``,
 #: held as a constant so the refusal's message and any caller rendering
@@ -263,23 +270,26 @@ class RouterBingXClockSkewError(RouterBingXPreflightError):
 class RouterBingXHedgeModeError(RouterBingXPreflightError):
     """The VST account is in hedge mode; the mirror places one-way orders.
 
-    The third of the four.  Any position the account reports with
-    ``positionSide`` ``LONG`` or ``SHORT`` proves the account holds
-    positions per side, while every order the plan carries states
-    ``positionSide`` ``BOTH`` — feature 3's own parameters, the one-way
-    spelling — and the venue refuses that combination outright.  The
-    repair is the one the feature's sentence quotes verbatim:
-    :data:`ONE_WAY_REPAIR`.  :attr:`symbol` and :attr:`position_side`
-    carry the position that proved it, in the venue's own spellings.
+    The third of the four.  The mode is asked of the account itself —
+    the client's ``position_mode()``, the boolean ``dualSidePosition``
+    the venue's position-mode document answers — never inferred from
+    the positions the account happens to hold, because both inferences
+    the live smoke test caught were wrong: a flat hedge-mode account
+    holds no rows to inspect, and BingX labels a one-way account's
+    positions ``LONG`` and ``SHORT`` as well.  Every order the plan
+    carries states ``positionSide`` ``BOTH`` — feature 3's own
+    parameters, the one-way spelling — and the venue refuses that
+    combination outright.  The repair is the one the feature's sentence
+    quotes verbatim: :data:`ONE_WAY_REPAIR`.  :attr:`dual_side_position`
+    carries the account's own answer.
     """
 
-    def __init__(self, symbol: Any, position_side: Any) -> None:
-        self.symbol = symbol
-        self.position_side = position_side
+    def __init__(self, dual_side_position: bool) -> None:
+        self.dual_side_position = dual_side_position
         super().__init__(
-            f"{HEDGE_MODE_CODE}: the VST account reports positionSide "
-            f"{position_side!r} on {symbol!r}, and the mirror places "
-            f"one-way orders only; {ONE_WAY_REPAIR}"
+            f"{HEDGE_MODE_CODE}: the VST account answers dualSidePosition "
+            f"{'true' if dual_side_position else 'false'}, and the mirror "
+            f"places one-way orders only; {ONE_WAY_REPAIR}"
         )
 
 
@@ -362,13 +372,16 @@ def _require_client_face(client: Any) -> None:
 
     The preflight holds no transport of its own — every venue fact
     arrives through the client it is handed, which is what makes the
-    suite's double a complete stand-in.  A client missing an endpoint is
-    a fault of the ask named here, up front, rather than an
-    :class:`AttributeError` from the middle of the ordered checks.
+    suite's double a complete stand-in.  ``position_mode`` is among the
+    five since the corrected hedge law: the mode is a fact the account
+    answers, and a client that cannot ask it cannot preflight at all.
+    A client missing an endpoint is a fault of the ask named here, up
+    front, rather than an :class:`AttributeError` from the middle of
+    the ordered checks.
     """
     for name in (
         "server_time",
-        "positions",
+        "position_mode",
         "balance",
         "set_margin_type",
         "set_leverage",
@@ -525,44 +538,6 @@ def _kill_guard() -> tuple[Any, Any, Any]:
     return require_orders_allowed, RiskOrdersKilledError, RiskError
 
 
-def _venue_positions(payload: Any) -> list[Mapping[str, Any]]:
-    """The positions payload as a list of the venue's position objects.
-
-    The venue's position document answers ``data`` as an array (both the
-    v2 and v3 spellings of the endpoint agree on this), each entry one
-    position.  ``None`` counts as no positions — a flat account, the
-    state the end-to-end stand-in holds — rather than a malformed
-    answer, the same reading feature 4's mirror gives the same field
-    when it replaces the book's positions with the venue's.  Anything
-    else is refused naming the shape received, because the hedge
-    question cannot be asked of a value that is not the venue's list.
-    """
-    if payload is None:
-        return []
-    if not isinstance(payload, Sequence) or isinstance(
-        payload, (str, bytes)
-    ):
-        raise RouterBingXPreflightError(
-            f"{BINGX_PREFLIGHT_CODE}: the positions payload is the venue's "
-            f"array of position objects, got {payload!r} "
-            f"({type(payload).__name__}); the hedge-mode question is asked "
-            "of each position the account reports, and a value that is not "
-            "the array names nothing to ask it of (feature 2)"
-        )
-    entries: list[Mapping[str, Any]] = []
-    for entry in payload:
-        if not isinstance(entry, Mapping):
-            raise RouterBingXPreflightError(
-                f"{BINGX_PREFLIGHT_CODE}: each entry in the positions "
-                f"payload is one of the venue's position objects, got "
-                f"{entry!r} ({type(entry).__name__}); the positionSide the "
-                "hedge-mode check reads is a field of the position, and an "
-                "entry that is not an object carries none (feature 2)"
-            )
-        entries.append(entry)
-    return entries
-
-
 def _available_usdt(payload: Any) -> Decimal:
     """Read the account's available USDT out of the venue's balance payload.
 
@@ -712,8 +687,9 @@ def run_bingx_preflight(
     2. ``clock_skew`` — the venue's server time against the local
        clock, refused strictly beyond
        :data:`MAX_CLOCK_SKEW_MILLISECONDS`.
-    3. ``hedge_mode`` — any position reporting ``positionSide``
-       ``LONG`` or ``SHORT``, repaired by
+    3. ``hedge_mode`` — the account's own ``position_mode()`` answer,
+       refused when ``dualSidePosition`` is true — never inferred from
+       the positions the account happens to hold — repaired by
        :data:`ONE_WAY_REPAIR`.
     4. ``insufficient_balance`` — available USDT strictly below
        ``equity_usdt``.
@@ -721,7 +697,8 @@ def run_bingx_preflight(
     Each argument is a keyword:
 
     * ``client`` — feature 1's :class:`~router.bingx_client.BingXClient`,
-      or a double carrying its five endpoints.  Every venue fact is
+      or a double carrying its five endpoints (``position_mode`` among
+      them since the corrected hedge law).  Every venue fact is
       read through it; this module opens nothing itself.
     * ``equity_usdt`` — the book's own scalar, as the book spelled it
       (a decimal string or a :class:`~decimal.Decimal`; a ``float`` is
@@ -797,12 +774,19 @@ def run_bingx_preflight(
         raise RouterBingXClockSkewError(skew_ms, server_ms, local_ms)
 
     # 3 — hedge_mode: the account's shape, before its size.
-    for position in _venue_positions(client.positions()):
-        position_side = position.get("positionSide")
-        if position_side in HEDGE_POSITION_SIDES:
-            raise RouterBingXHedgeModeError(
-                position.get("symbol"), position_side
-            )
+    dual_side = client.position_mode()
+    if not isinstance(dual_side, bool):
+        raise RouterBingXPreflightError(
+            f"{BINGX_PREFLIGHT_CODE}: the client's position_mode must answer "
+            f"the boolean dualSidePosition the venue's position-mode "
+            f"document carries, got {dual_side!r} "
+            f"({type(dual_side).__name__}); the hedge-mode question is "
+            "asked of the account's own answer — never inferred from the "
+            "positions it happens to hold — and a value that is not the "
+            "boolean names no mode to read (feature 2)"
+        )
+    if dual_side:
+        raise RouterBingXHedgeModeError(dual_side)
 
     # 4 — insufficient_balance: the plan's funding, before its writes.
     available = _available_usdt(client.balance())
@@ -812,7 +796,7 @@ def run_bingx_preflight(
     # The preparation: one margin arrangement per ordered symbol, in the
     # book's sorted order, each write absorbing only the already-set
     # answer.  The leverage rides the client's one-way default side —
-    # the hedge check above has proved the account holds ``BOTH``.
+    # the hedge check above has proved the account answers one-way.
     for symbol in prepared:
         _prepare(
             lambda symbol=symbol: client.set_margin_type(
