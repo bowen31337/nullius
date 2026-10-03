@@ -50,12 +50,17 @@ rebalance did not name is never passed to ``DELETE
 *left untouched*.
 
 **A refusal is translated, an unknown status is refused.**  The venue's
-``not_found`` answer is not an exception here: feature 1 raises
-:class:`~router.bingx_client.RouterBingXRefusedError` carrying the venue's
-code, and this module judges that code — :data:`~router.bingx_client.
-ORDER_NOT_FOUND_CODE` becomes the ``not_found`` status, any other code
-propagates, because an order that never landed is a fact about the order
-and a signature the venue rejected is a fault of the ask.  In the other
+``not_found`` answer is not an exception here: the venue does not answer an
+empty order object for a ``clientOrderID`` it holds no record of — it
+*refuses*, feature 1 raises :class:`~router.bingx_client.
+RouterBingXRefusedError` carrying the venue's code, and this module judges
+that code against :data:`ORDER_NOT_FOUND_CODES` (the live endpoint's
+``109421`` *order not exist*, recorded in fixture
+``live/query_order_not_exist.json``, beside the client's declared
+:data:`~router.bingx_client.ORDER_NOT_FOUND_CODE`) — a code in the set
+becomes the ``not_found`` status, any other code propagates, because an
+order that never landed is a fact about the order and a signature the
+venue rejected is a fault of the ask.  In the other
 direction, the status vocabulary is *closed* to the six words the sentence
 names: a venue answer carrying a status this system has no word for is a
 translation nobody has written rather than a status to pass through, so it
@@ -101,6 +106,7 @@ __all__ = [
     "CLIENT_ORDER_ID_FIELD",
     "EXECUTED_QUANTITY_FIELD",
     "OPEN_ORDERS_FIELD",
+    "ORDER_NOT_FOUND_CODES",
     "STATUS_FIELD",
     "SYMBOL_FIELD",
     "VST_OPEN_ORDER_STATUSES",
@@ -165,6 +171,26 @@ VST_ORDER_STATUSES = frozenset(
 #: translated into, so a caller reads one vocabulary of six statuses in
 #: which a missing order is a value, not an exception.
 VST_ORDER_NOT_FOUND = "not_found"
+
+#: The venue's own error codes for *it holds no record of this order* — the
+#: refusal codes :func:`read_back_orders` answers as
+#: :data:`VST_ORDER_NOT_FOUND` instead of a fault, and the only ones: every
+#: other code keeps feature 1's refusal and propagates, because an order
+#: that never landed is a fact about the order while a signature the venue
+#: rejected is a fault of the ask.  Two spellings of the one fact.
+#: ``109421`` is what the live VST endpoint answers — ``{"code": 109421,
+#: "msg": "order not exist", "data": {}}``, recorded verbatim in fixture
+#: ``live/query_order_not_exist.json`` when the first live smoke test asked
+#: after an order that had been refused at placement: the venue does not
+#: answer an empty order object for an unknown ``clientOrderID``, it
+#: refuses, and the refusal is what there is to judge.  Beside it the
+#: client's declared :data:`~router.bingx_client.ORDER_NOT_FOUND_CODE`,
+#: which feature 1's own contract names as a code this read-back judges —
+#: written from the spec's assumption before any live answer existed, and
+#: held as the client's public spelling of the same fact.  Membership is
+#: the test, not equality, because the venue has sent its codes as
+#: integers and as strings across versions.
+ORDER_NOT_FOUND_CODES = frozenset({ORDER_NOT_FOUND_CODE, 109421})
 
 #: The two statuses that mean an order is still working on the venue's book
 #: and can therefore be cancelled — the complement, within the closed
@@ -539,14 +565,14 @@ def _status_from(
 def _is_not_found(code: Any) -> bool:
     """Whether the venue's refusal code is its *no such order* answer.
 
-    Compared by spelling rather than by identity: the venue has sent the
-    code as an integer and as a string across versions, and the client
-    carries whatever it sent verbatim, so both spellings of
-    :data:`~router.bingx_client.ORDER_NOT_FOUND_CODE` are the same answer.
+    Compared by spelling rather than by identity: the venue has sent its
+    codes as integers and as strings across versions, and the client
+    carries whatever it sent verbatim, so every spelling of every code in
+    :data:`ORDER_NOT_FOUND_CODES` is the same answer.
     """
     if isinstance(code, bool) or code is None:
         return False
-    return str(code).strip() == str(ORDER_NOT_FOUND_CODE)
+    return str(code).strip() in {str(c) for c in ORDER_NOT_FOUND_CODES}
 
 
 def _open_order_entries(client: Any) -> list[Mapping]:
@@ -592,12 +618,16 @@ def read_back_orders(*, client: Any, orders: Any) -> list[VSTOrderStatus]:
     Walks ``orders`` — the plan's legs, in the order it is handed — and
     looks each up on the venue by its ``clientOrderID`` with feature 1's
     single-order read, folding the answer into a :class:`VSTOrderStatus`.
-    A venue refusal is judged: the not-found code becomes the
-    :data:`VST_ORDER_NOT_FOUND` status (the order never landed), any other
-    code propagates as feature 1 raised it, because a rejected signature is
-    a fault of the ask rather than a fact about the order.  A
-    :class:`~router.bingx_order.BingXRefusedLeg` among the legs is skipped:
-    the gates closed it and it names no venue order to look up.
+    A venue refusal is judged: a code in :data:`ORDER_NOT_FOUND_CODES` —
+    the live venue *refuses* an order it holds no record of, code 109421
+    ``order not exist``, rather than answering an empty order — becomes
+    that order's :data:`VST_ORDER_NOT_FOUND` status and the walk continues
+    with the remaining legs, so one missing leg cannot hide the placed
+    ones; any other code propagates as feature 1 raised it, because a
+    rejected signature is a fault of the ask rather than a fact about the
+    order.  A :class:`~router.bingx_order.BingXRefusedLeg` among the legs
+    is skipped: the gates closed it and it names no venue order to look
+    up.
 
     A pure function of the injected client and the legs: it reads no clock,
     touches no store and opens no socket of its own.  Refuses

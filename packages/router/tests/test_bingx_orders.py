@@ -26,8 +26,10 @@ propagates unchanged.  All of this is asserted below.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from router.bingx_client import (
@@ -57,6 +59,10 @@ OTHER_BOOK_ID = "synthetic-vst-1"
 OTHER_REBALANCE_TS = datetime.fromisoformat("2026-09-30T01:00:00+00:00")
 
 SYMBOLS = ("BTC-USDT", "ETH-USDT", "SOL-USDT")
+
+#: The recorded VST fixtures, as every suite in this member reaches them:
+#: inputs, never edited.
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "bingx_vst"
 
 
 def _identifier(symbol: str, *, book_id: str = BOOK_ID, ts: datetime = REBALANCE_TS) -> str:
@@ -226,6 +232,78 @@ def test_a_not_found_spelled_as_a_string_code_is_also_not_found() -> None:
     (status,) = read_back_orders(client=client, orders=[_order("BTC-USDT")])
 
     assert status.status == VST_ORDER_NOT_FOUND
+
+
+def _live_not_exist_refusal() -> RouterBingXRefusedError:
+    """The venue's verbatim refusal for an order it holds no record of.
+
+    Read from the live recording ``live/query_order_not_exist.json`` — the
+    answer the first live smoke test met when ``--status`` asked after an
+    order that had been refused at placement: ``{"code": 109421, "msg":
+    "order not exist", "data": {}}``.  The fixture is an input and is never
+    edited; reading the recording pins the translation against what the
+    venue actually answers, not what a spec assumed it would.
+    """
+    answer = json.loads(
+        (FIXTURES / "live" / "query_order_not_exist.json").read_text()
+    )
+    return RouterBingXRefusedError(answer["code"], answer["msg"])
+
+
+def test_the_live_order_not_exist_refusal_is_that_orders_not_found() -> None:
+    """The venue does not answer an empty order object for a
+    ``clientOrderID`` it holds no record of — it *refuses*, code 109421
+    ``order not exist``.  That refusal is one leg's ``not_found`` status
+    with no measurements: a fact about the order, not a fault that unwinds
+    the whole read-back and hides the legs that were placed."""
+    ids = {s: _identifier(s) for s in SYMBOLS}
+    client = _FakeClient(
+        queries={
+            ids["BTC-USDT"]: _filled(ids["BTC-USDT"], status="FILLED", qty="1", price="2"),
+            ids["ETH-USDT"]: _live_not_exist_refusal(),  # never placed
+            ids["SOL-USDT"]: _filled(ids["SOL-USDT"], status="NEW"),
+        }
+    )
+
+    statuses = read_back_orders(client=client, orders=[_order(s) for s in SYMBOLS])
+
+    assert [(s.status, s.executed_quantity, s.average_price) for s in statuses] == [
+        ("FILLED", Decimal("1"), Decimal("2")),
+        (VST_ORDER_NOT_FOUND, None, None),
+        ("NEW", Decimal("0"), Decimal("0")),
+    ]
+    # The read-back kept going: every leg was still asked of the venue.
+    assert [q[0] for q in client.queried] == [ids[s] for s in SYMBOLS]
+
+
+def test_the_live_not_exist_code_spelled_as_text_is_also_not_found() -> None:
+    """The live code is judged by spelling like the declared one: the venue
+    has sent its codes as integers and as strings across versions."""
+    cid = _identifier("BTC-USDT")
+    refusal = _live_not_exist_refusal()
+    client = _FakeClient(
+        queries={cid: RouterBingXRefusedError(str(refusal.code), refusal.msg)}
+    )
+
+    (status,) = read_back_orders(client=client, orders=[_order("BTC-USDT")])
+
+    assert status.status == VST_ORDER_NOT_FOUND
+
+
+def test_a_neighbouring_venue_code_keeps_raising() -> None:
+    """Only the not-found spellings become a status: a neighbouring order
+    code — the venue's duplicate-clientOrderID answer to a re-post — keeps
+    feature 1's refusal and propagates, because it is a fault of the ask
+    and translating it would report an order the venue did hold."""
+    cid = _identifier("BTC-USDT")
+    client = _FakeClient(
+        queries={cid: RouterBingXRefusedError(109404, "duplicate clientOrderID")}
+    )
+
+    with pytest.raises(RouterBingXRefusedError) as raised:
+        read_back_orders(client=client, orders=[_order("BTC-USDT")])
+
+    assert raised.value.code == 109404
 
 
 def test_any_other_venue_refusal_propagates_unchanged() -> None:
