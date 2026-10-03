@@ -47,6 +47,7 @@ from router.bingx_mirror import (
     MIRROR_OUTCOME_PRIOR,
     MIRROR_OUTCOME_REFUSED,
     PLACEMENT_FIELD,
+    REQUIRED_MARGIN_HEADROOM,
     VST_MIRROR_WEIGHT_SCHEDULE,
     MirrorLeg,
     RouterBingXMirrorError,
@@ -55,8 +56,18 @@ from router.bingx_mirror import (
     live_positions,
     main,
     mirror_place,
+    plan_required_margin,
 )
-from router.bingx_order import BingXOrder, BingXRefusedLeg
+from router.bingx_order import (
+    BINGX_BUY,
+    BINGX_LIMIT_ORDER,
+    BINGX_MARKET_ORDER,
+    BINGX_POST_ONLY,
+    BINGX_SELL,
+    BingXOrder,
+    BingXRefusedLeg,
+)
+from router.bingx_preflight import RouterBingXInsufficientBalanceError
 from router.errors import RouterRateLimitedError
 from router.limiter import (
     DEFAULT_WEIGHT_SCOPE,
@@ -119,6 +130,20 @@ def _live_depth_data() -> dict:
     hand-written row.
     """
     document = _load("live/depth_eth_usdt.json")
+    return document["data"]
+
+
+def _live_balance_data() -> dict:
+    """The recorded VST account's balance row, verbatim under ``data``.
+
+    The fixture is an input and is never edited: it is the live capture
+    (``live/balance.json`` of 2026-10-03) that pinned this defect — an
+    account answering ``availableMargin`` 7503.0716 with 2496.2791
+    already used by the book's own BTC long and DOGE short, against a
+    book whose whole ``equity_usdt`` is 10000.  Tests read it through the
+    client's own ``balance()`` envelope, never a hand-written row.
+    """
+    document = _load("live/balance.json")
     return document["data"]
 
 
@@ -324,6 +349,28 @@ def _plan(client: _MirrorClient, book: dict | None = None) -> list:
 
 def _order_symbols(plan: list) -> list[str]:
     return [leg.symbol for leg in plan if isinstance(leg, BingXOrder)]
+
+
+def _manual_order(
+    *, symbol: str, side: str, order_type: str, quantity: str, price: str | None = None
+) -> BingXOrder:
+    """A hand-built order leg, for driving the margin arithmetic directly.
+
+    Carries the one-way spelling every assembled order carries, so the
+    plan's own value type answers :func:`plan_required_margin` without a
+    full book, sizer and gate run behind it — the arithmetic's terms
+    (side, type, quantity, price) stated and nothing else.
+    """
+    return BingXOrder(
+        symbol=symbol,
+        side=side,
+        position_side="BOTH",
+        type=order_type,
+        quantity=quantity,
+        price=price,
+        time_in_force=BINGX_POST_ONLY if order_type == BINGX_LIMIT_ORDER else None,
+        client_order_id=f"margin-{symbol}-{side}".lower()[:40],
+    )
 
 
 # -- Reading the plan ----------------------------------------------------------
@@ -660,6 +707,185 @@ def test_a_refused_leg_is_not_placed_but_its_siblings_are(test_database_url):
         leg.symbol for leg in plan if isinstance(leg, BingXRefusedLeg)
     }
     assert placed_symbols.isdisjoint(refused)
+
+
+# -- mirror_place: the balance door judges the plan's own orders ----------------
+
+
+def test_rebalancing_a_book_that_already_holds_positions_passes_the_balance_door(
+    test_database_url,
+):
+    """The defect, replayed over the recorded account.
+
+    The reproduce clause's exact state: a book of equity 10000 whose BTC
+    long 0.0236 and DOGE short 5402 (the verbatim rows of
+    ``live/positions_one_way_short.json``) already use 2496.28 of margin,
+    against the verbatim balance row of ``live/balance.json`` answering
+    availableMargin 7503.0716.  The plan then needs only the remaining
+    legs — about 2800 of new margin at 1x, well within 7503 — but the old
+    door compared availableMargin with the book's whole equity_usdt and
+    refused every rebalance of a holding book (and comparing the
+    account's equity, 9999.28, would have refused too, after the
+    unrealised loss).  The door now judges the margin the orders about to
+    be sent need, so the remaining legs leave.
+    """
+    client = _MirrorClient(
+        positions=_live_positions_data(), balance=_live_balance_data()
+    )
+    limiter = _CountingLimiter()
+    store = RouterOrderPlacementStore(test_database_url)
+
+    outcomes = _place(
+        client, _plan(client), store, limiter, database_url=test_database_url
+    )
+
+    # The DOGE leg reduces the recorded short and the BTC leg tops up the
+    # recorded long; both are orders about to be sent, and both leave.
+    assert client.placed, "the balance door refused a fundable rebalance"
+    assert all(o.outcome == MIRROR_OUTCOME_PLACED for o in outcomes.values())
+    assert {o.symbol for o in client.placed} == set(outcomes)
+
+
+def test_the_balance_door_refuses_when_the_account_cannot_fund_the_plan(
+    test_database_url,
+):
+    """Below the required margin the door refuses, and nothing is asked.
+
+    The same recorded account with its availableMargin read down to 100 —
+    below the about-2800 the remaining legs need — refuses with the
+    correction's own message, naming both decimals and the one repair,
+    and the door closes before the venue is asked to hold a single margin
+    arrangement or book a single order.
+    """
+    client = _MirrorClient(
+        positions=_live_positions_data(),
+        balance={"balance": {"asset": "USDT", "availableMargin": "100"}},
+    )
+    limiter = _CountingLimiter()
+    store = RouterOrderPlacementStore(test_database_url)
+
+    with pytest.raises(RouterBingXInsufficientBalanceError) as raised:
+        _place(client, _plan(client), store, limiter, database_url=test_database_url)
+
+    message = str(raised.value)
+    assert message.startswith(
+        "insufficient_balance: available USDT 100 is below the "
+    )
+    assert "this plan's orders need; fund the VST account and run the " \
+        "preflight again" in message
+    assert client.placed == []
+    assert not [call for call in client.calls if call[0] == "set_margin_type"]
+
+
+def test_the_required_margin_counts_only_what_grows_a_position():
+    """The arithmetic the door judges, term by term.
+
+    Five legs over three held positions, one of every shape the law
+    names: a passive BUY from flat (BTC, at its own limit price), a
+    passive SELL that only reduces a long (ETH, free), a passive SELL
+    that crosses through zero (1000PEPE, counted only beyond it), a
+    MARKET BUY from flat (SOL, at the fixture document's own mark
+    118.392) and a MARKET BUY that only reduces a short (DOGE, free).
+    Only the growing parts count, at the preflight's leverage of one,
+    and the total carries the half-percent headroom.
+    """
+    client = _MirrorClient(
+        positions=(
+            {"symbol": "ETH-USDT", "positionSide": "LONG", "positionAmt": "2"},
+            {"symbol": "DOGE-USDT", "positionSide": "SHORT", "positionAmt": "100"},
+            {"symbol": "1000PEPE-USDT", "positionSide": "LONG", "positionAmt": "2"},
+        )
+    )
+    orders = [
+        # From flat: the whole 0.5 × the order's own limit price.
+        _manual_order(
+            symbol="BTC-USDT",
+            side=BINGX_BUY,
+            order_type=BINGX_LIMIT_ORDER,
+            quantity="0.5",
+            price="83000",
+        ),
+        # Reduces a long of 2: no new margin at any price.
+        _manual_order(
+            symbol="ETH-USDT",
+            side=BINGX_SELL,
+            order_type=BINGX_LIMIT_ORDER,
+            quantity="1",
+            price="2600",
+        ),
+        # Crosses through zero: only the 3 beyond it counts.
+        _manual_order(
+            symbol="1000PEPE-USDT",
+            side=BINGX_SELL,
+            order_type=BINGX_LIMIT_ORDER,
+            quantity="5",
+            price="0.0044",
+        ),
+        # MARKET from flat: the mark price the order itself does not carry.
+        _manual_order(
+            symbol="SOL-USDT",
+            side=BINGX_BUY,
+            order_type=BINGX_MARKET_ORDER,
+            quantity="8",
+        ),
+        # Reduces a short of 100: free, though it is a BUY.
+        _manual_order(
+            symbol="DOGE-USDT",
+            side=BINGX_BUY,
+            order_type=BINGX_MARKET_ORDER,
+            quantity="40",
+        ),
+    ]
+
+    margin = plan_required_margin(client=client, orders=orders)
+
+    bare = (
+        Decimal("0.5") * Decimal("83000")
+        + Decimal("3") * Decimal("0.0044")
+        + Decimal("8") * Decimal("118.392")
+    )
+    assert margin == bare * REQUIRED_MARGIN_HEADROOM
+    assert margin == Decimal("42659.384946")
+
+
+def test_an_all_reducing_or_empty_plan_needs_no_margin(test_database_url):
+    """Zero need passes the door on an account with nothing available.
+
+    The bug spec's own boundary: a plan whose every leg shrinks a holding
+    binds none of the account's money, so availableMargin 0 funds it; an
+    empty plan — every leg already at its target — binds none either and
+    prepares nothing, while the door still opens and answers.
+    """
+    reducing = _MirrorClient(
+        positions=(
+            {"symbol": "ETH-USDT", "positionSide": "LONG", "positionAmt": "10"},
+        ),
+        balance={"balance": {"asset": "USDT", "availableMargin": "0"}},
+    )
+    outcomes = _place(
+        reducing,
+        [
+            _manual_order(
+                symbol="ETH-USDT",
+                side=BINGX_SELL,
+                order_type=BINGX_MARKET_ORDER,
+                quantity="1",
+            )
+        ],
+        RouterOrderPlacementStore(test_database_url),
+        _CountingLimiter(),
+        database_url=test_database_url,
+    )
+    assert outcomes["ETH-USDT"].outcome == MIRROR_OUTCOME_PLACED
+
+    flat = _MirrorClient(
+        balance={"balance": {"asset": "USDT", "availableMargin": "0"}}
+    )
+    assert _place(
+        flat, [], RouterOrderPlacementStore(test_database_url),
+        _CountingLimiter(),
+        database_url=test_database_url,
+    ) == {}
 
 
 # -- mirror_place: passive legs price at the order book -------------------------

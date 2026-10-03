@@ -1,28 +1,40 @@
 """Tests for :mod:`router.bingx_preflight` — the door before any placement.
 
 Feature 2 of additions_spec_bingx_vst_mirror.xml, held clause by clause,
-under the correction ``bug_spec_bingx_vst_smoke.xml`` bug 2 won from the
-first live VST run:
+under the corrections ``bug_spec_bingx_vst_smoke.xml`` bug 2 and
+``bug_spec_bingx_preflight_margin.xml`` bug 1 won from the live VST
+runs:
 *System runs a VST preflight before any placement and returns a
 PreflightReport, or the first refusal, in this order: orders_killed while
 risk.kill.require_orders_allowed refuses; clock_skew when the venue's
 server time differs from the local clock by more than 1000 ms; hedge_mode
 when the account's own position-mode answer is hedge, with the repair
 "switch the VST account to one-way mode"; insufficient_balance when
-available USDT is below the book's equity_usdt.  For each symbol the plan
-will order, it then sets margin type ISOLATED and leverage 1, treating an
-already-set answer as success.  The report records the measured skew, the
-available balance and the symbols prepared.*
+available USDT is below the margin the plan's orders need.  For each
+symbol the plan will order, it then sets margin type ISOLATED and
+leverage 1, treating an already-set answer as success.  The report
+records the measured skew, the available balance, the required margin
+and the symbols prepared.*
 
-The hedge clause is the correction.  The Stage 1 spec prescribed inferring
-the mode from any position reporting ``positionSide`` LONG or SHORT, and
-the live smoke test caught that inference wrong in both directions: a
-flat hedge-mode account holds no rows to inspect (it passed, and the
-placement failed at the venue's leverage step with BingX code 109400),
-and BingX labels a one-way account's positions LONG and SHORT as well (a
-one-way DOGE short was refused here).  The mode is now asked of the
-account itself — ``position_mode()``, the boolean ``dualSidePosition``
-— and never inferred from the positions the account happens to hold.
+The hedge clause is the first correction.  The Stage 1 spec prescribed
+inferring the mode from any position reporting ``positionSide`` LONG or
+SHORT, and the live smoke test caught that inference wrong in both
+directions: a flat hedge-mode account holds no rows to inspect (it
+passed, and the placement failed at the venue's leverage step with BingX
+code 109400), and BingX labels a one-way account's positions LONG and
+SHORT as well (a one-way DOGE short was refused here).  The mode is now
+asked of the account itself — ``position_mode()``, the boolean
+``dualSidePosition`` — and never inferred from the positions the
+account happens to hold.
+
+The balance clause is the second correction.  The Stage 1 spec
+prescribed comparing available USDT with the book's ``equity_usdt``,
+and the second live run caught that refusing every rebalance of a book
+that already holds positions: the venue's ``availableMargin`` excludes
+the margin those positions use (the capture answered 7503.07 available
+against a 10000-equity book whose legs needed about 2800), so the term
+is now the required margin the caller — the mirror — computes for the
+orders about to be sent, and this module judges it strictly.
 
 Every test drives the preflight over an injected client double — the
 suite never opens a socket, and one test patches ``socket.socket`` to
@@ -190,13 +202,13 @@ class _UntouchableClient:
 
 
 def _funded_client(**overrides: object) -> _DoubleClient:
-    """A double over an account the book can be placed on.
+    """A double over an account the plan can be placed on.
 
     A flat one-way account (no positions, ``dualSidePosition`` false)
-    with available USDT at or above the equity the tests compare
-    against, and the venue's v2 balance spelling — the document shape the
-    client's own ``BALANCE_PATH`` pins.  Every field is overridable, so a
-    test states only the fact it is exploring.
+    with available USDT at or above the required margin the tests
+    compare against, and the venue's v2 balance spelling — the document
+    shape the client's own ``BALANCE_PATH`` pins.  Every field is
+    overridable, so a test states only the fact it is exploring.
     """
     terms: dict[str, object] = {
         "server_time": LOCAL_MILLIS,
@@ -226,21 +238,24 @@ def _kill_into(url: str) -> None:
 # -- The report -----------------------------------------------------------------
 
 
-def test_a_passing_preflight_answers_the_three_facts() -> None:
-    """The report records the measured skew, the balance and the symbols.
+def test_a_passing_preflight_answers_the_four_facts() -> None:
+    """The report records the skew, the balance, the margin and the symbols.
 
-    Feature 2's closing sentence names exactly three facts, and the
-    report carries exactly those: the skew as it was measured (signed,
-    venue minus local — positive here, the venue ahead), the available
-    balance as the exact decimal read off the venue's row, and the
-    symbols prepared in the sorted order the preparation walked — the
-    book's own symbol order, the same order the plan's legs answer in.
+    Feature 2's closing sentence names the measured skew, the available
+    balance and the symbols prepared, and the corrected sufficiency law
+    adds the required margin beside the balance it is judged against:
+    the skew as it was measured (signed, venue minus local — positive
+    here, the venue ahead), the available balance as the exact decimal
+    read off the venue's row, the required margin as the exact decimal
+    the caller handed in, and the symbols prepared in the sorted order
+    the preparation walked — the book's own symbol order, the same order
+    the plan's legs answer in.
     """
     client = _funded_client(server_time=LOCAL_MILLIS + 40)
 
     report = run_bingx_preflight(
         client,
-        equity_usdt="10000",
+        required_usdt="10000",
         symbols=["ETH-USDT", "BTC-USDT", "SOL-USDT"],
         env={},
         clock=lambda: LOCAL_MILLIS,
@@ -249,6 +264,7 @@ def test_a_passing_preflight_answers_the_three_facts() -> None:
     assert isinstance(report, PreflightReport)
     assert report.skew_ms == 40
     assert report.available_usdt == Decimal("10000")
+    assert report.required_usdt == Decimal("10000")
     assert report.symbols == ("BTC-USDT", "ETH-USDT", "SOL-USDT")
 
 
@@ -266,7 +282,7 @@ def test_preparation_sets_isolated_then_leverage_one_per_symbol() -> None:
 
     report = run_bingx_preflight(
         client,
-        equity_usdt="10000",
+        required_usdt="10000",
         symbols=["SOL-USDT", "BTC-USDT"],
         env={},
         clock=lambda: LOCAL_MILLIS,
@@ -296,7 +312,7 @@ def test_duplicate_symbols_prepare_once_in_sorted_order() -> None:
 
     report = run_bingx_preflight(
         client,
-        equity_usdt="10000",
+        required_usdt="10000",
         symbols=["BTC-USDT", "ETH-USDT", "BTC-USDT"],
         env={},
         clock=lambda: LOCAL_MILLIS,
@@ -321,7 +337,7 @@ def test_a_flat_plan_prepares_nothing() -> None:
 
     report = run_bingx_preflight(
         client,
-        equity_usdt="10000",
+        required_usdt="10000",
         symbols=[],
         env={},
         clock=lambda: LOCAL_MILLIS,
@@ -353,7 +369,7 @@ def test_the_kill_guard_refuses_while_a_kill_stands(
     with pytest.raises(RouterBingXOrdersKilledError) as raised:
         run_bingx_preflight(
             client,
-            equity_usdt="10000",
+            required_usdt="10000",
             symbols=["BTC-USDT"],
             database_url=test_database_url,
             env={},
@@ -386,7 +402,7 @@ def test_orders_killed_outranks_the_venue_checks(
     with pytest.raises(RouterBingXOrdersKilledError):
         run_bingx_preflight(
             client,
-            equity_usdt="10000",
+            required_usdt="10000",
             symbols=["BTC-USDT"],
             database_url=test_database_url,
             env={},
@@ -408,7 +424,7 @@ def test_a_deployment_with_no_kill_channel_passes_vacuously() -> None:
 
     report = run_bingx_preflight(
         client,
-        equity_usdt="10000",
+        required_usdt="10000",
         symbols=["BTC-USDT"],
         env={},
         clock=lambda: LOCAL_MILLIS,
@@ -438,7 +454,7 @@ def test_a_kill_channel_that_will_not_answer_is_not_no_kill(
     with pytest.raises(RouterBingXPreflightError) as raised:
         run_bingx_preflight(
             client,
-            equity_usdt="10000",
+            required_usdt="10000",
             symbols=["BTC-USDT"],
             database_url=url,
             env={},
@@ -470,7 +486,7 @@ def test_clock_skew_refuses_beyond_one_second_and_reads_nothing_else() -> None:
         with pytest.raises(RouterBingXClockSkewError) as raised:
             run_bingx_preflight(
                 client,
-                equity_usdt="10000",
+                required_usdt="10000",
                 symbols=["BTC-USDT"],
                 env={},
                 clock=lambda: LOCAL_MILLIS,
@@ -498,7 +514,7 @@ def test_a_skew_of_exactly_the_limit_passes_on_either_side() -> None:
 
         report = run_bingx_preflight(
             client,
-            equity_usdt="10000",
+            required_usdt="10000",
             symbols=[],
             env={},
             clock=lambda: LOCAL_MILLIS,
@@ -520,7 +536,7 @@ def test_a_clock_or_server_time_that_is_not_milliseconds_is_refused() -> None:
     with pytest.raises(RouterBingXPreflightError) as raised:
         run_bingx_preflight(
             _funded_client(server_time="soon"),
-            equity_usdt="10000",
+            required_usdt="10000",
             symbols=[],
             env={},
             clock=lambda: LOCAL_MILLIS,
@@ -530,7 +546,7 @@ def test_a_clock_or_server_time_that_is_not_milliseconds_is_refused() -> None:
     with pytest.raises(RouterBingXPreflightError):
         run_bingx_preflight(
             _funded_client(),
-            equity_usdt="10000",
+            required_usdt="10000",
             symbols=[],
             env={},
             clock=SimpleNamespace(),  # not callable
@@ -539,7 +555,7 @@ def test_a_clock_or_server_time_that_is_not_milliseconds_is_refused() -> None:
     with pytest.raises(RouterBingXPreflightError):
         run_bingx_preflight(
             _funded_client(),
-            equity_usdt="10000",
+            required_usdt="10000",
             symbols=[],
             env={},
             clock=lambda: "now",
@@ -567,7 +583,7 @@ def test_hedge_mode_refuses_when_the_account_answers_dual_side_position_true() -
     with pytest.raises(RouterBingXHedgeModeError) as raised:
         run_bingx_preflight(
             client,
-            equity_usdt="10000",
+            required_usdt="10000",
             symbols=["BTC-USDT"],
             env={},
             clock=lambda: LOCAL_MILLIS,
@@ -603,7 +619,7 @@ def test_a_one_way_account_passes_whatever_its_positions_label() -> None:
 
         report = run_bingx_preflight(
             client,
-            equity_usdt="10000",
+            required_usdt="10000",
             symbols=["BTC-USDT"],
             env={},
             clock=lambda: LOCAL_MILLIS,
@@ -629,7 +645,7 @@ def test_a_position_mode_answer_that_is_not_the_boolean_is_refused() -> None:
         with pytest.raises(RouterBingXPreflightError) as raised:
             run_bingx_preflight(
                 client,
-                equity_usdt="10000",
+                required_usdt="10000",
                 symbols=[],
                 env={},
                 clock=lambda: LOCAL_MILLIS,
@@ -643,14 +659,18 @@ def test_a_position_mode_answer_that_is_not_the_boolean_is_refused() -> None:
 # -- The fourth refusal: insufficient_balance ---------------------------------------
 
 
-def test_insufficient_balance_refuses_below_and_passes_at_equity() -> None:
-    """Available below equity refuses; exactly at equity passes.
+def test_insufficient_balance_refuses_below_and_passes_at_the_required_margin() -> None:
+    """Available below the margin the plan's orders need refuses; exactly at passes.
 
-    "Below" is strict — an account holding exactly the book's equity
-    passes, because the book asks for no more than the account has —
-    and on the refusal the plan's symbols are prepared not at all: the
-    balance closed the door before the venue was asked to hold margin
-    arrangements for orders that will never arrive.
+    The correction's own clause: the term is the required margin of the
+    orders about to be sent — an account holding 7503.07 against a plan
+    needing 2800 passes however large the book's equity is — and "below"
+    is strict, an account holding exactly what the plan needs passing
+    because the plan asks for no more than the account has.  On the
+    refusal the message names both decimals and the one repair, and the
+    plan's symbols are prepared not at all: the balance closed the door
+    before the venue was asked to hold margin arrangements for orders
+    that will never arrive.
     """
     thin = _funded_client(
         balance={"balance": {"asset": "USDT", "availableMargin": "9999.99"}}
@@ -658,15 +678,18 @@ def test_insufficient_balance_refuses_below_and_passes_at_equity() -> None:
     with pytest.raises(RouterBingXInsufficientBalanceError) as raised:
         run_bingx_preflight(
             thin,
-            equity_usdt="10000",
+            required_usdt="10000",
             symbols=["BTC-USDT"],
             env={},
             clock=lambda: LOCAL_MILLIS,
         )
     assert raised.value.available_usdt == Decimal("9999.99")
-    assert raised.value.equity_usdt == Decimal("10000")
-    message = str(raised.value)
-    assert message.startswith(f"{INSUFFICIENT_BALANCE_CODE}: ")
+    assert raised.value.required_usdt == Decimal("10000")
+    assert str(raised.value) == (
+        "insufficient_balance: available USDT 9999.99 is below the 10000 "
+        "this plan's orders need; fund the VST account and run the "
+        "preflight again"
+    )
     assert thin.calls == [
         ("server_time",),
         ("position_mode",),
@@ -676,12 +699,38 @@ def test_insufficient_balance_refuses_below_and_passes_at_equity() -> None:
     exact = _funded_client()
     report = run_bingx_preflight(
         exact,
-        equity_usdt=Decimal("10000"),
+        required_usdt=Decimal("10000"),
         symbols=["BTC-USDT"],
         env={},
         clock=lambda: LOCAL_MILLIS,
     )
     assert report.available_usdt == Decimal("10000")
+    assert report.required_usdt == Decimal("10000")
+
+
+def test_a_plan_that_needs_no_margin_passes_an_empty_account() -> None:
+    """An all-reducing or empty plan needs zero margin and passes.
+
+    The bug spec's own boundary: a plan whose every leg reduces a
+    holding asks the account for no new margin at all, so an account
+    with nothing available still passes the door — zero is not below
+    zero, and a plan that binds none of the account's money cannot be
+    refused for lacking any.
+    """
+    empty = _funded_client(
+        balance={"balance": {"asset": "USDT", "availableMargin": "0"}}
+    )
+    report = run_bingx_preflight(
+        empty,
+        required_usdt="0",
+        symbols=[],
+        env={},
+        clock=lambda: LOCAL_MILLIS,
+    )
+
+    assert report.available_usdt == Decimal("0")
+    assert report.required_usdt == Decimal("0")
+    assert report.symbols == ()
 
 
 def test_the_balance_row_is_read_from_either_document_spelling() -> None:
@@ -706,7 +755,7 @@ def test_the_balance_row_is_read_from_either_document_spelling() -> None:
 
         report = run_bingx_preflight(
             client,
-            equity_usdt="10000",
+            required_usdt="10000",
             symbols=[],
             env={},
             clock=lambda: LOCAL_MILLIS,
@@ -735,7 +784,7 @@ def test_a_balance_document_naming_no_usdt_row_is_refused() -> None:
         with pytest.raises(RouterBingXPreflightError) as raised:
             run_bingx_preflight(
                 client,
-                equity_usdt="10000",
+                required_usdt="10000",
                 symbols=[],
                 env={},
                 clock=lambda: LOCAL_MILLIS,
@@ -744,24 +793,24 @@ def test_a_balance_document_naming_no_usdt_row_is_refused() -> None:
         assert str(raised.value).startswith(f"{BINGX_PREFLIGHT_CODE}: ")
 
 
-def test_equity_arriving_as_a_float_is_refused_by_name() -> None:
-    """The book's equity obeys the member's money law: no floats.
+def test_a_required_margin_arriving_as_a_float_is_refused_by_name() -> None:
+    """The required margin obeys the member's money law: no floats.
 
     The same term the sizer refuses a float for, refused here for the
     same reason — a float is a binary approximation of a decimal no
-    book ever spelled, and a term read approximately would compare
+    caller ever spelled, and a term read approximately would compare
     approximately.  A decimal string and a Decimal both read exactly.
     """
-    for equity in (10000.0, 10000):
+    for required in (10000.0, 10000):
         with pytest.raises(RouterBingXPreflightError) as raised:
             run_bingx_preflight(
                 _funded_client(),
-                equity_usdt=equity,
+                required_usdt=required,
                 symbols=[],
                 env={},
                 clock=lambda: LOCAL_MILLIS,
             )
-        assert "equity_usdt" in str(raised.value)
+        assert "required_usdt" in str(raised.value)
 
 
 # -- The preparation ----------------------------------------------------------------
@@ -786,7 +835,7 @@ def test_an_already_set_margin_answer_counts_as_success() -> None:
 
     report = run_bingx_preflight(
         client,
-        equity_usdt="10000",
+        required_usdt="10000",
         symbols=["BTC-USDT"],
         env={},
         clock=lambda: LOCAL_MILLIS,
@@ -814,7 +863,7 @@ def test_an_already_set_leverage_answer_counts_as_success() -> None:
 
     report = run_bingx_preflight(
         client,
-        equity_usdt="10000",
+        required_usdt="10000",
         symbols=["BTC-USDT"],
         env={},
         clock=lambda: LOCAL_MILLIS,
@@ -841,7 +890,7 @@ def test_an_unrelated_venue_refusal_propagates_with_its_code() -> None:
     with pytest.raises(RouterBingXRefusedError) as raised:
         run_bingx_preflight(
             client,
-            equity_usdt="10000",
+            required_usdt="10000",
             symbols=["BTC-USDT"],
             env={},
             clock=lambda: LOCAL_MILLIS,
@@ -904,7 +953,7 @@ def test_the_client_face_is_required_up_front() -> None:
         with pytest.raises(RouterBingXPreflightError) as raised:
             run_bingx_preflight(
                 incomplete,
-                equity_usdt="10000",
+                required_usdt="10000",
                 symbols=[],
                 env={},
                 clock=lambda: LOCAL_MILLIS,
@@ -926,7 +975,7 @@ def test_symbols_that_name_nothing_are_refused() -> None:
         with pytest.raises(RouterBingXPreflightError) as raised:
             run_bingx_preflight(
                 _funded_client(),
-                equity_usdt="10000",
+                required_usdt="10000",
                 symbols=symbols,
                 env={},
                 clock=lambda: LOCAL_MILLIS,
@@ -953,7 +1002,7 @@ def test_no_socket_is_opened_by_a_preflight(
 
     report = run_bingx_preflight(
         client,
-        equity_usdt="10000",
+        required_usdt="10000",
         symbols=["BTC-USDT"],
         env={},
         clock=lambda: LOCAL_MILLIS,

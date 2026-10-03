@@ -1,18 +1,20 @@
 """Stage 1's preflight: the door between a plan and any placement.
 
 ``additions_spec_bingx_vst_mirror.xml``, "BingX VST Mirror", feature 2,
-under the correction ``bug_spec_bingx_vst_smoke.xml`` bug 2 won from the
-first live VST run:
+under the corrections ``bug_spec_bingx_vst_smoke.xml`` bug 2 and
+``bug_spec_bingx_preflight_margin.xml`` bug 1 won from the live VST
+runs:
 *System runs a VST preflight before any placement and returns a
 PreflightReport, or the first refusal, in this order: orders_killed while
 risk.kill.require_orders_allowed refuses; clock_skew when the venue's
 server time differs from the local clock by more than 1000 ms; hedge_mode
 when the account's own position-mode answer is hedge, with the repair
 "switch the VST account to one-way mode"; insufficient_balance when
-available USDT is below the book's equity_usdt.  For each symbol the plan
-will order, it then sets margin type ISOLATED and leverage 1, treating an
-already-set answer as success.  The report records the measured skew, the
-available balance and the symbols prepared.*
+available USDT is below the margin the plan's orders need.  For each
+symbol the plan will order, it then sets margin type ISOLATED and
+leverage 1, treating an already-set answer as success.  The report
+records the measured skew, the available balance, the required margin
+and the symbols prepared.*
 
 **Why the hedge question is asked of the account, not its rows.**  The
 Stage 1 spec prescribed inferring the mode from any position reporting
@@ -26,6 +28,24 @@ DOGE short was refused here).  The mode is therefore a fact the account
 answers about itself — the client's ``position_mode()``, the boolean
 ``dualSidePosition`` of ``GET /openApi/swap/v1/positionSide/dual`` — and
 this module never reads it out of a position's ``positionSide``.
+
+**Why the balance is judged against the plan's orders, not the book's
+equity.**  The Stage 1 spec prescribed *"available USDT below the book's
+equity_usdt"*, and the second live VST run caught that comparison
+refusing every rebalance of a book that already holds positions: the
+venue's ``availableMargin`` *excludes* the margin those positions
+already use — the capture's account held a book of equity 10000 whose
+BTC long and DOGE short used 2496.28 and answered availableMargin
+7503.07, below the equity and below the equity-after-loss (9999.28) too,
+while the three remaining legs needed about 2800 — so once a book holds
+anything its rebalance can never pass without funding beyond the book's
+whole equity.  The sufficiency question is therefore about the orders
+about to be sent, not the book that sized them: the caller (the mirror)
+computes the margin those orders need and hands it in as
+``required_usdt``, and this module compares against exactly that.
+Sizing is untouched — the book's ``equity_usdt`` still sizes every order
+through Stage 0's sizer; it just stops doubling as the account's
+sufficiency term.
 
 **Why the refusals are raised, and why they are ordered.**  The four are
 answers a preflight exists to give *before* a single order leaves, so
@@ -65,13 +85,14 @@ through one.
 balance is read from the venue's balance rows as an exact
 :class:`~decimal.Decimal` — ``availableMargin``, the field BingX's swap
 account document spells, with ``availableBalance`` accepted as the older
-spelling of the same fact — and compared strictly against the book's
-``equity_usdt``, itself decimalized under the same law
-:func:`router.sizing.size_contract_deltas` holds the equity to: a string
-or a ``Decimal``, never a ``float``, because a term read approximately
-would compare approximately.  "Below" is strict — an account holding
-exactly the book's equity passes, since the book asks for no more than
-the account has.
+spelling of the same fact — and compared strictly against the required
+margin the caller computed for the orders about to be sent, itself
+decimalized under the same law :func:`router.sizing.
+size_contract_deltas` holds the equity to: a string or a ``Decimal``,
+never a ``float``, because a term read approximately would compare
+approximately.  "Below" is strict — an account holding exactly the
+margin the plan's orders need passes, since the plan asks for no more
+than the account has.
 
 **The already-set answer is absorbed, and only that.**  A venue asked to
 make true what is already true answers in its own way — some answers are
@@ -127,10 +148,10 @@ __all__ = [
 ]
 
 #: The greppable token for the faults of *this module's own ask* — a
-#: client double missing an endpoint, an equity or a symbol that is not
-#: the shape this member's money discipline reads, a venue payload this
-#: module cannot judge, a kill channel that will not open.  Coined on the
-#: module's own name, the convention :data:`router.bingx_dry_run.
+#: client double missing an endpoint, a required margin or a symbol that
+#: is not the shape this member's money discipline reads, a venue payload
+#: this module cannot judge, a kill channel that will not open.  Coined
+#: on the module's own name, the convention :data:`router.bingx_dry_run.
 #: BINGX_DRY_RUN_CODE` states: the word names where to look.  These are
 #: not one of the four placement refusals the feature orders — they are
 #: repairs to make before any preflight answer is worth reading.
@@ -194,11 +215,12 @@ class RouterBingXPreflightError(RouterError):
     a single ``except``, split below into the four placement refusals
     the feature orders — each carrying the measurement it refused on —
     while the stem itself is raised directly for the faults of *this
-    module's own ask*: a client face missing an endpoint, an equity or a
-    symbol outside the shape this member reads money and legs in, a
-    venue payload this module cannot judge, a kill channel that will not
-    open.  Every message opens with :data:`BINGX_PREFLIGHT_CODE` or one
-    of the four code words, and names the one repair.
+    module's own ask*: a client face missing an endpoint, a required
+    margin or a symbol outside the shape this member reads money and
+    legs in, a venue payload this module cannot judge, a kill channel
+    that will not open.  Every message opens with
+    :data:`BINGX_PREFLIGHT_CODE` or one of the four code words, and
+    names the one repair.
     """
 
 
@@ -294,27 +316,31 @@ class RouterBingXHedgeModeError(RouterBingXPreflightError):
 
 
 class RouterBingXInsufficientBalanceError(RouterBingXPreflightError):
-    """Available USDT is below the book's equity; the plan cannot be funded.
+    """Available USDT cannot fund the plan's orders.
 
     The fourth of the four.  The available balance is the venue's own
-    row read as an exact decimal; the equity is the book's own
-    ``equity_usdt`` under the same law.  "Below" is strict — an account
-    holding exactly the equity passes — because the book asks for no
-    more than the account has.  :attr:`available_usdt` and
-    :attr:`equity_usdt` carry both decimals so the operator sees the gap
-    without re-deriving either side of it.
+    row read as an exact decimal; the term it is judged against is the
+    required margin the caller computed for the orders about to be sent
+    — never the book's whole ``equity_usdt``, which the margin the
+    book's own open positions already use puts beyond an
+    ``availableMargin``'s reach (the capture's holding book answered
+    7503.07 available against 10000 of equity while needing about 2800).
+    "Below" is strict — an account holding exactly what the plan's
+    orders need passes — because the plan asks for no more than the
+    account has.  :attr:`available_usdt` and :attr:`required_usdt`
+    carry both decimals so the operator sees the gap without
+    re-deriving either side of it.
     """
 
     def __init__(
-        self, available_usdt: Decimal, equity_usdt: Decimal
+        self, available_usdt: Decimal, required_usdt: Decimal
     ) -> None:
         self.available_usdt = available_usdt
-        self.equity_usdt = equity_usdt
+        self.required_usdt = required_usdt
         super().__init__(
             f"{INSUFFICIENT_BALANCE_CODE}: available USDT {available_usdt} "
-            f"is below the book's equity_usdt {equity_usdt}; fund the VST "
-            "account or republish the book with a smaller equity, and run "
-            "the preflight again"
+            f"is below the {required_usdt} this plan's orders need; fund "
+            "the VST account and run the preflight again"
         )
 
 
@@ -323,13 +349,14 @@ class RouterBingXInsufficientBalanceError(RouterBingXPreflightError):
 
 @dataclass(frozen=True)
 class PreflightReport:
-    """The three facts a passing preflight measured, frozen at the door.
+    """The four facts a passing preflight measured, frozen at the door.
 
-    Feature 2's last sentence names exactly what the report records —
-    *"the measured skew, the available balance and the symbols
-    prepared"* — and nothing else is carried: no timestamps (the report
-    is an answer, not a log row; feature 4's mirror prints it or its
-    refusal and the placement store records what was placed), no
+    Feature 2's last sentence names what the report records — *"the
+    measured skew, the available balance and the symbols prepared"* —
+    with the required margin added beside the balance by the corrected
+    sufficiency law, and nothing else is carried: no timestamps (the
+    report is an answer, not a log row; feature 4's mirror prints it or
+    its refusal and the placement store records what was placed), no
     credential echoes (none may be rendered anywhere), no margin or
     leverage answers (the preparation is a door the preflight walked
     through, not a fact downstream code reads).
@@ -341,7 +368,12 @@ class PreflightReport:
       operator repairing a clock needs: positive, the venue is ahead.
     * ``available_usdt`` — the account's available USDT as an exact
       :class:`~decimal.Decimal`, read from the venue's own balance row;
-      at or above the book's equity, for the same reason.
+      at or above the required margin, for the same reason.
+    * ``required_usdt`` — the margin the plan's orders need, the exact
+      :class:`~decimal.Decimal` the caller computed (the mirror's
+      position-increasing notional at :data:`PREFLIGHT_LEVERAGE`, with
+      its headroom), carried beside the available balance so the two
+      sides of the comparison the door just made answer together.
     * ``symbols`` — the symbols prepared, as a tuple in the sorted order
       the preparation walked; empty for a flat plan, which prepares
       nothing because it places nothing.
@@ -349,6 +381,7 @@ class PreflightReport:
 
     skew_ms: int
     available_usdt: Decimal
+    required_usdt: Decimal
     symbols: tuple[str, ...]
 
 
@@ -661,7 +694,7 @@ def _prepare(call: Callable[[], Any]) -> None:
 def run_bingx_preflight(
     client: Any,
     *,
-    equity_usdt: Any,
+    required_usdt: Any,
     symbols: Any,
     database_url: str | None = None,
     env: Mapping[str, str] | None = None,
@@ -673,10 +706,10 @@ def run_bingx_preflight(
     same venue state and the same terms answer the same report or the
     same first refusal in any process, which is what makes this the door
     feature 4's mirror consults before its first placement.  The ask is
-    validated up front (a client missing an endpoint, an equity or a
-    symbol outside the shapes this member reads), then the four checks
-    run in the feature's own order, then the preparation walks the
-    sorted symbols, and only then is the report answered:
+    validated up front (a client missing an endpoint, a required margin
+    or a symbol outside the shapes this member reads), then the four
+    checks run in the feature's own order, then the preparation walks
+    the sorted symbols, and only then is the report answered:
 
     1. ``orders_killed`` — :func:`risk.kill.require_orders_allowed`
        with this call's ``database_url``/``env`` pair, translated at
@@ -692,7 +725,7 @@ def run_bingx_preflight(
        the positions the account happens to hold — repaired by
        :data:`ONE_WAY_REPAIR`.
     4. ``insufficient_balance`` — available USDT strictly below
-       ``equity_usdt``.
+       ``required_usdt``, the margin the plan's orders need.
 
     Each argument is a keyword:
 
@@ -700,10 +733,14 @@ def run_bingx_preflight(
       or a double carrying its five endpoints (``position_mode`` among
       them since the corrected hedge law).  Every venue fact is
       read through it; this module opens nothing itself.
-    * ``equity_usdt`` — the book's own scalar, as the book spelled it
-      (a decimal string or a :class:`~decimal.Decimal`; a ``float`` is
-      refused by name, the law :func:`router.sizing.size_contract_deltas`
-      holds the same term to).
+    * ``required_usdt`` — the margin the plan's orders need, as the
+      caller computed it (a decimal string or a
+      :class:`~decimal.Decimal`; a ``float`` is refused by name, the
+      law :func:`router.sizing.size_contract_deltas` holds the equity
+      to).  The mirror derives it from the orders about to be sent —
+      never from the book's whole ``equity_usdt``, which the margin the
+      book's own open positions already use puts beyond an
+      ``availableMargin``'s reach.
     * ``symbols`` — the symbols the plan will order, any iterable;
       normalized to the sorted unique tuple and prepared one margin
       arrangement each (``ISOLATED``, leverage
@@ -717,11 +754,11 @@ def run_bingx_preflight(
       preflight measures the host, not the signature.
     """
     _require_client_face(client)
-    equity = _as_decimal(
-        equity_usdt,
-        "equity_usdt",
-        "the equity is the one scalar the available balance is judged "
-        "against",
+    required = _as_decimal(
+        required_usdt,
+        "required_usdt",
+        "the required margin is what the plan's orders need the account "
+        "to fund",
     )
     prepared = _require_symbols(symbols)
     if not callable(clock):
@@ -790,8 +827,8 @@ def run_bingx_preflight(
 
     # 4 — insufficient_balance: the plan's funding, before its writes.
     available = _available_usdt(client.balance())
-    if available < equity:
-        raise RouterBingXInsufficientBalanceError(available, equity)
+    if available < required:
+        raise RouterBingXInsufficientBalanceError(available, required)
 
     # The preparation: one margin arrangement per ordered symbol, in the
     # book's sorted order, each write absorbing only the already-set
@@ -810,5 +847,8 @@ def run_bingx_preflight(
         )
 
     return PreflightReport(
-        skew_ms=skew_ms, available_usdt=available, symbols=prepared
+        skew_ms=skew_ms,
+        available_usdt=available,
+        required_usdt=required,
+        symbols=prepared,
     )

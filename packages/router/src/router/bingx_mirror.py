@@ -78,6 +78,23 @@ was placed at — and a repriced leg the gates refuse raises through the
 send, so the store's claim rolls back and nothing is recorded for an order
 that never left.
 
+**The preflight judges the margin the plan's orders need, never the
+book's whole equity.**  The second live VST run refused the rebalance
+of a book that already held two of its five legs: the account answered
+availableMargin 7503.07 — the margin those held positions use (2496.28)
+already subtracted — and the preflight compared that against the book's
+equity_usdt 10000, a comparison no holding book can pass without
+funding beyond its own equity (and comparing the account's *equity*
+would have refused too, an unrealised loss putting it below the book's).
+The sufficiency term is therefore computed here, from the orders this
+run is about to send: each contributes its *position-increasing*
+quantity times a reference price at the preflight's own leverage of one
+— a passive leg at its limit price, a MARKET leg at its symbol's mark —
+with reducing legs free, crossing legs counted only beyond zero, and
+the total carrying half a percent of headroom for taker fees and drift
+(:func:`plan_required_margin`).  The book's ``equity_usdt`` keeps its
+one job: sizing the orders through Stage 0's sizer, unchanged.
+
 **The venue's ``clientOrderID`` is 40 characters; the store's key is 64.**
 :class:`~router.bingx_order.BingXOrder` carries only the projection feature 3
 applies at the boundary, and feature 317's placement store keys its
@@ -156,11 +173,17 @@ from pathlib import Path
 from typing import Any
 
 from .bingx_client import BingXClient, RouterBingXTransportError
-from .bingx_documents import RouterNotTradableError, resolve_bingx_filters
+from .bingx_documents import (
+    RouterMarkPriceError,
+    RouterNotTradableError,
+    resolve_bingx_filters,
+    resolve_bingx_mark_prices,
+)
 from .bingx_dry_run import dry_run_plan
 from .bingx_order import (
     BINGX_BUY,
     BINGX_LIMIT_ORDER,
+    BINGX_MARKET_ORDER,
     BingXOrder,
     BingXRefusedLeg,
     assemble_bingx_order,
@@ -170,7 +193,7 @@ from .bingx_orders import (
     cancel_rebalance_orders,
     read_back_orders,
 )
-from .bingx_preflight import run_bingx_preflight
+from .bingx_preflight import PREFLIGHT_LEVERAGE, run_bingx_preflight
 from .client_order_id import derive_client_order_id
 from .errors import RouterError
 from .limiter import (
@@ -196,6 +219,7 @@ __all__ = [
     "PLACEMENT_FIELD",
     "RATE_LIMIT_RETRIES",
     "REPOST_LIMIT",
+    "REQUIRED_MARGIN_HEADROOM",
     "VST_MIRROR_WEIGHT_SCHEDULE",
     "MirrorLeg",
     "RouterBingXMirrorError",
@@ -203,6 +227,7 @@ __all__ = [
     "live_positions",
     "main",
     "mirror_place",
+    "plan_required_margin",
     "reprice_passive_order",
 ]
 
@@ -259,6 +284,14 @@ RATE_LIMIT_RETRIES = 3
 #: a re-post is entitled to.  Bounded, because a venue that keeps dropping
 #: the connection must not be re-sent forever.
 REPOST_LIMIT = 1
+
+#: The headroom the plan's required margin carries over the bare notional
+#: of its position-increasing parts: half a percent, for the taker fees a
+#: crossing leg pays and the drift a resting price absorbs between the
+#: plan and its fill.  A multiplier rather than a spread, stated as an
+#: exact :class:`~decimal.Decimal` because the term it scales is one —
+#: the same money law every amount in this member keeps.
+REQUIRED_MARGIN_HEADROOM = Decimal("1.005")
 
 #: The value the mirror's limiter is matched to: weight one per request
 #: against an allowance of ten per second, the numbers feature 1's client
@@ -720,6 +753,117 @@ def _full_identifier(book: Mapping[str, Any], symbol: str) -> str:
     return derive_client_order_id(
         book_id=book_id, rebalance_ts=moment, symbol=symbol
     ).client_order_id
+
+
+# -- The balance door's term: the plan's required margin ------------------------
+
+
+def _increasing_size(order: BingXOrder, held: Decimal) -> Decimal:
+    """The part of ``order`` that grows the symbol's position, if any.
+
+    The sufficiency question the corrected preflight asks is *can the
+    account fund the orders about to be sent*, and an order that shrinks
+    a holding funds itself: the margin it releases is at least the margin
+    the smaller position needs.  Three shapes, then — an order from flat
+    or growing the side already held is new margin in full; an order
+    against the held side but no larger than it releases more than it
+    binds and needs none; and an order that crosses through zero needs
+    margin only for the part beyond it, the part that lands as a new
+    position on the other side.  ``held`` is the symbol's signed quantity
+    exactly as :func:`live_positions` read it, and the answer is the
+    unsigned quantity that counts, never a signed delta — margin binds
+    magnitude, not direction.
+    """
+    size = Decimal(order.quantity)
+    if held == 0 or (held > 0) == (order.side == BINGX_BUY):
+        # Flat, or growing the side already held: the whole order is
+        # new margin.
+        return size
+    beyond = size - abs(held)
+    # Reducing orders need no new margin; a crossing one needs only the
+    # quantity beyond zero.
+    return beyond if beyond > 0 else Decimal("0")
+
+
+def plan_required_margin(
+    *, client: Any, orders: Sequence[BingXOrder]
+) -> Decimal:
+    """The margin the plan's orders need, as one exact decimal.
+
+    The term the preflight's ``insufficient_balance`` check judges
+    against, computed here — the mirror's own verb — because the
+    question is about the orders this run is about to send, and only the
+    mirror knows them beside the account that will fund them:
+
+    * each order contributes its position-increasing quantity (see
+      :func:`_increasing_size`) times a reference price, divided by the
+      leverage the preflight itself sets (:data:`PREFLIGHT_LEVERAGE`,
+      one — the mirror's sizing assumes the account funds the notional
+      itself);
+    * the reference price is the order's own limit price for a passive
+      leg and the symbol's mark price for a MARKET leg, which carries no
+      price of its own — read from the venue's premiumIndex document,
+      the same read the plan was sized through;
+    * the total carries :data:`REQUIRED_MARGIN_HEADROOM`, the half
+      percent for taker fees and price drift.
+
+    The account's positions are re-read through :func:`live_positions`
+    and the premiumIndex document only when a MARKET leg needs it, so an
+    all-passive plan costs the one positions read and an empty plan
+    costs nothing at all — an empty or all-reducing plan answers zero,
+    which passes the balance door on any account, the boundary the bug
+    spec names.  Every term is an exact
+    :class:`~decimal.Decimal` built from the venue's own strings and the
+    order's own spelling; no float enters the arithmetic.
+    """
+    if not orders:
+        # An empty plan places nothing and needs nothing: zero, which
+        # the door judges as funded on any account.
+        return Decimal("0")
+    held = live_positions(client)
+    market_symbols = sorted(
+        {
+            order.symbol
+            for order in orders
+            if order.type == BINGX_MARKET_ORDER
+        }
+    )
+    marks: dict[str, Decimal] = {}
+    if market_symbols:
+        if not callable(getattr(client, "premium_index", None)):
+            raise RouterBingXMirrorError(
+                f"{MIRROR_CODE}: the injected client exposes no callable "
+                "premium_index(); a MARKET leg carries no price of its "
+                "own, so the margin it needs is read at its symbol's mark "
+                "price, and a client that cannot ask for the document "
+                "cannot be asked to fund one (feature 2)"
+            )
+        try:
+            marks = resolve_bingx_mark_prices(
+                _document(client.premium_index(), "BingX premiumIndex"),
+                market_symbols,
+            )
+        except RouterMarkPriceError as refusal:
+            raise RouterBingXMirrorError(
+                f"{MIRROR_CODE}: the venue's premiumIndex document states "
+                f"no mark price for {refusal.symbol!r}; a MARKET leg's "
+                "required margin is read at its symbol's mark price, and a "
+                "leg the plan ordered cannot be priced for funding by a "
+                "document that does not price it (feature 2)"
+            ) from refusal
+    total = Decimal("0")
+    for order in orders:
+        reference = (
+            Decimal(order.price)
+            if order.type == BINGX_LIMIT_ORDER
+            else marks[order.symbol]
+        )
+        total += (
+            _increasing_size(order, held.get(order.symbol, Decimal("0")))
+            * reference
+            / PREFLIGHT_LEVERAGE
+        )
+    return total * REQUIRED_MARGIN_HEADROOM
 
 
 # -- Passive repricing ---------------------------------------------------------
@@ -1235,16 +1379,18 @@ def mirror_place(
 ) -> dict[str, MirrorLeg]:
     """Feature 4's placement half: preflight, then place every order once.
 
-    Runs :func:`router.bingx_preflight.run_bingx_preflight` over the symbols
-    the plan will order — so a killed order layer, a skewed clock, a
-    hedge-mode account or an unfunded one refuses here, before a single
-    order leaves — and then places each order leg in the plan's own order
-    through the store, the limiter and the backoff (see :func:`_place_one`),
-    repricing every passive leg at its own side of the live book just
-    before it leaves (see :func:`_passive_repricer`).  The repricer is
-    built *before* the preflight runs: its one client face check and its
-    one public contracts read are side-effect-free, so a wiring fault
-    refuses before the preflight's first venue POST rather than after it.
+    Runs :func:`router.bingx_preflight.run_bingx_preflight` over the
+    symbols the plan will order and the margin those orders need (see
+    :func:`plan_required_margin`) — so a killed order layer, a skewed
+    clock, a hedge-mode account or an unfunded one refuses here, before
+    a single order leaves — and then places each order leg in the plan's
+    own order through the store, the limiter and the backoff (see
+    :func:`_place_one`), repricing every passive leg at its own side of
+    the live book just before it leaves (see :func:`_passive_repricer`).
+    The repricer and the margin are built *before* the preflight runs:
+    their client face checks and their public reads are
+    side-effect-free, so a wiring fault refuses before the preflight's
+    first venue POST rather than after it.
 
     Returns one :class:`MirrorLeg` per *order* leg, keyed by symbol.  A leg
     the plan itself refused (a gate's code word, a document's) is not an
@@ -1262,15 +1408,9 @@ def mirror_place(
             "would spend the budget unmetered (feature 4)"
         )
     orders = [leg for leg in plan if isinstance(leg, BingXOrder)]
-    if "equity_usdt" not in book:
-        raise RouterBingXMirrorError(
-            f"{MIRROR_CODE}: the book document states no equity_usdt; the "
-            "preflight compares the account's available balance against the "
-            "book's own equity before anything is placed (feature 2)"
-        )
     repricer = _passive_repricer(client=client, book=book, orders=orders)
     preflight_kwargs: dict[str, Any] = {
-        "equity_usdt": book["equity_usdt"],
+        "required_usdt": plan_required_margin(client=client, orders=orders),
         "symbols": [order.symbol for order in orders],
         "database_url": database_url,
         "env": env,
