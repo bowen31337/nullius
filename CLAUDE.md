@@ -9,7 +9,37 @@
 - Framework: unknown
 
 ## Build & Test
-- Add your build/test/lint commands here
+
+Python 3.12, uv workspace. Set `UV_CACHE_DIR` to a writable directory first:
+`~/.cache` is read-only inside claw-forge's sandbox. Use
+`export UV_CACHE_DIR=$PWD/.uv-cache`; in a worktree, `$PWD` is the worktree.
+
+**While iterating, run only the test files you are changing.** One file takes
+seconds (router `test_bingx_mirror.py`: 78 tests in about 2 s). A whole member
+suite takes minutes, because its composition tests build the full app with
+`create_app()` (96 components, 6–18 s each).
+
+```bash
+# one member test file (fast loop)
+PYTHONPATH=src:packages/<member>/src uv run --no-sync pytest -q -p no:cacheprovider packages/<member>/tests/test_<file>.py
+
+# a whole member suite, once at the end (router: ~100 s serial, ~70 s at -n 4)
+PYTHONPATH=src:packages/<member>/src uv run --no-sync pytest -q -p no:cacheprovider -n 4 packages/<member>/tests
+
+# the workspace suite the acceptance gate runs (root tests/ only, ~215 s)
+uv run --all-packages pytest -n 4 --dist loadfile
+```
+
+- **PYTHONPATH:** add every member that the code under test imports.
+  - router: `src:packages/router/src:packages/book/src:packages/ingest/src:packages/risk/src`
+- **Two suites, run separately:** the gate runs only `tests/` (`pytest.ini`
+  testpaths). Member suites under `packages/*/tests` are separate runs, and the
+  gate does not run them.
+- **Order independence:** tests must not depend on order or worker, because
+  everything also runs under pytest-xdist. Keep no state at module level across
+  tests. Use a child pytest process instead (see `tests/test_conftest.py`).
+- **Lint:** lint only the files you touched, with `uv run --no-sync ruff check <files>`.
+  Repo-wide lint is already red on main.
 
 ## Workspace layout: members only, no seats
 
