@@ -30,6 +30,7 @@ import io
 import json
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -88,6 +89,20 @@ def _load(name: str) -> object:
 
 def _book() -> dict:
     return _load("synthetic_book.json")
+
+
+def _live_positions_data() -> list:
+    """The recorded VST one-way account's positions, verbatim.
+
+    The fixture is an input and is never edited: it is the live capture
+    (``capture.json`` of 2026-10-03) that pinned this defect — a SHORT
+    reported with an *unsigned* positive ``positionAmt`` and the direction
+    only in ``positionSide``.  Every regression test below reads it through
+    :func:`router.bingx_client.BingXClient.positions`' own envelope, never a
+    hand-written row.
+    """
+    document = _load("live/positions_one_way_short.json")
+    return document["data"]
 
 
 class _MirrorClient:
@@ -332,15 +347,127 @@ def test_live_positions_none_is_a_flat_account():
 
 
 def test_live_positions_reads_the_position_amt_spelling():
+    # A row carrying no ``positionSide`` has only the amount's own sign to
+    # read, and the answer is the exact Decimal the sizer reads verbatim.
     client = _MirrorClient(
         positions=[{"symbol": "BTC-USDT", "positionAmt": "-0.0100"}]
     )
-    assert live_positions(client) == {"BTC-USDT": "-0.0100"}
+    assert live_positions(client) == {"BTC-USDT": Decimal("-0.0100")}
 
 
 def test_live_positions_reads_the_older_position_spelling():
     client = _MirrorClient(positions=[{"symbol": "DOGE-USDT", "position": "12"}])
-    assert live_positions(client) == {"DOGE-USDT": "12"}
+    assert live_positions(client) == {"DOGE-USDT": Decimal("12")}
+
+
+# -- The recorded live account: a short is reported unsigned -------------------
+
+
+def test_live_positions_reads_the_recorded_short_as_negative():
+    """The defect, pinned against the verbatim VST capture.
+
+    ``live/positions_one_way_short.json`` is the live account's own answer:
+    a DOGE-USDT short of 5402 reported as ``positionAmt`` ``"5402"`` — a
+    positive amount — with the direction only in ``positionSide``
+    ``"SHORT"``, beside a LONG BTC-USDT row.  A reader that trusts the
+    amount alone answers ``+5402`` and doubles the short on the next
+    placement, so the signed answer is asserted here, not a hand-written
+    row's.
+    """
+    client = _MirrorClient(positions=_live_positions_data())
+    assert live_positions(client) == {
+        "DOGE-USDT": Decimal("-5402"),
+        "BTC-USDT": Decimal("0.0236"),
+    }
+
+
+def test_live_positions_answers_exact_decimals():
+    """The signed answer is exact — never a float approximation."""
+    client = _MirrorClient(positions=_live_positions_data())
+    held = live_positions(client)
+    assert all(isinstance(value, Decimal) for value in held.values())
+
+
+def test_live_positions_a_both_row_keeps_its_own_sign():
+    """One-way labelling aside, a BOTH row's amount is already signed."""
+    client = _MirrorClient(
+        positions=[{"symbol": "ETH-USDT", "positionAmt": "-0.5", "positionSide": "BOTH"}]
+    )
+    assert live_positions(client) == {"ETH-USDT": Decimal("-0.5")}
+
+
+def test_live_positions_a_lone_negative_amount_keeps_its_sign():
+    """A row stating no side carries the sign in the amount it spells."""
+    client = _MirrorClient(positions=[{"symbol": "ETH-USDT", "positionAmt": "-0.5"}])
+    assert live_positions(client) == {"ETH-USDT": Decimal("-0.5")}
+
+
+def test_live_positions_a_short_with_a_negative_amount_is_refused():
+    """SHORT beside a negative amount disagrees; refuse it, never guess."""
+    client = _MirrorClient(
+        positions=[
+            {"symbol": "DOGE-USDT", "positionAmt": "-5402", "positionSide": "SHORT"}
+        ]
+    )
+    with pytest.raises(RouterBingXMirrorError) as excinfo:
+        live_positions(client)
+    assert "DOGE-USDT" in str(excinfo.value)
+
+
+def test_live_positions_a_long_with_a_negative_amount_is_refused():
+    client = _MirrorClient(
+        positions=[
+            {"symbol": "BTC-USDT", "positionAmt": "-0.01", "positionSide": "LONG"}
+        ]
+    )
+    with pytest.raises(RouterBingXMirrorError) as excinfo:
+        live_positions(client)
+    assert "BTC-USDT" in str(excinfo.value)
+
+
+def test_live_positions_a_short_with_a_negative_older_spelling_is_refused():
+    """The older ``position`` spelling carries the same disagreement."""
+    client = _MirrorClient(
+        positions=[
+            {"symbol": "DOGE-USDT", "position": "-5402", "positionSide": "SHORT"}
+        ]
+    )
+    with pytest.raises(RouterBingXMirrorError) as excinfo:
+        live_positions(client)
+    assert "DOGE-USDT" in str(excinfo.value)
+
+
+def test_live_positions_refuses_an_unknown_symbol_side():
+    """A side the venue's vocabulary does not carry is refused, not assumed."""
+    client = _MirrorClient(
+        positions=[{"symbol": "DOGE-USDT", "positionAmt": "5", "positionSide": "FLAT"}]
+    )
+    with pytest.raises(RouterBingXMirrorError) as excinfo:
+        live_positions(client)
+    assert "DOGE-USDT" in str(excinfo.value)
+
+
+def test_a_symbol_already_at_its_target_ships_no_order():
+    """The recorded short, at its own target, sizes to nothing.
+
+    With the account's DOGE holding read as ``-5402`` (the fixture) and a
+    book whose DOGE target truncates to exactly ``-5402`` contracts, the
+    delta is zero and no order ships.  Read as ``+5402`` — the defect —
+    the delta would be ``-10804`` and a market SELL of about 10804 would
+    be sent, doubling the short.
+    """
+    book = _book()
+    # -5402 × 0.09381 (DOGE's mark) ÷ 10000 equity, as a weight whose
+    # target truncates onto the contract grid to exactly -5402.
+    book["weights"] = dict(book["weights"])
+    book["weights"]["DOGE-USDT"] = -0.0506762
+    client = _MirrorClient(positions=_live_positions_data())
+    legacy = build_mirror_plan(book=book, client=client)
+    by_symbol = {leg.symbol: leg for leg in legacy}
+    assert "DOGE-USDT" not in _order_symbols(legacy)
+    # BTC-USDT is held long (0.0236) at a target of 0.0240: a small BUY
+    # remains, so the plan is not empty.
+    assert by_symbol["BTC-USDT"].quantity == "0.0004"
 
 
 def test_live_positions_refuses_a_float_size():

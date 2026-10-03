@@ -2,8 +2,10 @@
 
 Feature 4 of ``additions_spec_bingx_vst_mirror.xml``, driven the way an
 operator drives it — ``python -m router.bingx_mirror --book BOOK --place``
-— against a stand-in that *verifies every signature* it receives and holds a
-flat account.  For the recorded fixtures and the synthetic book:
+— against a stand-in that *verifies every signature* it receives and serves
+the recorded VST account (flat by default, and the verbatim one-way short
+account of ``live/positions_one_way_short.json`` when a test stages it).
+For the recorded fixtures and the synthetic book:
 
 * a first ``--place`` sends exactly five ``POST /trade/order`` requests;
 * a second ``--place`` sends none and prints ``prior`` for all five;
@@ -148,7 +150,7 @@ def _signature_ok(params: dict, signature: str | None, key: str | None) -> bool:
 
 
 class _StandIn:
-    """A BingX stand-in: verifies signatures, holds a flat account.
+    """A BingX stand-in: verifies signatures, serves the recorded account.
 
     Records every request it receives — method, path, decoded parameters,
     headers — so the tests can count the ``POST /trade/order`` requests and
@@ -157,12 +159,14 @@ class _StandIn:
     and recorded as a failure, so a run that "succeeded" over a broken
     signature cannot pass silently.
 
-    The account's position mode is one-way by default — the state a
-    mirror-ready account holds — and a test flips ``dual_side_position``
-    to stage the hedge-mode account the live smoke test began on.  The
-    answer is served in the capture's own spelling, the fact as a
-    string, so the client's reading of it is exercised exactly as the
-    venue spells it.
+    The account's positions are flat by default — the state a mirror-ready
+    account starts in — and a test sets ``positions`` to the recorded live
+    account's rows to stage the one-way short the smoke test caught.  The
+    account's position mode is one-way by default and a test flips
+    ``dual_side_position`` to stage the hedge-mode account the live smoke
+    test began on.  The mode answer is served in the capture's own spelling,
+    the fact as a string, so the client's reading of it is exercised exactly
+    as the venue spells it.
     """
 
     def __init__(self) -> None:
@@ -171,6 +175,9 @@ class _StandIn:
         self.orders: dict[str, dict] = {}
         self.open_orders: list[dict] = []
         self.dual_side_position = False
+        # The account's positions, verbatim: flat by default, the recorded
+        # one-way short account when a test stages it.
+        self.positions: list[dict] = []
         self._lock = threading.Lock()
 
     # -- introspection used by the tests -----------------------------------
@@ -217,7 +224,9 @@ class _StandIn:
                 "data": {"balance": {"asset": "USDT", "availableMargin": "100000"}},
             }
         if path == POSITIONS_PATH:
-            return 200, {"code": 0, "msg": "", "data": []}
+            with self._lock:
+                rows = [dict(row) for row in self.positions]
+            return 200, {"code": 0, "msg": "", "data": rows}
         if path == POSITION_MODE_PATH:
             # One-way by default; the live capture's string spelling.
             return 200, {
@@ -694,6 +703,62 @@ def test_cancel_leaves_the_listing_s_foreign_order_untouched(
         if r["method"] == "DELETE" and r["path"] == ORDER_PATH
     ]
     assert {r["params"]["clientOrderID"] for r in deletes} == set(cancelled)
+
+
+# -- The non-flat account: a recorded short is not doubled ---------------------
+
+
+#: The synthetic book's book_id is unchanged; only DOGE's weight is set so
+#: its target truncates onto the contract grid to exactly -5402 — the size
+#: the recorded fixture's short holds — which is what makes DOGE the symbol
+#: already at its target.  The weight is the book's own decision; the
+#: *positions* still come verbatim from the recorded fixture.
+DOGE_AT_TARGET_WEIGHT = -0.0506762
+
+
+def _book_at_target(path: Path) -> Path:
+    book = _fixture("synthetic_book.json")
+    book["weights"] = dict(book["weights"])
+    book["weights"]["DOGE-USDT"] = DOGE_AT_TARGET_WEIGHT
+    path.write_text(json.dumps(book), encoding="utf-8")
+    return path
+
+
+def test_a_place_against_a_recorded_short_account_never_doubles_it(
+    tmp_path, stand_in, database_url
+):
+    """The live smoke test's critical symptom, replayed end to end.
+
+    The stand-in serves the verbatim one-way short account
+    (``live/positions_one_way_short.json``: DOGE-USDT ``positionAmt``
+    ``"5402"`` signed only by ``positionSide`` ``"SHORT"``, beside a LONG
+    BTC-USDT row) and answers one-way.  The book's DOGE target is -5402, so,
+    read correctly, DOGE is already at its target and no order ships for it.
+    A reader that trusts the unsigned amount sizes ``-5402 - (+5402)`` and
+    sends a market SELL of about 10804 — doubling the short, exactly what
+    the smoke test caught.  The fix reads the side, so no DOGE order is
+    posted and not one SELL for DOGE can reach the venue.
+    """
+    _, venue, url = stand_in
+    venue.positions = _fixture("live/positions_one_way_short.json")["data"]
+    book = _book_at_target(tmp_path / "book_at_target.json")
+
+    result = _run(
+        ["--book", str(book), "--place"],
+        _child_env(tmp_path, url, database_url),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert venue.signature_failures == []
+    # The account's own positions were read (the signed POSITIONS_PATH call).
+    assert any(r["path"] == POSITIONS_PATH for r in venue.requests)
+
+    # No order for the symbol already at its target — and in particular no
+    # SELL that would double the recorded short — while every other leg
+    # still ships, so the run is not abandoned.
+    posts = venue.order_posts()
+    shipped = {p["params"]["symbol"] for p in posts}
+    assert shipped == set(ORDERED_SYMBOLS) - {"DOGE-USDT"}
 
 
 # -- The stand-in itself is honest --------------------------------------------
