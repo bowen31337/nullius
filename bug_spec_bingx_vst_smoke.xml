@@ -1,0 +1,105 @@
+<bug_spec>
+  <!-- Found by the first live VST smoke test of the Stage 1 mirror (2026-10-03),
+       sub-account nullius01 on open-api-vst.bingx.com. The Stage 1 end-to-end
+       stand-in imitated the spec's assumptions, not BingX, so every fix below
+       is pinned against the verbatim VST responses recorded under
+       packages/router/tests/fixtures/bingx_vst/live/ (capture.json explains each).
+       Shapes are core with explicit touches_files: plan-bugs ignores <layout>,
+       and plugin= needs the removed src/app/modules seats (see CLAUDE.md). -->
+
+  <bug index="1" shape="core" severity="critical" depends_on="2"
+       touches_files="packages/router/src/router/bingx_mirror.py,packages/router/tests/test_bingx_mirror.py,packages/router/tests/test_bingx_mirror_e2e.py">
+    <title>The mirror reads a live SHORT position as a long, because live_positions ignores positionSide and BingX sends positionAmt unsigned</title>
+    <symptoms>
+      On a VST account verified one-way (GET /openApi/swap/v1/positionSide/dual answers dualSidePosition "false"), an open DOGE-USDT short of 5402 is reported as {"positionSide": "SHORT", "positionAmt": "5402"}, a positive amount with the direction only in positionSide (fixture live/positions_one_way_short.json, which also carries a LONG BTC-USDT row with "0.0236").
+      router.bingx_mirror.live_positions(client) returns {"DOGE-USDT": "5402"}, so the short is read as a long.
+      With the book's DOGE target of -5402, the next --place would size DOGE as -5402 - (+5402) and send a market SELL of about 10804, doubling the short. Only the false hedge-mode refusal in bug 2 stopped it.
+    </symptoms>
+    <reproduction_steps>
+      Call router.bingx_mirror.live_positions with a client whose positions() returns the data array of packages/router/tests/fixtures/bingx_vst/live/positions_one_way_short.json; it answers DOGE-USDT as +5402.
+    </reproduction_steps>
+    <expected>live_positions answers each symbol's signed quantity: a SHORT row is negative, a LONG row positive, and a BOTH row keeps positionAmt's own sign. For the fixture it answers {"DOGE-USDT": Decimal("-5402"), "BTC-USDT": Decimal("0.0236")}. A row whose positionSide and a negative positionAmt disagree (SHORT with a negative amount, or LONG with a negative amount) is refused naming the symbol rather than guessed. The end-to-end stand-in gains a non-flat account case built from the fixture, and a --place against it sends no order for a symbol already at its target.</expected>
+    <actual>Root cause: live_positions (packages/router/src/router/bingx_mirror.py) reads positionAmt (or position) as the signed size and never reads positionSide. BingX reports the size unsigned with the direction in positionSide, so every short becomes a long.</actual>
+    <constraints>
+      Pin the fix against the recorded live fixture, never a hand-written position row alone
+      Never edit the fixtures under packages/router/tests/fixtures/bingx_vst/ (live/ included); they are inputs
+      No network access and no credentials in any test
+      Stage 0's offline dry run (router.bingx_dry_run, router.bingx_order) keeps its behaviour and its tests
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="high"
+       touches_files="packages/router/src/router/bingx_client.py,packages/router/tests/test_bingx_client.py,packages/router/src/router/bingx_preflight.py,packages/router/tests/test_bingx_preflight.py,packages/router/tests/test_bingx_mirror_e2e.py">
+    <title>The preflight's hedge-mode check is wrong both ways: it passes a flat hedge-mode account and refuses a one-way account that holds positions</title>
+    <symptoms>
+      A fresh sub-account in hedge mode (dualSidePosition "true", fixture live/position_mode_hedge.json) with no positions passed the preflight. Placement then failed at the leverage step with BingX code 109400 "In the Hedge mode, the 'Side' field can only be set to LONG, SHORT or ALL."
+      After the account was switched to one-way (dualSidePosition "false", fixture live/position_mode_one_way.json) and held a DOGE short, the preflight refused: "hedge_mode: the VST account reports positionSide 'SHORT' on 'DOGE-USDT' ... switch the VST account to one-way mode".
+    </symptoms>
+    <reproduction_steps>
+      Run router.bingx_preflight with a client whose positions() returns [] while the account's position mode is hedge: no hedge_mode refusal.
+      Run it with a client whose positions() returns the data of live/positions_one_way_short.json while the mode is one-way: it refuses hedge_mode.
+    </reproduction_steps>
+    <expected>The client gains a position_mode() call, GET /openApi/swap/v1/positionSide/dual, answering the boolean dualSidePosition, read through the same signing, host guard and envelope handling as every other call. The preflight refuses hedge_mode exactly when that call answers "true", with the repair "switch the VST account to one-way mode", and never infers the mode from positionSide. The refusal order stays: orders_killed, clock_skew, hedge_mode, insufficient_balance. The end-to-end stand-in serves the endpoint (one-way by default).</expected>
+    <actual>Root cause: router.bingx_preflight infers hedge mode from whether any position reports positionSide LONG or SHORT. A flat account has no rows to inspect, and BingX labels one-way positions LONG/SHORT as well, so the inference is wrong in both directions. The Stage 1 spec prescribed that inference; it was never checked against BingX.</actual>
+    <constraints>
+      The new call reaches only open-api-vst.bingx.com through the existing host guard
+      Never edit the fixtures under packages/router/tests/fixtures/bingx_vst/
+      No network access and no credentials in any test
+    </constraints>
+  </bug>
+
+  <bug index="3" shape="core" severity="medium"
+       touches_files="packages/router/src/router/bingx_orders.py,packages/router/tests/test_bingx_orders.py">
+    <title>--status crashes with bingx_refused 109421 instead of reporting not_found for an order that was never placed</title>
+    <symptoms>
+      `./run.sh vst --book … --status` after a run where three orders were refused at placement exits with "bingx_mirror: bingx_refused: the venue answered code 109421 with 'order not exist'" and prints no status for any order, including the two that were placed.
+      The query's verbatim answer is {"code": 109421, "msg": "order not exist", "data": {}} (fixture live/query_order_not_exist.json).
+    </symptoms>
+    <reproduction_steps>
+      Run router.bingx_orders' read-back with a client whose query_order raises RouterBingXRefusedError(109421, "order not exist") for one clientOrderID and answers normally for the others.
+    </reproduction_steps>
+    <expected>A 109421 answer for a clientOrderID is that order's status not_found, and the read-back continues with the remaining orders. Every order is reported: placed ones with their status, executed quantity and average price, missing ones as not_found. Any other venue refusal still raises.</expected>
+    <actual>Root cause: the read-back in router.bingx_orders maps not_found from a different shape (an empty or absent order), and lets RouterBingXRefusedError for code 109421 propagate, which aborts the whole read-back.</actual>
+    <constraints>
+      Only code 109421 maps to not_found; other codes keep raising
+      Never edit the fixtures under packages/router/tests/fixtures/bingx_vst/
+      No network access and no credentials in any test
+    </constraints>
+  </bug>
+
+  <bug index="4" shape="core" severity="medium" depends_on="1"
+       touches_files="packages/router/src/router/bingx_mirror.py,packages/router/tests/test_bingx_mirror.py">
+    <title>A placement refused by BingX prints only the code, losing the message that says why</title>
+    <symptoms>
+      Three PostOnly LIMIT orders were refused at placement and printed as {"placement": "refused", "code": "101215"} with no message. 101215 is in none of BingX's published documentation, so the cause could not be established. The same three orders validated with code 0 on POST /openApi/swap/v2/trade/order/test minutes later.
+    </symptoms>
+    <reproduction_steps>
+      Run the mirror's placement with a client whose place_order raises RouterBingXRefusedError(101215, "&lt;venue message&gt;"): the printed leg carries the code but not the message.
+    </reproduction_steps>
+    <expected>A refused leg's JSON line carries the venue's code and its msg verbatim ("message"). The placement store still records nothing for a refused order, and the exit code stays 1 when any leg is refused.</expected>
+    <actual>Root cause: the mirror builds the refused leg from RouterBingXRefusedError's code alone and drops its msg.</actual>
+    <constraints>
+      The message is the venue's text only: never the request URL, query string, signature, API key or secret
+      No network access and no credentials in any test
+    </constraints>
+  </bug>
+
+  <bug index="5" shape="core" severity="high" depends_on="2,4"
+       touches_files="packages/router/src/router/bingx_client.py,packages/router/tests/test_bingx_client.py,packages/router/src/router/bingx_mirror.py,packages/router/tests/test_bingx_mirror.py,packages/router/tests/test_bingx_mirror_e2e.py">
+    <title>Passive orders are priced at the mark, not at the order book, so a PostOnly limit can land on the wrong side of the book and be refused</title>
+    <symptoms>
+      The mirror places PostOnly LIMIT orders at the mark rounded onto the tick grid on the passive side. On VST the mark and the best bid/ask diverge by several ticks (fixture live/depth_eth_usdt.json: ETH-USDT best bid 2679.42, best ask 2694.76 while the mark was about 2685). A mark-priced post-only order is therefore not guaranteed to rest, and three of four were refused at placement (code 101215, see bug 4).
+    </symptoms>
+    <reproduction_steps>
+      Plan a BUY leg whose mark is above the best ask in a recorded depth answer: the mirror places a PostOnly order priced through the ask.
+    </reproduction_steps>
+    <expected>Just before placing, the mirror reads the symbol's order book through a new client call, GET /openApi/swap/v2/quote/depth (public), and prices each passive leg at its own side of the book: a BUY at the best bid, a SELL at the best ask, on the tick grid. It re-judges the repriced order against the step and tick grids, the notional floor and the minimum quantity before sending. A symbol whose book has no quote on that side is refused as no_book. Aggressive (MARKET) legs are unchanged. Stage 0's offline dry run keeps mark pricing, since it has no book. The end-to-end stand-in serves depth from the recorded fixture.</expected>
+    <actual>Root cause: passive pricing comes from router.bingx_order's mark-based rule, written for the offline dry run, and the mirror reuses it at placement time without consulting the live book.</actual>
+    <constraints>
+      router.bingx_order and router.bingx_dry_run keep their behaviour and tests; the repricing lives in the mirror
+      The depth call reaches only open-api-vst.bingx.com through the existing host guard
+      Never edit the fixtures under packages/router/tests/fixtures/bingx_vst/
+      No network access and no credentials in any test
+    </constraints>
+  </bug>
+</bug_spec>

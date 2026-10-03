@@ -1,0 +1,18 @@
+{
+  "code": 0,
+  "msg": "",
+  "data": {
+    "balance": {
+      "userId": "<redacted>",
+      "asset": "VST",
+      "balance": "9999.3507",
+      "equity": "9999.2781",
+      "unrealizedProfit": "-0.0726",
+      "realisedProfit": "0",
+      "availableMargin": "7503.0716",
+      "usedMargin": "2496.2791",
+      "freezedMargin": "0.0000",
+      "shortUid": "<redacted>"
+    }
+  }
+}
