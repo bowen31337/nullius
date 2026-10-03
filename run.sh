@@ -12,6 +12,8 @@
 #   ./run.sh worker             start the report generation worker (Dramatiq + asyncpg pool)
 #   ./run.sh test   [args]      run pytest
 #   ./run.sh shell              drop into a shell with secrets injected
+#   ./run.sh vst    [args]      python -m router.bingx_mirror with ONLY the BingX
+#                               VST sub-account key (.env.vst.tpl), never .env.tpl
 #
 # No-secret commands (run with a CLEAN env — package managers and linters
 # must never see runtime credentials; this is the main supply-chain
@@ -41,6 +43,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # One shared writable dir gives agent and gate the same browsers, fetched once.
 export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.pw-browsers}"
 ENV_TPL="${SCRIPT_DIR}/.env.tpl"
+ENV_VST_TPL="${SCRIPT_DIR}/.env.vst.tpl"
 
 cmd="${1:-help}"
 shift || true
@@ -136,6 +139,21 @@ case "${cmd}" in
   shell)
     echo "→ Dropping into shell with secrets injected (type 'exit' to leave)..."
     exec ${OP} bash
+    ;;
+
+  vst)
+    # The BingX VST mirror gets the sub-account key and nothing else: its own
+    # env file, not .env.tpl, so no claw-forge agent ever sees an exchange key.
+    # The placement store defaults to a file outside the repo.
+    if [[ ! -f "${ENV_VST_TPL}" ]]; then
+      echo "error: ${ENV_VST_TPL} not found." >&2
+      exit 1
+    fi
+    mkdir -p "$HOME/.local/share/nullius"
+    export DATABASE_URL="${DATABASE_URL:-sqlite:///$HOME/.local/share/nullius/vst.db}"
+    cd "${SCRIPT_DIR}"
+    exec op run --env-file="${ENV_VST_TPL}" -- \
+      uv run --all-packages python -m router.bingx_mirror "$@"
     ;;
 
   # ── No-secret commands ──────────────────────────────────────────────────────
