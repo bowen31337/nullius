@@ -623,6 +623,49 @@ def test_a_venue_refusal_is_reported_with_its_code(test_database_url):
     assert first.code == "101204"
 
 
+def test_a_venue_refusal_is_reported_with_its_message(test_database_url):
+    """The live smoke test's symptom: a code no documentation explains.
+
+    Three PostOnly orders were refused as ``101215`` — a code in none of
+    BingX's published pages — and the printed line carried the code alone,
+    so the refusal's one legible fact, the venue's own ``msg``, was dropped
+    between the client (which carries it verbatim) and the report.
+    """
+    client = _MirrorClient(
+        place_effects=[lambda: (_ for _ in ()).throw(
+            RouterBingXRefusedError(101215, "post-only order would take the market")
+        )]
+    )
+    limiter = _CountingLimiter()
+    store = RouterOrderPlacementStore(test_database_url)
+    outcomes = _place(
+        client, _plan(client), store, limiter, database_url=test_database_url
+    )
+    first = outcomes["1000PEPE-USDT"]
+    assert first.outcome == MIRROR_OUTCOME_REFUSED
+    assert first.code == "101215"
+    assert first.message == "post-only order would take the market"
+
+
+def test_a_refusal_without_a_venue_message_carries_none(test_database_url):
+    """A transport failure words nothing; its token is the class name."""
+    client = _MirrorClient(
+        place_effects=[
+            lambda: (_ for _ in ()).throw(_transport_unknown()),
+            lambda: (_ for _ in ()).throw(_transport_unknown()),
+        ]
+    )
+    limiter = _CountingLimiter()
+    store = RouterOrderPlacementStore(test_database_url)
+    outcomes = _place(
+        client, _plan(client), store, limiter, database_url=test_database_url
+    )
+    first = outcomes["1000PEPE-USDT"]
+    assert first.outcome == MIRROR_OUTCOME_REFUSED
+    assert first.code == "RouterBingXTransportError"
+    assert first.message is None
+
+
 def test_a_rate_limited_send_is_retried_and_succeeds(test_database_url):
     client = _MirrorClient(place_effects=[lambda: (_ for _ in ()).throw(_rate_limited())])
     limiter = _CountingLimiter()
@@ -796,6 +839,26 @@ def test_mirror_leg_refuses_a_code_on_a_placed_leg():
         MirrorLeg(symbol="BTC-USDT", outcome=MIRROR_OUTCOME_PLACED, code="x")
 
 
+def test_mirror_leg_refuses_a_message_on_a_placed_leg():
+    with pytest.raises(RouterBingXMirrorError):
+        MirrorLeg(
+            symbol="BTC-USDT",
+            outcome=MIRROR_OUTCOME_PLACED,
+            message="the venue said something",
+        )
+
+
+def test_mirror_leg_refuses_a_blank_message():
+    """A message that states nothing is no message; the leg carries none."""
+    with pytest.raises(RouterBingXMirrorError):
+        MirrorLeg(
+            symbol="BTC-USDT",
+            outcome=MIRROR_OUTCOME_REFUSED,
+            code="101215",
+            message="  ",
+        )
+
+
 # -- main: the command ---------------------------------------------------------
 
 
@@ -931,6 +994,44 @@ def test_place_refused_leg_exits_one(tmp_path, test_database_url):
         if json.loads(line).get(PLACEMENT_FIELD) == MIRROR_OUTCOME_REFUSED
     ]
     assert refused and refused[0]["code"] == "101204"
+
+
+def test_place_refused_leg_prints_the_venues_message(
+    tmp_path, test_database_url
+):
+    """The line an operator greps carries the venue's own ``msg`` verbatim.
+
+    The live smoke test printed ``{"placement": "refused", "code":
+    "101215"}`` and nothing else, and 101215 is in none of BingX's published
+    documentation — the message is the only fact that says why.  The exit
+    code stays 1 and the store still records nothing for the refused order.
+    """
+    book_path = tmp_path / "book.json"
+    book_path.write_text(json.dumps(_book()), encoding="utf-8")
+    client = _MirrorClient(
+        place_effects=[lambda: (_ for _ in ()).throw(
+            RouterBingXRefusedError(101215, "post-only order would take the market")
+        )]
+    )
+    store = RouterOrderPlacementStore(test_database_url)
+    limiter = _CountingLimiter()
+    code, out, _ = _run_main(
+        ["--book", str(book_path), "--place"],
+        client=client, store=store, limiter=limiter,
+        database_url=test_database_url,
+    )
+    assert code == 1
+    refused = [
+        json.loads(line)
+        for line in out.splitlines()
+        if json.loads(line).get(PLACEMENT_FIELD) == MIRROR_OUTCOME_REFUSED
+    ]
+    assert refused and refused[0]["code"] == "101215"
+    assert refused[0]["message"] == "post-only order would take the market"
+    # The refused order is still recorded nowhere: the row a re-run would
+    # answer from exists only for an order the venue took.
+    key = _full_identifier(_book(), "1000PEPE-USDT")
+    assert store.prior_result(key) is None
 
 
 def test_status_prints_the_read_back(tmp_path):

@@ -14,8 +14,8 @@ builds the plan with dry_run_plan.*
   acquiring :class:`~router.limiter.RouterRateLimiter` weight and retrying
   429s with :func:`router.retry.retry_rate_limited`.  It prints one JSON
   line per leg: ``placed``, ``prior`` (already placed), or ``refused`` with
-  its code.  It exits 0 when every order was placed or was already placed,
-  and 1 otherwise.
+  its code and the venue's own message.  It exits 0 when every order was
+  placed or was already placed, and 1 otherwise.
 * When a POST /trade/order times out or its connection drops, the outcome
   is unknown.  The mirror then queries that ``clientOrderID`` before doing
   anything else.  A found order is recorded as placed, and only a
@@ -261,13 +261,17 @@ class MirrorLeg:
     :data:`MIRROR_OUTCOME_PLACED`, :data:`MIRROR_OUTCOME_PRIOR` or
     :data:`MIRROR_OUTCOME_REFUSED`; ``code`` is the refusing vocabulary's
     own code word — the venue's ``code`` field for a venue refusal — and is
-    ``None`` for the two outcomes that are not refusals.  Frozen and
+    ``None`` for the two outcomes that are not refusals; ``message`` is the
+    venue's own ``msg`` for a venue refusal, verbatim, and is ``None`` for
+    a refusal that words nothing (a transport failure, an exhausted
+    backoff) and for the two outcomes that are not refusals.  Frozen and
     hashable, so a caller can key a report on it.
     """
 
     symbol: str
     outcome: str
     code: str | None = None
+    message: str | None = None
 
     def __post_init__(self) -> None:
         if self.outcome not in (
@@ -290,11 +294,22 @@ class MirrorLeg:
                     "what an operator greps to learn why the order did not "
                     "land (feature 4)"
                 )
-        elif self.code is not None:
+            if self.message is not None and (
+                not isinstance(self.message, str) or not self.message.strip()
+            ):
+                raise RouterBingXMirrorError(
+                    f"{MIRROR_CODE}: a refused leg's message is the venue's "
+                    f"own msg verbatim, got {self.message!r}; a message that "
+                    "states nothing is not a reason — a refusal the venue "
+                    "worded carries its msg, and one it did not carries no "
+                    "message at all (feature 4)"
+                )
+        elif self.code is not None or self.message is not None:
             raise RouterBingXMirrorError(
                 f"{MIRROR_CODE}: a {self.outcome!r} leg carries no refusal "
-                f"code, got {self.code!r}; an order that was placed (or "
-                "already was) was refused by nothing (feature 4)"
+                f"code or message, got code {self.code!r} and message "
+                f"{self.message!r}; an order that was placed (or already "
+                "was) was refused by nothing (feature 4)"
             )
 
 
@@ -729,6 +744,26 @@ def _refusal_code(refusal: BaseException) -> str:
     return type(refusal).__name__
 
 
+def _refusal_message(refusal: BaseException) -> str | None:
+    """The venue's own ``msg`` for a refusal that stopped a placement.
+
+    Read off :attr:`RouterBingXRefusedError.msg` — the venue's envelope
+    text carried verbatim, and the **only** ``msg`` any vocabulary in this
+    member holds — so the message a refused leg prints is the venue's own
+    words and never a request URL, query string, signature or credential.
+    A refusal that carries none (an exhausted backoff's standing
+    rate-limit reading, a transport this module could not resolve even by
+    asking) answers ``None``: the code column is that refusal's token, and
+    a message invented here would be a fact no venue stated.  A blank msg
+    counts as no message, the same reading the code column gives a blank
+    code.
+    """
+    msg = getattr(refusal, "msg", None)
+    if isinstance(msg, str) and msg.strip():
+        return msg
+    return None
+
+
 def _place_one(
     *,
     client: Any,
@@ -766,7 +801,8 @@ def _place_one(
     A refusal that survives the backoff propagates out of the attempt, so
     the store's transaction rolls back and nothing is recorded — the order
     path keeps the retry it is entitled to make — and is answered here as a
-    ``refused`` leg carrying its code.
+    ``refused`` leg carrying its code and, when the venue worded it, its
+    message.
     """
     def _send() -> None:
         _post_order(client=client, order=order, reposts=reposts)
@@ -813,6 +849,7 @@ def _place_one(
             symbol=order.symbol,
             outcome=MIRROR_OUTCOME_REFUSED,
             code=_refusal_code(refusal),
+            message=_refusal_message(refusal),
         )
     outcome = MIRROR_OUTCOME_PLACED if result.appended else MIRROR_OUTCOME_PRIOR
     return MirrorLeg(symbol=order.symbol, outcome=outcome)
@@ -903,11 +940,18 @@ def _print_leg(leg: BingXOrder | BingXRefusedLeg) -> None:
 
 
 def _print_placed(leg: BingXOrder, outcome: MirrorLeg) -> None:
-    """One placed line: the plan's own parameters beside the placement word."""
+    """One placed line: the plan's own parameters beside the placement word.
+
+    A refused leg adds its code and, when the venue worded the refusal, its
+    own ``msg`` verbatim under ``"message"`` — the one fact that says why
+    an undocumented code refused the order.
+    """
     line: dict[str, Any] = dict(leg.parameters())
     line[PLACEMENT_FIELD] = outcome.outcome
     if outcome.code is not None:
         line["code"] = outcome.code
+    if outcome.message is not None:
+        line["message"] = outcome.message
     print(json.dumps(line))
 
 
