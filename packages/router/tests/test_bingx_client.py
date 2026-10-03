@@ -32,6 +32,7 @@ from router.bingx_client import (
     API_KEY_ENV,
     BALANCE_PATH,
     BINGX_REFUSED_CODE,
+    DEPTH_PATH,
     LIVE_HOST,
     LIVE_HOST_REFUSED_CODE,
     OPEN_ORDERS_PATH,
@@ -469,6 +470,32 @@ def test_positions_can_be_narrowed_to_one_symbol() -> None:
     client = _client(recorder)
     client.positions("BTC-USDT")
     assert "symbol=BTC-USDT" in recorder.last_url
+
+
+def test_depth_reads_one_symbols_book_from_its_own_public_endpoint() -> None:
+    """GET quote/depth for the symbol — public, so it signs nothing.
+
+    The read the mirror's passive repricing stands on: a PostOnly order
+    rests on its own side of the *book*, and the mark can sit on the far
+    side of it (the live capture's ETH-USDT book — the best bid 2665.89,
+    the best ask 2673.27 — against a mark of 2685.87).  Market data is
+    public like contracts and premiumIndex: no signature, no key.
+    """
+    recorder = _Recorder(
+        (200, _envelope({"bids": [["2665.89", "45.451"]], "asks": [["2673.27", "39.807"]]}))
+    )
+    client = _client(recorder)
+
+    data = client.depth("ETH-USDT")
+
+    assert data["bids"][0][0] == "2665.89"
+    assert data["asks"][0][0] == "2673.27"
+    method, url, headers, body = recorder.requests[-1]
+    assert method == "GET"
+    assert url.startswith(f"{VST_BASE_URL}{DEPTH_PATH}")
+    assert "symbol=ETH-USDT" in url
+    assert "X-BX-APIKEY" not in headers
+    assert body == b""
 
 
 def test_position_mode_hits_its_own_endpoint_signed_like_every_account_read() -> None:

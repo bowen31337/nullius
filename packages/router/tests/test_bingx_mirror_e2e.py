@@ -62,6 +62,7 @@ import pytest
 from router.bingx_client import (
     BALANCE_PATH,
     CONTRACTS_PATH,
+    DEPTH_PATH,
     LEVERAGE_PATH,
     LIVE_HOST,
     MARGIN_TYPE_PATH,
@@ -86,7 +87,9 @@ API_SECRET = "e2e-fake-vst-secret"
 
 #: The public, unsigned reads: the venue's quote documents and its clock.
 #: Every other endpoint this client touches is signed and is verified.
-PUBLIC_PATHS = frozenset({CONTRACTS_PATH, PREMIUM_INDEX_PATH, SERVER_TIME_PATH})
+PUBLIC_PATHS = frozenset(
+    {CONTRACTS_PATH, PREMIUM_INDEX_PATH, SERVER_TIME_PATH, DEPTH_PATH}
+)
 
 #: The five symbols the synthetic book orders with a flat account.
 ORDERED_SYMBOLS = ("1000PEPE-USDT", "BTC-USDT", "DOGE-USDT", "ETH-USDT", "SOL-USDT")
@@ -211,6 +214,30 @@ class _StandIn:
             return 200, _fixture("contracts.json")
         if path == PREMIUM_INDEX_PATH:
             return 200, _fixture("premium_index.json")
+        if path == DEPTH_PATH:
+            # The order book the mirror's passive repricing reads just
+            # before placing.  ETH-USDT is answered with the recorded live
+            # capture verbatim — the book that pinned the defect, whose
+            # best bid (2665.89) and best ask (2673.27) sit several ticks
+            # below the premiumIndex mark (2685.87) — and every other
+            # symbol with a one-level book around its own mark, so a leg
+            # the record does not cover still rests at the price its plan
+            # already carried.
+            symbol = params.get("symbol")
+            marks = {
+                row["symbol"]: row["markPrice"]
+                for row in _fixture("premium_index.json")["data"]
+            }
+            if symbol == "ETH-USDT":
+                return 200, _fixture("live/depth_eth_usdt.json")
+            if symbol in marks:
+                mark = marks[symbol]
+                return 200, {
+                    "code": 0,
+                    "msg": "",
+                    "data": {"bids": [[mark, "1"]], "asks": [[mark, "1"]]},
+                }
+            return 200, {"code": 109400, "msg": f"no such symbol {symbol}"}
         if path == SERVER_TIME_PATH:
             return 200, {
                 "code": 0,
@@ -759,6 +786,69 @@ def test_a_place_against_a_recorded_short_account_never_doubles_it(
     posts = venue.order_posts()
     shipped = {p["params"]["symbol"] for p in posts}
     assert shipped == set(ORDERED_SYMBOLS) - {"DOGE-USDT"}
+
+
+# -- Passive legs price at the recorded book -----------------------------------
+
+
+def _book_with_eth_buy(path: Path) -> Path:
+    """The synthetic book with ETH's weight flipped, so ETH is a BUY leg.
+
+    Only the weight is the book's own decision; the *book* the stand-in
+    prices against is the recorded live capture served verbatim on the
+    depth endpoint — the mark (2685.87) above the best ask (2673.27), the
+    exact state that made the smoke test's mark-priced PostOnly orders
+    cross.
+    """
+    book = _fixture("synthetic_book.json")
+    book["weights"] = dict(book["weights"])
+    book["weights"]["ETH-USDT"] = 0.15
+    path.write_text(json.dumps(book), encoding="utf-8")
+    return path
+
+
+def test_a_passive_buy_leg_reaches_the_venue_at_the_books_best_bid(
+    tmp_path, stand_in, database_url
+):
+    """The defect, driven the way the operator drove it.
+
+    The live smoke test placed four PostOnly orders priced at the mark and
+    the venue refused three of them (BingX 101215) — on VST the mark and
+    the book diverge by several ticks, and a PostOnly order priced through
+    the book crosses it.  Here the stand-in serves the recorded capture's
+    own book for ETH-USDT, whose best bid is 2665.89 against a mark of
+    2685.87 (above even the best ask, 2673.27): the ETH BUY leg must reach
+    the venue resting at the bid, never at the mark, while the one
+    aggressive (MARKET) leg still carries no price and every leg ships.
+    """
+    _, venue, url = stand_in
+    book = _book_with_eth_buy(tmp_path / "book_with_eth_buy.json")
+
+    result = _run(
+        ["--book", str(book), "--place"],
+        _child_env(tmp_path, url, database_url),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert venue.signature_failures == []
+    # The book was actually read for the passive legs, on the public path.
+    assert any(
+        r["method"] == "GET"
+        and r["path"] == DEPTH_PATH
+        and r["params"].get("symbol") == "ETH-USDT"
+        for r in venue.requests
+    )
+    posts = venue.order_posts()
+    assert len(posts) == 5
+    eth = next(p for p in posts if p["params"]["symbol"] == "ETH-USDT")
+    assert eth["params"]["side"] == "BUY"
+    assert eth["params"]["type"] == "LIMIT"
+    assert eth["params"]["price"] == "2665.89"
+    assert "2685.87" != eth["params"]["price"]
+    # The aggressive leg is unchanged: a MARKET order carries no price.
+    doge = next(p for p in posts if p["params"]["symbol"] == "DOGE-USDT")
+    assert doge["params"]["type"] == "MARKET"
+    assert "price" not in doge["params"]
 
 
 # -- The stand-in itself is honest --------------------------------------------

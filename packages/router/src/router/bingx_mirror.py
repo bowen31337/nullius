@@ -51,6 +51,33 @@ delta against a position the account never took).  A flat account answers no
 positions at all, which is the empty mapping: every leg is sized from flat,
 which is the state the end-to-end stand-in holds.
 
+**Passive legs are priced at the book, never at the mark.**  The plan's
+prices are Stage 0's own rule — the mark rounded onto the tick grid away
+from crossing — written for an *offline* dry run that has no book to ask.
+At placement the venue is under no obligation to trade at its mark: the
+live capture's book for ETH-USDT quotes a best bid of 2665.89 and a best
+ask of 2673.27 while the premiumIndex mark is 2685.87, several ticks
+*above* the ask, so a PostOnly BUY priced at the mark crosses the book and
+the venue refuses it (BingX 101215 — three of the four orders in the live
+smoke test).  Just before placing, the mirror therefore reads the symbol's
+book through :meth:`~router.bingx_client.BingXClient.depth` and prices each
+passive leg at **its own side of that book** — a BUY at the best bid, a
+SELL at the best ask, on the tick grid — by handing the book-side quote to
+:func:`router.bingx_order.assemble_bingx_order` as the mark, the one door
+that owns the gates and the grid rounding, with the leg's identity terms
+unchanged (the repriced order keeps the plan's ``clientOrderID`` and the
+store keeps its key, because feature 316 folds identity, never price).  The
+repriced order is re-judged gate for gate — grids, notional floor, minimum
+quantity — and a gate that closes it refuses the leg with that gate's own
+code word; a side with no quote on it refuses the leg as
+:data:`NO_BOOK_CODE`.  Aggressive (MARKET) legs carry no price and are sent
+verbatim, and Stage 0's offline dry run keeps mark pricing, since it has no
+book.  Repricing lives *inside the store's send*: a leg the store answers
+``prior`` is never repriced — the venue already holds it at the price it
+was placed at — and a repriced leg the gates refuse raises through the
+send, so the store's claim rolls back and nothing is recorded for an order
+that never left.
+
 **The venue's ``clientOrderID`` is 40 characters; the store's key is 64.**
 :class:`~router.bingx_order.BingXOrder` carries only the projection feature 3
 applies at the boundary, and feature 317's placement store keys its
@@ -129,8 +156,15 @@ from pathlib import Path
 from typing import Any
 
 from .bingx_client import BingXClient, RouterBingXTransportError
+from .bingx_documents import RouterNotTradableError, resolve_bingx_filters
 from .bingx_dry_run import dry_run_plan
-from .bingx_order import BingXOrder, BingXRefusedLeg
+from .bingx_order import (
+    BINGX_BUY,
+    BINGX_LIMIT_ORDER,
+    BingXOrder,
+    BingXRefusedLeg,
+    assemble_bingx_order,
+)
 from .bingx_orders import (
     VST_ORDER_NOT_FOUND,
     cancel_rebalance_orders,
@@ -158,6 +192,7 @@ __all__ = [
     "MIRROR_OUTCOME_PLACED",
     "MIRROR_OUTCOME_PRIOR",
     "MIRROR_OUTCOME_REFUSED",
+    "NO_BOOK_CODE",
     "PLACEMENT_FIELD",
     "RATE_LIMIT_RETRIES",
     "REPOST_LIMIT",
@@ -168,6 +203,7 @@ __all__ = [
     "live_positions",
     "main",
     "mirror_place",
+    "reprice_passive_order",
 ]
 
 #: The greppable token this command's own faults open with — a book that
@@ -189,6 +225,14 @@ DATABASE_URL_MISSING_CODE = "database_url_missing"
 #: Restated here rather than imported from a sibling store, the discipline
 #: every store in this member keeps for its own address.
 DATABASE_URL_ENV = "DATABASE_URL"
+
+#: The code word for a passive leg whose symbol's book quotes nothing on
+#: the leg's own side — no bids for a BUY, no asks for a SELL — so there is
+#: no price on that side for a PostOnly order to rest against.  A leg-level
+#: fact and a *value* (a refused leg in the placements report), never an
+#: error: the venue's book for a freshly listed symbol can legitimately be
+#: empty on one side, and the leg is skipped while its siblings place.
+NO_BOOK_CODE = "no_book"
 
 #: The three placement outcomes a leg can print, one word each: the order
 #: did not exist in the store and the venue was asked; the store already
@@ -264,14 +308,20 @@ class MirrorLeg:
     ``None`` for the two outcomes that are not refusals; ``message`` is the
     venue's own ``msg`` for a venue refusal, verbatim, and is ``None`` for
     a refusal that words nothing (a transport failure, an exhausted
-    backoff) and for the two outcomes that are not refusals.  Frozen and
-    hashable, so a caller can key a report on it.
+    backoff) and for the two outcomes that are not refusals; ``order`` is
+    the order the venue was actually asked to take — a passive leg as it
+    was repriced at the book, an aggressive leg verbatim — and is ``None``
+    whenever nothing was sent for this leg *this run* (a ``prior`` leg the
+    store answered from its row, or a refusal), because in those cases the
+    order that was placed, or never placed, is not this run's to report.
+    Frozen and hashable, so a caller can key a report on it.
     """
 
     symbol: str
     outcome: str
     code: str | None = None
     message: str | None = None
+    order: BingXOrder | None = None
 
     def __post_init__(self) -> None:
         if self.outcome not in (
@@ -310,6 +360,13 @@ class MirrorLeg:
                 f"code or message, got code {self.code!r} and message "
                 f"{self.message!r}; an order that was placed (or already "
                 "was) was refused by nothing (feature 4)"
+            )
+        if self.order is not None and not isinstance(self.order, BingXOrder):
+            raise RouterBingXMirrorError(
+                f"{MIRROR_CODE}: a leg's sent order is a "
+                f"BingXOrder, got {type(self.order).__name__}; the leg "
+                "reports the request the venue was asked to take, and "
+                "nothing else spells those parameters (feature 4)"
             )
 
 
@@ -665,6 +722,276 @@ def _full_identifier(book: Mapping[str, Any], symbol: str) -> str:
     ).client_order_id
 
 
+# -- Passive repricing ---------------------------------------------------------
+
+
+class _RepriceRefusal(Exception):
+    """A repriced leg the gates closed, carrying the refusing code word.
+
+    Deliberately *not* a :class:`~router.errors.RouterError`: this is
+    plumbing between the store's send callable and :func:`_place_one`, not
+    part of the module's vocabulary, and it must travel a path
+    :class:`~router.errors.RouterRateLimitedError` cannot — through
+    :func:`router.retry.retry_rate_limited`, which re-raises every other
+    exception untouched — because a repricing refusal is final (there is
+    nothing to wait out and no re-send that would answer it) and the store's
+    claim must roll back so nothing is recorded for an order that never
+    left.  Folded into the leg's ``refused`` report here, never printed or
+    raised past :func:`_place_one`.
+    """
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+def _book_quote(depth: Any, side: str, symbol: str) -> Decimal | None:
+    """The book's own quote on ``side`` of ``symbol``'s depth answer.
+
+    ``depth`` is what :meth:`~router.bingx_client.BingXClient.depth` answers
+    — the venue envelope's ``data``, a mapping of ``bids`` and ``asks``
+    arrays of ``[price, quantity]`` decimal-string pairs.  A BUY rests on
+    the bid side and a SELL on the ask side, so the quote is the *best*
+    price on that side: the greatest bid, the least ask — read as a
+    maximum/minimum over the stated levels rather than as "the first row",
+    because nothing obliges the venue to order its rows.  A side that is
+    absent or holds no level answers ``None``: that is
+    :data:`NO_BOOK_CODE`, a fact about the book the leg carries as a value.
+    A side this module cannot *read* — a payload that is not the document
+    shape, a level that is not a pair, a price that is not a decimal — is a
+    fault of the ask and refuses here, the same reading
+    :func:`live_positions` gives a positions payload it cannot parse; a
+    ``float`` price is refused by name as everywhere in this member, a
+    binary approximation of a decimal no venue ever sent.
+    """
+    if not isinstance(depth, Mapping):
+        raise RouterBingXMirrorError(
+            f"{MIRROR_CODE}: the depth answer for {symbol!r} is the "
+            f"venue's book, an object of 'bids' and 'asks' arrays, got "
+            f"{type(depth).__name__}; a book that is not the document shape "
+            "cannot be priced against (feature 4)"
+        )
+    field = "bids" if side == BINGX_BUY else "asks"
+    levels = depth.get(field)
+    if levels is None or (isinstance(levels, (list, tuple)) and not levels):
+        return None
+    if not isinstance(levels, (list, tuple)):
+        raise RouterBingXMirrorError(
+            f"{MIRROR_CODE}: the depth answer for {symbol!r} carries "
+            f"{field!r} as {type(levels).__name__}, not an array of "
+            "[price, quantity] pairs; a side this module cannot read is not "
+            "a side of the book (feature 4)"
+        )
+    prices: list[Decimal] = []
+    for level in levels:
+        if not isinstance(level, (list, tuple)) or not level:
+            raise RouterBingXMirrorError(
+                f"{MIRROR_CODE}: the depth answer for {symbol!r} carries a "
+                f"{field!r} level of {level!r}, which is not a "
+                "[price, quantity] pair; a level without a price states no "
+                "quote the order could rest against (feature 4)"
+            )
+        price = level[0]
+        if isinstance(price, bool) or not isinstance(price, (str, int)):
+            raise RouterBingXMirrorError(
+                f"{MIRROR_CODE}: the depth answer for {symbol!r} carries a "
+                f"{field!r} price of {price!r} ({type(price).__name__}); a "
+                "price must be a decimal string or a whole number, because "
+                "a float is a binary approximation of a decimal no venue "
+                "ever sent (feature 4)"
+            )
+        try:
+            number = Decimal(price)
+        except InvalidOperation as exc:
+            raise RouterBingXMirrorError(
+                f"{MIRROR_CODE}: the depth answer for {symbol!r} carries a "
+                f"{field!r} price of {price!r}, which is not a decimal; a "
+                "price the tick grid cannot read is not a quote the order "
+                "could rest on (feature 4)"
+            ) from exc
+        if not number.is_finite():
+            raise RouterBingXMirrorError(
+                f"{MIRROR_CODE}: the depth answer for {symbol!r} carries a "
+                f"{field!r} price of {price!r}, which is not a finite "
+                "decimal; a price that is not a number cannot be rounded "
+                "onto the tick grid (feature 4)"
+            )
+        prices.append(number)
+    return max(prices) if side == BINGX_BUY else min(prices)
+
+
+def _duration_terms(book: Mapping[str, Any], symbol: str) -> tuple[timedelta, timedelta]:
+    """The book's two posture durations for ``symbol``, re-read as the plan read them.
+
+    The posture gate (feature 314) compares the symbol's decay horizon with
+    the book's expected fill time, and both terms reach the plan from the
+    book document; the repricing re-assembles the leg through the same
+    gate, so it re-reads the same two durations from the same document
+    rather than inventing a default a posture could hide behind.  The plan
+    was built from this book, so the terms are present and readable; the
+    refusals here exist so a fault stays legible instead of surfacing as a
+    bare :class:`KeyError` or :class:`TypeError` mid-placement.
+    """
+    horizons = book.get("decay_horizon_seconds")
+    if not isinstance(horizons, Mapping) or symbol not in horizons:
+        raise RouterBingXMirrorError(
+            f"{MIRROR_CODE}: the book document states no decay horizon for "
+            f"{symbol!r}; the posture gate reads the symbol's horizon and "
+            "the repriced leg must be judged through it (feature 314)"
+        )
+    fill = book.get("expected_fill_seconds")
+    if isinstance(fill, bool) or not isinstance(fill, (int, float)):
+        raise RouterBingXMirrorError(
+            f"{MIRROR_CODE}: the book document states no expected fill time "
+            f"as a number of seconds, got {fill!r} ({type(fill).__name__}); "
+            "the posture gate compares the symbol's horizon against it and "
+            "the repriced leg must be judged through it (feature 314)"
+        )
+    horizon = horizons[symbol]
+    if isinstance(horizon, bool) or not isinstance(horizon, (int, float)):
+        raise RouterBingXMirrorError(
+            f"{MIRROR_CODE}: the book document states the decay horizon for "
+            f"{symbol!r} as {horizon!r} ({type(horizon).__name__}), not a "
+            "number of seconds; the posture gate compares it against the "
+            "book's fill time and the repriced leg must be judged through "
+            "it (feature 314)"
+        )
+    return timedelta(seconds=horizon), timedelta(seconds=fill)
+
+
+def reprice_passive_order(
+    *,
+    order: BingXOrder,
+    depth: Any,
+    filters: Any,
+    book: Mapping[str, Any],
+) -> BingXOrder | BingXRefusedLeg:
+    """Price one passive leg at its own side of the book, not at the mark.
+
+    The defect's repair, stated as a verb: the plan's ``order`` was priced
+    by Stage 0's offline rule — the mark rounded onto the tick grid — which
+    crosses the book whenever the mark sits on the far side of it (the live
+    capture: ETH-USDT's mark 2685.87 above its best ask 2673.27), and a
+    PostOnly order that crosses is refused by the venue (BingX 101215).
+    The answer is the same order priced at :func:`_book_quote`'s best quote
+    on the leg's own side — a BUY at the best bid, a SELL at the best ask —
+    and the pricing itself is not re-implemented here: the quote is handed
+    to :func:`router.bingx_order.assemble_bingx_order` as the mark, the one
+    door that owns the tick-grid rounding (away from crossing, so a
+    book-side quote stays non-crossing by construction) and every gate, so
+    the repriced leg is re-judged gate for gate — posture, the step and
+    tick grids, the notional floor, the minimum quantity, isolated margin —
+    against the *repriced* price, and a gate that closes it answers the
+    refused leg with that gate's own code word, never an exception.
+
+    The identity is the plan's own: ``assemble_bingx_order`` derives the
+    ``clientOrderID`` from the book's ``book_id``, ``rebalance_ts`` and the
+    symbol — terms that exclude price — so the repriced order keeps the
+    plan's identifier, the store keeps its key, and a re-run of the same
+    book still finds the row.  ``delta`` is re-signed off the leg's own
+    side and quantity, the same sign the sizer chose; ``book`` supplies the
+    posture durations and the margin arrangement verbatim.
+    """
+    quote = _book_quote(depth, order.side, order.symbol)
+    if quote is None:
+        return BingXRefusedLeg(symbol=order.symbol, code=NO_BOOK_CODE)
+    book_id, moment = _identity_terms(book)
+    size = Decimal(order.quantity)
+    delta = size if order.side == BINGX_BUY else -size
+    horizon, fill = _duration_terms(book, order.symbol)
+    answer = assemble_bingx_order(
+        symbol=order.symbol,
+        delta=delta,
+        mark=quote,
+        filters=filters,
+        signal_decay_horizon=horizon,
+        expected_fill_time=fill,
+        client_order_id=derive_client_order_id(
+            book_id=book_id, rebalance_ts=moment, symbol=order.symbol
+        ),
+        book_id=book_id,
+        account=book.get("account"),
+        mode=book.get("margin_mode"),
+    )
+    if isinstance(answer, BingXOrder) and answer.type != BINGX_LIMIT_ORDER:
+        # The leg being repriced is passive, so the posture gate reading
+        # these same durations answered LIMIT when the plan was built; a
+        # different answer now means the book changed under the plan, and
+        # that disagreement is a fault of the ask, not a leg the mirror
+        # can place.
+        raise RouterBingXMirrorError(
+            f"{MIRROR_CODE}: repricing the passive {order.type} leg for "
+            f"{order.symbol!r} answered a {answer.type} order; the book's "
+            "durations judge the posture, and a posture that changes "
+            "between the plan and its placement is a book the plan no "
+            "longer describes (feature 314)"
+        )
+    return answer
+
+
+def _passive_repricer(
+    *, client: Any, book: Mapping[str, Any], orders: Sequence[BingXOrder]
+) -> Callable[[BingXOrder], BingXOrder] | None:
+    """The per-leg repricing closure for a placement run, or ``None``.
+
+    ``None`` — no repricing at all, every leg sent verbatim — when the run
+    holds no passive leg: an all-market plan has no price to reprice and
+    its client need not expose a ``depth`` face at all.  Otherwise the
+    client must expose one, and the filters the repriced legs are re-judged
+    against are fetched and translated **once per run** (a public read,
+    side-effect-free) here rather than per leg, so five legs cost one
+    contracts document — and here rather than inside the send so a wiring
+    fault refuses before the preflight performs its first venue POST.
+
+    The closure reprices exactly the passive legs; a MARKET leg passes
+    through verbatim (it carries no price to reprice), and the depth of
+    *only* the leg being sent is read — inside the send — so no leg reads a
+    book it may never be placed against.  A leg the gates closed answers a
+    :class:`_RepriceRefusal` carrying the gate's code word, which escapes
+    the backoff and rolls the store's claim back.
+    """
+    if not any(order.type == BINGX_LIMIT_ORDER for order in orders):
+        return None
+    depth = getattr(client, "depth", None)
+    if not callable(depth):
+        raise RouterBingXMirrorError(
+            f"{MIRROR_CODE}: the injected client exposes no callable "
+            "depth(); a passive leg is priced at its own side of the "
+            "symbol's order book just before placing, because the mark "
+            "can sit on the far side of the book and a PostOnly order "
+            "priced at it crosses (feature 1)"
+        )
+    contracts = resolve_bingx_filters(
+        _document(client.contracts(), "BingX contracts")
+    )
+
+    def reprice(order: BingXOrder) -> BingXOrder:
+        if order.type != BINGX_LIMIT_ORDER:
+            return order
+        try:
+            filters = contracts[order.symbol]
+        except KeyError as exc:
+            raise RouterBingXMirrorError(
+                f"{MIRROR_CODE}: the venue's contracts document states no "
+                f"filters for {order.symbol!r}; a leg the plan ordered "
+                "cannot be re-judged against filters the venue does not "
+                "publish for it (feature 4)"
+            ) from exc
+        except RouterNotTradableError as refusal:
+            # Impossible for a leg the plan ordered — the plan's own
+            # translation refused those — but if the venue's document
+            # changed under the run, the leg is refused, not placed blind.
+            raise _RepriceRefusal(str(refusal.code)) from refusal
+        answer = reprice_passive_order(
+            order=order, depth=depth(order.symbol), filters=filters, book=book
+        )
+        if isinstance(answer, BingXRefusedLeg):
+            raise _RepriceRefusal(answer.code)
+        return answer
+
+    return reprice
+
+
 # -- Placement -----------------------------------------------------------------
 
 
@@ -771,11 +1098,12 @@ def _place_one(
     store: Any,
     limiter: Any,
     book: Mapping[str, Any],
-    retries: int,
-    reposts: int,
-    sleep: Callable[[timedelta], Any],
-    jitter_rng: Any,
-    on_retry: Any,
+    repricer: Callable[[BingXOrder], BingXOrder] | None = None,
+    retries: int = RATE_LIMIT_RETRIES,
+    reposts: int = REPOST_LIMIT,
+    sleep: Callable[[timedelta], Any] = _sleep,
+    jitter_rng: Any = None,
+    on_retry: Any = None,
 ) -> MirrorLeg:
     """Place one order through the store, the limiter and the backoff.
 
@@ -798,14 +1126,32 @@ def _place_one(
     also states the honest order: a request prices itself before it is
     made.
 
+    **A passive leg is repriced inside the send, never before it.**  The
+    store invokes its callable only for a fresh placement — a leg it
+    answers ``prior`` was never this run's to price — so the repricing (and
+    the depth read it stands on) lives in ``_send`` itself, where it runs
+    exactly when the order is about to leave, and the order actually sent
+    is carried out in ``sent`` for the leg's report.  A repricing refusal
+    (a gate closing the repriced leg, a side with no quote on it) raises
+    :class:`_RepriceRefusal` out of the send: not a
+    :class:`~router.errors.RouterError`, so the backoff does not retry it —
+    there is nothing to wait out — and it is answered here, under the
+    store's rollback, as a ``refused`` leg carrying the refusing code word.
+
     A refusal that survives the backoff propagates out of the attempt, so
     the store's transaction rolls back and nothing is recorded — the order
     path keeps the retry it is entitled to make — and is answered here as a
     ``refused`` leg carrying its code and, when the venue worded it, its
     message.
     """
+    sent: list[BingXOrder] = []
+
     def _send() -> None:
-        _post_order(client=client, order=order, reposts=reposts)
+        to_send = order
+        if repricer is not None:
+            to_send = repricer(order)
+        sent.append(to_send)
+        _post_order(client=client, order=to_send, reposts=reposts)
 
     def _attempt() -> Any:
         # The weight is acquired *before* the store opens its transaction:
@@ -842,8 +1188,16 @@ def _place_one(
         # the send — is absorbed and the *placement* is re-entered: the
         # store's claim rolls back on the raise (nothing is recorded for an
         # order the venue did not take), and the next attempt re-acquires
-        # the weight and re-claims before re-sending.
+        # the weight and re-claims before re-sending.  A repricing refusal
+        # is the one exception: not a RouterRateLimitedError, so the backoff
+        # re-raises it untouched and the leg is answered below.
         result = retry_rate_limited(_attempt, **retry_kwargs)
+    except _RepriceRefusal as refusal:
+        return MirrorLeg(
+            symbol=order.symbol,
+            outcome=MIRROR_OUTCOME_REFUSED,
+            code=refusal.code,
+        )
     except RouterError as refusal:
         return MirrorLeg(
             symbol=order.symbol,
@@ -851,8 +1205,16 @@ def _place_one(
             code=_refusal_code(refusal),
             message=_refusal_message(refusal),
         )
-    outcome = MIRROR_OUTCOME_PLACED if result.appended else MIRROR_OUTCOME_PRIOR
-    return MirrorLeg(symbol=order.symbol, outcome=outcome)
+    if not result.appended:
+        # The store answered this leg from a row a prior run wrote; the
+        # venue already holds the order at the price it was placed at, so
+        # nothing was sent this run and the plan's own leg is the report.
+        return MirrorLeg(symbol=order.symbol, outcome=MIRROR_OUTCOME_PRIOR)
+    return MirrorLeg(
+        symbol=order.symbol,
+        outcome=MIRROR_OUTCOME_PLACED,
+        order=sent[-1] if sent else None,
+    )
 
 
 def mirror_place(
@@ -877,7 +1239,12 @@ def mirror_place(
     the plan will order — so a killed order layer, a skewed clock, a
     hedge-mode account or an unfunded one refuses here, before a single
     order leaves — and then places each order leg in the plan's own order
-    through the store, the limiter and the backoff (see :func:`_place_one`).
+    through the store, the limiter and the backoff (see :func:`_place_one`),
+    repricing every passive leg at its own side of the live book just
+    before it leaves (see :func:`_passive_repricer`).  The repricer is
+    built *before* the preflight runs: its one client face check and its
+    one public contracts read are side-effect-free, so a wiring fault
+    refuses before the preflight's first venue POST rather than after it.
 
     Returns one :class:`MirrorLeg` per *order* leg, keyed by symbol.  A leg
     the plan itself refused (a gate's code word, a document's) is not an
@@ -901,6 +1268,7 @@ def mirror_place(
             "preflight compares the account's available balance against the "
             "book's own equity before anything is placed (feature 2)"
         )
+    repricer = _passive_repricer(client=client, book=book, orders=orders)
     preflight_kwargs: dict[str, Any] = {
         "equity_usdt": book["equity_usdt"],
         "symbols": [order.symbol for order in orders],
@@ -919,6 +1287,7 @@ def mirror_place(
             store=store,
             limiter=limiter,
             book=book,
+            repricer=repricer,
             retries=retries,
             reposts=reposts,
             sleep=sleep,
@@ -940,13 +1309,19 @@ def _print_leg(leg: BingXOrder | BingXRefusedLeg) -> None:
 
 
 def _print_placed(leg: BingXOrder, outcome: MirrorLeg) -> None:
-    """One placed line: the plan's own parameters beside the placement word.
+    """One placed line: the sent order's parameters beside the placement word.
 
-    A refused leg adds its code and, when the venue worded the refusal, its
-    own ``msg`` verbatim under ``"message"`` — the one fact that says why
-    an undocumented code refused the order.
+    The parameters printed are the order the venue was asked to take —
+    ``outcome.order``, a passive leg repriced at the book — falling back to
+    the plan's own leg when this run sent nothing (a ``prior`` leg the
+    store answered from its row) or when no repricer ran.  A refused leg
+    adds its code and, when the venue worded the refusal, its own ``msg``
+    verbatim under ``"message"`` — the one fact that says why an
+    undocumented code refused the order.
     """
-    line: dict[str, Any] = dict(leg.parameters())
+    line: dict[str, Any] = dict(
+        (outcome.order if outcome.order is not None else leg).parameters()
+    )
     line[PLACEMENT_FIELD] = outcome.outcome
     if outcome.code is not None:
         line["code"] = outcome.code

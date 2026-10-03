@@ -85,6 +85,7 @@ __all__ = [
     "BINGX_REFUSED_CODE",
     "CONTRACTS_PATH",
     "DEFAULT_TIMEOUT_SECONDS",
+    "DEPTH_PATH",
     "LEVERAGE_PATH",
     "LIVE_HOST",
     "LIVE_HOST_REFUSED_CODE",
@@ -148,6 +149,12 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 SERVER_TIME_PATH = "/openApi/swap/v2/server/time"
 CONTRACTS_PATH = "/openApi/swap/v2/quote/contracts"
 PREMIUM_INDEX_PATH = "/openApi/swap/v2/quote/premiumIndex"
+#: The symbol's order book — public market data, the read the mirror's
+#: passive repricing stands on (``bug_spec_bingx_vst_mirror.xml``, bug on
+#: mark-priced PostOnly orders).  Where the mark is only the venue's account
+#: of value, the book is the collection of prices a PostOnly order can rest
+#: against without crossing, so the mirror asks it just before placing.
+DEPTH_PATH = "/openApi/swap/v2/quote/depth"
 BALANCE_PATH = "/openApi/swap/v2/user/balance"
 POSITIONS_PATH = "/openApi/swap/v2/user/positions"
 MARGIN_TYPE_PATH = "/openApi/swap/v2/trade/marginType"
@@ -686,6 +693,26 @@ class BingXClient:
         """GET the venue's premiumIndex (mark price) document (public, unsigned)."""
         return self._request(
             "GET", PREMIUM_INDEX_PATH, operation=OPERATION_ACCOUNT, signed=False
+        )
+
+    def depth(self, symbol: str) -> Any:
+        """GET one symbol's order book (public, unsigned).
+
+        The mirror's passive repricing reads this just before placing: a
+        PostOnly order rests only on its own side of the book — a BUY at the
+        best bid, a SELL at the best ask — while the mark can sit on the far
+        side and cross.  The venue answers ``data`` as a mapping with
+        ``bids`` and ``asks`` arrays of ``[price, quantity]`` string pairs;
+        the caller judges the sides.  ``symbol`` passes through exactly as
+        ``positions`` spells it, the venue's own refusal covering a name it
+        does not know.
+        """
+        return self._request(
+            "GET",
+            DEPTH_PATH,
+            operation=OPERATION_ACCOUNT,
+            parameters={"symbol": symbol},
+            signed=False,
         )
 
     def balance(self) -> Any:

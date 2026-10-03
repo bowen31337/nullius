@@ -105,6 +105,38 @@ def _live_positions_data() -> list:
     return document["data"]
 
 
+def _live_depth_data() -> dict:
+    """The recorded VST order book for ETH-USDT, verbatim under ``data``.
+
+    The fixture is an input and is never edited: it is the live capture
+    (``capture.json`` of 2026-10-03) that pinned this defect — a book whose
+    best bid is 2665.89 and best ask 2673.27 while the premiumIndex's mark
+    is 2685.87, several ticks *above* the ask.  A PostOnly BUY priced at the
+    mark crosses that book and the venue refuses it (BingX 101215 — three
+    of the four orders in the live smoke test); priced at the book's own
+    side, the best bid, it rests.  Tests read it through
+    :func:`router.bingx_client.BingXClient.depth`'s own envelope, never a
+    hand-written row.
+    """
+    document = _load("live/depth_eth_usdt.json")
+    return document["data"]
+
+
+def _book_with_eth_buy() -> dict:
+    """The synthetic book with ETH's weight flipped, so ETH is a BUY leg.
+
+    The book's own ETH weight is -0.15 (a SELL on a flat account); +0.15
+    makes ETH the one passive BUY leg whose mark, 2685.87, sits above the
+    recorded book's best ask, 2673.27 — the exact shape the reproduce
+    clause names: *a BUY leg whose mark is above the best ask in a recorded
+    depth answer*.
+    """
+    book = _book()
+    book["weights"] = dict(book["weights"])
+    book["weights"]["ETH-USDT"] = 0.15
+    return book
+
+
 class _MirrorClient:
     """A stand-in for feature 1's client: canned documents, recorded calls.
 
@@ -124,6 +156,7 @@ class _MirrorClient:
         contracts: object = None,
         marks: object = None,
         positions: object = (),
+        depths: dict[str, object] | None = None,
         server_time: int = LOCAL_MILLIS,
         balance: object = BALANCE,
         place_effects: list | None = None,
@@ -133,6 +166,7 @@ class _MirrorClient:
         self._contracts = _load("contracts.json") if contracts is None else contracts
         self._marks = _load("premium_index.json") if marks is None else marks
         self._positions = positions
+        self._depths = dict(depths or {})
         self._server_time = server_time
         self._balance = balance
         self._place_effects = list(place_effects or [])
@@ -153,6 +187,30 @@ class _MirrorClient:
     def positions(self, symbol: str | None = None) -> object:
         self.calls.append(("positions", symbol))
         return self._positions
+
+    # -- The mirror's repricing read ----------------------------------------
+    def depth(self, symbol: str) -> object:
+        """The symbol's order book, as the venue's depth answer spells it.
+
+        A symbol staged under ``depths`` is answered with that payload
+        verbatim (the recorded live capture for ETH-USDT); every other
+        symbol is answered with a one-level book around its own mark, so a
+        test that stages no depth still reprices at the price the plan
+        already carries and the placed orders keep their shapes.
+        """
+        self.calls.append(("depth", symbol))
+        staged = self._depths.get(symbol)
+        if staged is not None:
+            return staged
+        mark = self._mark_price(symbol)
+        return {"bids": [[mark, "1"]], "asks": [[mark, "1"]]}
+
+    def _mark_price(self, symbol: str) -> str:
+        rows = self._marks.get("data") if isinstance(self._marks, dict) else self._marks
+        for row in rows or ():
+            if row.get("symbol") == symbol:
+                return row["markPrice"]
+        raise AssertionError(f"the double holds no mark price for {symbol!r}")
 
     # -- The preflight's five faces -----------------------------------------
     def server_time(self) -> int:
@@ -602,6 +660,285 @@ def test_a_refused_leg_is_not_placed_but_its_siblings_are(test_database_url):
         leg.symbol for leg in plan if isinstance(leg, BingXRefusedLeg)
     }
     assert placed_symbols.isdisjoint(refused)
+
+
+# -- mirror_place: passive legs price at the order book -------------------------
+
+
+def test_a_passive_buy_leg_is_priced_at_the_best_bid_not_the_mark(test_database_url):
+    """The defect, pinned against the recorded book.
+
+    The premiumIndex mark for ETH-USDT is 2685.87 — several ticks above the
+    recorded book's best ask of 2673.27 — so a PostOnly BUY priced at the
+    mark crosses the book and the venue refuses it (101215, three of the
+    four orders in the live smoke test).  Priced at the book's own side —
+    the best bid, 2665.89, on the tick grid — the order rests.  The double
+    accepts either price, which is the point: only the venue's book says
+    which one crosses, so the mirror must ask it before placing.
+    """
+    book = _book_with_eth_buy()
+    client = _MirrorClient(depths={"ETH-USDT": _live_depth_data()})
+    limiter = _CountingLimiter()
+    store = RouterOrderPlacementStore(test_database_url)
+    outcomes = _place(
+        client, build_mirror_plan(book=book, client=client), store, limiter,
+        book=book, database_url=test_database_url,
+    )
+    assert outcomes["ETH-USDT"].outcome == MIRROR_OUTCOME_PLACED
+    eth = next(order for order in client.placed if order.symbol == "ETH-USDT")
+    assert eth.side == "BUY"
+    assert eth.type == "LIMIT"
+    assert eth.price == "2665.89"
+
+
+def test_a_passive_sell_leg_is_priced_at_the_best_ask_not_the_mark(test_database_url):
+    """The SELL mirror of the BUY defect, against the same recorded book.
+
+    The book's own ETH weight is -0.15, so the flat-account plan already
+    carries the SELL leg; at the recorded book the best ask is 2673.27,
+    below the mark of 2685.87 — a PostOnly SELL priced at the mark is
+    *through* the bid side by the same several ticks, and refuses.
+    """
+    book = _book()
+    client = _MirrorClient(depths={"ETH-USDT": _live_depth_data()})
+    limiter = _CountingLimiter()
+    store = RouterOrderPlacementStore(test_database_url)
+    outcomes = _place(
+        client, build_mirror_plan(book=book, client=client), store, limiter,
+        book=book, database_url=test_database_url,
+    )
+    assert outcomes["ETH-USDT"].outcome == MIRROR_OUTCOME_PLACED
+    eth = next(order for order in client.placed if order.symbol == "ETH-USDT")
+    assert eth.side == "SELL"
+    assert eth.price == "2673.27"
+
+
+def test_a_book_quote_off_the_tick_grid_rounds_onto_it_away_from_crossing(
+    test_database_url,
+):
+    """The quote is rounded by Stage 0's own grid rule, never sent raw.
+
+    A staged best bid of 2665.895 sits half a tick off ETH's 0.01 grid; a
+    BUY may not round up toward the crossing, so the price rests at
+    2665.89.  The rounding is the gate's own — the mirror hands the quote
+    to the one door that owns the grid — and so is the answer's exact
+    spelling: the grid's subtraction keeps the operand's scale
+    (``"2665.890"``), a trailing zero this module must not re-format, so
+    the assertion judges the value the venue reads, not the string.
+    """
+    book = _book_with_eth_buy()
+    client = _MirrorClient(
+        depths={"ETH-USDT": {"bids": [["2665.895", "45.451"]], "asks": []}}
+    )
+    limiter = _CountingLimiter()
+    store = RouterOrderPlacementStore(test_database_url)
+    _place(
+        client, build_mirror_plan(book=book, client=client), store, limiter,
+        book=book, database_url=test_database_url,
+    )
+    eth = next(order for order in client.placed if order.symbol == "ETH-USDT")
+    assert Decimal(eth.price) == Decimal("2665.89")
+
+
+def test_an_aggressive_market_leg_is_sent_verbatim_without_a_depth_read(
+    test_database_url,
+):
+    """A MARKET leg carries no price, so no book is read and no leg changes.
+
+    DOGE is the plan's one aggressive leg (its decay horizon of 60s is
+    shorter than the book's 120s fill expectation), and the bug report's
+    own constraint fixes it: *aggressive (MARKET) legs are unchanged*.
+    """
+    client = _MirrorClient()
+    limiter = _CountingLimiter()
+    store = RouterOrderPlacementStore(test_database_url)
+    _place(client, _plan(client), store, limiter, database_url=test_database_url)
+    assert ("depth", "DOGE-USDT") not in client.calls
+    doge = next(order for order in client.placed if order.symbol == "DOGE-USDT")
+    assert doge.type == "MARKET"
+    assert "price" not in doge.parameters()
+    # The passive legs around it are the ones the book was read for.
+    assert ("depth", "ETH-USDT") in client.calls
+
+
+def test_the_repriced_order_keeps_the_plans_identity_and_the_store_key(
+    test_database_url,
+):
+    """Identity folds book, rebalance and symbol — never price.
+
+    The repriced leg must answer the same clientOrderID the plan derived
+    and the same full 64-hex store key, or a re-run would not find the
+    row and would place the same order twice under two names.
+    """
+    book = _book_with_eth_buy()
+    client = _MirrorClient(depths={"ETH-USDT": _live_depth_data()})
+    limiter = _CountingLimiter()
+    store = RouterOrderPlacementStore(test_database_url)
+    plan = build_mirror_plan(book=book, client=client)
+    _place(client, plan, store, limiter, book=book, database_url=test_database_url)
+    planned = next(
+        leg for leg in plan if isinstance(leg, BingXOrder) and leg.symbol == "ETH-USDT"
+    )
+    placed = next(order for order in client.placed if order.symbol == "ETH-USDT")
+    assert placed.client_order_id == planned.client_order_id
+    assert placed.price != planned.price  # the price moved to the book
+    key = _full_identifier(book, "ETH-USDT")
+    assert store.prior_result(key) is not None
+
+
+def test_a_side_with_no_quote_refuses_the_leg_as_no_book(test_database_url):
+    """A book with no bid on it leaves a BUY nowhere to rest.
+
+    The staged ETH book quotes only asks — a BUY has no side of the book
+    to price at — and the bug report names the answer: *a symbol whose
+    book has no quote on that side is refused as no_book*.  A leg-level
+    refusal: nothing is placed, nothing is recorded, the siblings still
+    go.
+    """
+    book = _book_with_eth_buy()
+    client = _MirrorClient(
+        depths={"ETH-USDT": {"bids": [], "asks": [["2673.27", "39.807"]]}}
+    )
+    limiter = _CountingLimiter()
+    store = RouterOrderPlacementStore(test_database_url)
+    outcomes = _place(
+        client, build_mirror_plan(book=book, client=client), store, limiter,
+        book=book, database_url=test_database_url,
+    )
+    assert outcomes["ETH-USDT"].outcome == MIRROR_OUTCOME_REFUSED
+    assert outcomes["ETH-USDT"].code == "no_book"
+    assert all(o.symbol != "ETH-USDT" for o in client.placed)
+    assert store.prior_result(_full_identifier(book, "ETH-USDT")) is None
+    # The refusal is one leg's, not the run's.
+    assert outcomes["BTC-USDT"].outcome == MIRROR_OUTCOME_PLACED
+
+
+def test_a_repriced_leg_below_the_notional_floor_is_refused(test_database_url):
+    """The repriced order is re-judged against the floor at its new price.
+
+    1000PEPE's leg is 69446 contracts; at the staged best bid of 0.0000200
+    the order is worth 1.39 USDT, below the venue's 2 USDT floor — a value
+    the mark price (0.0043199, about 300 USDT) hid.  The gate's own code
+    word refuses the leg, exactly as it would have at plan time.
+    """
+    client = _MirrorClient(
+        depths={"1000PEPE-USDT": {"bids": [["0.0000200", "1000000"]], "asks": []}}
+    )
+    limiter = _CountingLimiter()
+    store = RouterOrderPlacementStore(test_database_url)
+    outcomes = _place(
+        client, _plan(client), store, limiter, database_url=test_database_url
+    )
+    assert outcomes["1000PEPE-USDT"].outcome == MIRROR_OUTCOME_REFUSED
+    assert outcomes["1000PEPE-USDT"].code == "below_min_notional"
+    assert all(o.symbol != "1000PEPE-USDT" for o in client.placed)
+    assert store.prior_result(_full_identifier(_book(), "1000PEPE-USDT")) is None
+
+
+def test_a_prior_leg_is_never_repriced(test_database_url):
+    """The store's send is the only place the book is read.
+
+    A leg the store answers ``prior`` was placed by an earlier run at the
+    price that run's book quoted; repricing it now would either send a
+    second order for a leg the venue already holds or refuse a leg that
+    already landed.  The depth read lives inside the send, so a prior
+    answer reads no book at all.
+    """
+    first = _MirrorClient()
+    limiter = _CountingLimiter()
+    store = RouterOrderPlacementStore(test_database_url)
+    _place(first, _plan(first), store, limiter, database_url=test_database_url)
+
+    second = _MirrorClient(depths={"ETH-USDT": _live_depth_data()})
+    outcomes = _place(
+        second, _plan(second), store, limiter, database_url=test_database_url
+    )
+    assert second.placed == []
+    assert all(o.outcome == MIRROR_OUTCOME_PRIOR for o in outcomes.values())
+    assert not [call for call in second.calls if call[0] == "depth"]
+
+
+class _DepthlessClient(_MirrorClient):
+    """A client with every face but ``depth`` — the wiring fault."""
+
+    depth = None
+
+
+def test_a_client_without_a_depth_face_refuses_before_the_preflight(test_database_url):
+    """The face is checked before the run's first side effect.
+
+    A client that cannot read the book cannot price a passive leg, and the
+    check must not wait for a leg to fail mid-run: it refuses with the
+    method named, before the preflight's margin and leverage POSTs — the
+    ordering that keeps a wiring fault from moving the account first.
+    """
+    client = _DepthlessClient()
+    limiter = _CountingLimiter()
+    store = RouterOrderPlacementStore(test_database_url)
+    with pytest.raises(RouterBingXMirrorError) as excinfo:
+        _place(client, _plan(client), store, limiter, database_url=test_database_url)
+    assert "depth" in str(excinfo.value)
+    assert client.placed == []
+    assert not [call for call in client.calls if call[0] == "set_margin_type"]
+
+
+def test_the_placed_line_prints_the_book_price_not_the_mark(
+    tmp_path, test_database_url
+):
+    """The operator's line reports the order the venue was asked to take."""
+    book_path = tmp_path / "book.json"
+    book_path.write_text(json.dumps(_book_with_eth_buy()), encoding="utf-8")
+    client = _MirrorClient(depths={"ETH-USDT": _live_depth_data()})
+    store = RouterOrderPlacementStore(test_database_url)
+    limiter = _CountingLimiter()
+    code, out, err = _run_main(
+        ["--book", str(book_path), "--place"],
+        client=client,
+        store=store,
+        limiter=limiter,
+        database_url=test_database_url,
+    )
+    assert code == 0
+    assert err == ""
+    eth = next(
+        json.loads(line)
+        for line in out.splitlines()
+        if json.loads(line).get("symbol") == "ETH-USDT"
+    )
+    assert eth["price"] == "2665.89"
+    assert "2685.87" not in eth
+
+
+def test_a_no_book_run_exits_one(tmp_path, test_database_url):
+    """A refused leg still fails the run, even though nothing crossed."""
+    book = _book_with_eth_buy()
+    book_path = tmp_path / "book.json"
+    book_path.write_text(json.dumps(book), encoding="utf-8")
+    client = _MirrorClient(
+        depths={"ETH-USDT": {"bids": [], "asks": [["2673.27", "39.807"]]}}
+    )
+    store = RouterOrderPlacementStore(test_database_url)
+    limiter = _CountingLimiter()
+    code, out, _ = _run_main(
+        ["--book", str(book_path), "--place"],
+        client=client,
+        store=store,
+        limiter=limiter,
+        database_url=test_database_url,
+    )
+    assert code == 1
+    refused = next(
+        json.loads(line)
+        for line in out.splitlines()
+        if json.loads(line).get("symbol") == "ETH-USDT"
+    )
+    assert refused[PLACEMENT_FIELD] == MIRROR_OUTCOME_REFUSED
+    assert refused["code"] == "no_book"
+
+
+def test_a_mirror_leg_refuses_a_sent_order_that_is_not_an_order():
+    with pytest.raises(RouterBingXMirrorError):
+        MirrorLeg(symbol="BTC-USDT", outcome=MIRROR_OUTCOME_PLACED, order="LIMIT")
 
 
 # -- mirror_place: refusals and the rate limit ---------------------------------
