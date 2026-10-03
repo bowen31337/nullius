@@ -1,0 +1,37 @@
+<bug_spec>
+  <!-- Found on the live VST smoke test, 2026-10-03, after the five fixes in
+       bug_spec_bingx_vst_smoke.xml merged. Core shape with explicit
+       touches_files: plan-bugs ignores <layout>, and plugin= needs the removed
+       src/app/modules seats (see CLAUDE.md). -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/router/src/router/bingx_preflight.py,packages/router/tests/test_bingx_preflight.py,packages/router/src/router/bingx_mirror.py,packages/router/tests/test_bingx_mirror.py,packages/router/tests/test_bingx_mirror_e2e.py">
+    <title>The preflight refuses to rebalance a book that already holds positions, because it compares available margin with the book's whole equity</title>
+    <symptoms>
+      On the nullius01 VST sub-account, the synthetic book (equity_usdt 10000) had placed two of five legs, a BTC-USDT long 0.0236 and a DOGE-USDT short 5402, using 2496.28 of margin. The account then showed balance 9999.35, equity 9999.14, availableMargin 7503.07 and usedMargin 2496.28.
+      Re-running `./run.sh vst --book … --place` to send the three remaining legs refuses before any order: "insufficient_balance: available USDT 7503.0716 is below the book's equity_usdt 10000".
+      The three remaining legs (ETH-USDT SELL 0.558, SOL-USDT BUY 8.38, 1000PEPE-USDT BUY ~70100) need about 2800 of new margin at 1x, well within 7503 available.
+      Comparing equity instead would still refuse, because 9999.14 is below 10000 after a 0.86 unrealised loss.
+    </symptoms>
+    <reproduction_steps>
+      Run router.bingx_mirror's placement with a client whose balance() returns the data of packages/router/tests/fixtures/bingx_vst/live/balance.json (or availableMargin 7503.0716 and usedMargin 2496.2791), whose positions() returns live/positions_one_way_short.json, and a book with equity_usdt 10000. The plan needs only the three remaining legs, and the preflight refuses insufficient_balance.
+    </reproduction_steps>
+    <expected>The preflight judges whether the account can fund the orders about to be sent, not the book's whole equity:
+      - The mirror computes the plan's required margin. Each order to be sent contributes quantity × reference price ÷ leverage, where leverage is 1 (the preflight sets it), the reference price is the order's limit price, and a MARKET leg uses the symbol's mark price.
+      - Only the part of an order that increases the absolute size of the symbol's position counts. A leg that reduces a position needs no new margin, and a leg that crosses through zero counts only the quantity beyond zero.
+      - The total carries 0.5% headroom for taker fees and price drift.
+      - The preflight refuses insufficient_balance only when availableMargin is strictly below that required margin. The message names both decimals: "insufficient_balance: available USDT &lt;a&gt; is below the &lt;r&gt; this plan's orders need; fund the VST account and run the preflight again".
+      - For the recorded live state, with the three remaining legs, the preflight passes. With availableMargin below the required margin it refuses.
+      - An all-reducing or empty plan needs zero margin and passes the balance check.
+      - The refusal order stays: orders_killed, clock_skew, hedge_mode, insufficient_balance.
+      - run_bingx_preflight takes the required margin as a keyword-only Decimal-convertible term in place of equity_usdt, and the PreflightReport records it.</expected>
+    <actual>Root cause: router.bingx_mirror passes the book's equity_usdt to run_bingx_preflight, which refuses when availableMargin is below it (packages/router/src/router/bingx_preflight.py, `if available &lt; equity`). availableMargin excludes the margin the book's own open positions already use, so once a book holds any position its rebalance can never pass without funding beyond the book's equity. The Stage 1 spec prescribed "available USDT below the book's equity_usdt", and it was never exercised with an account that holds positions.</actual>
+    <constraints>
+      Book sizing is unchanged: equity_usdt still sizes the orders through Stage 0's sizer
+      Decimal arithmetic throughout, built from the venue's strings
+      Never edit the fixtures under packages/router/tests/fixtures/bingx_vst/ (live/ included); they are inputs
+      No network access and no credentials in any test
+      The other preflight refusals and the margin-type and leverage preparation keep their behaviour and tests
+    </constraints>
+  </bug>
+</bug_spec>
