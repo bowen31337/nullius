@@ -1,0 +1,60 @@
+{
+  "code": 0,
+  "msg": "",
+  "data": {
+    "order": {
+      "symbol": "SOL-USDT",
+      "orderId": 2106579112056328192,
+      "side": "BUY",
+      "positionSide": "LONG",
+      "type": "LIMIT",
+      "origQty": "0.04",
+      "price": "60.000",
+      "executedQty": "0.00",
+      "avgPrice": "0.000",
+      "cumQuote": "0",
+      "stopPrice": "",
+      "profit": "0.0000",
+      "commission": "0.000000",
+      "status": "CANCELLED",
+      "time": 1791082573000,
+      "updateTime": 1791082573324,
+      "clientOrderId": "nulliusprobe0000000000000000000000000000",
+      "leverage": "",
+      "takeProfit": {
+        "type": "",
+        "quantity": 0,
+        "stopPrice": 0,
+        "price": 0,
+        "workingType": "",
+        "stopGuaranteed": ""
+      },
+      "stopLoss": {
+        "type": "",
+        "quantity": 0,
+        "stopPrice": 0,
+        "price": 0,
+        "workingType": "",
+        "stopGuaranteed": ""
+      },
+      "advanceAttr": 0,
+      "positionID": 0,
+      "takeProfitEntrustPrice": 0,
+      "stopLossEntrustPrice": 0,
+      "orderType": "",
+      "workingType": "",
+      "onlyOnePosition": false,
+      "reduceOnly": false,
+      "postOnly": false,
+      "stopGuaranteed": "",
+      "triggerOrderId": 0,
+      "trailingStopRate": 0,
+      "trailingStopDistance": 0,
+      "is_twap": false,
+      "mainOrderId": "",
+      "priceRate": "",
+      "actPrice": "",
+      "closePosition": ""
+    }
+  }
+}

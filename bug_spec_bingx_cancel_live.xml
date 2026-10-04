@@ -1,0 +1,46 @@
+<bug_spec>
+  <!-- Found by live probes on nullius01 VST, 2026-10-04: two tiny far-from-market
+       SOL-USDT PostOnly orders (0.04 @ 60), placed, recorded and cancelled
+       directly. Core shape with explicit touches_files: plan-bugs ignores
+       <layout>, and plugin= needs the removed src/app/modules seats
+       (see CLAUDE.md). -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/router/src/router/bingx_client.py,packages/router/tests/test_bingx_client.py">
+    <title>BingXClient.cancel_order fails on real BingX: a DELETE's signed parameters are sent in a form body, which BingX ignores</title>
+    <symptoms>
+      BingXClient.from_env().cancel_order(clientOrderID, symbol="SOL-USDT") for a resting VST order raised RouterBingXRefusedError: "the venue answered code 109400 with 'Invalid parameters, err:timestamp: This field is required. symbol: This field is required. '" (fixture live/cancel_order_body_params_refused.json). The order stayed open.
+      The same DELETE /openApi/swap/v2/trade/order, with the same parameters (symbol, clientOrderID, timestamp, recvWindow) signed into the query string, answered code 0 and cancelled the order (fixture live/cancel_order_ok.json).
+      POST requests with form bodies work on BingX (place_order, set_margin_type, set_leverage), so only DELETE is affected.
+    </symptoms>
+    <reproduction_steps>
+      Call BingXClient(...).cancel_order with a recording transport: the request is DELETE with Content-Type application/x-www-form-urlencoded and its signed parameters in the body, and the URL carries no query string.
+    </reproduction_steps>
+    <expected>A DELETE carries its signed parameter string, with &amp;signature=&lt;hex&gt; appended, in the URL's query string and sends no body, exactly like a GET. POST keeps the form body. The signature is still computed over the same sorted, encoded string. Tests pin the request shape for GET, POST and DELETE, and the host guard still runs before any send.</expected>
+    <actual>Root cause: BingXClient._signed_target sends any method other than GET with the payload in an x-www-form-urlencoded body. BingX reads parameters from a DELETE's query string only, so it sees neither timestamp nor symbol.</actual>
+    <constraints>
+      No network access and no credentials in any test
+      Never edit the fixtures under packages/router/tests/fixtures/bingx_vst/ (live/ included); they are inputs
+      The client still reaches only open-api-vst.bingx.com
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="high"
+       touches_files="packages/router/src/router/bingx_orders.py,packages/router/tests/test_bingx_orders.py,packages/router/tests/test_bingx_mirror_e2e.py">
+    <title>--cancel never recognises its own open orders on real BingX: it reads clientOrderID, but the open-orders listing spells it clientOrderId</title>
+    <symptoms>
+      The live GET /openApi/swap/v2/trade/openOrders answer (fixture live/open_orders_one_resting.json) nests rows under data.orders. Each row carries its identifier as "clientOrderId" (lower-case d), with no "clientOrderID" key.
+      router.bingx_orders reads CLIENT_ORDER_ID_FIELD = "clientOrderID" from each row, so on the real listing it finds no identifier, matches none of the rebalance's orders and cancels nothing. The end-to-end stand-in serves rows spelled "clientOrderID" as a bare array, so the tests pass.
+    </symptoms>
+    <reproduction_steps>
+      Run cancel_rebalance_orders with a client whose open_orders() returns the data of live/open_orders_one_resting.json, and whose order set contains that row's clientOrderId: nothing is cancelled.
+    </reproduction_steps>
+    <expected>The open-orders reader takes a row's identifier from "clientOrderId", the venue's spelling, and accepts "clientOrderID" as an alternative. A row carrying neither is skipped as foreign, never cancelled. For the fixture, an order set containing that identifier cancels exactly that order, and an order set without it cancels nothing. The end-to-end stand-in serves the listing in the real shape: data.orders, with rows spelled clientOrderId.</expected>
+    <actual>Root cause: CLIENT_ORDER_ID_FIELD in router.bingx_orders is "clientOrderID", the spelling of the order-placement parameter, but BingX's listing and order documents use "clientOrderId". The stand-in copied the placement spelling, so the tests never saw the real one.</actual>
+    <constraints>
+      Orders of other books and rebalances stay untouched
+      No network access and no credentials in any test
+      Never edit the fixtures under packages/router/tests/fixtures/bingx_vst/ (live/ included); they are inputs
+    </constraints>
+  </bug>
+</bug_spec>

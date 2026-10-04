@@ -7,6 +7,9 @@
     "position_mode_hedge.json": "verbatim answer from the same account before it was switched to one-way (captured 2026-10-03, re-typed from the session log)",
     "query_order_not_exist.json": "GET /trade/order for a clientOrderId that was refused at placement: code 109421 'order not exist'",
     "placement_refused_101215": "three PostOnly LIMIT orders priced at the mark were refused with code 101215 at placement; the message was not kept; the same orders validated with code 0 on /trade/order/test minutes later",
-    "query_order_pending.json": "GET /trade/order for a resting PostOnly order: details nested under data.order, status 'PENDING' (not NEW)"
+    "query_order_pending.json": "GET /trade/order for a resting PostOnly order: details nested under data.order, status 'PENDING' (not NEW)",
+    "open_orders_one_resting.json": "GET /trade/openOrders with one resting PostOnly probe order: rows under data.orders, id spelled clientOrderId",
+    "cancel_order_ok.json": "DELETE /trade/order of that probe by clientOrderId: the venue's success answer",
+    "cancel_order_body_params_refused.json": "Answer to router.bingx_client.BingXClient.cancel_order (DELETE /trade/order with its signed parameters in an x-www-form-urlencoded body): BingX ignores a DELETE body. Transcribed verbatim from RouterBingXRefusedError(109400, msg). The same DELETE with the signed parameters in the query string answered code 0 (cancel_order_ok.json)."
   }
 }
