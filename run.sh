@@ -16,6 +16,8 @@
 #                               VST sub-account key (.env.vst.tpl), never .env.tpl
 #   ./run.sh vst-rebalance [args]  one scheduled rebalance slot (systemd timer)
 #   ./run.sh vst-flatten   [args]  cancel all orders and close all positions
+#   ./run.sh vst-alert     [args]  send a Telegram alert (OnFailure hook, --test)
+#   ./run.sh vst-heartbeat [args]  alert if no rebalance slot finished recently
 #
 # No-secret commands (run with a CLEAN env — package managers and linters
 # must never see runtime credentials; this is the main supply-chain
@@ -158,7 +160,7 @@ case "${cmd}" in
       uv run --all-packages python -m router.bingx_mirror "$@"
     ;;
 
-  vst-rebalance|vst-flatten)
+  vst-rebalance|vst-flatten|vst-alert|vst-heartbeat)
     # Stage 2 entry points, with the same VST-only key and store as `vst`.
     if [[ ! -f "${ENV_VST_TPL}" ]]; then
       echo "error: ${ENV_VST_TPL} not found." >&2
@@ -167,7 +169,12 @@ case "${cmd}" in
     mkdir -p "$HOME/.local/share/nullius"
     export DATABASE_URL="${DATABASE_URL:-sqlite:///$HOME/.local/share/nullius/vst.db}"
     cd "${SCRIPT_DIR}"
-    module="router.bingx_rebalance"; [[ "${cmd}" == "vst-flatten" ]] && module="router.bingx_flatten"
+    case "${cmd}" in
+      vst-flatten)   module="router.bingx_flatten" ;;
+      vst-alert)     module="router.bingx_alert" ;;
+      vst-heartbeat) module="router.bingx_heartbeat" ;;
+      *)             module="router.bingx_rebalance" ;;
+    esac
     exec op run --env-file="${ENV_VST_TPL}" -- \
       uv run --all-packages python -m "${module}" "$@"
     ;;

@@ -1,0 +1,152 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — Telegram alerting for the scheduled BingX VST bot</project_name>
+  <addition_summary>
+    Extend the router workspace member (packages/router, import name router)
+    so the unattended Stage 2 bot on the BingX VST sub-account nullius01
+    reports to its operator through a Telegram bot. Today a systemd user
+    timer runs one rebalance slot every 4 hours (`./run.sh vst-rebalance`).
+    A daily-loss halt, a refused leg, a crashed slot or a dead timer shows
+    up only in journalctl. This addition sends Telegram messages:
+    - urgent on a daily-loss halt;
+    - a warning when a slot exits with a refused leg;
+    - a silent summary after every slot;
+    - an urgent alert when a slot cannot run at all (systemd OnFailure);
+    - an urgent alert when no slot has finished for 5 hours (an hourly
+      heartbeat timer).
+    Alerting is best-effort by design. A Telegram failure is logged and never
+    changes a slot's outcome, its orders or its exit code.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / SQLite stores addressed by DATABASE_URL / pytest (ruff conventions) / systemd user units under deploy/systemd/</stack>
+    <test_baseline>workspace suite tests/ (1573) and packages/router/tests (1296) passing on main</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses, stdlib-first (no third-party
+      dependency), typed refusals that open with a greppable code word and are
+      defined in the raising module, subclassing router.errors.RouterError
+      (router.errors and router/__init__.py are not edited). Follow CLAUDE.md's
+      Build &amp; Test section. Tests never reach the network; HTTP goes
+      through an injected transport.
+      Existing pieces:
+      - router.bingx_rebalance.main(argv, …, now=, emit=) runs one slot and
+        emits one JSON summary line (slot, rebalance_ts, opening_equity,
+        current_equity, daily_loss, daily_loss_limit, cancelled, reconciled,
+        orders, refused, skipped, exit_code). It returns exit 0 when all
+        orders are placed or prior, 1 on a refused leg, and 3 on a daily-loss
+        refusal (daily_loss_halt or orders_halted).
+      - deploy/systemd/nullius-vst-rebalance.service is a oneshot with
+        SuccessExitStatus=0 1 3. It runs `run.sh vst-rebalance`, with PATH set
+        and OP_SERVICE_ACCOUNT_TOKEN loaded from %h/.config/op/service-token.
+      - run.sh already routes `./run.sh vst-alert` to python -m
+        router.bingx_alert and `./run.sh vst-heartbeat` to python -m
+        router.bingx_heartbeat, under op run with .env.vst.tpl and
+        DATABASE_URL defaulting to ~/.local/share/nullius/vst.db.
+      The operator adds TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to
+      .env.vst.tpl (1Password references); that is not part of this spec.
+      Telegram Bot API facts: POST
+      https://api.telegram.org/bot&lt;token&gt;/sendMessage with chat_id,
+      text, optional parse_mode and disable_notification. The response is
+      {"ok": true, "result": {...}}, or {"ok": false, "error_code": n,
+      "description": "..."} on failure. The token is part of the URL path,
+      so any URL in an error message carries the secret.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Telegram Alerting">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/router/src/router/bingx_alert.py,packages/router/tests/test_bingx_alert.py">
+        System sends one Telegram alert with a level of urgent, warning or info
+        through POST https://api.telegram.org/bot&lt;token&gt;/sendMessage,
+        using TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.
+        - The message opens with the level and "nullius VST".
+        - An info alert is sent with disable_notification true.
+        - It reaches only api.telegram.org through a host guard, and returns
+          True when Telegram answers ok.
+        - On a missing variable, a transport error, a timeout of 10 seconds or
+          an ok:false answer, it returns False and logs one line naming the
+          failure. The token never appears in that line, a repr, an
+          exception or stdout: the bot path is scrubbed from every URL.
+        - `python -m router.bingx_alert --test` sends an info test message and
+          exits 0 on delivery, 1 otherwise.
+        - `python -m router.bingx_alert --unit NAME --event failure` sends an
+          urgent "slot could not run" alert naming the unit and the
+          journalctl command to read it.
+      </feature>
+      <feature index="2" shape="core" depends_on="1"
+               touches_files="packages/router/src/router/bingx_rebalance.py,packages/router/tests/test_bingx_rebalance.py">
+        System alerts on every rebalance slot's outcome without changing it.
+        After each slot it records the slot's completion (book_id, slot,
+        finished_at, exit_code) in its own table in the DATABASE_URL store,
+        then sends feature 1's alert:
+        - urgent for exit 3, naming the daily loss, the limit and the manual
+          reset;
+        - warning for exit 1, listing each refused symbol with its code and
+          message;
+        - info for exit 0, summarising the orders placed, prior and skipped,
+          the orders cancelled, whether the previous slot was reconciled, and
+          the day's loss.
+        The JSON summary line, the exit code and every order are identical
+        whether alerting succeeds, fails or is unconfigured. An alert that
+        raises is caught and logged.
+      </feature>
+      <feature index="3" shape="core" depends_on="2"
+               touches_files="packages/router/src/router/bingx_heartbeat.py,packages/router/tests/test_bingx_heartbeat.py,deploy/systemd/nullius-vst-heartbeat.service,deploy/systemd/nullius-vst-heartbeat.timer">
+        System checks the bot's heartbeat from `python -m router.bingx_heartbeat
+        --max-age-hours 5`. It reads the newest slot completion that feature 2
+        recorded. When there is none, or the newest is older than the limit, it
+        sends an urgent alert naming the last slot and its age, and exits 1.
+        Otherwise it sends nothing and exits 0. At most one heartbeat alert is
+        sent per stale slot, so an hourly check does not repeat it every hour.
+        deploy/systemd/ holds a oneshot heartbeat service, with the same
+        environment as the rebalance service (PATH, and the token loaded from
+        %h/.config/op/service-token), that runs `run.sh vst-heartbeat
+        --max-age-hours 5`, and a timer that fires it hourly at minute 35 with
+        Persistent=true.
+      </feature>
+      <feature index="4" shape="core" depends_on="1"
+               touches_files="deploy/systemd/nullius-vst-alert@.service,deploy/systemd/nullius-vst-rebalance.service,packages/router/tests/test_bingx_alert_units.py">
+        System sends an urgent Telegram alert when a scheduled slot cannot run
+        at all (the systemd unit fails). The rebalance
+        service gains OnFailure=nullius-vst-alert@%n.service. The template
+        unit nullius-vst-alert@.service is a oneshot, with the same PATH and
+        token loading as the rebalance service, that runs `run.sh vst-alert
+        --unit %i --event failure`. Exit codes 1 and 3 stay successes, since
+        feature 2 alerts on those. Tests parse the units and pin the OnFailure
+        line, the template's ExecStart, the PATH entry, the token-file load
+        and the absence of any literal token. One test runs the template's
+        expanded ExecStart under env -i with run.sh stubbed, to prove PATH and
+        the token reach the child.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    New modules router.bingx_alert and router.bingx_heartbeat are both
+    runnable with python -m. Their tests, plus tests/test_bingx_alert_units.py
+    for the units, sit in packages/router/tests/. The new units sit in
+    deploy/systemd/. Every new file is committed as an empty stub so its
+    claim resolves. bingx_rebalance gains the slot-completion table and the
+    alert call at the end of a slot, after the summary line is emitted.
+    Nothing installs, enables or reloads units; that is an operator step.
+  </integration_points>
+  <constraints>
+    - The Telegram token never appears in any repository file, test fixture,
+      log line, exception message, repr or stdout. Tests use a fake token and
+      assert it is absent from every captured output.
+    - Alerting never alters trading: a slot's orders, summary line and exit
+      code are the same with alerting up, down or unconfigured.
+    - No test opens a network connection, reads 1Password or a real
+      credential, or edits .env.tpl, .env.vst.tpl, run.sh, claw-forge.yaml or
+      claw-forge.local.yaml.
+    - No third-party dependency; pyproject.toml and uv.lock are not edited.
+    - Stage 1 and Stage 2 modules other than bingx_rebalance keep their
+      behaviour, and their tests stay green unchanged.
+    - Nothing installs, enables or reloads systemd units.
+    - Do not edit docs/user-journeys/.
+    - All existing workspace and member tests must stay green.
+  </constraints>
+  <implementation_steps>
+    <step>Phase 1: the alert module (feature 1).</step>
+    <step>Phase 2: slot alerts with the completion record (feature 2), and the OnFailure template (feature 4).</step>
+    <step>Phase 3: the heartbeat check and its timer (feature 3).</step>
+  </implementation_steps>
+</project_specification>
