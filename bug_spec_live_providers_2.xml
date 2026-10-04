@@ -1,0 +1,31 @@
+<bug_spec>
+  <!-- Found verifying bug_spec_live_providers.xml bug 1 on 2026-10-05. Core
+       shape with explicit touches_files: plan-bugs ignores <layout>. -->
+
+  <bug index="1" shape="core" severity="low"
+       touches_files="packages/providers/src/providers/_live_http.py,packages/providers/tests/test_live_http.py">
+    <title>A negative retry-after makes post_json retry immediately instead of backing off on the exponential ladder</title>
+    <symptoms>
+      providers._live_http._retry_after_seconds("-5") answers 0.0, because it returns max(0.0, seconds).
+      post_json then retries a 429 carrying retry-after: -5 after sleep(0.0). A vendor or proxy that keeps sending a negative value gets max_attempts requests in a burst with no backoff.
+      bug_spec_live_providers.xml bug 1 specified the opposite: "A retry-after that is not a finite non-negative number (nan, an HTTP date, empty) falls back to the exponential ladder."
+      RFC 9110 section 10.2.3 defines Retry-After delay-seconds as a non-negative integer, so a negative value is malformed. It is not a request to retry now.
+    </symptoms>
+    <reproduction_steps>
+      Call post_json("https://api.anthropic.com/v1/messages", {}, {}, allowed_hosts={"api.anthropic.com"}, transport=T, sleep=S), where T answers (429, {"retry-after": "-5"}, b"{}") first and (200, {}, b'{"ok": 1}') second. S records 0.0, where the ladder's first wait (1 s plus jitter) was expected.
+    </reproduction_steps>
+    <expected>_retry_after_seconds answers None for any negative value (for example "-5", "-0.5" and "-inf"), exactly as it does for nan, an HTTP date and an empty value. post_json then waits on the exponential ladder (1, 2, 4 s plus jitter, capped by MAX_RETRY_AFTER_SECONDS).
+      - "0" stays a valid wait of 0.0, because zero is non-negative.
+      - Every other retry-after behaviour is unchanged: the ceiling refusal above 60 s (including inf), honouring finite values at or below 60, and the ladder for nan and dates.
+      - The docstring sentence "A negative delta clamps to zero" is replaced by one stating that a negative delta is malformed and falls back to the ladder.
+      - Tests cover "-5", "-0.5" and "-inf" (ladder, sleep at least 1.0), and "0" (sleep 0.0), with an injected sleep that records its argument.</expected>
+    <actual>Root cause: packages/providers/src/providers/_live_http.py, _retry_after_seconds ends `return max(0.0, seconds)`, which clamps negatives to zero instead of rejecting them as malformed.</actual>
+    <constraints>
+      No network access and no real credential in any test
+      No third-party dependency; pyproject.toml and uv.lock are not edited
+      No file outside the two listed is edited
+      The host guard, the secret scrubbing, the retryable status set, the 4xx no-retry rule and the retry-after ceiling keep their behaviour and tests
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
