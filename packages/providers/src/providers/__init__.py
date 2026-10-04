@@ -445,12 +445,48 @@ contradicts the row it would overwrite, has not called, pinned, gated,
 timed or routed anything — it is the campaign's *money* that could not
 be decided or accounted.
 
+The live-providers addition is the other half of the boundary this package
+always described: the backends that place a real call, on the trusted side
+of it, through the one seam every call already passes.  Features 1 through
+5 of the addition built them as private modules — the door
+(:mod:`providers._live_http`), the two backends (:mod:`providers._anthropic`,
+:mod:`providers._openai_compat`), the registry (:mod:`providers._live`) and
+the budget wrapper (:mod:`providers._budget`) — and this, the addition's
+sixth feature, is the export seam: the surface a caller composes and
+imports against, never a private module path.  Twelve names join
+``__all__``, and the split is the addition's own:
+
+* :class:`AnthropicProvider` and :class:`OpenAICompatProvider` — the two
+  live backends.  A :class:`Provider` each, so either is drop-in for the
+  recorded-fixture backend a campaign replays with: the seam normalizes the
+  call, and which backend serves it is invisible to the caller.
+
+* :func:`live_provider`, :func:`require_served` and
+  :data:`LIVE_PROVIDER_ENV_VARS` — the registry's whole surface: a pin in,
+  a bound backend out; the served-model check that catches a vendor quietly
+  serving another model under a pinned id; and the ``NULLIUS_``-prefixed
+  variable table that keeps research credentials apart from claw-forge's
+  own bare names.
+
+* :class:`BudgetedProvider` and :class:`BudgetExhaustedError` — the token
+  ceiling: a wrapper that refuses a call once the ceiling is spent, so a
+  campaign's spend stops at a number the deployment stated.
+
+* :class:`ProviderHostRefusedError`, :class:`ProviderTransportError`,
+  :class:`ProviderHTTPError`, :class:`ProviderRequestError` and
+  :class:`ServedModelMismatchError` — the live path's failure vocabulary,
+  joining :class:`ProviderError`'s base rather than minting a seventh: a
+  call that never left the machine, left and failed, or came back from the
+  wrong model is still "the provider could not complete this call", and a
+  caller catching the interface's error catches every way the live path
+  stops.
+
 This package is a workspace member discovered by convention. The module loader
 (``app.module_loader``) scans the members the root ``pyproject.toml`` declares
 (``packages/*``), imports each package, and composes whatever the package's
 ``@register`` builder contributes — so the registration below is the entire
 wiring story. Nothing edits a registry, router or factory to make the provider
-plugin exist; importing this module *is* joining the application.  **Seven**
+plugin exist; importing this module *is* joining the application.  **Eight**
 components are registered from this one package, and the split is the split
 between the category's contract and its services.  Feature 192's
 interface (``providers``) contributes no long-lived component to the composed
@@ -483,9 +519,16 @@ it is a **directory**, not a table, so its builder resolves
 :data:`FIXTURE_DIR_ENV` rather than ``DATABASE_URL`` and composes a
 :class:`FixtureStore` (or nothing, when no fixture root is named — a
 deployment that captures no fixtures is a real state, and one that names no
-directory must not have its composition taken down for it).  All seven
-registrations live in this ``__init__`` and none in a submodule, because a
-submodule's ``@register`` fires only on the first
+directory must not have its composition taken down for it).  The live
+resolver (``live-providers``) is an eighth, and of the opposite shape from
+every store above: its builder resolves **no** variable and makes **no**
+call, because which credentials a deployment holds is a question only a
+resolve asks — a composition must succeed on a box with no keys at all (a
+CI run, an offline replay against fixtures), so the builder answers a
+stateless resolver and every environment read happens inside its
+``resolve()``, against the environment of the moment a provider is asked
+for.  All eight registrations live in this ``__init__`` and none in a
+submodule, because a submodule's ``@register`` fires only on the first
 ``create_app()`` of a process and would silently drop out of every later one.
 
 Stdlib-only, like the rest of this tree.  The interface holds no transport, no
@@ -496,8 +539,11 @@ contract the transport is written against.
 
 from __future__ import annotations
 
+import os
+
 from app.module_loader import register
 
+from ._anthropic import AnthropicProvider, ProviderRequestError
 from ._batch import (
     BATCH_ENDPOINT,
     BATCH_RATE_MULTIPLE,
@@ -522,6 +568,7 @@ from ._batch_errors import (
     BatchRoutingError,
     UnknownProviderError,
 )
+from ._budget import BudgetedProvider, BudgetExhaustedError
 from ._cache import (
     CACHE_READ_TOKENS_COLUMN,
     DEPTH_CACHE_RATE_TABLE,
@@ -581,6 +628,18 @@ from ._fixture_errors import (
     FixtureCorruptError,
     FixtureStoreError,
 )
+from ._live import (
+    LIVE_PROVIDER_ENV_VARS,
+    ServedModelMismatchError,
+    live_provider,
+    require_served,
+)
+from ._live_http import (
+    ProviderHostRefusedError,
+    ProviderHTTPError,
+    ProviderTransportError,
+)
+from ._openai_compat import OpenAICompatProvider
 from ._pin_errors import (
     AgentSamplingMalformedError,
     CkptHashConflictError,
@@ -717,6 +776,7 @@ __all__ = [
     "HOSTED_API_CKPT_HASH",
     "INPUT_TOKENS_COLUMN",
     "LARGE_HISTORY_FROM_DEPTH",
+    "LIVE_PROVIDER_ENV_VARS",
     "MAX_TEMPERATURE",
     "MEASURED_AT_COLUMN",
     "MINUTES_PER_DAY",
@@ -748,11 +808,14 @@ __all__ = [
     "AgentSampling",
     "AgentSamplingMalformedError",
     "AgentWeights",
+    "AnthropicProvider",
     "BatchCompletion",
     "BatchEndpoint",
     "BatchPricing",
     "BatchRequest",
     "BatchRoutingError",
+    "BudgetExhaustedError",
+    "BudgetedProvider",
     "CachePrice",
     "CachePricing",
     "CacheRateConflictError",
@@ -788,12 +851,17 @@ __all__ = [
     "NodeProvenance",
     "NodeProvenanceError",
     "NotImplementedBatchError",
+    "OpenAICompatProvider",
     "PeakPricing",
     "PeakWindow",
     "PinColumnError",
     "Provider",
     "ProviderError",
+    "ProviderHTTPError",
+    "ProviderHostRefusedError",
     "ProviderNotConfiguredError",
+    "ProviderRequestError",
+    "ProviderTransportError",
     "RecordedProvider",
     "RecordedResponse",
     "RecordingProvider",
@@ -818,6 +886,7 @@ __all__ = [
     "ServedContextBelowHistoryError",
     "ServedContextLimit",
     "ServedContextUnverifiedError",
+    "ServedModelMismatchError",
     "UnassignedRootProviderError",
     "UnknownCampaignError",
     "UnknownModelError",
@@ -832,11 +901,13 @@ __all__ = [
     "build_agent_model_pins",
     "build_depth_cache_rates",
     "build_fixture_store",
+    "build_live_providers",
     "build_root_provider_rotation",
     "build_root_rotation",
     "choose_run_window",
     "flat_pricing",
     "hosted_api_weights",
+    "live_provider",
     "measure_cache_rate",
     "prompt_hash",
     "published_figure",
@@ -846,6 +917,7 @@ __all__ = [
     "require_agent_sampling",
     "require_batch_completion",
     "require_depth_model",
+    "require_served",
     "require_served_context",
     "rotation_digest",
     "rotation_index",
@@ -931,6 +1003,22 @@ ROOT_ROTATION_COMPONENT = "root-rotation"
 #: discipline :data:`ROOT_SERVING_PROVIDER_COMPONENT` states for its own name.
 #: Spelled here once, and read by name through the composed application.
 FIXTURE_STORE_COMPONENT = "fixture-store"
+
+#: The component name the live-providers resolver registers under.  The
+#: plugin name plus what it contributes, on the ``agent-model-pins`` /
+#: ``depth-run-windows`` / ``depth-cache-rates`` / ``root-serving-provider`` /
+#: ``root-rotation`` / ``fixture-store`` precedent for a member's later
+#: components.
+#:
+#: *live-providers* rather than *live-provider* because that is the fact:
+#: the component answers the **set** of live backends — every vendor the
+#: registry serves, chosen per pin at resolve time — and not one provider
+#: bound at composition.  A reader scanning the composed application's keys
+#: should be able to tell it is not holding a credential-bearing object,
+#: the discipline :data:`ROOT_SERVING_PROVIDER_COMPONENT` states for its own
+#: name.  Spelled here once, and read by name through the composed
+#: application.
+LIVE_PROVIDERS_COMPONENT = "live-providers"
 
 
 @register(PROVIDERS_COMPONENT)
@@ -1168,3 +1256,78 @@ def build_fixture_store() -> FixtureStore | None:
     recorded.
     """
     return FixtureStore.resolve()
+
+
+class LiveProviderResolver:
+    """The composed application's door to the live backends: a pin in, a provider out.
+
+    One method, :meth:`resolve`, and no state — deliberately the thinnest
+    object the composed application could hold for the live path, and the
+    thinness is the feature.  Nothing is decided at composition time because
+    there is nothing to decide: which vendor serves a pin, which variable
+    holds its credential, whether the deployment holds one at all — every one
+    of those is a question about the moment a call is wanted, and the
+    resolver holds no answer to any of them.  It reads the environment
+    inside :meth:`resolve` and nowhere else, so an application composed on a
+    box with no credentials at all (a CI run, an offline replay against
+    recorded fixtures) carries the resolver exactly as a production
+    deployment does, and the same composed application answers live
+    providers the moment the variables appear.
+
+    Nothing calls the live backends through this door yet — binding the
+    resolver into the signal and policy-development agents is a later
+    feature's work.  This class is the seam those features will hold: the
+    one object a caller needs to turn a pinned model into a provider,
+    reached as ``create_app().get("live-providers")`` rather than by
+    importing a private module.
+    """
+
+    def resolve(self, pin: object) -> Provider:
+        """Answer :func:`live_provider` for ``pin``, reading ``os.environ``.
+
+        The one operation, forwarded to the registry with the process
+        environment as the mapping — read **here**, at call time, which is
+        the load-bearing half of this class's shape.  A resolver that read
+        the environment at build time would freeze the deployment's
+        credentials into the application, and a launcher that exported a
+        variable afterwards would be silently ignored; the read happening
+        per call is what keeps the composed resolver answering the
+        environment the caller is actually running in.
+
+        ``pin`` is recognised structurally (three string parts), on the
+        registry's own rule, so a pin built from either copy of this member
+        resolves identically.  Refusals are the registry's, verbatim: a
+        vendor with no backend, or a missing or empty variable, leaves as
+        :class:`~providers.ProviderNotConfiguredError` naming the variable —
+        never its value.
+        """
+        return live_provider(pin, os.environ)
+
+
+@register(LIVE_PROVIDERS_COMPONENT)
+def build_live_providers() -> LiveProviderResolver:
+    """Component builder: the resolver that turns a pin into a live provider.
+
+    The live-providers addition's contribution to the composed application:
+    the one object a caller holds to reach a live backend through.  Takes no
+    arguments — that is the factory's registration protocol — and, unlike
+    every store this member registers, resolves **no** environment variable
+    and makes **no** call.  Composition must not need a credential, because
+    a deployment that runs entirely against recorded fixtures (the offline
+    path this package exists to make possible) has none — and the factory
+    calls every builder on every ``create_app()``, so a builder that
+    demanded a key would take composition down for exactly the runs that
+    must never touch one.  Which credentials exist, and whether a vendor's
+    variable is set, is asked only inside
+    :meth:`~providers.LiveProviderResolver.resolve`.
+
+    Answers the resolver unconditionally, never ``None``: there is no
+    "unconfigured" state to report.  The stores above answer ``None`` when
+    the resource they name is absent, but the resolver names no resource —
+    it is the deferred question *which provider serves this pin?*, and a
+    deployment with no credentials is a deployment whose answers all
+    refuse, not one with no resolver.  The refusal arrives at
+    :meth:`~providers.LiveProviderResolver.resolve` time, naming the
+    variable, which is where an operator can act on it.
+    """
+    return LiveProviderResolver()
