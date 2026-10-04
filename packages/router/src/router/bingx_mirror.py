@@ -22,7 +22,19 @@ builds the plan with dry_run_plan.*
   ``not_found`` answer is re-posted, so a blind retry never meets BingX's
   duplicate-``clientOrderID`` refusal for an order that actually landed.
 * ``--status`` prints feature 3's read-back, and ``--cancel`` cancels the
-  rebalance's open orders.
+  rebalance's open orders.  Both address the rebalance's orders **by
+  identity**, never by today's plan: for every symbol the book's weights
+  name, the ``clientOrderID`` derived from ``(book_id, rebalance_ts,
+  symbol)`` exactly as placement derives it (see
+  :func:`rebalance_order_identities`).  The plan is re-sized against the
+  account's live positions, so a symbol whose position has reached its
+  target, or whose leg a gate refused, has no leg in it — while its placed
+  order still sits on the venue's book.  ``--status`` therefore prints one
+  line per book symbol, in the book's order (a symbol never placed or
+  refused answers ``not_found``), with the decimals in plain positional
+  notation; ``--cancel`` cancels every open order whose identifier belongs
+  to that set, whatever today's plan says.  Neither command needs
+  ``DATABASE_URL``, places anything or reads the venue's quote documents.
 
 **The command reads its documents from the venue, not from paths.**  Stage
 0's dry run takes three files; this command takes one book and fetches the
@@ -173,6 +185,7 @@ from pathlib import Path
 from typing import Any
 
 from .bingx_client import BingXClient, RouterBingXTransportError
+from .bingx_client_order_id import project_bingx_client_order_id
 from .bingx_documents import (
     RouterMarkPriceError,
     RouterNotTradableError,
@@ -189,6 +202,8 @@ from .bingx_order import (
     assemble_bingx_order,
 )
 from .bingx_orders import (
+    CLIENT_ORDER_ID_FIELD,
+    SYMBOL_FIELD,
     VST_ORDER_NOT_FOUND,
     cancel_rebalance_orders,
     read_back_orders,
@@ -228,6 +243,7 @@ __all__ = [
     "main",
     "mirror_place",
     "plan_required_margin",
+    "rebalance_order_identities",
     "reprice_passive_order",
 ]
 
@@ -753,6 +769,68 @@ def _full_identifier(book: Mapping[str, Any], symbol: str) -> str:
     return derive_client_order_id(
         book_id=book_id, rebalance_ts=moment, symbol=symbol
     ).client_order_id
+
+
+def rebalance_order_identities(book: Mapping[str, Any]) -> list[dict[str, str]]:
+    """This rebalance's orders by identity: one name per symbol the weights name.
+
+    The order set ``--status`` and ``--cancel`` address — and the repair for
+    the defect both shared: the CLI used to hand the two verbs the legs of
+    :func:`build_mirror_plan`, a plan re-sized against the account's live
+    positions, so it held only the legs *today* still wants.  A symbol
+    whose position has already reached its target sizes to no leg at all,
+    and a leg a gate refused is a refused leg the verbs skip, so a filled
+    order vanished from ``--status`` and a resting order the plan dropped
+    was never cancelled.  The rebalance's orders are not a property of
+    today's sizing, though: a ``clientOrderID`` is a *function* of
+    ``(book_id, rebalance_ts, symbol)`` (feature 316), so the set of orders
+    this rebalance may own on the venue is exactly one name per symbol the
+    book's weights name — derived here through the same derivation and the
+    same 40-character projection (Stage 0 feature 3) placement named the
+    orders with, never read off a plan that no longer holds them.
+
+    The answer is the shape a written plan holds — ``{"symbol": ...,
+    "clientOrderID": ...}`` in the venue's own field spellings — one entry
+    per weight, in the book's own order, which is the order ``--status``
+    prints.  Both verbs read it through their own order reader, so the
+    read-back answers one status per book symbol (a symbol never placed or
+    gate-refused answers ``not_found``) and the cancel owns every
+    identifier the rebalance could ever have placed, while the orders of
+    any other book or rebalance — different terms, different digest — stay
+    untouched.  Pure computation: no client, no store, no clock, so neither
+    command needs ``DATABASE_URL``, places anything, or even reads the
+    venue's documents to learn what to ask about.
+    """
+    weights = book.get("weights")
+    if not isinstance(weights, Mapping) or not weights:
+        raise RouterBingXMirrorError(
+            f"{MIRROR_CODE}: the book document states no weights mapping "
+            f"(got {weights!r}); every order this rebalance owns is named "
+            "for a symbol the weights name, and a book that names no "
+            "symbols owns no orders to look up or cancel (feature 316)"
+        )
+    book_id, moment = _identity_terms(book)
+    orders: list[dict[str, str]] = []
+    for symbol in weights:
+        if not isinstance(symbol, str) or not symbol.strip():
+            raise RouterBingXMirrorError(
+                f"{MIRROR_CODE}: the book's weights must be keyed by "
+                f"non-empty symbol names — got {symbol!r}; an order's "
+                "clientOrderID is derived from its symbol, and a weight "
+                "keyed by no name names no order (feature 316)"
+            )
+        name = symbol.strip()
+        orders.append(
+            {
+                SYMBOL_FIELD: name,
+                CLIENT_ORDER_ID_FIELD: project_bingx_client_order_id(
+                    derive_client_order_id(
+                        book_id=book_id, rebalance_ts=moment, symbol=name
+                    )
+                ),
+            }
+        )
+    return orders
 
 
 # -- The balance door's term: the plan's required margin ------------------------
@@ -1509,7 +1587,10 @@ def main(
     preflights, places each order once and prints one line per leg; it exits
     0 when every order was placed or already was, and 1 otherwise.
     ``--status`` prints feature 3's read-back and ``--cancel`` cancels this
-    rebalance's open orders.
+    rebalance's open orders — both over the rebalance's orders **by
+    identity** (see :func:`rebalance_order_identities`), one name per
+    symbol the book's weights name, so a filled order or a resting one the
+    plan no longer wants is still looked up and still cancelled.
 
     The ``client``, ``transport``, ``store``, ``limiter``, ``env`` and the
     two retry seams are injectable so the suite can drive the command
@@ -1561,14 +1642,19 @@ def main(
             client = BingXClient.from_env(env=env, transport=transport)
 
         if arguments.status:
-            plan = build_mirror_plan(book=book, client=client)
-            for status in read_back_orders(client=client, orders=plan):
+            # Addressed by identity, never by today's plan: the plan is
+            # re-sized against the account's live positions, so a symbol
+            # already at its target has no leg in it while its placed order
+            # still sits on the venue's book — and a leg the gates refused
+            # never named one at all.
+            orders = rebalance_order_identities(book)
+            for status in read_back_orders(client=client, orders=orders):
                 print(json.dumps(status.as_dict()))
             return 0
 
         if arguments.cancel:
-            plan = build_mirror_plan(book=book, client=client)
-            for identifier in cancel_rebalance_orders(client=client, orders=plan):
+            orders = rebalance_order_identities(book)
+            for identifier in cancel_rebalance_orders(client=client, orders=orders):
                 print(json.dumps({"clientOrderID": identifier}))
             return 0
 

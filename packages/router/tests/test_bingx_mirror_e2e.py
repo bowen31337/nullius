@@ -54,6 +54,7 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit
@@ -75,6 +76,8 @@ from router.bingx_client import (
     VST_HOST,
     BingXClient,
 )
+from router.bingx_client_order_id import project_bingx_client_order_id
+from router.client_order_id import derive_client_order_id
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "bingx_vst"
@@ -92,6 +95,20 @@ PUBLIC_PATHS = frozenset(
 
 #: The five symbols the synthetic book orders with a flat account.
 ORDERED_SYMBOLS = ("1000PEPE-USDT", "BTC-USDT", "DOGE-USDT", "ETH-USDT", "SOL-USDT")
+
+#: Every symbol the synthetic book's weights name, in the book's own order
+#: (the fixture's own weighting order).  The identity set ``--status``
+#: prints one line per and ``--cancel`` owns: a symbol the gates refused
+#: belongs to it as surely as a symbol the plan still orders.
+BOOK_SYMBOLS = (
+    "BTC-USDT",
+    "ETH-USDT",
+    "SOL-USDT",
+    "DOGE-USDT",
+    "1000PEPE-USDT",
+    "AGLD-USDT",
+    "NCFXUSD2ARS-USDT",
+)
 
 #: A ``sitecustomize`` the child process imports before anything else.  It
 #: rewrites the client's own HTTPS URL to the loopback stand-in — leaving
@@ -700,7 +717,7 @@ def test_place_without_a_database_url_refuses_before_placing(
 # -- --status and --cancel -----------------------------------------------------
 
 
-def test_status_reads_back_the_five_orders_after_placing(
+def test_status_reads_back_every_book_symbol_after_placing(
     tmp_path, stand_in, book_path, database_url
 ):
     _, _venue, url = stand_in
@@ -711,25 +728,31 @@ def test_status_reads_back_the_five_orders_after_placing(
     status = _run(["--book", str(book_path), "--status"], env)
     assert status.returncode == 0, status.stderr
     lines = _lines(status.stdout)
-    assert len(lines) == 5
-    # The venue's own word for a resting order, read from the nested
-    # order document the real endpoint answers.
-    assert {line["status"] for line in lines} == {"PENDING"}
-    assert {line["symbol"] for line in lines} == set(ORDERED_SYMBOLS)
-    assert all(line["executedQty"] == "0" for line in lines)
-    assert all(line["origQty"] not in (None, "") for line in lines)
+    # One line per book symbol, in the book's own order: the five the
+    # venue holds — its own word for a resting order, read from the nested
+    # order document the real endpoint answers — beside the two the gates
+    # refused, addressed by identity and answered not_found.
+    assert [line["symbol"] for line in lines] == list(BOOK_SYMBOLS)
+    by_symbol = {line["symbol"]: line for line in lines}
+    for symbol in ORDERED_SYMBOLS:
+        assert by_symbol[symbol]["status"] == "PENDING"
+        assert by_symbol[symbol]["executedQty"] == "0"
+        assert by_symbol[symbol]["origQty"] not in (None, "")
+    for symbol in ("AGLD-USDT", "NCFXUSD2ARS-USDT"):
+        assert by_symbol[symbol]["status"] == "not_found"
 
 
-def test_status_before_placing_reports_every_leg_not_found(
+def test_status_before_placing_reports_every_book_symbol_not_found(
     tmp_path, stand_in, book_path, database_url
 ):
-    """The read-back over a venue that holds none of the plan's orders.
+    """The read-back over a venue that holds none of the rebalance's orders.
 
     The stand-in answers each lookup with the recorded refusal — code
     109421, ``order not exist``, ``live/query_order_not_exist.json``
     verbatim — and the read-back translates it into this system's
-    ``not_found`` status rather than aborting: one line per order of the
-    rebalance, exit 0, no measurements to report."""
+    ``not_found`` status rather than aborting: one line per book symbol,
+    addressed by identity (the two the gates would refuse included), exit
+    0, no measurements to report."""
     _, _venue, url = stand_in
     status = _run(
         ["--book", str(book_path), "--status"],
@@ -737,11 +760,39 @@ def test_status_before_placing_reports_every_leg_not_found(
     )
     assert status.returncode == 0, status.stderr
     lines = _lines(status.stdout)
-    assert len(lines) == 5
+    assert len(lines) == len(BOOK_SYMBOLS)
+    assert [line["symbol"] for line in lines] == list(BOOK_SYMBOLS)
     assert {line["status"] for line in lines} == {"not_found"}
-    assert {line["symbol"] for line in lines} == set(ORDERED_SYMBOLS)
     assert all(line["executedQty"] is None for line in lines)
     assert all(line["avgPrice"] is None for line in lines)
+
+
+def test_status_and_cancel_need_no_database_url_and_place_nothing(
+    tmp_path, stand_in, book_path
+):
+    """The spec's own clause, staged exactly: neither verb is a placement.
+
+    The child's environment carries no ``DATABASE_URL`` — the state
+    ``--place`` refuses under — and the venue holds none of the rebalance's
+    orders, so ``--status`` answers one ``not_found`` line per book symbol
+    and ``--cancel`` cancels nothing.  Both exit 0, and not one order POST
+    reaches the venue: addressed by identity, the two verbs ask the venue
+    about orders by name and never size, fund or place a leg.
+    """
+    _, venue, url = stand_in
+    env = _child_env(tmp_path, url, None)  # DATABASE_URL popped
+
+    status = _run(["--book", str(book_path), "--status"], env)
+    assert status.returncode == 0, status.stderr
+    lines = _lines(status.stdout)
+    assert [line["symbol"] for line in lines] == list(BOOK_SYMBOLS)
+    assert {line["status"] for line in lines} == {"not_found"}
+
+    cancel = _run(["--book", str(book_path), "--cancel"], env)
+    assert cancel.returncode == 0, cancel.stderr
+    assert _lines(cancel.stdout) == []
+
+    assert venue.order_posts() == []
 
 
 def test_cancel_leaves_the_listing_s_foreign_order_untouched(
@@ -763,6 +814,99 @@ def test_cancel_leaves_the_listing_s_foreign_order_untouched(
         if r["method"] == "DELETE" and r["path"] == ORDER_PATH
     ]
     assert {r["params"]["clientOrderID"] for r in deletes} == set(cancelled)
+
+
+# -- The recorded incident: the plan drops a leg, the order remains --------------
+
+
+def _projection(symbol: str) -> str:
+    """The 40-character projection of the synthetic book's order for
+    ``symbol`` — the same derivation and projection placement names the
+    order with, recomputed here so a test can name the exact identifier the
+    venue should have been asked about."""
+    book = _fixture("synthetic_book.json")
+    return project_bingx_client_order_id(
+        derive_client_order_id(
+            book_id=book["book_id"],
+            rebalance_ts=datetime.fromisoformat(book["rebalance_ts"]),
+            symbol=symbol,
+        )
+    )
+
+
+def _filled_account(venue: _StandIn) -> None:
+    """Move the stand-in's account to the recorded one-way short.
+
+    The state the nullius01 account reached once its rebalance's DOGE leg
+    filled: DOGE ``-5402`` (the recorded fixture), which is exactly the
+    at-target book's own DOGE target, so a plan built after the fill sizes
+    no DOGE leg while the rebalance's DOGE order still rests on the book.
+    """
+    venue.positions = _fixture("live/positions_one_way_short.json")["data"]
+
+
+def test_status_sees_the_leg_the_plan_no_longer_wants(
+    tmp_path, stand_in, database_url
+):
+    """The recorded incident, replayed end to end.
+
+    Five orders were placed on a flat account; the fills moved the account
+    to the recorded one-way short, where DOGE sits at the at-target book's
+    own DOGE target — so a plan built today sizes no DOGE leg, and the
+    operator's ``--status`` printed three lines with DOGE's and SOL's
+    orders missing.  Addressed by identity, the command answers one line
+    per book symbol with DOGE's among them (the stand-in holds every
+    placed order resting, so its word is PENDING — before the fix there was
+    no DOGE line at all)."""
+    _, venue, url = stand_in
+    env = _child_env(tmp_path, url, database_url)
+    book = _book_at_target(tmp_path / "book_at_target.json")
+    placed = _run(["--book", str(book), "--place"], env)
+    assert placed.returncode == 0, placed.stderr
+    assert {p["params"]["symbol"] for p in venue.order_posts()} == set(
+        ORDERED_SYMBOLS
+    )
+    _filled_account(venue)
+
+    status = _run(["--book", str(book), "--status"], env)
+
+    assert status.returncode == 0, status.stderr
+    lines = _lines(status.stdout)
+    assert [line["symbol"] for line in lines] == list(BOOK_SYMBOLS)
+    by_symbol = {line["symbol"]: line["status"] for line in lines}
+    assert by_symbol["DOGE-USDT"] == "PENDING"
+    assert by_symbol["AGLD-USDT"] == "not_found"
+    assert by_symbol["NCFXUSD2ARS-USDT"] == "not_found"
+
+
+def test_cancel_takes_the_resting_order_the_plan_no_longer_wants(
+    tmp_path, stand_in, database_url
+):
+    """The incident's other half: ``--cancel`` over the same plan-derived
+    order set would have left DOGE's resting order on the venue's book
+    forever.  The cancel owns every identifier this rebalance placed, so
+    DOGE's DELETE reaches the venue while the listing's foreign order stays
+    untouched."""
+    _, venue, url = stand_in
+    env = _child_env(tmp_path, url, database_url)
+    book = _book_at_target(tmp_path / "book_at_target.json")
+    placed = _run(["--book", str(book), "--place"], env)
+    assert placed.returncode == 0, placed.stderr
+    _filled_account(venue)
+
+    cancel = _run(["--book", str(book), "--cancel"], env)
+
+    assert cancel.returncode == 0, cancel.stderr
+    cancelled = {line["clientOrderID"] for line in _lines(cancel.stdout)}
+    assert _projection("DOGE-USDT") in cancelled
+    deletes = [
+        r["params"]["clientOrderID"]
+        for r in venue.requests
+        if r["method"] == "DELETE" and r["path"] == ORDER_PATH
+    ]
+    assert _projection("DOGE-USDT") in deletes
+    # The listing's foreign order was never handed to the venue's cancel.
+    assert "f" * 40 not in deletes
 
 
 # -- The non-flat account: a recorded short is not doubled ---------------------

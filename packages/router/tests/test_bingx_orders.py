@@ -334,17 +334,43 @@ def test_the_live_pending_answer_is_read_in_the_venues_nested_shape() -> None:
     assert status.executed_quantity == Decimal("0")
     assert status.average_price == Decimal("0.0000000")
     assert status.is_open is True
-    # The decimals render back as this module always renders them — the
-    # exact Decimal spellings — which for the recording's all-zero
-    # seven-decimal avgPrice is Decimal's own "0E-7".
+    # The decimals render back in plain positional notation — the venue's
+    # own spelling for its all-zero seven-decimal avgPrice, never the
+    # "0E-7" Decimal's str() answers for that value (the spelling the
+    # operator's --status printed before the fix).
     assert status.as_dict() == {
         "symbol": "1000PEPE-USDT",
         "clientOrderID": recorded_id,
         "status": "PENDING",
-        "origQty": str(Decimal("69850")),
-        "executedQty": str(Decimal("0")),
-        "avgPrice": str(Decimal("0.0000000")),
+        "origQty": "69850",
+        "executedQty": "0",
+        "avgPrice": "0.0000000",
     }
+
+
+def test_as_dict_renders_every_decimal_in_plain_positional_notation() -> None:
+    """The report never spells money in exponent form.
+
+    The recorded venue sends a resting order's avgPrice as ``"0.0000000"``;
+    :class:`~decimal.Decimal`'s own ``str()`` spells that value ``"0E-7"``,
+    and the operator's ``--status`` printed it that way.  ``as_dict``
+    renders each decimal in plain positional notation instead, so the
+    venue's seven-decimal zero prints exactly as the venue spelled it.
+    """
+    status = VSTOrderStatus(
+        symbol="1000PEPE-USDT",
+        client_order_id="a" * 40,
+        status="PENDING",
+        executed_quantity=Decimal("0"),
+        average_price=Decimal("0.0000000"),
+        original_quantity=Decimal("69850"),
+    )
+
+    rendered = status.as_dict()
+
+    assert rendered["avgPrice"] == "0.0000000"
+    assert rendered["executedQty"] == "0"
+    assert rendered["origQty"] == "69850"
 
 
 def test_the_live_not_exist_code_spelled_as_text_is_also_not_found() -> None:

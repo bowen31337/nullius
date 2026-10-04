@@ -413,10 +413,15 @@ class VSTOrderStatus:
 
         ``symbol``, ``clientOrderID``, ``status``, ``origQty``,
         ``executedQty`` and ``avgPrice`` — the keys the venue's order
-        document carries — with the decimals rendered as their exact
-        string spellings (and ``None`` where a not-found order has no
-        measurement), so a ``json.dumps`` of this answer is one line of a
-        plan-like report.
+        document carries — with the decimals rendered in plain positional
+        notation (and ``None`` where a not-found order has no measurement),
+        so a ``json.dumps`` of this answer is one line of a plan-like
+        report.  Positional, never exponent form, because the report spells
+        money the way the venue does: the live recording's resting order
+        carries ``avgPrice`` ``"0.0000000"``, which :class:`~decimal.Decimal`'s
+        own ``str()`` renders ``"0E-7"`` — a spelling no venue ever sent and
+        no operator ever grepped for.  The fixed-point rendering keeps the
+        exact value and the exact scale the venue's string carried.
         """
         return {
             SYMBOL_FIELD: self.symbol,
@@ -424,14 +429,15 @@ class VSTOrderStatus:
             STATUS_FIELD: self.status,
             ORIGINAL_QUANTITY_FIELD: (
                 None if self.original_quantity is None
-                else str(self.original_quantity)
+                else format(self.original_quantity, "f")
             ),
             EXECUTED_QUANTITY_FIELD: (
                 None if self.executed_quantity is None
-                else str(self.executed_quantity)
+                else format(self.executed_quantity, "f")
             ),
             AVERAGE_PRICE_FIELD: (
-                None if self.average_price is None else str(self.average_price)
+                None if self.average_price is None
+                else format(self.average_price, "f")
             ),
         }
 

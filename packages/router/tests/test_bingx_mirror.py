@@ -57,6 +57,7 @@ from router.bingx_mirror import (
     main,
     mirror_place,
     plan_required_margin,
+    rebalance_order_identities,
 )
 from router.bingx_order import (
     BINGX_BUY,
@@ -162,6 +163,45 @@ def _book_with_eth_buy() -> dict:
     return book
 
 
+#: The DOGE weight whose target truncates onto the contract grid to exactly
+#: ``-5402`` — the size the recorded one-way short account holds — so a
+#: plan built over that account sizes no DOGE leg at all: the symbol is
+#: already at its target.  The identity terms are untouched, so DOGE's
+#: clientOrderID is the same as the plain book's.
+DOGE_AT_TARGET_WEIGHT = -0.0506762
+
+
+def _book_with_doge_at_target() -> dict:
+    """The synthetic book with DOGE's weight set to the recorded holding.
+
+    The state the nullius01 account reached once its rebalance's DOGE leg
+    filled: the account holds DOGE ``-5402`` (the recorded fixture), this
+    book's DOGE target is exactly that, and today's plan — re-sized against
+    the live positions — ships no DOGE leg while the rebalance's placed
+    DOGE order still sits on the venue's book.
+    """
+    book = _book()
+    book["weights"] = dict(book["weights"])
+    book["weights"]["DOGE-USDT"] = DOGE_AT_TARGET_WEIGHT
+    return book
+
+
+def _placed_ids() -> dict[str, str]:
+    """The 40-character projections of the rebalance's five placed orders.
+
+    One per symbol the flat-account plan orders, each derived from the same
+    ``(book_id, rebalance_ts, symbol)`` terms placement names orders with —
+    the weights play no part, so the at-target book's DOGE order keeps this
+    same identifier.
+    """
+    return {
+        symbol: _full_identifier(_book(), symbol)[:40]
+        for symbol in (
+            "1000PEPE-USDT", "BTC-USDT", "DOGE-USDT", "ETH-USDT", "SOL-USDT"
+        )
+    }
+
+
 class _MirrorClient:
     """A stand-in for feature 1's client: canned documents, recorded calls.
 
@@ -172,7 +212,10 @@ class _MirrorClient:
     raises — so a test can stage a transport failure, a venue refusal or a
     429 on any attempt.  ``orders_held`` names the clientOrderIDs the venue
     claims to hold, which ``query_order`` answers for; everything else is
-    the not-found refusal feature 3 translates.
+    the not-found refusal feature 3 translates.  ``query_answers`` stages a
+    whole answer document per clientOrderID and wins over the plain held
+    spelling — the state the recorded incident answers for its filled and
+    resting legs.
     """
 
     def __init__(
@@ -186,6 +229,7 @@ class _MirrorClient:
         balance: object = BALANCE,
         place_effects: list | None = None,
         orders_held: set[str] | None = None,
+        query_answers: dict[str, dict] | None = None,
         open_orders: object = (),
     ) -> None:
         self._contracts = _load("contracts.json") if contracts is None else contracts
@@ -196,6 +240,7 @@ class _MirrorClient:
         self._balance = balance
         self._place_effects = list(place_effects or [])
         self._orders_held = set(orders_held or ())
+        self._query_answers = dict(query_answers or {})
         self._open_orders = open_orders
         self.calls: list[tuple] = []
         self.placed: list[BingXOrder] = []
@@ -272,6 +317,9 @@ class _MirrorClient:
 
     def query_order(self, client_order_id: str, *, symbol: str | None = None) -> object:
         self.calls.append(("query_order", client_order_id, symbol))
+        staged = self._query_answers.get(client_order_id)
+        if staged is not None:
+            return staged
         if client_order_id in self._orders_held:
             return {
                 "symbol": symbol,
@@ -629,6 +677,57 @@ def test_full_identifier_refuses_a_naive_rebalance():
         _full_identifier(
             {"book_id": "b", "rebalance_ts": "2026-09-30T00:00:00"}, "BTC-USDT"
         )
+
+
+# -- The rebalance's order identities -------------------------------------------
+
+
+def test_rebalance_order_identities_answers_one_name_per_book_symbol():
+    """The order set --status and --cancel address: one identifier per
+    symbol the book's weights name — including the two the gates refuse —
+    in the book's own order, each the 40-character projection of the same
+    derivation placement names its orders with."""
+    book = _book()
+    orders = rebalance_order_identities(book)
+
+    assert [order["symbol"] for order in orders] == list(book["weights"])
+    assert all(len(order["clientOrderID"]) == 40 for order in orders)
+    for symbol in book["weights"]:
+        expected = _full_identifier(book, symbol)[:40]
+        order = next(o for o in orders if o["symbol"] == symbol)
+        assert order["clientOrderID"] == expected
+
+
+def test_rebalance_order_identities_ignores_the_weights_own_values():
+    """Identity folds (book_id, rebalance_ts, symbol) — never the weight —
+    so the at-target book's DOGE order keeps the plain book's name, which
+    is the whole reason a dropped leg can still be found by it."""
+    plain = rebalance_order_identities(_book())
+    at_target = rebalance_order_identities(_book_with_doge_at_target())
+    assert plain == at_target
+
+
+def test_rebalance_order_identities_refuses_a_book_without_weights():
+    book = _book()
+    del book["weights"]
+    with pytest.raises(RouterBingXMirrorError) as excinfo:
+        rebalance_order_identities(book)
+    assert MIRROR_CODE in str(excinfo.value)
+
+
+def test_rebalance_order_identities_refuses_an_empty_weights_mapping():
+    book = _book()
+    book["weights"] = {}
+    with pytest.raises(RouterBingXMirrorError):
+        rebalance_order_identities(book)
+
+
+def test_rebalance_order_identities_refuses_a_weight_keyed_by_no_symbol():
+    book = _book()
+    book["weights"] = {**book["weights"], "": 0.1}
+    with pytest.raises(RouterBingXMirrorError) as excinfo:
+        rebalance_order_identities(book)
+    assert MIRROR_CODE in str(excinfo.value)
 
 
 # -- mirror_place: the happy path ---------------------------------------------
@@ -1609,8 +1708,17 @@ def test_status_prints_the_read_back(tmp_path):
     assert code == 0
     assert err == ""
     lines = [json.loads(line) for line in out.splitlines()]
-    assert len(lines) == 5
-    assert all(line["status"] == "NEW" for line in lines)
+    # One line per book symbol, in the book's own order: the five the
+    # venue holds answer NEW, and the two the gates refused — named by
+    # identity, never by today's plan — answer not_found.
+    book = _book()
+    assert [line["symbol"] for line in lines] == list(book["weights"])
+    statuses = {line["symbol"]: line["status"] for line in lines}
+    assert statuses == {
+        **{symbol: "NEW" for symbol in _order_symbols(plan)},
+        "AGLD-USDT": "not_found",
+        "NCFXUSD2ARS-USDT": "not_found",
+    }
 
 
 def test_cancel_prints_the_identifiers_it_cancelled(tmp_path):
@@ -1632,6 +1740,128 @@ def test_cancel_prints_the_identifiers_it_cancelled(tmp_path):
     assert cancelled == [owned[0]]
     # The foreign order was never handed to the venue's cancel.
     assert ("cancel_order", "a" * 40, "OTHER-USDT") not in client.calls
+
+
+def test_status_addresses_the_rebalances_orders_by_identity_not_todays_plan(
+    tmp_path,
+):
+    """The recorded incident, reproduced.
+
+    The nullius01 rebalance placed five orders; the venue filled BTC, DOGE
+    and ETH and left SOL and 1000PEPE resting.  ``--status`` printed three
+    lines — DOGE (filled, and at its target once the fill landed, so sized
+    to no leg by today's plan) and SOL (resting) missing — because it
+    addressed ``build_mirror_plan``'s legs, a plan re-sized against the
+    account's live positions that holds only the legs today still wants.
+    The rebalance's orders are addressed by identity instead: one line per
+    book symbol, in the book's order, with DOGE's and SOL's among them and
+    the two the gates refused answering ``not_found``.
+    """
+    book = _book_with_doge_at_target()
+    book_path = tmp_path / "book.json"
+    book_path.write_text(json.dumps(book), encoding="utf-8")
+    ids = _placed_ids()
+    client = _MirrorClient(
+        positions=_live_positions_data(),
+        query_answers={
+            ids["BTC-USDT"]: {
+                "symbol": "BTC-USDT",
+                "clientOrderID": ids["BTC-USDT"],
+                "status": "FILLED",
+                "origQty": "0.0240",
+                "executedQty": "0.0240",
+                "avgPrice": "83137.3",
+            },
+            ids["DOGE-USDT"]: {
+                "symbol": "DOGE-USDT",
+                "clientOrderID": ids["DOGE-USDT"],
+                "status": "FILLED",
+                "origQty": "5402",
+                "executedQty": "5402",
+                "avgPrice": "0.09381",
+            },
+            ids["ETH-USDT"]: {
+                "symbol": "ETH-USDT",
+                "clientOrderID": ids["ETH-USDT"],
+                "status": "FILLED",
+                "origQty": "0.5590",
+                "executedQty": "0.5590",
+                "avgPrice": "2685.87",
+            },
+            ids["SOL-USDT"]: {
+                "symbol": "SOL-USDT",
+                "clientOrderID": ids["SOL-USDT"],
+                "status": "PENDING",
+                "origQty": "0.0370",
+                "executedQty": "0",
+                "avgPrice": "0",
+            },
+            ids["1000PEPE-USDT"]: {
+                "symbol": "1000PEPE-USDT",
+                "clientOrderID": ids["1000PEPE-USDT"],
+                "status": "PENDING",
+                "origQty": "69850",
+                "executedQty": "0",
+                # The venue's own seven-decimal zero — the value the
+                # operator's --status printed as "0E-7".
+                "avgPrice": "0.0000000",
+            },
+        },
+    )
+    code, out, err = _run_main(
+        ["--book", str(book_path), "--status"], client=client
+    )
+    assert code == 0
+    assert err == ""
+    lines = [json.loads(line) for line in out.splitlines()]
+    assert [line["symbol"] for line in lines] == list(book["weights"])
+    by_symbol = {line["symbol"]: line for line in lines}
+    assert by_symbol["DOGE-USDT"]["status"] == "FILLED"
+    assert by_symbol["SOL-USDT"]["status"] == "PENDING"
+    assert by_symbol["AGLD-USDT"]["status"] == "not_found"
+    assert by_symbol["NCFXUSD2ARS-USDT"]["status"] == "not_found"
+    # The venue's seven-decimal zero prints as the venue spelled it, in
+    # plain positional notation — never Decimal's exponent form.
+    assert by_symbol["1000PEPE-USDT"]["avgPrice"] == "0.0000000"
+    # No plan was built and nothing was placed: the command asks only the
+    # venue's order face, over the identities the book itself names.
+    plan_reads = [
+        c for c in client.calls if c[0] in ("contracts", "premium_index", "positions")
+    ]
+    assert plan_reads == []
+    assert client.placed == []
+
+
+def test_cancel_addresses_the_rebalances_orders_by_identity_not_todays_plan(
+    tmp_path,
+):
+    """The incident's other half: ``--cancel`` used the same plan-derived
+    order set, so a resting order the plan dropped was never cancelled and
+    stayed on the venue's book — the operator's SOL order would have been
+    left resting forever.  The cancel owns every identifier this rebalance
+    could ever have placed, whatever today's plan says, and the foreign
+    order stays untouched."""
+    book = _book_with_doge_at_target()
+    book_path = tmp_path / "book.json"
+    book_path.write_text(json.dumps(book), encoding="utf-8")
+    doge = _placed_ids()["DOGE-USDT"]
+    client = _MirrorClient(
+        positions=_live_positions_data(),
+        open_orders=[
+            {"clientOrderID": doge, "symbol": "DOGE-USDT"},
+            {"clientOrderID": "a" * 40, "symbol": "OTHER-USDT"},
+        ],
+    )
+    code, out, err = _run_main(
+        ["--book", str(book_path), "--cancel"], client=client
+    )
+    assert code == 0
+    assert err == ""
+    cancelled = [json.loads(line)["clientOrderID"] for line in out.splitlines()]
+    assert cancelled == [doge]
+    # The foreign order was never handed to the venue's cancel.
+    assert ("cancel_order", "a" * 40, "OTHER-USDT") not in client.calls
+    assert client.placed == []
 
 
 def test_a_missing_book_path_refuses(tmp_path):
