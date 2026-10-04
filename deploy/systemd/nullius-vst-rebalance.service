@@ -29,6 +29,16 @@
 [Unit]
 Description=nullius scheduled BingX VST rebalance (one 4-hour slot)
 Documentation=file:/%h/projects/nullius/deploy/systemd/nullius-vst-rebalance.timer
+# A slot that cannot run *at all* — this unit enters the "failed" state —
+# produces no slot output, so nothing inside the slot can raise the alarm.
+# systemd then starts one instance of the alert template, passing this
+# unit's own full name (`%n`, i.e. nullius-vst-rebalance.service) as the
+# instance the template runs with, and the alert names.  Exits 1 (a
+# refused leg) and 3 (a daily-loss halt) are *slot outcomes*, kept
+# successes by SuccessExitStatus below, so a slot that ran never starts
+# this hook — it fires only for the failures with no output at all: the
+# unreadable-token guard's exit 2, a crash, `op` or `uv` failing.
+OnFailure=nullius-vst-alert@%n.service
 # The venue is remote, so wait for the network before a slot starts; a slot
 # that cannot reach the venue places nothing and exits 1, which the timer's
 # next firing retries.

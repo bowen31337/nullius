@@ -1,1 +1,58 @@
-# Stub — written by additions_spec_bingx_vst_alerts.xml.
+# The Telegram alerting OnFailure hook: a scheduled slot that cannot run
+# *at all*.  A slot the rebalance unit runs to completion — even a refused
+# leg (exit 1) or a daily-loss halt (exit 3) — prints its summary line and
+# is alerted from inside the slot; but a unit that fails outright (the
+# unreadable-token guard's exit 2, a crash, `op` or `uv` failing) produces
+# no slot output, so nothing inside the slot can raise the alarm.  The
+# rebalance unit names this template in `OnFailure=`, and systemd starts
+# one instance of it with the failed unit's own full name (the `%n` of its
+# `OnFailure=` line) as the instance — e.g. `nullius-vst-rebalance.service`
+# — which arrives here as `%i`: the name the alert quotes and the
+# `journalctl --user -u …` command it prints reads.
+#
+# This file is written by the feature; linking it into
+# ~/.config/systemd/user/ alongside the rebalance unit is an operator step.
+# Nothing in this repository installs or enables it.
+#
+# The unit carries the **same environment** as the rebalance service, for
+# the same reason: a systemd user service runs neither `~/.zshrc` (which
+# exports `OP_SERVICE_ACCOUNT_TOKEN` from `~/.config/op/service-token`) nor
+# the login PATH that puts `~/.local/bin` — where `uv` lives — ahead of the
+# system's.  Both are needed: `run.sh` first runs `op run` (which needs the
+# service account) and then `uv run` (which needs `uv` on PATH).  The
+# token's *value* never appears here; the ExecStart reads it from the
+# operator's file, which is mode 0600 and lives outside the repository.
+#
+# `./run.sh vst-alert --unit %i --event failure` is the urgent door of
+# `router.bingx_alert`: one Telegram message naming the failed unit and how
+# to read it.  It exits 0 on delivery and 1 otherwise; an undelivered
+# alert leaves *this* unit failed in the journal, which is the truth, and
+# this template declares no `OnFailure=` of its own — nothing recurses.
+
+[Unit]
+Description=nullius urgent Telegram alert: a scheduled BingX VST slot could not run
+Documentation=file:/%h/projects/nullius/deploy/systemd/nullius-vst-rebalance.service
+# The alert posts to api.telegram.org, so it too waits for the network.
+# A slot that failed *because* the network is down may still find it down
+# when this runs; the alert then exits 1 and joins the journal.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+# One alert, then done — a oneshot, never retried here, because a slot
+# that just failed does not need a redelivery storm on top of it.
+Type=oneshot
+# The repository root, as in the rebalance unit: `run.sh` resolves the
+# workspace from its own location.
+WorkingDirectory=%h/projects/nullius
+# `uv` lives in the operator's ~/.local/bin, which a service does not inherit.
+# It goes first so the pinned interpreter wins over any system copy; the
+# system directories follow for `op`, `/bin/sh` and the ordinary tools.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# The token prologue is the rebalance unit's own, byte for byte: read the
+# operator's file at start, export it, and fail (exit 2, with a message
+# naming the file) rather than run `op` credential-less.  `$$` is systemd's
+# escape for a literal dollar; `%h` stays a specifier because it must
+# resolve here.  `%i` is the failed unit's own full name, and reaches the
+# alert as one shell word — a unit name contains no shell metacharacter.
+ExecStart=/bin/sh -c 'OP_SERVICE_ACCOUNT_TOKEN="$$(cat %h/.config/op/service-token)"; export OP_SERVICE_ACCOUNT_TOKEN; : "$${OP_SERVICE_ACCOUNT_TOKEN:?1Password service token unreadable — see %h/.config/op/service-token}"; exec %h/projects/nullius/run.sh vst-alert --unit %i --event failure'
