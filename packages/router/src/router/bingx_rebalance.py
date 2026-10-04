@@ -36,6 +36,23 @@ that store: the guard records the day's opening equity in it, the cancel
 and the reconcile read what earlier slots wrote, and the placement records
 its terms there.
 
+**After a slot finishes it is recorded and reported, never changed.**
+Feature 2 of ``additions_spec_bingx_vst_alerts.xml``: once the summary line
+is emitted — or the halt's reason printed, for exit 3 — the slot's
+completion (``book_id``, ``slot``, ``finished_at``, ``exit_code``) is
+appended to this module's own :data:`ROUTER_SLOT_COMPLETION_TABLE` in the
+same ``DATABASE_URL`` store, and then one of feature 1's alerts follows:
+**urgent** on exit 3, naming the day's loss, the limit and the manual
+reset; **warning** on exit 1, listing each refused symbol with its code and
+message; **info** on exit 0, summarising the orders placed, prior and
+skipped, the orders cancelled, whether the previous slot was reconciled,
+and the day's loss.  The record comes first so the heartbeat that reads it
+(feature 3) cannot miss a finish because a phone was unreachable.  Both
+acts are best-effort: a slot that cannot be recorded, and an alert that
+returns ``False`` or raises, is one log line each — the JSON summary line,
+the exit code and every order are identical whether alerting succeeds,
+fails or is unconfigured, which is that spec's own constraint.
+
 ``deploy/systemd/`` holds the user service that runs one slot as a oneshot
 and the timer that fires it at 00:05, 04:05, 08:05, 12:05, 16:05 and 20:05
 UTC.  Writing those units is this feature's deliverable; enabling them is an
@@ -63,16 +80,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
+import sqlite3
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
+from .bingx_alert import INFO, URGENT, WARNING, scrub_bot_path, send_alert
 from .bingx_client import BingXClient
 from .bingx_mirror import (
+    MIRROR_OUTCOME_PLACED,
+    MIRROR_OUTCOME_PRIOR,
     MIRROR_OUTCOME_REFUSED,
     VST_MIRROR_WEIGHT_SCHEDULE,
     build_mirror_plan,
@@ -100,9 +125,12 @@ __all__ = [
     "EXIT_OK",
     "EXIT_REFUSED",
     "REBALANCE_SLOT_HOURS",
+    "ROUTER_SLOT_COMPLETION_TABLE",
     "SLOT_LOOKBACK_HOURS",
     "RebalanceReport",
     "RouterBingXRebalanceError",
+    "RouterSlotCompletionStore",
+    "SlotCompletion",
     "floor_to_slot",
     "main",
 ]
@@ -138,6 +166,46 @@ SLOT_LOOKBACK_HOURS = 24
 EXIT_OK = 0
 EXIT_REFUSED = 1
 EXIT_DAILY_LOSS_HALT = 3
+
+#: The table this module's own slot-completion record lands in — the "its own
+#: table" of feature 2 in ``additions_spec_bingx_vst_alerts.xml``, held in the
+#: same ``DATABASE_URL`` store every other step of a slot shares so a second
+#: process (the heartbeat feature 3 will add) reads what this one wrote
+#: without any coordination but the database itself.
+ROUTER_SLOT_COMPLETION_TABLE = "router_bingx_slot_completion"
+
+#: The completion table's DDL, created idempotently beside the code that
+#: reads it — the discipline every store in this workspace follows.  One row
+#: per slot that *finished*, appended and never rewritten: a re-run inside
+#: one slot is a second completion of the same slot, and what reads the
+#: table wants the newest finish, not the unique one.  The exit codes are
+#: pinned to the spec's own three by the table itself, so a row wearing any
+#: other number is a row this store did not write.
+_SLOT_COMPLETION_SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS {ROUTER_SLOT_COMPLETION_TABLE} (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id     TEXT NOT NULL,     -- the book the slot ran for
+    slot        TEXT NOT NULL,     -- the slot's own 4-hour UTC start, ISO 8601
+    finished_at TEXT NOT NULL,     -- the instant the slot finished, ISO 8601 UTC
+    exit_code   INTEGER NOT NULL,  -- the spec's own three: 0 placed-or-prior, 1 refused, 3 halted
+    CHECK (exit_code IN (0, 1, 3))
+);
+"""
+
+#: The level each of the spec's three exits alerts at — the mapping feature 2's
+#: own sentence states (*urgent for exit 3, warning for exit 1, info for exit
+#: 0*), spelled once so the command and its suite cannot disagree about which
+#: word means what.
+_ALERT_LEVEL_BY_EXIT: Mapping[int, str] = {
+    EXIT_DAILY_LOSS_HALT: URGENT,
+    EXIT_REFUSED: WARNING,
+    EXIT_OK: INFO,
+}
+
+#: The module's logger.  One line per best-effort fault — a completion that
+#: could not be recorded, an alert that raised — carrying the greppable
+#: module code, and never a token.
+log = logging.getLogger("router.bingx_rebalance")
 
 
 class RouterBingXRebalanceError(RouterError):
@@ -407,6 +475,420 @@ def _decimal_text(value: Any) -> str:
         return str(value)
 
 
+# -- The slot-completion record (alerts feature 2) -------------------------------
+
+
+@dataclass(frozen=True)
+class SlotCompletion:
+    """One slot that finished, as this module records and reads it back.
+
+    The four fields feature 2's own sentence names — the ``book_id`` the
+    slot ran for, the ``slot`` (the 4-hour UTC start the run stamped as its
+    ``rebalance_ts``), the ``finished_at`` instant and the ``exit_code`` —
+    and nothing else: the record is the heartbeat's operand, not a second
+    summary line, so it carries what a reader must know to judge *when the
+    bot last finished a slot* and no more.  The moments are timezone-aware
+    in the table's one canonical UTC spelling.
+    """
+
+    book_id: str
+    slot: datetime
+    finished_at: datetime
+    exit_code: int
+
+
+def _sqlite_path(database_url: str) -> Path:
+    """Translate a ``sqlite:///`` URL into the filesystem path it names.
+
+    The same translation :mod:`router.bingx_risk` and :mod:`router.store`
+    each restate in their own words, for the reason each of them does: a
+    store reaches into no sibling's private helper.  ``sqlite:///foo.db``
+    is relative, ``sqlite:////foo.db`` is absolute, and any other scheme
+    is refused by name in this module's own vocabulary — an address this
+    record cannot speak holds no table to complete a slot in.
+    """
+
+    parsed = urlparse(database_url)
+    if parsed.scheme != "sqlite":
+        raise RouterBingXRebalanceError(
+            f"{BINGX_REBALANCE_CODE}: unsupported {DATABASE_URL_ENV} scheme "
+            f"{parsed.scheme!r}: the slot-completion record is kept in the "
+            "sqlite store the spec's single-machine allowment names "
+            "(sqlite:///), and an address this module cannot speak holds no "
+            "table to record a finished slot in (alerts feature 2)"
+        )
+    if parsed.netloc not in ("", "localhost"):
+        raise RouterBingXRebalanceError(
+            f"{BINGX_REBALANCE_CODE}: sqlite {DATABASE_URL_ENV} must not "
+            f"carry a host, got {parsed.netloc!r} (alerts feature 2)"
+        )
+    path = unquote(parsed.path).removeprefix("/")
+    if not path or path == ":memory:":
+        raise RouterBingXRebalanceError(
+            f"{BINGX_REBALANCE_CODE}: sqlite {DATABASE_URL_ENV} carries no "
+            "database path: an in-memory store would die with the connection "
+            "that opened it, and a slot whose completion vanished would leave "
+            "the heartbeat alerting about a bot that is running (alerts "
+            "feature 2)"
+        )
+    return Path(path)
+
+
+def _utc_text(moment: datetime) -> str:
+    """The table's one canonical moment spelling: aware, UTC, ISO 8601."""
+
+    return moment.astimezone(UTC).isoformat()
+
+
+def _require_aware(moment: Any, what: str) -> datetime:
+    """An aware instant, or a refusal naming the field it was read from."""
+
+    if not isinstance(moment, datetime) or (
+        moment.tzinfo is None or moment.tzinfo.utcoffset(moment) is None
+    ):
+        raise RouterBingXRebalanceError(
+            f"{BINGX_REBALANCE_CODE}: a slot completion's {what} is an "
+            f"aware instant, got {moment!r}; the record is what the "
+            "heartbeat measures an age against, and an instant that names "
+            "no timezone names no age (alerts feature 2)"
+        )
+    return moment
+
+
+def _completion_from_row(row: Sequence[Any]) -> SlotCompletion:
+    """Reconstruct one completion from its row, or refuse a row this store
+    could not have written.
+
+    The same defence :meth:`router.bingx_risk.RouterDailyOpeningEquityStore`
+    makes of its own rows: what a reader refuses under is the stored record,
+    so a row edited outside this package — an exit code outside the spec's
+    three, a moment no parser accepts — fails to reconstruct rather than
+    loading as a plausible-looking finish.
+    """
+
+    book_id, slot_text, finished_text, exit_code = row
+    if not isinstance(book_id, str) or not book_id.strip():
+        raise RouterBingXRebalanceError(
+            f"{BINGX_REBALANCE_CODE}: {ROUTER_SLOT_COMPLETION_TABLE} holds "
+            f"book_id={book_id!r}; a slot ran for a named book, and a row "
+            "that names none is a row this store did not write (alerts "
+            "feature 2)"
+        )
+    try:
+        slot = datetime.fromisoformat(str(slot_text))
+        finished_at = datetime.fromisoformat(str(finished_text))
+    except ValueError as exc:
+        raise RouterBingXRebalanceError(
+            f"{BINGX_REBALANCE_CODE}: {ROUTER_SLOT_COMPLETION_TABLE} holds "
+            f"slot={slot_text!r}, finished_at={finished_text!r}, which is "
+            "not ISO 8601 text; the record's moments are the heartbeat's "
+            "clock, and a row that states none is a row this store did not "
+            "write (alerts feature 2)"
+        ) from exc
+    if exit_code not in _ALERT_LEVEL_BY_EXIT or isinstance(exit_code, bool):
+        raise RouterBingXRebalanceError(
+            f"{BINGX_REBALANCE_CODE}: {ROUTER_SLOT_COMPLETION_TABLE} holds "
+            f"exit_code={exit_code!r}; a slot finishes on one of the spec's "
+            "own three exits (0, 1, 3), and a row wearing any other number "
+            "is a row this store did not write (alerts feature 2)"
+        )
+    return SlotCompletion(
+        book_id=book_id,
+        slot=_require_aware(slot, "slot"),
+        finished_at=_require_aware(finished_at, "finished_at"),
+        exit_code=int(exit_code),
+    )
+
+
+class RouterSlotCompletionStore:
+    """Holds and answers this module's own slot-completion table.
+
+    Bound to a database URL at construction; construction performs no I/O,
+    so composing a caller never touches the database and the store costs
+    nothing until a slot finishes.  Each operation opens its own
+    connection, creating the schema idempotently if absent — the
+    discipline every store in this workspace follows, which is what makes
+    the record readable from a *different* process (the heartbeat's hourly
+    check) than the one that wrote it: the database, not any process's
+    memory, is the coordination point.
+
+    Two faces, one table: the rebalance appends a finish (:meth:`record`)
+    and the heartbeat asks for the newest one (:meth:`newest`) — the
+    question feature 3's own sentence asks of this record.
+    """
+
+    def __init__(self, database_url: str) -> None:
+        if not isinstance(database_url, str) or not database_url.strip():
+            raise RouterBingXRebalanceError(
+                f"{BINGX_REBALANCE_CODE}: {DATABASE_URL_ENV} must be a "
+                "non-empty database URL; a slot's completion is recorded in "
+                "the store it names, and an address that states nothing "
+                "names no store to record in (alerts feature 2)"
+            )
+        self._database_url = database_url.strip()
+
+    @property
+    def database_url(self) -> str:
+        """The database URL this table's completions stand in."""
+        return self._database_url
+
+    def _connect(self) -> sqlite3.Connection:
+        path = _sqlite_path(self._database_url)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(path)
+        with connection:
+            connection.executescript(_SLOT_COMPLETION_SCHEMA)
+        return connection
+
+    def ensure_schema(self) -> None:
+        """Bring the table to the shape this store reads, idempotently.
+
+        Public so a test seeding a finish can prepare the table without
+        reaching for the private :meth:`_connect` — the same door
+        :class:`router.bingx_risk.RouterDailyOpeningEquityStore` leaves
+        open, for the same reason.
+        """
+
+        self._connect().close()
+
+    def record(
+        self,
+        *,
+        book_id: str,
+        slot: datetime,
+        finished_at: datetime,
+        exit_code: int,
+    ) -> None:
+        """Append one slot's completion — the four fields, once each.
+
+        The write is an append, never an upsert: a re-run inside one slot
+        is a *second* completion of that slot (the timer's catch-up), and
+        the reader asks for the newest finish rather than the unique one,
+        so rewriting the row would hide exactly the fact the record exists
+        to state.
+        """
+
+        if not isinstance(book_id, str) or not book_id.strip():
+            raise RouterBingXRebalanceError(
+                f"{BINGX_REBALANCE_CODE}: a slot completion names the book "
+                f"it ran for, got {book_id!r}; every order's name folds the "
+                "book's identity, and a completion that names none names no "
+                "slot (alerts feature 2)"
+            )
+        _require_aware(slot, "slot")
+        _require_aware(finished_at, "finished_at")
+        if exit_code not in _ALERT_LEVEL_BY_EXIT or isinstance(exit_code, bool):
+            raise RouterBingXRebalanceError(
+                f"{BINGX_REBALANCE_CODE}: a slot finishes on one of the "
+                f"spec's own three exits (0, 1, 3), got {exit_code!r}; the "
+                "record is what the heartbeat judges an age against, and an "
+                "exit this module cannot take names no outcome (alerts "
+                "feature 2)"
+            )
+        with closing(self._connect()) as connection, connection:
+            connection.execute(
+                f"INSERT INTO {ROUTER_SLOT_COMPLETION_TABLE} "
+                "(book_id, slot, finished_at, exit_code) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    book_id,
+                    _utc_text(slot),
+                    _utc_text(finished_at),
+                    int(exit_code),
+                ),
+            )
+
+    def newest(self) -> SlotCompletion | None:
+        """The most recently finished slot, or ``None`` when none has.
+
+        "Newest" is judged on ``finished_at`` with the row's own number
+        breaking a tie — two runs finishing inside one clock tick are two
+        completions, and the heartbeat wants the later of them.
+        """
+
+        try:
+            with closing(self._connect()) as connection:
+                row = connection.execute(
+                    f"SELECT book_id, slot, finished_at, exit_code "
+                    f"FROM {ROUTER_SLOT_COMPLETION_TABLE} "
+                    "ORDER BY finished_at DESC, id DESC LIMIT 1"
+                ).fetchone()
+        except (sqlite3.Error, OSError) as exc:
+            raise RouterBingXRebalanceError(
+                f"{BINGX_REBALANCE_CODE}: could not read the newest slot "
+                f"completion from the store: {exc}; the heartbeat judges "
+                "the bot's health on this record, and a store that cannot "
+                "be asked about it cannot answer for the bot (alerts "
+                "feature 2)"
+            ) from exc
+        if row is None:
+            return None
+        return _completion_from_row(row)
+
+
+# -- The slot's alert (alerts feature 2) -----------------------------------------
+
+
+def _figure_text(value: Any) -> str:
+    """A halt's figure, in the spelling its own record carries.
+
+    The guard's breach measures its figures as exact decimals, while the
+    standing halt record carries them as the floats feature 325's store
+    reads — ``400.0``, spelled the way that member's own summary spells it.
+    A bare :func:`format` on a float would widen it to six places nobody
+    sent, so a float is narrowed through its own shortest decimal spelling
+    first and everything else passes to :func:`_decimal_text` unchanged.
+    """
+
+    if isinstance(value, float):
+        return _decimal_text(Decimal(str(value)))
+    return _decimal_text(value)
+
+
+def _halt_alert_text(book_id: str, slot: datetime, halt: BaseException) -> str:
+    """The urgent body for exit 3: the loss, the limit, the manual reset.
+
+    Both of feature 2's halt refusals carry the figures the sentence names:
+    a fresh breach measures them on its :attr:`check`, and a halt that
+    already stands carries them on the record feature 325 wrote when it
+    tripped.  The repair is the same door either way — the manual reset —
+    because the halt does not lift by itself.
+    """
+
+    check = getattr(halt, "check", None)
+    if check is not None:
+        loss, limit = check.daily_loss, check.daily_loss_limit
+    else:
+        standing = halt.halt
+        loss, limit = standing.loss, standing.limit
+    return (
+        f"The {slot.isoformat()} slot for book {book_id} exited 3: the "
+        "daily-loss guard refused the day.\n"
+        f"The day's loss {_figure_text(loss)} USDT passed the daily loss "
+        f"limit {_figure_text(limit)} USDT.\n"
+        "Orders are refused until an operator closes the halt through the "
+        "manual reset (risk.daily_loss.manual_reset)."
+    )
+
+
+def _refusal_alert_text(report: RebalanceReport) -> str:
+    """The warning body for exit 1: each refused symbol, code and message.
+
+    The listing is the sentence's own requirement — one line per leg the
+    venue would not take, carrying the code and the message exactly as the
+    summary line recorded them, so an operator reading the phone and one
+    reading the journal see the same refusal.
+    """
+
+    opener = (
+        f"The {report.rebalance_ts.isoformat()} slot for book "
+        f"{report.book_id} exited 1: {len(report.refused)} of its "
+        f"{len(report.orders)} order legs were refused."
+    )
+    lines = [opener]
+    for entry in report.refused:
+        line = f"- {entry['symbol']}: {entry['placement'] or 'no code'}"
+        if entry.get("message"):
+            line += f" — {entry['message']}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _summary_alert_text(report: RebalanceReport) -> str:
+    """The info body for exit 0: the slot's own summary, silently delivered.
+
+    Every clause of the sentence's list — the orders placed, prior and
+    skipped, the orders cancelled, whether the previous slot was
+    reconciled, and the day's loss — stated as figures, because the alert
+    is a summary and the JSON line above it already carries the detail.
+    """
+
+    placed = sum(
+        1 for order in report.orders if order["outcome"] == MIRROR_OUTCOME_PLACED
+    )
+    prior = sum(
+        1 for order in report.orders if order["outcome"] == MIRROR_OUTCOME_PRIOR
+    )
+    reconciled = "yes" if report.reconciled else "no"
+    opener = (
+        f"The {report.rebalance_ts.isoformat()} slot for book "
+        f"{report.book_id} exited 0."
+    )
+    orders = (
+        f"Orders: {placed} placed, {prior} prior, "
+        f"{len(report.skipped)} skipped by the gates."
+    )
+    cancelled = (
+        f"Cancelled {len(report.cancelled)} resting order(s) left by "
+        "earlier slots."
+    )
+    reconcile = f"The previous slot was reconciled: {reconciled}."
+    loss = (
+        f"The day's loss is {_decimal_text(report.guard.daily_loss)} USDT "
+        f"against the limit {_decimal_text(report.guard.daily_loss_limit)} "
+        "USDT."
+    )
+    return f"{opener}\n{orders}\n{cancelled}\n{reconcile}\n{loss}"
+
+
+def _complete_slot(
+    *,
+    book_id: str,
+    slot: datetime,
+    finished_at: datetime,
+    exit_code: int,
+    report: RebalanceReport | None,
+    halt: BaseException | None,
+    env: Mapping[str, str] | None,
+    transport: Any,
+    completion_store: Any,
+    alert: Callable[..., bool],
+) -> None:
+    """Record the slot's completion, then send its alert — best-effort, both.
+
+    The spec's own order — *records the slot's completion ... then sends
+    feature 1's alert* — and its own stance: alerting never alters trading,
+    so each act is wrapped separately (a record that could not be written
+    is no reason to stay silent about the slot) and a fault in either is
+    exactly one log line.  An alert that raises is caught and logged here
+    rather than left to the command's own ``except RouterError``, which
+    would answer a delivery fault with the wrong exit code — the one way
+    alerting could change a slot's outcome, and the one thing this
+    feature's constraint forbids.
+    """
+
+    try:
+        completion_store.record(
+            book_id=book_id,
+            slot=slot,
+            finished_at=finished_at,
+            exit_code=exit_code,
+        )
+    except Exception as exc:  # noqa: BLE001 - the record is best-effort too
+        log.warning(
+            "%s: the %s slot's completion could not be recorded (%s)",
+            BINGX_REBALANCE_CODE,
+            slot.isoformat(),
+            scrub_bot_path(f"{type(exc).__name__}: {exc}"),
+        )
+    try:
+        if exit_code == EXIT_DAILY_LOSS_HALT:
+            text = _halt_alert_text(book_id, slot, halt)
+        elif exit_code == EXIT_REFUSED:
+            text = _refusal_alert_text(report)
+        else:
+            text = _summary_alert_text(report)
+        alert(_ALERT_LEVEL_BY_EXIT[exit_code], text, env=env, transport=transport)
+    except Exception as exc:  # noqa: BLE001 - the alert never alters the slot
+        log.warning(
+            "%s: the %s slot's %s alert raised and was caught (%s)",
+            BINGX_REBALANCE_CODE,
+            slot.isoformat(),
+            _ALERT_LEVEL_BY_EXIT.get(exit_code, "slot"),
+            scrub_bot_path(f"{type(exc).__name__}: {exc}"),
+        )
+
+
 def _persist_target_weights(
     *,
     book: Mapping[str, Any],
@@ -646,6 +1128,7 @@ def main(
     store: Any = None,
     limiter: Any = None,
     book_store: Any = None,
+    completion_store: Any = None,
     env: Mapping[str, str] | None = None,
     database_url: str | None = None,
     now: Callable[[], datetime] | None = None,
@@ -653,6 +1136,7 @@ def main(
     sleep: Callable[[timedelta], Any] = _sleep,
     jitter_rng: Any = None,
     on_retry: Any = None,
+    alert: Callable[..., bool] | None = None,
     emit: Callable[[str], None] = print,
 ) -> int:
     """One scheduled rebalance slot: ``python -m router.bingx_rebalance --book BOOK``.
@@ -663,11 +1147,20 @@ def main(
     or prior, 1 when any leg was refused, 3 on a daily-loss refusal.  It
     refuses to start without ``DATABASE_URL``.
 
+    Once the slot has an outcome the completion is recorded and the alert
+    sent — after the summary line, never instead of it — as
+    :func:`_complete_slot` states, so neither act can change the line, the
+    orders or the exit code.
+
     The seams — ``client``, ``transport``, ``store``, ``limiter``,
-    ``book_store``, ``env``, ``database_url``, ``now`` and the retry pair —
-    are injectable so the suite drives the command against a recording double
-    with no environment variable that could change the host; a caller that
-    injects nothing gets feature 1's real client built from the environment.
+    ``book_store``, ``completion_store``, ``env``, ``database_url``, ``now``,
+    the retry pair, ``alert`` and ``emit`` — are injectable so the suite
+    drives the command against a recording double with no environment
+    variable that could change the host; a caller that injects nothing gets
+    feature 1's real client built from the environment.  ``transport`` is
+    the one HTTP door for the whole command — venue and Bot API share its
+    ``(method, url, headers, body) -> (status, body)`` contract — and
+    ``alert`` defaults to :func:`router.bingx_alert.send_alert`.
     """
 
     parser = argparse.ArgumentParser(
@@ -711,7 +1204,7 @@ def main(
                 "identity, equity, weights, horizons and positions as one "
                 "object (feature 4)"
             )
-        _book_identity(book)
+        book_id, _ = _book_identity(book)
 
         if now is not None and not callable(now):
             raise RouterBingXRebalanceError(
@@ -720,7 +1213,8 @@ def main(
                 "moment is floored to its slot, and a value that is not a "
                 "callable names no moment (feature 4)"
             )
-        moment = (now if now is not None else (lambda: datetime.now(UTC)))()
+        moment_fn = now if now is not None else (lambda: datetime.now(UTC))
+        moment = moment_fn()
         rebalance_ts = floor_to_slot(moment)
 
         if client is None:
@@ -731,6 +1225,9 @@ def main(
             limiter = RouterRateLimiter(url, schedule=VST_MIRROR_WEIGHT_SCHEDULE)
         if book_store is None:
             book_store = _resolve_book_store(env, url)
+        if completion_store is None:
+            completion_store = RouterSlotCompletionStore(url)
+        sender = alert if alert is not None else send_alert
 
         try:
             report = _run_slot(
@@ -757,9 +1254,39 @@ def main(
             # placement refusal.  The guard's own message, carrying the day's
             # loss and the halt, goes to stderr so an operator sees why.
             print(str(halt), file=sys.stderr)
+            # The halted slot finished too: exit 3 is an outcome, and it is
+            # recorded and alerted as one — urgently, naming the loss, the
+            # limit and the manual reset — without touching the exit.
+            _complete_slot(
+                book_id=book_id,
+                slot=rebalance_ts,
+                finished_at=moment_fn(),
+                exit_code=EXIT_DAILY_LOSS_HALT,
+                report=None,
+                halt=halt,
+                env=env,
+                transport=transport,
+                completion_store=completion_store,
+                alert=sender,
+            )
             return EXIT_DAILY_LOSS_HALT
 
         emit(json.dumps(report.as_line()))
+        # The summary line is already emitted, so what follows cannot change
+        # it: the completion is recorded and the alert sent, best-effort,
+        # after the outcome they report is on the record.
+        _complete_slot(
+            book_id=report.book_id,
+            slot=report.rebalance_ts,
+            finished_at=moment_fn(),
+            exit_code=report.exit_code,
+            report=report,
+            halt=None,
+            env=env,
+            transport=transport,
+            completion_store=completion_store,
+            alert=sender,
+        )
         return report.exit_code
     except RouterError as exc:
         message = str(exc)

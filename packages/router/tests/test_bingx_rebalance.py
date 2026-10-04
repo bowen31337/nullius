@@ -28,6 +28,18 @@ every order is placed or prior, 1 when a leg is *refused* — which a leg the
 *gates* closed is not, because it names no venue order — and 3 on a
 daily-loss refusal, both the breach and a halt that already stands.
 
+**Feature 2 of the alerts spec** — *alerts on every rebalance slot's
+outcome without changing it* — is held by the suite's tail: every finished
+slot appends its completion (``book_id``, ``slot``, ``finished_at``,
+``exit_code``) to the module's own table in the ``DATABASE_URL`` store and
+then sends feature 1's alert — urgent on 3 naming the loss, the limit and
+the manual reset; warning on 1 listing each refused symbol with its code
+and message; silent info on 0 summarising the legs, the cancels, the
+reconcile and the day's loss.  The alert rides the same injected
+``transport`` the venue does, so no test opens a socket, and the fake
+token feature 1's suite coins is asserted absent from every captured
+output — stdout, stderr and the log.
+
 No test opens a socket.  The client is the recording double
 :mod:`packages.router.tests.test_bingx_mirror` already proves the mirror
 against, every BingX answer it serves is the recorded fixture under
@@ -47,6 +59,7 @@ from pathlib import Path
 
 import pytest
 from risk.daily_loss import halt_on_daily_loss, recorded_daily_loss_halts
+from router.bingx_alert import BOT_NAME, INFO, URGENT, WARNING
 from router.bingx_client_order_id import project_bingx_client_order_id
 from router.bingx_mirror import (
     MIRROR_OUTCOME_PLACED,
@@ -60,8 +73,11 @@ from router.bingx_rebalance import (
     EXIT_OK,
     EXIT_REFUSED,
     REBALANCE_SLOT_HOURS,
+    ROUTER_SLOT_COMPLETION_TABLE,
     SLOT_LOOKBACK_HOURS,
     RouterBingXRebalanceError,
+    RouterSlotCompletionStore,
+    SlotCompletion,
     floor_to_slot,
     main,
 )
@@ -81,6 +97,7 @@ from test_bingx_mirror import (  # isort: skip
     _MirrorClient,
 )
 import test_bingx_reconcile as reconcile_fixtures  # isort: skip
+import test_bingx_alert as alert_fixtures  # isort: skip
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "bingx_vst"
 
@@ -155,6 +172,9 @@ def _run(
     limiter: _CountingLimiter | None = None,
     book_store: object | None = None,
     env: dict | None = None,
+    transport: object | None = None,
+    alert: object | None = None,
+    completion_store: object | None = None,
 ) -> tuple[int, list[dict]]:
     """One slot of the command, with the suite's doubles, as (exit, lines).
 
@@ -163,20 +183,28 @@ def _run(
     is the pinned millisecond the preflight compares against the double's
     server time, and ``emit`` collects the JSON lines instead of printing
     them — so the one line the command prints is the assertion's operand
-    and never the test runner's stdout.
+    and never the test runner's stdout.  The alert's own seams — the
+    ``transport`` the Bot API POST would ride and the ``alert`` sender
+    itself — pass straight through, so an alert test configures the
+    environment and watches the one call, and every other test leaves them
+    unconfigured (``env={}`` answers no token, so nothing is sent and no
+    socket opens).
     """
     emitted: list[str] = []
     code = main(
         ["--book", str(book_path)],
         client=client,
+        transport=transport,
         store=store or RouterOrderPlacementStore(url),
         limiter=limiter or _CountingLimiter(),
         book_store=book_store,
+        completion_store=completion_store,
         env={} if env is None else env,
         database_url=url,
         now=lambda: now,
         clock=_clock,
         sleep=lambda _d: None,
+        alert=alert,
         emit=emitted.append,
     )
     return code, [json.loads(line) for line in emitted]
@@ -1094,6 +1122,613 @@ def test_a_deployment_injecting_only_the_environment_still_runs_a_slot(
     assert {record.symbol for record in recorded} == {
         order["symbol"] for order in line["orders"]
     }
+
+
+# -- Alerts feature 2: the slot's own record and alert --------------------------
+#
+# "System alerts on every rebalance slot's outcome without changing it.
+# After each slot it records the slot's completion (book_id, slot,
+# finished_at, exit_code) in its own table in the DATABASE_URL store, then
+# sends feature 1's alert" — the record first (so the heartbeat that reads
+# it cannot miss a finish because a phone was unreachable), the alert
+# second, and neither able to touch the summary line, the orders or the
+# exit code.  The Bot API is configured through the same literal
+# environment mapping feature 1's suite uses, with its fake token, and the
+# transport is a recorder — so no test here opens a socket, and the one
+# token that legitimately appears (the request URL's own path) is asserted
+# to appear nowhere else.
+
+#: Feature 1's suite's own fake credential — the Bot API's shape, never a
+#: real secret, and asserted absent from every captured output below.
+FAKE_TOKEN = alert_fixtures.FAKE_TOKEN
+
+
+class _AlertTransport:
+    """A recording stand-in for the Bot API transport the alert rides.
+
+    The same contract the venue's transport answers — ``(method, url,
+    headers, body) -> (status, body)`` — which is why one injected door
+    serves both.  Answers feature 1's own canned documents (its ``_ok``
+    and ``_refused``), so the alert's delivery outcomes are the venue-shaped
+    bytes the real sender parses; ``journal`` lets an ordering test watch
+    the call land next to the summary line it follows.
+    """
+
+    def __init__(
+        self,
+        answer: tuple[int, bytes] | None = None,
+        *,
+        journal: list[str] | None = None,
+    ) -> None:
+        self.answer = alert_fixtures._ok() if answer is None else answer
+        self.journal = journal
+        self.calls: list[tuple[str, str, dict[str, str], bytes]] = []
+
+    def __call__(
+        self, method: str, url: str, headers: dict[str, str], body: bytes
+    ) -> tuple[int, bytes]:
+        self.calls.append((method, url, dict(headers), body))
+        if self.journal is not None:
+            self.journal.append("alert")
+        return self.answer
+
+
+def _alert_env() -> dict[str, str]:
+    """An environment the Bot API is configured by — fake token, fake chat."""
+    return alert_fixtures._env()
+
+
+def _alert_body(transport: _AlertTransport) -> dict:
+    """The one alert's decoded request body."""
+    assert len(transport.calls) == 1, transport.calls
+    return json.loads(transport.calls[0][3].decode("utf-8"))
+
+
+def _assert_no_token_anywhere(capsys, caplog) -> None:
+    """The fake token appears in the request URL's path and nowhere else.
+
+    The spec's own constraint: not in a log line, an exception message, a
+    repr or stdout — so every captured surface is checked, not just the
+    one a given failure would reach.
+    """
+    captured = capsys.readouterr()
+    for surface in (captured.out, captured.err, caplog.text):
+        assert FAKE_TOKEN not in surface
+
+
+def _completions(url: str) -> list[tuple]:
+    """The completion rows, straight out of the store with SQL.
+
+    Read raw, the way ``_opening_equity_days`` reads the guard's own table,
+    so the table's name and the record's own spellings are pinned rather
+    than read back through the door under test.
+    """
+    path = url.removeprefix("sqlite://")
+    with sqlite3.connect(path) as plain:
+        return list(
+            plain.execute(
+                f"SELECT book_id, slot, finished_at, exit_code "
+                f"FROM {ROUTER_SLOT_COMPLETION_TABLE} ORDER BY id"
+            )
+        )
+
+
+def _refusing_client() -> _MirrorClient:
+    """The venue that takes four legs and refuses the fifth, PostOnly-cross.
+
+    The recorded refusal (BingX 101215) staged on the fourth placement, so
+    one leg of five is refused with a code and a message — the leg the
+    warning alert must list.
+    """
+    from router.bingx_client import RouterBingXRefusedError
+
+    refusal = RouterBingXRefusedError(
+        "101215", "the PostOnly order would have crossed the book"
+    )
+    effects: list = [lambda: {"orderId": "x"} for _ in range(3)]
+    effects.append(lambda: (_ for _ in ()).throw(refusal))
+    effects.append(lambda: {"orderId": "x"})
+    return _client(place_effects=effects)
+
+
+# -- ...its own table in the DATABASE_URL store ---------------------------------
+
+
+def test_each_finished_slot_records_its_completion(
+    tmp_path, test_database_url
+) -> None:
+    """The record's four fields, once, in the module's own table.
+
+    ``finished_at`` is the same clock the slot's moment came from, asked
+    once more at the finish — so the row states when the slot ended, not
+    merely which boundary it belonged to.
+    """
+    code, _ = _run(_write_book(tmp_path), client=_client(), url=test_database_url)
+
+    assert code == EXIT_OK
+    assert _completions(test_database_url) == [
+        ("synthetic-vst-0", SLOT_NOON.isoformat(), MID_SLOT.isoformat(), EXIT_OK)
+    ]
+
+
+def test_a_refused_slot_records_its_completion_with_exit_one(
+    tmp_path, test_database_url
+) -> None:
+    code, _ = _run(
+        _write_book(tmp_path),
+        client=_refusing_client(),
+        url=test_database_url,
+    )
+
+    assert code == EXIT_REFUSED
+    assert _completions(test_database_url) == [
+        ("synthetic-vst-0", SLOT_NOON.isoformat(), MID_SLOT.isoformat(), EXIT_REFUSED)
+    ]
+
+
+def test_a_daily_loss_halt_records_its_completion_with_exit_three(
+    tmp_path, test_database_url
+) -> None:
+    """A halted slot finished too: exit 3 is an outcome, recorded as one.
+
+    Without the row, a day spent halted would look to the heartbeat like a
+    day the bot never ran — and the operator has already been told
+    urgently, so the record is what keeps the two alerts from arguing.
+    """
+    book_path = _write_book(tmp_path)
+    _run(
+        book_path,
+        client=_client(),
+        url=test_database_url,
+        now=datetime(2026, 10, 4, 8, 7, tzinfo=UTC),
+    )
+    code, _ = _run(
+        book_path,
+        client=_client(balance=_funded_balance("9500")),
+        url=test_database_url,
+        now=datetime(2026, 10, 4, 12, 7, tzinfo=UTC),
+    )
+
+    assert code == EXIT_DAILY_LOSS_HALT
+    assert _completions(test_database_url) == [
+        (
+            "synthetic-vst-0",
+            SLOT_MORNING.isoformat(),
+            datetime(2026, 10, 4, 8, 7, tzinfo=UTC).isoformat(),
+            EXIT_OK,
+        ),
+        (
+            "synthetic-vst-0",
+            SLOT_NOON.isoformat(),
+            datetime(2026, 10, 4, 12, 7, tzinfo=UTC).isoformat(),
+            EXIT_DAILY_LOSS_HALT,
+        ),
+    ]
+
+
+def test_a_second_run_in_the_same_slot_appends_a_second_completion(
+    tmp_path, test_database_url
+) -> None:
+    """The record is an append, never an upsert.
+
+    Two runs inside one slot are two completions of it (the timer's
+    catch-up), and the reader asks for the newest finish — so rewriting
+    the row would hide exactly the fact the record exists to state.
+    """
+    book_path = _write_book(tmp_path)
+    _run(book_path, client=_client(), url=test_database_url)
+    code, _ = _run(book_path, client=_client(), url=test_database_url)
+
+    assert code == EXIT_OK
+    rows = _completions(test_database_url)
+    assert len(rows) == 2
+    assert {row[1] for row in rows} == {SLOT_NOON.isoformat()}
+
+
+def test_the_newest_completion_is_answered_for_the_heartbeat(
+    tmp_path, test_database_url
+) -> None:
+    """The read door feature 3 will ask through: newest finish, or nothing.
+
+    An empty table answers ``None`` rather than a completion, because "no
+    slot has finished" is the heartbeat's own urgent state, not a fault
+    here.
+    """
+    book_path = _write_book(tmp_path)
+    assert RouterSlotCompletionStore(test_database_url).newest() is None
+
+    _run(
+        book_path,
+        client=_client(),
+        url=test_database_url,
+        now=datetime(2026, 10, 4, 8, 7, tzinfo=UTC),
+    )
+    _run(
+        book_path,
+        client=_client(),
+        url=test_database_url,
+        now=datetime(2026, 10, 4, 12, 7, tzinfo=UTC),
+    )
+
+    newest = RouterSlotCompletionStore(test_database_url).newest()
+    assert newest == SlotCompletion(
+        book_id="synthetic-vst-0",
+        slot=SLOT_NOON,
+        finished_at=datetime(2026, 10, 4, 12, 7, tzinfo=UTC),
+        exit_code=EXIT_OK,
+    )
+
+
+def test_the_completion_store_refuses_an_exit_outside_the_specs_three(
+    test_database_url,
+) -> None:
+    store = RouterSlotCompletionStore(test_database_url)
+    with pytest.raises(RouterBingXRebalanceError) as refusal:
+        store.record(
+            book_id="synthetic-vst-0",
+            slot=SLOT_NOON,
+            finished_at=MID_SLOT,
+            exit_code=2,
+        )
+    assert str(refusal.value).startswith(BINGX_REBALANCE_CODE)
+
+
+def test_the_completion_store_refuses_a_row_it_could_not_have_written(
+    tmp_path,
+) -> None:
+    """A moment no parser accepts fails to reconstruct, not to load."""
+    url = f"sqlite:///{tmp_path / 'tampered.db'}"
+    store = RouterSlotCompletionStore(url)
+    store.ensure_schema()
+    with sqlite3.connect(url.removeprefix("sqlite://")) as plain:
+        plain.execute(
+            f"INSERT INTO {ROUTER_SLOT_COMPLETION_TABLE} "
+            "(book_id, slot, finished_at, exit_code) "
+            "VALUES ('b', 'today', '2026-10-04T12:37:00+00:00', 0)"
+        )
+
+    with pytest.raises(RouterBingXRebalanceError) as refusal:
+        store.newest()
+    assert ROUTER_SLOT_COMPLETION_TABLE in str(refusal.value)
+
+
+# -- ...then sends feature 1's alert ---------------------------------------------
+
+
+def test_an_exit_zero_slot_sends_one_silent_info_alert(
+    tmp_path, test_database_url, capsys, caplog
+) -> None:
+    """Info on 0: the slot's own summary, delivered silently.
+
+    Every clause of the sentence's list is in the body — the legs placed,
+    prior and skipped, the orders cancelled (one, the sweep took the
+    resting order the morning slot left), the reconcile, the day's loss —
+    and the message opens the way feature 1's sender formats every level:
+    the level, the bot's name, then this body.  The figures are the
+    summary line's own spellings, so the phone and the journal agree.
+    """
+    previous_id = _slot_identifier("synthetic-vst-0", SLOT_MORNING, "BTC-USDT")
+    transport = _AlertTransport()
+    code, _ = _run(
+        _write_book(tmp_path),
+        client=_client(
+            open_orders=[{"symbol": "BTC-USDT", "clientOrderId": previous_id}]
+        ),
+        url=test_database_url,
+        env=_alert_env(),
+        transport=transport,
+    )
+
+    assert code == EXIT_OK
+    body = _alert_body(transport)
+    assert body["disable_notification"] is True
+    text = body["text"]
+    assert text.startswith(f"{INFO}: {BOT_NAME}\n\n")
+    summary = text.removeprefix(f"{INFO}: {BOT_NAME}\n\n")
+    assert summary == "\n".join(
+        (
+            f"The {SLOT_NOON.isoformat()} slot for book synthetic-vst-0 exited 0.",
+            "Orders: 5 placed, 0 prior, 2 skipped by the gates.",
+            "Cancelled 1 resting order(s) left by earlier slots.",
+            "The previous slot was reconciled: no.",
+            "The day's loss is 0.0000 USDT against the limit 300.00 USDT.",
+        )
+    )
+    # The token rides the request URL's path — the Bot API's own shape —
+    # and appears on no captured surface.
+    assert f"/bot{FAKE_TOKEN}/sendMessage" in transport.calls[0][1]
+    _assert_no_token_anywhere(capsys, caplog)
+
+
+def test_the_info_alert_names_a_reconciled_previous_slot(
+    tmp_path, test_database_url, capsys, caplog
+) -> None:
+    """The reconcile clause on its writing branch.
+
+    The 12:00 slot reconciles the 08:00 one from its recorded terms, so
+    the body states the previous slot *was* reconciled — the fact the
+    sentence asks the summary to carry, not a figure derived from one.
+    """
+    book_path = _write_book(tmp_path)
+    store = RouterOrderPlacementStore(test_database_url)
+    limiter = _CountingLimiter()
+    _run(
+        book_path,
+        client=_client(),
+        url=test_database_url,
+        store=store,
+        limiter=limiter,
+        now=datetime(2026, 10, 4, 8, 7, tzinfo=UTC),
+    )
+    afternoon = _client()
+    afternoon._query_answers = _filled_answers(
+        store, book_id="synthetic-vst-0", slot=SLOT_MORNING
+    )
+    transport = _AlertTransport()
+    code, _ = _run(
+        book_path,
+        client=afternoon,
+        url=test_database_url,
+        store=store,
+        limiter=limiter,
+        env=_alert_env(),
+        transport=transport,
+    )
+
+    assert code == EXIT_OK
+    assert "The previous slot was reconciled: yes." in _alert_body(transport)["text"]
+    _assert_no_token_anywhere(capsys, caplog)
+
+
+def test_an_exit_one_slot_sends_one_warning_alert_listing_each_refused_leg(
+    tmp_path, test_database_url, capsys, caplog
+) -> None:
+    """Warning on 1: each refused symbol, with its code and its message.
+
+    The listing answers the summary line's own ``refused`` entries — same
+    symbols, same code, same message — so the phone and the journal state
+    one refusal, and the alert rings.
+    """
+    transport = _AlertTransport()
+    code, lines = _run(
+        _write_book(tmp_path),
+        client=_refusing_client(),
+        url=test_database_url,
+        env=_alert_env(),
+        transport=transport,
+    )
+
+    assert code == EXIT_REFUSED
+    body = _alert_body(transport)
+    assert body["disable_notification"] is False
+    text = body["text"]
+    assert text.startswith(f"{WARNING}: {BOT_NAME}\n\n")
+    refused = lines[0]["refused"]
+    assert len(refused) == 1
+    assert (
+        f"- {refused[0]['symbol']}: 101215 "
+        "— the PostOnly order would have crossed the book" in text
+    )
+    _assert_no_token_anywhere(capsys, caplog)
+
+
+def test_a_breach_slot_sends_one_urgent_alert_naming_loss_limit_and_reset(
+    tmp_path, test_database_url, capsys, caplog
+) -> None:
+    """Urgent on 3, on the branch that tripped the halt this run.
+
+    The day's loss (499.2781, the recorded equity against 9500), the limit
+    (300.00, 3% of the book's equity, the guard's own spelling) and the
+    manual reset — the three things the sentence says the urgent alert
+    names, and the alert rings.
+    """
+    book_path = _write_book(tmp_path)
+    _run(
+        book_path,
+        client=_client(),
+        url=test_database_url,
+        now=datetime(2026, 10, 4, 8, 7, tzinfo=UTC),
+    )
+    transport = _AlertTransport()
+    code, _ = _run(
+        book_path,
+        client=_client(balance=_funded_balance("9500")),
+        url=test_database_url,
+        now=datetime(2026, 10, 4, 12, 7, tzinfo=UTC),
+        env=_alert_env(),
+        transport=transport,
+    )
+
+    assert code == EXIT_DAILY_LOSS_HALT
+    body = _alert_body(transport)
+    assert body["disable_notification"] is False
+    text = body["text"]
+    assert text.startswith(f"{URGENT}: {BOT_NAME}\n\n")
+    assert (
+        "The day's loss 499.2781 USDT passed the daily loss limit 300.00 USDT."
+        in text
+    )
+    assert "manual reset" in text
+    assert "risk.daily_loss.manual_reset" in text
+    assert f"The {SLOT_NOON.isoformat()} slot for book synthetic-vst-0" in text
+    _assert_no_token_anywhere(capsys, caplog)
+
+
+def test_a_standing_halt_slot_sends_one_urgent_alert_from_the_halt_record(
+    tmp_path, test_database_url, capsys, caplog
+) -> None:
+    """Urgent on 3, on the branch where the halt already stood.
+
+    No check was run this slot — the guard refused before reading the
+    venue — so the figures the alert names come from the halt record
+    feature 325 wrote when the breach tripped, carried on the refusal
+    itself and spelled the way that member's own summary spells them.
+    """
+    halt_on_daily_loss(
+        daily_loss=400.0,
+        daily_loss_limit=300.0,
+        database_url=test_database_url,
+    )
+    transport = _AlertTransport()
+    code, _ = _run(
+        _write_book(tmp_path),
+        client=_client(),
+        url=test_database_url,
+        env=_alert_env(),
+        transport=transport,
+    )
+
+    assert code == EXIT_DAILY_LOSS_HALT
+    text = _alert_body(transport)["text"]
+    assert "The day's loss 400.0 USDT passed the daily loss limit 300.0 USDT." in text
+    assert "risk.daily_loss.manual_reset" in text
+    _assert_no_token_anywhere(capsys, caplog)
+
+
+def test_the_alert_follows_the_summary_line(
+    tmp_path, test_database_url, capsys, caplog
+) -> None:
+    """The record and the alert come after the summary line is emitted.
+
+    The spec's own order, held on a shared journal: the line first (the
+    outcome on the record), then the one alert that reports it.
+    """
+    journal: list[str] = []
+    transport = _AlertTransport(journal=journal)
+    code = main(
+        ["--book", str(_write_book(tmp_path))],
+        client=_client(),
+        limiter=_CountingLimiter(),
+        env=_alert_env(),
+        database_url=test_database_url,
+        now=lambda: MID_SLOT,
+        clock=_clock,
+        sleep=lambda _d: None,
+        transport=transport,
+        emit=lambda _line: journal.append("summary"),
+    )
+
+    assert code == EXIT_OK
+    assert journal == ["summary", "alert"]
+    _assert_no_token_anywhere(capsys, caplog)
+
+
+# -- ...without changing it ------------------------------------------------------
+
+
+def test_the_outcome_is_identical_whether_alerting_succeeds_fails_or_is_unconfigured(
+    tmp_path, capsys, caplog
+) -> None:
+    """The spec's own constraint, on three identical slots.
+
+    Three fresh stores, three fresh clients, one book, one moment: the
+    alert is delivered, refused by the Bot API, or never configured — and
+    the exit code, the whole summary line and every order the venue saw
+    are the same three times.  The one difference is the log.
+    """
+    book_path = _write_book(tmp_path)
+    delivered = _AlertTransport()
+    refused = _AlertTransport(alert_fixtures._refused())
+    unconfigured = _AlertTransport()
+
+    runs: list[tuple[int, list[dict], list]] = []
+    for name, environment, transport in (
+        ("delivered", _alert_env(), delivered),
+        ("refused_by_the_bot_api", _alert_env(), refused),
+        ("unconfigured", {}, unconfigured),
+    ):
+        url = f"sqlite:///{tmp_path / name}.db"
+        client = _client()
+        code, lines = _run(
+            book_path,
+            client=client,
+            url=url,
+            env=environment,
+            transport=transport,
+        )
+        runs.append((code, lines, [str(order) for order in client.placed]))
+
+    assert [code for code, _, _ in runs] == [EXIT_OK] * 3
+    lines = [line for _, run_lines, _ in runs for line in run_lines]
+    assert len(lines) == 3
+    assert lines[0] == lines[1] == lines[2]
+    placed = [orders for _, _, orders in runs]
+    assert placed[0] == placed[1] == placed[2]
+    assert len(placed[0]) == 5
+    # One alert left per configured slot, none from the unconfigured one.
+    assert len(delivered.calls) == 1
+    assert len(refused.calls) == 1
+    assert unconfigured.calls == []
+    _assert_no_token_anywhere(capsys, caplog)
+
+
+def test_an_alert_that_raises_is_caught_and_logged(
+    tmp_path, test_database_url, capsys, caplog
+) -> None:
+    """A raising alert is one log line — never a changed outcome.
+
+    The raise is staged with the bot path inside it, the worst case this
+    module's own log line could meet: the line that lands is scrubbed, the
+    slot still exits 0, its summary line still prints and its completion
+    was still recorded before the alert was ever attempted.
+    """
+
+    def raising_alert(
+        level: str, text: str, *, env: object = None, transport: object = None
+    ) -> bool:
+        raise RuntimeError(
+            f"connection error posting "
+            f"https://api.telegram.org/bot{FAKE_TOKEN}/sendMessage"
+        )
+
+    book_path = _write_book(tmp_path)
+    code, lines = _run(
+        book_path,
+        client=_client(),
+        url=test_database_url,
+        env=_alert_env(),
+        alert=raising_alert,
+    )
+
+    assert code == EXIT_OK
+    assert len(lines) == 1
+    assert _completions(test_database_url) == [
+        ("synthetic-vst-0", SLOT_NOON.isoformat(), MID_SLOT.isoformat(), EXIT_OK)
+    ]
+    assert "alert raised and was caught" in caplog.text
+    assert "/bot<redacted>" in caplog.text
+    _assert_no_token_anywhere(capsys, caplog)
+
+
+def test_a_completion_that_cannot_be_recorded_is_logged_and_the_alert_still_leaves(
+    tmp_path, test_database_url, capsys, caplog
+) -> None:
+    """The record's fault is one log line too — and never silence.
+
+    A slot that could not be recorded still alerts: the two acts are
+    separately wrapped, because a store that cannot take the row is no
+    reason to keep the operator uninformed about the outcome itself.
+    """
+
+    class _BrokenStore:
+        def record(self, **_kwargs) -> None:
+            raise sqlite3.OperationalError("disk I/O error")
+
+    transport = _AlertTransport()
+    code, lines = _run(
+        _write_book(tmp_path),
+        client=_client(),
+        url=test_database_url,
+        env=_alert_env(),
+        transport=transport,
+        completion_store=_BrokenStore(),
+    )
+
+    assert code == EXIT_OK
+    assert len(lines) == 1
+    assert len(transport.calls) == 1
+    assert "could not be recorded" in caplog.text
+    _assert_no_token_anywhere(capsys, caplog)
 
 
 # -- The systemd unit supplies its own environment -----------------------------
