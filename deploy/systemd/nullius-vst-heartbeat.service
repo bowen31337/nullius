@@ -1,1 +1,54 @@
-# Stub — written by additions_spec_bingx_vst_alerts.xml.
+# Stage 2 alerts feature 3 — the bot's heartbeat check, as a user service.
+# This file is written by the feature; installing and enabling it (linking it
+# into ~/.config/systemd/user/ and starting the timer) is an operator step.
+# Nothing in this repository installs or enables it.
+#
+# The check runs `python -m router.bingx_heartbeat --max-age-hours 5` through
+# `./run.sh vst-heartbeat`: it reads the newest slot completion the rebalance
+# recorded, and when none has finished within five hours it sends one urgent
+# Telegram alert naming the last slot and its age, and exits 1.  The service
+# is a oneshot because that is all the check is — one read, at most one
+# message, done — and the timer's next firing is the retry.
+#
+# The unit carries its **own environment**, for the same reason the rebalance
+# service does: a systemd user service runs neither `~/.zshrc` (which exports
+# `OP_SERVICE_ACCOUNT_TOKEN` from `~/.config/op/service-token`) nor the login
+# PATH that puts `~/.local/bin` — where `uv` lives — ahead of the system's.
+# Both are needed: `run.sh` first runs `op run` (which needs the service
+# account and injects the Bot API credentials from `.env.vst.tpl`) and then
+# `uv run` (which needs `uv` on PATH).  The token's *value* never appears
+# here; the ExecStart reads it from the operator's file, which is mode 0600
+# and lives outside the repository.
+
+[Unit]
+Description=nullius BingX VST heartbeat check (no slot finished within five hours)
+Documentation=file:/%h/projects/nullius/deploy/systemd/nullius-vst-heartbeat.timer
+# The check reads the local store and, when stale, posts to api.telegram.org,
+# so it waits for the network like every other unit that talks to the venue.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# The repository root.  `%h` is the operator's home; edit this line (and the
+# matching one in the timer's unit) if the checkout lives elsewhere.
+WorkingDirectory=%h/projects/nullius
+# `uv` lives in the operator's ~/.local/bin, which a service does not inherit.
+# It goes first so the pinned interpreter wins over any system copy; the
+# system directories follow for `op`, `/bin/sh` and the ordinary tools.  This
+# is the rebalance unit's own PATH, entry for entry: both go through `run.sh`.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# The token prologue is the rebalance unit's own, byte for byte: read the
+# operator's file at start, export it, and fail (exit 2, with a message
+# naming the file) rather than run `op` credential-less.  `$$` is systemd's
+# escape for a literal dollar — a bare `$(cat …)` would be consumed by
+# systemd's own substitution and reach the shell empty.  `%h` stays a
+# systemd specifier because it must resolve here; only the dollar is doubled.
+ExecStart=/bin/sh -c 'OP_SERVICE_ACCOUNT_TOKEN="$$(cat %h/.config/op/service-token)"; export OP_SERVICE_ACCOUNT_TOKEN; : "$${OP_SERVICE_ACCOUNT_TOKEN:?1Password service token unreadable — see %h/.config/op/service-token}"; exec %h/projects/nullius/run.sh vst-heartbeat --max-age-hours 5'
+# Exit 1 means *the bot is stale* — the check ran and told the truth.  That
+# is the check's own outcome, not a fault of the unit, so it stays a success
+# and the hour's next firing carries on quietly; a stale bot does not need
+# the unit to fail on top of the alert.  Exit 2 (the unreadable-token guard)
+# and any crash remain real failures, visible in `systemctl --user status`.
+Restart=no
+SuccessExitStatus=0 1

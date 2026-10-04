@@ -1,1 +1,34 @@
-# Stub — written by additions_spec_bingx_vst_alerts.xml.
+# Stage 2 alerts feature 3 — the timer that fires the heartbeat check hourly.
+# Written by the feature; enabling it is an operator step
+# (`systemctl --user enable --now nullius-vst-heartbeat.timer`).  Nothing in
+# this repository installs or enables it.
+#
+# One firing an hour, at minute 35 — half an hour after the rebalance timer's
+# own :05 firings, so a slot that just ran has had time to finish and record
+# its completion before this reads for it, and the check is never racing the
+# slot it is checking on.  Scheduled in UTC with the offset spelled on the
+# line, the same convention the rebalance timer uses, so the schedule is UTC
+# whatever the host's clock is set to.
+
+[Unit]
+Description=nullius BingX VST heartbeat timer (hourly, minute 35)
+Documentation=file:/%h/projects/nullius/deploy/systemd/nullius-vst-heartbeat.service
+
+[Timer]
+# Every hour on the hour's 35th minute, in UTC.  The offset is part of the
+# expression so the schedule does not depend on the host's timezone.
+OnCalendar=*-*-* *:35:00 UTC
+# A firing missed because the machine was off (a laptop, a reboot) is run on
+# the next boot: the check is idempotent and deduped, so catching up either
+# finds a fresh completion and stays silent or finds the same stale slot and
+# sends nothing new.
+Persistent=true
+# The service is a oneshot, so systemd will not start a second check while
+# one is still running.
+AccuracySec=1min
+# No jitter: one firing an hour is nowhere near the thundering-herd scale
+# that RandomizedDelaySec exists to spread.
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target
