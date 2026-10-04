@@ -33,13 +33,23 @@ quantity and the average price the read-back answered, and prices the fill
 against the order's **reference price**:
 
 * the order's own limit price for a passive ``LIMIT`` leg, and
-* the symbol's mark price for an aggressive ``MARKET`` leg, which carries
-  no price of its own.
+* the symbol's mark price for an aggressive ``MARKET`` leg that carries no
+  price of its own.
 
 That is exactly the reference the mirror's own
 :func:`router.bingx_mirror.plan_required_margin` reads for the same two
 legs, reused rather than re-decided, so the price a fill is reconciled
 against is the price the order path already benchmarked it to.
+
+**The reference is what was *placed at*, never a mark re-read here.**  When
+the terms come from placement's own record — the scheduled slot's spelling,
+and the fix the reconciliation bug spec names — every leg carries the price
+the venue was actually asked at: a ``LIMIT``'s limit *after repricing*, and a
+``MARKET``'s mark *read in the run that placed it*.  A recorded leg therefore
+never falls back to the premiumIndex document, which is fetched only for a
+plan's price-less ``MARKET`` leg.  Re-reading a mark at reconciliation time
+would price a finished fill against a market the rebalance never traded in —
+the very defect this module was fixed for.
 
 The **signed slippage** of one fill is the executed price's distance from
 that reference, signed so that *adverse is positive*: a buy that paid above
@@ -188,19 +198,31 @@ class _PlanLeg:
     price.
 
     The venue's read-back answers a status per ``clientOrderID`` but carries
-    no order *type* and no limit *price* — the two terms a fill's reference
-    price and fee are read from.  Those terms travel on the plan the order
-    path built, so this value is that leg's terms drawn off the plan and
-    keyed by the identifier the read-back answers under: the symbol, the
-    side, the venue's order type, and the limit price (``None`` for a
-    ``MARKET`` leg, which carries none).
+    no order *type* and no reference *price* — the two terms a fill's
+    reference price and fee are read from.  Those terms travel either on the
+    plan the order path built or on the record placement wrote, so this value
+    is that leg's terms and is keyed by the identifier the read-back answers
+    under: the symbol, the side, the venue's order type, and the reference
+    price when it is known *without* a document.
+
+    ``reference`` is the price a fill's slippage is measured against, held
+    only when the leg carries it itself: a plan's ``LIMIT`` leg holds its own
+    limit price, and a **recorded** leg holds the price the venue was
+    actually asked at — the limit after repricing, or the mark read in the
+    run that placed a ``MARKET`` order.  It is ``None`` only for a *plan's*
+    ``MARKET`` leg, which carries no price of its own, so the caller-holding-
+    the-plan spelling still reads that symbol's mark at reconcile time.  A
+    recorded leg never needs that read: its reference is a fact placement
+    wrote down, and re-reading a mark here would price a finished fill
+    against a market the rebalance never traded in — the defect the
+    reconciliation bug spec names.
     """
 
     client_order_id: str
     symbol: str
     side: str
     type: str
-    price: Decimal | None
+    reference: Decimal | None
 
 
 def _rebalance_instant(value: Any) -> datetime:
@@ -561,7 +583,7 @@ def _plan_legs(orders: Any) -> list[_PlanLeg]:
                 symbol=name,
                 side=side,
                 type=kind,
-                price=(
+                reference=(
                     _leg_price(price, name)
                     if kind == BINGX_LIMIT_ORDER
                     else None
@@ -642,18 +664,24 @@ def reconcile_rebalance_fill_costs(
     :func:`forward.reconciliation.reconcile_fill_costs` — answering the
     recorded reconciliation.  The steps, in the order they must happen:
 
-    1. **Read the plan's terms** — the legs' symbols, sides, types and limit
-       prices, refused by name where a leg cannot be read.
+    1. **Read the rebalance's terms** — with ``orders`` handed in, the
+       plan's legs (symbols, sides, types and limit prices), refused by name
+       where a leg cannot be read; with no ``orders``, the terms placement
+       recorded, each leg carrying the reference price the venue was actually
+       asked at.
     2. **Read the orders back** — feature 3's verb, over the same legs, so a
        leg the venue holds no record of is that leg's ``not_found`` and a
        refused leg is skipped.
     3. **Price the fills** — for each order the venue reports with an
        ``executedQty`` strictly greater than zero, its signed slippage in
        basis points (adverse positive) plus its fee in basis points, and the
-       notional it traded at.  A ``MARKET`` leg's reference is its symbol's
-       mark, read from the premiumIndex document — fetched through the
-       client, unless ``marks`` names one — only when a filled ``MARKET``
-       leg needs it; a ``LIMIT`` leg's reference is its own limit price.
+       notional it traded at.  A leg's reference is what its terms carry: a
+       ``LIMIT`` leg's limit price and any *recorded* leg's reference (the
+       limit actually sent after repricing, or the mark read in the run that
+       placed a ``MARKET`` order).  Only a plan's price-less ``MARKET`` leg
+       falls back to its symbol's mark, read from the premiumIndex document —
+       fetched through the client, unless ``marks`` names one — and only when
+       such a filled leg needs it.
     4. **Weight and record** — the notional-weighted mean of
        ``slippage + fee`` is ``realized_cost_bps`` and of ``fee`` alone is
        ``modeled_cost_bps``; both are handed to feature 340's store, which
@@ -706,11 +734,13 @@ def reconcile_rebalance_fill_costs(
                 symbol=record.symbol,
                 side=record.side,
                 type=record.type,
-                price=(
-                    record.reference_price
-                    if record.type == BINGX_LIMIT_ORDER
-                    else None
-                ),
+                # The reference placement recorded for *every* leg — the
+                # limit actually sent after repricing, or the mark read in
+                # the run that placed a MARKET order.  Never re-derived here:
+                # the whole point of recording the terms is that a finished
+                # fill is priced against what it was placed at, not against a
+                # mark re-read in a later process.
+                reference=record.reference_price,
             )
             for record in records
         ]
@@ -738,14 +768,18 @@ def reconcile_rebalance_fill_costs(
         contracts = _require_callable(client, "contracts")()
     rates = _contract_fee_rates(_document(contracts))
 
-    # Only a filled MARKET leg needs a mark; read the document lazily, as
-    # plan_required_margin does, so an all-passive rebalance costs the
-    # client nothing beyond the read-back it already did.
+    # Only a filled MARKET leg that carries no reference of its own needs a
+    # mark; read the document lazily, as plan_required_margin does, so an
+    # all-passive rebalance — and a rebalance reconciled from placement's own
+    # records, every leg of which carries its reference — costs the client
+    # nothing beyond the read-back it already did.  The document is reached
+    # only for a *plan's* MARKET leg, whose limit-free terms carry no price.
     market_symbols = sorted(
         {
             leg.symbol
             for leg in legs
             if leg.type == BINGX_MARKET_ORDER
+            and leg.reference is None
             and (status := by_id.get(leg.client_order_id)) is not None
             and status.executed_quantity is not None
             and status.executed_quantity > 0
@@ -795,12 +829,17 @@ def reconcile_rebalance_fill_costs(
         average_price = status.average_price
         if quantity <= 0 or average_price is None or average_price <= 0:
             continue
+        # The leg's own reference when it carries one — a plan LIMIT's limit
+        # price, or any *recorded* leg's reference (the limit actually sent,
+        # or the mark read at placement) — else the mark fetched for a plan's
+        # price-less MARKET leg.  A recorded leg never falls through to the
+        # mark, so a finished fill is never priced against a re-read market.
         reference = (
-            leg.price
-            if leg.type == BINGX_LIMIT_ORDER
+            leg.reference
+            if leg.reference is not None
             else mark_prices[leg.symbol]
         )
-        assert reference is not None  # LIMIT legs carry one; MARKET has a mark
+        assert reference is not None  # every leg resolves a reference here
         sign = Decimal(1) if leg.side == BINGX_BUY else Decimal(-1)
         slippage_bps = (
             sign * (average_price - reference) / reference * _BPS_PER_UNIT

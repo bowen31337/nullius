@@ -806,6 +806,61 @@ def test_the_reconciliation_reads_the_terms_placement_recorded(
     assert record.modeled_cost_bps == pytest.approx(maker, abs=float(TAKER_BPS))
 
 
+def test_a_recorded_market_leg_is_priced_against_its_recorded_mark(
+    test_database_url: str,
+) -> None:
+    """A MARKET leg's reference is the mark *placement* recorded, never one re-read.
+
+    The bug spec's root cause names this leg explicitly: the reference must
+    come from ``record.reference_price`` — the mark read in the run that
+    placed the order — rather than a mark fetched at reconciliation time.
+    The scheduled slot therefore hands *no* ``marks`` and the act must not
+    reach for the document at all: a mark moved since placement would
+    otherwise be folded into a finished rebalance's cost.  The recorded mark
+    is proven load-bearing by reading it back and pricing against it in the
+    test's own arithmetic.
+    """
+    _place_the_book(test_database_url)
+    records = RouterOrderPlacementStore(test_database_url).records_for(
+        BOOK_ID, _book()["rebalance_ts"]
+    )
+    aggressive = [record for record in records if record.type == "MARKET"]
+    assert aggressive, "the synthetic book places no MARKET leg to exercise"
+    record = aggressive[0]
+    cid = project_bingx_client_order_id(record.client_order_id)
+    fill_price = record.reference_price + Decimal("0.001")
+    client = _FakeClient(
+        queries={
+            cid: _filled_answer(
+                cid,
+                symbol=record.symbol,
+                type_="MARKET",
+                qty=str(record.quantity),
+                price=str(fill_price),
+            )
+        }
+    )
+
+    answer = reconcile_rebalance_fill_costs(
+        client=client,
+        book_id=BOOK_ID,
+        rebalance_ts=_book()["rebalance_ts"],
+        database_url=test_database_url,
+    )
+
+    assert answer is not None
+    # A MARKET reference comes from the record alone, so no document is read.
+    assert client.premium_index_calls == 0
+    sign = Decimal(1) if record.side == "BUY" else Decimal(-1)
+    slippage = (
+        sign
+        * (fill_price - record.reference_price)
+        / record.reference_price
+        * Decimal(10_000)
+    )
+    assert answer.realized_cost_bps == pytest.approx(float(slippage) + float(TAKER_BPS))
+
+
 def test_the_reconciliation_is_addressed_by_the_rebalances_own_identity(
     test_database_url: str,
 ) -> None:
