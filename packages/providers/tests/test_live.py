@@ -59,11 +59,10 @@ FAKE_LOCAL_KEY = "fake-local-key-not-a-credential"
 
 #: The model and snapshot a suite pin names.  One hosted vendor (anthropic)
 #: and one OpenAI-compatible vendor (deepseek) cover the two backends; the
-#: dash-suffixed sibling is the dated snapshot a vendor serves for the same
-#: line, which ``require_served`` must admit.
+#: dash-suffixed sibling is the pin's own dated snapshot, the one spelling
+#: ``require_served`` must admit alongside the bare model name.
 PIN = ModelPin("anthropic", "claude-opus-5", "20260401")
 DEEPSEEK_PIN = ModelPin("deepseek", "deepseek-chat", "20260401")
-SNAPSHOT = "claude-opus-5-20261001"
 
 #: A self-hosted base URL: loopback over http, the one plaintext destination
 #: feature 1's door serves, standing in for the vLLM box a deployment runs.
@@ -368,11 +367,6 @@ def test_exact_pin_model_is_admitted_unchanged():
     assert require_served(PIN, completion) is completion
 
 
-def test_dash_suffixed_snapshot_is_admitted():
-    """A dated snapshot of the same line is the same model, admitted."""
-    assert require_served(PIN, _completion(SNAPSHOT)) is not None
-
-
 def test_different_model_is_refused_with_the_code_word():
     """A vendor quietly serving another model is the finding this check exists for."""
     with pytest.raises(ServedModelMismatchError) as caught:
@@ -390,15 +384,38 @@ def test_refusal_names_both_the_asked_and_served_model():
     assert "deepseek-chat" in message and "deepseek-v4.1-flash" in message
 
 
-def test_a_dash_suffix_on_a_different_model_line_is_still_the_same_line():
-    """``-v2`` after the pinned name is a snapshot of *it*, so it is admitted.
+def test_exact_pin_model_and_version_snapshot_is_admitted():
+    """``pin.model-pin.version`` is the dated snapshot the pin names, admitted."""
+    snapshot = f"{PIN.model}-{PIN.version}"
+    assert require_served(PIN, _completion(snapshot)) is not None
 
-    The rule is prefix-shaped, not semantic: the check cannot know whether a
-    vendor's dash suffix is a date or a revision, so it admits every one —
-    which is what catches the §14.1 swap, where the served name shares no
-    prefix with the pinned one at all.
+
+def test_a_different_dated_snapshot_is_refused():
+    """A vendor serving a *different* snapshot of the same line is the §14.1 swap.
+
+    A completion named ``pin.model`` plus some other date is not the pinned
+    snapshot, so it must be refused rather than folded into "any suffix".
     """
-    assert require_served(DEEPSEEK_PIN, _completion("deepseek-chat-v2")) is not None
+    with pytest.raises(ServedModelMismatchError):
+        require_served(PIN, _completion(f"{PIN.model}-20270101"))
+
+
+def test_a_preview_suffix_is_refused():
+    """A vendor-invented suffix like ``-preview`` is not the pinned snapshot."""
+    with pytest.raises(ServedModelMismatchError):
+        require_served(PIN, _completion(f"{PIN.model}-preview"))
+
+
+def test_a_trailing_dash_with_no_version_is_refused():
+    """An empty suffix after the dash is not the pinned version either."""
+    with pytest.raises(ServedModelMismatchError):
+        require_served(PIN, _completion(f"{PIN.model}-"))
+
+
+def test_a_case_variant_of_the_snapshot_is_refused():
+    """The comparison is exact, so a case variant is not the pinned snapshot."""
+    with pytest.raises(ServedModelMismatchError):
+        require_served(PIN, _completion(f"{PIN.model}-{PIN.version}".upper()))
 
 
 def test_a_prefix_without_the_dash_is_not_the_same_line():
