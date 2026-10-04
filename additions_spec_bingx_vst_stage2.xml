@@ -1,0 +1,186 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — Stage 2 BingX VST: scheduled rebalances, flatten, daily-loss halt, fill-cost reconciliation</project_name>
+  <addition_summary>
+    Extend the router workspace member (packages/router, import name router)
+    so the Stage 1 VST mirror runs on its own, under its risk limits, on the
+    dedicated sub-account nullius01. Stage 1 places a book on demand
+    (python -m router.bingx_mirror --place), reads it back (--status) and
+    cancels it (--cancel). Every path is verified live and pinned against the
+    recorded VST responses under packages/router/tests/fixtures/bingx_vst/live/.
+    Stage 2 closes the gaps between that manual command and an unattended
+    bot with four pieces:
+    - a flatten that cancels every open order and closes every position;
+    - a daily-loss guard wired to risk feature 325, which flattens and halts
+      at 3% of the book's equity;
+    - a per-rebalance fill-cost reconciliation recorded through forward
+      feature 340;
+    - a one-shot scheduled rebalance driven by a systemd user timer every 4
+      hours, which stamps rebalance_ts with the slot start so a re-run within
+      a slot is idempotent.
+    The target book still comes from a book file (the synthetic book today).
+    Each rebalance is persisted into the book member's
+    RebalanceTargetWeightsStore when the file names its originating signals,
+    so swapping in real promoted signals later changes only the input.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (members under packages/*, composed by
+      src/app/module_loader.create_app) / SQLite stores addressed by
+      DATABASE_URL / pytest (ruff conventions)</stack>
+    <test_baseline>workspace suite tests/ (1573) and packages/router/tests
+      (1099) passing on main. Measure the real numbers before relying on
+      them.</test_baseline>
+    <conventions>
+      snake_case modules, frozen dataclasses for value types, stdlib-first
+      members (the router adds no third-party dependency), docstrings citing
+      app_spec.xml feature numbers and docs/nullius-tech-architecture.md
+      sections, refusals raised as typed errors whose message opens with a
+      greppable code word and names the one repair, defined in the module that
+      raises them and subclassing router.errors.RouterError (router.errors and
+      router/__init__.py are not edited). Decimal arithmetic from the venue's
+      strings. Cross-member imports (book, risk, forward) are deferred past
+      module scope. Follow CLAUDE.md's Build &amp; Test section: iterate on one
+      test file, then run the member suite once at -n 4. Tests never reach the
+      network: clients are injected doubles. Every BingX response a test feeds
+      must be a recorded fixture from
+      packages/router/tests/fixtures/bingx_vst/live/ or built from one; never
+      invent a response shape (Stage 1 lost eleven bugs to a stand-in that
+      copied the spec instead of BingX).
+      Existing pieces to reuse, not reimplement:
+      - router.bingx_client.BingXClient: positions, balance, open_orders,
+        place_order, cancel_order, query_order, position_mode, depth,
+        contracts and premium_index;
+      - router.bingx_mirror: build_mirror_plan, mirror_place,
+        rebalance_order_identities and live_positions;
+      - router.bingx_orders: read_back_orders and cancel_rebalance_orders;
+      - risk.daily_loss: halt_on_daily_loss(daily_loss=, daily_loss_limit=),
+        require_within_daily_loss_limit and manual_reset;
+      - forward.reconciliation.reconcile_fill_costs(book_id, rebalance_ts=,
+        realized_cost_bps=, modeled_cost_bps=);
+      - book's RebalanceTargetWeightsStore.record(book_id=, rebalance_ts=,
+        target_weights=, originating_signals=).
+      BingX facts, verified live (see live/capture.json):
+      - positionAmt is unsigned, with the side in positionSide;
+      - open orders are listed under data.orders with the id spelled
+        clientOrderId;
+      - a DELETE's signed parameters go in the query string;
+      - a single order is nested under data.order, and a resting order's
+        status is PENDING;
+      - the account is one-way (dualSidePosition false).
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="BingX VST Stage 2">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/router/src/router/bingx_flatten.py,packages/router/tests/test_bingx_flatten.py">
+        System flattens the VST sub-account from `python -m router.bingx_flatten
+        --confirm`: it cancels every open order on the account, then closes
+        every position with one reduce-only MARKET order per symbol (side
+        opposite to positionSide, quantity the unsigned positionAmt,
+        positionSide BOTH, reduceOnly true). It prints one JSON line per
+        cancelled order and per close, and returns exit 0 only when a final
+        read shows no open orders and no positions. Without --confirm it
+        prints what it would do and changes nothing. A close the venue
+        refuses is printed with its code and message, and the run exits 1.
+      </feature>
+      <feature index="2" shape="core" depends_on="1"
+               touches_files="packages/router/src/router/bingx_risk.py,packages/router/tests/test_bingx_risk.py">
+        System guards each rebalance with a daily-loss check before anything
+        is placed. The first check of each UTC day records the account's
+        equity as that day's opening equity, in its own table in the
+        DATABASE_URL store. Each check computes daily_loss as opening equity
+        minus current equity. When daily_loss reaches 3% of the book's
+        equity_usdt, it trips risk.daily_loss.halt_on_daily_loss, flattens
+        through feature 1 and returns a daily_loss_halt refusal. While a halt
+        stands, require_within_daily_loss_limit refuses every later check
+        with orders_halted, places nothing, and keeps refusing until
+        risk.daily_loss.manual_reset. A profit or a smaller loss passes.
+      </feature>
+      <feature index="3" shape="core" depends_on=""
+               touches_files="packages/router/src/router/bingx_reconcile.py,packages/router/tests/test_bingx_reconcile.py">
+        System reconciles one finished rebalance's fill costs. It reads back
+        the rebalance's orders with read_back_orders and takes each filled
+        order's executedQty and avgPrice. The realized cost in basis points is
+        the notional-weighted signed slippage of avgPrice against the order's
+        reference price (adverse is positive), plus the fee rate the order
+        paid. The fee is makerFeeRate for a PostOnly LIMIT and takerFeeRate
+        for a MARKET order, from the contracts document. The modeled cost is
+        that same fee rate alone. It records both through
+        forward.reconciliation.reconcile_fill_costs(book_id, rebalance_ts=,
+        realized_cost_bps=, modeled_cost_bps=), and returns the recorded
+        reconciliation. A rebalance with no filled order records nothing and
+        returns none. Reconciling the same rebalance twice returns the first
+        record unchanged.
+      </feature>
+      <feature index="4" shape="core" depends_on="1,2,3"
+               touches_files="packages/router/src/router/bingx_rebalance.py,packages/router/tests/test_bingx_rebalance.py,deploy/systemd/nullius-vst-rebalance.service,deploy/systemd/nullius-vst-rebalance.timer">
+        System runs one scheduled rebalance slot from `python -m
+        router.bingx_rebalance --book BOOK` and prints one JSON summary line.
+        The slot is the current UTC time floored to a 4-hour boundary, and
+        rebalance_ts is the slot start, so a second run in the same slot
+        prints prior for every order and places nothing new.
+        In order, a slot:
+        1. runs feature 2's daily-loss guard;
+        2. cancels resting orders left by this book's earlier slots in the
+           last 24 hours, using rebalance_order_identities per slot;
+        3. reconciles the previous slot through feature 3;
+        4. builds and places the plan through build_mirror_plan and
+           mirror_place;
+        5. persists the rebalance into the book member's
+           RebalanceTargetWeightsStore when the book names
+           originating_signal_ids.
+        It exits 0 when every order is placed or prior, 1 when any leg is
+        refused, and 3 on a daily-loss refusal. It refuses to start without
+        DATABASE_URL.
+        deploy/systemd/ holds a user service that runs `./run.sh vst-rebalance
+        --book packages/router/tests/fixtures/bingx_vst/synthetic_book.json`
+        from the repository root as a oneshot, and a timer that fires it at
+        00:05, 04:05, 08:05, 12:05, 16:05 and 20:05 UTC, with Persistent=true
+        and no overlapping runs.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Four new modules under packages/router/src/router/: bingx_flatten.py,
+    bingx_risk.py, bingx_reconcile.py and bingx_rebalance.py. bingx_flatten
+    and bingx_rebalance are runnable with python -m. Their tests sit in
+    packages/router/tests/, and the systemd units sit in deploy/systemd/.
+    Each file is committed as an empty stub so its claim resolves.
+    run.sh already routes `./run.sh vst-rebalance` and `./run.sh vst-flatten`
+    to the two entry points under op run with .env.vst.tpl (the VST key only)
+    and DATABASE_URL defaulting to ~/.local/share/nullius/vst.db.
+    The placement store, the daily-loss halt, the opening-equity table and
+    the fill-cost reconciliation all live in that one store.
+    Stage 1 modules are reused through their public functions. Their files,
+    and router.errors and router/__init__.py, are not edited.
+  </integration_points>
+  <constraints>
+    - The only host reachable is open-api-vst.bingx.com, through
+      BingXClient's host guard. There is no live-host path.
+    - No test or task opens a network connection, reads 1Password or a
+      credential, or edits .env.tpl, .env.vst.tpl, run.sh,
+      claw-forge.yaml or claw-forge.local.yaml.
+    - Every BingX response used in a test is a recorded fixture from
+      packages/router/tests/fixtures/bingx_vst/live/ or derived from one.
+      Those fixtures are never edited.
+    - Nothing in this addition installs or enables the systemd units. Writing
+      the files is the deliverable; enabling them is an operator step.
+    - Flatten acts only through --confirm or through the daily-loss guard.
+      Nothing else can close positions.
+    - The Stage 1 modules (bingx_client, bingx_documents, sizing,
+      bingx_client_order_id, bingx_order, bingx_dry_run, bingx_preflight,
+      bingx_orders, bingx_mirror) keep their public behaviour and their tests
+      stay green unchanged.
+    - No change to packages/ingest, packages/book's, packages/risk's or
+      packages/forward's source, src/app/module_loader.py, the root
+      pyproject.toml, uv.lock, migrations/** or settings.
+    - Do not edit docs/user-journeys/: verdicts there are set only by browser
+      runs.
+    - All existing workspace and member tests must stay green.
+  </constraints>
+  <implementation_steps>
+    <step>Phase 1: flatten (feature 1) and fill-cost reconciliation (feature 3), independent, over injected client doubles built from the live fixtures.</step>
+    <step>Phase 2: the daily-loss guard (feature 2), over risk.daily_loss and feature 1's flatten.</step>
+    <step>Phase 3: the scheduled rebalance slot and the systemd units (feature 4), composing features 1–3 with Stage 1's planning and placement.</step>
+  </implementation_steps>
+</project_specification>

@@ -14,6 +14,8 @@
 #   ./run.sh shell              drop into a shell with secrets injected
 #   ./run.sh vst    [args]      python -m router.bingx_mirror with ONLY the BingX
 #                               VST sub-account key (.env.vst.tpl), never .env.tpl
+#   ./run.sh vst-rebalance [args]  one scheduled rebalance slot (systemd timer)
+#   ./run.sh vst-flatten   [args]  cancel all orders and close all positions
 #
 # No-secret commands (run with a CLEAN env — package managers and linters
 # must never see runtime credentials; this is the main supply-chain
@@ -154,6 +156,20 @@ case "${cmd}" in
     cd "${SCRIPT_DIR}"
     exec op run --env-file="${ENV_VST_TPL}" -- \
       uv run --all-packages python -m router.bingx_mirror "$@"
+    ;;
+
+  vst-rebalance|vst-flatten)
+    # Stage 2 entry points, with the same VST-only key and store as `vst`.
+    if [[ ! -f "${ENV_VST_TPL}" ]]; then
+      echo "error: ${ENV_VST_TPL} not found." >&2
+      exit 1
+    fi
+    mkdir -p "$HOME/.local/share/nullius"
+    export DATABASE_URL="${DATABASE_URL:-sqlite:///$HOME/.local/share/nullius/vst.db}"
+    cd "${SCRIPT_DIR}"
+    module="router.bingx_rebalance"; [[ "${cmd}" == "vst-flatten" ]] && module="router.bingx_flatten"
+    exec op run --env-file="${ENV_VST_TPL}" -- \
+      uv run --all-packages python -m "${module}" "$@"
     ;;
 
   # ── No-secret commands ──────────────────────────────────────────────────────
