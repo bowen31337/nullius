@@ -527,16 +527,20 @@ def _retry_after_seconds(value: object) -> float | None:
     ``None`` — never a guess — when the header is absent, unreadable, an
     HTTP-date rather than a delta (the door's vendors send deltas; a date is
     a clock the door has no view of), or ``nan``: ``float`` reads ``nan``,
-    but it is not a *wait*, and ``max(0.0, nan)`` returns whichever operand
-    Python happens to compare first, so the caller falls back to the
-    exponential ladder rather than sleeping on a number the door invented.
+    but it is not a *wait*, and no comparison answers anything about it
+    (``nan < 0`` is as false as every other comparison with ``nan``), so the
+    caller falls back to the exponential ladder rather than sleeping on a
+    number the door invented.
 
     ``inf`` is *not* ``None``: it parses to a wait larger than any ceiling,
     and the loop refuses a retry-after above the ceiling, so ``inf`` leaves
     here honestly as itself and meets that refusal — where it would otherwise
     hang ``sleep`` forever or raise a raw ``OverflowError``.  A negative
-    delta clamps to zero: a vendor that answers the past is saying *now*, not
-    *backwards*.
+    delta is malformed and falls back to the ladder: RFC 9110's
+    ``delay-seconds`` is a non-negative integer, so a vendor that answers
+    the past is not saying *now* — and clamping the value to zero would turn
+    one malformed header into a burst of retries with no backoff between
+    them.
     """
     if value is None:
         return None
@@ -544,9 +548,9 @@ def _retry_after_seconds(value: object) -> float | None:
         seconds = float(str(value).strip())
     except ValueError:
         return None
-    if math.isnan(seconds):
+    if math.isnan(seconds) or seconds < 0.0:
         return None
-    return max(0.0, seconds)
+    return seconds
 
 
 def _header_value(headers: object, name: str) -> str | None:

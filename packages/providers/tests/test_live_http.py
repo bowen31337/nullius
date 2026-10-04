@@ -540,6 +540,21 @@ def test_a_nan_retry_after_falls_back_to_the_ladder():
     assert sleeper.waits == [1.0]
 
 
+@pytest.mark.parametrize("value", ["-5", "-0.5", "-inf"])
+def test_a_negative_retry_after_falls_back_to_the_ladder(value):
+    # A negative delta is malformed, not urgent: RFC 9110's delay-seconds is
+    # a non-negative integer, so a vendor — or a proxy — answering the past
+    # is not asking to retry *now*.  The door falls back to the ladder's
+    # first rung rather than clamping to a zero wait, so one malformed
+    # header cannot buy a burst of retries with no backoff between them.
+    transport = _transport((429, {"retry-after": value}, b"rate limited"), _ok())
+
+    answered, sleeper = _drive(transport)
+
+    assert answered == _answer_body()
+    assert sleeper.waits == [1.0]
+
+
 def test_the_ladder_never_waits_above_the_ceiling():
     # The other half of the bound: the door's own exponential ladder must stay
     # under the ceiling too, so no path — vendor's header or the door's
