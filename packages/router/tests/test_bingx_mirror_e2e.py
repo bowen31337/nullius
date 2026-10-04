@@ -210,7 +210,11 @@ class _StandIn:
     def handle(
         self, method: str, path: str, query: str, body: bytes, headers: dict
     ) -> tuple[int, dict]:
-        raw = query if method == "GET" else body.decode("ascii") if body else ""
+        # BingX reads a GET's and a DELETE's parameters from the query string
+        # and a POST's from the form body — the shape the client now sends
+        # (the live capture cancel_order_body_params_refused.json is the
+        # venue refusing a DELETE whose signed string rode in the body).
+        raw = body.decode("ascii") if method == "POST" and body else query
         params = dict(parse_qsl(raw))
         entry = {"method": method, "path": path, "params": params, "headers": headers}
         with self._lock:

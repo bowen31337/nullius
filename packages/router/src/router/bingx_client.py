@@ -574,15 +574,24 @@ class BingXClient:
     ) -> tuple[str, dict[str, str], bytes]:
         """Assemble the signed URL, headers and body for a request.
 
-        A ``GET``'s parameters ride in the query string; a write's ride in the
-        body — both are the *same* sorted, encoded string the signature was
-        computed over, with ``signature=<hex>`` appended, and both carry the
-        key in the ``X-BX-APIKEY`` header.
+        A ``POST`` is the one method BingX reads from a form body, so its
+        parameters ride there.  Every other method — ``GET`` and ``DELETE``
+        alike — carries the parameters in the query string and sends no body,
+        because BingX reads a ``DELETE``'s parameters from the query string
+        only: a DELETE whose signed string rode in an
+        ``x-www-form-urlencoded`` body was refused with code 109400, *"timestamp:
+        This field is required. symbol: This field is required."* (the live
+        capture ``cancel_order_body_params_refused.json``), while the same call
+        with the string in the URL answered code 0 (``cancel_order_ok.json``).
+
+        In every case the payload is the *same* sorted, encoded string the
+        signature was computed over, with ``signature=<hex>`` appended, and
+        carries the key in the ``X-BX-APIKEY`` header.
         """
         query, signature = self.sign(parameters)
         payload = f"{query}&signature={signature}" if query else f"signature={signature}"
         headers = {"X-BX-APIKEY": self.api_key}
-        if method == "GET":
+        if method != "POST":
             return self._absolute(f"{path}?{payload}"), headers, b""
         headers["Content-Type"] = "application/x-www-form-urlencoded"
         return self._absolute(path), headers, payload.encode("ascii")

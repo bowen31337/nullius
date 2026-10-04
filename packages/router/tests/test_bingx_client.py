@@ -580,13 +580,85 @@ def test_set_leverage_sends_one_on_both_sides() -> None:
 
 
 def test_cancel_order_sends_a_delete_carrying_the_client_order_id() -> None:
+    """A DELETE carries its signed parameters in the *query string*, no body.
+
+    The live capture (``fixtures/bingx_vst/live/cancel_order_body_params_refused.json``)
+    is the venue refusing a DELETE whose parameters rode in an
+    ``x-www-form-urlencoded`` body — code 109400, *"timestamp: This field is
+    required. symbol: This field is required."*  BingX reads a DELETE's
+    parameters from the query string only, so a body is invisible to it.  The
+    same call with the signed string in the URL answered code 0
+    (``cancel_order_ok.json``).  This pins the request shape the venue accepts.
+    """
     recorder = _Recorder((200, _envelope(None)))
     client = _client(recorder)
     client.cancel_order("b" * 40)
-    method, _url, _headers, body = recorder.requests[-1]
+    method, url, headers, body = recorder.requests[-1]
     assert method == "DELETE"
-    fields = dict(urllib.parse.parse_qsl(body.decode("ascii")))
+    assert body == b""
+    assert "Content-Type" not in headers
+    fields = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
     assert fields["clientOrderID"] == "b" * 40
+    assert fields["timestamp"] == str(FIXED_MILLIS)
+    assert fields["recvWindow"] == "5000"
+    assert "signature" in fields
+
+
+def test_a_delete_carries_the_signed_string_in_the_url_exactly_like_a_get() -> None:
+    """The bug's regression: GET, POST and DELETE each put the signed string
+    where the venue reads it.
+
+    A ``GET`` signs into the query string; a ``POST`` keeps the form body the
+    venue accepts; a ``DELETE`` signs into the query string too, appended with
+    ``&signature=<hex>`` and sending no body.  The signature is the same
+    HMAC-SHA256 hex over the same sorted, encoded string in every case.
+    """
+    parameters = {"symbol": "SOL-USDT", "clientOrderID": "b" * 40}
+
+    client = _client(_Recorder((200, _envelope(None))))
+
+    url_get, _headers_get, body_get = client._signed_target("GET", ORDER_PATH, parameters)
+    url_post, headers_post, body_post = client._signed_target(
+        "POST", ORDER_PATH, parameters
+    )
+    url_delete, headers_delete, body_delete = client._signed_target(
+        "DELETE", ORDER_PATH, parameters
+    )
+
+    # GET: signed string in the query, no body.
+    get_query = urllib.parse.urlsplit(url_get).query
+    assert get_query.endswith(f"&signature={_expected_signature(parameters)}")
+    assert body_get == b""
+
+    # POST: the venue accepts a form body — unchanged.
+    assert urllib.parse.urlsplit(url_post).query == ""
+    assert headers_post["Content-Type"] == "application/x-www-form-urlencoded"
+    assert body_post.decode("ascii") == (
+        f"{_sorted_query(parameters)}&signature={_expected_signature(parameters)}"
+    )
+
+    # DELETE: the fix — signed string in the query, no body, exactly like GET.
+    delete_query = urllib.parse.urlsplit(url_delete).query
+    assert delete_query == get_query
+    assert "clientOrderID" in delete_query and "symbol" in delete_query
+    assert "timestamp" in delete_query and "recvWindow" in delete_query
+    assert "signature" in delete_query
+    assert body_delete == b""
+    assert "Content-Type" not in headers_delete
+    assert headers_delete["X-BX-APIKEY"] == API_KEY
+
+
+def _sorted_query(parameters: dict) -> str:
+    merged = {**parameters, "timestamp": str(FIXED_MILLIS), "recvWindow": "5000"}
+    return urllib.parse.urlencode(sorted(merged.items()))
+
+
+def _expected_signature(parameters: dict) -> str:
+    return hmac.new(
+        SECRET_KEY.encode("utf-8"),
+        _sorted_query(parameters).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def test_every_path_the_feature_lists_has_an_exposed_call() -> None:
