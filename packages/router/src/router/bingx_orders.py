@@ -122,6 +122,7 @@ __all__ = [
     "CLIENT_ORDER_ID_ECHO_FIELD",
     "CLIENT_ORDER_ID_FIELD",
     "EXECUTED_QUANTITY_FIELD",
+    "IDENTIFIER_FIELDS",
     "OPEN_ORDERS_FIELD",
     "ORDER_FIELD",
     "ORDER_NOT_FOUND_CODES",
@@ -156,12 +157,26 @@ BINGX_ORDERS_CODE = "bingx_orders"
 #: The venue's own field spellings, as its order documents carry them.
 #: Declared once at the venue boundary, never spelled at a call site.
 SYMBOL_FIELD = "symbol"
+#: The plan's and the placement parameter's spelling of the identifier —
+#: ``clientOrderID``.  This is also the key :meth:`VSTOrderStatus.as_dict`
+#: and the mirror's written plan print, so a ``--status`` line is read back
+#: as an order the rebalance owns.
 CLIENT_ORDER_ID_FIELD = "clientOrderID"
-#: The venue's single-order read spells its identifier echo one letter
-#: lower — ``clientOrderId`` — as ``live/query_order_pending.json``
-#: records; the plan's orders and the open-orders listing carry the
-#: capital-``ID`` spelling above.  The echo is read under both.
+#: The spelling the venue's *order documents* carry — ``clientOrderId``,
+#: one letter lower — as ``live/open_orders_one_resting.json`` (the
+#: open-orders listing) and ``live/query_order_pending.json`` (the
+#: single-order read's echo) both record.  The listing is where the cancel
+#: reads ownership from, and the live row carries no capital-``ID`` key at
+#: all (the defect this reader was fixed for), so the venue's spelling is
+#: read first and the placement spelling accepted as an alternative:
+#: :data:`IDENTIFIER_FIELDS` is the pair, and a row carrying neither is
+#: skipped as foreign.
 CLIENT_ORDER_ID_ECHO_FIELD = "clientOrderId"
+#: Every spelling a venue row may carry its identifier under, the venue's
+#: own document spelling first.  A row carrying neither is skipped as
+#: foreign — it cannot belong to this rebalance — never guessed at and
+#: never cancelled.
+IDENTIFIER_FIELDS = (CLIENT_ORDER_ID_ECHO_FIELD, CLIENT_ORDER_ID_FIELD)
 STATUS_FIELD = "status"
 ORIGINAL_QUANTITY_FIELD = "origQty"
 EXECUTED_QUANTITY_FIELD = "executedQty"
@@ -666,6 +681,26 @@ def _is_not_found(code: Any) -> bool:
     return str(code).strip() in {str(c) for c in ORDER_NOT_FOUND_CODES}
 
 
+def _row_identifier(entry: Mapping) -> str | None:
+    """A listing row's identifier, under either spelling the venue uses.
+
+    The venue's open-orders listing spells a row's identifier
+    ``clientOrderId`` — one letter off the placement parameter — as
+    ``live/open_orders_one_resting.json`` records; the plan's own orders
+    and older answers spell it ``clientOrderID``.  Both are read, the
+    listing's spelling first (:data:`IDENTIFIER_FIELDS`), so a row is
+    recognised whichever the venue sent.  A row carrying a readable
+    identifier under neither spelling is answered ``None`` — the row names
+    no order, so it cannot belong to this rebalance and the caller skips
+    it as foreign rather than guessing at what it might have meant.
+    """
+    for field in IDENTIFIER_FIELDS:
+        value = entry.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def _open_order_entries(client: Any) -> list[Mapping]:
     """The venue's open-orders listing, as a list of order mappings, or refuse.
 
@@ -752,14 +787,18 @@ def cancel_rebalance_orders(*, client: Any, orders: Any) -> list[str]:
     """Feature 3's second sentence: cancel this rebalance's open orders.
 
     Reads the venue's open-orders listing and cancels exactly the entries
-    whose ``clientOrderID`` is one of ``orders``' own — the book's
+    whose identifier — the listing's own ``clientOrderId``, the placement
+    spelling ``clientOrderID`` accepted as an alternative
+    (:data:`IDENTIFIER_FIELDS`) — is one of ``orders``' own — the book's
     rebalance's identifiers, by construction — returning the identifiers it
     cancelled, in the order the venue listed them.  An open order the
     listing carries that this rebalance did not name (another book's,
     another rebalance's) is never passed to the venue's cancel at all, so
-    it is left untouched; that filter is the whole of the sentence's
-    ownership clause, and it is exact because a ``clientOrderID`` is a
-    function of the book, the rebalance and the symbol that named it.
+    it is left untouched; a row naming no identifier under either spelling
+    is skipped the same way, since a name is the whole of the ownership
+    test.  That filter is the whole of the sentence's ownership clause, and
+    it is exact because a ``clientOrderID`` is a function of the book, the
+    rebalance and the symbol that named it.
 
     ``orders`` is the plan's legs (see :func:`_book_orders`): refused legs
     name no order and are skipped.  A :class:`~router.bingx_order.
@@ -778,16 +817,15 @@ def cancel_rebalance_orders(*, client: Any, orders: Any) -> list[str]:
     }
     cancelled: list[str] = []
     for entry in _open_order_entries(client):
-        raw_id = entry.get(CLIENT_ORDER_ID_FIELD)
-        if not isinstance(raw_id, str) or not raw_id.strip():
-            raise RouterBingXOrdersError(
-                f"{BINGX_ORDERS_CODE}: an open order from the venue carries "
-                f"no readable {CLIENT_ORDER_ID_FIELD!r}, got {raw_id!r} "
-                f"({type(raw_id).__name__}); the cancel decides ownership by "
-                "this field, and a row without it cannot be judged — let "
-                "alone safely cancelled"
-            )
-        client_order_id = raw_id.strip()
+        raw_id = _row_identifier(entry)
+        if raw_id is None:
+            # The venue's row names no order under either spelling.  It
+            # cannot be this rebalance's — a name is the whole of the
+            # ownership test — so it is skipped as foreign, exactly the
+            # way another book's row is: never guessed at, and never
+            # handed to the venue's cancel.
+            continue
+        client_order_id = raw_id
         if client_order_id not in owned:
             # Not this rebalance's order: another book's, or another
             # rebalance's.  It is left untouched — never handed to the

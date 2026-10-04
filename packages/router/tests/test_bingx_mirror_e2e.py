@@ -303,7 +303,13 @@ class _StandIn:
                 self.orders[client_order_id] = params
                 self.open_orders.append(
                     {
-                        "clientOrderID": client_order_id,
+                        # The venue's open-orders listing spells a row's
+                        # identifier clientOrderId — one letter off the
+                        # placement parameter — as live/
+                        # open_orders_one_resting.json records.  The
+                        # stand-in serves the listing's own spelling so the
+                        # cancel is exercised against the real shape.
+                        "clientOrderId": client_order_id,
                         "symbol": params.get("symbol"),
                         "status": "NEW",
                     }
@@ -345,18 +351,22 @@ class _StandIn:
                 self.orders.pop(client_order_id, None)
                 self.open_orders = [
                     o for o in self.open_orders
-                    if o["clientOrderID"] != client_order_id
+                    if o["clientOrderId"] != client_order_id
                 ]
             return 200, {"code": 0, "msg": "", "data": {}}
         if path == OPEN_ORDERS_PATH:
             with self._lock:
                 listed = list(self.open_orders)
+            # The listing's real shape: the rows ride under data.orders (the
+            # client answers the envelope's data, so this module reads
+            # {"orders": [...]}) and each row spells its identifier
+            # clientOrderId, as live/open_orders_one_resting.json records.
             # A foreign order rides the listing: it belongs to no rebalance
             # this command knows, and the cancel must leave it untouched.
             listed.append(
-                {"clientOrderID": "f" * 40, "symbol": "OTHER-USDT", "status": "NEW"}
+                {"clientOrderId": "f" * 40, "symbol": "OTHER-USDT", "status": "NEW"}
             )
-            return 200, {"code": 0, "msg": "", "data": listed}
+            return 200, {"code": 0, "msg": "", "data": {"orders": listed}}
 
         return 404, {"code": 109400, "msg": f"no such path {path}"}
 

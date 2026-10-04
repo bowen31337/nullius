@@ -670,16 +670,79 @@ def test_a_refused_leg_is_never_a_cancel_target() -> None:
     assert cancelled == []
 
 
+def _live_open_orders_data() -> dict:
+    """The live recording's ``data`` — what feature 1's ``open_orders`` answers.
+
+    ``live/open_orders_one_resting.json`` is the answer the live
+    ``GET /openApi/swap/v2/trade/openOrders`` gave for an account holding
+    one resting order; feature 1 hands this module the envelope's ``data``,
+    so the cancel sees ``{"orders": [...]}``.  The row carries its
+    identifier as ``clientOrderId`` — the venue listing's own spelling, one
+    letter off the placement parameter ``clientOrderID`` — and carries no
+    capital-``ID`` key at all.  The fixture is an input and is never
+    edited; reading the recording pins the cancel against the shape the
+    venue actually answers.
+    """
+    answer = json.loads(
+        (FIXTURES / "live" / "open_orders_one_resting.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    return answer["data"]
+
+
+def _live_open_order_entry() -> dict:
+    """The single resting row of the live recording's ``data``."""
+    return _live_open_orders_data()["orders"][0]
+
+
+def test_the_live_resting_order_is_recognised_in_the_venues_own_spelling() -> None:
+    """The defect, pinned against the recording that caught it.
+
+    A client whose ``open_orders`` answers the live recording's ``data`` —
+    a listing whose row spells its identifier ``clientOrderId`` and carries
+    no capital-``ID`` key at all — must cancel exactly the order an order
+    set naming that identifier owns.  Before the fix the reader looked only
+    for ``clientOrderID``, found nothing, matched none of the rebalance's
+    orders and cancelled nothing.
+    """
+    entry = _live_open_order_entry()
+    recorded_id = entry["clientOrderId"]
+    client = _FakeClient(listing=_live_open_orders_data())
+
+    cancelled = cancel_rebalance_orders(client=client, orders=[recorded_id])
+
+    assert cancelled == [recorded_id]
+    assert client.cancelled == [(recorded_id, entry["symbol"])]
+
+
+def test_a_live_shaped_row_that_is_not_owned_is_left_untouched() -> None:
+    """An order set without the recorded identifier cancels nothing: the
+    venue-shaped row is judged foreign by its ``clientOrderId`` and never
+    handed to the venue's cancel."""
+    client = _FakeClient(listing=_live_open_orders_data())
+
+    cancelled = cancel_rebalance_orders(
+        client=client, orders=[_order("BTC-USDT")]
+    )
+
+    assert cancelled == []
+    assert client.cancelled == []
+
+
 # -- The cancel's own refusals ------------------------------------------------
 
 
-def test_an_open_order_with_no_readable_identifier_is_refused() -> None:
-    """Ownership is decided by clientOrderID; a listing row without one is
-    refused rather than guessed at."""
+def test_an_open_order_naming_no_identifier_is_left_as_foreign() -> None:
+    """A listing row carrying no identifier under either spelling cannot be
+    this rebalance's, so it is skipped as foreign and never cancelled —
+    never guessed at, and never a fault that unwinds the cancel."""
     client = _FakeClient(listing=[{"status": "NEW", "symbol": "BTC-USDT"}])
 
-    with pytest.raises(RouterBingXOrdersError):
-        cancel_rebalance_orders(client=client, orders=[_order("BTC-USDT")])
+    cancelled = cancel_rebalance_orders(client=client, orders=[_order("BTC-USDT")])
+
+    assert cancelled == []
+    assert client.cancelled == []
 
 
 def test_a_listing_that_is_not_a_listing_is_refused() -> None:
