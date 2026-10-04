@@ -3,6 +3,15 @@
 # (linking it into ~/.config/systemd/user/ and starting the timer) is an
 # operator step.  Nothing in this repository installs or enables it.
 #
+# The unit carries its **own environment**, because a systemd user service is
+# not an interactive shell: it runs neither `~/.zshrc` (which exports
+# `OP_SERVICE_ACCOUNT_TOKEN` from `~/.config/op/service-token`) nor the login
+# PATH that puts `~/.local/bin` — where `uv` lives — ahead of the system's.
+# Both are needed: `run.sh` first runs `op run` (which needs the service
+# account) and then `uv run` (which needs `uv` on PATH).  The token's *value*
+# never appears here; the ExecStart reads it from the operator's file, which
+# is mode 0600 and lives outside the repository.
+#
 # The unit is a **oneshot**: a slot runs once, to completion, and exits.
 # systemd never runs two instances of one service unit at a time, so a
 # timer that fires while a slot is still running cannot start a second
@@ -31,9 +40,23 @@ Type=oneshot
 # The repository root.  `%h` is the operator's home; edit this line (and the
 # matching one in the timer's unit) if the checkout lives elsewhere.
 WorkingDirectory=%h/projects/nullius
+# `uv` lives in the operator's ~/.local/bin, which a service does not inherit.
+# It goes first so the pinned interpreter wins over any system copy; the
+# system directories follow for `op`, `/bin/sh` and the ordinary tools.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # One slot.  `run.sh` already injects the VST key and the store URL; the
 # book is the synthetic Stage 0 book this feature ships with.
-ExecStart=%h/projects/nullius/run.sh vst-rebalance --book packages/router/tests/fixtures/bingx_vst/synthetic_book.json
+#
+# The token is read from the operator's own file (mode 0600) at start, inside
+# the shell, and never written into this unit.  `$$` is systemd's escape for a
+# literal dollar — a bare `$(cat …)` would be consumed by systemd's own
+# substitution and reach the shell empty.  The assignment is a separate
+# statement — so it needs its own `export`, unlike the `VAR=… cmd` prefix form
+# — and the `": "${VAR:?…}"` guard makes a missing or unreadable token file a
+# *failure* (exit 2, outside SuccessExitStatus below) with a message naming
+# the file, rather than a run of `op` with no credentials.  `%h` stays a
+# systemd specifier because it must resolve here; only the dollar is doubled.
+ExecStart=/bin/sh -c 'OP_SERVICE_ACCOUNT_TOKEN="$$(cat %h/.config/op/service-token)"; export OP_SERVICE_ACCOUNT_TOKEN; : "$${OP_SERVICE_ACCOUNT_TOKEN:?1Password service token unreadable — see %h/.config/op/service-token}"; exec %h/projects/nullius/run.sh vst-rebalance --book packages/router/tests/fixtures/bingx_vst/synthetic_book.json'
 # A slot that fails (exit 1: a refused leg, exit 3: a daily-loss halt) is
 # recorded by systemd and by the JSON line the command prints to the
 # journal; it is not restarted here, because the timer's next slot handles

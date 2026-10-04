@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -1093,3 +1094,244 @@ def test_a_deployment_injecting_only_the_environment_still_runs_a_slot(
     assert {record.symbol for record in recorded} == {
         order["symbol"] for order in line["orders"]
     }
+
+
+# -- The systemd unit supplies its own environment -----------------------------
+#
+# The bug this suite's tail closes: the unit assumed the operator's
+# interactive shell.  A systemd user service inherits neither the
+# ``OP_SERVICE_ACCOUNT_TOKEN`` ``~/.zshrc`` exports from
+# ``~/.config/op/service-token`` nor the ``~/.local/bin`` that holds ``uv``,
+# so every slot failed — first on ``op`` ("No accounts configured"), then,
+# once the token was supplied, on ``uv`` ("executable file not found in
+# $PATH").  The service must carry both itself, and the token value must
+# never appear in the unit, the repository or a log line.
+#
+# These tests read the *shipped* unit, not a copy: the file the operator
+# links into ``~/.config/systemd/user/`` is the one pinned here.  Nothing is
+# installed or enabled, and no test opens a socket.
+
+UNIT_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "deploy"
+    / "systemd"
+    / "nullius-vst-rebalance.service"
+)
+
+#: The unit's own spelling of the operator's home, and of the token file
+#: ``~/.zshrc`` loads the token from (mode 0600, outside the repository).
+UNIT_HOME_SPECIFIER = "%h"
+TOKEN_FILE_SUFFIX = "/.config/op/service-token"
+
+
+def _unit_text() -> str:
+    return UNIT_PATH.read_text(encoding="utf-8")
+
+
+def _unit_directive(name: str) -> str:
+    """The single directive line ``name`` in the shipped unit.
+
+    A directive that is absent is a *failure* — systemd would fall back to
+    its own inherited environment, which is exactly the defect — so the
+    absence is reported by index rather than silently skipped.  The
+    ``Environment=PATH`` and ``ExecStart`` lines are each expected exactly
+    once; a second would shadow the first.
+    """
+    matches = [
+        line
+        for line in _unit_text().splitlines()
+        if line.startswith(f"{name}=")
+    ]
+    assert matches, f"the unit declares no {name}="
+    assert len(matches) == 1, f"the unit declares {name}= more than once"
+    return matches[0]
+
+
+def _systemd_expand(command: str, *, home: str) -> str:
+    """The line's text as systemd hands it to the kernel, minimally.
+
+    Only the two substitutions the unit actually uses are applied, both
+    documented in ``systemd.service(5)``: the ``%h`` specifier becomes the
+    operator's home, and a literal ``$$`` becomes a single ``$`` (systemd's
+    own escape for a dollar sign it must not itself expand).  A bare ``$``
+    would otherwise be consumed by systemd as an environment substitution
+    before the shell ever saw it, so the escape is load-bearing, and this
+    helper is deliberately strict about the only transformation being the
+    documented one.
+    """
+    return command.replace("$$", "$").replace(UNIT_HOME_SPECIFIER, home)
+
+
+def test_the_unit_puts_the_operators_local_bin_before_the_system_path() -> None:
+    """The first defect: ``uv`` lives in ``%h/.local/bin``, not the system PATH.
+
+    A systemd user service is handed the manager's PATH, never a login
+    shell's, so ``Environment=PATH`` must name both the operator's tools and
+    the system directories — with ``%h/.local/bin`` *first*, so the pinned
+    ``uv`` wins over any system copy.
+    """
+    environment = _unit_directive("Environment")
+    assert environment.startswith("Environment=PATH=")
+    path = environment.removeprefix("Environment=PATH=")
+    entries = path.split(":")
+    assert entries[:4] == [
+        f"{UNIT_HOME_SPECIFIER}/.local/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+    ]
+
+
+def test_the_unit_execstart_loads_the_token_file_not_a_literal() -> None:
+    """The second defect: ``op`` needs the token the login shell exports.
+
+    The ExecStart must load ``OP_SERVICE_ACCOUNT_TOKEN`` from
+    ``%h/.config/op/service-token`` at start — inside the shell it invokes,
+    with the literal-dollar escape systemd requires — rather than assuming
+    the variable is already in its environment.
+    """
+    exec_start = _unit_directive("ExecStart")
+    assert "op run" not in exec_start or "/bin/sh" in exec_start
+    assert exec_start.removeprefix("ExecStart=").startswith("/bin/sh -c ")
+    assert "OP_SERVICE_ACCOUNT_TOKEN=" in exec_start
+    # The value is read from the operator's file, never written in.  Both
+    # substitutions are applied together: systemd turns `%h` into the home,
+    # and the escaped `$$` into the single `$` the shell then runs.
+    expanded = _systemd_expand(exec_start, home="/home/operator")
+    assert f"$(cat /home/operator{TOKEN_FILE_SUFFIX})" in expanded
+    # The dollar of that command substitution is escaped in the *source*, so
+    # it survives the manager's own expansion and reaches the shell.
+    assert "$$(cat" in exec_start
+
+
+def test_the_unit_carries_no_literal_service_account_token() -> None:
+    """No token, key or secret is ever written into a repository file.
+
+    1Password service-account tokens carry an ``ops_`` prefix; the unit must
+    contain no such string, and no assignment of a literal value to the
+    token variable — its only occurrence is the ``cat`` of the operator's
+    own file.
+    """
+    text = _unit_text()
+    assert "ops_" not in text
+    # The *executable* lines carry the token — comments may name the variable
+    # without assigning it, which is documentation, not a leak.
+    for index, line in enumerate(text.splitlines(), start=1):
+        if line.startswith("#") or "OP_SERVICE_ACCOUNT_TOKEN" not in line:
+            continue
+        # The single legitimate shape: the variable is *assigned from* the
+        # token file.  Any other assignment (e.g. a literal value, or a bare
+        # environment pass) is a token whose provenance the unit does not
+        # control.
+        assert "OP_SERVICE_ACCOUNT_TOKEN=" in line, (
+            f"line {index} mentions the token without assigning it from the file"
+        )
+        assert "cat" in line and TOKEN_FILE_SUFFIX in line
+
+
+def _unit_environment(home: Path) -> dict[str, str]:
+    """The environment systemd would give the unit's own ``ExecStart``.
+
+    Only the keys ``Environment=PATH`` declares are supplied — a systemd
+    user service inherits the manager's environment, whose PATH is the one
+    this line overwrites — plus ``HOME`` (which is how ``%h`` resolves) and
+    ``USER``.  Nothing else, so the test is the ``env -i`` proof the bug
+    report asks for: if the unit does not supply PATH and the token itself,
+    the child does not see them.
+    """
+    path = _unit_directive("Environment").removeprefix("Environment=PATH=")
+    return {
+        "PATH": _systemd_expand(path, home=str(home)),
+        "HOME": str(home),
+        "USER": "operator",
+    }
+
+
+def _unit_exec_start(home: Path) -> str:
+    """The ExecStart, as systemd's substitutions leave it for the shell."""
+    return _systemd_expand(
+        _unit_directive("ExecStart").removeprefix("ExecStart="), home=str(home)
+    )
+
+
+def _run_unit(tmp_path: Path, *, token: str | None) -> subprocess.CompletedProcess:
+    """Exercise the shipped ExecStart in a systemd-like environment.
+
+    ``%h`` is the temporary home, so ``%h/projects/nullius/run.sh`` is a stub
+    written here rather than the repository's own wrapper — the point is the
+    environment that reaches it, not what the wrapper then does.  The stub
+    records the token and PATH it was handed, so a passing run can assert
+    they *arrived* rather than merely that the process exited 0.
+    """
+    home = tmp_path / "home"
+    repo = home / "projects" / "nullius"
+    repo.mkdir(parents=True)
+    marker = tmp_path / "stub-env.txt"
+    stub = repo / "run.sh"
+    stub.write_text(
+        "#!/bin/sh\n"
+        f'printf "TOKEN=%s\\nPATH=%s\\n" "$OP_SERVICE_ACCOUNT_TOKEN" "$PATH" '
+        f'> "{marker}"\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+
+    if token is not None:
+        token_file = home / ".config" / "op" / "service-token"
+        token_file.parent.mkdir(parents=True)
+        token_file.write_text(token, encoding="utf-8")
+        token_file.chmod(0o600)
+
+    result = subprocess.run(
+        ["/bin/sh", "-c", _unit_exec_start(home)],
+        cwd=repo,
+        env=_unit_environment(home),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result
+
+
+def test_a_missing_token_file_makes_the_unit_fail_clearly(tmp_path: Path) -> None:
+    """Fails closed: no token file means the unit stops, it does not run ``op``.
+
+    The ExecStart is exercised in an ``env -i`` environment built from the
+    unit's own ``Environment=PATH``, with ``run.sh`` replaced by a stub.  A
+    missing token file must yield a non-zero exit *outside* the unit's own
+    ``SuccessExitStatus`` (0, 1, 3 — a refusal, not a failure), so systemd
+    records it as failed rather than green, with a message naming the file;
+    and ``run.sh`` must never have been reached.
+    """
+    result = _run_unit(tmp_path, token=None)
+
+    assert result.returncode not in (0, 1, 3), result.stderr
+    assert TOKEN_FILE_SUFFIX in result.stderr
+    # The unit's own message, not merely whatever `cat` printed — so a failure
+    # names the token file rather than looking like an unrelated command error.
+    assert "unreadable" in result.stderr
+    assert not (tmp_path / "stub-env.txt").exists()
+
+
+def test_the_exec_start_hands_path_and_token_to_run_sh(tmp_path: Path) -> None:
+    """The whole clause: both defects, on the command the unit actually ships.
+
+    The ExecStart runs against a stub ``run.sh`` in a bare environment.  Both
+    things the interactive shell used to provide must reach the child: the
+    ``%h/.local/bin`` PATH entry (where ``uv`` lives) and the token read from
+    ``%h/.config/op/service-token`` — the value itself never written into the
+    unit, only read from the operator's file at start.
+    """
+    # A synthetic placeholder, in a temporary directory — not a credential,
+    # and deliberately not shaped like one.
+    token = "token-value-read-from-the-operators-file"
+    result = _run_unit(tmp_path, token=token)
+
+    assert result.returncode == 0, result.stderr
+    recorded = (tmp_path / "stub-env.txt").read_text(encoding="utf-8")
+    assert f"TOKEN={token}\n" in recorded
+    path_line = next(
+        line for line in recorded.splitlines() if line.startswith("PATH=")
+    )
+    first_entry = path_line.removeprefix("PATH=").split(":")[0]
+    assert first_entry == str(tmp_path / "home" / ".local" / "bin")
