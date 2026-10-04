@@ -486,8 +486,11 @@ claw-forge validate-spec additions_spec.xml --project-root .
 
 Gap 10 (*footprint matches zero real files*) is an always-ERROR and is the
 check that catches a layout guessed wrong or a `plugin=` that needed
-explicit `touches_files`. Fix and re-run until it is clean — do not present
-the spec as done while it is red.
+explicit `touches_files`. A path the feature will **create** belongs in
+`creates="..."` on the `<feature>`, not in `touches_files=` — Gap 10 skips
+declared-new paths while file claims still lock them, so never clear the
+error by dropping a new file's entry. Fix and re-run until it is clean — do
+not present the spec as done while it is red.
 
 ### Step 4: Show next steps
 

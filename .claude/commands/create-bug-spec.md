@@ -133,6 +133,14 @@ Then locate the real files, so the footprint is not aspirational:
 grep -rl "<a symbol from the bug report>" src/ 2>/dev/null | head
 ```
 
+A file the fix must **create** (a missing `conftest.py`, a new config module)
+goes in `creates=`, never in `touches_files=` — the validator rejects a
+`touches_files` entry that matches nothing on disk, and dropping the entry
+under-declares the footprint and gets the agent flagged by the post-merge
+audit. `creates=` entries are unioned into the footprint (file claims lock
+them), exempt from the existence check, and warned about if they already
+exist.
+
 **Two bugs with overlapping footprints can never run in parallel.** If you can
 give them disjoint footprints, do; if not, say so, because the user is trading
 throughput for it.
