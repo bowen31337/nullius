@@ -130,6 +130,20 @@ def _filled(client_order_id: str, *, status: str, qty: str = "0", price: str = "
     }
 
 
+def _read_answer(
+    client_order_id: str, *, status: str, qty: str = "0", price: str = "0"
+) -> dict:
+    """The venue's read answer for ``client_order_id``, in its real shape.
+
+    The single-order read wraps its order document under ``data.order`` —
+    the nesting ``live/query_order_pending.json`` records — so the answers
+    this suite scripts for ``query_order`` speak that shape, never the
+    flat one the stand-in used to serve (the reason these tests never saw
+    the real document the live venue answers).
+    """
+    return {"order": _filled(client_order_id, status=status, qty=qty, price=price)}
+
+
 # -- The read-back: one order per leg, looked up by clientOrderID --------------
 
 
@@ -140,7 +154,7 @@ def test_each_order_is_looked_up_by_its_client_order_id_in_the_order_handed() ->
     orders = [_order("BTC-USDT"), _order("ETH-USDT"), _order("SOL-USDT")]
     ids = [_order(s)["clientOrderID"] for s in SYMBOLS]
     client = _FakeClient(
-        queries={i: _filled(i, status="NEW") for i in ids}
+        queries={i: _read_answer(i, status="NEW") for i in ids}
     )
 
     statuses = read_back_orders(client=client, orders=orders)
@@ -157,7 +171,7 @@ def test_the_status_is_the_venue_word_and_the_two_measurements_are_decimals() ->
     built from the venue's strings — including a partially filled order."""
     cid = _identifier("BTC-USDT")
     client = _FakeClient(
-        queries={cid: _filled(cid, status="PARTIALLY_FILLED", qty="0.0040", price="83137.3")}
+        queries={cid: _read_answer(cid, status="PARTIALLY_FILLED", qty="0.0040", price="83137.3")}
     )
 
     (status,) = read_back_orders(client=client, orders=[_order("BTC-USDT")])
@@ -174,16 +188,18 @@ def test_the_status_is_the_venue_word_and_the_two_measurements_are_decimals() ->
     [
         ("NEW", True),
         ("PARTIALLY_FILLED", True),
+        ("PENDING", True),
         ("FILLED", False),
         ("CANCELED", False),
         ("EXPIRED", False),
     ],
 )
-def test_the_closed_status_vocabulary_is_passed_through(word: str, open_: bool) -> None:
-    """All five venue words the sentence names are admissible, and only the
-    two working states read as open."""
+def test_the_known_status_words_are_passed_through(word: str, open_: bool) -> None:
+    """Every venue word this system knows is admissible and passed through,
+    and only the working states — NEW, PARTIALLY_FILLED and the resting
+    order's PENDING — read as open."""
     cid = _identifier("ETH-USDT")
-    client = _FakeClient(queries={cid: _filled(cid, status=word)})
+    client = _FakeClient(queries={cid: _read_answer(cid, status=word)})
 
     (status,) = read_back_orders(client=client, orders=[_order("ETH-USDT")])
 
@@ -212,9 +228,9 @@ def test_a_not_found_among_found_orders_does_not_hide_the_others() -> None:
     ids = {s: _identifier(s) for s in SYMBOLS}
     client = _FakeClient(
         queries={
-            ids["BTC-USDT"]: _filled(ids["BTC-USDT"], status="FILLED", qty="1", price="2"),
+            ids["BTC-USDT"]: _read_answer(ids["BTC-USDT"], status="FILLED", qty="1", price="2"),
             # ETH-USDT is absent -> not_found
-            ids["SOL-USDT"]: _filled(ids["SOL-USDT"], status="NEW"),
+            ids["SOL-USDT"]: _read_answer(ids["SOL-USDT"], status="NEW"),
         }
     )
 
@@ -259,9 +275,9 @@ def test_the_live_order_not_exist_refusal_is_that_orders_not_found() -> None:
     ids = {s: _identifier(s) for s in SYMBOLS}
     client = _FakeClient(
         queries={
-            ids["BTC-USDT"]: _filled(ids["BTC-USDT"], status="FILLED", qty="1", price="2"),
+            ids["BTC-USDT"]: _read_answer(ids["BTC-USDT"], status="FILLED", qty="1", price="2"),
             ids["ETH-USDT"]: _live_not_exist_refusal(),  # never placed
-            ids["SOL-USDT"]: _filled(ids["SOL-USDT"], status="NEW"),
+            ids["SOL-USDT"]: _read_answer(ids["SOL-USDT"], status="NEW"),
         }
     )
 
@@ -274,6 +290,61 @@ def test_the_live_order_not_exist_refusal_is_that_orders_not_found() -> None:
     ]
     # The read-back kept going: every leg was still asked of the venue.
     assert [q[0] for q in client.queried] == [ids[s] for s in SYMBOLS]
+
+
+def _live_pending_answer() -> dict:
+    """The venue's verbatim read answer for a resting order, as feature 1's
+    ``query_order`` hands it to this module: the envelope's ``data``.
+
+    Read from the live recording ``live/query_order_pending.json`` — the
+    answer the operator's ``--status`` met for one of three PostOnly orders
+    resting on VST.  The order details sit under ``data.order`` and the
+    resting order's status word is ``PENDING``, a word the Stage 1
+    sentence's list does not carry.  The fixture is an input and is never
+    edited; reading the recording pins the read-back against what the venue
+    actually answers, not what a spec assumed it would.
+    """
+    answer = json.loads(
+        (FIXTURES / "live" / "query_order_pending.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    return answer["data"]
+
+
+def test_the_live_pending_answer_is_read_in_the_venues_nested_shape() -> None:
+    """The defect, pinned against the recording that caught it.
+
+    The venue's read answer nests the order under ``data.order`` and reports
+    a resting order as ``PENDING`` — a word outside the list the Stage 1
+    sentence wrote.  The read-back reads the object under ``order``, reports
+    the venue's word verbatim and answers the order's measurements, so the
+    operator's ``--status`` answers one line per order instead of refusing
+    with *carries no readable 'status'*.
+    """
+    data = _live_pending_answer()
+    recorded_id = data["order"]["clientOrderId"]
+    client = _FakeClient(queries={recorded_id: data})
+
+    (status,) = read_back_orders(client=client, orders=[recorded_id])
+
+    assert status.status == "PENDING"
+    assert status.symbol == "1000PEPE-USDT"
+    assert status.original_quantity == Decimal("69850")
+    assert status.executed_quantity == Decimal("0")
+    assert status.average_price == Decimal("0.0000000")
+    assert status.is_open is True
+    # The decimals render back as this module always renders them — the
+    # exact Decimal spellings — which for the recording's all-zero
+    # seven-decimal avgPrice is Decimal's own "0E-7".
+    assert status.as_dict() == {
+        "symbol": "1000PEPE-USDT",
+        "clientOrderID": recorded_id,
+        "status": "PENDING",
+        "origQty": str(Decimal("69850")),
+        "executedQty": str(Decimal("0")),
+        "avgPrice": str(Decimal("0.0000000")),
+    }
 
 
 def test_the_live_not_exist_code_spelled_as_text_is_also_not_found() -> None:
@@ -333,7 +404,7 @@ def test_a_refused_leg_is_skipped_because_it_names_no_venue_order() -> None:
     """The gates' refused legs are not the read-back's business: they are
     skipped, so only real orders reach the venue."""
     good = _order("BTC-USDT")
-    client = _FakeClient(queries={good["clientOrderID"]: _filled(good["clientOrderID"], status="NEW")})
+    client = _FakeClient(queries={good["clientOrderID"]: _read_answer(good["clientOrderID"], status="NEW")})
 
     statuses = read_back_orders(
         client=client,
@@ -350,7 +421,7 @@ def test_a_bare_identifier_is_read_and_its_symbol_taken_from_the_venue() -> None
     cid = _identifier("SOL-USDT")
     document = _filled(cid, status="NEW")
     document["symbol"] = "SOL-USDT"
-    client = _FakeClient(queries={cid: document})
+    client = _FakeClient(queries={cid: {"order": document}})
 
     (status,) = read_back_orders(client=client, orders=[cid])
 
@@ -363,7 +434,7 @@ def test_a_plan_shaped_mapping_leg_is_read() -> None:
     """The read-back reads the shape a written plan holds — the venue's own
     field spellings — not only the frozen BingXOrder value."""
     order = _order("BTC-USDT")
-    client = _FakeClient(queries={order["clientOrderID"]: _filled(order["clientOrderID"], status="NEW")})
+    client = _FakeClient(queries={order["clientOrderID"]: _read_answer(order["clientOrderID"], status="NEW")})
 
     (status,) = read_back_orders(client=client, orders=[order])
 
@@ -374,16 +445,46 @@ def test_a_plan_shaped_mapping_leg_is_read() -> None:
 # -- The read-back's own refusals ---------------------------------------------
 
 
-def test_an_unknown_status_word_is_refused_not_passed_through() -> None:
-    """The vocabulary is closed to the words the sentence names; a word
-    outside it is a translation nobody has written."""
+def test_a_status_word_outside_the_known_set_is_reported_as_spelled() -> None:
+    """The status word is the venue's own and is never refused for its
+    spelling: a word this system does not know — one BingX could coin
+    tomorrow, the way it coins ``PENDING`` for a resting order — is
+    reported exactly as the venue spelled it, so a new status cannot abort
+    the read-back.  Only the measurements are refused when unreadable."""
     cid = _identifier("BTC-USDT")
-    client = _FakeClient(queries={cid: _filled(cid, status="PENDING_CANCEL")})
+    client = _FakeClient(queries={cid: _read_answer(cid, status="PENDING_CANCEL")})
+
+    (status,) = read_back_orders(client=client, orders=[_order("BTC-USDT")])
+
+    assert status.status == "PENDING_CANCEL"
+    assert status.is_open is False  # not a word this system knows as working
+    assert status.executed_quantity == Decimal("0")
+
+
+def test_a_bare_order_object_is_still_read_when_the_answer_wraps_no_order() -> None:
+    """An answer that already *is* the order object — the shape older
+    venue answers and every injected double speak — is read just as the
+    wrapped one is; only a missing or unreadable field is refused."""
+    cid = _identifier("ETH-USDT")
+    client = _FakeClient(queries={cid: _filled(cid, status="NEW")})
+
+    (status,) = read_back_orders(client=client, orders=[_order("ETH-USDT")])
+
+    assert status.status == "NEW"
+    assert status.executed_quantity == Decimal("0")
+
+
+def test_an_answer_wrapping_something_other_than_an_order_object_is_refused() -> None:
+    """An answer whose ``order`` key holds a non-object cannot be read into
+    a status; it is refused naming what it wrapped."""
+    cid = _identifier("BTC-USDT")
+    client = _FakeClient(queries={cid: {"order": [cid]}})
 
     with pytest.raises(RouterBingXOrdersError) as raised:
         read_back_orders(client=client, orders=[_order("BTC-USDT")])
 
     assert str(raised.value).startswith(BINGX_ORDERS_CODE)
+    assert "order" in str(raised.value)
 
 
 def test_a_missing_measurement_is_refused() -> None:
@@ -422,10 +523,13 @@ def test_a_negative_measurement_is_refused() -> None:
 
 def test_an_answer_for_a_different_order_is_refused() -> None:
     """An echoed clientOrderID that is not the one asked for is refused
-    rather than reported under this order's name."""
+    rather than reported under this order's name — under either spelling
+    the venue writes the echo, plan capitalisation or the read's own
+    ``clientOrderId``."""
     cid = _identifier("BTC-USDT")
     other = _identifier("ETH-USDT")
-    client = _FakeClient(queries={cid: _filled(other, status="NEW")})
+    wrong_caps = {"order": {"clientOrderId": other, "status": "NEW"}}
+    client = _FakeClient(queries={cid: wrong_caps})
 
     with pytest.raises(RouterBingXOrdersError):
         read_back_orders(client=client, orders=[_order("BTC-USDT")])
@@ -597,6 +701,30 @@ def test_a_found_status_must_carry_both_measurements() -> None:
         )
 
 
+def test_a_not_found_status_carries_no_original_quantity_either() -> None:
+    with pytest.raises(RouterBingXOrdersError):
+        VSTOrderStatus(
+            symbol="BTC-USDT",
+            client_order_id="a" * 40,
+            status=VST_ORDER_NOT_FOUND,
+            executed_quantity=None,
+            average_price=None,
+            original_quantity=Decimal(1),
+        )
+
+
+def test_an_original_quantity_that_runs_backwards_is_refused() -> None:
+    with pytest.raises(RouterBingXOrdersError):
+        VSTOrderStatus(
+            symbol="BTC-USDT",
+            client_order_id="a" * 40,
+            status="NEW",
+            executed_quantity=Decimal(0),
+            average_price=Decimal(0),
+            original_quantity=Decimal("-1"),
+        )
+
+
 def test_an_over_long_identifier_is_refused() -> None:
     with pytest.raises(RouterBingXOrdersError):
         VSTOrderStatus(
@@ -611,7 +739,9 @@ def test_an_over_long_identifier_is_refused() -> None:
 def test_no_credential_or_secret_appears_in_a_status_answer() -> None:
     """A status is measurements and words only — it cannot leak a credential."""
     cid = _identifier("BTC-USDT")
-    client = _FakeClient(queries={cid: _filled(cid, status="NEW", qty="0", price="0")})
+    document = _read_answer(cid, status="NEW", qty="0", price="0")
+    document["order"]["origQty"] = "1"
+    client = _FakeClient(queries={cid: document})
 
     (status,) = read_back_orders(client=client, orders=[_order("BTC-USDT")])
 
@@ -621,6 +751,7 @@ def test_no_credential_or_secret_appears_in_a_status_answer() -> None:
         "symbol": "BTC-USDT",
         "clientOrderID": cid,
         "status": "NEW",
+        "origQty": "1",
         "executedQty": "0",
         "avgPrice": "0",
     }

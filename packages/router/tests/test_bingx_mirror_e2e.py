@@ -67,7 +67,6 @@ from router.bingx_client import (
     LIVE_HOST,
     MARGIN_TYPE_PATH,
     OPEN_ORDERS_PATH,
-    ORDER_NOT_FOUND_CODE,
     ORDER_PATH,
     POSITION_MODE_PATH,
     POSITIONS_PATH,
@@ -298,19 +297,25 @@ class _StandIn:
             with self._lock:
                 order = self.orders.get(client_order_id)
             if order is None:
-                return 200, {
-                    "code": ORDER_NOT_FOUND_CODE,
-                    "msg": "order does not exist",
-                }
+                # The venue's verbatim refusal for an order it holds no
+                # record of — live/query_order_not_exist.json, never edited.
+                return 200, _fixture("live/query_order_not_exist.json")
+            # The single-order read's real shape, as live/
+            # query_order_pending.json records it: the order document
+            # nested under data.order, the echo spelled clientOrderId, and
+            # a resting order's status word PENDING.
             return 200, {
                 "code": 0,
                 "msg": "",
                 "data": {
-                    "symbol": order.get("symbol"),
-                    "clientOrderID": client_order_id,
-                    "status": "NEW",
-                    "executedQty": "0",
-                    "avgPrice": "0",
+                    "order": {
+                        "symbol": order.get("symbol"),
+                        "clientOrderId": client_order_id,
+                        "status": "PENDING",
+                        "origQty": order.get("quantity") or "0",
+                        "executedQty": "0",
+                        "avgPrice": "0",
+                    }
                 },
             }
         if path == ORDER_PATH and method == "DELETE":
@@ -707,8 +712,36 @@ def test_status_reads_back_the_five_orders_after_placing(
     assert status.returncode == 0, status.stderr
     lines = _lines(status.stdout)
     assert len(lines) == 5
-    assert {line["status"] for line in lines} == {"NEW"}
+    # The venue's own word for a resting order, read from the nested
+    # order document the real endpoint answers.
+    assert {line["status"] for line in lines} == {"PENDING"}
     assert {line["symbol"] for line in lines} == set(ORDERED_SYMBOLS)
+    assert all(line["executedQty"] == "0" for line in lines)
+    assert all(line["origQty"] not in (None, "") for line in lines)
+
+
+def test_status_before_placing_reports_every_leg_not_found(
+    tmp_path, stand_in, book_path, database_url
+):
+    """The read-back over a venue that holds none of the plan's orders.
+
+    The stand-in answers each lookup with the recorded refusal — code
+    109421, ``order not exist``, ``live/query_order_not_exist.json``
+    verbatim — and the read-back translates it into this system's
+    ``not_found`` status rather than aborting: one line per order of the
+    rebalance, exit 0, no measurements to report."""
+    _, _venue, url = stand_in
+    status = _run(
+        ["--book", str(book_path), "--status"],
+        _child_env(tmp_path, url, database_url),
+    )
+    assert status.returncode == 0, status.stderr
+    lines = _lines(status.stdout)
+    assert len(lines) == 5
+    assert {line["status"] for line in lines} == {"not_found"}
+    assert {line["symbol"] for line in lines} == set(ORDERED_SYMBOLS)
+    assert all(line["executedQty"] is None for line in lines)
+    assert all(line["avgPrice"] is None for line in lines)
 
 
 def test_cancel_leaves_the_listing_s_foreign_order_untouched(

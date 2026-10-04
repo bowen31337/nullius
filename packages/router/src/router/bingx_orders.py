@@ -49,10 +49,10 @@ rebalance did not name is never passed to ``DELETE
 /openApi/swap/v2/trade/order`` at all, which is the mechanical form of
 *left untouched*.
 
-**A refusal is translated, an unknown status is refused.**  The venue's
-``not_found`` answer is not an exception here: the venue does not answer an
-empty order object for a ``clientOrderID`` it holds no record of — it
-*refuses*, feature 1 raises :class:`~router.bingx_client.
+**A refusal is translated, a status word is reported as the venue spelled
+it.**  The venue's ``not_found`` answer is not an exception here: the venue
+does not answer an empty order object for a ``clientOrderID`` it holds no
+record of — it *refuses*, feature 1 raises :class:`~router.bingx_client.
 RouterBingXRefusedError` carrying the venue's code, and this module judges
 that code against :data:`ORDER_NOT_FOUND_CODES` (the live endpoint's
 ``109421`` *order not exist*, recorded in fixture
@@ -60,21 +60,37 @@ that code against :data:`ORDER_NOT_FOUND_CODES` (the live endpoint's
 :data:`~router.bingx_client.ORDER_NOT_FOUND_CODE`) — a code in the set
 becomes the ``not_found`` status, any other code propagates, because an
 order that never landed is a fact about the order and a signature the
-venue rejected is a fault of the ask.  In the other
-direction, the status vocabulary is *closed* to the six words the sentence
-names: a venue answer carrying a status this system has no word for is a
-translation nobody has written rather than a status to pass through, so it
-is refused with this module's own code word — the same read-exactly-or-
-refuse discipline every value in this member holds its terms to.
+venue rejected is a fault of the ask.  In the other direction, the status
+word is the venue's own and is passed through verbatim: the live endpoint
+reports a resting order as ``PENDING`` (fixture
+``live/query_order_pending.json``), a word the sentence's list does not
+carry, and refusing a word the venue actually sends would let any status
+BingX coins tomorrow abort the read-back — so :data:`VST_ORDER_STATUSES`
+documents the words this system knows rather than gating them, and only a
+missing or unreadable status is refused.
+
+**The read-back reads the venue's own shape.**  The single-order read's
+answer wraps its order document under ``data.order`` — the nesting the
+live recording carries — so :func:`_status_from` takes the object under
+:data:`ORDER_FIELD` when the answer wraps one, and reads an answer that
+already *is* the order object just as gladly (the shape older answers and
+every injected double speak).  The venue's read also spells its echo
+``clientOrderId``, one letter off the plan's ``clientOrderID``; the echo
+is read under both spellings, and an answer naming a different order's
+identifier under either is refused rather than reported under this one's
+name.
 
 **Money and quantities are decimals built from the venue's strings.**  The
 conventions are explicit — *"Money and quantities are decimal.Decimal built
-from the venue's strings"* — so ``executedQty`` and ``avgPrice`` are read
-as exact :class:`~decimal.Decimal` values and a float (a binary
-approximation of a decimal no venue ever sent) is refused by name.  An
-order with no fills answers ``"0"`` for both, which parses to
+from the venue's strings"* — so ``origQty``, ``executedQty`` and
+``avgPrice`` are read as exact :class:`~decimal.Decimal` values and a float
+(a binary approximation of a decimal no venue ever sent) is refused by
+name.  ``origQty`` is answered when the venue's document carries it and
+``None`` when it does not — an answer that omits it reports no original
+quantity rather than inventing one.  An order with no fills answers
+``"0"`` for the executed quantity and the average price, which parses to
 :data:`~decimal.Decimal` zero and is reported as measured; ``not_found``
-carries ``None`` for both, because there is no order to have executed
+carries ``None`` for all three, because there is no order to have executed
 against.
 
 **No table, no component, no clock, no I/O, no network.**  The client is
@@ -103,10 +119,13 @@ from .errors import RouterError
 __all__ = [
     "AVERAGE_PRICE_FIELD",
     "BINGX_ORDERS_CODE",
+    "CLIENT_ORDER_ID_ECHO_FIELD",
     "CLIENT_ORDER_ID_FIELD",
     "EXECUTED_QUANTITY_FIELD",
     "OPEN_ORDERS_FIELD",
+    "ORDER_FIELD",
     "ORDER_NOT_FOUND_CODES",
+    "ORIGINAL_QUANTITY_FIELD",
     "STATUS_FIELD",
     "SYMBOL_FIELD",
     "VST_OPEN_ORDER_STATUSES",
@@ -117,6 +136,7 @@ __all__ = [
     "VST_ORDER_STATUS_FILLED",
     "VST_ORDER_STATUS_NEW",
     "VST_ORDER_STATUS_PARTIALLY_FILLED",
+    "VST_ORDER_STATUS_PENDING",
     "RouterBingXOrdersError",
     "VSTOrderStatus",
     "cancel_rebalance_orders",
@@ -127,34 +147,47 @@ __all__ = [
 #: module's own name — the convention :mod:`router.bingx_dry_run` sets with
 #: ``bingx_dry_run`` and :mod:`router.bingx_order` with ``bingx_order`` —
 #: so an operator greps one word and lands on the read-back that refused.
-#: A refusal here is a fault of the *ask* (a status the system cannot
-#: translate, an order payload the venue shaped wrong, an item that names
-#: no order) rather than a fact about a leg: the venue's own refusals keep
-#: feature 1's ``bingx_refused`` word and propagate untouched.
+#: A refusal here is a fault of the *ask* (an order payload the venue
+#: shaped wrong, an item that names no order) rather than a fact about a
+#: leg: the venue's own refusals keep feature 1's ``bingx_refused`` word
+#: and propagate untouched.
 BINGX_ORDERS_CODE = "bingx_orders"
 
 #: The venue's own field spellings, as its order documents carry them.
 #: Declared once at the venue boundary, never spelled at a call site.
 SYMBOL_FIELD = "symbol"
 CLIENT_ORDER_ID_FIELD = "clientOrderID"
+#: The venue's single-order read spells its identifier echo one letter
+#: lower — ``clientOrderId`` — as ``live/query_order_pending.json``
+#: records; the plan's orders and the open-orders listing carry the
+#: capital-``ID`` spelling above.  The echo is read under both.
+CLIENT_ORDER_ID_ECHO_FIELD = "clientOrderId"
 STATUS_FIELD = "status"
+ORIGINAL_QUANTITY_FIELD = "origQty"
 EXECUTED_QUANTITY_FIELD = "executedQty"
 AVERAGE_PRICE_FIELD = "avgPrice"
+#: The key the single-order read wraps its order document under: the live
+#: endpoint answers ``{"order": {...}}`` as its ``data`` (recorded in
+#: ``live/query_order_pending.json``).  An answer that carries no such key
+#: is read as the order object itself.
+ORDER_FIELD = "order"
 #: The key the open-orders listing wraps its rows under, when it wraps
 #: them at all: the venue answers either a bare array or ``{"orders": [
 #: ...], "total": n}``, and both are read.
 OPEN_ORDERS_FIELD = "orders"
 
-#: The venue's status vocabulary, closed to exactly the six words feature
-#: 3's sentence names.  A value outside this set is a translation this
-#: system has not written, refused rather than passed through; ``NEW`` and
-#: ``PARTIALLY_FILLED`` are also the two the venue's open-orders listing
-#: can carry.
+#: The venue's status vocabulary: the words this system knows the venue to
+#: use, ``PENDING`` included — the live endpoint's word for a resting
+#: order, which feature 3's sentence omits.  The set documents the known
+#: words and no longer gates the read-back: a status outside it is
+#: reported as the venue spelled it, never refused, because a word BingX
+#: coins tomorrow is a fact about the order, not a fault of the ask.
 VST_ORDER_STATUS_NEW = "NEW"
 VST_ORDER_STATUS_PARTIALLY_FILLED = "PARTIALLY_FILLED"
 VST_ORDER_STATUS_FILLED = "FILLED"
 VST_ORDER_STATUS_CANCELED = "CANCELED"
 VST_ORDER_STATUS_EXPIRED = "EXPIRED"
+VST_ORDER_STATUS_PENDING = "PENDING"
 VST_ORDER_STATUSES = frozenset(
     {
         VST_ORDER_STATUS_NEW,
@@ -162,6 +195,7 @@ VST_ORDER_STATUSES = frozenset(
         VST_ORDER_STATUS_FILLED,
         VST_ORDER_STATUS_CANCELED,
         VST_ORDER_STATUS_EXPIRED,
+        VST_ORDER_STATUS_PENDING,
     }
 )
 
@@ -192,13 +226,19 @@ VST_ORDER_NOT_FOUND = "not_found"
 #: integers and as strings across versions.
 ORDER_NOT_FOUND_CODES = frozenset({ORDER_NOT_FOUND_CODE, 109421})
 
-#: The two statuses that mean an order is still working on the venue's book
-#: and can therefore be cancelled — the complement, within the closed
-#: vocabulary, of the terminal states.  Exposed so a caller can ask an
-#: answered :class:`VSTOrderStatus` whether the order is still live
-#: (:attr:`VSTOrderStatus.is_open`) without re-spelling the pair.
+#: The statuses that mean an order is still working on the venue's book
+#: and can therefore be cancelled — the complement, within the known
+#: vocabulary, of the terminal states.  ``PENDING`` is the live endpoint's
+#: word for a resting order (``live/query_order_pending.json``).  Exposed
+#: so a caller can ask an answered :class:`VSTOrderStatus` whether the
+#: order is still live (:attr:`VSTOrderStatus.is_open`) without
+#: re-spelling the set.
 VST_OPEN_ORDER_STATUSES = frozenset(
-    {VST_ORDER_STATUS_NEW, VST_ORDER_STATUS_PARTIALLY_FILLED}
+    {
+        VST_ORDER_STATUS_NEW,
+        VST_ORDER_STATUS_PARTIALLY_FILLED,
+        VST_ORDER_STATUS_PENDING,
+    }
 )
 
 
@@ -206,12 +246,14 @@ class RouterBingXOrdersError(RouterError):
     """The read-back or the cancel cannot be answered at all.
 
     Raised for a fault of the *ask*, never for a fact about an order: a
-    venue status word this system has no translation for, an order payload
-    that is not a mapping or that is missing the fields the sentence reads,
-    an ``executedQty`` or ``avgPrice`` offered as a float or as something
-    that is not a decimal, an item handed in that names no order, or a
-    client that does not expose the method the verb needs.  The venue's own
-    refusal — including the not-found answer this module translates into
+    status the venue did not spell as readable text, an order payload that
+    is not a mapping or that is missing the fields the sentence reads, an
+    ``origQty``, ``executedQty`` or ``avgPrice`` offered as a float or as
+    something that is not a decimal, an item handed in that names no
+    order, or a client that does not expose the method the verb needs.  A
+    status word outside :data:`VST_ORDER_STATUSES` is *not* one of these —
+    it is reported as the venue spelled it.  The venue's own refusal —
+    including the not-found answer this module translates into
     :data:`VST_ORDER_NOT_FOUND` — keeps feature 1's class and propagates
     untouched; what is raised here is what *this* module cannot read.
 
@@ -225,10 +267,11 @@ class VSTOrderStatus:
     """One of the book's orders, as the venue answered for it.
 
     The value :func:`read_back_orders` answers for one ``clientOrderID``:
-    the status the venue reports — one of the six words in
-    :data:`VST_ORDER_STATUSES`, or this system's :data:`VST_ORDER_NOT_FOUND`
-    when the venue holds no record — beside the two measurements the
-    sentence names.
+    the status the venue reports — its own word, spelled as it spelled it
+    (:data:`VST_ORDER_STATUSES` documents the words this system knows,
+    ``PENDING`` among them), or this system's :data:`VST_ORDER_NOT_FOUND`
+    when the venue holds no record — beside the measurements the sentence
+    names.
 
     * ``symbol`` — the leg, the venue's hyphenated spelling, when it is
       known: the caller's order normally names it, and a bare identifier
@@ -239,6 +282,9 @@ class VSTOrderStatus:
     * ``client_order_id`` — the venue field's payload, the identifier the
       order was looked up by (feature 3's forty-character projection).
     * ``status`` — the venue's word, or :data:`VST_ORDER_NOT_FOUND`.
+    * ``original_quantity`` — the venue's ``origQty`` as an exact
+      :class:`~decimal.Decimal`, when the venue's document carries it, and
+      ``None`` when it does not (and always for a not-found order).
     * ``executed_quantity`` — the venue's ``executedQty`` as an exact
       :class:`~decimal.Decimal`, or ``None`` when the order was not found.
     * ``average_price`` — the venue's ``avgPrice`` as an exact
@@ -249,8 +295,10 @@ class VSTOrderStatus:
     ``executed_quantity`` and ``average_price`` are required together,
     exactly when the status is not :data:`VST_ORDER_NOT_FOUND`: a found
     order always has both (the venue answers ``"0"`` when nothing has
-    filled), and a not-found order has neither.  Frozen and hashable, so a
-    read-back can stand as a key or sit in a set.
+    filled), and a not-found order has neither.  ``original_quantity`` is
+    answered exactly when the venue's document carried it, and never for a
+    not-found order.  Frozen and hashable, so a read-back can stand as a
+    key or sit in a set.
     """
 
     symbol: str | None
@@ -258,6 +306,7 @@ class VSTOrderStatus:
     status: str
     executed_quantity: Decimal | None
     average_price: Decimal | None
+    original_quantity: Decimal | None = None
 
     def __post_init__(self) -> None:
         if self.symbol is not None and (
@@ -287,23 +336,40 @@ class VSTOrderStatus:
         object.__setattr__(
             self, "client_order_id", self.client_order_id.strip()
         )
-        if self.status not in VST_ORDER_STATUSES | {VST_ORDER_NOT_FOUND}:
+        if not isinstance(self.status, str) or not self.status.strip():
             raise RouterBingXOrdersError(
-                f"{BINGX_ORDERS_CODE}: an order status is one of "
-                f"{sorted(VST_ORDER_STATUSES)} or {VST_ORDER_NOT_FOUND!r}, "
-                f"got {self.status!r}; a word outside the vocabulary is not "
-                "one this system has a translation for"
+                f"{BINGX_ORDERS_CODE}: an order status is the venue's own "
+                f"word as non-empty text, got {self.status!r} "
+                f"({type(self.status).__name__}); a blank or unreadable "
+                "status is a response this module cannot read, whatever "
+                "word it was going to report"
+            )
+        object.__setattr__(self, "status", self.status.strip())
+        if self.original_quantity is not None and (
+            not isinstance(self.original_quantity, Decimal)
+            or not self.original_quantity.is_finite()
+            or self.original_quantity < 0
+        ):
+            raise RouterBingXOrdersError(
+                f"{BINGX_ORDERS_CODE}: the original_quantity for "
+                f"{self.client_order_id!r} must be a finite, non-negative "
+                f"Decimal, got {self.original_quantity!r} "
+                f"({type(self.original_quantity).__name__}); a quantity "
+                "that is not a number, or runs negative, is not one a "
+                "venue reports"
             )
         if self.status == VST_ORDER_NOT_FOUND:
             if (
                 self.executed_quantity is not None
                 or self.average_price is not None
+                or self.original_quantity is not None
             ):
                 raise RouterBingXOrdersError(
                     f"{BINGX_ORDERS_CODE}: an order the venue holds no "
-                    "record of carries neither an executed quantity nor an "
-                    f"average price, got {self.executed_quantity!r} and "
-                    f"{self.average_price!r}; there is no order to have "
+                    "record of carries neither an original quantity nor an "
+                    "executed quantity nor an average price, got "
+                    f"{self.original_quantity!r}, {self.executed_quantity!r} "
+                    f"and {self.average_price!r}; there is no order to have "
                     "filled, and a number here would be invented"
                 )
             return
@@ -333,26 +399,33 @@ class VSTOrderStatus:
     def is_open(self) -> bool:
         """Whether the order is still live and so cancellable.
 
-        True for :data:`VST_ORDER_STATUS_NEW` and
-        :data:`VST_ORDER_STATUS_PARTIALLY_FILLED` — the two words for an
-        order still working on the venue's book — and false for every
-        terminal status and for :data:`VST_ORDER_NOT_FOUND`.
+        True for :data:`VST_ORDER_STATUS_NEW`,
+        :data:`VST_ORDER_STATUS_PARTIALLY_FILLED` and
+        :data:`VST_ORDER_STATUS_PENDING` — the words for an order still
+        working on the venue's book — and false for every terminal status,
+        for a word this system does not know, and for
+        :data:`VST_ORDER_NOT_FOUND`.
         """
         return self.status in VST_OPEN_ORDER_STATUSES
 
     def as_dict(self) -> dict[str, Any]:
         """The status as the venue's own field spellings, ready to print.
 
-        ``symbol``, ``clientOrderID``, ``status``, ``executedQty`` and
-        ``avgPrice`` — the keys the venue's order document carries — with
-        the two decimals rendered as their exact string spellings (and
-        ``None`` where a not-found order has no measurement), so a
-        ``json.dumps`` of this answer is one line of a plan-like report.
+        ``symbol``, ``clientOrderID``, ``status``, ``origQty``,
+        ``executedQty`` and ``avgPrice`` — the keys the venue's order
+        document carries — with the decimals rendered as their exact
+        string spellings (and ``None`` where a not-found order has no
+        measurement), so a ``json.dumps`` of this answer is one line of a
+        plan-like report.
         """
         return {
             SYMBOL_FIELD: self.symbol,
             CLIENT_ORDER_ID_FIELD: self.client_order_id,
             STATUS_FIELD: self.status,
+            ORIGINAL_QUANTITY_FIELD: (
+                None if self.original_quantity is None
+                else str(self.original_quantity)
+            ),
             EXECUTED_QUANTITY_FIELD: (
                 None if self.executed_quantity is None
                 else str(self.executed_quantity)
@@ -505,12 +578,17 @@ def _status_from(
 ) -> VSTOrderStatus:
     """Fold a venue order document into a :class:`VSTOrderStatus`, or refuse.
 
-    The venue's read answer is one order object: its ``status`` word
-    (closed to the six the sentence names), its ``executedQty`` and
-    ``avgPrice``, and — when the venue echoes it — its ``clientOrderID``,
-    which is checked against the identifier we asked for so an answer
-    about a different order is refused rather than reported under this
-    one's name.
+    The venue's read answer wraps its order document under
+    :data:`ORDER_FIELD` — the live endpoint answers ``{"order": {...}}``
+    as its ``data`` — so the object under that key is read when the answer
+    wraps one, and an answer that already *is* the order object is read
+    just as gladly.  From the order object: its ``status`` word, reported
+    verbatim whether or not :data:`VST_ORDER_STATUSES` knows it; its
+    ``origQty`` when it carries one, its ``executedQty`` and ``avgPrice``;
+    and — when the venue echoes it — its ``clientOrderID`` (spelled
+    ``clientOrderId`` by the single-order read), which is checked against
+    the identifier we asked for so an answer about a different order is
+    refused rather than reported under this one's name.
     """
     if not isinstance(document, Mapping):
         raise RouterBingXOrdersError(
@@ -518,7 +596,17 @@ def _status_from(
             f"{client_order_id!r} is an order object, got {document!r} "
             f"({type(document).__name__})"
         )
-    echoed = document.get(CLIENT_ORDER_ID_FIELD)
+    if ORDER_FIELD in document:
+        wrapped = document[ORDER_FIELD]
+        if not isinstance(wrapped, Mapping):
+            raise RouterBingXOrdersError(
+                f"{BINGX_ORDERS_CODE}: the venue's answer for "
+                f"{client_order_id!r} wraps its order under "
+                f"{ORDER_FIELD!r} as an object, got {wrapped!r} "
+                f"({type(wrapped).__name__})"
+            )
+        document = wrapped
+    echoed = document.get(CLIENT_ORDER_ID_FIELD, document.get(CLIENT_ORDER_ID_ECHO_FIELD))
     if echoed is not None and (
         not isinstance(echoed, str) or echoed.strip() != client_order_id
     ):
@@ -537,14 +625,6 @@ def _status_from(
             "the first thing the sentence reports"
         )
     status = raw_status.strip()
-    if status not in VST_ORDER_STATUSES:
-        raise RouterBingXOrdersError(
-            f"{BINGX_ORDERS_CODE}: the venue reports status {status!r} for "
-            f"{client_order_id!r}, which is not one of "
-            f"{sorted(VST_ORDER_STATUSES)}; the vocabulary is closed to the "
-            "words feature 3 names, and a word outside it is a translation "
-            "nobody has written"
-        )
     answer_symbol = document.get(SYMBOL_FIELD)
     name = symbol
     if name is None and isinstance(answer_symbol, str) and answer_symbol.strip():
@@ -553,6 +633,11 @@ def _status_from(
         symbol=name,
         client_order_id=client_order_id,
         status=status,
+        original_quantity=(
+            _decimal_field(document, ORIGINAL_QUANTITY_FIELD, client_order_id)
+            if ORIGINAL_QUANTITY_FIELD in document
+            else None
+        ),
         executed_quantity=_decimal_field(
             document, EXECUTED_QUANTITY_FIELD, client_order_id
         ),
