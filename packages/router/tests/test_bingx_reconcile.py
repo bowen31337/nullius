@@ -914,6 +914,37 @@ def test_the_reconciliation_refuses_an_unparsable_rebalance_ts_by_name(
     assert str(refusal.value).startswith(BINGX_RECONCILE_CODE)
 
 
+def test_the_reconciliation_refuses_a_naive_iso_string_by_name(
+    test_database_url: str,
+) -> None:
+    """The book's own spelling *without* an offset is a naive value and is
+    refused by this member, naming the value, before anything is read.
+
+    The reported defect is precisely about the book carrying ``rebalance_ts``
+    as a string: an offset-less one parses as a naive instant, which the
+    forward store would otherwise reject only deep inside itself.  The
+    refusal must be the router's own, up front, and must reach neither the
+    venue nor the store.
+    """
+    client = _FakeClient()
+    with pytest.raises(RouterBingXReconcileError) as refusal:
+        reconcile_rebalance_fill_costs(
+            client=client,
+            book_id=BOOK_ID,
+            rebalance_ts="2026-09-30T00:00:00",  # no offset: naive
+            database_url=test_database_url,
+        )
+    message = str(refusal.value)
+    assert message.startswith(BINGX_RECONCILE_CODE)
+    # The refusal names the value rather than surfacing a bare type error.
+    assert "2026, 9, 30" in message
+    # Nothing was read from the venue, and nothing was written to the store.
+    assert client.queried == []
+    assert client.contracts_calls == 0
+    assert client.premium_index_calls == 0
+    assert reconciled_fill_costs(database_url=test_database_url) == ()
+
+
 def test_the_reconciliation_accepts_an_iso_string_with_an_offset(
     test_database_url: str,
 ) -> None:
