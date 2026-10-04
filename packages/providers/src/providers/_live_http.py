@@ -31,6 +31,15 @@ here, rather than re-decided (and re-forgotten) per vendor:
   congestion better than any schedule of ours — and otherwise the exponential
   ladder 1, 2, 4 s plus additive jitter drawn from an injectable random, so a
   deployment's agents that all failed together do not all retry together.
+  Either way the wait is bounded by :data:`MAX_RETRY_AFTER_SECONDS`: a header
+  is a number the vendor — or a proxy, or a hostile middlebox — chooses, and
+  one ``retry-after: 86400`` must not block a model call for a day, ``inf``
+  must not block it forever (or escape as a raw ``OverflowError``, outside
+  this module's vocabulary), and ``1e9`` must not block it for thirty-one
+  years.  A retry-after at or below the ceiling is honoured verbatim; one
+  above it is refused at once as a :class:`ProviderHTTPError`, because the
+  vendor is saying *not soon* and the caller, not the door, decides what to
+  do about that.
   Every other failure is not transient: another 4xx is the *request* being
   refused (a bad model name, a bad key, a malformed body) and re-sending it
   would be the same refusal with more noise, so it raises at once.
@@ -73,6 +82,7 @@ import http.client
 import ipaddress
 import json
 import logging
+import math
 import random
 import time
 import urllib.error
@@ -85,6 +95,7 @@ from ._errors import CompletionMalformedError, ProviderError
 
 __all__ = [
     "HOST_REFUSED_CODE",
+    "MAX_RETRY_AFTER_SECONDS",
     "PROVIDER_HTTP_CODE",
     "PROVIDER_TRANSPORT_CODE",
     "RETRYABLE_STATUSES",
@@ -122,6 +133,20 @@ SECRET_HEADER_NAMES: Final[frozenset[str]] = frozenset(
 #: something true about the request or the vendor that re-sending cannot
 #: change, and is refused at once.
 RETRYABLE_STATUSES: Final[frozenset[int]] = frozenset({429, 500, 502, 503, 529})
+
+#: The ceiling, in seconds, on any wait between attempts — the vendor's own
+#: ``retry-after`` and the door's exponential ladder alike.  A ``retry-after``
+#: header is a number the vendor chooses, and a vendor — or a proxy, or a
+#: gateway, or a middlebox that rewrites headers — can choose *86400* (a day),
+#: *1e9* (thirty-one years) or *inf* (forever, or a raw ``OverflowError`` that
+#: is not a :class:`~providers.ProviderError` at all and so escapes the whole
+#: provider seam's vocabulary).  Sixty seconds is the point past which "retry
+#: after a moment" has stopped being what the vendor is saying: above it the
+#: door refuses at once with :class:`ProviderHTTPError`, naming the value and
+#: this ceiling, and leaves the decision — wait, fail over, give up — to the
+#: caller rather than blocking the research loop on one header either could
+#: have written.
+MAX_RETRY_AFTER_SECONDS: Final[float] = 60.0
 
 #: The greppable word that opens every :class:`ProviderHostRefusedError`
 #: message: ``host_refused``.  An operator greps one word for *a live call
@@ -295,17 +320,21 @@ def post_json(
     because the member is stdlib-only); a test injects a callable of
     :data:`Transport`'s shape and opens no socket.  ``sleep`` and ``random``
     are injectable the same way: the retry waits are the vendor's
-    ``retry-after`` when present, otherwise the exponential ladder 1, 2, 4 s
-    plus additive jitter from ``random()``.
+    ``retry-after`` when present and at or below
+    :data:`MAX_RETRY_AFTER_SECONDS`, otherwise the exponential ladder 1, 2,
+    4 s plus additive jitter from ``random()``, both capped at the ceiling —
+    a ``retry-after`` above it is refused at once (see below).
 
     Raises :class:`ProviderHostRefusedError` before anything is sent when the
     URL's host is not in ``allowed_hosts`` or the scheme is not https on a
     non-loopback host; :class:`ProviderTransportError` when every attempt
     timed out or dropped; :class:`ProviderHTTPError` — carrying the status on
     ``.status`` and the vendor's own message on ``.detail`` — when a
-    retryable status survived ``max_attempts`` attempts or any other status
-    was answered; and :class:`CompletionMalformedError` when a 2xx body is
-    not a JSON object.
+    retryable status survived ``max_attempts`` attempts, a retryable status
+    carried a ``retry-after`` above :data:`MAX_RETRY_AFTER_SECONDS` (refused
+    at once rather than sleeping a day, a year or forever), or any other
+    status was answered; and :class:`CompletionMalformedError` when a 2xx
+    body is not a JSON object.
     """
     if max_attempts < 1:
         raise ValueError(
@@ -353,11 +382,22 @@ def post_json(
             )
             return _decode_object(response_body, request_headers)
         if status in RETRYABLE_STATUSES and attempt < max_attempts:
-            wait = _wait_seconds(
-                attempt,
-                _retry_after_seconds(_header_value(response_headers, "retry-after")),
-                random,
+            retry_after = _retry_after_seconds(
+                _header_value(response_headers, "retry-after")
             )
+            if retry_after is not None and retry_after > MAX_RETRY_AFTER_SECONDS:
+                # The vendor is saying "not soon" — a day, thirty-one years,
+                # forever.  Sleeping it would block the caller for as long as
+                # a header says, and ``inf`` would hang or escape as a raw
+                # OverflowError outside this module's vocabulary; the door
+                # refuses at once instead, in the vendor's own word, and the
+                # caller decides what to do about a wait that long.
+                failure = _retry_after_over_ceiling_error(
+                    url, request_headers, status, response_body, retry_after
+                )
+                log.error("POST %s: %s", url, failure)
+                raise failure
+            wait = _wait_seconds(attempt, retry_after, random)
             log.warning(
                 "POST %s: attempt %d of %d answered status %d; retrying in %.3f s",
                 url,
@@ -460,33 +500,51 @@ def _wait_seconds(
 ) -> float:
     """The wait before the attempt after the one that just failed.
 
-    The vendor's ``retry-after`` in seconds when it sent one — verbatim, with
-    no jitter on top, because the vendor knows its own congestion and a
-    deployment that argued with it would be retrying into the same wall.
-    Otherwise the exponential ladder: ``2 ** (attempt - 1)`` seconds — 1, 2,
-    4 — plus additive jitter from the injectable ``random``, so callers that
-    all failed together do not all retry together.
+    The vendor's ``retry-after`` in seconds when it sent one — honoured
+    verbatim, with no jitter on top, because the vendor knows its own
+    congestion and a deployment that argued with it would be retrying into
+    the same wall.  Otherwise the exponential ladder: ``2 ** (attempt - 1)``
+    seconds — 1, 2, 4 — plus additive jitter from the injectable ``random``,
+    so callers that all failed together do not all retry together.
+
+    Both ends are capped at :data:`MAX_RETRY_AFTER_SECONDS`: the caller may
+    raise ``max_attempts`` (and so reach a ladder rung well past the ceiling,
+    ``2 ** 8`` and beyond), and the jitter is an injected draw the door does
+    not otherwise bound — so the ladder's base is clamped at the ceiling and
+    the jitter is bounded by the room left under it, and no path can sleep
+    above the ceiling.  A ``retry_after`` only reaches here already at or
+    below the ceiling: the loop refuses a larger one before calling this.
     """
     if retry_after is not None:
         return retry_after
-    return float(2 ** (attempt - 1)) + max(0.0, jitter())
+    base = min(float(2 ** (attempt - 1)), MAX_RETRY_AFTER_SECONDS)
+    return base + min(max(0.0, jitter()), MAX_RETRY_AFTER_SECONDS - base)
 
 
 def _retry_after_seconds(value: object) -> float | None:
     """Read a ``retry-after`` header's value as seconds, or answer ``None``.
 
-    ``None`` — never a guess — when the header is absent, unreadable, or an
+    ``None`` — never a guess — when the header is absent, unreadable, an
     HTTP-date rather than a delta (the door's vendors send deltas; a date is
-    a clock the door has no view of), so the caller falls back to the
-    exponential ladder rather than sleeping on a number it invented.  A
-    negative delta clamps to zero: a vendor that answers the past is saying
-    *now*, not *backwards*.
+    a clock the door has no view of), or ``nan``: ``float`` reads ``nan``,
+    but it is not a *wait*, and ``max(0.0, nan)`` returns whichever operand
+    Python happens to compare first, so the caller falls back to the
+    exponential ladder rather than sleeping on a number the door invented.
+
+    ``inf`` is *not* ``None``: it parses to a wait larger than any ceiling,
+    and the loop refuses a retry-after above the ceiling, so ``inf`` leaves
+    here honestly as itself and meets that refusal — where it would otherwise
+    hang ``sleep`` forever or raise a raw ``OverflowError``.  A negative
+    delta clamps to zero: a vendor that answers the past is saying *now*, not
+    *backwards*.
     """
     if value is None:
         return None
     try:
         seconds = float(str(value).strip())
     except ValueError:
+        return None
+    if math.isnan(seconds):
         return None
     return max(0.0, seconds)
 
@@ -574,6 +632,39 @@ def _http_error(
             f"status {status} from POST {url} on the first attempt, not "
             f"retried: {detail}"
         )
+    return ProviderHTTPError(
+        _scrub_text(sentence, request_headers), status=status, detail=detail
+    )
+
+
+def _retry_after_over_ceiling_error(
+    url: str,
+    request_headers: Mapping[str, str],
+    status: int,
+    response_body: bytes,
+    retry_after: float,
+) -> ProviderHTTPError:
+    """Build the refusal for a retryable status asking to wait past the ceiling.
+
+    The vendor answered a status the door *would* retry, but with a
+    ``retry-after`` above :data:`MAX_RETRY_AFTER_SECONDS` — a day, a year,
+    forever.  Sleeping it would block the caller for as long as one header
+    says, which is exactly the stall the ceiling exists to stop, so the door
+    refuses at once instead: a :class:`ProviderHTTPError` carrying the status
+    (the caller may still branch on it — a 429 is still a rate limit), with a
+    message that names the vendor's value and the ceiling, the two numbers the
+    decision needs.  The vendor's own error body is folded in as the detail
+    the other HTTP refusals carry, scrubbed the same way.
+    """
+    detail = _scrub_text(_vendor_error_message(response_body), request_headers)
+    sentence = (
+        f"status {status} from POST {url} carries retry-after "
+        f"{_seconds_for_message(retry_after)} s, above the door's ceiling of "
+        f"{_seconds_for_message(MAX_RETRY_AFTER_SECONDS)} s; not retried. "
+        f"The vendor is saying "
+        f"'not soon', and the caller decides what to do about a wait that "
+        f"long: {detail}"
+    )
     return ProviderHTTPError(
         _scrub_text(sentence, request_headers), status=status, detail=detail
     )
@@ -677,6 +768,20 @@ def _scrub_text(text: str, headers: Mapping[str, str]) -> str:
         if isinstance(value, str) and value:
             text = text.replace(value, "***")
     return text
+
+
+def _seconds_for_message(seconds: float) -> str:
+    """Render a wait as the plainest number a message can carry.
+
+    The vendor's header was an integer count of seconds ("86400") and the
+    ceiling is one (60), so the message names both as integers rather than as
+    float reprs ("86400.0", "60.0") a reader would stop at — a whole number of
+    seconds is what a wait is, and the message should read like the header an
+    operator can go look at.  A fractional value keeps its decimal.
+    """
+    if math.isfinite(seconds) and seconds == int(seconds):
+        return str(int(seconds))
+    return repr(seconds)
 
 
 def _attempts_word(count: int) -> str:

@@ -397,8 +397,9 @@ def test_jitter_is_additive_from_the_injected_random():
 
 def test_the_vendors_retry_after_is_the_wait_verbatim():
     # The vendor's own congestion estimate is honoured exactly: no jitter on
-    # top, no rounding, no ceiling — the door does not know better than the
-    # vendor when the vendor will be free.
+    # top, no rounding — the door does not know better than the vendor when
+    # the vendor will be free.  (The one bound is MAX_RETRY_AFTER_SECONDS,
+    # read by the ceiling section below; 7 s is well under it.)
     transport = _transport((429, {"retry-after": "7"}, b"rate limited"), _ok())
 
     _, sleeper = _drive(transport, random=lambda: 99.0)
@@ -437,6 +438,136 @@ def test_an_unreadable_retry_after_falls_back_to_the_ladder():
     _, sleeper = _drive(transport)
 
     assert sleeper.waits == [1.0]
+
+
+# ── The retry-after ceiling: a vendor cannot stall the door ────────────────────
+#
+# A header is a number a vendor — or a proxy, or a gateway, or a hostile
+# middlebox — chooses, and the door must not hand that choice a blank cheque:
+# one header at 86400 s blocks a model call for a day, "inf" blocks it
+# forever (or escapes as a raw OverflowError, outside the provider
+# vocabulary), and "1e9" blocks it for thirty-one years.  MAX_RETRY_AFTER_
+# SECONDS is the ceiling, and a retry-after at or below it is honoured
+# verbatim while one above it is refused at once, as the vendor's own HTTP
+# error — the caller decides what to do about "not soon".
+
+
+def test_the_ceiling_is_a_module_constant_of_sixty_seconds():
+    # The bound is a named module constant, not a literal buried in the loop,
+    # so a deployment reads the number the door holds and the suite pins it as
+    # the value the spec states.
+    assert live_http.MAX_RETRY_AFTER_SECONDS == 60.0
+
+
+def test_a_retry_after_of_a_day_is_refused_at_once_without_sleeping():
+    # 86400 s is a vendor saying "not soon": the door sleeps nothing, sends
+    # nothing more, and refuses as the vendor's own HTTP error — carrying the
+    # status and naming both the value and the ceiling, the two numbers the
+    # caller needs to decide.
+    transport = _transport((429, {"retry-after": "86400"}, b"{}"), _ok())
+
+    with pytest.raises(ProviderHTTPError) as raised:
+        _drive(transport)
+
+    assert str(raised.value).startswith(f"{PROVIDER_HTTP_CODE}:")
+    assert raised.value.status == 429
+    assert "86400" in str(raised.value)
+    assert "60" in str(raised.value)
+    assert len(transport.calls) == 1
+
+
+def test_a_retry_after_of_thirty_one_years_is_refused_at_once():
+    # 1e9 s — about thirty-one years — is the same finding as a day, only
+    # louder; the ceiling catches the magnitude, not one spelling of it.
+    transport = _transport((503, {"retry-after": "1e9"}, b"{}"), _ok())
+
+    with pytest.raises(ProviderHTTPError) as raised:
+        _drive(transport)
+
+    assert raised.value.status == 503
+    assert "1000000000" in str(raised.value)
+    assert len(transport.calls) == 1
+
+
+def test_an_infinite_retry_after_is_refused_as_a_provider_error_not_an_overflow():
+    # "inf" is the failure the raw door is worst at: sleep(inf) either hangs
+    # forever or raises OverflowError, and an OverflowError is not a
+    # ProviderError, so it escapes the seam's whole vocabulary.  The refusal
+    # is the provider's own word.
+    transport = _transport((429, {"retry-after": "inf"}, b"{}"), _ok())
+
+    with pytest.raises(ProviderHTTPError) as raised:
+        _drive(transport)
+
+    assert isinstance(raised.value, ProviderError)
+    assert raised.value.status == 429
+    assert len(transport.calls) == 1
+
+
+def test_the_ceiling_itself_is_honoured_verbatim():
+    # 60 s is at the ceiling, not above it: the boundary is inclusive, so a
+    # vendor that asks for exactly the door's bound is obeyed exactly.
+    transport = _transport((429, {"retry-after": "60"}, b"rate limited"), _ok())
+
+    answered, sleeper = _drive(transport)
+
+    assert answered == _answer_body()
+    assert sleeper.waits == [60.0]
+
+
+def test_a_retry_after_one_second_above_the_ceiling_is_refused():
+    # 61 s is over the bound by one second and meets the same refusal — the
+    # comparison is strict, so there is no gap just above the ceiling.
+    transport = _transport((429, {"retry-after": "61"}, b"rate limited"), _ok())
+
+    with pytest.raises(ProviderHTTPError) as raised:
+        _drive(transport)
+
+    assert raised.value.status == 429
+    assert len(transport.calls) == 1
+
+
+def test_a_nan_retry_after_falls_back_to_the_ladder():
+    # "nan" is not a finite non-negative number, so it is unreadable in the
+    # header's sense and takes the ladder, exactly as an HTTP-date does — a
+    # value the door cannot compare against a ceiling is not a value it
+    # sleeps on.
+    transport = _transport((429, {"retry-after": "nan"}, b"rate limited"), _ok())
+
+    answered, sleeper = _drive(transport)
+
+    assert answered == _answer_body()
+    assert sleeper.waits == [1.0]
+
+
+def test_the_ladder_never_waits_above_the_ceiling():
+    # The other half of the bound: the door's own exponential ladder must stay
+    # under the ceiling too, so no path — vendor's header or the door's
+    # schedule — can sleep above MAX_RETRY_AFTER_SECONDS.  A long ladder (the
+    # caller may raise max_attempts) is read off the recording sleep.
+    transport = _transport(*[(503, {}, b"overloaded")] * 8, _ok())
+
+    answered, sleeper = _drive(transport, max_attempts=9, random=lambda: 10.0)
+
+    assert answered == _answer_body()
+    assert sleeper.waits, "the ladder was exercised"
+    assert all(wait <= live_http.MAX_RETRY_AFTER_SECONDS for wait in sleeper.waits)
+
+
+@pytest.mark.parametrize("value", ["inf", "nan", "-inf"])
+def test_no_retry_after_value_escapes_the_provider_vocabulary(value):
+    # The closing property of the ceiling: whatever a vendor writes in the
+    # header — infinity either sign, a not-a-number — and however the door
+    # ends up refusing (at once for "not soon", or on the ladder once the
+    # attempts run out), the ending is a ProviderError, never an
+    # OverflowError or a ValueError out of the sleep.
+    transport = _transport((429, {"retry-after": value}, b"{}"))
+
+    with pytest.raises(ProviderError) as raised:
+        _drive(transport)
+
+    assert isinstance(raised.value, ProviderError)
+    assert raised.value.status == 429
 
 
 def test_a_timeout_is_retried():
