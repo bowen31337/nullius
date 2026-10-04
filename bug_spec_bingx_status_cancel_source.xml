@@ -1,0 +1,33 @@
+<bug_spec>
+  <!-- Found on the live VST smoke test, 2026-10-04, right after the status
+       read-back fix merged. Core shape with explicit touches_files: plan-bugs
+       ignores <layout>, and plugin= needs the removed src/app/modules seats
+       (see CLAUDE.md). -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/router/src/router/bingx_mirror.py,packages/router/tests/test_bingx_mirror.py,packages/router/src/router/bingx_orders.py,packages/router/tests/test_bingx_orders.py,packages/router/tests/test_bingx_mirror_e2e.py">
+    <title>--status and --cancel see only the orders today's plan still wants, so filled legs vanish from status and a resting order the plan dropped is never cancelled</title>
+    <symptoms>
+      The synthetic book's rebalance placed five orders on nullius01. The placement store holds all five rows: BTC-USDT, DOGE-USDT, 1000PEPE-USDT, ETH-USDT and SOL-USDT. On the venue, BTC, DOGE and ETH were FILLED and SOL and 1000PEPE were PENDING.
+      `./run.sh vst --book … --status` printed only three lines (1000PEPE PENDING, BTC FILLED, ETH FILLED). DOGE (filled) and SOL (resting) were missing.
+      `--cancel` uses the same order set, so it would leave the resting SOL order on the book.
+      1000PEPE's avgPrice printed as "0E-7"; the venue sent "0.0000000".
+    </symptoms>
+    <reproduction_steps>
+      In router.bingx_mirror's CLI, --status and --cancel call build_mirror_plan(book, client) and pass its legs to read_back_orders and cancel_rebalance_orders. Once a symbol's position reaches its target, or its leg is refused (below_min_notional), it has no leg in today's plan, so that symbol's placed order is never looked up or cancelled. Reproduce with a client whose positions put DOGE at target while its order exists on the venue: --status omits DOGE.
+    </reproduction_steps>
+    <expected>--status and --cancel address the rebalance's orders by identity, not by today's plan.
+      - For every symbol named in the book's weights, the clientOrderID is derived from (book_id, rebalance_ts, symbol) with router.client_order_id and the 40-character projection, exactly as placement does.
+      - --status prints one line per book symbol, in the book's order. A symbol never placed or refused is not_found. Placed symbols show the venue's status, origQty, executedQty and avgPrice.
+      - --cancel cancels every open order whose clientOrderID belongs to that set, whatever today's plan says, and prints each cancelled identifier. Orders of other books and rebalances stay untouched.
+      - Neither command needs DATABASE_URL or places anything.
+      - Decimal quantities and prices are printed in plain positional notation, never exponent form: avgPrice "0.0000000" stays "0.0000000", not "0E-7".
+      - For the recorded state (five book symbols placed, two resting), --status prints a line for all seven book symbols. AGLD-USDT and NCFXUSD2ARS-USDT are not_found, and DOGE and SOL appear with their venue status.</expected>
+    <actual>Root cause: the CLI derives the order set from build_mirror_plan(), which re-sizes the book against live positions, so it contains only the legs still needed today. read_back_orders' as_dict renders Decimal with str(), which gives exponent form for small values.</actual>
+    <constraints>
+      Placement behaviour, the placement store and its idempotency key are unchanged
+      Never edit the fixtures under packages/router/tests/fixtures/bingx_vst/ (live/ included); they are inputs
+      No network access and no credentials in any test
+    </constraints>
+  </bug>
+</bug_spec>
