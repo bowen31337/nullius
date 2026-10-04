@@ -1,0 +1,31 @@
+<bug_spec>
+  <!-- Found by running the Stage 2 service's ExecStart in a systemd-like
+       environment, 2026-10-04 (no systemd user manager in the build sandbox).
+       Core shape with explicit touches_files: plan-bugs ignores <layout>, and
+       plugin= needs the removed src/app/modules seats (see CLAUDE.md). -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="deploy/systemd/nullius-vst-rebalance.service,packages/router/tests/test_bingx_rebalance.py">
+    <title>The scheduled rebalance service fails every slot: systemd provides neither the 1Password service token nor uv on PATH</title>
+    <symptoms>
+      The service's ExecStart (`%h/projects/nullius/run.sh vst-rebalance --book …`) was run with a systemd user unit's environment (HOME, USER, PATH=/usr/local/bin:/usr/bin:/bin):
+      - with no OP_SERVICE_ACCOUNT_TOKEN, op run fails with "No accounts configured for use with 1Password CLI.";
+      - with the token supplied, it fails with `[ERROR] error while starting process: exec: "uv": executable file not found in $PATH`. uv lives in ~/.local/bin/uv.
+      In an interactive shell both work, because ~/.zshrc exports OP_SERVICE_ACCOUNT_TOKEN from ~/.config/op/service-token (mode 0600) and puts ~/.local/bin on PATH. A systemd user service runs neither.
+    </symptoms>
+    <reproduction_steps>
+      From the repository root: `env -i HOME=$HOME USER=$USER PATH=/usr/local/bin:/usr/bin:/bin ./run.sh vst --help` fails on op. Adding OP_SERVICE_ACCOUNT_TOKEN="$(cat ~/.config/op/service-token)" then fails on uv.
+    </reproduction_steps>
+    <expected>The service supplies both itself:
+      - Environment=PATH puts %h/.local/bin before /usr/local/bin:/usr/bin:/bin.
+      - ExecStart loads OP_SERVICE_ACCOUNT_TOKEN at start from %h/.config/op/service-token, for example /bin/sh -c 'OP_SERVICE_ACCOUNT_TOKEN="$(cat %h/.config/op/service-token)" exec %h/projects/nullius/run.sh vst-rebalance --book …'. The token value never appears in the unit file, the repository or any log line.
+      - A missing or unreadable token file makes the unit fail with a clear message, not start op without credentials.
+      Tests parse the unit and pin the PATH entry, the token-file load and the absence of any literal token. A test also runs the ExecStart command string in an env -i environment, with run.sh replaced by a stub, to prove PATH and the token reach the child.</expected>
+    <actual>Root cause: the unit assumes the interactive shell's environment. It sets neither PATH nor the 1Password service-account token, both of which run.sh needs (op run, then uv run).</actual>
+    <constraints>
+      Never write a token, key or secret into any repository file, test or log
+      Nothing installs or enables the units
+      No network access in any test
+    </constraints>
+  </bug>
+</bug_spec>
