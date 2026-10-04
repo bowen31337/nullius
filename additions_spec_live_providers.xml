@@ -1,0 +1,293 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — live LLM providers behind the provider interface</project_name>
+  <addition_summary>
+    Extend the providers workspace member (packages/providers, import name
+    providers) with live model backends, so the research loop's signal agent
+    and policy-development agent can make real model calls. Today the member
+    holds the one seam every model call passes through
+    (Provider.complete(Request) -> Completion), the rules on which model may
+    take which role, and the provenance pins. The only concrete providers are
+    RecordingProvider, a tap with nothing live to wrap, and RecordedProvider,
+    which answers from fixtures only. This addition adds:
+    - a stdlib HTTP layer with a host guard, timeouts, bounded retries and
+      secret scrubbing;
+    - an Anthropic Messages backend;
+    - one OpenAI-compatible chat-completions backend that serves openai,
+      deepseek, google (Gemini's OpenAI-compatible endpoint) and self-hosted
+      vLLM;
+    - a registry that turns a pinned (provider, model, version) triple into
+      the right live provider, using credentials from the environment;
+    - an operator smoke-check command;
+    - a composed component.
+    Batch APIs are out of scope: the live backends answer one request at a
+    time and keep the base class's NotImplementedBatchError.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / stdlib only in the providers member (dependencies = []) / pytest (ruff conventions)</stack>
+    <test_baseline>packages/providers/tests: measured 2026-10-04, 899 passed (PYTHONPATH=src:packages/providers/src, -n 4, 69 s). Workspace suite tests/ green on main.</test_baseline>
+    <conventions>
+      snake_case private modules (providers._name), frozen dataclasses, stdlib
+      only (urllib.request, json), and typed refusals that open with a
+      greppable code word. Each new error class is defined in the module that
+      raises it and subclasses providers.ProviderError. Tests never reach the
+      network: every HTTP call goes through an injected transport callable.
+      Follow CLAUDE.md's Build &amp; Test section.
+
+      Existing pieces (read, do not change):
+      - providers.Request(messages: tuple[Message, ...], model: str,
+        temperature: float = 0.0 (0..2), max_tokens: int = 1024).
+        Message(role in {system, user, assistant}, content: str).
+      - providers.Completion(content, model, usage: Usage, finish_reason in
+        {stop, length}). Usage(input_tokens, output_tokens,
+        cache_read_tokens = 0), all non-negative. Completion.model is the
+        SERVING model.
+      - providers.Provider: complete() validates the request, calls the
+        subclass's _complete(request) and validates the answer.
+        check_model(model) accepts any model by default. A provider that pins
+        a set overrides it to raise UnknownModelError. Provider.completion(...)
+        builds a validated Completion.
+      - providers.ProviderError, ProviderNotConfiguredError,
+        UnknownModelError, CompletionMalformedError.
+      - providers.ModelPin(provider, model, version), stored as
+        "provider/model/version" (e.g. "anthropic/claude-opus-5/20260401").
+        The provider spellings in use are anthropic, openai, google, deepseek
+        and self-hosted.
+      - providers.FixtureStore(root).record(Exchange(request, completion))
+        writes feature 194's fixture file. providers.Exchange is the
+        RecordingProvider's record.
+      - @register builders live only in providers/__init__.py, because a
+        submodule's @register fires late.
+
+      Vendor wire facts:
+      - Anthropic: POST https://api.anthropic.com/v1/messages with headers
+        x-api-key, anthropic-version: 2023-06-01 and content-type
+        application/json. The body has model, max_tokens, an optional
+        top-level system, messages [{role, content}] and temperature (0..1).
+        The answer has content [{type: "text", text}], model, stop_reason
+        (end_turn, stop_sequence, max_tokens, or others) and usage
+        {input_tokens, output_tokens, cache_creation_input_tokens,
+        cache_read_input_tokens}. A failure answers {type: "error", error:
+        {type, message}}. 429 and 529 are retryable, with a retry-after
+        header. A text block may carry cache_control {type: "ephemeral"}, with
+        at most 4 breakpoints.
+      - OpenAI-compatible: POST {base}/chat/completions with Authorization:
+        Bearer KEY. The body has model, messages, temperature, and the length
+        cap (max_completion_tokens for openai, max_tokens for the others). The
+        answer has choices[0].message.content, choices[0].finish_reason
+        (stop, length, content_filter, tool_calls), model and usage
+        {prompt_tokens, completion_tokens}. The cached-input figure is
+        usage.prompt_tokens_details.cached_tokens (openai, google) or
+        usage.prompt_cache_hit_tokens (deepseek). The bases are
+        https://api.openai.com/v1,
+        https://generativelanguage.googleapis.com/v1beta/openai and
+        https://api.deepseek.com. self-hosted takes its base URL from the
+        environment.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Live Provider Backends">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/providers/pyproject.toml,packages/providers/src/providers/_live_http.py,packages/providers/tests/test_live_http.py">
+        System posts one JSON request to a model vendor through
+        providers._live_http.post_json(url, headers, body, *, allowed_hosts,
+        timeout=120.0, max_attempts=4, transport=None, sleep=time.sleep), and
+        it answers the decoded JSON object.
+        - The default transport is urllib.request. Tests inject a callable
+          (url, headers, body_bytes, timeout) -> (status, response_headers,
+          body_bytes), so no test opens a socket.
+        - A URL whose host is not in allowed_hosts raises
+          ProviderHostRefusedError (code word host_refused) before anything
+          is sent. Only https is accepted, except for a loopback host.
+        - Status 429, 500, 502, 503 and 529, a timeout and a dropped
+          connection are retried up to max_attempts. The wait is the
+          retry-after header in seconds when present, otherwise exponential
+          (1, 2, 4 s) with additive jitter from an injectable random.
+        - A final failure raises ProviderTransportError (code word
+          provider_transport) for timeouts and connections, or
+          ProviderHTTPError (code word provider_http) carrying the status and
+          the vendor's own error message. Any other 4xx raises
+          ProviderHTTPError at once, without a retry.
+        - A body that is not a JSON object raises CompletionMalformedError.
+        - The member stays stdlib only. This feature claims
+          packages/providers/pyproject.toml so that no other feature touches
+          it, and it leaves the file unchanged with dependencies = [].
+        - Secret scrubbing: every header value named in a secret-header set
+          (x-api-key, authorization, x-goog-api-key) is replaced by "***" in
+          every exception message, repr and log line. A test passes a fake
+          key and asserts it is absent from every captured output.
+      </feature>
+      <feature index="2" shape="core" depends_on="1"
+               touches_files="packages/providers/src/providers/_anthropic.py,packages/providers/tests/test_anthropic.py">
+        System completes a request through Anthropic's Messages API with
+        providers._anthropic.AnthropicProvider(api_key, *, model,
+        base_url="https://api.anthropic.com", transport=None), a Provider
+        subclass whose _complete posts through feature 1 with allowed_hosts
+        {"api.anthropic.com"}.
+        - System messages are joined into the top-level system field. The
+          rest go in messages in order.
+        - The prefix is cacheable: the system text, and the message just
+          before the final one (when there is one), carry cache_control
+          {type: "ephemeral"}. That is at most 2 breakpoints.
+        - A temperature above 1.0 raises ProviderRequestError (code word
+          unsupported_temperature) before any call. It is never clamped.
+        - check_model refuses any model other than the one the provider was
+          built for, with UnknownModelError.
+        - The answer joins the text blocks into content and copies the
+          response's model field verbatim into Completion.model.
+          stop_reason end_turn or stop_sequence maps to stop, and max_tokens
+          maps to length. Any other stop_reason raises
+          CompletionMalformedError naming it.
+        - Usage: input_tokens = input_tokens + cache_creation_input_tokens +
+          cache_read_input_tokens, so it counts every input token.
+          cache_read_tokens = cache_read_input_tokens. output_tokens =
+          output_tokens.
+        - repr(provider) never shows the key.
+      </feature>
+      <feature index="3" shape="core" depends_on="1"
+               touches_files="packages/providers/src/providers/_openai_compat.py,packages/providers/tests/test_openai_compat.py">
+        System completes a request through an OpenAI-compatible
+        chat-completions endpoint with
+        providers._openai_compat.OpenAICompatProvider(vendor, api_key, *,
+        model, base_url=None, transport=None), a Provider subclass whose
+        _complete posts through feature 1.
+        - vendor is one of openai, deepseek, google and self-hosted, and each
+          has a default base URL and an allowed host (api.openai.com,
+          api.deepseek.com, generativelanguage.googleapis.com). Any other
+          vendor raises ProviderNotConfiguredError.
+        - self-hosted has no default: it requires base_url, and its allowed
+          host is that URL's own host. Its api_key may be empty, in which case
+          no Authorization header is sent.
+        - Messages are sent verbatim with their roles. The length cap is
+          sent as max_completion_tokens for openai and as max_tokens for the
+          other vendors.
+        - check_model refuses any model other than the one the provider was
+          built for, with UnknownModelError.
+        - The answer copies the response's model field verbatim into
+          Completion.model. finish_reason stop maps to stop, and length maps
+          to length. Any other finish_reason, or a null message content,
+          raises CompletionMalformedError naming it.
+        - Usage: input_tokens = prompt_tokens and output_tokens =
+          completion_tokens. cache_read_tokens is
+          prompt_tokens_details.cached_tokens, or prompt_cache_hit_tokens for
+          deepseek, and 0 when the response reports neither.
+        - repr(provider) never shows the key.
+      </feature>
+      <feature index="4" shape="core" depends_on="2,3"
+               touches_files="packages/providers/src/providers/_live.py,packages/providers/tests/test_live.py">
+        System returns a live provider for a pinned model with
+        providers._live.live_provider(pin, env=None, transport=None), and it
+        answers an AnthropicProvider for pin.provider anthropic, or an
+        OpenAICompatProvider for openai, deepseek, google or self-hosted.
+        - Credentials come from env (os.environ by default), one variable
+          per vendor: NULLIUS_ANTHROPIC_API_KEY, NULLIUS_OPENAI_API_KEY,
+          NULLIUS_DEEPSEEK_API_KEY, NULLIUS_GOOGLE_API_KEY, plus
+          NULLIUS_SELF_HOSTED_BASE_URL and an optional
+          NULLIUS_SELF_HOSTED_API_KEY. The NULLIUS_ prefix keeps the research
+          keys apart from claw-forge's own ANTHROPIC_API_KEY, which is never
+          read.
+        - A missing or empty variable raises ProviderNotConfiguredError
+          naming the variable, never its value.
+        - The wire model is pin.model. pin.version is provenance only.
+        - providers._live.require_served(pin, completion) raises
+          ServedModelMismatchError (code word served_model_mismatch) when
+          completion.model is neither pin.model nor pin.model followed by a
+          "-" suffix. It answers the completion unchanged otherwise. This is
+          how a vendor silently serving another model is caught.
+        - LIVE_PROVIDER_ENV_VARS is exported as a mapping from vendor to
+          variable name.
+      </feature>
+      <feature index="5" shape="core" depends_on="4"
+               touches_files="packages/providers/src/providers/live_check.py,packages/providers/tests/test_live_check.py">
+        System makes one real model call from
+        `python -m providers.live_check --pin PROVIDER/MODEL/VERSION
+        [--prompt TEXT] [--max-tokens N] [--record DIR]` and prints one JSON
+        line with pin, served_model, finish_reason, input_tokens,
+        output_tokens, cache_read_tokens, latency_ms and the first 200
+        characters of content.
+        - It builds the provider with feature 4's live_provider, sends one
+          user message (default prompt "Reply with the single word: ok") and
+          applies require_served.
+        - With --record DIR it writes the exchange through
+          providers.FixtureStore(DIR).record(Exchange(request, completion)),
+          so a live answer can become an offline fixture.
+        - Exit codes: 0 on success, 1 on any ProviderError (one stderr line
+          with the error's code word and message), 2 on bad arguments.
+        - main(argv, *, env=None, transport=None, emit=print, clock=None)
+          is injectable. Tests drive it with a fake transport and a fake key,
+          and assert the key is absent from stdout and stderr.
+      </feature>
+      <feature index="6" shape="core" depends_on="4,7"
+               touches_files="packages/providers/src/providers/__init__.py,packages/providers/tests/test_live_component.py">
+        System exports the live backends from the providers package. They
+        are AnthropicProvider, OpenAICompatProvider, live_provider,
+        require_served, LIVE_PROVIDER_ENV_VARS, BudgetedProvider,
+        ProviderHostRefusedError, ProviderTransportError, ProviderHTTPError,
+        ProviderRequestError, ServedModelMismatchError and
+        BudgetExhaustedError, all added to __all__. The package also
+        registers a "live-providers" component with @register in
+        providers/__init__.py, and that component returns a resolver object
+        whose resolve(pin) answers live_provider(pin, os.environ).
+        - Building the component reads no environment variable and makes no
+          call. Only resolve() reads credentials.
+        - create_app().get("live-providers") answers the resolver. The test
+          builds the app with create_app() once.
+        - Every existing export and component of the package is unchanged.
+      </feature>
+      <feature index="7" shape="core" depends_on=""
+               touches_files="packages/providers/src/providers/_budget.py,packages/providers/tests/test_budget.py">
+        System refuses a model call once a token ceiling is spent, through
+        providers._budget.BudgetedProvider(inner, *, max_input_tokens,
+        max_output_tokens). This is a Provider subclass that wraps any
+        Provider and adds each answered completion's usage to its running
+        totals.
+        - When either running total has reached its ceiling, the next
+          complete() raises BudgetExhaustedError (code word budget_exhausted)
+          naming both totals and both ceilings. It raises before the inner
+          provider is called, so nothing is sent.
+        - A call that crosses the ceiling is still answered and counted. The
+          refusal starts with the call after it.
+        - spent() answers (input_tokens, output_tokens). A ceiling of 0
+          refuses the first call.
+        - A ceiling that is negative or not an int raises ValueError at
+          construction.
+        - check_model delegates to the inner provider. Batches are refused
+          with the base class's NotImplementedBatchError.
+        - The totals live in memory, one budget per instance. Persisting
+          spend is a later spec.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    New private modules providers._live_http, providers._anthropic,
+    providers._openai_compat, providers._live and providers._budget, and the runnable module
+    providers.live_check, all in packages/providers/src/providers/. Their tests
+    go in packages/providers/tests/. Every new file is committed as an empty
+    stub so its claim resolves. Only feature 6 edits providers/__init__.py.
+    Nothing calls the live backends yet: binding them into the signal agent
+    and the policy-development agent is a later spec.
+  </integration_points>
+  <constraints>
+    - No test opens a network connection or reads a real credential. Tests
+      use fake keys and assert the key is absent from every captured output.
+    - An API key never appears in any repository file, fixture, log line,
+      exception message, repr or stdout.
+    - No third-party dependency. pyproject.toml files and uv.lock are not
+      edited. HTTP uses urllib.request.
+    - Do not edit .env.tpl, .env.vst.tpl, .env.example, run.sh,
+      claw-forge.yaml or claw-forge.local.yaml.
+    - The existing modules of the providers member keep their behaviour.
+      Only feature 6 edits providers/__init__.py, and it only adds.
+    - No member outside packages/providers is edited. The router member and
+      the order path never import providers.
+    - Do not edit docs/user-journeys/.
+    - All existing workspace tests (tests/) and packages/providers/tests stay
+      green.
+  </constraints>
+  <implementation_steps>
+    <step>Phase 1: the HTTP layer (feature 1) and the token budget (feature 7), in parallel.</step>
+    <step>Phase 2: the Anthropic backend (feature 2) and the OpenAI-compatible backend (feature 3), in parallel.</step>
+    <step>Phase 3: the pin registry (feature 4).</step>
+    <step>Phase 4: the smoke-check command (feature 5) and the package exports with the composed component (feature 6), in parallel.</step>
+  </implementation_steps>
+</project_specification>
