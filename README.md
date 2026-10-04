@@ -56,6 +56,7 @@ Agents write to Z1 only, and Z1 holds no credential for Z0.
 .
 ├── src/app/              # Application factory and module loader (discovers members)
 ├── packages/             # uv workspace members, one per bounded component
+│   ├── api/              #   HTTP transport over the composed application (bearer-token gated)
 │   ├── contract/         #   Z0 MarketWindow contract and signal ABI
 │   ├── ingest/           #   Market-data ingest workers
 │   ├── snapshot/         #   Content-addressed, immutable lake snapshots
@@ -79,16 +80,31 @@ Agents write to Z1 only, and Z1 holds no credential for Z0.
 │   ├── forward/          #   Forward-test records and decay
 │   ├── universe/         #   Monthly point-in-time tradable universe
 │   ├── book/             #   Fixed portfolio construction (IR-weighted composite)
-│   ├── router/           #   Order routing, venue filters and rate limiting
+│   ├── router/           #   Order routing, venue filters, rate limiting and the BingX VST bot
 │   ├── risk/             #   Risk supervisor and kill switches
 │   ├── ops/              #   Metrics API and Streamlit dashboard
 │   ├── artifacts/        #   Per-node artifact store
 │   └── providers/        #   Single normalized interface for model calls
 ├── migrations/           # Relational schema migrations
+├── deploy/systemd/       # Timers and services for the scheduled BingX VST bot
 ├── infra/security/       # Credential isolation, secrets management and policies
 ├── tests/                # Workspace-level contract, invariant and end-to-end suites
-└── docs/                 # PRD, technical architecture and design notes
+└── docs/                 # PRD, technical architecture, design notes and user journeys
 ```
+
+## Paper trading on BingX VST
+
+The `router` member takes the fixed book to a real venue in stages. All of them run against BingX's **VST** venue (simulated funds), and the client refuses any other host.
+
+| Stage | Command | What it does |
+|---|---|---|
+| 0: Dry run | `python -m router.bingx_dry_run --book B --contracts C --marks M` | Builds the order plan from recorded documents and prints one JSON line per order or refused leg. No network, no keys |
+| 1: Mirror | `./run.sh vst --book B [--place \| --status \| --cancel]` | Fetches live contracts, marks and positions, runs a preflight, and places idempotently by client order ID |
+| 2: Scheduled | `./run.sh vst-rebalance --book B` | Runs one 4-hour slot: daily-loss guard, cancel stale orders, reconcile the previous slot's fill costs, place, then record the slot |
+| 2: Flatten | `./run.sh vst-flatten --confirm` | Cancels every order and closes every position. Without `--confirm` it only prints what it would do |
+| Alerting | `./run.sh vst-alert` / `vst-heartbeat` | Sends Telegram alerts for slot outcomes, failed units and a bot that has gone quiet |
+
+The `vst*` commands inject only the VST sub-account key and the Telegram credentials, through 1Password (`op run --env-file=.env.vst.tpl`). They keep their store at `~/.local/share/nullius/vst.db` unless `DATABASE_URL` says otherwise. `deploy/systemd/` schedules a rebalance at 00/04/08/12/16/20:05 UTC and a heartbeat check every hour, and a failed slot triggers an alert unit.
 
 ## Stack
 
@@ -114,8 +130,12 @@ cp .env.example .env
 The workspace-level suites and the per-member suites are separate trees, so run both:
 
 ```bash
-uv run pytest tests
-uv run pytest packages/*/tests
+# Workspace contract, invariant and end-to-end suites
+uv run --all-packages pytest -n 4 --dist loadfile
+
+# One member's suite; put every member it imports on PYTHONPATH
+PYTHONPATH=src:packages/router/src:packages/book/src:packages/ingest/src:packages/risk/src \
+  uv run --no-sync pytest -q -n 4 packages/router/tests
 ```
 
 Each test gets a temporary lake root and a throwaway SQLite database. Set `TEST_DATABASE_URL` to run against PostgreSQL instead.
@@ -125,6 +145,7 @@ Each test gets a temporary lake root and a throwaway SQLite database. Set `TEST_
 - [`docs/alpha-engine-prd.md`](docs/alpha-engine-prd.md): product requirements, planted-null mechanism, replay objective and success metrics
 - [`docs/nullius-tech-architecture.md`](docs/nullius-tech-architecture.md): trust zones, component map, data model, determinism contract and failure modes
 - [`docs/design.md`](docs/design.md): design notes
+- [`docs/user-journeys/`](docs/user-journeys/README.md): every external surface (dashboard, HTTP API and CLI) as a journey, with a browser-driven sweep
 
 ## How it was built
 
@@ -132,11 +153,11 @@ NULLIUS was built feature by feature, with each feature specified up front and i
 
 ## Status
 
-**Research build: not production trading software.** Most components and their end-to-end tests are in place. The system has not been validated with capital, and nothing here is financial advice. Trading carries a substantial risk of loss.
+**Research build: not production trading software.** Most components and their end-to-end tests are in place. Execution runs on a schedule against BingX's simulated-funds VST venue only. The system has not been validated with capital, and nothing here is financial advice. Trading carries a substantial risk of loss.
 
 ## Security
 
-The repository contains no credentials. Configuration comes from environment variables (see `.env.example`), and local secret files (`.env`, `.env.tpl`, `claw-forge.local.yaml`) are git-ignored. Exchange credentials belong in a secrets manager. Any key-like strings under `infra/security/tests/` are fake fixtures that exercise the secrets-management code.
+The repository contains no credentials. Configuration comes from environment variables (see `.env.example`), and local secret files (`.env`, `.env.tpl`, `.env.vst.tpl`, `claw-forge.local.yaml`) are git-ignored. Exchange credentials belong in a secrets manager and are injected per command. The exchange key is kept apart from the template the coding agents run under. Any key-like strings under `infra/security/tests/` are fake fixtures that exercise the secrets-management code.
 
 If you find a security issue, please open a private security advisory on GitHub rather than a public issue.
 
