@@ -1,0 +1,64 @@
+<bug_spec>
+  <!-- Found reviewing feature 1 of additions_spec_live_providers.xml on
+       2026-10-05, probing post_json against a loopback HTTP server. Core shape
+       with explicit touches_files: plan-bugs ignores <layout> (see CLAUDE.md). -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/providers/src/providers/_live_http.py,packages/providers/tests/test_live_http.py">
+    <title>post_json sleeps for whatever retry-after a vendor sends, so one header can block a model call for a day, forever, or crash it with a raw OverflowError</title>
+    <symptoms>
+      providers._live_http.post_json retries a 429, 500, 502, 503 or 529 after the retry-after header's value in seconds, with no upper bound.
+      Against a loopback server that answers 429 with retry-after: 86400 and then 200, post_json calls sleep(86400.0), blocking the caller for a day.
+      _retry_after_seconds("1e9") answers 1000000000.0, a wait of about 31 years.
+      _retry_after_seconds("inf") answers inf, so sleep(inf) either blocks forever or raises OverflowError. That is not a ProviderError, so it escapes the provider seam's error vocabulary.
+      A misbehaving proxy, gateway or vendor can therefore stall the research loop's model calls indefinitely.
+    </symptoms>
+    <reproduction_steps>
+      Call post_json("http://127.0.0.1:PORT/x", {}, {}, allowed_hosts={"127.0.0.1"}, transport=T, sleep=S), where T answers (429, {"retry-after": "86400"}, b"{}") first and (200, {}, b'{"ok": 1}') second, and S records its argument. S records 86400.0.
+      Repeat with retry-after "inf" and "1e9": S records inf and 1000000000.0.
+    </reproduction_steps>
+    <expected>post_json never waits longer than a ceiling between attempts:
+      - A module constant MAX_RETRY_AFTER_SECONDS = 60.0 bounds every retry wait.
+      - When a retryable status carries a retry-after above MAX_RETRY_AFTER_SECONDS, including inf, post_json does not sleep or retry. It raises ProviderHTTPError (code word provider_http) at once, carrying the status and naming the retry-after value and the ceiling. The vendor is saying "not soon", and the caller decides what to do.
+      - A finite retry-after at or below the ceiling is honoured verbatim, as today.
+      - A retry-after that is not a finite non-negative number (nan, an HTTP date, empty) falls back to the exponential ladder (1, 2, 4 s plus jitter), as today for unparseable values.
+      - The exponential ladder's own waits stay below the ceiling.
+      - No path calls sleep with a value above MAX_RETRY_AFTER_SECONDS, and no path raises anything but a ProviderError subclass for a retry-after value.
+      - Tests cover 86400, 1e9, inf, nan, 60 (honoured), 61 (refused) and the HTTP-date form, with an injected sleep that records its argument.</expected>
+    <actual>Root cause: _wait_seconds returns the vendor's retry_after verbatim when present (packages/providers/src/providers/_live_http.py, `if retry_after is not None: return retry_after`), and _retry_after_seconds accepts any float, including inf and 1e9. The spec prescribed "the wait is the retry-after header in seconds when present" without a ceiling.</actual>
+    <constraints>
+      The host guard, the secret scrubbing, the retryable status set and the 4xx no-retry rule keep their behaviour and tests
+      No network access and no real credential in any test
+      No third-party dependency; pyproject.toml and uv.lock are not edited
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="high"
+       touches_files="packages/providers/src/providers/_live.py,packages/providers/tests/test_live.py">
+    <title>require_served accepts any snapshot suffix after the pinned model, so a vendor serving a different dated snapshot passes the served-model check</title>
+    <symptoms>
+      providers._live.require_served(pin, completion) accepts completion.model when it equals pin.model or starts with pin.model + "-", and never reads pin.version.
+      With pin anthropic/claude-opus-5/20260401, a completion whose model is "claude-opus-5-20270101" passes, although it names a different snapshot from the pinned 20260401.
+      Any suffix passes: "claude-opus-5-preview", "claude-opus-5-x", even "claude-opus-5-".
+      The check exists to catch a vendor silently serving a different model under the pinned ID (docs/nullius-tech-architecture.md section 14.1, "Provenance: pin the agent"), and a newer dated snapshot is that case.
+    </symptoms>
+    <reproduction_steps>
+      require_served(ModelPin("anthropic", "claude-opus-5", "20260401"), Provider.completion(content="x", model="claude-opus-5-20270101", input_tokens=1, output_tokens=1)) returns the completion instead of raising ServedModelMismatchError.
+    </reproduction_steps>
+    <expected>require_served accepts exactly two served spellings and refuses every other:
+      - completion.model == pin.model (a vendor that echoes the requested ID), or
+      - completion.model == pin.model + "-" + pin.version (a vendor that answers with the dated snapshot, as Anthropic does).
+      - Any other value raises ServedModelMismatchError (code word served_model_mismatch). That includes a different suffix, an empty suffix, a prefix of the pin, a case variant and a longer model name. The message names the served value, pin.model and pin.version.
+      - Tests cover: pin.model (accepted); pin.model-pin.version (accepted); pin.model-otherdate, pin.model-preview and pin.model- (refused); a model sharing the prefix such as claude-opus-50 (refused); and case variants (refused).
+      - live_provider and LIVE_PROVIDER_ENV_VARS keep their behaviour.</expected>
+    <actual>Root cause: packages/providers/src/providers/_live.py, `if served == model or served.startswith(model + "-"): return completion`. The spec prescribed "pin.model followed by a '-' suffix" and called pin.version provenance only, so the check never compares the snapshot.</actual>
+    <constraints>
+      No network access and no real credential in any test
+      No third-party dependency; pyproject.toml and uv.lock are not edited
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
