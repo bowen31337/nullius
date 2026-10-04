@@ -116,6 +116,7 @@ from collections.abc import Callable, Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -132,7 +133,9 @@ __all__ = [
     "DATABASE_URL_ENV",
     "ORDER_PLACEMENT_OUTCOMES",
     "ORDER_PLACEMENT_TABLE",
+    "ORDER_RECORD_TABLE",
     "OrderPlacement",
+    "OrderRecord",
     "PlacementOrder",
     "PlacementResult",
     "RouterOrderPlacementStore",
@@ -143,6 +146,26 @@ DATABASE_URL_ENV = "DATABASE_URL"
 
 #: One row per placed order: feature 316's key and what the venue did with it.
 ORDER_PLACEMENT_TABLE = "router_order_placement"
+
+#: One row per order placement's **terms** — the rebalance's identity, the
+#: leg, and the reference price a fill is measured against.  Feature 317's
+#: table above holds *that* an order was placed and feature 316's key names
+#: it, but a key is a one-way hash of ``(book_id, rebalance_ts, symbol)`` and
+#: carries neither the side, the type, the quantity nor the price; and the
+#: only plan a later run can rebuild is re-sized against *today's* positions
+#: and *today's* marks, so it holds neither every order the rebalance placed
+#: nor the prices the venue was actually asked for.
+#:
+#: This table is where placement records what it sent, keyed by the same
+#: full 64-hex identifier, so the fill-cost reconciliation of a *finished*
+#: rebalance reads the terms back rather than rebuilding a plan that has
+#: nothing to say about them (the defect the reconciliation bug spec names).
+#: It sits beside feature 317's table because both are facts about a
+#: placement and both are written by the same act, but the tables stay
+#: distinct: feature 317's is the app-owned idempotency claim whose key is
+#: its whole content, and this one is the router's record of the *terms* a
+#: fill is priced against, whose content is exactly what a hash cannot carry.
+ORDER_RECORD_TABLE = "router_order_record"
 
 #: The closed outcome vocabulary this table admits — exactly the states a
 #: *placement* can be in, which is one: the venue took the order.  A
@@ -178,6 +201,26 @@ CREATE TABLE IF NOT EXISTS {ORDER_PLACEMENT_TABLE} (
     outcome         TEXT NOT NULL CHECK (outcome IN ({_OUTCOME_CHECK})),
     placed_at       TEXT NOT NULL               -- ISO 8601 UTC: when it landed
 );
+
+-- Feature 317's placement terms, one row per placed order, beside the row
+-- above and keyed by the same identifier.  Every value is TEXT and every
+-- decimal is the string the router *sent* (the venue's own spelling, or a
+-- Decimal rendered positionally), for the reason every store in this member
+-- states: a decimal re-rendered by a store would be a decimal nobody sent.
+-- The reference price is NOT NULL for every row: a LIMIT order carries the
+-- limit it was priced at, and a MARKET order carries the mark read in the
+-- same run, so a filled order always has a reference to be measured against.
+CREATE TABLE IF NOT EXISTS {ORDER_RECORD_TABLE} (
+    client_order_id TEXT NOT NULL PRIMARY KEY,  -- feature 316's 64 hex chars
+    book_id         TEXT NOT NULL,              -- the rebalance's book
+    rebalance_ts    TEXT NOT NULL,              -- ISO 8601 UTC: the slot start
+    symbol          TEXT NOT NULL,              -- the leg that was placed
+    side            TEXT NOT NULL,              -- BUY / SELL
+    type            TEXT NOT NULL,              -- LIMIT / MARKET
+    quantity        TEXT NOT NULL,              -- the sent order's size
+    reference_price TEXT NOT NULL,              -- limit price, or run's mark
+    placed_at       TEXT NOT NULL               -- ISO 8601 UTC: when it landed
+);
 """
 
 #: The one write this module makes: claim the key iff it has no row yet.
@@ -199,6 +242,42 @@ _READ_SQL = f"""
 SELECT client_order_id, symbol, outcome, placed_at
 FROM {ORDER_PLACEMENT_TABLE}
 WHERE client_order_id = ?
+"""
+
+#: The columns the terms read-back unpacks, in the order :class:`OrderRecord`
+#: names them — spelled once so the write and the read cannot drift apart on
+#: a column order, the failure a positional ``SELECT *`` invites.
+_RECORD_COLUMNS = (
+    "client_order_id, book_id, rebalance_ts, symbol, side, type, "
+    "quantity, reference_price, placed_at"
+)
+
+#: The terms write: claim the key iff it has no row yet, the same
+#: ``WHERE NOT EXISTS`` shape feature 317's write uses and for the same
+#: reason — the check and the claim are one statement, so the row a
+#: resubmission reads is the row the first placement wrote rather than a
+#: second row for one order.  A row already held is *not* restated: an order
+#: placed once has one set of terms, and re-recording them would let a
+#: re-send rewrite the reference a fill is measured against.
+_RECORD_INSERT_SQL = f"""
+INSERT INTO {ORDER_RECORD_TABLE} (
+    {_RECORD_COLUMNS}
+)
+SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+WHERE NOT EXISTS (
+    SELECT 1 FROM {ORDER_RECORD_TABLE} WHERE client_order_id = ?
+)
+"""
+
+#: Every term this module recorded for one rebalance, in the order the rows
+#: landed.  Read by ``(book_id, rebalance_ts)`` — the rebalance's identity,
+#: §13.2's own pair — because that is the whole of what the reconciliation
+#: of a finished rebalance is given.
+_RECORD_READ_SQL = f"""
+SELECT {_RECORD_COLUMNS}
+FROM {ORDER_RECORD_TABLE}
+WHERE book_id = ? AND rebalance_ts = ?
+ORDER BY rowid
 """
 
 
@@ -277,6 +356,48 @@ def _require_aware(moment: object, what: str) -> datetime:
     return moment
 
 
+def _require_moment(value: object, what: str) -> datetime:
+    """Return ``value`` as a timezone-aware instant, from a datetime or ISO text.
+
+    A rebalance's instant reaches this member in two spellings: as a
+    :class:`~datetime.datetime` a caller built, or as the ISO 8601 string the
+    *book file* carries (``"2026-09-30T00:00:00+00:00"``).  Both are read
+    here — a string is parsed before anything else is touched — so a caller
+    handing the book's own spelling is not refused deep inside a store for a
+    value the book legitimately holds, and a naive or unparsable value is
+    refused up front naming itself.
+    """
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise RouterSubmissionResultError(
+                f"{SUBMISSION_RESULT_CODE}: {what}={value!r} is not an ISO "
+                "8601 instant; the rebalance's instant is the second half of "
+                "the pair that names every order, and a string that will not "
+                "parse names no rebalance (feature 317)"
+            ) from exc
+    return _require_aware(value, what)
+
+
+def _placement_moment(now: datetime | None) -> datetime:
+    """The instant a placement record is stamped with: ``now``, or the clock.
+
+    The one door both writes in this member take their moment through — the
+    placement row (feature 317) and its terms (this bug's fix) — so the
+    module reads the wall clock in exactly one place and a caller that hands
+    a ``now`` (the suite, and a caller staging a deterministic moment) is
+    honoured identically by both.  The clock read is a *label*: it says when
+    the order was written down, and no identity in this member is hashed
+    from it — feature 316's key is the rebalance's own instant, taken from
+    the book — so a retry that lands under a later reading cannot change an
+    order's name.
+    """
+    if now is None:
+        now = datetime.now(UTC)
+    return _require_aware(now, "now")
+
+
 def _require_symbol(value: object) -> str:
     """Return ``value`` as a venue symbol, or refuse what cannot be one.
 
@@ -295,6 +416,114 @@ def _require_symbol(value: object) -> str:
             "no order the venue could have taken (feature 317)"
         )
     return value.strip()
+
+
+def _require_book_id(value: object) -> str:
+    """Return ``value`` as a rebalance's book id, or refuse what cannot be one.
+
+    Non-empty text, stripped, otherwise verbatim: the book id is half of the
+    ``(book_id, rebalance_ts)`` pair feature 316 folds into every order's
+    name, so a record that re-spelled it would name a rebalance no order
+    belongs to.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise RouterSubmissionResultError(
+            f"{SUBMISSION_RESULT_CODE}: a recorded order's book_id must be "
+            f"non-empty text, got {value!r} ({type(value).__name__}); the "
+            "rebalance a fill belongs to is named by the pair (book_id, "
+            "rebalance_ts), and a record that names no book cannot be "
+            "reconciled (feature 317)"
+        )
+    return value.strip()
+
+
+#: The venue's two order sides, restated here rather than imported from
+#: :mod:`router.bingx_order` so this module's own record vocabulary is
+#: self-standing (the discipline every store keeps for its own terms).  The
+#: spellings are the venue's own — a record that carried ``buy`` would name a
+#: side no order was placed with.
+_ORDER_SIDES = frozenset({"BUY", "SELL"})
+
+#: The venue's two order types.  ``LIMIT``/``MARKET`` is exactly the pair the
+#: fee rule turns on — maker for a passive limit, taker for an aggressive
+#: market — so a record outside it names no fee the reconciliation could
+#: read.
+_ORDER_TYPES = frozenset({"LIMIT", "MARKET"})
+
+
+def _require_side(value: object) -> str:
+    """Return ``value`` as a venue order side, or refuse it by name."""
+    if not isinstance(value, str) or value not in _ORDER_SIDES:
+        raise RouterSubmissionResultError(
+            f"{SUBMISSION_RESULT_CODE}: a recorded order's side is one of "
+            f"{sorted(_ORDER_SIDES)}, got {value!r}; a fill's signed slippage "
+            "is adverse-positive only against a known side, so a record "
+            "outside the venue's own vocabulary is one no order was placed "
+            "with (feature 317)"
+        )
+    return value
+
+
+def _require_type(value: object) -> str:
+    """Return ``value`` as a venue order type, or refuse it by name."""
+    if not isinstance(value, str) or value not in _ORDER_TYPES:
+        raise RouterSubmissionResultError(
+            f"{SUBMISSION_RESULT_CODE}: a recorded order's type is one of "
+            f"{sorted(_ORDER_TYPES)}, got {value!r}; the fee a fill paid is "
+            "the maker rate for a LIMIT and the taker rate for a MARKET, so a "
+            "record outside that pair names neither (feature 317)"
+        )
+    return value
+
+
+def _require_positive(value: object, what: str) -> Decimal:
+    """Return ``value`` as an exact positive :class:`~decimal.Decimal`, or refuse it.
+
+    ``str``, ``int`` and :class:`~decimal.Decimal` are read (a JSON number
+    reaches here as its shortest ``str`` spelling, the same reading
+    :func:`router.bingx_reconcile._rate` takes of a document's rate); a
+    ``bool``, a float, a non-finite or non-positive value is refused.  A
+    quantity or reference price of zero is not a term any order was sent
+    with — the venue refuses a zero-size order — so a record holding one is a
+    fault of the ask rather than a fact to store.
+    """
+    if isinstance(value, (bool, float)) or value is None:
+        raise RouterSubmissionResultError(
+            f"{SUBMISSION_RESULT_CODE}: a recorded order's {what} must be an "
+            f"exact decimal (a string, an int or a Decimal), got {value!r} "
+            f"({type(value).__name__}); money and size are never binary "
+            "approximations (feature 317)"
+        )
+    if isinstance(value, Decimal):
+        number = value
+    elif isinstance(value, (str, int)):
+        try:
+            number = Decimal(str(value))
+        except InvalidOperation:
+            number = None
+    else:
+        number = None
+    if number is None or not number.is_finite() or number <= 0:
+        raise RouterSubmissionResultError(
+            f"{SUBMISSION_RESULT_CODE}: a recorded order's {what} must be a "
+            f"finite positive decimal, got {value!r}; an order is sent with a "
+            "size and (for the reconciliation) a reference price it is "
+            "measured against, and a value that is not positive names neither "
+            "(feature 317)"
+        )
+    return number
+
+
+def _decimal_text(value: Decimal) -> str:
+    """Render a :class:`~decimal.Decimal` in plain positional notation.
+
+    ``str(Decimal("1E+3"))`` is ``'1E+3'``, which a plain positional reader
+    (the venue's own documents, an operator at a sqlite prompt) would not read
+    as one thousand; ``format(value, 'f')`` renders the same value as
+    ``'1000'``.  Every decimal this table stores goes through here, so what
+    lands is what the router sent.
+    """
+    return format(value, "f")
 
 
 def _require_outcome(value: object) -> str:
@@ -509,6 +738,84 @@ class PlacementResult:
         return iter((self.placement, self.appended))
 
 
+@dataclass(frozen=True)
+class OrderRecord:
+    """One placed order's terms, as :meth:`RouterOrderPlacementStore.record_order` wrote them.
+
+    The record a fill's cost is measured against, read back by a *later*
+    process that never held the plan: the rebalance's identity
+    (``book_id``, ``rebalance_ts``), the leg (``symbol``, ``side``,
+    ``type``, ``quantity``) and the ``reference_price`` the fill's signed
+    slippage is a fraction of.
+
+    ``reference_price`` is the price the venue was *actually* asked at — the
+    limit price a passive leg was repriced to at the book, or the mark read
+    in the same run for a ``MARKET`` leg — never a price re-derived at
+    reconciliation time.  It is stored as text and read back as an exact
+    :class:`~decimal.Decimal`, so the format the reconciliation arithmetic
+    speaks and the format the column holds are one fact.
+
+    ``quantity`` is the size the order was sent with, carried so a record
+    is self-describing to an operator; the reconciliation prices fills from
+    the venue's own ``executedQty`` (the part of the order that actually
+    traded) rather than from this figure, which is the order's ask.
+    """
+
+    client_order_id: str
+    book_id: str
+    rebalance_ts: datetime
+    symbol: str
+    side: str
+    type: str
+    quantity: Decimal
+    reference_price: Decimal
+    placed_at: datetime
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "client_order_id",
+            normalize_client_order_id(self.client_order_id),
+        )
+        object.__setattr__(self, "book_id", _require_book_id(self.book_id))
+        object.__setattr__(
+            self, "rebalance_ts", _require_aware(self.rebalance_ts, "rebalance_ts")
+        )
+        object.__setattr__(self, "symbol", _require_symbol(self.symbol))
+        object.__setattr__(self, "side", _require_side(self.side))
+        object.__setattr__(self, "type", _require_type(self.type))
+        object.__setattr__(
+            self, "quantity", _require_positive(self.quantity, "quantity")
+        )
+        object.__setattr__(
+            self,
+            "reference_price",
+            _require_positive(self.reference_price, "reference_price"),
+        )
+        object.__setattr__(
+            self, "placed_at", _require_aware(self.placed_at, "placed_at")
+        )
+
+    @property
+    def key(self) -> str:
+        """The record's identity — feature 316's key, spelled out."""
+        return self.client_order_id
+
+    def row(self) -> dict[str, Any]:
+        """The record as a store-shaped mapping — the column names, verbatim."""
+        return {
+            "client_order_id": self.client_order_id,
+            "book_id": self.book_id,
+            "rebalance_ts": _isoformat_utc(self.rebalance_ts),
+            "symbol": self.symbol,
+            "side": self.side,
+            "type": self.type,
+            "quantity": _decimal_text(self.quantity),
+            "reference_price": _decimal_text(self.reference_price),
+            "placed_at": _isoformat_utc(self.placed_at),
+        }
+
+
 class RouterOrderPlacementStore:
     """Reads and appends the router's placed orders — feature 317's store.
 
@@ -651,7 +958,7 @@ class RouterOrderPlacementStore:
                 "from a prior result (feature 317)"
             )
         performed = _require_callable(place)
-        moment = _require_aware(datetime.now(UTC) if now is None else now, "now")
+        moment = _placement_moment(now)
         key = order.key
         # The transaction is run by hand rather than through ``with
         # connection`` because the callable sits *inside* it and its
@@ -803,4 +1110,190 @@ class RouterOrderPlacementStore:
                 f"{refusal} — the row this came from is the placement filed "
                 f"under order {client_order_id!r} at {placed_at_raw!r} "
                 "(feature 317)"
+            ) from refusal
+
+    # -- The placement's terms: what a fill is measured against ---------------
+
+    def record_order(
+        self,
+        *,
+        client_order_id: Any,
+        book_id: Any,
+        rebalance_ts: Any,
+        symbol: Any,
+        side: Any,
+        order_type: Any,
+        quantity: Any,
+        reference_price: Any,
+        now: datetime | None = None,
+    ) -> OrderRecord:
+        """Record one placed order's terms, so a later reconciliation can price it.
+
+        The write that closes the gap the reconciliation defect names: a
+        hash names an order but carries none of its terms, and the only plan
+        a later run can rebuild is re-sized against *today's* positions and
+        marks — so the side, the type, the size and, above all, the reference
+        price a fill's slippage is a fraction of are written down at
+        placement time and read back by :meth:`records_for`.
+
+        ``reference_price`` is the price the venue was actually asked at: a
+        passive leg's limit price **after repricing at the book**, or a
+        ``MARKET`` leg's symbol mark read in the same run.  A caller records
+        the order it *sent*, never the plan's pre-repricing price — a fill is
+        measured against what it was placed at, and a plan price the venue
+        never saw would measure it against a price nobody offered.
+
+        The write is idempotent by the key, exactly as :meth:`place` is: a
+        re-send whose order already has a row changes nothing, because an
+        order placed once has one set of terms and a rewritable reference
+        would let a replay move the figure a fill is judged against.  The
+        row that stands is returned.
+
+        Refuses :class:`~router.errors.RouterSubmissionResultError` eagerly,
+        before the store is touched, for any malformed term (a missing book,
+        a naive instant, a side or type outside the venue's vocabulary, a
+        non-positive size or price).  Fails with
+        :class:`~router.errors.RouterStoreError` when the store could not
+        take the row: an order placed and not recorded is exactly the gap
+        that would make its fill-cost reconciliation wrong again.
+        """
+        # The ask is settled whole before a connection is opened, the
+        # ordering every act in this workspace states: a malformed record is
+        # refused without touching a database.
+        instant = _require_moment(rebalance_ts, "rebalance_ts")
+        moment = _placement_moment(now)
+        record = OrderRecord(
+            client_order_id=normalize_client_order_id(client_order_id),
+            book_id=_require_book_id(book_id),
+            rebalance_ts=instant,
+            symbol=_require_symbol(symbol),
+            side=_require_side(side),
+            type=_require_type(order_type),
+            quantity=_require_positive(quantity, "quantity"),
+            reference_price=_require_positive(
+                reference_price, "reference_price"
+            ),
+            placed_at=moment,
+        )
+        try:
+            with closing(self._connect()) as connection, connection:
+                connection.execute(
+                    _RECORD_INSERT_SQL,
+                    (
+                        record.client_order_id,
+                        record.book_id,
+                        _isoformat_utc(record.rebalance_ts),
+                        record.symbol,
+                        record.side,
+                        record.type,
+                        _decimal_text(record.quantity),
+                        _decimal_text(record.reference_price),
+                        _isoformat_utc(record.placed_at),
+                        record.client_order_id,
+                    ),
+                )
+                row = connection.execute(
+                    _RECORD_READ_SQL,
+                    (record.book_id, _isoformat_utc(record.rebalance_ts)),
+                ).fetchall()
+        except (sqlite3.Error, OSError) as exc:
+            raise RouterStoreError(
+                f"could not record the placement terms for order "
+                f"{record.client_order_id} of book {record.book_id!r} at "
+                f"{_isoformat_utc(record.rebalance_ts)}: {exc}"
+            ) from exc
+        # The standing row for this key — the one just claimed, or the one a
+        # prior placement wrote — is the answer, so a re-issue reports the
+        # terms that actually stand rather than the ones it offered.
+        for stored in row:
+            if stored[0] == record.client_order_id:
+                return self._record_from_row(stored)
+        # The insert claimed the key but its own row did not read back inside
+        # the transaction that wrote it: a write that cannot be read is not
+        # one this store can report.
+        raise RouterStoreError(
+            f"the placement terms for order {record.client_order_id} were "
+            "written and could not be read back in the transaction that wrote "
+            "them; a record that cannot be read is not one this store can "
+            "report (feature 317)"
+        )
+
+    def records_for(
+        self, book_id: Any, rebalance_ts: Any
+    ) -> tuple[OrderRecord, ...]:
+        """Every term this store recorded for one rebalance, in the order they landed.
+
+        The read the fill-cost reconciliation takes, addressed by the
+        rebalance's own identity — ``(book_id, rebalance_ts)``, the pair
+        feature 316 folds and §13.2 names — so a *later* process reads back
+        the orders a finished rebalance placed without holding the plan that
+        built them.  An empty tuple is the honest answer for a rebalance this
+        table has never recorded: no orders recorded is a different fact from
+        orders recorded with no fill, and the reconciliation tells them apart
+        by first asking whether any row exists at all.
+
+        Both terms are validated here, so a malformed ask is refused as the
+        ask's own fault rather than answered with an empty read.
+        """
+        wanted_book = _require_book_id(book_id)
+        instant = _require_moment(rebalance_ts, "rebalance_ts")
+        try:
+            with closing(self._connect()) as connection:
+                rows = connection.execute(
+                    _RECORD_READ_SQL, (wanted_book, _isoformat_utc(instant))
+                ).fetchall()
+        except (sqlite3.Error, OSError) as exc:
+            raise RouterStoreError(
+                f"could not read the placement terms recorded for book "
+                f"{wanted_book!r} at {_isoformat_utc(instant)}: {exc}"
+            ) from exc
+        return tuple(self._record_from_row(row) for row in rows)
+
+    def _record_from_row(self, row: tuple) -> OrderRecord:
+        """Rebuild one stored term row, refusing a value no record can be.
+
+        The same stance :meth:`_from_row` takes for feature 317's table: this
+        table is writable by any tool and SQLite columns are dynamically
+        typed, so a raw ``INSERT`` can land a side, a type or a decimal this
+        module never writes.  The value layer
+        (:class:`OrderRecord`) validates every field, and the refusal is
+        re-raised naming the row's key so an operator can find it.
+        """
+        (
+            client_order_id,
+            book_id,
+            rebalance_ts_raw,
+            symbol,
+            side,
+            order_type,
+            quantity_raw,
+            reference_raw,
+            placed_at_raw,
+        ) = row
+        try:
+            instant = datetime.fromisoformat(rebalance_ts_raw)
+            placed = datetime.fromisoformat(placed_at_raw)
+        except (TypeError, ValueError) as exc:
+            raise RouterSubmissionResultError(
+                f"{SUBMISSION_RESULT_CODE}: the placement terms filed under "
+                f"order {client_order_id!r} carry a moment this store cannot "
+                f"read ({rebalance_ts_raw!r}, {placed_at_raw!r}); the row is "
+                "repairable and its key names it (feature 317)"
+            ) from exc
+        try:
+            return OrderRecord(
+                client_order_id=client_order_id,
+                book_id=book_id,
+                rebalance_ts=instant,
+                symbol=symbol,
+                side=side,
+                type=order_type,
+                quantity=quantity_raw,
+                reference_price=reference_raw,
+                placed_at=placed,
+            )
+        except RouterSubmissionResultError as refusal:
+            raise RouterSubmissionResultError(
+                f"{refusal} — the row this came from is the placement terms "
+                f"filed under order {client_order_id!r} (feature 317)"
             ) from refusal

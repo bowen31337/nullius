@@ -34,6 +34,18 @@ formula.  The store is feature 340's own: the reconciliation is read back
 through :func:`forward.reconciliation.reconciled_fill_costs`, so a row that
 landed is proven to have landed where β₄'s recalibration and §16's live
 metric will look for it.
+
+**The recorded-placement path** — the fix the bug spec
+``bug_spec_bingx_reconcile_refs.xml`` names — is the second half of this
+suite.  With no ``orders`` handed in, the act reads the terms
+:meth:`~router.submission_result.RouterOrderPlacementStore.record_order`
+wrote at placement time, addressed by ``(book_id, rebalance_ts)``, and
+never rebuilds a plan: a plan rebuilt today is re-sized against today's
+positions and marks, so it neither lists every order the rebalance placed
+nor carries the reference prices the venue was actually asked at.  Those
+tests drive :func:`router.bingx_mirror.mirror_place` over the recorded
+VST fixtures first — so the rows are written by the real placement path —
+then reconcile from the store alone.
 """
 
 from __future__ import annotations
@@ -50,6 +62,10 @@ from forward.reconciliation import (
 )
 from router.bingx_client import ORDER_NOT_FOUND_CODE, RouterBingXRefusedError
 from router.bingx_client_order_id import project_bingx_client_order_id
+
+# The placement path whose rows the recorded-terms half of this suite reads
+# back, and the doubles this member's mirror suite already proves it against.
+from router.bingx_mirror import build_mirror_plan, mirror_place
 from router.bingx_order import BingXRefusedLeg
 from router.bingx_orders import RouterBingXOrdersError
 from router.bingx_reconcile import (
@@ -58,6 +74,14 @@ from router.bingx_reconcile import (
     reconcile_rebalance_fill_costs,
 )
 from router.client_order_id import derive_client_order_id
+from router.submission_result import RouterOrderPlacementStore
+
+from test_bingx_mirror import (  # isort: skip
+    _book,
+    _clock,
+    _CountingLimiter,
+    _MirrorClient,
+)
 
 BOOK_ID = "synthetic-vst-0"
 REBALANCE_TS = datetime.fromisoformat("2026-09-30T00:00:00+00:00")
@@ -691,3 +715,173 @@ def test_a_float_measurement_is_refused_before_it_reaches_the_store(
         )
 
     assert reconciled_fill_costs(database_url=test_database_url) == ()
+
+
+# -- The recorded-placement path: no plan, only what placement wrote -----------
+#
+# The bug spec ``bug_spec_bingx_reconcile_refs.xml``: the reconciliation used
+# to rebuild a plan, and a rebuilt plan is re-sized against today's positions
+# and marks — so it neither lists every order the rebalance placed nor carries
+# the reference prices the venue was actually asked at.  The rows below are
+# written by the *real* placement path (``mirror_place`` over the recorded VST
+# fixtures) and read back with no plan in hand, which is exactly the scheduled
+# slot's spelling: ``reconcile_rebalance_fill_costs(client=, book_id=,
+# rebalance_ts=)`` and nothing else.
+
+
+def _place_the_book(url: str) -> _MirrorClient:
+    """Place the synthetic book's plan for real, recording every order's terms.
+
+    Drives the same ``build_mirror_plan`` + ``mirror_place`` pair a rebalance
+    slot drives, over the mirror suite's recording double, so the rows the
+    reconciliation below reads back were written by the placement path itself
+    rather than by a test hand-writing them into the table.
+    """
+    client = _MirrorClient()
+    plan = build_mirror_plan(book=_book(), client=client)
+    mirror_place(
+        client=client,
+        book=_book(),
+        plan=plan,
+        store=RouterOrderPlacementStore(url),
+        limiter=_CountingLimiter(),
+        database_url=url,
+        clock=_clock,
+        sleep=lambda _d: None,
+    )
+    assert client.placed, "the placement path recorded nothing to reconcile"
+    return client
+
+
+def _answers_for_records(url: str) -> tuple[dict, list]:
+    """A filled answer for every recorded order, from its recorded reference.
+
+    Keyed by the 40-character projection the read-back *asks* with, while the
+    answer document carries that same projection as the venue's echoed
+    ``clientOrderId`` — the shape feature 1's own query envelope answers.
+    """
+    records = RouterOrderPlacementStore(url).records_for(
+        BOOK_ID, _book()["rebalance_ts"]
+    )
+    answers: dict[str, dict] = {}
+    for record in records:
+        query_id = project_bingx_client_order_id(record.client_order_id)
+        answers[query_id] = _filled_answer(
+            query_id,
+            symbol=record.symbol,
+            type_=record.type,
+            qty=str(record.quantity),
+            price=str(record.reference_price),
+        )
+    return answers, records
+
+
+def test_the_reconciliation_reads_the_terms_placement_recorded(
+    test_database_url: str,
+) -> None:
+    """No plan is handed in: the orders and their references come from the store.
+
+    Every order the placement path sent is priced, at the reference price
+    that path recorded — the price the venue was actually asked at — so an
+    at-reference fill's realized cost is the fee alone.
+    """
+    _place_the_book(test_database_url)
+    answers, records = _answers_for_records(test_database_url)
+    client = _FakeClient(queries=answers)
+
+    record = reconcile_rebalance_fill_costs(
+        client=client,
+        book_id=BOOK_ID,
+        rebalance_ts=_book()["rebalance_ts"],
+        database_url=test_database_url,
+    )
+
+    assert record is not None
+    assert len(records) >= 5
+    # Every recorded order was looked up, by its projected identifier.
+    assert len(client.queried) == len(records)
+    # A fill at its own recorded reference pays the fee and nothing else.
+    maker = float(MAKER_BPS)
+    assert record.difference_bps == pytest.approx(0.0, abs=1e-9)
+    assert record.modeled_cost_bps == pytest.approx(maker, abs=float(TAKER_BPS))
+
+
+def test_the_reconciliation_is_addressed_by_the_rebalances_own_identity(
+    test_database_url: str,
+) -> None:
+    """A rebalance this store never recorded reconciles nothing, at no cost.
+
+    The same store, a different slot: no rows under that pair, so the honest
+    answer is ``None`` — not a zero cost, which would read as a perfectly
+    calibrated model.
+    """
+    _place_the_book(test_database_url)
+    other = datetime.fromisoformat("2026-09-30T04:00:00+00:00")
+
+    answer = reconcile_rebalance_fill_costs(
+        client=_FakeClient(),
+        book_id=BOOK_ID,
+        rebalance_ts=other,
+        database_url=test_database_url,
+    )
+
+    assert answer is None
+    assert reconciled_fill_costs(database_url=test_database_url) == ()
+
+
+def test_the_reconciliation_refuses_a_naive_rebalance_ts_by_name(
+    test_database_url: str,
+) -> None:
+    """The bug spec's own clause: naive or unparsable is refused up front,
+    with the router's own code word, before any store is read."""
+    with pytest.raises(RouterBingXReconcileError) as refusal:
+        reconcile_rebalance_fill_costs(
+            client=_FakeClient(),
+            book_id=BOOK_ID,
+            # Naive on purpose: this is the shape being refused.
+            rebalance_ts=datetime(2026, 9, 30, 0, 0),  # noqa: DTZ001
+            database_url=test_database_url,
+        )
+    assert str(refusal.value).startswith(BINGX_RECONCILE_CODE)
+    assert reconciled_fill_costs(database_url=test_database_url) == ()
+
+
+def test_the_reconciliation_refuses_an_unparsable_rebalance_ts_by_name(
+    test_database_url: str,
+) -> None:
+    with pytest.raises(RouterBingXReconcileError) as refusal:
+        reconcile_rebalance_fill_costs(
+            client=_FakeClient(),
+            book_id=BOOK_ID,
+            rebalance_ts="last tuesday",
+            database_url=test_database_url,
+        )
+    assert str(refusal.value).startswith(BINGX_RECONCILE_CODE)
+
+
+def test_the_reconciliation_accepts_an_iso_string_with_an_offset(
+    test_database_url: str,
+) -> None:
+    """A timezone-aware ISO string is the book's own spelling and is accepted."""
+    answer = reconcile_rebalance_fill_costs(
+        client=_FakeClient(),
+        book_id=BOOK_ID,
+        rebalance_ts="2026-09-30T00:00:00+00:00",
+        database_url=test_database_url,
+    )
+    # Nothing recorded for that rebalance, so nothing to price — but the
+    # call was accepted rather than refused as an unparsable instant.
+    assert answer is None
+
+
+def test_the_reconciliation_refuses_when_no_store_is_named(test_database_url: str) -> None:
+    """With no plan and no store there is nothing to price, and the act says so
+    by name rather than answering a silent ``None``."""
+    with pytest.raises(RouterBingXReconcileError) as refusal:
+        reconcile_rebalance_fill_costs(
+            client=_FakeClient(),
+            book_id=BOOK_ID,
+            rebalance_ts=REBALANCE_TS,
+            env={},
+        )
+    assert str(refusal.value).startswith(BINGX_RECONCILE_CODE)

@@ -510,7 +510,7 @@ def test_live_positions_reads_the_position_amt_spelling():
 
 def test_live_positions_reads_the_older_position_spelling():
     client = _MirrorClient(positions=[{"symbol": "DOGE-USDT", "position": "12"}])
-    assert live_positions(client) == {"DOGE-USDT": Decimal("12")}
+    assert live_positions(client) == {"DOGE-USDT": Decimal(12)}
 
 
 # -- The recorded live account: a short is reported unsigned -------------------
@@ -529,7 +529,7 @@ def test_live_positions_reads_the_recorded_short_as_negative():
     """
     client = _MirrorClient(positions=_live_positions_data())
     assert live_positions(client) == {
-        "DOGE-USDT": Decimal("-5402"),
+        "DOGE-USDT": Decimal(-5402),
         "BTC-USDT": Decimal("0.0236"),
     }
 
@@ -939,9 +939,9 @@ def test_the_required_margin_counts_only_what_grows_a_position():
     margin = plan_required_margin(client=client, orders=orders)
 
     bare = (
-        Decimal("0.5") * Decimal("83000")
-        + Decimal("3") * Decimal("0.0044")
-        + Decimal("8") * Decimal("118.392")
+        Decimal("0.5") * Decimal(83000)
+        + Decimal(3) * Decimal("0.0044")
+        + Decimal(8) * Decimal("118.392")
     )
     assert margin == bare * REQUIRED_MARGIN_HEADROOM
     assert margin == Decimal("42659.384946")
@@ -1894,3 +1894,177 @@ def test_the_schedule_is_the_one_the_integration_points_name():
         "account",
     ):
         assert VST_MIRROR_WEIGHT_SCHEDULE.weight_for(operation) == 1
+
+
+# -- mirror_place: the terms it records as it places ---------------------------
+#
+# The bug spec ``bug_spec_bingx_reconcile_refs.xml``: an order's terms — the
+# side, the type, the size and, above all, the reference price the venue was
+# actually asked at — cannot be recovered from a hash, and a plan rebuilt at
+# reconciliation time is re-sized against today's positions and marks.  So
+# placement writes them down.  The tests below hold that write: that it
+# happens for a leg the venue actually took, that it does not happen twice
+# for a replay, and that the reference recorded is the *sent* price (the
+# repriced limit at the book), never the plan's pre-repricing one.
+
+
+def _records(store, book: dict | None = None):
+    """Every term the store recorded for the plain book's rebalance."""
+    source = book or _book()
+    return store.records_for(source["book_id"], source["rebalance_ts"])
+
+
+def test_place_records_each_placed_orders_terms(test_database_url):
+    """One row per sent order, carrying the terms a fill is priced against."""
+    client = _MirrorClient()
+    limiter = _CountingLimiter()
+    store = RouterOrderPlacementStore(test_database_url)
+    _place(client, _plan(client), store, limiter, database_url=test_database_url)
+
+    records = _records(store)
+    assert len(records) == 5
+    assert {record.symbol for record in records} == {
+        order.symbol for order in client.placed
+    }
+    by_symbol = {record.symbol: record for record in records}
+    sent = {order.symbol: order for order in client.placed}
+    for symbol, record in by_symbol.items():
+        # Every term is the order the venue was actually asked to take.
+        assert record.side == sent[symbol].side
+        assert record.type == sent[symbol].type
+        assert record.quantity == Decimal(sent[symbol].quantity)
+        # A LIMIT leg's reference is its sent limit; a MARKET leg's is its
+        # symbol's mark read in the same run.
+        if sent[symbol].type == BINGX_LIMIT_ORDER:
+            assert record.reference_price == Decimal(sent[symbol].price)
+        else:
+            assert record.reference_price == Decimal(_mark_of(client, symbol))
+        # The key is feature 316's own, spelled out in full.
+        assert record.client_order_id == _full_identifier(_book(), symbol)
+        assert record.book_id == _book()["book_id"]
+        assert record.rebalance_ts == datetime.fromisoformat(
+            _book()["rebalance_ts"]
+        )
+
+
+def test_place_records_the_repriced_limit_not_the_plans_own_price(test_database_url):
+    """The defect's exact figure: what the venue was asked at, not what the
+    plan proposed before repricing at the book.
+
+    ETH is a SELL whose plan price is the mark, 2685.87; the recorded live
+    depth's best ask is 2673.27, and the order is repriced down to it just
+    before it leaves.  The recorded reference must be 2673.27 — the price a
+    fill will actually be measured against.
+    """
+    client = _MirrorClient(depths={"ETH-USDT": _live_depth_data()})
+    limiter = _CountingLimiter()
+    store = RouterOrderPlacementStore(test_database_url)
+    _place(client, _plan(client), store, limiter, database_url=test_database_url)
+
+    eth = {record.symbol: record for record in _records(store)}["ETH-USDT"]
+    sent = next(order for order in client.placed if order.symbol == "ETH-USDT")
+    assert sent.price == "2673.27"
+    assert eth.reference_price == Decimal("2673.27")
+    # And not the plan's own pre-repricing price.
+    assert eth.reference_price != Decimal("2685.87")
+
+
+def test_a_replay_records_no_second_row_and_leaves_the_reference_alone(
+    test_database_url,
+):
+    """A ``prior`` leg is answered from its row: the reference cannot move.
+
+    A second run in the same rebalance sends nothing (Stage 1's law), so it
+    reaches the recorder for no leg at all — the row that stands is the
+    first placement's, and a fill is measured against the price the order
+    was actually placed at, never a price a later run would have proposed.
+    """
+    store = RouterOrderPlacementStore(test_database_url)
+    limiter = _CountingLimiter()
+
+    first = _MirrorClient()
+    _place(first, _plan(first), store, limiter, database_url=test_database_url)
+    before = _records(store)
+
+    second = _MirrorClient(depths={"ETH-USDT": _live_depth_data()})
+    outcomes = _place(
+        second, _plan(second), store, limiter, database_url=test_database_url
+    )
+
+    assert second.placed == []
+    assert all(o.outcome == MIRROR_OUTCOME_PRIOR for o in outcomes.values())
+    assert _records(store) == before
+
+
+def test_a_refused_leg_records_nothing(test_database_url):
+    """An order the venue never took has no terms to remember.
+
+    The store's claim rolls back on the refusal, so no row is written — an
+    order that was refused has no fill to price, and a row for it would
+    invite a reconciliation to price one that never happened.
+    """
+    refusal = RouterBingXRefusedError("101215", "the PostOnly order would have crossed")
+    client = _MirrorClient(
+        place_effects=[lambda: (_ for _ in ()).throw(refusal)]
+    )
+    limiter = _CountingLimiter()
+    store = RouterOrderPlacementStore(test_database_url)
+    outcomes = _place(
+        client, _plan(client), store, limiter, database_url=test_database_url
+    )
+
+    assert any(o.outcome == MIRROR_OUTCOME_REFUSED for o in outcomes.values())
+    refused_symbol = next(
+        symbol for symbol, o in outcomes.items() if o.outcome == MIRROR_OUTCOME_REFUSED
+    )
+    recorded = {record.symbol for record in _records(store)}
+    assert refused_symbol not in recorded
+    assert len(recorded) == 4
+
+
+def test_a_gate_closed_leg_is_never_recorded(test_database_url):
+    """A leg the gates closed names no venue order, so it has no terms.
+
+    The synthetic book's AGLD and NCFXUSD2ARS legs never reach placement, so
+    the table carries rows for the five orders and nothing for the two
+    refusals.
+    """
+    client = _MirrorClient()
+    limiter = _CountingLimiter()
+    store = RouterOrderPlacementStore(test_database_url)
+    _place(client, _plan(client), store, limiter, database_url=test_database_url)
+
+    recorded = {record.symbol for record in _records(store)}
+    assert "AGLD-USDT" not in recorded
+    assert "NCFXUSD2ARS-USDT" not in recorded
+
+
+def test_a_store_without_the_terms_write_still_places(test_database_url):
+    """The terms write is optional at the store seam: a double with only
+    ``place`` keeps placing exactly as before this recording existed."""
+    inner = RouterOrderPlacementStore(test_database_url)
+
+    class _BarePlacementStore:
+        """A store exposing feature 317's one contract and nothing more."""
+
+        def place(self, *args, **kwargs):
+            return inner.place(*args, **kwargs)
+
+    client = _MirrorClient()
+    limiter = _CountingLimiter()
+    outcomes = _place(
+        client,
+        _plan(client),
+        _BarePlacementStore(),
+        limiter,
+        database_url=test_database_url,
+    )
+
+    assert len(client.placed) == 5
+    assert all(o.outcome == MIRROR_OUTCOME_PLACED for o in outcomes.values())
+    assert _records(inner) == ()
+
+
+def _mark_of(client: _MirrorClient, symbol: str) -> str:
+    """The mark the double holds for ``symbol`` — the recorded fixture's own."""
+    return client._mark_price(symbol)

@@ -1,1 +1,46 @@
-# Stub — written by additions_spec_bingx_vst_stage2.xml feature 4.
+# Stage 2 feature 4 — the timer that fires one rebalance slot per 4-hour
+# boundary.  Written by the feature; enabling it is an operator step
+# (`systemctl --user enable --now nullius-vst-rebalance.timer`).  Nothing in
+# this repository installs or enables it.
+#
+# Six firings a day, five minutes past each UTC boundary: 00:05, 04:05,
+# 08:05, 12:05, 16:05 and 20:05.  Scheduling in UTC rather than local time
+# matters — the slot itself is `now` floored to a UTC 4-hour boundary, so a
+# timer in another timezone would fire into the middle of a slot and the
+# run would be a no-op replay of the slot it landed in.
+#
+# Five minutes of slack is deliberate: the slot's `rebalance_ts` is the
+# boundary (00:00, 04:00, ...), not the firing moment, so a firing at 00:05
+# runs the 00:00 slot and a firing at 00:00:30 would run the same one.
+
+[Unit]
+Description=nullius scheduled BingX VST rebalance timer (4-hour slots)
+Documentation=file:/%h/projects/nullius/deploy/systemd/nullius-vst-rebalance.service
+
+[Timer]
+# One line per boundary, each stating its own UTC offset — so the schedule
+# is UTC whatever the host's clock is set to, with no reliance on the
+# `Timezone=` key (which some systemd builds apply only to bare calendar
+# expressions).  The space-separated form inside a single OnCalendar is
+# only honoured from systemd 252; six lines work everywhere.
+OnCalendar=*-*-* 00:05:00 UTC
+OnCalendar=*-*-* 04:05:00 UTC
+OnCalendar=*-*-* 08:05:00 UTC
+OnCalendar=*-*-* 12:05:00 UTC
+OnCalendar=*-*-* 16:05:00 UTC
+OnCalendar=*-*-* 20:05:00 UTC
+# A slot missed because the machine was off (a laptop, a reboot) is run on
+# the next boot.  The run is idempotent within its own slot, so catching up
+# never double-places: it finds the slot's orders already placed and prints
+# `prior` for every one of them.
+Persistent=true
+# The service is a oneshot, so systemd will not start a second instance
+# while one is still running — a slow slot is skipped, never overlapped.
+# AccuracySec keeps a firing from drifting across the slot's own boundary.
+AccuracySec=1min
+# No jitter: the slot is a boundary, and six firings a day are nowhere near
+# the thundering-herd scale that RandomizedDelaySec exists to spread.
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target

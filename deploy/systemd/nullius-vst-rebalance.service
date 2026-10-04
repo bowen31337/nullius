@@ -1,1 +1,44 @@
-# Stub — written by additions_spec_bingx_vst_stage2.xml feature 4.
+# Stage 2 feature 4 — one scheduled BingX VST rebalance slot, as a user
+# service.  This file is written by the feature; installing and enabling it
+# (linking it into ~/.config/systemd/user/ and starting the timer) is an
+# operator step.  Nothing in this repository installs or enables it.
+#
+# The unit is a **oneshot**: a slot runs once, to completion, and exits.
+# systemd never runs two instances of one service unit at a time, so a
+# timer that fires while a slot is still running cannot start a second
+# one — the rebalance cannot overlap itself.  That is also why the command
+# is idempotent *inside* a slot: `rebalance_ts` is the slot's own 4-hour
+# boundary, so even a manual re-run places nothing new.
+#
+# `./run.sh vst-rebalance` is the wrapper that injects only the BingX VST
+# sub-account key (`.env.vst.tpl`, never `.env.tpl`) through `op run` and
+# defaults `DATABASE_URL` to `~/.local/share/nullius/vst.db`, which is the
+# one store the guard, the cancels, the reconcile and the placements all
+# use.  It must run from the repository root, because the book path is
+# relative to it and `run.sh` resolves the workspace from its own location.
+
+[Unit]
+Description=nullius scheduled BingX VST rebalance (one 4-hour slot)
+Documentation=file:/%h/projects/nullius/deploy/systemd/nullius-vst-rebalance.timer
+# The venue is remote, so wait for the network before a slot starts; a slot
+# that cannot reach the venue places nothing and exits 1, which the timer's
+# next firing retries.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# The repository root.  `%h` is the operator's home; edit this line (and the
+# matching one in the timer's unit) if the checkout lives elsewhere.
+WorkingDirectory=%h/projects/nullius
+# One slot.  `run.sh` already injects the VST key and the store URL; the
+# book is the synthetic Stage 0 book this feature ships with.
+ExecStart=%h/projects/nullius/run.sh vst-rebalance --book packages/router/tests/fixtures/bingx_vst/synthetic_book.json
+# A slot that fails (exit 1: a refused leg, exit 3: a daily-loss halt) is
+# recorded by systemd and by the JSON line the command prints to the
+# journal; it is not restarted here, because the timer's next slot handles
+# the retry and the daily-loss halt must not be hammered.
+Restart=no
+# The slot's exit 3 (daily-loss halt) is a *refusal*, not a crash: report it
+# in the journal without systemd treating the unit as failed.
+SuccessExitStatus=0 1 3

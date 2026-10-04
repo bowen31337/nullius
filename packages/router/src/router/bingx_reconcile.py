@@ -86,6 +86,22 @@ theirs — and a deployment that names neither is refused *by the store*,
 not silently answered, because a divergence that went nowhere is the hole
 feature 340 exists to close.
 
+**The orders come from where they were *placed*, not from a plan.**  The
+sentence says the module reads back *"the rebalance's orders"*; a plan is
+not those orders.  A plan is a function of the book, today's positions and
+today's marks, so a plan rebuilt at reconciliation time is re-sized against
+a world the rebalance never traded in — it drops a leg whose target the
+account has since reached, and it carries pre-repricing prices the venue
+was never asked at.  So when the caller hands no ``orders`` the act reads
+the terms :meth:`~router.submission_result.RouterOrderPlacementStore.record_order`
+wrote at *placement* time, addressed by ``(book_id, rebalance_ts)`` — the
+side, the type, the size and, above all, the reference price the order was
+actually placed at.  That is the scheduled slot's spelling (feature 4 of
+the Stage 2 spec) and the fix ``bug_spec_bingx_reconcile_refs.xml`` names.
+The ``orders`` parameter stays, and remains the way a caller *holding* the
+plan hands it in — the suite's own spelling, and the one a same-process
+caller may use.
+
 **The injected client, and no socket.**  ``client`` is feature 1's
 :class:`~router.bingx_client.BingXClient` in a deployment and a recording
 double in the suite: the read-back walks it per order, and the contracts
@@ -93,17 +109,20 @@ and premiumIndex documents are fetched through it too — unless the caller
 hands them in, which the suite does with the recorded fixtures and a
 rebalance slot with the documents it already read.  Nothing here opens a
 socket, reads a credential or consults a clock; the only I/O is the store
-feature 340 owns, and the only write is its one row.
+feature 340 owns and the placement store the terms are read from, and the
+only write is feature 340's one row.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from .bingx_client_order_id import project_bingx_client_order_id
 from .bingx_documents import RouterMarkPriceError, resolve_bingx_mark_prices
 from .bingx_order import (
     BINGX_BUY,
@@ -182,6 +201,107 @@ class _PlanLeg:
     side: str
     type: str
     price: Decimal | None
+
+
+def _rebalance_instant(value: Any) -> datetime:
+    """Return ``value`` as a timezone-aware instant, from a datetime or ISO text.
+
+    The book file carries its ``rebalance_ts`` as an ISO 8601 string
+    (``"2026-09-30T00:00:00+00:00"``), while a caller that built the instant
+    in memory hands a :class:`~datetime.datetime`; both are the same fact and
+    both are read here, so the rebalance's identity is the pair the book
+    states rather than whichever spelling a caller happened to hold.  A
+    string is parsed before anything is read or written; a naive or
+    unparsable value is refused up front with this module's own code word,
+    naming the value, so a value that would otherwise surface deep inside the
+    forward member's store is refused here instead.
+    """
+
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise RouterBingXReconcileError(
+                f"{BINGX_RECONCILE_CODE}: rebalance_ts={value!r} is not an ISO "
+                "8601 instant; the rebalance's instant is the second half of "
+                "the pair (book_id, rebalance_ts) that names the rebalance "
+                "being reconciled, and a string that will not parse names no "
+                "rebalance (feature 3)"
+            ) from exc
+    if not isinstance(value, datetime):
+        raise RouterBingXReconcileError(
+            f"{BINGX_RECONCILE_CODE}: rebalance_ts must be a datetime or an "
+            f"ISO 8601 string, got {value!r} ({type(value).__name__}); the "
+            "reconcile is addressed by the rebalance's instant, and a value "
+            "that names no instant names no rebalance to reconcile (feature 3)"
+        )
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        raise RouterBingXReconcileError(
+            f"{BINGX_RECONCILE_CODE}: rebalance_ts={value!r} names no "
+            "timezone; a naive instant folds into the rebalance's identity an "
+            "offset nobody agreed on, and one rebalance would read as two "
+            "(feature 3)"
+        )
+    return value.astimezone(UTC)
+
+
+@dataclass(frozen=True)
+class _LiteralOrder:
+    """One recorded placement, shaped as the leg the read-back consumes.
+
+    The recorded terms (see
+    :class:`~router.submission_result.OrderRecord`) read into the same
+    ``symbol`` / ``client_order_id`` surface a
+    :class:`~router.bingx_order.BingXOrder` carries, so
+    :func:`read_back_orders` looks each order up by the identifier it was
+    recorded under — the full 64-hex key, which is *not* the venue's
+    40-character projection and is exactly what the venue's own read-back
+    accepts.
+    """
+
+    client_order_id: str
+    symbol: str
+
+
+def _recorded_orders(
+    *,
+    database_url: str | None,
+    env: Mapping[str, str] | None,
+    book_id: Any,
+    rebalance_ts: datetime,
+) -> Sequence[Any]:
+    """The rebalance's recorded placements, or refuse a store that cannot answer.
+
+    Reads :meth:`~router.submission_result.RouterOrderPlacementStore.records_for`
+    — the terms placement wrote when it sent each order — addressed by the
+    rebalance's own identity.  The store is resolved from ``database_url``,
+    else ``DATABASE_URL``, exactly as :func:`_forward_reconcile` resolves its
+    own; a deployment that names neither is refused by the store itself.  The
+    import is deferred past module scope for the same reason every
+    cross-member import in this package is: a module never imports a sibling
+    at import time, so scan order cannot decide whether this module loads.
+    """
+
+    try:
+        from .submission_result import RouterOrderPlacementStore
+    except ModuleNotFoundError as exc:  # pragma: no cover - same package
+        raise RouterBingXReconcileError(
+            f"{BINGX_RECONCILE_CODE}: the rebalance's recorded placements are "
+            "read from router.submission_result, which is not importable in "
+            "this environment (feature 3)"
+        ) from exc
+    store = RouterOrderPlacementStore.resolve(env) if database_url is None else (
+        RouterOrderPlacementStore(database_url)
+    )
+    if store is None:
+        raise RouterBingXReconcileError(
+            f"{BINGX_RECONCILE_CODE}: a rebalance is reconciled from the terms "
+            "placement recorded, and neither database_url nor "
+            "DATABASE_URL names the store they were written to; set "
+            "DATABASE_URL to the store the router places orders in, or hand "
+            "the plan's legs as `orders` (feature 3)"
+        )
+    return store.records_for(book_id, rebalance_ts)
 
 
 def _require_callable(client: Any, name: str) -> Any:
@@ -506,7 +626,7 @@ def reconcile_rebalance_fill_costs(
     client: Any,
     book_id: Any,
     rebalance_ts: Any,
-    orders: Any,
+    orders: Any = None,
     contracts: Any = None,
     marks: Any = None,
     database_url: str | None = None,
@@ -556,9 +676,63 @@ def reconcile_rebalance_fill_costs(
     and the store's keep feature 340's.
     """
 
-    legs = _plan_legs(orders)
-    statuses = read_back_orders(client=client, orders=orders)
+    instant = _rebalance_instant(rebalance_ts)
+    if orders is None:
+        # The scheduled slot's spelling, and the one a *later* process must
+        # use: the rebalance's orders and their reference prices are read back
+        # from what placement recorded, never from a plan rebuilt today —
+        # today's plan is re-sized against today's positions and marks, so it
+        # neither lists every order the rebalance placed nor carries the
+        # prices the venue was asked at.  A rebalance with no recorded terms
+        # is not an error: it was never placed by a run that recorded, so
+        # there is nothing to reconcile and ``None`` is the honest answer.
+        records = _recorded_orders(
+            database_url=database_url,
+            env=env,
+            book_id=book_id,
+            rebalance_ts=instant,
+        )
+        if not records:
+            return None
+        # The venue addresses an order by feature 3's 40-character
+        # projection of the recorded 64-hex key, so both the legs and the
+        # read-back are keyed by that projection: the read-back echoes it
+        # back, and the pricing loop joins the two on one spelling.
+        legs = [
+            _PlanLeg(
+                client_order_id=project_bingx_client_order_id(
+                    record.client_order_id
+                ),
+                symbol=record.symbol,
+                side=record.side,
+                type=record.type,
+                price=(
+                    record.reference_price
+                    if record.type == BINGX_LIMIT_ORDER
+                    else None
+                ),
+            )
+            for record in records
+        ]
+        read_back = [
+            _LiteralOrder(
+                client_order_id=project_bingx_client_order_id(
+                    record.client_order_id
+                ),
+                symbol=record.symbol,
+            )
+            for record in records
+        ]
+    else:
+        legs = _plan_legs(orders)
+        read_back = list(orders)
+    statuses = read_back_orders(client=client, orders=read_back)
     by_id = {status.client_order_id: status for status in statuses}
+
+    # Every read uses the rebalance's *parsed* instant, so a caller that
+    # handed the book's own ISO string and one that built the datetime read
+    # and write the identical row.
+    rebalance_ts = instant
 
     if contracts is None:
         contracts = _require_callable(client, "contracts")()

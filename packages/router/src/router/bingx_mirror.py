@@ -860,7 +860,7 @@ def _increasing_size(order: BingXOrder, held: Decimal) -> Decimal:
     beyond = size - abs(held)
     # Reducing orders need no new margin; a crossing one needs only the
     # quantity beyond zero.
-    return beyond if beyond > 0 else Decimal("0")
+    return beyond if beyond > 0 else Decimal(0)
 
 
 def plan_required_margin(
@@ -897,7 +897,7 @@ def plan_required_margin(
     if not orders:
         # An empty plan places nothing and needs nothing: zero, which
         # the door judges as funded on any account.
-        return Decimal("0")
+        return Decimal(0)
     held = live_positions(client)
     market_symbols = sorted(
         {
@@ -929,7 +929,7 @@ def plan_required_margin(
                 "leg the plan ordered cannot be priced for funding by a "
                 "document that does not price it (feature 2)"
             ) from refusal
-    total = Decimal("0")
+    total = Decimal(0)
     for order in orders:
         reference = (
             Decimal(order.price)
@@ -937,7 +937,7 @@ def plan_required_margin(
             else marks[order.symbol]
         )
         total += (
-            _increasing_size(order, held.get(order.symbol, Decimal("0")))
+            _increasing_size(order, held.get(order.symbol, Decimal(0)))
             * reference
             / PREFLIGHT_LEVERAGE
         )
@@ -1313,6 +1313,80 @@ def _refusal_message(refusal: BaseException) -> str | None:
     return None
 
 
+def _order_recorder(
+    *,
+    store: Any,
+    book: Mapping[str, Any],
+    client: Any,
+    orders: Sequence[BingXOrder],
+) -> Callable[[BingXOrder], None] | None:
+    """The callable that records each placed leg's terms, or ``None``.
+
+    Returns ``None`` — recording nothing — unless the store carries the
+    terms write (``record_order``).  That absence is deliberate and not a
+    fault: the placement store's *contract* is
+    :meth:`~router.submission_result.RouterOrderPlacementStore.place`, and a
+    deployment (or a Stage 1 test double) that supplies only that contract
+    must keep placing orders exactly as it did before this recording
+    existed.  The real store carries both, so a deployment records; a double
+    without the terms write is an explicit opt-out.
+
+    For a MARKET leg the recorder reads its symbol's mark **once**, from the
+    same premiumIndex document the plan already fetched through, and hands
+    that mark to every aggressive leg — because the fill-cost reconciliation
+    measures a MARKET fill against the mark read *in the run that placed it*,
+    never against a mark re-read later.  The document is fetched only when
+    the plan actually holds a MARKET leg, so an all-passive rebalance costs
+    no extra read.
+    """
+    record_order = getattr(store, "record_order", None)
+    if not callable(record_order):
+        return None
+    book_id, moment = _identity_terms(book)
+
+    marks: dict[str, Decimal] = {}
+    market_symbols = sorted(
+        {
+            order.symbol
+            for order in orders
+            if order.type == BINGX_MARKET_ORDER
+        }
+    )
+    if market_symbols:
+        try:
+            marks = resolve_bingx_mark_prices(
+                _document(client.premium_index(), "BingX premiumIndex"),
+                market_symbols,
+            )
+        except RouterMarkPriceError as refusal:
+            raise RouterBingXMirrorError(
+                f"{MIRROR_CODE}: the venue's premiumIndex document states no "
+                f"mark price for {refusal.symbol!r}; a MARKET leg's recorded "
+                "reference price is its symbol's mark read in the same run, "
+                "and a document that does not price the leg cannot record the "
+                "reference its fill is measured against (feature 3)"
+            ) from refusal
+
+    def recorder(order: BingXOrder) -> None:
+        reference = (
+            Decimal(order.price)
+            if order.type == BINGX_LIMIT_ORDER
+            else marks[order.symbol]
+        )
+        record_order(
+            client_order_id=_full_identifier(book, order.symbol),
+            book_id=book_id,
+            rebalance_ts=moment,
+            symbol=order.symbol,
+            side=order.side,
+            order_type=order.type,
+            quantity=order.quantity,
+            reference_price=reference,
+        )
+
+    return recorder
+
+
 def _place_one(
     *,
     client: Any,
@@ -1326,6 +1400,7 @@ def _place_one(
     sleep: Callable[[timedelta], Any] = _sleep,
     jitter_rng: Any = None,
     on_retry: Any = None,
+    on_placed: Callable[[BingXOrder], None] | None = None,
 ) -> MirrorLeg:
     """Place one order through the store, the limiter and the backoff.
 
@@ -1432,10 +1507,19 @@ def _place_one(
         # venue already holds the order at the price it was placed at, so
         # nothing was sent this run and the plan's own leg is the report.
         return MirrorLeg(symbol=order.symbol, outcome=MIRROR_OUTCOME_PRIOR)
+    placed_order = sent[-1] if sent else None
+    if placed_order is not None and on_placed is not None:
+        # The placement's terms are recorded here, from the order the venue
+        # was *actually* asked to take — a passive leg as it was repriced at
+        # the book, an aggressive leg verbatim — and only for a leg this run
+        # placed.  A `prior` leg returned above never reaches this, so the
+        # row that records where an order was placed at is the first
+        # placement's and no replay can move it.
+        on_placed(placed_order)
     return MirrorLeg(
         symbol=order.symbol,
         outcome=MIRROR_OUTCOME_PLACED,
-        order=sent[-1] if sent else None,
+        order=placed_order,
     )
 
 
@@ -1487,6 +1571,7 @@ def mirror_place(
         )
     orders = [leg for leg in plan if isinstance(leg, BingXOrder)]
     repricer = _passive_repricer(client=client, book=book, orders=orders)
+    recorder = _order_recorder(store=store, book=book, client=client, orders=orders)
     preflight_kwargs: dict[str, Any] = {
         "required_usdt": plan_required_margin(client=client, orders=orders),
         "symbols": [order.symbol for order in orders],
@@ -1511,6 +1596,7 @@ def mirror_place(
             sleep=sleep,
             jitter_rng=jitter_rng,
             on_retry=on_retry,
+            on_placed=recorder,
         )
     return outcomes
 
