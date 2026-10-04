@@ -1,0 +1,30 @@
+<bug_spec>
+  <!-- Found on the live VST smoke test, 2026-10-04, after the placement fixes
+       merged and three PostOnly orders were resting on nullius01. Core shape
+       with explicit touches_files: plan-bugs ignores <layout>, and plugin= needs
+       the removed src/app/modules seats (see CLAUDE.md). -->
+
+  <bug index="1" shape="core" severity="medium"
+       touches_files="packages/router/src/router/bingx_orders.py,packages/router/tests/test_bingx_orders.py,packages/router/tests/test_bingx_mirror_e2e.py">
+    <title>--status cannot read a live order: BingX nests it under data.order and reports a resting order as PENDING</title>
+    <symptoms>
+      With three PostOnly orders resting on VST (1000PEPE-USDT, ETH-USDT, SOL-USDT), `./run.sh vst --book … --status` exits with "bingx_orders: the venue's answer for '44ee68f878d24b5b13a74433bd7be65a13a30371' carries no readable 'status', got None (NoneType)" and reports nothing.
+      The verbatim answer to GET /openApi/swap/v2/trade/order for that order (fixture live/query_order_pending.json) is {"code": 0, "msg": "", "data": {"order": {"symbol": "1000PEPE-USDT", "status": "PENDING", "origQty": "69850", "executedQty": "0", "avgPrice": "0.0000000", "price": "0.0042697", …}}}.
+      The order details sit under data.order, and a resting order's status is "PENDING", a word the read-back's vocabulary (NEW, PARTIALLY_FILLED, FILLED, CANCELED, EXPIRED, not_found) does not include.
+    </symptoms>
+    <reproduction_steps>
+      Run router.bingx_orders' read-back with a client whose query_order returns the data of packages/router/tests/fixtures/bingx_vst/live/query_order_pending.json: it raises "carries no readable 'status'".
+    </reproduction_steps>
+    <expected>The read-back reads an order from the venue's own shape, the object under "order" in the answer's data. For each clientOrderID it reports:
+      - the venue's status word verbatim (for example PENDING, PARTIALLY_FILLED, FILLED, CANCELLED);
+      - origQty, executedQty and avgPrice as Decimal strings.
+      A status word outside the known set is reported as the venue spelled it, never refused, so a new BingX status cannot abort the read-back. code 109421 stays not_found (the earlier fix). For the fixture it reports 1000PEPE-USDT as PENDING with executedQty 0. --status prints one line per order of the rebalance and exits 0. The end-to-end stand-in answers GET /trade/order in this real nested shape.</expected>
+    <actual>Root cause: router.bingx_orders reads status, executedQty and avgPrice from the top level of the answer's data, but BingX nests them under data.order. It also judges status against a fixed vocabulary written into the Stage 1 spec, which omits BingX's PENDING. The stand-in served a flat shape, so the tests never saw the real one.</actual>
+    <constraints>
+      Pin the fix against live/query_order_pending.json and live/query_order_not_exist.json
+      Never edit the fixtures under packages/router/tests/fixtures/bingx_vst/ (live/ included); they are inputs
+      Cancel behaviour (only the rebalance's own orders, others untouched) keeps its tests
+      No network access and no credentials in any test
+    </constraints>
+  </bug>
+</bug_spec>

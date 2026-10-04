@@ -6,6 +6,7 @@
     "positions_one_way_short.json": "account verified one-way (dualSidePosition false); a SHORT is reported with positionSide 'SHORT' and an UNSIGNED positive positionAmt",
     "position_mode_hedge.json": "verbatim answer from the same account before it was switched to one-way (captured 2026-10-03, re-typed from the session log)",
     "query_order_not_exist.json": "GET /trade/order for a clientOrderId that was refused at placement: code 109421 'order not exist'",
-    "placement_refused_101215": "three PostOnly LIMIT orders priced at the mark were refused with code 101215 at placement; the message was not kept; the same orders validated with code 0 on /trade/order/test minutes later"
+    "placement_refused_101215": "three PostOnly LIMIT orders priced at the mark were refused with code 101215 at placement; the message was not kept; the same orders validated with code 0 on /trade/order/test minutes later",
+    "query_order_pending.json": "GET /trade/order for a resting PostOnly order: details nested under data.order, status 'PENDING' (not NEW)"
   }
 }

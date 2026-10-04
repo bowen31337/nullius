@@ -1,0 +1,60 @@
+{
+  "code": 0,
+  "msg": "",
+  "data": {
+    "order": {
+      "symbol": "1000PEPE-USDT",
+      "orderId": 2106553296475918336,
+      "side": "BUY",
+      "positionSide": "BOTH",
+      "type": "LIMIT",
+      "origQty": "69850",
+      "price": "0.0042697",
+      "executedQty": "0",
+      "avgPrice": "0.0000000",
+      "cumQuote": "0",
+      "stopPrice": "",
+      "profit": "0.0000",
+      "commission": "0.000000",
+      "status": "PENDING",
+      "time": 1791076418000,
+      "updateTime": 1791076418412,
+      "clientOrderId": "44ee68f878d24b5b13a74433bd7be65a13a30371",
+      "leverage": "1X",
+      "takeProfit": {
+        "type": "TAKE_PROFIT",
+        "quantity": 0,
+        "stopPrice": 0,
+        "price": 0,
+        "workingType": "",
+        "stopGuaranteed": "false"
+      },
+      "stopLoss": {
+        "type": "STOP",
+        "quantity": 0,
+        "stopPrice": 0,
+        "price": 0,
+        "workingType": "",
+        "stopGuaranteed": "false"
+      },
+      "advanceAttr": 0,
+      "positionID": 0,
+      "takeProfitEntrustPrice": 0,
+      "stopLossEntrustPrice": 0,
+      "orderType": "",
+      "workingType": "MARK_PRICE",
+      "onlyOnePosition": true,
+      "reduceOnly": false,
+      "postOnly": false,
+      "stopGuaranteed": "false",
+      "triggerOrderId": 0,
+      "trailingStopRate": 0,
+      "trailingStopDistance": 0,
+      "is_twap": false,
+      "mainOrderId": "",
+      "priceRate": "",
+      "actPrice": "",
+      "closePosition": "false"
+    }
+  }
+}
