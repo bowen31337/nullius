@@ -1,0 +1,52 @@
+<bug_spec>
+  <!-- Found by live verification of Stage 2 feature 3 on nullius01 VST,
+       2026-10-04, run against a throwaway copy of the store so no wrong
+       first record landed. Core shape with explicit touches_files: plan-bugs
+       ignores <layout>, and plugin= needs the removed src/app/modules seats
+       (see CLAUDE.md). -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/router/src/router/bingx_mirror.py,packages/router/tests/test_bingx_mirror.py,packages/router/src/router/bingx_reconcile.py,packages/router/tests/test_bingx_reconcile.py,packages/router/src/router/bingx_rebalance.py,packages/router/tests/test_bingx_rebalance.py">
+    <title>Fill-cost reconciliation prices fills against a rebuilt plan, not against what was placed, so it drops real fills and records a false cost</title>
+    <symptoms>
+      The synthetic book's first rebalance (rebalance_ts 2026-09-30T00:00:00+00:00) filled all five orders on VST, per --status:
+      - BTC-USDT 0.0236 @ 84590.0, LIMIT
+      - ETH-USDT 0.558 @ 2687.92, LIMIT
+      - SOL-USDT 8.32 @ 119.863, LIMIT
+      - DOGE-USDT 5402 @ 0.09255, MARKET
+      - 1000PEPE-USDT 69850 @ 0.0042697, LIMIT
+      Reconciling it the way the scheduled slot must, with the legs from build_mirror_plan(book), gave: the plan held only today's drift legs (BTC, DOGE, ETH and SOL with new quantities and prices), and 1000PEPE-USDT was refused as below_min_notional, so its real fill was excluded entirely. The recorded difference was 33.17 bps, although four of the five fills were PostOnly at their own limit prices with zero slippage.
+      forward.reconcile_fill_costs keeps the first record per (book_id, rebalance_ts), so that false figure would have been permanent.
+      router.submission_result's placement store records only client_order_id, symbol, outcome and placed_at, so nothing downstream knows an order's side, type, quantity or reference price.
+    </symptoms>
+    <reproduction_steps>
+      Call router.bingx_reconcile.reconcile_rebalance_fill_costs for a rebalance whose positions have since reached target, passing build_mirror_plan(book) as orders: filled symbols without a leg today are ignored, and the remaining legs carry today's prices.
+    </reproduction_steps>
+    <expected>Every order the mirror sends is recorded at placement time, keyed by its full 64-hex client order identifier. The record holds book_id, rebalance_ts, symbol, side, type, quantity, and its reference price: the limit price actually sent for a LIMIT, after repricing, or the mark read in the same run for a MARKET. It lives in its own table in the DATABASE_URL store, written by mirror_place when the placement is accepted.
+      reconcile_rebalance_fill_costs takes (client, book_id, rebalance_ts) and no plan. It reads those recorded orders and each one's fill from the venue through read_back_orders, then prices slippage against the recorded reference.
+      For the first rebalance's recorded orders and fills, the four PostOnly fills contribute zero slippage, DOGE contributes its fill against its recorded mark, every fill pays its maker or taker fee, and no filled order is ignored.
+      The scheduled slot reconciles the previous slot through this signature.</expected>
+    <actual>Root cause: reconcile_rebalance_fill_costs derives each order's reference from the `orders` legs it is handed (and a MARKET leg's from the mark at reconcile time). The only legs a later run can produce come from re-planning against today's positions and prices, which neither lists every placed order nor carries the prices that were sent. The placement store never recorded those terms.</actual>
+    <constraints>
+      Placement behaviour, the placement store's idempotency key and Stage 1's printed JSON lines are unchanged
+      Every BingX response in a test is a recorded fixture from packages/router/tests/fixtures/bingx_vst/live/ or derived from one; those fixtures are never edited
+      No network access and no credentials in any test
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="medium" depends_on="1"
+       touches_files="packages/router/src/router/bingx_reconcile.py,packages/router/tests/test_bingx_reconcile.py">
+    <title>reconcile_rebalance_fill_costs accepts rebalance_ts as the book's ISO string and only fails deep inside the forward member</title>
+    <symptoms>
+      Passing the book file's rebalance_ts ("2026-09-30T00:00:00+00:00", a string, the form the book carries) raised from inside forward: "forward.errors.ForwardReconciliationError: forward_reconciliation_malformed: the rebalance's instant must be a datetime, not str".
+    </symptoms>
+    <reproduction_steps>
+      Call reconcile_rebalance_fill_costs(..., rebalance_ts="2026-09-30T00:00:00+00:00", ...).
+    </reproduction_steps>
+    <expected>rebalance_ts may be a timezone-aware datetime or an ISO-8601 string with an offset, the book's own spelling. A string is parsed before anything is read. A naive or unparsable value is refused up front with the router's own code word, naming the value, before any venue call or store write.</expected>
+    <actual>Root cause: the function forwards rebalance_ts unvalidated, and only forward's store validates the type.</actual>
+    <constraints>
+      No network access and no credentials in any test
+    </constraints>
+  </bug>
+</bug_spec>
