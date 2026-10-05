@@ -976,6 +976,16 @@ spec passes without `/fix-spec`:
   feature; an uncovered question with a declared `priority: 1` is an **ERROR** that blocks
   `plan`. That link is what makes "did we cover the PRD?" answerable — so emit it while
   authoring, when you still know which question you are expanding.
+  - **Brownfield additions specs in a project with a brief: declare subsystems in
+    `umbrella.yaml` FIRST.** With no umbrella manifest, Layer 6 holds *every* spec to
+    *every* competency question in the brief — a small additions spec adding one
+    capability reports every other subsystem's questions as uncovered ERRORs, and no
+    edit to that spec can ever clear them. The fix is never a stub feature with an
+    unrelated `covers=` (that falsifies traceability for good): add an `umbrella.yaml`
+    where each subsystem names its `spec:` path and the question ids it `owns:`, and
+    Layer 6 narrows that spec's uncovered-question check to exactly those ids. One-time
+    setup per project; every later additions spec validates against only its own
+    questions. Verify with `claw-forge umbrella check`.
 
 - **Migration / schema work is always `shape="core"`** (Gap 8, **ERROR** otherwise). If a
   feature description contains any of `migration`, `alembic`, `database schema`, `DDL`,
