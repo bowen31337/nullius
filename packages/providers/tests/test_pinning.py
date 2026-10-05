@@ -30,6 +30,7 @@ from providers import (
     RollingAliasError,
     require_agent_model_id,
 )
+from providers._pinning import ROLLING_VERSION_MARKERS
 
 #: The ids architecture §14.1's own tables name, as the fixtures a reader is
 #: asked to recognise: the root tier's rotation, the depth tier's model, and a
@@ -283,3 +284,106 @@ def test_the_separator_is_the_one_the_schema_comment_writes(make_pin):
     # so this asserts the character itself, not merely that joining uses it.
     assert SEPARATOR == "/"
     assert str(make_pin("a", "b", "c")).count(SEPARATOR) == 2
+
+
+# ── A marker in the version slot is an alias wearing a triple's shape ─────────
+
+
+def test_the_marker_words_are_a_frozenset_of_the_words_the_spec_names():
+    # The words are data, not a regex buried in the refusal, so the rule can be
+    # read off the module and no caller has to reverse-engineer which strings
+    # are traps.  A frozenset because membership is the only question asked of
+    # it, and a *set* because the rule is a set of words, not a ranking.
+    assert isinstance(ROLLING_VERSION_MARKERS, frozenset)
+    assert ROLLING_VERSION_MARKERS == frozenset(
+        {"latest", "current", "stable", "default", "newest", "live", "auto"}
+    )
+
+
+@pytest.mark.parametrize("marker", sorted(ROLLING_VERSION_MARKERS))
+def test_a_version_that_is_a_moving_marker_is_the_rolling_alias_refused(marker):
+    # The §14.1 failure in triple form.  "deepseek/deepseek-flash/latest" names
+    # a *target* the provider may re-point at will — exactly the bare id the
+    # triple exists to refuse, wearing the shape the parser used to accept.  A
+    # campaign run in August and one in September under this string can be
+    # authored by different models, which is the uncontrolled heterogeneity the
+    # M3 paired comparison must not be drawn from.
+    with pytest.raises(RollingAliasError) as refusal:
+        require_agent_model_id(f"deepseek/deepseek-flash/{marker}")
+    message = str(refusal.value)
+    # The refusal names the triple and the marker: the caller must be able to
+    # see *which* value was refused and *why*, without bisecting the argument.
+    assert "deepseek/deepseek-flash/" in message
+    assert marker in message
+
+
+@pytest.mark.parametrize("marker", sorted(ROLLING_VERSION_MARKERS))
+def test_a_marker_in_mixed_case_is_still_a_marker(marker):
+    # Case-insensitive, because "LATEST" and "Latest" name the same moving
+    # target as "latest" — folding is the rule, and a case-sensitive check
+    # would be a check a caller could spell around.
+    with pytest.raises(RollingAliasError):
+        require_agent_model_id(f"deepseek/deepseek-flash/{marker.upper()}")
+
+
+def test_a_model_name_ending_in_latest_is_the_alias_the_marker_rule_catches():
+    # "openai/chatgpt-4o-latest/2024-08-06" puts the marker in the *model* slot
+    # and a real-looking date after it.  It is the same alias: the provider
+    # re-points "chatgpt-4o-latest" at a newer snapshot while the version part
+    # stays a string the row cannot recover the model from.  So the rule is not
+    # only "the version is a marker": a model that *is* "latest" or *ends with*
+    # "-latest" names a target too, and the version slot cannot rescue it.
+    with pytest.raises(RollingAliasError) as refusal:
+        require_agent_model_id("openai/chatgpt-4o-latest/2024-08-06")
+    assert "chatgpt-4o-latest" in str(refusal.value)
+    # ...and the bare "latest" model is caught too, not only the "-latest"
+    # suffix — "latest" is a marker word whether or not anything precedes it.
+    with pytest.raises(RollingAliasError):
+        require_agent_model_id("openai/latest/2024-08-06")
+    # Mixed case in the model slot folds the same way the version slot does.
+    with pytest.raises(RollingAliasError):
+        require_agent_model_id("openai/ChatGPT-4o-LATEST/2024-08-06")
+
+
+def test_model_pin_construction_applies_the_same_rule_as_the_parser(make_pin):
+    # The parser is the classmethod over this rule, so a pin built from three
+    # arguments must be refused on the same grounds — otherwise a caller could
+    # build in memory a pin whose stored form the reader would refuse.  Each
+    # refusal is the feature's own vocabulary, never the standard library's.
+    with pytest.raises(RollingAliasError):
+        make_pin("deepseek", "deepseek-flash", "latest")
+    with pytest.raises(RollingAliasError):
+        make_pin("openai", "chatgpt-4o-latest", "2024-08-06")
+    # ModelPin.parse is the same parse, so the read-back of such a stored
+    # value refuses rather than silently answering a pin.
+    with pytest.raises(RollingAliasError):
+        ModelPin.parse("deepseek/deepseek-flash/latest")
+
+
+@pytest.mark.parametrize(
+    "version",
+    ["20260401", "2026-03-01", "v4.1", "1", "2024-08-06", "fp8-2026-05"],
+)
+def test_a_dated_or_numbered_version_is_not_a_marker(version):
+    # The near-misses the spec names: the rule is a fixed vocabulary of *words*
+    # meaning "no snapshot", not a heuristic about what a version looks like.
+    # A date, a dotted release and a bare number are all snapshots.
+    assert require_agent_model_id(f"anthropic/claude-opus-5/{version}").version == version
+
+
+@pytest.mark.parametrize(
+    ("model", "version"),
+    [
+        ("stable-diffusion-3", "1"),
+        ("autoformer", "1"),
+        ("liveness-probe", "20260101"),
+        ("newest-model-v2", "1"),
+        ("currentness", "1"),
+    ],
+)
+def test_a_model_that_merely_contains_a_marker_word_is_accepted(model, version):
+    # A marker word *elsewhere* in a name is not a marker: "stable-diffusion-3"
+    # is a model whose name contains "stable", not a name that ends in
+    # "-latest".  The suffix is the load-bearing part of the model rule —
+    # catching every substring would refuse real, pinned models.
+    assert require_agent_model_id(f"local/{model}/{version}").model == model

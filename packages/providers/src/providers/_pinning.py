@@ -44,11 +44,14 @@ thing:
 dates of ``version``, and it would be wrong: mitigation 2's own recommendation
 is ``claude-opus-5`` — a dateless id the provider documents as a pinned
 snapshot, and the id §14.1's root tier actually names.  A date check would
-refuse the very ids the architecture recommends.  What feature 203 can enforce
-without a provider's documentation is *structure*: three parts, each non-empty,
-and therefore a value a model stratum can be keyed on.  Whether a given version
-string is genuinely immutable is a procurement fact, not a parseable one, and
-this module says so rather than pretending a regex can decide it.
+refuse the very ids the architecture recommends.  What feature 203 enforces
+without a provider's documentation is *structure* — three parts, each non-empty
+— plus the one meaning it *can* decide: the fixed vocabulary of words that
+announce *no snapshot* (:data:`ROLLING_VERSION_MARKERS`, and the ``-latest``
+model suffix).  Whether any other version string is genuinely immutable is a
+procurement fact, not a parseable one, and this module says so rather than
+pretending a regex can decide it; so the rule is a set of known-marker *words*
+rather than a pattern over the version's shape.
 
 The rendering, and the one separator
 ------------------------------------
@@ -63,12 +66,14 @@ value.  Without that rule ``("a/b", "c", "d")`` and ``("a", "b/c", "d")`` would
 render alike and two different models would share a stratum — the same class of
 silent conflation the triple exists to end.
 
-The inverse (:func:`require_agent_model_id`) is strict, and strictness is the
-feature: a value that is not three separator-joined non-empty parts is refused
-as a :class:`~providers.RollingAliasError`, never guessed at, never padded with
-a default part.  A reader that "recovered" a triple from ``'deepseek-flash'``
-by inventing a provider or a version would manufacture precisely the false
-stratum the refusal exists to prevent.
+The inverse (:func:`require_agent_model_id`) is strict in shape and in meaning:
+a value that is not three separator-joined non-empty parts is refused as a
+:class:`~providers.RollingAliasError`, and so is a triple whose *model* or
+*version* names a moving target — ``deepseek/deepseek-flash/latest`` has the
+shape of a pin and names no snapshot.  A reader that "recovered" a triple from
+``'deepseek-flash'`` by inventing a provider or a version would manufacture
+precisely the false stratum the refusal exists to prevent, and so would a reader
+that accepted ``…/latest`` as though the string named one model.
 
 The value type
 --------------
@@ -96,6 +101,7 @@ __all__ = [
     "MODEL_PIN_PARTS",
     "MODEL_PIN_REVISION",
     "NODE_TABLE",
+    "ROLLING_VERSION_MARKERS",
     "SEPARATOR",
     "ModelPin",
     "require_agent_model_id",
@@ -130,6 +136,114 @@ NODE_TABLE = "node"
 #: not reached this revision has no column for a pin to live in, and the repair
 #: is to run the chain to here.
 MODEL_PIN_REVISION = "0115_agent_model_trio"
+
+#: The version words that name no snapshot — a *rolling alias in triple form*.
+#: Feature 203's sentence refuses a "rolling alias", and the shape check alone
+#: does not catch one: ``deepseek/deepseek-flash/latest`` is three non-empty
+#: parts and still names a *target* the provider may re-point at will, so two
+#: campaigns under it a month apart can be authored by different models — the
+#: DeepSeek retirement case §14.1 records as history.  These seven are the
+#: spellings of "no fixed snapshot" that a provider publishes; compared
+#: case-insensitively, a version equal to one of them is refused.
+#:
+#: A frozenset because membership is the only question ever asked of it, and a
+#: *set of words* rather than a regex because the rule is deliberately a fixed
+#: vocabulary: a date (``20260401``), a dotted release (``v4.1``) or a bare
+#: number (``1``) is a snapshot and must pass, and no pattern over a version's
+#: *shape* can tell a marker from a name that merely contains one.
+#:
+#: The same words are the marker suffix rule's vocabulary: a *model* name that
+#: ends in ``-latest`` (``chatgpt-4o-latest``) puts the moving target in the
+#: model slot with a real-looking version after it, which is the same alias
+#: seen from the other side — hence :data:`_ROLLING_MODEL_SUFFIX`.
+ROLLING_VERSION_MARKERS: frozenset[str] = frozenset(
+    {"latest", "current", "stable", "default", "newest", "live", "auto"}
+)
+
+#: The one marker spelling that is recognisable as a *suffix* on a model name.
+#: ``chatgpt-4o-latest`` is a model whose name carries the moving target at its
+#: end, so the model rule is "ends with ``-latest`` or equals ``latest``".  The
+#: suffix is load-bearing: catching the word *anywhere* in a model name would
+#: refuse ``stable-diffusion-3``, a real pinned model that merely contains a
+#: marker word, which the spec requires stay accepted.
+_ROLLING_MODEL_SUFFIX = "-latest"
+
+
+def _rolling_marker_in(part: str, *, model: bool) -> str | None:
+    """The moving marker ``part`` names, or ``None`` if it names a snapshot.
+
+    Feature 203's meaning rule, split from its shape rule.  A triple's shape
+    (three non-empty, separator-free parts) says the value *can* be stored; this
+    says whether a part actually names something that served.  Both are needed
+    and neither implies the other: ``a/b/c`` is a well-formed triple and
+    ``a/b/latest`` is a well-formed triple that names no snapshot.
+
+    Returns the marker it matched rather than a bool so the refusal can name it
+    — *"…refused because its version is 'latest'"* tells an operator what to
+    change, where *"refused"* leaves them to guess which of three parts was the
+    problem.  The comparison folds case, and the *stored* string is untouched:
+    ``LATEST`` and ``latest`` are the same target, and a caller spelling one
+    past the rule would make the rule optional.
+
+    ``model`` selects the model slot's rule from the version slot's, and the two
+    differ on purpose.  A **version** is either one of the marker words or a
+    snapshot, so its rule is exact membership in
+    :data:`ROLLING_VERSION_MARKERS`.  A **model** name is refused only when it
+    *is* ``latest`` or *ends with* ``-latest`` — the observed aliasing shapes
+    (``chatgpt-4o-latest``) — and not when it merely contains a marker word
+    elsewhere, so ``stable-diffusion-3`` stays accepted as the spec requires.
+    """
+    folded = part.casefold()
+    if model:
+        if folded == "latest" or folded.endswith(_ROLLING_MODEL_SUFFIX):
+            return part
+        return None
+    if folded in ROLLING_VERSION_MARKERS:
+        return part
+    return None
+
+
+def _require_pinned_part(value: str, part: str, triple: str) -> str:
+    """Refuse a triple part that names a moving target rather than a snapshot.
+
+    The meaning half of the rule :func:`_require_part` gives the shape half.
+    Called only for the ``model`` and ``version`` slots — a *provider* name is
+    not a snapshot and the spec's own fixtures name it freely (``local``) — and
+    raising the same :class:`~providers.RollingAliasError` as the shape rule,
+    because a marker in a part *is* a rolling alias, just one the shape check
+    cannot see.
+
+    ``triple`` is the whole value rendered (``provider/model/version``) so the
+    refusal names the pin the caller offered as well as the marker inside it;
+    a message naming only the offending part would leave an operator to work
+    out which stored value it came from.
+    """
+    marker = _rolling_marker_in(value, model=(part == "model"))
+    if marker is None:
+        return value
+    if part == "model":
+        raise RollingAliasError(
+            f"a model pin's model {value!r} names a moving target rather than "
+            f"a model snapshot: it is {marker!r} or ends with "
+            f"{_ROLLING_MODEL_SUFFIX!r}, which a provider re-points at a newer "
+            f"snapshot while the id stays the same. Feature 203 pins a node's "
+            f"authoring model so the M3 paired comparison has a stable stratum "
+            f"to group by, but {triple!r} gives the string a stratum without "
+            f"naming the model it holds: two campaigns a month apart can be "
+            f"authored by different models under one id (architecture §14.1). "
+            f"Pin the dated or numbered snapshot the provider documents, in "
+            f"place of {value!r}."
+        )
+    raise RollingAliasError(
+        f"a model pin's version {value!r} names a moving target rather than a "
+        f"snapshot: in {triple!r} the version is the marker {marker!r}, a word "
+        f"meaning *whatever the provider serves now*, so the triple has the "
+        f"shape of a pin without naming one. Two campaigns pinned with "
+        f"{marker!r} a month apart can be authored by different models — "
+        f"architecture §14.1's DeepSeek retirement — and the stratum they "
+        f"share would silently mix them. Pin the dated or numbered snapshot "
+        f"the provider documents, in place of {value!r}."
+    )
 
 
 def _require_part(value: object, part: str) -> str:
@@ -217,9 +331,23 @@ class ModelPin:
         # malformed in two places is refused for the first one a reader would
         # meet — the same ordering :class:`~providers.Completion` uses to
         # decide which field a malformed answer fails on.
+        #
+        # The shape rule runs for all three parts; the *meaning* rule then runs
+        # on the two slots a moving marker can hide in.  Applying the meaning
+        # rule at construction is what keeps the parser and the record one rule
+        # rather than two: a pin built from three arguments and a pin parsed
+        # from a stored string are refused for the same markers, so no path
+        # builds a pin that :func:`require_agent_model_id` would refuse on the
+        # way back out (the store's read-back is the path that matters).
         object.__setattr__(self, "provider", _require_part(self.provider, "provider"))
         object.__setattr__(self, "model", _require_part(self.model, "model"))
         object.__setattr__(self, "version", _require_part(self.version, "version"))
+        # The provider slot is exempt: a provider name is a supply chain, not a
+        # snapshot, and the spec's own fixtures name it freely.
+        object.__setattr__(self, "model", _require_pinned_part(self.model, "model", str(self)))
+        object.__setattr__(
+            self, "version", _require_pinned_part(self.version, "version", str(self))
+        )
 
     @classmethod
     def parse(cls, value: object) -> ModelPin:
@@ -281,8 +409,9 @@ def require_agent_model_id(value: object) -> ModelPin:
     """Return ``value`` as a :class:`ModelPin`, refusing a rolling alias.
 
     The one parse of the stored form, and the feature's gate: a value that is
-    three separator-joined non-empty parts *is* a pinned triple, and anything
-    else is a rolling alias — refused as
+    three separator-joined non-empty parts, with a *model* and *version* that
+    name a snapshot rather than a moving target, *is* a pinned triple, and
+    anything else is a rolling alias — refused as
     :class:`~providers.RollingAliasError` with the value in the message.
 
     The refusal is deliberately unaccommodating, in both directions a caller
@@ -298,6 +427,12 @@ def require_agent_model_id(value: object) -> ModelPin:
       with the re-routing written down.  Refused on the same grounds.
     * A **four-part** value is refused rather than truncated, because guessing
       which of the extra parts is the version would be inventing a stratum.
+    * A **well-formed triple whose version is a marker** (``'…/latest'``) or
+      whose model ends in ``-latest`` (``'chatgpt-4o-latest'``) is the same
+      alias wearing the triple's shape — three parts are necessary but not
+      sufficient.  This is the loophole the meaning rule closes: the shape
+      check alone accepted it, and a value that is accepted is a value the
+      store writes and the stratification keys on.
 
     The parts are parsed positionally — provider, then model, then version —
     because that is the order :data:`MODEL_PIN_PARTS` declares, and the order
