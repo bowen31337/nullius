@@ -21,6 +21,7 @@ members = [
     "nullius-ingest",
     "nulloracle",
     "ops",
+    "orchestrator",
     "policy-runtime",
     "promotion",
     "providers",
@@ -422,6 +423,11 @@ requires-dist = [
     { name = "regime", editable = "packages/regime" },
     { name = "scoring", editable = "packages/scoring" },
 ]
+
+[[package]]
+name = "orchestrator"
+version = "0.1.0"
+source = { editable = "packages/orchestrator" }
 
 [[package]]
 name = "packaging"

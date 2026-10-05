@@ -1,0 +1,319 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — live evaluation pipeline (orchestrator member, spec A of the campaign driver)</project_name>
+  <addition_summary>
+    Add a new workspace member, packages/orchestrator (import name
+    orchestrator). It is the orchestrator of docs/nullius-tech-architecture.md
+    (app_spec feature 150), and it evaluates one live node with a single call.
+    Today evaluation is a chain of separate evaluator verbs:
+    resolve_window, execute_signal, normalize_scores, align_targets,
+    gate_targets, apply_costs, compute_node_metrics, compute_marginal_ir and
+    persist_node. Only tests/e2e/test_momentum_signal_positive_ic.py
+    assembles them, and four pieces a live run needs are missing:
+    - No implementation exists of the evaluator's TreeNodeWriter and
+      ArtifactWriter protocols.
+    - No caller of evaluator.debit_trial exists.
+    - No way exists to hand the evaluator a null-aware oracle for a node
+      below its campaign's root: the null target route answers NOT_FOUND for
+      any node the sidecar does not hold, and Type-R seals roots only.
+    - Nothing loads the evaluation inputs from configuration.
+    This spec supplies those pieces, plus a one-call evaluate_node, without
+    editing the evaluator, nulloracle or ledger members. Those are the
+    read-only trust zone Z0, which the orchestrator calls and never changes.
+    Spec B (additions_spec_campaign_driver.xml) builds the campaign loop on
+    top of it.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace (members = packages/*, picked up automatically) / Polars / SQLite or PostgreSQL via DATABASE_URL / pytest (ruff conventions)</stack>
+    <test_baseline>Measured 2026-10-05 on main (HEAD eb878ba): workspace tests/ 1594 passed; packages/providers/tests 1382, packages/signal-agent/tests 761, packages/dreaming/tests 787, packages/discovery/tests 678 passed.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md's Build &amp; Test section and its rules:
+      - Members only. Do not edit the root pyproject.toml, because the
+        packages/* glob already registers a new member.
+      - @register builders live only in a member's __init__.py.
+      - Components are read through create_app().get(name).
+      - A refusal is a typed error that opens with a greppable code word and
+        is defined in the raising module.
+      - Tests never reach the network or read a real credential.
+
+      Existing pieces (read, never edit):
+      - The evaluator's canonical chain is in
+        tests/e2e/test_momentum_signal_positive_ic.py::_run_pipeline. Mirror
+        its inputs and order exactly.
+      - resolve_window(snapshot, t) and execute_signal(resolution, code, *,
+        seed, rebalance_dates=None, sandbox=None, materialize=None).
+      - align_targets(execution, closes), and gate_targets(alignment, oracle,
+        *, node_id, campaign_id, depth), where Oracle is a callable
+        OracleRequest(node_id, campaign_id, depth, horizon, symbols,
+        date_range) -&gt; OracleResponse(target_series, charges_budget).
+      - apply_costs(gated, charges, *, node_id, cost_model) and
+        compute_node_metrics(returns, scores) -&gt; NodeMetrics.
+      - compute_marginal_ir(returns, book).
+      - persist_node(*, node_id, campaign_id, snapshot_name, evaluator_hash,
+        returns, metrics, profile, estimate, attribution, marginal,
+        artifact_writer, tree_writer, code=None, steps_completed,
+        database_url) -&gt; NodePersistence.
+      - The protocols TreeNodeWriter.write_node(node_row: NodeRow) -&gt;
+        (str, bool) (in evaluator._persist_store), and
+        ArtifactWriter.write_artifact(node_id, campaign_id, filename,
+        payload) plus flush(node_id) (in evaluator._artifact).
+      - evaluator._debit: TrialCharge, charge_failure(...) and
+        debit_trial(charge, ledger) -&gt; DebitedTrial. ledger is the
+        "ledger" component (TrialLedger.debit, idempotent by node).
+        A charge carries node_id, campaign_id, outcome, charges_budget,
+        epoch_id, evaluator_hash, snapshot_hash, cost_model_hash and
+        charge_units.
+      - nulloracle:
+        - TargetEndpoint.post(TargetRequest(node_id, campaign_id, depth,
+          horizon, symbols, date_range)) -&gt; TargetResponse(status,
+          node_id, target_series, charges_budget, detail). Status NOT_FOUND
+          means the sidecar holds no entry for the node.
+        - The Type-D flip is decided through the endpoint's past_flip seam,
+          from the request.
+        - TypeRSelection.persist(campaign_id) seals root assignments, and
+          TypeRSelection.null_status(node_id) walks parent_id.
+        - Components "nulloracle-target-route" and
+          "nulloracle-type-r-selection".
+      - The node table (migrations 0118, 0114 to 0117): the metric columns
+        are ic_mean, ic_tstat, ir_standalone, ir_marginal, turnover,
+        cost_adjusted_ir and perturb_stability. A node row is written first
+        by discovery's AttemptLog, or by spec B's root planter.
+      - signal_agent.ScoreRecord(ic_mean, ic_tstat, ir_standalone,
+        ir_marginal, turnover, cost_adjusted_ir, perturb_stability,
+        fail_class).
+      - The artifacts member's ArtifactStore is the per-node artifact store.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Orchestrator Member">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/orchestrator/pyproject.toml,packages/orchestrator/src/orchestrator/__init__.py,packages/orchestrator/tests/test_member.py,uv.lock">
+        System creates the orchestrator workspace member at
+        packages/orchestrator (project name orchestrator, import name
+        orchestrator). Its pyproject declares workspace dependencies on
+        evaluator, nulloracle, ledger, artifacts, discovery, signal-agent,
+        providers and policy-runtime, each with a [tool.uv.sources]
+        workspace = true entry. It adds no third-party package.
+        - uv.lock is regenerated with `uv lock`, and `uv sync
+          --all-packages` succeeds. The root pyproject.toml is not edited.
+        - orchestrator/__init__.py holds a module docstring and an empty
+          __all__, and registers no component yet.
+        - test_member.py imports orchestrator and asserts that
+          create_app() still composes.
+      </feature>
+      <feature index="2" shape="core" depends_on="1"
+               touches_files="packages/orchestrator/src/orchestrator/_oracle.py,packages/orchestrator/tests/test_oracle.py">
+        System creates a null-aware OracleResponse for any node of a campaign with
+        orchestrator._oracle.SubtreeOracle(endpoint, *, database_url). This
+        is a callable evaluator Oracle, OracleRequest -&gt; OracleResponse.
+        - It resolves the request node's root by walking node.parent_id in
+          the DATABASE_URL store, until parent_id is NULL.
+        - It posts TargetRequest(node_id=root id, campaign_id,
+          depth=request.depth, horizon, symbols, date_range) to the endpoint.
+          The root's sealed assignment therefore covers its whole subtree,
+          as Type-R inheritance requires. Because the request keeps the
+          node's own depth, the endpoint's Type-D past_flip still decides
+          the flip by depth.
+        - An OK response is mapped to OracleResponse(target_series,
+          charges_budget).
+        - Any other status raises OracleTargetError (code word
+          oracle_target), carrying the status and the endpoint's detail.
+          A node with no row, or a parent chain longer than 10000 links,
+          raises OracleTargetError.
+        - The module never reads a node's null bit, and never imports the
+          sidecar key. Tests use a fake endpoint that records requests, and
+          assert that children of a root are served under the root's id with
+          their own depth.
+      </feature>
+      <feature index="3" shape="core" depends_on="1"
+               touches_files="packages/orchestrator/src/orchestrator/_tree_writer.py,packages/orchestrator/tests/test_tree_writer.py">
+        System persists a node's evaluated metrics onto its existing node
+        row with orchestrator._tree_writer.NodeMetricsWriter(database_url),
+        an implementation of the evaluator's TreeNodeWriter protocol.
+        - write_node(node_row) UPDATEs ic_mean, ic_tstat, ir_standalone,
+          ir_marginal, turnover, cost_adjusted_ir and perturb_stability on
+          the row whose id is node_row.node_id. It answers (node_id,
+          written), where written is True when the row changed.
+        - Writing the same values again answers written False. Different
+          values for a row that already holds metrics raise
+          NodeMetricsConflictError (code word node_metrics_conflict).
+        - A missing node row raises NodeMetricsConflictError naming the
+          node. The writer never INSERTs a node row.
+        - Tests use a throwaway SQLite database migrated with the node table
+          migrations.
+      </feature>
+      <feature index="4" shape="core" depends_on="1"
+               touches_files="packages/orchestrator/src/orchestrator/_artifact_writer.py,packages/orchestrator/tests/test_artifact_writer.py">
+        System saves to the artifacts member's store every evaluation
+        artifact of a node, with orchestrator._artifact_writer.ArtifactStoreWriter(store),
+        an implementation of the evaluator's ArtifactWriter protocol.
+        - write_artifact(node_id, campaign_id, filename, payload) stages
+          the payload under the node, and flush(node_id) writes the staged
+          files through the ArtifactStore.
+        - Flushing a node with nothing staged is a no-op. Flushing twice
+          rewrites nothing.
+        - Tests use an ArtifactStore over a tmp_path directory.
+      </feature>
+      <feature index="5" shape="core" depends_on="1"
+               touches_files="packages/orchestrator/src/orchestrator/_context.py,packages/orchestrator/tests/test_context.py">
+        System creates the live evaluation inputs with
+        orchestrator._context.load_evaluation_context(env=None). It answers
+        an EvaluationContext, or None when NULLIUS_EVALUATION_CONFIG is
+        unset.
+        - NULLIUS_EVALUATION_CONFIG names a JSON file holding snapshot_mount
+          (a path), evaluation_dates (ISO dates), horizon, seed, epoch_id,
+          artifact_dir and sandbox_runtime.
+        - sandbox_runtime is "gvisor" or "unisolated". "gvisor" requires the
+          runsc binary on PATH when the config loads. Without it, loading
+          raises EvaluationConfigError naming isolation_required.
+          "unisolated" is accepted only when the file also holds
+          acknowledge_unisolated: true. Any other value, or "unisolated"
+          without the acknowledgement, raises EvaluationConfigError. There
+          is no default: a missing key is refused.
+        - The other inputs come from the variables the members already
+          read: DATABASE_URL, NULLIUS_COST_MODEL_PATH, NULLIUS_EVALUATOR_CONFIG
+          and the null sidecar's own variables.
+        - EvaluationContext is a frozen dataclass. It holds the snapshot
+          handle and closes, the cost schedule and cost model, the evaluator
+          identity (evaluator_hash, snapshot_hash, cost_model_hash), the
+          epoch_id, the database_url, the artifact directory, and the seed.
+          It builds exactly the inputs _run_pipeline assembles.
+        - A missing file, a missing key, or an epoch_id that is not a
+          non-blank string raises EvaluationConfigError (code word
+          evaluation_config) naming the key. The file never holds a
+          credential.
+      </feature>
+      <feature index="6" shape="core" depends_on="1"
+               touches_files="packages/orchestrator/src/orchestrator/_charge.py,packages/orchestrator/tests/test_charge.py">
+        System persists one evaluated node's debit to the trial ledger with
+        orchestrator._charge.charge_node(node_id, campaign_id, *, outcome,
+        charges_budget, epoch_id, evaluator_hash, snapshot_hash,
+        cost_model_hash, ledger), and it answers the evaluator's
+        DebitedTrial.
+        - It builds the evaluator's TrialCharge with all nine terms, and
+          calls evaluator.debit_trial(charge, ledger).
+        - charge_failed_node(node_id, campaign_id, failure, *, ...) uses
+          evaluator.charge_failure for a node whose evaluation failed, with
+          the same terms.
+        - A second charge for the same node answers the ledger's existing
+          record, so it is idempotent by node.
+        - charges_budget is passed exactly as the oracle answered it, and
+          is never recomputed.
+        - Tests use a TrialLedger over a throwaway SQLite database.
+      </feature>
+      <feature index="7" shape="core" depends_on="2,3,4,5,6"
+               touches_files="packages/orchestrator/src/orchestrator/_evaluate.py,packages/orchestrator/tests/test_evaluate.py">
+        System evaluates one live node with
+        orchestrator._evaluate.evaluate_node(node_id, campaign_id, depth,
+        code, *, context, oracle, ledger), and it answers a NodeEvaluation
+        with node_id, metrics, score (a signal_agent.ScoreRecord),
+        charges_budget, fail_class, persistence and debit.
+        - Before anything executes, the code is screened against the sandbox
+          member's committed import allowlist (sandbox.SandboxImports, the
+          IMPORTS_COMPONENT_NAME component). A disallowed import is charged
+          with charge_failed_node, with fail_class disallowed_import, and the
+          code is never executed.
+        - When context.sandbox_runtime is "unisolated", each evaluation logs
+          one WARNING line, "unisolated sandbox", naming the node.
+        - It runs the evaluator chain in _run_pipeline's order:
+          resolve_window, execute_signal, normalize_scores, align_targets,
+          gate_targets (with the SubtreeOracle), apply_costs,
+          compute_node_metrics, and compute_marginal_ir against an empty
+          book.
+        - It then calls persist_node with NodeMetricsWriter and
+          ArtifactStoreWriter, and charges the node with charge_node.
+        - When the signal raises, or the sandbox or the execution fails,
+          the node is charged with charge_failed_node. NodeEvaluation then
+          carries fail_class (the failure's class name) and no metrics, and
+          nothing is retried.
+        - The score is ScoreRecord(ic_mean, ic_tstat, ir_standalone,
+          ir_marginal, turnover, cost_adjusted_ir, perturb_stability=None,
+          fail_class). Evaluating the same node twice answers the same
+          metrics, appends no second debit and writes no conflicting row.
+        - The module never reads a null bit. charges_budget comes only from
+          the oracle's response.
+        - Tests reuse the momentum e2e test's fixture approach (a seeded
+          snapshot and closes) with a fake endpoint.
+      </feature>
+      <feature index="8" shape="core" depends_on="7"
+               touches_files="packages/orchestrator/src/orchestrator/__init__.py,packages/orchestrator/tests/test_live_evaluator_component.py">
+        System creates a "live-evaluator" component, registered with
+        @register in orchestrator/__init__.py. Its builder answers a
+        LiveEvaluator whose evaluate(node_id, campaign_id, depth, code)
+        calls evaluate_node with the loaded context, a SubtreeOracle over
+        the "nulloracle-target-route" component, and the "ledger" component.
+        It answers None when load_evaluation_context() answers None.
+        - The builder reads only NULLIUS_EVALUATION_CONFIG and the variables
+          named in feature 5. It evaluates nothing at build time.
+        - The package exports evaluate_node, NodeEvaluation, LiveEvaluator,
+          SubtreeOracle, OracleTargetError, NodeMetricsWriter,
+          ArtifactStoreWriter, load_evaluation_context, EvaluationContext,
+          EvaluationConfigError, charge_node and charge_failed_node in
+          __all__.
+      </feature>
+    </category>
+    <category name="Evaluation Verification">
+      <feature index="9" shape="core" depends_on="7"
+               touches_files="tests/e2e/test_live_evaluation_end_to_end.py">
+        System verifies live evaluation end to end with no network in
+        tests/e2e/test_live_evaluation_end_to_end.py.
+        - Setup: a campaign with two roots and one child each is seeded in a
+          throwaway SQLite database, with a seeded snapshot.
+          TypeRSelection.persist(campaign_id) seals the roots into a
+          throwaway sidecar so that one root is null and one is real, and
+          the test fixture controls which through the selection's seed.
+        - evaluate_node runs on both children through a SubtreeOracle over
+          a real TargetEndpoint.
+        - The test asserts that each child's metrics land on its node row,
+          and that each child is debited once on the ledger with the
+          oracle's charges_budget.
+        - It asserts that the null root's child was served the permuted
+          target and the real root's child the real one. It checks this
+          from the endpoint's responses, and never from a null bit inside
+          the orchestrator.
+        - A second evaluate_node on the same child appends no second debit.
+        - A child whose signal raises is charged as a failure, with its
+          fail_class.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    The new member is packages/orchestrator, with the private modules
+    _oracle, _tree_writer, _artifact_writer, _context, _charge and
+    _evaluate, and the component "live-evaluator". Features 1 and 8 are the
+    only edits to orchestrator/__init__.py. Feature 1 is the only edit to
+    uv.lock.
+    The evaluator, nulloracle, ledger, artifacts and discovery members are
+    called, never edited.
+    Every new file is committed as an empty stub so its claim resolves.
+    Spec B adds root planting, live selection and the campaign loop to the
+    same member.
+  </integration_points>
+  <constraints>
+    - Do not edit the evaluator, nulloracle, ledger, artifacts or discovery
+      members, the migrations, or the root pyproject.toml. Z0 is called,
+      never changed.
+    - The orchestrator never reads a node's null status, the sidecar key or
+      any is_null value. Null-ness reaches evaluation only as the target
+      series and charges_budget the null target route answers.
+    - Every evaluated node, failed ones included, is debited exactly once
+      with all nine terms.
+    - Model-written code never executes before the import screen. Live
+      evaluation refuses to start without sandbox_runtime "gvisor" (runsc on
+      PATH), or an explicit "unisolated" acknowledgement in the config. A
+      gVisor executor is a later spec.
+    - No test opens a network connection or reads a real credential. No
+      third-party dependency is added.
+    - Do not edit run.sh, the .env templates, claw-forge.yaml or
+      docs/user-journeys/.
+    - All existing workspace tests (tests/) and the member suites of
+      evaluator, nulloracle, ledger, discovery, signal-agent and providers
+      stay green.
+  </constraints>
+  <implementation_steps>
+    <step>Phase 1: the member (feature 1).</step>
+    <step>Phase 2: the oracle adapter, the two writers, the context and the charge (features 2 to 6), in parallel.</step>
+    <step>Phase 3: the one-call evaluation (feature 7).</step>
+    <step>Phase 4: the component (feature 8) and the end-to-end verification (feature 9).</step>
+  </implementation_steps>
+</project_specification>
