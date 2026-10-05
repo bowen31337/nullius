@@ -550,6 +550,7 @@ from ._authoring import (
     AuthoringRecord,
     load_authoring_config,
 )
+from ._authoring_session import AuthoringSession, role_for_depth
 from ._authoring_store import record_authoring, record_campaign_cache_rate
 from ._batch import (
     BATCH_ENDPOINT,
@@ -819,6 +820,7 @@ __all__ = [
     "AuthoringConfig",
     "AuthoringConfigError",
     "AuthoringRecord",
+    "AuthoringSession",
     "BatchCompletion",
     "BatchEndpoint",
     "BatchPricing",
@@ -932,6 +934,7 @@ __all__ = [
     "require_depth_model",
     "require_served",
     "require_served_context",
+    "role_for_depth",
     "rotation_digest",
     "rotation_index",
     "route_depth_call",
