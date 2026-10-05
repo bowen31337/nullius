@@ -11,12 +11,13 @@ reads, built fresh for one run and torn down after it (feature 5's job).
 The bundle this module writes is deliberately small: one process
 (feature 2's hardened child bootstrap, invoked the same way), one
 read-only root (the provisioned runtime, never the host filesystem a
-signal might read from), three mounts and nothing else.  There is no
-caller-supplied mount list and no caller-supplied process — every field
-is derived from ``runtime_root``, ``child_path`` and ``limits``, so the
-one thing left to police is whether those three arguments themselves
-name a path under the data lake, which is :func:`build_bundle`'s own
-refusal.
+signal might read from), five mounts and nothing else — ``/proc``, the
+source-less ``/dev`` and ``/sys`` gVisor needs to boot its sandbox at
+all, a tmpfs ``/tmp``, and the child bind. There is no caller-supplied
+mount list and no caller-supplied process — every field is derived from
+``runtime_root``, ``child_path`` and ``limits``, so the one thing left
+to police is whether those three arguments themselves name a path under
+the data lake, which is :func:`build_bundle`'s own refusal.
 
 The JSON is deterministic for equal inputs: nothing here reads a clock,
 a random source or an environment variable, so two bundles built from
@@ -84,7 +85,13 @@ FEATURE_2_ENV: Final[tuple[str, ...]] = (
 NAMESPACES: Final[tuple[str, ...]] = ("pid", "ipc", "uts", "mount", "network")
 
 _MOUNT_DESTINATION_PROC: Final[str] = "/proc"
+_MOUNT_DESTINATION_DEV: Final[str] = "/dev"
+_MOUNT_DESTINATION_SYS: Final[str] = "/sys"
 _MOUNT_DESTINATION_TMP: Final[str] = "/tmp"
+
+#: gVisor's own device tmpfs is sized in kilobytes, not the megabytes
+#: ``/tmp`` gets — it holds device nodes, not a signal's working files.
+_DEV_SIZE_OPTION: Final[str] = "size=64k"
 
 #: A cgroup v2 ``cpu.max`` of one full core: quota equals period. Not a
 #: field of ``limits`` — the sandbox member's policies measure a cpu
@@ -105,7 +112,7 @@ class BundleError(Exception):
     drift the feature names: a root or a mount source that lies under one
     of ``lake_roots`` (the data lake reaches a signal only as the IPC
     window, never a bind mount), and a mount set that is not precisely
-    the three the feature lists. Also raised for a ``limits`` object that
+    the five the feature lists. Also raised for a ``limits`` object that
     cannot be read as the two counts this bundle needs — a configuration
     this module cannot write is refused rather than written with a
     guessed number.
@@ -182,13 +189,31 @@ def _limit(limits: Any, name: str) -> int:
 
 
 def _mounts(child_path: Path) -> list[dict[str, Any]]:
-    """The exactly-three mounts every bundle carries, in document order."""
+    """The exactly-five mounts every bundle carries, in document order.
+
+    ``/dev`` and ``/sys`` are gVisor's own virtual filesystems — neither
+    carries a host path as its source, so the "no host data mount"
+    guarantee is unchanged. Without them, ``runsc`` cannot boot its
+    sandbox at all: it exits before the child ever runs.
+    """
     return [
         {
             "destination": _MOUNT_DESTINATION_PROC,
             "type": "proc",
             "source": "proc",
             "options": [],
+        },
+        {
+            "destination": _MOUNT_DESTINATION_DEV,
+            "type": "tmpfs",
+            "source": "tmpfs",
+            "options": ["nosuid", "strictatime", "mode=0755", _DEV_SIZE_OPTION],
+        },
+        {
+            "destination": _MOUNT_DESTINATION_SYS,
+            "type": "sysfs",
+            "source": "sysfs",
+            "options": ["nosuid", "noexec", "nodev", "ro"],
         },
         {
             "destination": _MOUNT_DESTINATION_TMP,
@@ -210,23 +235,25 @@ def _validate_mounts(
     child_path: Path,
     lake_roots: Sequence[Path],
 ) -> None:
-    """Refuse anything but the three mounts the feature names.
+    """Refuse anything but the five mounts the feature names.
 
     Checked as its own step — reachable with a hand-built ``mounts`` list
     as well as through :func:`build_bundle` — because the feature's own
     sentence names this as a refusal in its own right: a bundle "adds a
-    mount beyond the three listed" is refused the same way one whose root
+    mount beyond the five listed" is refused the same way one whose root
     lies under the lake is, not merely prevented by this module never
-    constructing a fourth.
+    constructing a sixth.
     """
-    if len(mounts) != 3:
+    if len(mounts) != 5:
         raise BundleError(
-            f"{BUNDLE_ERROR_CODE}: a signal's bundle carries exactly three "
-            "mounts (proc, a 64 MiB tmpfs at /tmp, and the child bootstrap "
-            f"bound read-only) — got {len(mounts)}"
+            f"{BUNDLE_ERROR_CODE}: a signal's bundle carries exactly five "
+            "mounts (proc, dev, sys, a 64 MiB tmpfs at /tmp, and the child "
+            f"bootstrap bound read-only) — got {len(mounts)}"
         )
     expected = {
         _MOUNT_DESTINATION_PROC,
+        _MOUNT_DESTINATION_DEV,
+        _MOUNT_DESTINATION_SYS,
         _MOUNT_DESTINATION_TMP,
         str(child_path),
     }

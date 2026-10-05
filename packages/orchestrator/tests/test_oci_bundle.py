@@ -97,16 +97,32 @@ def test_root_is_the_runtime_root_read_only(tmp_path):
     assert config["root"] == {"path": str(runtime_root.resolve()), "readonly": True}
 
 
-def test_mounts_are_exactly_proc_tmp_and_the_child_path(tmp_path):
+def test_mounts_are_exactly_proc_dev_sys_tmp_and_the_child_path(tmp_path):
     child_path = tmp_path / "child" / "_sandbox_child.py"
     _, config = _build(tmp_path, child_path=child_path)
     mounts = config["mounts"]
-    assert len(mounts) == 3
+    assert len(mounts) == 5
     by_destination = {m["destination"]: m for m in mounts}
-    assert set(by_destination) == {"/proc", "/tmp", str(child_path.resolve())}
+    assert set(by_destination) == {
+        "/proc",
+        "/dev",
+        "/sys",
+        "/tmp",
+        str(child_path.resolve()),
+    }
 
     proc = by_destination["/proc"]
     assert proc["type"] == "proc"
+
+    dev = by_destination["/dev"]
+    assert not dev["source"].startswith("/")  # no host path backs it
+    assert "nosuid" in dev["options"]
+
+    sys_mount = by_destination["/sys"]
+    assert sys_mount["type"] == "sysfs"
+    assert not sys_mount["source"].startswith("/")  # no host path backs it
+    for option in ("nosuid", "noexec", "nodev", "ro"):
+        assert option in sys_mount["options"]
 
     tmp = by_destination["/tmp"]
     assert tmp["type"] == "tmpfs"
@@ -249,7 +265,7 @@ def test_multiple_lake_roots_are_all_checked(tmp_path):
         )
 
 
-def test_validate_mounts_refuses_a_mount_beyond_the_three(tmp_path):
+def test_validate_mounts_refuses_a_mount_beyond_the_five(tmp_path):
     child_path = tmp_path / "child" / "_sandbox_child.py"
     mounts = _mounts(child_path.resolve())
     mounts.append(
@@ -276,7 +292,7 @@ def test_validate_mounts_refuses_a_bind_source_under_the_lake(tmp_path):
     lake_root = tmp_path / "lake"
     child_path = tmp_path / "child" / "_sandbox_child.py"
     mounts = _mounts(child_path.resolve())
-    mounts[2] = dict(mounts[2], source=str(lake_root / "data"))
+    mounts[-1] = dict(mounts[-1], source=str(lake_root / "data"))  # the bind mount
     with pytest.raises(BundleError, match=BUNDLE_ERROR_CODE):
         _validate_mounts(mounts, child_path.resolve(), (lake_root,))
 
