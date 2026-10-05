@@ -34,7 +34,7 @@ name = "signal-agent"
 version = "0.1.0"
 description = "The hypothesis-authoring agent's contract seam: agent-authored signal source is adopted only when it conforms to the declared signal contract, and what is adopted is source the sandbox executes."
 requires-python = ">=3.12"
-dependencies = ["nullius", "nullius-contract"]
+dependencies = ["nullius", "nullius-contract", "providers", "discovery"]
 
 [build-system]
 requires = ["hatchling"]
@@ -43,6 +43,8 @@ build-backend = "hatchling.build"
 [tool.uv.sources]
 nullius = { workspace = true }
 nullius-contract = { workspace = true }
+providers = { workspace = true }
+discovery = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/signal_agent"]

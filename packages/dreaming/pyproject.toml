@@ -37,7 +37,7 @@ name = "dreaming"
 version = "0.1.0"
 description = "Holds the replay pool fixed for a dreaming iteration and refuses a pool mutation during one."
 requires-python = ">=3.12"
-dependencies = ["nullius"]
+dependencies = ["nullius", "providers"]
 
 [build-system]
 requires = ["hatchling"]
@@ -45,6 +45,7 @@ build-backend = "hatchling.build"
 
 [tool.uv.sources]
 nullius = { workspace = true }
+providers = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dreaming"]

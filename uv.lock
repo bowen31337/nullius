@@ -260,10 +260,14 @@ version = "0.1.0"
 source = { editable = "packages/dreaming" }
 dependencies = [
     { name = "nullius" },
+    { name = "providers" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "nullius", editable = "." }]
+requires-dist = [
+    { name = "nullius", editable = "." },
+    { name = "providers", editable = "packages/providers" },
+]
 
 [[package]]
 name = "evaluator"
@@ -696,14 +700,18 @@ name = "signal-agent"
 version = "0.1.0"
 source = { editable = "packages/signal-agent" }
 dependencies = [
+    { name = "discovery" },
     { name = "nullius" },
     { name = "nullius-contract" },
+    { name = "providers" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "discovery", editable = "packages/discovery" },
     { name = "nullius", editable = "." },
     { name = "nullius-contract", editable = "packages/contract" },
+    { name = "providers", editable = "packages/providers" },
 ]
 
 [[package]]
