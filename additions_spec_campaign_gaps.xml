@@ -1,0 +1,173 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — campaign driver gaps (spec D): resume, import-allowlist consistency, runtime-root verification</project_name>
+  <addition_summary>
+    Three gaps left open by specs A to C and SEC-1, each a self-contained
+    change to the orchestrator or its sandbox child:
+    - A campaign cannot be resumed: run_campaign always creates a fresh
+      campaign and plants fresh roots, so a campaign interrupted mid-run
+      restarts from scratch. Add resumption from the existing node rows.
+    - The sandbox child's import allowlist advertises numpy, which the
+      evaluation runtime does not provide, so a signal that imports numpy
+      passes the guard, then fails at runtime, wasting a trial. Make the
+      allowlist match what the runtime can actually import.
+    - GVisorSandbox trusts whatever directory NULLIUS_GVISOR_RUNTIME_ROOT
+      names; a partial or tampered runtime root runs agent code anyway. Have
+      it verify the root against the manifest digest the provisioning script
+      already writes.
+    No new member, no new dependency. Each feature edits one existing source
+    file (plus its test), all in the orchestrator member except the shared
+    sandbox child.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / SQLite or PostgreSQL via DATABASE_URL / pytest (ruff conventions). runsc and bwrap installed; the gVisor runtime root is /opt/nullius/gvisor-runtime with a sibling manifest.</stack>
+    <test_baseline>Measured 2026-10-06 on main (HEAD 1055aa2): workspace tests/ 1621 passed; orchestrator member suite 362 passed + 5 skipped (serial; the 5 are the real-runsc tests, run only when runsc and NULLIUS_GVISOR_RUNTIME_ROOT are set).</test_baseline>
+    <conventions>
+      Follow CLAUDE.md. Typed refusals open with a greppable code word in the
+      raising module. Tests never reach the network or read a credential, and
+      must pass under pytest-xdist (no module-level mutable state shared
+      across tests; unique ids per test).
+
+      Existing pieces (read; edit only the file a feature names):
+      - orchestrator._campaign.run_campaign(*, campaign_type, workspaces,
+        rounds, width, allowance, author, evaluator, policy, context,
+        sidecar_selection, emit) -&gt; CampaignResult(campaign_id, roots,
+        nodes, rounds_run, stop_reason, manifest). It calls
+        discovery.create_campaign (which mints a new campaign_id), plants one
+        root per workspace with orchestrator._roots.plant_root, seals nulls
+        once with sidecar_selection.persist(campaign_id), evaluates the
+        roots, then runs the round loop until a stop reason. plant_root is
+        idempotent (same values answer the same id), the trial ledger is
+        idempotent per node, and the stores refuse a conflicting rewrite.
+      - orchestrator._sandbox_child.AGENT_IMPORTS_ALLOWLIST (a frozenset) and
+        _TRUSTED_IMPORT_ROOTS both list numpy today. The child runs under the
+        gVisor runtime root (polars, pyarrow, contract, app; no numpy) or,
+        for the unisolated runtime, the host interpreter.
+      - orchestrator._gvisor.GVisorSandbox(*, runsc, runtime_root,
+        state_root, limits=None, lake_roots=()) resolves runsc at
+        construction (_require_runsc) and raises GVisorUnavailableError (code
+        word isolation_required) when it cannot. deploy/gvisor/provision_runtime.sh
+        writes &lt;root&gt;.manifest.json beside the root, carrying tree_sha256
+        (the sha256 of the sorted per-file sha256 sums of the whole tree),
+        python, polars, pyarrow and built_at.
+      - discovery.create_campaign(campaign_type, workspaces, *,
+        campaign_id=None, database_url=None, env=None); passing an existing
+        campaign_id is how a caller addresses an existing campaign.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Campaign Driver Gaps">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/orchestrator/src/orchestrator/_campaign.py,packages/orchestrator/tests/test_campaign_resume.py">
+        System resumes an interrupted campaign with
+        orchestrator._campaign.resume_campaign(campaign_id, *, rounds, width,
+        allowance, author, evaluator, policy, context, emit), and it answers
+        the same CampaignResult run_campaign answers, continuing the existing
+        campaign rather than planting a new one.
+        - It reads the campaign's existing node rows from context.database_url.
+          A campaign_id with no node rows raises CampaignResumeError (code
+          word campaign_resume) naming the id: resume continues work, it does
+          not start it.
+        - It does not call create_campaign, does not plant new roots, and
+          does not re-seal nulls (Type-R sealing is write-once and already
+          done). The roots are the existing depth-0 rows.
+        - Any planted root not yet evaluated (no metrics and no fail_class) is
+          evaluated before the round loop, so a campaign interrupted between
+          planting and evaluating its roots finishes that step on resume.
+        - It then runs the round loop exactly as run_campaign does — the same
+          budget_account over the campaign's own ledger rows, the same
+          policy.select, the same NodeWorker batch with retry_interrupted,
+          the same four stop reasons — and finishes the campaign manifest.
+          Because the child id is uuid5 and the ledger and stores are
+          idempotent, a node already expanded and evaluated is not repeated.
+        - run_campaign is refactored so the shared loop, root-evaluation and
+          finish logic are one private helper both entry points call; its own
+          behaviour, signature and tests are unchanged.
+        - emit receives the same per-node and per-round events, plus one
+          opening event naming the resumed campaign_id and the count of nodes
+          already present.
+        - A test resumes after roots are planted but not evaluated and shows
+          the roots gain metrics. A test resumes mid-campaign and shows the
+          node count grows. A test resumes an unknown campaign_id and shows
+          it raises CampaignResumeError. A test resumes a finished campaign
+          and shows it creates no node and returns a stop_reason. A test
+          shows resume calls create_campaign zero times and re-seals zero
+          times. Every test passes under pytest-xdist.
+      </feature>
+      <feature index="2" shape="core" depends_on=""
+               touches_files="packages/orchestrator/src/orchestrator/_sandbox_child.py,packages/orchestrator/tests/test_sandbox_child.py">
+        System keeps the sandbox child's import allowlist in step with what
+        the runtime can import, so a signal is refused at the guard for a module the runtime cannot
+        import, instead of failing at execution with a wasted trial.
+        - numpy is removed from AGENT_IMPORTS_ALLOWLIST and from
+          _TRUSTED_IMPORT_ROOTS, because the evaluation runtime (the gVisor
+          runtime root, and the evaluator's own environment) does not install
+          numpy. A signal that imports numpy is now refused at the guard with
+          the existing disallowed_import error, a deterministic refusal, in
+          place of a runtime ImportError.
+        - polars, pyarrow, contract and the standard-library modules the
+          allowlist names remain, and a benign polars signal still scores.
+        - A test asserts that every module named in AGENT_IMPORTS_ALLOWLIST is
+          importable in the child's own interpreter, so the allowlist cannot
+          drift from the runtime again. The test imports each name in a
+          subprocess with the child's own -I flags and fails naming any that
+          does not import.
+        - No other behaviour of the child changes: the import guard, the
+          builtins stripping, the result channel and the fail classes are
+          unchanged.
+      </feature>
+      <feature index="3" shape="core" depends_on=""
+               touches_files="packages/orchestrator/src/orchestrator/_gvisor.py,packages/orchestrator/tests/test_gvisor.py,deploy/gvisor/provision_runtime.sh">
+        System verifies the gVisor runtime root against its manifest before
+        running agent code in it, so a partial or tampered root is refused
+        rather than used.
+        - GVisorSandbox reads &lt;runtime_root&gt;.manifest.json at
+          construction and recomputes the tree digest the same way the
+          provisioning script does — the sha256 of the sorted per-file
+          sha256 sums of every file under the root — and compares it to the
+          manifest's tree_sha256.
+        - A missing manifest, malformed JSON, a missing tree_sha256, or a
+          digest that does not match raises GVisorUnavailableError (code word
+          isolation_required) naming the root and the mismatch. Construction
+          succeeds only when the digest matches.
+        - A trusted-root check env escape hatch is not added; the only way to
+          run is a matching digest. The check reads files, never executes
+          anything from the root.
+        - deploy/gvisor/provision_runtime.sh is updated only if needed so the
+          digest it writes is computed by the identical algorithm the sandbox
+          recomputes (sorted per-file sha256 sums, hashed); the two must
+          agree on a freshly provisioned root.
+        - Tests build a small fake runtime root and manifest in a tmp dir
+          (not the real 455 MB root): a matching digest constructs; a mutated
+          file, a missing manifest and a bad tree_sha256 each raise. Tests do
+          not require runsc for the digest checks (runsc resolution is
+          stubbed or the check is exercised below the run path), and pass
+          under xdist.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Each feature edits one existing source file in its own member plus a test
+    file; test_campaign_resume.py is new and committed as an empty stub so its
+    claim resolves. No new module, component, member or dependency. The run.sh
+    operator verb and its 1Password template for a live campaign are an
+    operator step, done by hand outside this spec.
+  </integration_points>
+  <constraints>
+    - resume_campaign never calls create_campaign or re-seals nulls; it
+      continues an existing campaign and refuses an empty one.
+    - Removing numpy must not break a polars-based signal; polars must not
+      require numpy at import in the runtime.
+    - The runtime-root digest check reads files only and never executes code
+      from the root; there is no env var that bypasses it.
+    - Do not edit the evaluator, nulloracle, ledger, discovery or
+      policy-runtime members, the migrations, run.sh, the .env templates,
+      claw-forge.yaml or docs/user-journeys/.
+    - All existing workspace tests (tests/) and the orchestrator and
+      signal-agent member suites stay green, and every new test passes under
+      pytest-xdist.
+  </constraints>
+  <implementation_steps>
+    <step>Phase 1: campaign resume (feature 1), numpy allowlist (feature 2), and runtime-root verification (feature 3), in parallel.</step>
+  </implementation_steps>
+</project_specification>
