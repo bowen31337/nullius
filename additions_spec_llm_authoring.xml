@@ -1,0 +1,400 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — bind the live LLM providers into the signal agent and the policy-development agent</project_name>
+  <addition_summary>
+    The providers member has live LLM backends (additions_spec_live_providers.xml),
+    but nothing calls them. This addition makes the two LLM roles of
+    docs/nullius-tech-architecture.md section 14.1 real.
+    - The signal agent becomes an LLM author: the agent callable that
+      discovery.NodeExpansion(agent, database_url) already accepts. It builds
+      the C3 prompt from the campaign's complete proposal history, calls the
+      model chosen for the node's role, parses the answer and runs it through
+      the signal-agent gates.
+    - The policy-development agent becomes an LLM reviser: the Reviser that
+      dreaming.revise_policy(..., reviser=) already accepts.
+    - Every live call leaves an authoring record. Once the node row exists,
+      that record is written to the existing provenance stores: the node's
+      agent_model_id pin (203), its agent_sampling (204), the root call's
+      serving provider and its rotation assignment (196 and 197). At the end
+      of a campaign, the depth role's measured cache hit rate is written as
+      well (200).
+    Out of scope:
+    - the campaign driver (planting roots, then the select, expand, evaluate
+      and persist loop);
+    - the depth-model admission and price gates (198, 199, 201, 202), which
+      need pricing data no config carries yet;
+    - batch APIs;
+    - operator wiring of API keys into run.sh or the 1Password templates.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / stdlib plus workspace members only / SQLite or PostgreSQL via DATABASE_URL / pytest (ruff conventions)</stack>
+    <test_baseline>Measured 2026-10-05: packages/providers/tests 1221 passed, packages/signal-agent/tests 633 passed, workspace tests/ 1592 passed. All green on main (HEAD a8cf426).</test_baseline>
+    <conventions>
+      Follow CLAUDE.md's Build &amp; Test section and its rules:
+      - Only workspace members, under packages/&lt;name&gt;/.
+      - @register builders live only in a member's __init__.py.
+      - Components are read through create_app().get(name), or by direct
+        import within their own member.
+      - A refusal is a typed error that opens with a greppable code word and
+        is defined in the module that raises it.
+      - Tests never reach the network or read a real credential. Model calls
+        in tests go through providers.RecordedProvider, or a live backend
+        with an injected fake transport.
+
+      Existing pieces (read, do not change unless a feature says so):
+      - providers:
+        - Request(messages, model, temperature, max_tokens) and
+          Message(role, content).
+        - Completion(content, model, usage: Usage(input_tokens,
+          output_tokens, cache_read_tokens), finish_reason).
+        - ModelPin(provider, model, version), stored as "p/m/v".
+        - live_provider(pin, env=None, transport=None) -&gt; Provider,
+          require_served(pin, completion), and BudgetedProvider(inner, *,
+          max_input_tokens, max_output_tokens).
+        - The "live-providers" component, whose resolver answers
+          resolve(pin).
+        - AgentSampling(temperature, top_p=1.0, thinking=False, seed=0) and
+          HOSTED_API_CKPT_HASH.
+        - AgentModelPins (component "agent-model-pins"), with persist(node_id,
+          pin) and persist_weights(node_id, ckpt_hash=HOSTED_API_CKPT_HASH, *,
+          sampling). Both need the node row to exist.
+        - FrontierProvider(provider, model),
+          FrontierTier(providers=(FrontierProvider, ...)) and
+          ROOT_TIER_MAX_DEPTH = 1.
+        - rotation_index(campaign_id, node_id, tier) -&gt; int. This is a pure
+          sha256 decision.
+        - RootRotation (component "root-rotation"), with
+          record_root_provider(call, serving, tier, *, now=None). call is
+          RootCall(node_id, campaign_id, depth), and its node row must exist
+          with depth &lt;= 1. A serving provider other than the assigned one
+          raises UnassignedRootProviderError.
+        - DepthCacheRates (component "depth-cache-rates"), with
+          measure(campaign_id, usages, *, now=None). It is write-once per
+          campaign, so the same totals again are accepted and different
+          totals raise CacheRateConflictError.
+      - discovery:
+        - NodeExpansion(agent, database_url) calls agent(NodeWorkspace) with
+          NodeWorkspace(node_id, parent_id, campaign_id, theme_root, depth).
+        - The agent returns one object with .code (non-blank str) and an
+          optional .stated_mechanism (str or None). Extra attributes are
+          ignored.
+        - The child node's id is uuid.uuid5(discovery.EXPANSION_NAMESPACE,
+          str(parent node_id)), and its depth is the parent's depth + 1.
+        - AttemptProvenance(evaluator_hash, snapshot_hash, cost_model_hash,
+          agent_model_id: str, agent_sampling: dict, agent_ckpt_hash) is
+          written onto the node row by record_attempts.
+      - signal-agent:
+        - SignalContract.adopt(source) -&gt; SourceAdoption (.adopted,
+          .problems, .detail, .require()).
+        - PromptGuidanceGate.admit(prompt_parts) -&gt; GuidanceVerdict. The
+          prompt must be named parts, and a flat str is refused.
+        - AntiConvergenceGate: require_in(prompt) checks that the committed
+          clause appears verbatim, and admit(source, held) -&gt;
+          AntiConvergenceVerdict.
+        - MechanismDiagnosis.diagnose(source, complaints=(), ...) -&gt;
+          DiagnosisVerdict.
+        - ProposalHistoryStore: history(campaign_id) -&gt;
+          tuple[PriorProposal(node_id, proposal, code_hash), ...], and
+          persist(node_id, proposal, *, score=None).
+      - dreaming: Reviser = Callable[[str, int, Any], str], meaning
+        (incumbent_source, revision_index, seed) -&gt; source. Its call site
+        is revise_policy(incumbent_source, count, *, seed, reviser=None).
+      - Today signal-agent depends only on the contract member, and dreaming
+        only on its existing members. Neither depends on providers or
+        discovery.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Authoring Foundation">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/signal-agent/pyproject.toml,packages/dreaming/pyproject.toml,uv.lock">
+        System persists the workspace dependencies the authors need to
+        uv.lock: signal-agent gains the providers and discovery members, and
+        dreaming gains the providers member.
+        - Only workspace members are added, as [tool.uv.sources] workspace =
+          true entries, the same way the existing member dependencies are
+          declared. No third-party package is added.
+        - uv.lock is regenerated with `uv lock`, and `uv sync --all-packages`
+          succeeds.
+        - packages/signal-agent/tests and packages/dreaming/tests stay green.
+          No source file is edited.
+      </feature>
+      <feature index="2" shape="core" depends_on=""
+               touches_files="packages/providers/src/providers/_authoring.py,packages/providers/src/providers/__init__.py,packages/providers/tests/test_authoring_config.py">
+        System creates an AuthoringConfig from the JSON file named by
+        NULLIUS_AUTHORING_CONFIG with providers.load_authoring_config(env=None),
+        or answers None when the variable is unset.
+        - The file holds root_tier (a list of 1 to 3 "p/m/v" pins with
+          distinct providers), depth (one pin), policy (one pin), temperature
+          (0..1, default 0.7), max_tokens (default 8192), and max_input_tokens
+          and max_output_tokens (the per-pin budget ceilings).
+        - Every pin is parsed with providers.require_agent_model_id. A
+          malformed file, a missing key, a duplicate root provider or an
+          out-of-range value raises AuthoringConfigError (code word
+          authoring_config) naming the key. The file never holds a
+          credential.
+        - The module also defines AuthoringRecord, a frozen dataclass with
+          node_id, campaign_id, depth, role (one of root, depth or policy),
+          pin, sampling (AgentSampling with the config's temperature), usage
+          (the summed Usage of every call the authoring made), served_model
+          and tier (the FrontierTier built from root_tier, for root records).
+          AuthoringRecord.attempt_provenance_terms() answers {agent_model_id,
+          agent_sampling, agent_ckpt_hash: None}, ready for discovery's
+          AttemptProvenance.
+        - providers/__init__.py exports load_authoring_config,
+          AuthoringConfig, AuthoringConfigError and AuthoringRecord in
+          __all__, and changes nothing else.
+      </feature>
+      <feature index="3" shape="core" depends_on="2"
+               touches_files="packages/providers/src/providers/_authoring_session.py,packages/providers/src/providers/__init__.py,packages/providers/tests/test_authoring_session.py">
+        System creates one budgeted provider per pinned model for authoring
+        calls with providers.AuthoringSession(config, resolve), and
+        provider_for(role, *, campaign_id, node_id) answers (provider, pin).
+        resolve is a callable pin -&gt; Provider, such as the "live-providers"
+        resolver.
+        - role root: the pin is root_tier[rotation_index(campaign_id,
+          node_id, tier)], where tier is the FrontierTier built from root_tier
+          in order. This is the same decision RootRotation records, so the
+          recorder never meets UnassignedRootProviderError.
+        - role depth: the depth pin. role policy: the policy pin. Any other
+          role raises AuthoringConfigError.
+        - Each pin's provider is resolved once per session and wrapped in a
+          BudgetedProvider with the config's ceilings, so every call to that
+          pin in the session draws on one budget.
+        - providers.role_for_depth(child_depth) answers root when
+          child_depth &lt;= ROOT_TIER_MAX_DEPTH, and depth otherwise.
+        - providers/__init__.py exports AuthoringSession and role_for_depth
+          in __all__. Tests use a fake resolve that counts calls.
+      </feature>
+      <feature index="4" shape="core" depends_on="2"
+               touches_files="packages/providers/src/providers/_authoring_store.py,packages/providers/src/providers/__init__.py,packages/providers/tests/test_authoring_store.py">
+        System persists authoring provenance with providers.record_authoring(record,
+        *, database_url=None, env=None) once the record's node row exists. It
+        also persists a campaign's measured depth cache hit rate with
+        providers.record_campaign_cache_rate(campaign_id, records, *,
+        database_url=None, env=None).
+        - record_authoring persists the pin through
+          AgentModelPins.persist(node_id, pin), and the sampling through
+          persist_weights(node_id, HOSTED_API_CKPT_HASH,
+          sampling=record.sampling).
+        - For a root record it also calls RootRotation.record_root_provider(
+          RootCall(node_id, campaign_id, depth), FrontierProvider(pin.provider,
+          pin.model), record.tier). A depth or policy record writes no root
+          row.
+        - Recording the same record twice is idempotent. A missing node row
+          raises the stores' own NodeNotRecordedError, unchanged.
+        - record_campaign_cache_rate passes the usage of every depth-role
+          record of that campaign to DepthCacheRates.measure(campaign_id,
+          usages), and answers the MeasuredCacheRate. Other campaigns'
+          records and root or policy records are ignored, and repeating the
+          call answers the same row.
+        - providers/__init__.py exports both functions in __all__. Tests use
+          a throwaway SQLite database.
+      </feature>
+    </category>
+    <category name="Signal Agent Author">
+      <feature index="5" shape="core" depends_on="1"
+               touches_files="packages/signal-agent/src/signal_agent/_authoring_prompt.py,packages/signal-agent/tests/test_authoring_prompt.py">
+        System builds the C3 authoring prompt with
+        signal_agent._authoring_prompt.build_authoring_prompt(workspace,
+        history, *, clause), and it creates named prompt parts that
+        PromptGuidanceGate.admit admits and AntiConvergenceGate.require_in
+        accepts.
+        - The parts are task (the signal ABI `signal(ctx: MarketWindow, seed:
+          int) -&gt; pl.Series`, the node's theme_root and depth, and the
+          required answer format), anti_convergence (the committed clause,
+          verbatim), and history.
+        - history is a sequence of (PriorProposal, ScoreRecord or None)
+          pairs. The part holds every prior node of the campaign in full, in
+          the store's order: its node_id, code_hash, complete proposal text,
+          and its score.json, which is ScoreRecord.to_json(), or null for a
+          node not yet scored. Nothing is summarised, sampled or truncated.
+        - ScoreRecord carries the seven metrics and fail_class only, so the
+          prompt never holds a node's null status. The module never imports
+          or reads the nulloracle member.
+        - The answer format asks for exactly one ```python fenced block
+          holding the signal source, and one line starting "Mechanism:"
+          stating the mechanism.
+        - to_request(parts, *, model, temperature, max_tokens) answers a
+          providers.Request: one system message with the task and
+          anti_convergence parts, and one user message with the history part.
+        - The workspace is duck-typed. It reads campaign_id, theme_root and
+          depth.
+      </feature>
+      <feature index="6" shape="core" depends_on=""
+               touches_files="packages/signal-agent/src/signal_agent/_authored.py,packages/signal-agent/tests/test_authored.py">
+        System parses a model's answer with
+        signal_agent._authored.parse_authored(text), and it creates a
+        ParsedProposal(code, stated_mechanism, proposal), where proposal is
+        the full raw text.
+        - code is the body of the answer's single ```python fenced block.
+          Zero or several python blocks, or a blank body, raise
+          AuthoredOutputError (code word authored_output), defined in this
+          module.
+        - stated_mechanism is the text after the first line starting
+          "Mechanism:", stripped, or None when no such line exists.
+        - The module imports nothing outside the standard library and the
+          signal_agent package.
+      </feature>
+      <feature index="7" shape="core" depends_on="3,5,6"
+               touches_files="packages/signal-agent/src/signal_agent/_llm_author.py,packages/signal-agent/tests/test_llm_author.py">
+        System authors a refined signal with
+        signal_agent._llm_author.LLMSignalAuthor(session, *, history_store,
+        contract, anti_convergence, guidance, config, max_retries=1). It is
+        a callable taking a discovery NodeWorkspace, and it creates an
+        AuthoredSignal with code, stated_mechanism, proposal and record.
+        - The child's id is uuid.uuid5(discovery.EXPANSION_NAMESPACE,
+          str(workspace.node_id)) and its depth is workspace.depth + 1.
+          providers.role_for_depth(child depth) picks root or depth, and
+          session.provider_for(role, campaign_id, node_id=child id) picks the
+          model.
+        - It builds the prompt with feature 5 from history_store.history(campaign_id),
+          pairing each PriorProposal with history_store.load(node_id).score. It refuses the prompt before any call when guidance
+          or anti_convergence refuses it.
+        - It calls provider.complete(request), and applies
+          providers.require_served(pin, completion).
+        - The answer is parsed with feature 6 and adopted with
+          contract.adopt(code). It is then checked with
+          anti_convergence.admit(code, held=the history's prior proposals).
+        - When the parse, the adoption or the anti-convergence check fails,
+          it retries up to max_retries times. Each retry appends the
+          assistant answer and a user message naming the defect (the
+          adoption's problems, or the refusal's code word).
+        - After the last failed retry it raises AuthoringRefusedError (code
+          word authoring_refused) naming the last defect.
+        - BudgetExhaustedError and ServedModelMismatchError propagate
+          unchanged, and are never retried.
+        - record is a providers.AuthoringRecord with the child's node_id and
+          depth, the role, the pin, the sampling, the usage summed over every
+          call, the served model and the root tier.
+        - Tests drive it with providers.RecordedProvider or a fake provider,
+          and assert the request text carries every prior proposal verbatim.
+      </feature>
+      <feature index="8" shape="core" depends_on="7"
+               touches_files="packages/signal-agent/src/signal_agent/__init__.py,packages/signal-agent/tests/test_signal_author_component.py">
+        System creates a "signal-author" component, registered with
+        @register in signal_agent/__init__.py. Its builder answers an
+        LLMSignalAuthor wired to this member's own components and to a
+        providers.AuthoringSession over the "live-providers" resolver, or
+        None when providers.load_authoring_config() answers None.
+        - The builder reads NULLIUS_AUTHORING_CONFIG, and nothing else. It
+          makes no model call, and reads no API key.
+        - The package exports LLMSignalAuthor, AuthoredSignal,
+          AuthoringRefusedError, parse_authored, ParsedProposal,
+          AuthoredOutputError and build_authoring_prompt in __all__.
+        - Every existing export and component of the package is unchanged.
+          The test builds create_app() with the variable unset (None) and
+          with a config file (an LLMSignalAuthor).
+      </feature>
+    </category>
+    <category name="Policy Development Author">
+      <feature index="9" shape="core" depends_on="1,3"
+               touches_files="packages/dreaming/src/dreaming/llm_reviser.py,packages/dreaming/tests/test_llm_reviser.py">
+        System creates a revised exploration policy module through a model
+        with dreaming.llm_reviser.LLMReviser(session, *, config), a callable
+        matching dreaming's Reviser (incumbent_source, revision_index, seed)
+        -&gt; source.
+        - It takes the policy pin from session.provider_for("policy",
+          campaign_id="policy-development", node_id=f"revision-{revision_index}").
+        - The request carries the incumbent source in full, the
+          revision_index and the seed, with the config's temperature and
+          max_tokens. It asks for exactly one ```python block holding the
+          whole revised module.
+        - It applies require_served, and answers the body of the answer's
+          single python block.
+        - Zero or several blocks raise ReviserOutputError (code word
+          reviser_output), defined in this module. So does an answer
+          identical to the incumbent, naming revision_index.
+        - Each call appends a providers.AuthoringRecord with role policy to
+          LLMReviser.records.
+        - revise_policy(incumbent, count, reviser=LLMReviser(...)) works
+          unchanged. A test passes it with a fake provider.
+      </feature>
+      <feature index="10" shape="core" depends_on="9"
+               touches_files="packages/dreaming/src/dreaming/__init__.py,packages/dreaming/tests/test_policy_reviser_component.py">
+        System creates a "policy-reviser" component, registered with
+        @register in dreaming/__init__.py. Its builder answers an LLMReviser
+        over a providers.AuthoringSession with the "live-providers" resolver,
+        or None when providers.load_authoring_config() answers None.
+        - The builder makes no model call and reads no API key. The package
+          exports LLMReviser and ReviserOutputError in __all__.
+        - Every existing export and component of the package is unchanged.
+          revise_policy's default reviser stays default_reviser.
+      </feature>
+    </category>
+    <category name="Authoring Verification">
+      <feature index="11" shape="core" depends_on="4,7,9"
+               touches_files="tests/e2e/test_llm_authoring_end_to_end.py">
+        System verifies one LLM-authored refinement end to end, with no
+        network, in tests/e2e/test_llm_authoring_end_to_end.py.
+        - Setup: a campaign with one root node row (depth 0) is seeded in a
+          throwaway SQLite database, together with a prior proposal in the
+          ProposalHistoryStore.
+        - An LLMSignalAuthor is built over a providers.AuthoringSession whose
+          resolve answers providers.RecordedProvider fixtures for the root
+          and depth pins.
+        - discovery.NodeExpansion(author, database_url) expands the root.
+          Its RefinedSignal carries the authored code and stated mechanism.
+        - The attempt is persisted with AttemptProvenance built from
+          record.attempt_provenance_terms(). Then record_authoring(record) is
+          called, and the proposal is stored with ProposalHistoryStore.persist.
+        - The test asserts that the node row carries the pinned
+          agent_model_id and agent_sampling, that the root serving-provider
+          row names the pin's provider, and that the proposal row holds the
+          raw answer.
+        - A second expansion at depth 2 uses the depth pin.
+          record_campaign_cache_rate then persists the campaign's measured
+          rate.
+        - An LLMReviser with a RecordedProvider revises an incumbent through
+          revise_policy.
+        - A refusal path is covered: a fixture answer without a python
+          block, retried once, raises AuthoringRefusedError.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    New modules:
+    - providers._authoring, providers._authoring_session and
+      providers._authoring_store, whose names features 2, 3 and 4 export;
+    - signal_agent._authoring_prompt, signal_agent._authored and
+      signal_agent._llm_author;
+    - dreaming.llm_reviser.
+    New components: "signal-author" (signal-agent) and "policy-reviser"
+    (dreaming). Both answer None unless NULLIUS_AUTHORING_CONFIG names a
+    config file.
+    Features 2, 3 and 4 add exports to providers/__init__.py, and features
+    10 and 12 are the only edits to the signal-agent and dreaming
+    __init__.py. Feature 1 is the only edit to the manifests and uv.lock.
+    Every new file is committed as an empty stub so its claim resolves.
+    The campaign driver that calls the author and the reviser in a loop is a
+    later spec. Until then, a caller wires them as feature 11 does.
+  </integration_points>
+  <constraints>
+    - No test opens a network connection or reads a real credential. Model
+      calls in tests use RecordedProvider fixtures or fake providers, and no
+      API key appears in any file, fixture, log line, exception or repr.
+    - No third-party dependency. Feature 1 adds workspace members only.
+    - Do not edit run.sh, .env.tpl, .env.vst.tpl, .env.example,
+      claw-forge.yaml or claw-forge.local.yaml.
+    - Do not edit the existing modules of discovery, of policy-runtime, or
+      of the providers live backends (_live_http, _anthropic,
+      _openai_compat, _live, _budget, live_check).
+    - The router member and the order path never import providers,
+      signal_agent or dreaming's reviser. There is no model in the order
+      path.
+    - The C3 history is never summarised or truncated.
+    - No authoring module imports or reads the nulloracle member, the null
+      sidecar or any is_null value. The agent sees only ScoreRecord metrics
+      (docs/nullius-tech-architecture.md design principle 2).
+    - Do not edit docs/user-journeys/.
+    - All existing workspace tests (tests/) and the member suites of
+      providers, signal-agent, dreaming and discovery stay green.
+  </constraints>
+  <implementation_steps>
+    <step>Phase 1: workspace dependencies (feature 1), the authoring config (feature 2) and the output parser (feature 6), in parallel.</step>
+    <step>Phase 2: the session (feature 3), the recorder (feature 4) and the prompt builder (feature 5).</step>
+    <step>Phase 3: the signal author (feature 7) and the policy reviser (feature 9).</step>
+    <step>Phase 4: the components (features 8 and 10).</step>
+    <step>Phase 5: the end-to-end verification (feature 11).</step>
+  </implementation_steps>
+</project_specification>
