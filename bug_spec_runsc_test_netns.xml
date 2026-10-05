@@ -1,0 +1,29 @@
+<bug_spec>
+  <!-- Found 2026-10-06 running feature 6's real-runsc integration test. The
+       test asserts the runsc state dir is empty after a run, but runsc keeps
+       a single shared null-netns handle for every no-network container
+       (verified: 3 runs leave exactly 1 entry, not per-container). The
+       product cleanup is correct; the assertion is too strict. Test-only,
+       one file. -->
+  <bug index="1" shape="core" severity="low"
+       touches_files="packages/orchestrator/tests/test_gvisor_runsc.py">
+    <title>The real-runsc integration test wrongly requires an empty state dir, but runsc keeps one shared null-netns handle for --network=none</title>
+    <symptoms>
+      test_infinite_loop_is_a_timeout_and_the_state_dir_is_empty_afterward asserts the runsc --root state directory is empty once GVisorSandbox has run and cleaned up. Under the real runsc it always holds exactly one entry, "null-netns": the shared network-namespace handle runsc creates for --network=none containers. It is created once and reused — three runs leave exactly one entry, not one per container — so it is not a per-container leak. GVisorSandbox's own cleanup (runsc delete -force) removes each container's state correctly; only this shared handle remains, and the test fails on it.
+    </symptoms>
+    <reproduction_steps>
+      With runsc on PATH and NULLIUS_GVISOR_RUNTIME_ROOT set, run GVisorSandbox several times against one state_root and list it: it contains exactly ["null-netns"], regardless of how many runs.
+    </reproduction_steps>
+    <expected>
+      - The test asserts that no per-container state remains after a run — for example that the state dir contains nothing but the shared "null-netns" handle, or that runsc lists no container — rather than requiring the directory to be wholly empty.
+      - The infinite loop still asserts fail_class timeout. The container's own state is gone after cleanup.
+      - Every other assertion in the file is unchanged, and the test still skips when runsc or the runtime root is absent.
+    </expected>
+    <actual>Root cause: packages/orchestrator/tests/test_gvisor_runsc.py asserts the state directory is empty, not accounting for runsc's shared --network=none null-netns handle. GVisorSandbox cleanup is correct; the assertion is wrong.</actual>
+    <constraints>
+      Only the one test file is edited; no production code changes
+      No test opens a network connection or reads a real credential; the test still skips without runsc
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
