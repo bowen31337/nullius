@@ -130,30 +130,27 @@ def test_the_pyproject_declares_the_eight_workspace_dependencies() -> None:
         assert sources[name] == {"workspace": True}, name
 
 
-def test_the_module_holds_a_docstring_and_an_empty_all() -> None:
-    # The sentence's bullet: a module docstring and an empty ``__all__``.
-    # The docstring is this member's front page — the factory's scan
-    # imports the package with nothing else to show for it — and the
-    # empty ``__all__`` is the honest statement that feature 1 exports
-    # nothing: the features that follow add their own names as they add
-    # their subjects, and nothing imports `from orchestrator import *`
-    # in the meantime.
+def test_the_module_holds_a_docstring_and_a_resolvable_all() -> None:
+    # Feature 1 shipped a docstring and an empty ``__all__``; the features
+    # that followed added their own names (feature 8 exports the live
+    # evaluation pipeline).  What stays true for the member is that it has
+    # a front page and that every exported name resolves on the package.
     assert isinstance(orchestrator.__doc__, str)
     assert orchestrator.__doc__.strip()
-    assert orchestrator.__all__ == []
+    assert isinstance(orchestrator.__all__, list)
+    assert len(set(orchestrator.__all__)) == len(orchestrator.__all__)
+    for name in orchestrator.__all__:
+        assert hasattr(orchestrator, name), name
 
 
-def test_the_member_registers_no_component_yet() -> None:
-    # "Registers no component yet" held precisely: a scan of this member
-    # alone — its own src/ as the only root, a fresh registry so nothing
-    # another member registered can mask the claim — composes the empty
-    # application.  The member exists to the factory and contributes
-    # nothing, which is what lets it land beside every composition that
-    # predates it.
+def test_the_member_registers_exactly_its_own_components() -> None:
+    # A scan of this member alone — its own src/ as the only root, a fresh
+    # registry so nothing another member registered can mask the claim —
+    # composes exactly the components the member owns: feature 1 registered
+    # none, and feature 8 added "live-evaluator" (None when unconfigured).
     app = create_app(MEMBER_SRC, registry=Registration())
     assert isinstance(app, Application)
-    assert app.components == {}
-    assert app.order == ()
+    assert set(app.order) == {"live-evaluator"}
 
 
 def test_create_app_still_composes() -> None:
