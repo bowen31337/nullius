@@ -112,7 +112,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import closing
 from pathlib import Path
-from typing import Any, Optional, Tuple
+from typing import Any
 from urllib.parse import unquote, urlparse
 
 __all__ = [
@@ -142,7 +142,7 @@ NODE_ID_COLUMN = "id"
 #: names as the node's own measured scalars (four from step 8, ``ir_marginal``
 #: from step 9, ``cost_adjusted_ir`` from step 10's cost-adjusted axis), and
 #: they travel together on one row in one transaction.
-_CORE_COLUMNS: Tuple[str, ...] = (
+_CORE_COLUMNS: tuple[str, ...] = (
     "ic_mean",
     "ic_tstat",
     "ir_standalone",
@@ -161,7 +161,7 @@ _OPTIONAL_COLUMN = "perturb_stability"
 #: All seven feature-101 columns, in the order the migration adds them — the
 #: ``SET`` list of the ``UPDATE`` and the ``SELECT`` list of the read, one
 #: spelling so the two cannot drift.
-_TARGET_COLUMNS: Tuple[str, ...] = _CORE_COLUMNS + (_OPTIONAL_COLUMN,)
+_TARGET_COLUMNS: tuple[str, ...] = _CORE_COLUMNS + (_OPTIONAL_COLUMN,)
 
 #: The greppable word that opens every :class:`NodeMetricsConflictError`
 #: message — the spec's own spelling, so an operator greps one word for *the
@@ -239,7 +239,7 @@ class NodeMetricsWriter:
                 "feature 3)"
             )
         self._database_url = database_url.strip()
-        self._path: Optional[Path] = None
+        self._path: Path | None = None
         self._resolved = False
 
     @property
@@ -289,7 +289,7 @@ class NodeMetricsWriter:
 
     # -- The write ----------------------------------------------------------
 
-    def write_node(self, node_row: Any) -> Tuple[str, bool]:
+    def write_node(self, node_row: Any) -> tuple[str, bool]:
         """Update one node's metric columns; answer ``(node_id, written)``.
 
         Copies the seven metrics the evaluator measured onto the row the tree
@@ -368,7 +368,7 @@ def _node_id_of(node_row: Any) -> str:
     return node_id.strip()
 
 
-def _incoming_values(node_row: Any) -> dict[str, Optional[float]]:
+def _incoming_values(node_row: Any) -> dict[str, float | None]:
     """The seven values the record offers, as numbers or an honest ``None``.
 
     Read by attribute — the ``NodeRow`` the evaluator hands across its seam is
@@ -377,7 +377,7 @@ def _incoming_values(node_row: Any) -> dict[str, Optional[float]]:
     ``NULL`` is where *unmeasured* already lives); ``perturb_stability`` may be
     ``None``, which means *not measured by this step* rather than zero.
     """
-    values: dict[str, Optional[float]] = {}
+    values: dict[str, float | None] = {}
     for column in _CORE_COLUMNS:
         value = getattr(node_row, column, None)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -404,7 +404,7 @@ def _incoming_values(node_row: Any) -> dict[str, Optional[float]]:
 
 def _read_row(
     connection: sqlite3.Connection, node_id: str
-) -> Optional[dict[str, Optional[float]]]:
+) -> dict[str, float | None] | None:
     """The seven metric columns the tree holds for ``node_id``, or ``None``.
 
     ``None`` means the tree holds no such node *or* holds no table at all —
@@ -446,7 +446,7 @@ def _read_row(
     }
 
 
-def _holds_metrics(stored: dict[str, Optional[float]]) -> bool:
+def _holds_metrics(stored: dict[str, float | None]) -> bool:
     """Whether the row already carries a measurement.
 
     The six *core* columns decide it — they travel together from one write, so
@@ -460,7 +460,7 @@ def _holds_metrics(stored: dict[str, Optional[float]]) -> bool:
 
 
 def _differences(
-    stored: dict[str, Optional[float]], incoming: dict[str, Optional[float]]
+    stored: dict[str, float | None], incoming: dict[str, float | None]
 ) -> list[str]:
     """The columns whose offered value differs from the one the row holds.
 
@@ -489,7 +489,7 @@ def _differences(
 def _update(
     connection: sqlite3.Connection,
     node_id: str,
-    incoming: dict[str, Optional[float]],
+    incoming: dict[str, float | None],
 ) -> None:
     """Set the metric columns on the node's row — one ``UPDATE``, one statement.
 
@@ -501,7 +501,7 @@ def _update(
     the write's whole contract exists to prevent.
     """
     assignments = [f"{column} = ?" for column in _CORE_COLUMNS]
-    values: list[Optional[float]] = [incoming[column] for column in _CORE_COLUMNS]
+    values: list[float | None] = [incoming[column] for column in _CORE_COLUMNS]
     if incoming[_OPTIONAL_COLUMN] is not None:
         assignments.append(f"{_OPTIONAL_COLUMN} = ?")
         values.append(incoming[_OPTIONAL_COLUMN])

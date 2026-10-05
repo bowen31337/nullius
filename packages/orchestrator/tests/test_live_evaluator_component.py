@@ -64,7 +64,6 @@ import orchestrator
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from app.module_loader import Application, Registration, create_app
 from orchestrator import (
     EvaluationConfigError,
     EvaluationContext,
@@ -73,6 +72,8 @@ from orchestrator import (
     load_evaluation_context,
 )
 from snapshot import SnapshotService
+
+from app.module_loader import Application, Registration, create_app
 
 #: This member's ``src/`` — the scan root a test that wants *only* this
 #: member's own registrations passes to ``create_app``, the same root
