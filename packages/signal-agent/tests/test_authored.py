@@ -11,21 +11,24 @@ parse" would let the block rule hold while the raw-text fidelity quietly
 didn't:
 
 * **the code** — the body of the answer's *single* ```` ```python ```` block,
-  byte for byte.  The fence rules are CommonMark's, pinned here as decisions
-  (indentation tolerated, case-folded info string, no info string closes,
-  unclosed runs to the end) rather than left for a reader to infer; the
-  near-miss spellings are pinned as *not* python blocks, because a parser
-  that guessed at ``py``/``python3`` would admit blocks the prompt never
-  asked for.
-* **the refusals** — zero blocks, several blocks, a blank body, and the
-  not-text case beneath all three.  Each message opens with the
-  ``authored_output`` code word, because feature 7's retry loop quotes that
-  word back to the model and an operator greps for the same token in a
-  campaign log.
-* **the stated mechanism** — the first line starting ``Mechanism:``, its
-  remainder stripped, or ``None``.  The ``None``-versus-empty-string split is
-  pinned with the argument that owns it: a *missing* line is the honest
-  unstated state 0117's nullable column records, and a *blank* one is
+  read as source rather than as wire bytes.  The fence rules are CommonMark's,
+  pinned here as decisions (indentation tolerated and dedented, case-folded
+  info string, no info string closes, a python fence that never closes
+  refused as unterminated, ``\\r\\n`` read as ``\\n``) rather than left for a
+  reader to infer; the near-miss spellings are pinned as *not* python
+  blocks, because a parser that guessed at ``py``/``python3`` would admit
+  blocks the prompt never asked for.
+* **the refusals** — zero blocks, several blocks, a blank body, an
+  unterminated fence, and the not-text case beneath all four.  Each message
+  opens with the ``authored_output`` code word, because feature 7's retry
+  loop quotes that word back to the model and an operator greps for the same
+  token in a campaign log.
+* **the stated mechanism** — the first line whose label, once markdown
+  markers and indentation are stripped, is ``Mechanism:`` case-insensitively;
+  its remainder stripped, or ``None``.  Lines inside the code block are not
+  scanned — the source is not the statement.  The ``None``-versus-empty-string
+  split is pinned with the argument that owns it: a *missing* line is the
+  honest unstated state 0117's nullable column records, and a *blank* one is
   feature 211's refusal to make at persist — neither is the parser's.
 * **the proposal** — the full raw answer, untransformed.  Pinned as an
   ``is`` claim, not merely an equality: the next round reads this text in
@@ -54,6 +57,7 @@ fails a test rather than a review.
 from __future__ import annotations
 
 import ast
+import hashlib
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -150,6 +154,46 @@ def test_the_block_body_is_carried_byte_for_byte() -> None:
     )
 
 
+def test_a_crlf_answer_s_code_carries_no_carriage_return() -> None:
+    """``\\r\\n`` answers are read as ``\\n`` answers — the wire is not the source.
+
+    A completion arrives with the line endings of whichever platform emitted
+    it, and a scanner that split the raw text left a carriage return on the
+    tail of every line of code: the same source then hashed differently
+    depending on the transport it arrived by, and the anti-convergence check
+    (feature 9), which reads that hash to catch a model repeating itself,
+    could miss a repeat that was one line ending away.  The normalisation is
+    of the *reading* only — the proposal field stays the very object handed
+    in, because what §14.1's history persists is the answer exactly as it
+    arrived, not as this parse chose to spell it.
+    """
+    answer = "Mechanism: m\r\n```python\r\ncode()\r\n```\r\n"
+    parsed = _authored.parse_authored(answer)
+    assert parsed.code == "code()"
+    assert "\r" not in parsed.code
+    assert parsed.stated_mechanism == "m"
+    assert parsed.proposal is answer
+
+
+def test_crlf_and_lf_spellings_of_one_answer_share_one_code_hash() -> None:
+    """``code_hash`` is over the source, not the line ending it arrived by.
+
+    §9.1 hashes the code the contract adopted, so two spellings of one answer
+    that differ only in ``\\r`` are one proposal — and the pin is the digest
+    itself, the exact comparison the anti-convergence check makes, because a
+    scanner could reintroduce the difference as a whitespace change no
+    equality assertion would notice.
+    """
+    lf_answer = f"```python\n{_CODE}\n```\n\nMechanism: {_MECHANISM}\n"
+    crlf_answer = lf_answer.replace("\n", "\r\n")
+    lf_code = _authored.parse_authored(lf_answer).code
+    crlf_code = _authored.parse_authored(crlf_answer).code
+    assert crlf_code == lf_code == _CODE
+    assert hashlib.sha256(crlf_code.encode()).hexdigest() == (
+        hashlib.sha256(lf_code.encode()).hexdigest()
+    )
+
+
 def test_a_fence_may_be_indented_and_surrounded_by_space() -> None:
     """Fence matching strips the line — models indent fences inside lists.
 
@@ -159,6 +203,41 @@ def test_a_fence_may_be_indented_and_surrounded_by_space() -> None:
     zero would refuse a perfectly clear block.
     """
     answer = f"   ```python \n{_CODE}\n   ```"
+    parsed = _authored.parse_authored(answer)
+    assert parsed.code == _CODE
+
+
+@pytest.mark.parametrize("indent", [" ", "    ", "        "])
+def test_an_indented_fence_s_body_is_dedented_by_the_fence(indent: str) -> None:
+    """The fence's uniform indentation goes; the source it carries stays.
+
+    A block fenced inside a list arrives with the list's indentation on
+    every line, and ``contract.adopt`` would read the surviving prefix as
+    Python indentation — an ``IndentationError`` wearing a conformance
+    defect it is not, paid for with a retry.  The repair is a *reading* of
+    the shape: the opening fence's own indentation is the surrounding
+    prose's claim on these lines, and stripping it (and only as much of it
+    as every body line shares) recovers the column-zero source the model
+    wrote inside the list.
+    """
+    answer = f"{indent}```python\n{indent}c\n{indent}```"
+    parsed = _authored.parse_authored(answer)
+    assert parsed.code == "c"
+
+
+def test_a_list_indented_signal_keeps_its_own_relative_indentation() -> None:
+    """Uniform list indent removed, relative structure intact — one dedent.
+
+    The whole module sits inside the fence's indentation, and its nested
+    lines sit four columns deeper: the dedent takes the *common* leading
+    whitespace, capped at the fence's own, so ``def`` lands at column zero
+    with its body still four columns in — the shape the sandbox executes,
+    not a re-relative rendering of it.
+    """
+    indented_code = "\n".join(
+        f"    {line}" for line in _CODE.split("\n")
+    )
+    answer = f"- the proposal:\n\n    ```python\n{indented_code}\n    ```"
     parsed = _authored.parse_authored(answer)
     assert parsed.code == _CODE
 
@@ -233,18 +312,56 @@ def test_a_python_line_inside_an_open_block_is_content_not_a_boundary() -> None:
     assert parsed.code == "first\n```python\nsecond"
 
 
-def test_an_unclosed_fence_runs_to_the_end_of_the_text() -> None:
-    """No closing fence: the body is the remainder — one block, not zero.
+def test_an_unterminated_python_fence_is_refused() -> None:
+    """A fence that opens and never closes is a truncation, not a block.
 
-    CommonMark again: an unclosed fence runs to the end of its container.
-    The block still counts as the one it visibly meant to be, so a truncated
-    answer is judged on the source it did carry (the contract's refusal to
-    make, if prose followed) rather than refused here as a shape it never
-    chose.
+    The shape this answer wears is the ``max_tokens`` cut: the model was
+    writing its source and stopped mid-fence, and what follows the opener is
+    the piece that fit, not the proposal.  Adopting the tail would spend the
+    round on a signal the model never finished writing — a truncated source
+    parading as a complete one, for the conformance gates to be blamed for —
+    so the refusal names the unterminated block and lets the retry
+    (feature 7) ask for the whole answer again.
     """
-    answer = f"Intro prose.\n```python\n{_CODE}"
-    parsed = _authored.parse_authored(answer)
-    assert parsed.code == _CODE
+    answer = f"Intro prose.\n```python\n{_CODE}\n"
+    with pytest.raises(_authored.AuthoredOutputError) as raised:
+        _authored.parse_authored(answer)
+    message = str(raised.value)
+    assert message.startswith("authored_output: ")
+    assert "unterminated" in message
+
+
+def test_an_opener_alone_with_no_body_at_all_is_unterminated() -> None:
+    """Even a bodyless opener is a truncation — there is no closer to read.
+
+    The fence opened and the answer ended; whether the model wrote nothing
+    or was cut off before it could, the block was never closed, and the
+    unterminated refusal is more precise here than a blank-body one: the
+    answer's defect is where it stops, not what it carries.
+    """
+    answer = "```python"
+    with pytest.raises(_authored.AuthoredOutputError) as raised:
+        _authored.parse_authored(answer)
+    message = str(raised.value)
+    assert message.startswith("authored_output: ")
+    assert "unterminated" in message
+
+
+def test_an_unclosed_fence_of_another_language_is_no_python_block() -> None:
+    """Only the python fence's own truncation is the unterminated refusal.
+
+    A ```` ```json ```` documentation block that never closes is not the
+    answer's source and never was: its content is skipped whole, the answer
+    carries no python block, and the refusal is the zero-block one — the
+    unterminated shape is reserved for the fence whose body was about to
+    become code.
+    """
+    answer = '```json\n{"metric": "ir_marginal", "window": 42}\n'
+    with pytest.raises(_authored.AuthoredOutputError) as raised:
+        _authored.parse_authored(answer)
+    message = str(raised.value)
+    assert message.startswith("authored_output: ")
+    assert "no ```python fenced block" in message
 
 
 # ── The refusals: one shape, four depths, one code word ─────────────────────
@@ -397,31 +514,96 @@ def test_a_mechanism_line_that_says_nothing_answers_empty_string() -> None:
 
 
 @pytest.mark.parametrize(
-    "line",
-    ["  Mechanism: indented", "mechanism: lower case", "The Mechanism: mid-sentence"],
+    ("line", "mechanism"),
+    [
+        ("**Mechanism:** order-flow imbalance", "order-flow imbalance"),
+        ("**Mechanism**: order-flow imbalance", "order-flow imbalance"),
+        ("__Mechanism__: order-flow imbalance", "order-flow imbalance"),
+        ("*Mechanism: order-flow imbalance", "order-flow imbalance"),
+        ("- **Mechanism:** order-flow imbalance", "order-flow imbalance"),
+        ("- Mechanism: order-flow imbalance", "order-flow imbalance"),
+        ("> Mechanism: order-flow imbalance", "order-flow imbalance"),
+        ("## Mechanism: order-flow imbalance", "order-flow imbalance"),
+        ("  Mechanism: indented", "indented"),
+        ("mechanism: lower case", "lower case"),
+    ],
 )
-def test_only_a_line_that_starts_with_the_prefix_counts(line: str) -> None:
-    """The prefix is exact: column zero, capital ``M``, one colon.
+def test_the_mechanism_label_is_recognised_under_markdown_markers(
+    line: str, mechanism: str
+) -> None:
+    """Bold, underscores, bullets, quotes, headings, indent, case — one label.
 
-    The format names the spelling (feature 5) and a parser that recognised
-    indented or lower-case variants would be accepting lines the prompt
-    never asked for, on the model's behalf — the near-miss rule from the
-    fence's info string, applied to the mechanism's marker.
+    Models routinely dress the line the format asked for — bolding the
+    label, bulleting it, indenting it inside a list — and the label is the
+    *format's* half of the line while the rationale is the *model's* half:
+    recognising the dressed label recovers a statement the model did make,
+    where column-zero plain text only silently turned it into an unstated
+    mechanism.  The closing marker comes off with the label, whichever side
+    of the colon it landed on, and the rationale itself is still stripped of
+    whitespace and of nothing else — the tolerance spends itself entirely on
+    the label, never on the words after it.
+    """
+    answer = f"```python\n{_CODE}\n```\n\n{line}\n"
+    parsed = _authored.parse_authored(answer)
+    assert parsed.stated_mechanism == mechanism
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "The Mechanism: mid-sentence",
+        "Our mechanism: possessive prose",
+        "Mechanisms: plural",
+        "Mechanism : spaced before the colon",
+        "1. Mechanism: ordered list",
+    ],
+)
+def test_mechanism_near_misses_stay_unstated(line: str) -> None:
+    """Tolerance ends where the label ends: the word, then its colon.
+
+    Mid-sentence and plural spellings are prose *about* the mechanism, not
+    the statement; an ordered list's ``1.`` is not a marker the format's
+    answer ever wears; and a space before the colon is a different spelling
+    than the one the prompt names (feature 5 asks for ``Mechanism:``).  The
+    line is left unread rather than guessed at — the same near-miss rule the
+    fence's info string carries, one word wide.
     """
     answer = f"```python\n{_CODE}\n```\n\n{line}\n"
     parsed = _authored.parse_authored(answer)
     assert parsed.stated_mechanism is None
 
 
-def test_a_mechanism_line_inside_the_fence_is_still_the_statement() -> None:
-    """The scan reads raw lines in order — it does not track fences.
+def test_a_mechanism_line_inside_the_code_block_is_ignored() -> None:
+    """The source's own lines are code, not a statement — even a loud one.
 
-    Taking the model at its word about where it stated its rationale cuts
-    both ways, and this is the other edge: a mechanism stated inside the
-    code fence is *read*, because a structure-aware scan that skipped it
-    would silently turn a stated mechanism into an unstated one — the wrong
-    direction for a column whose whole nullability argument is honesty about
-    what was said.
+    The label scan reads every line *except* the one block that is the
+    source, because the widened label rule (a ``#`` is a marker,
+    indentation is allowed) would otherwise let a comment like
+    ``# Mechanism: ...`` in the model's own source become the stated
+    rationale — code is what the model wrote for the sandbox, not what it
+    stated for the node's column.  The statement is read where the format
+    asked it to stand, outside the block.
+    """
+    answer = (
+        "```python\n"
+        f"{_CODE}\n"
+        "# Mechanism: a comment in the source\n"
+        "Mechanism: a bare line in the source\n"
+        "```\n"
+        "\n"
+        "Mechanism: the stated rationale\n"
+    )
+    parsed = _authored.parse_authored(answer)
+    assert parsed.stated_mechanism == "the stated rationale"
+
+
+def test_a_mechanism_line_only_inside_the_code_block_answers_none() -> None:
+    """An answer that states its mechanism only in code is honestly unstated.
+
+    The same exclusion read from the other side: no line outside the block
+    states anything, so the parse reports the absence (``None``) — 0117's
+    nullable column records an agent that stated no mechanism — rather than
+    mining the source for a sentence that was never a statement.
     """
     answer = (
         "```python\n"
@@ -430,7 +612,7 @@ def test_a_mechanism_line_inside_the_fence_is_still_the_statement() -> None:
         "```\n"
     )
     parsed = _authored.parse_authored(answer)
-    assert parsed.stated_mechanism == "stated inside the fence"
+    assert parsed.stated_mechanism is None
 
 
 # ── The value: parts, hash, and a repr that keeps prose out of logs ─────────
