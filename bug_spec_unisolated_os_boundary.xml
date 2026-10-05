@@ -1,0 +1,42 @@
+<bug_spec>
+  <!-- SEC-1. Automated push-review 2026-10-06 plus verification: the hardened
+       subprocess (unisolated) path relies on a Python import/builtins guard
+       that is not a security boundary. Allowlisted modules re-export os/sys
+       (random._os, typing.sys, fractions.sys, statistics.sys, collections._sys,
+       dataclasses.sys), so agent code reaches the host despite the guard and
+       despite SC-1. gVisor mode is unaffected (its OS boundary contains this;
+       verified 5/5 against real runsc). The fix gives the unisolated path a
+       real OS boundary via bubblewrap (bwrap 0.9.0 is installed and works
+       rootless on this host: unshare-all plus clearenv blocks network, scrubs
+       the env, and isolates /proc). Owner approved running this. Core shape,
+       explicit touches_files: plan-bugs ignores layout. -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/orchestrator/src/orchestrator/_hardened_sandbox.py,packages/orchestrator/src/orchestrator/_context.py,packages/orchestrator/tests/test_hardened_sandbox.py,packages/orchestrator/tests/test_hostile_signals.py,packages/orchestrator/tests/test_context.py">
+    <title>The unisolated executor runs agent code in a bare subprocess whose only barrier is a bypassable Python guard; wrap it in a bubblewrap OS sandbox</title>
+    <symptoms>
+      HardenedSubprocessSandbox spawns the child bootstrap directly (subprocess.Popen of python -I _sandbox_child.py) with only the Python import allowlist and a stripped builtins dict between agent code and the host. That guard is not a security boundary: allowlisted modules re-export dangerous ones — random._os is os, and fractions/statistics/typing/collections/dataclasses expose sys — so agent code reaches os, sys and sockets by attribute access, defeating the guard and the SC-1 callback fix. In the unisolated runtime this reads the host environment (NULLIUS_*_API_KEY, DATABASE_URL via /proc) and opens network sockets. gVisor mode is not affected: its namespaces, read-only root and dropped network contain the same code (verified against the real runsc).
+    </symptoms>
+    <reproduction_steps>
+      Under sandbox_runtime unisolated, a signal that does `import random; random._os` obtains the os module, and `import fractions; fractions.sys.modules` obtains sys — both outside the allowlist. A socket opened from that os/sys reaches the network, and the parent environment is readable, because the bare subprocess shares the host network and environment.
+    </reproduction_steps>
+    <expected>
+      - The unisolated executor runs the child inside a bubblewrap sandbox: the spawned command is bwrap with a new network namespace and no interfaces (no --share-net; loopback only), a fresh PID namespace (--unshare-pid), a fresh mount namespace, a cleared environment (--clearenv) into which only the six existing keys are set (--setenv PATH, OMP_NUM_THREADS, MKL_NUM_THREADS, POLARS_MAX_THREADS, PYTHONHASHSEED, NULLIUS_SIGNAL_SEED), a private /proc (--proc /proc) so the parent's /proc and environ are unreachable, a tmpfs working directory, --die-with-parent, and the host read-only (--ro-bind / / or the minimal set of paths the host interpreter and its site-packages need), then python -I the child bootstrap.
+      - The request still reaches the child on stdin and the one framed result still returns on the child's stdout pipe, unchanged (bwrap passes stdin and stdout through). The RLIMIT_CPU/AS/NPROC/FSIZE preexec limits and the wall-clock watchdog still apply to the bwrap process and are inherited by the child. Fail classes (timeout, oom, crash, violation, payload, empty) are unchanged.
+      - Even when agent code bypasses the Python guard through a re-exported module, it cannot open a network socket (the namespace has no route) and cannot read the parent environment or /proc. A hostile-signal test asserts both: a signal that reaches os/sys via random._os or fractions.sys and tries to connect a socket is contained (no connection), and a planted parent-environment secret is unreadable.
+      - bwrap is required for the unisolated runtime: load_evaluation_context (or the executor selection) raises EvaluationConfigError (code word isolation_required) naming bwrap when sandbox_runtime is unisolated and bwrap is not on PATH. There is no bare-subprocess fallback.
+      - The module docstrings state plainly that the Python import guard is defense-in-depth, not a security boundary, and that isolation comes from bwrap (unisolated) or gVisor.
+      - gVisor mode (GVisorSandbox) is unchanged. The import screen and the hardened child bootstrap are kept as defense-in-depth.
+      - Tests that assert the exact spawned argv are updated to expect the bwrap wrapper; a test skips with a reason when bwrap is absent.
+    </expected>
+    <actual>Root cause: packages/orchestrator/src/orchestrator/_hardened_sandbox.py execs the child as a bare host subprocess, trusting the Python-level guard in _sandbox_child.py, which allowlisted modules re-export around. The gVisor-executor spec added an OS boundary only for the gvisor runtime, leaving unisolated with no OS boundary.</actual>
+    <constraints>
+      bwrap provides the boundary; no bare-subprocess execution of agent code remains in the unisolated path
+      The child bootstrap, request framing, result channel and fail-class vocabulary are unchanged
+      gVisor mode and the evaluator, nulloracle, ledger members are not edited
+      No test opens a real network connection to a non-loopback host or reads a real credential; the bwrap test skips when bwrap is absent
+      No third-party Python dependency is added (bwrap is a system binary)
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
