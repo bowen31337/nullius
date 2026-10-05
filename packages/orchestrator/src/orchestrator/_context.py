@@ -52,14 +52,25 @@ naming ``isolation_required``, the one refusal in this module whose name
 is not a key — it is the spec's own word for what is missing, and an
 operator grepping a log for it finds feature 157's law and this gate
 with one token.  ``"unisolated"`` is accepted only when the document
-also holds ``acknowledge_unisolated: true``: the acknowledgement is the
-operator saying *in the artifact that outlives the process* that model
-code will run on the host, which is why a missing or false value is
-refused rather than warned — a WARNING can scroll past; a refused
-configuraration stops the run before the first ``import`` (the spec's
-constraint: *"Model-written code never executes before the import
-screen"* — the gate is upstream of that screen, and stays closed until
-the runtime is real or the risk is owned).  Both spellings are compared
+also holds ``acknowledge_unisolated: true`` *and* the ``bwrap`` binary is
+on that same ``PATH``: the acknowledgement is the operator saying *in
+the artifact that outlives the process* that model code will run on the
+host, which is why a missing or false value is refused rather than
+warned — a WARNING can scroll past; a refused configuraration stops the
+run before the first ``import`` (the spec's constraint: *"Model-written
+code never executes before the import screen"* — the gate is upstream
+of that screen, and stays closed until the runtime is real or the risk
+is owned).  The ``bwrap`` requirement is
+``bug_spec_unisolated_os_boundary.xml`` (SEC-1): the Python import guard
+:mod:`orchestrator._sandbox_child` installs is defense-in-depth, not a
+security boundary — allowlisted modules re-export disallowed ones as
+plain attributes (``dataclasses.sys`` is the real :mod:`sys`), so the
+acknowledgement alone no longer suffices.  Isolation for ``"unisolated"``
+comes from :class:`~orchestrator._hardened_sandbox.HardenedSubprocessSandbox`
+running the child inside ``bwrap``, the same way isolation for
+``"gvisor"`` comes from ``runsc``; neither runtime has a bare-subprocess
+fallback, and a missing ``bwrap`` is refused under the same
+``isolation_required`` name a missing ``runsc`` already carries.  Both spellings are compared
 casefolded — ``gVisor`` and ``Runsc`` are one deployment written by two
 people, and a law about capitalization would be a law about typography
 (``sandbox._is_gvisor`` makes the same call) — and the context carries
@@ -160,6 +171,7 @@ from ._hardened_sandbox import HardenedSubprocessSandbox
 __all__ = [
     "ACKNOWLEDGE_UNISOLATED_KEY",
     "BARS_STREAM",
+    "BWRAP_RUNTIME",
     "EVALUATION_CONFIG_CODE",
     "EVALUATION_CONFIG_ENV",
     "GVISOR_RUNTIME",
@@ -223,6 +235,15 @@ LAKE_ROOTS_KEY: Final[str] = "lake_roots"
 #: is not this one's dependency; the binary's name is not a fact two
 #: spellings of it could drift on.
 GVISOR_RUNTIME: Final[str] = "runsc"
+
+#: The binary ``"unisolated"`` is gated on — ``bug_spec_unisolated_os_boundary.xml``
+#: (SEC-1): the bare-subprocess path this runtime used to mean had only a
+#: bypassable Python import guard between agent code and the host, so
+#: ``"unisolated"`` now demands bwrap on the same terms ``"gvisor"`` demands
+#: ``runsc`` — there is no bare-subprocess fallback.  The same spelling as
+#: :data:`orchestrator._hardened_sandbox.BWRAP_BINARY`, local to this module
+#: for the reason :data:`GVISOR_RUNTIME` already states for its own binary.
+BWRAP_RUNTIME: Final[str] = "bwrap"
 
 #: The name a missing ``runsc`` refusal carries — the spec's own word
 #: for what is missing, the one refusal in this module that names a
@@ -665,8 +686,13 @@ def _sandbox_runtime(
     environment that loads the configuration is the environment that
     would run the code), looked up fresh through :func:`shutil.which`
     and never cached.  ``"unisolated"`` demands the document's explicit
-    ``acknowledge_unisolated: true``.  Both comparisons casefold, and
-    the canonical lowercase spelling is what the context carries.
+    ``acknowledge_unisolated: true`` *and* the ``bwrap`` binary on that
+    same ``PATH`` (``bug_spec_unisolated_os_boundary.xml``, SEC-1): the
+    acknowledgement alone no longer suffices, because the runtime it
+    acknowledges runs model-written code inside a bwrap sandbox now, not
+    a bare subprocess, and there is no bare-subprocess fallback to fall
+    back to when bwrap is missing.  Both comparisons casefold, and the
+    canonical lowercase spelling is what the context carries.
     """
     raw = values["sandbox_runtime"]
     if not isinstance(raw, str):
@@ -711,6 +737,21 @@ def _sandbox_runtime(
             "model-written code will run on the host — a missing or "
             "false one is refused rather than warned, because a warning "
             "scrolls past and an unisolated run does not"
+        )
+    search = source.get("PATH", "")
+    if shutil.which(BWRAP_RUNTIME, path=search) is None:
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {ISOLATION_REQUIRED} — "
+            f"sandbox_runtime is 'unisolated', which still runs "
+            f"model-written code inside a bwrap (bubblewrap) sandbox — "
+            "the only OS boundary this runtime has "
+            "(bug_spec_unisolated_os_boundary.xml: a bare-subprocess "
+            "executor trusts a Python import guard that allowlisted "
+            "modules re-export around) — and the "
+            f"{BWRAP_RUNTIME!r} binary is not on the PATH this "
+            "environment names; install bubblewrap in the deployment, "
+            "or set sandbox_runtime to 'gvisor' instead. There is no "
+            "bare-subprocess fallback."
         )
     return runtime
 

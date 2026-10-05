@@ -9,12 +9,31 @@ and detail.*
 
 :class:`HardenedSubprocessSandbox` spawns feature 1's bootstrap
 (:mod:`orchestrator._sandbox_child`, run as ``python -I _sandbox_child.py``)
-as a real child process and answers an :class:`evaluator.SandboxResult` — the
-exact type :func:`evaluator.execute_signal` already reads
-(``result.scores``, ``result.problems``, ``result.seed``,
-``result.contract_version``) — so it can replace
-:class:`evaluator.SignalSandbox` at that call site with no change to the
-caller.
+inside a ``bwrap`` (bubblewrap) sandbox and answers an
+:class:`evaluator.SandboxResult` — the exact type
+:func:`evaluator.execute_signal` already reads (``result.scores``,
+``result.problems``, ``result.seed``, ``result.contract_version``) — so it
+can replace :class:`evaluator.SignalSandbox` at that call site with no change
+to the caller.
+
+**bug_spec_unisolated_os_boundary.xml (SEC-1): the Python import guard is
+defense-in-depth, not a security boundary.** :mod:`orchestrator._sandbox_child`
+screens the agent's own ``import`` statements, but allowlisted modules
+re-export disallowed ones as plain attributes of an already-loaded module
+object — ``dataclasses.sys`` and ``typing.sys`` are the real :mod:`sys`,
+reachable with no further import-time check at all, because attribute access
+is not an import statement and the guard was never meant to catch it. A bare
+subprocess has nothing else standing between that bypass and the host: the
+host network, the host's own ``/proc`` (and the secrets a sibling or parent
+process's environment carries), and the filesystem are all one namespace with
+the agent code. ``bwrap`` is what actually contains that bypass: a private
+network namespace with no route out, a private PID and mount namespace, a
+cleared environment and a private ``/proc`` mean a signal that reaches
+``os``/``sys`` this way still cannot open a socket, still cannot read a
+parent's environment, and still cannot see any host process at all. There is
+no bare-subprocess fallback — :meth:`HardenedSubprocessSandbox.__init__`
+resolves ``bwrap`` on ``PATH`` and refuses to construct without it (see
+:func:`_require_bwrap`).
 
 **Why the parent's own ``stdout`` pipe *is* the bootstrap's "private
 descriptor".**  :func:`orchestrator._sandbox_child._redirect_stdio` duplicates
@@ -54,6 +73,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -61,7 +81,7 @@ import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import sandbox
 from evaluator import EvaluatorSandboxError, SandboxResult
@@ -69,6 +89,9 @@ from evaluator import EvaluatorSandboxError, SandboxResult
 from . import _sandbox_child as _child
 
 __all__ = [
+    "BWRAP_BINARY",
+    "BWRAP_UNAVAILABLE_CODE",
+    "BwrapUnavailableError",
     "HardenedLimits",
     "HardenedSubprocessSandbox",
 ]
@@ -81,6 +104,55 @@ _CHILD_PATH: Path = Path(_child.__file__)
 #: The fixed, from-scratch ``PATH`` every child runs under — just enough for
 #: the interpreter itself; nothing the parent's shell exported.
 _ENV_PATH: str = "/usr/bin:/bin"
+
+#: The system binary every unisolated run is wrapped in — see the module
+#: docstring's SEC-1 paragraph.  A system binary, not a Python dependency:
+#: resolved fresh off ``PATH`` through :func:`shutil.which`, the same idiom
+#: :func:`orchestrator._gvisor._require_runsc` uses for ``runsc``.
+BWRAP_BINARY: Final[str] = "bwrap"
+
+#: The greppable code word a missing ``bwrap`` refusal carries — the same
+#: word :mod:`orchestrator._context` names when the ``"unisolated"`` gate's
+#: own ``bwrap`` check fails, and :mod:`orchestrator._gvisor` names for a
+#: missing ``runsc`` (:data:`orchestrator._gvisor.GVISOR_UNAVAILABLE_CODE`):
+#: one word for "this executor has nothing to isolate agent code with."
+BWRAP_UNAVAILABLE_CODE: Final[str] = "isolation_required"
+
+
+class BwrapUnavailableError(Exception):
+    """``bwrap`` is missing or not executable — raised at construction.
+
+    :class:`HardenedSubprocessSandbox` has no bare-subprocess fallback (SEC-1):
+    a sandbox that cannot find a working ``bwrap`` has nothing to isolate
+    agent-authored code with, and refuses to be built at all rather than
+    silently running the child unconfined at the first signal's expense — the
+    same "fail at construction" stance
+    :class:`orchestrator._gvisor.GVisorUnavailableError` takes for a missing
+    ``runsc``.
+    """
+
+
+def _require_bwrap() -> Path:
+    """Resolve ``bwrap`` to an executable path, or raise.
+
+    Looked up fresh through :func:`shutil.which` at every construction — never
+    cached across instances — so a deployment that installs ``bwrap`` need not
+    restart anything already running to start working, the same freshness
+    :func:`orchestrator._context._sandbox_runtime` gives its own ``runsc``
+    lookup.
+    """
+    resolved = shutil.which(BWRAP_BINARY)
+    if resolved is None:
+        raise BwrapUnavailableError(
+            f"{BWRAP_UNAVAILABLE_CODE}: {BWRAP_BINARY!r} is missing or not "
+            "executable. The unisolated executor's only OS boundary is bwrap "
+            "(bubblewrap); a HardenedSubprocessSandbox with no working bwrap "
+            "beneath it has nothing to isolate agent-authored code with, and "
+            "there is no bare-subprocess fallback — install bwrap, or run "
+            "under sandbox_runtime 'gvisor' instead."
+        )
+    return Path(resolved)
+
 
 #: Caps on how much of the child's stdout/stderr this launcher will hold onto.
 #: The bootstrap's own contract writes at most one small JSON envelope to the
@@ -162,6 +234,63 @@ def _child_env(seed: int, *, pins: dict[str, str]) -> dict[str, str]:
         "PYTHONHASHSEED": "0",
         sandbox.ENV_SIGNAL_SEED: str(int(seed)),
     }
+
+
+def _bwrap_argv(bwrap: Path, env: dict[str, str], cwd: str) -> list[str]:
+    """The ``bwrap`` command line the child actually runs under (SEC-1).
+
+    Every namespace ``bug_spec_unisolated_os_boundary.xml``'s own "Expected"
+    section names, in one invocation: ``--unshare-all`` (a private user, IPC,
+    PID, network, UTS and cgroup namespace — a strict superset of the
+    ``--unshare-net``/``--unshare-pid`` the spec calls out by name) plus
+    ``--die-with-parent`` so a killed launcher never orphans the child.
+    ``--clearenv`` wipes whatever ``bwrap`` itself was spawned with, and the
+    six ``--setenv`` pairs restate exactly ``env`` (:func:`_child_env`'s own
+    six keys) — never ``os.environ`` — so the environment inside the sandbox
+    is, structurally, the same from-scratch six keys the bare subprocess
+    executor always built, now enforced twice over.  ``--proc /proc`` is a
+    *fresh* procfs for the new PID namespace: the host's own ``/proc`` (and
+    every other process's environment and file descriptors on it) is
+    unreachable from inside, closing the exact ``/proc`` route the bug names.
+    ``--ro-bind / /`` gives the child's own interpreter and site-packages
+    (wherever the host actually keeps them) read-only, identity-mapped access
+    — the host filesystem is readable, never writable (``RLIMIT_FSIZE`` is
+    already zero; this is the second, OS-level door on the same fact).
+    ``--dev /dev`` is load-bearing, not decorative: the bootstrap's own
+    ``_redirect_stdio`` opens ``/dev/null`` for *writing* before anything else
+    runs, and a plain ``--ro-bind``'d ``/dev/null`` refuses that open with
+    ``EROFS`` — a fresh, writable ``/dev`` is what keeps that first line of
+    the bootstrap from crashing every single run.  ``--tmpfs``/``--chdir``
+    give the child the one writable (if useless, given ``RLIMIT_FSIZE=0``)
+    directory the spec calls "a tmpfs working directory," shadowing the
+    read-only root for that one path.
+    """
+    argv = [
+        str(bwrap),
+        "--unshare-all",
+        "--die-with-parent",
+        "--clearenv",
+    ]
+    for key, value in env.items():
+        argv += ["--setenv", key, value]
+    argv += [
+        "--ro-bind",
+        "/",
+        "/",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        "--tmpfs",
+        cwd,
+        "--chdir",
+        cwd,
+        "--",
+        sys.executable,
+        "-I",
+        str(_CHILD_PATH),
+    ]
+    return argv
 
 
 def _ambient_task_count(uid: int) -> int:
@@ -320,12 +449,37 @@ def _decode_problems(detail: str) -> list[Any]:
     ]
 
 
+def _signal_from_returncode(returncode: int | None) -> int | None:
+    """The signal that killed a process, read off either exit convention.
+
+    A bare ``subprocess`` reports a negative ``returncode`` for a process the
+    kernel killed by signal directly (Python's own convention, and what the
+    parametrized unit test below still exercises). ``bwrap``, under
+    ``--unshare-all``, forks its own PID-1-equivalent for the new namespace
+    (a consequence of ``--unshare-pid``), and that process reports the
+    grandchild's signal death by *exiting normally* with the shell's
+    ``128 + signal`` convention rather than dying by the same signal itself —
+    so ``bwrap``'s own ``returncode`` (what :meth:`HardenedSubprocessSandbox.run`
+    actually observes once every spawn goes through SEC-1's fix) is positive.
+    Reading both conventions here, in one place, is what lets
+    :func:`_classify_silent_death` stay the single thing that names a signal a
+    fail class, regardless of which process reported it.
+    """
+    if returncode is None:
+        return None
+    if returncode < 0:
+        return -returncode
+    if returncode >= 128:
+        return returncode - 128
+    return None
+
+
 def _classify_silent_death(returncode: int | None) -> tuple[str, str]:
     """A child that wrote no result: the fail class the signal (and the limit
     it correlates with) implies — ``crash`` for anything else, by name.
     """
-    if returncode is not None and returncode < 0:
-        killed_by = -returncode
+    killed_by = _signal_from_returncode(returncode)
+    if killed_by is not None:
         if killed_by == _CPU_LIMIT_SIGNAL:
             return (
                 "timeout",
@@ -353,12 +507,20 @@ class HardenedSubprocessSandbox:
     (:func:`_default_limits`, the import allowlist, the thread pins) happens
     at construction, so a per-node evaluation that calls :meth:`run` once per
     rebalance date pays that cost exactly once rather than once per date.
+
+    ``bwrap`` is resolved once, here, at construction (:func:`_require_bwrap`)
+    — raising :class:`BwrapUnavailableError` rather than building a sandbox
+    with no OS boundary beneath it (SEC-1's own "no bare-subprocess fallback"
+    constraint). The same "fail at construction, not at a signal's expense"
+    stance :class:`orchestrator._gvisor.GVisorSandbox` already takes for its
+    own ``runsc``.
     """
 
     def __init__(self, limits: HardenedLimits | None = None) -> None:
         self.limits: HardenedLimits = limits if limits is not None else _default_limits()
         self._imports = sandbox.sandbox_imports()
         self._thread_pins = sandbox.sandbox_threads().pins()
+        self._bwrap: Path = _require_bwrap()
 
     def run(self, code: str, window: Any, *, seed: int) -> SandboxResult:
         """Execute ``code``'s ``signal`` over ``window`` in a hardened child.
@@ -404,7 +566,7 @@ class HardenedSubprocessSandbox:
 
         with tempfile.TemporaryDirectory(prefix="nullius-hardened-") as cwd:
             proc = subprocess.Popen(
-                [sys.executable, "-I", str(_CHILD_PATH)],
+                _bwrap_argv(self._bwrap, env, cwd),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

@@ -144,6 +144,20 @@ def test_gvisor_refuses_a_missing_extra_key_by_name(
     assert key in message
 
 
+def _fake_bwrap_dir(tmp_path: Path) -> Path:
+    """A scratch directory holding an executable ``bwrap`` — SEC-1's own
+    gate (``bug_spec_unisolated_os_boundary.xml``) now requires ``bwrap`` on
+    ``PATH`` for ``sandbox_runtime: "unisolated"``, the same stand-in
+    :func:`_fake_runsc_dir` already gives the ``"gvisor"`` gate's ``runsc``.
+    """
+    bwrap_dir = tmp_path / "bwrap-bin"
+    bwrap_dir.mkdir(exist_ok=True)
+    bwrap = bwrap_dir / "bwrap"
+    bwrap.write_text("#!/bin/sh\n", encoding="utf-8")
+    bwrap.chmod(0o755)
+    return bwrap_dir
+
+
 def test_unisolated_needs_none_of_the_three_extra_keys(tmp_path: Path) -> None:
     # The conditional shape: "unisolated" builds no gVisor executor, so it
     # reads none of the three keys this feature adds — a document that
@@ -157,9 +171,15 @@ def test_unisolated_needs_none_of_the_three_extra_keys(tmp_path: Path) -> None:
     document["sandbox_runtime"] = "unisolated"
     document["acknowledge_unisolated"] = True
     config_path = _write_config(tmp_path, document)
+    bwrap_dir = _fake_bwrap_dir(tmp_path)
 
     with pytest.raises(EvaluationConfigError) as record:
-        load_evaluation_context({"NULLIUS_EVALUATION_CONFIG": str(config_path)})
+        load_evaluation_context(
+            {
+                "NULLIUS_EVALUATION_CONFIG": str(config_path),
+                "PATH": str(bwrap_dir),
+            }
+        )
 
     message = str(record.value)
     assert "DATABASE_URL" in message

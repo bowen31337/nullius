@@ -281,14 +281,28 @@ def _environment_over(base: str, document: Mapping[str, Any]) -> dict[str, str]:
     configuration path, the store, and the pinned evaluator image.  Used
     by the tests that stage their own lake and so cannot borrow the
     fixture's ``LiveWorld`` environment.
+
+    ``PATH`` names a fresh, root-local directory carrying a fake ``bwrap`` —
+    every document this helper builds defaults to ``sandbox_runtime:
+    "unisolated"`` (:func:`_standard_document`), and SEC-1
+    (bug_spec_unisolated_os_boundary.xml) gates that runtime on ``bwrap``
+    being on ``PATH``, the same stub shape the ``live`` fixture's own
+    ``bare_path`` carries.
     """
     root = Path(base)
     path = root / f"evaluation-{abs(id(document))}.json"
     path.write_text(json.dumps(document), encoding="utf-8")
+    bwrap_dir = root / f"bwrap-path-{abs(id(document))}"
+    bwrap_dir.mkdir(exist_ok=True)
+    bwrap = bwrap_dir / "bwrap"
+    if not bwrap.exists():
+        bwrap.write_text("#! /bin/sh\n", encoding="utf-8")
+        bwrap.chmod(0o755)
     return {
         "NULLIUS_EVALUATION_CONFIG": str(path),
         "DATABASE_URL": f"sqlite:///{root / 'environment-over.db'}",
         "NULLIUS_EVALUATOR_IMAGE": IMAGE,
+        "PATH": str(bwrap_dir),
     }
 
 
@@ -345,8 +359,16 @@ def live(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LiveWorld:
     config_path = tmp_path / "evaluation.json"
     config_path.write_text(json.dumps(document), encoding="utf-8")
 
+    # "Bare" with respect to runsc (the gvisor-without-runsc test below reads
+    # it for exactly that absence) — but it still carries a fake bwrap, since
+    # SEC-1 (bug_spec_unisolated_os_boundary.xml) gates the default
+    # "unisolated" document this fixture builds on bwrap being on PATH too,
+    # the same way with-runsc carries a fake runsc for gvisor's own gate.
     bare_path = tmp_path / "bare-path"
     bare_path.mkdir()
+    bwrap = bare_path / "bwrap"
+    bwrap.write_text("#! /bin/sh\n", encoding="utf-8")
+    bwrap.chmod(0o755)
     runsc_path = tmp_path / "with-runsc"
     runsc_path.mkdir()
     runsc = runsc_path / "runsc"
@@ -703,6 +725,22 @@ def test_unisolated_requires_the_acknowledgement(
     # past, and an unisolated run does not.
     config = _config_file(live, acknowledge_unisolated=acknowledgement)
     _refuses(_environment(live, config), "acknowledge_unisolated")
+
+
+def test_unisolated_without_bwrap_names_isolation_required(live: LiveWorld) -> None:
+    # SEC-1 (bug_spec_unisolated_os_boundary.xml): the acknowledgement alone
+    # no longer suffices — "unisolated" now runs model-written code inside a
+    # bwrap sandbox, and a PATH that carries no bwrap (runsc_path has only a
+    # fake runsc) refuses at load, the same "gate upstream of every read"
+    # shape test_gvisor_without_runsc_names_isolation_required already proves
+    # for the other runtime's own binary.
+    config = _config_file(live, acknowledge_unisolated=True)
+    _refuses(
+        _environment(live, config, PATH=str(live.runsc_path)),
+        "isolation_required",
+        "bwrap",
+        "PATH",
+    )
 
 
 @pytest.mark.parametrize("runtime", ["firecracker", "docker", None, ""])

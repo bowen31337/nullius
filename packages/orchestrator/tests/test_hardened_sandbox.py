@@ -33,7 +33,10 @@ outside a pytest temporary directory; no third-party dependency is added.
 from __future__ import annotations
 
 import datetime as dt
+import shutil
 import signal
+import subprocess
+import sys
 import time
 
 import pyarrow as pa
@@ -42,6 +45,13 @@ from contract.window import MarketWindow
 from evaluator import EvaluatorSandboxError, SandboxResult
 from orchestrator import _hardened_sandbox as hs
 from orchestrator._hardened_sandbox import HardenedLimits, HardenedSubprocessSandbox
+
+#: SEC-1: HardenedSubprocessSandbox has no bare-subprocess fallback — every
+#: construction resolves bwrap (bug_spec_unisolated_os_boundary.xml) and
+#: raises when it is missing, so a host without it skips this whole module
+#: with a reason, the same discipline test_gvisor_runsc.py gives its own
+#: real-runsc dependency, rather than failing every test here.
+pytestmark = pytest.mark.skipif(shutil.which("bwrap") is None, reason="bwrap is not on PATH")
 
 _UNIVERSE = ("AAA", "BBB")
 
@@ -130,6 +140,63 @@ def test_disallowed_import_answers_crash_naming_disallowed_import_without_spawni
     assert "disallowed_import" in result.detail
     assert result.scores is None
     assert result.seed == 1
+
+
+# -- SEC-1: the child is spawned under bwrap, not as a bare subprocess -------
+
+
+def test_bwrap_is_required_and_refused_at_construction_when_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(hs.shutil, "which", lambda name: None)
+    with pytest.raises(hs.BwrapUnavailableError) as record:
+        HardenedSubprocessSandbox(limits=_fast_limits())
+    assert str(record.value).startswith(hs.BWRAP_UNAVAILABLE_CODE)
+    assert "bwrap" in str(record.value)
+
+
+def test_the_child_runs_under_bwrap_with_the_sec1_sandbox_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[list[str]] = []
+    real_popen = hs.subprocess.Popen
+
+    def _capturing_popen(argv: list[str], *args: object, **kwargs: object) -> subprocess.Popen:
+        captured.append(list(argv))
+        return real_popen(argv, *args, **kwargs)
+
+    monkeypatch.setattr(hs.subprocess, "Popen", _capturing_popen)
+    sandbox_instance = HardenedSubprocessSandbox(limits=_fast_limits())
+    result = sandbox_instance.run(_BENIGN, _window(), seed=7)
+
+    assert result.fail_class is None
+    assert len(captured) == 1
+    argv = captured[0]
+
+    assert argv[0] == str(sandbox_instance._bwrap)
+    assert "bwrap" in argv[0]
+    assert "--unshare-all" in argv  # a private user/ipc/pid/net/uts/cgroup namespace
+    assert "--die-with-parent" in argv
+    assert "--clearenv" in argv
+    assert "--proc" in argv and argv[argv.index("--proc") + 1] == "/proc"
+    assert "--dev" in argv and argv[argv.index("--dev") + 1] == "/dev"
+    assert "--ro-bind" in argv
+    assert sys.executable in argv
+    assert "-I" in argv
+    assert str(hs._CHILD_PATH) in argv
+
+    # The six child env keys still ride as --setenv pairs — never copied
+    # from this launcher's own os.environ (feature 2's own promise, now
+    # enforced a second time by bwrap's own --clearenv).
+    for key in (
+        "PATH",
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "POLARS_MAX_THREADS",
+        "PYTHONHASHSEED",
+        "NULLIUS_SIGNAL_SEED",
+    ):
+        assert key in argv
 
 
 # -- a benign signal scores, deterministically --------------------------------

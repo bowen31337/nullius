@@ -54,6 +54,10 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import shutil
+import socket
+import subprocess
+import sys
 import textwrap
 import time
 from pathlib import Path
@@ -62,6 +66,12 @@ import pyarrow as pa
 import pytest
 from contract.window import MarketWindow
 from orchestrator._hardened_sandbox import HardenedLimits, HardenedSubprocessSandbox
+
+#: SEC-1: HardenedSubprocessSandbox has no bare-subprocess fallback — every
+#: construction resolves bwrap (bug_spec_unisolated_os_boundary.xml) and
+#: raises when it is missing, so a host without it skips this whole module
+#: with a reason rather than failing every test here.
+pytestmark = pytest.mark.skipif(shutil.which("bwrap") is None, reason="bwrap is not on PATH")
 
 _UNIVERSE = ("AAA", "BBB")
 
@@ -101,6 +111,113 @@ def test_planted_environment_secret_is_unreachable_and_import_os_is_refused(
     assert "disallowed_import" in result.detail
     assert "'os'" in result.detail
     assert result.scores is None
+
+
+# -- SEC-1: allowlisted modules re-export os/sys; the OS boundary (not the ---
+# -- Python guard) must still contain what that bypass reaches --------------
+
+
+def test_dataclasses_sys_bypass_reaches_no_network_and_no_host_proc(tmp_path: Path) -> None:
+    # `dataclasses` (like `typing` and `collections`) is a committed allowlist
+    # term, and its own source does `import sys` at module scope — already
+    # fully loaded before the bootstrap's guard ever goes up (it is part of
+    # the interpreter's own early init, not something polars/pyarrow load
+    # lazily), so `import dataclasses` is admitted and the *attribute*
+    # `dataclasses.sys` hands back the real `sys` module with no further
+    # import-time check at all: attribute access is not an import statement,
+    # and the Python guard was never meant to catch it (see
+    # orchestrator._hardened_sandbox's own module docstring). `sys.modules`
+    # then hands back the real, already-resident `os` and `socket` modules
+    # the same way. What must stop this signal is the OS boundary underneath
+    # the guard, not the guard itself.
+    #
+    # The planted secret must be real at the kernel level — visible in
+    # /proc/<pid>/environ, which is a snapshot of the environment a process
+    # received at its own execve and never reflects a later os.environ
+    # mutation (monkeypatch.setenv included) — so the launcher that spawns
+    # the hardened child runs in its own subprocess, with the secret baked
+    # into that subprocess's spawn-time environment.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    try:
+        signal_source = (
+            "import dataclasses\n"
+            "import polars as pl\n"
+            "sys_mod = dataclasses.sys\n"
+            "os_mod = sys_mod.modules.get('os')\n"
+            "def signal(ctx, seed):\n"
+            "    leaked = False\n"
+            "    try:\n"
+            "        fd = os_mod.open('/proc/%d/environ' % os_mod.getppid(), os_mod.O_RDONLY)\n"
+            "        try:\n"
+            "            data = os_mod.read(fd, 65536)\n"
+            "        finally:\n"
+            "            os_mod.close(fd)\n"
+            "        leaked = b'NULLIUS_TEST_SECRET' in data\n"
+            "    except OSError:\n"
+            "        leaked = False\n"
+            "    connected = False\n"
+            "    socket_mod = sys_mod.modules.get('socket')\n"
+            "    if socket_mod is not None:\n"
+            "        try:\n"
+            "            sock = socket_mod.socket(socket_mod.AF_INET, socket_mod.SOCK_STREAM)\n"
+            "            sock.settimeout(1.0)\n"
+            f"            sock.connect(('127.0.0.1', {port}))\n"
+            "            sock.close()\n"
+            "            connected = True\n"
+            "        except OSError:\n"
+            "            connected = False\n"
+            "    return pl.Series([1.0 if leaked else 0.0, 1.0 if connected else 0.0])\n"
+        )
+
+        harness = textwrap.dedent(f"""
+            import json
+            import sys
+            sys.path[:0] = {sys.path!r}
+            import datetime as dt
+            import pyarrow as pa
+            from contract.window import MarketWindow
+            from orchestrator._hardened_sandbox import HardenedLimits, HardenedSubprocessSandbox
+
+            t = dt.datetime(2024, 1, 1, tzinfo=dt.UTC)
+            window = MarketWindow(
+                t,
+                universe=("AAA", "BBB"),
+                frames={{"bars": pa.table({{"AAA": [1.0], "BBB": [1.0]}})}},
+            )
+            limits = HardenedLimits(cpu_s=10.0, runner_mem_mb=4096, pids=64, wall_s=10.0)
+            sandbox_instance = HardenedSubprocessSandbox(limits=limits)
+            result = sandbox_instance.run({signal_source!r}, window, seed=1)
+            print(json.dumps({{
+                "fail_class": result.fail_class,
+                "detail": result.detail,
+                "scores": result.scores.to_list() if result.scores is not None else None,
+            }}))
+            """)
+        harness_path = tmp_path / "harness.py"
+        harness_path.write_text(harness, encoding="utf-8")
+
+        env = dict(os.environ)
+        env["NULLIUS_TEST_SECRET"] = "do-not-leak"
+        proc = subprocess.run(
+            [sys.executable, str(harness_path)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    finally:
+        listener.close()
+
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert payload["fail_class"] is None, payload["detail"]
+    # [leaked, connected] — neither the planted secret nor the host's own
+    # loopback listener was reachable from inside the sandbox.
+    assert payload["scores"] == [0.0, 0.0]
 
 
 # -- opening a planted host file or a planted lake path: refused (no open) ---
