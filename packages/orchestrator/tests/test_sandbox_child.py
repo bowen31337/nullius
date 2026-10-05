@@ -21,6 +21,10 @@ One test per claim the feature sentence makes:
 * a conforming signal scores, deterministically, across two runs;
 * an import outside the committed ceiling never executes, and the refusal
   names ``disallowed_import``;
+* the same refusal holds when the disallowed import is issued from inside a
+  callback a signal hands to a trusted library, nested one callback deeper,
+  while an allowlisted import inside a callback and a callback that performs
+  no import at all are both unaffected;
 * ``open``/``eval``/``exec`` are gone from the signal's builtins;
 * a signal that raises, defines no entrypoint, or returns the wrong shape is
   classified ``crash``/``violation`` rather than crashing the bootstrap;
@@ -39,6 +43,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import json
+import math
 import struct
 import subprocess
 import sys
@@ -205,6 +210,102 @@ def test_os_environ_is_unreachable_even_with_planted_secrets() -> None:
     result = _decode_result_frame(out)
     assert result["fail_class"] == "crash"
     assert "disallowed_import" in result["detail"]
+
+
+# -- the import guard inside a trusted library's own callback mechanism -----
+#
+# A signal that hands a Python callback to a trusted library (``polars``'s
+# row-wise ``map_elements``, here) runs that callback with the library's own
+# frames still on the stack.  The guard must judge an import issued from
+# *inside* that callback as agent code, not as part of loading the trusted
+# dependency, no matter how many trusted frames sit between the callback and
+# the signal's own call into the library.
+
+
+def test_disallowed_import_inside_a_library_callback_is_refused_with_no_host_effect(
+    tmp_path: Path,
+) -> None:
+    sentinel = tmp_path / "sentinel"
+    source = textwrap.dedent(
+        f"""
+        import polars as pl
+
+        def signal(ctx, seed):
+            def cb(x):
+                import os
+                fd = os.open({str(sentinel)!r}, os.O_WRONLY | os.O_CREAT)
+                os.write(fd, b"pwned")
+                os.close(fd)
+                return x
+            pl.Series(list(ctx.universe)).map_elements(cb, return_dtype=pl.Utf8)
+            return pl.Series([float(len(sym)) for sym in ctx.universe])
+        """
+    )
+    result, _rc, _err = run_signal(source)
+    assert result["fail_class"] == "crash"
+    assert "disallowed_import" in result["detail"]
+    assert "'os'" in result["detail"]
+    assert result["scores"] is None
+    assert not sentinel.exists()
+
+
+def test_disallowed_import_nested_one_callback_deeper_is_refused(tmp_path: Path) -> None:
+    sentinel = tmp_path / "sentinel"
+    source = textwrap.dedent(
+        f"""
+        import polars as pl
+
+        def signal(ctx, seed):
+            def outer(x):
+                def inner(y):
+                    import os
+                    fd = os.open({str(sentinel)!r}, os.O_WRONLY | os.O_CREAT)
+                    os.close(fd)
+                    return y
+                return pl.Series([x]).map_elements(inner, return_dtype=pl.Utf8)[0]
+            pl.Series(list(ctx.universe)).map_elements(outer, return_dtype=pl.Utf8)
+            return pl.Series([float(len(sym)) for sym in ctx.universe])
+        """
+    )
+    result, _rc, _err = run_signal(source)
+    assert result["fail_class"] == "crash"
+    assert "disallowed_import" in result["detail"]
+    assert not sentinel.exists()
+
+
+def test_allowlisted_import_inside_a_callback_is_admitted() -> None:
+    source = textwrap.dedent(
+        """
+        import polars as pl
+
+        def signal(ctx, seed):
+            def cb(x):
+                import math
+                return float(math.sqrt(len(x)))
+            return pl.Series(list(ctx.universe)).map_elements(cb, return_dtype=pl.Float64)
+        """
+    )
+    result, _rc, _err = run_signal(source, universe=("AAA", "BBB"))
+    assert result["fail_class"] is None
+    decoded = json.loads(base64.b64decode(result["scores"]).decode("utf-8"))
+    assert decoded == [math.sqrt(3.0), math.sqrt(3.0)]
+
+
+def test_benign_callback_with_no_import_still_scores_cleanly() -> None:
+    source = textwrap.dedent(
+        """
+        import polars as pl
+
+        def signal(ctx, seed):
+            def cb(x):
+                return float(len(x))
+            return pl.Series(list(ctx.universe)).map_elements(cb, return_dtype=pl.Float64)
+        """
+    )
+    result, _rc, _err = run_signal(source, universe=("AAA", "BBBB"))
+    assert result["fail_class"] is None
+    decoded = json.loads(base64.b64decode(result["scores"]).decode("utf-8"))
+    assert decoded == [3.0, 4.0]
 
 
 @pytest.mark.parametrize("builtin_name", ["open", "exec", "eval", "compile", "input", "breakpoint"])

@@ -234,7 +234,8 @@ def _root(name: str) -> str:
 
 
 def _trusted_root_in_stack(frame: Any, *, limit: int = 128) -> bool:
-    """Whether any frame from ``frame`` upward belongs to a trusted root.
+    """Whether any frame from ``frame`` upward belongs to a trusted root —
+    unless the signal source itself sits somewhere in that chain first.
 
     Walks ``frame.f_back`` rather than stopping at the immediate caller,
     because a trusted package's own import of some helper can itself trigger
@@ -243,9 +244,21 @@ def _trusted_root_in_stack(frame: Any, *, limit: int = 128) -> bool:
     hop (see the module docstring).  ``limit`` bounds a pathological stack
     rather than walking forever; a dependency chain this deep has never been
     observed and the bound is a safety margin, not a tuned constant.
+
+    A frame compiled from :data:`SIGNAL_SOURCE_FILENAME` poisons the walk the
+    moment it is seen: a signal that hands a trusted library a callback —
+    ``df.map_elements(cb)`` and the like — runs that callback with the
+    library's own frames still on the stack, so without this check a trusted
+    root found *above* the callback (nearer the signal's own call into the
+    library) would wrongly vouch for an import the callback performs itself.
+    The signal source frame is always the asker in that shape, no matter which
+    trusted frames sit above or below it, so it must decide the outcome before
+    any later frame gets a chance to.
     """
     depth = 0
     while frame is not None and depth < limit:
+        if frame.f_code.co_filename == SIGNAL_SOURCE_FILENAME:
+            return False
         name = frame.f_globals.get("__name__", "")
         if isinstance(name, str) and _root(name) in _TRUSTED_IMPORT_ROOTS:
             return True
