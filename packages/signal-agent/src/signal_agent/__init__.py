@@ -301,6 +301,30 @@ two have different repairs — and, like them, deliberately not an
 :class:`AgentSourceError`), with 214's and 207's classes raised unchanged
 wherever they name the same fact and the same repair.
 
+**The Authoring Foundation's seat is the member's tenth, and the first that
+holds a model rather than judging one.**  additions_spec_llm_authoring.xml,
+"Signal Agent Author": *System creates a "signal-author" component,
+registered with ``@register`` in ``signal_agent/__init__.py``* — the
+composition seam for feature 7's :class:`~signal_agent.LLMSignalAuthor`,
+the callable a campaign driver hands to ``discovery.NodeExpansion`` in
+place of the stub agent.  Its builder wires that callable to this member's
+own laws (the contract, the anti-convergence gate, the guidance gate and
+the proposal-history store — the same builders the registry calls under
+their own names) and to a ``providers.AuthoringSession`` over the
+``live-providers`` resolver, and it answers ``None`` when
+``providers.load_authoring_config()`` does: a deployment that authors
+nothing (a CI run, an offline replay against recorded fixtures) is a real
+state, and its composition must succeed.  The builder reads
+``NULLIUS_AUTHORING_CONFIG`` and nothing else — no model call, no
+credential, because the session resolves a pin only inside
+``provider_for`` and the resolver reads a key only inside ``resolve()``.
+``signal-author`` sorts after every ``signal-agent-*`` name, so the nine
+laws stay contiguous and the author sits immediately after the category it
+serves.  What the paragraph below says of the member is unchanged by this:
+the member still ships no prompt and no client of its own — the author is
+a *wiring*, and the models, the pins and the budgets are the providers
+member's config, stated by a deployment and never baked here.
+
 **What this member is, and what it deliberately is not.**  §14.1 gives the
 signal agent its seat — *"Signal agent, roots (depth 0-1) ... Signal agent,
 depth >= 2"* — and PRD §C3 describes it as *"a coding agent writing signal
@@ -380,6 +404,11 @@ from ._anti_convergence import (
     proposal_skeleton,
     skeleton_digest,
 )
+from ._authored import (
+    AuthoredOutputError,
+    ParsedProposal,
+    parse_authored,
+)
 from ._authoring import (
     CONFORMS_CODE,
     AdoptionReason,
@@ -389,6 +418,7 @@ from ._authoring import (
     signal_contract,
     source_code_hash,
 )
+from ._authoring_prompt import build_authoring_prompt
 from ._dead_territory import (
     COMMITTED_DEAD_TERRITORY,
     DEAD_TERRITORY_CODE,
@@ -464,6 +494,11 @@ from ._history import (
     PriorProposal,
     ProposalHistory,
     proposal_history,
+)
+from ._llm_author import (
+    AuthoredSignal,
+    AuthoringRefusedError,
+    LLMSignalAuthor,
 )
 from ._mechanism import (
     CANONICAL_MECHANISM_MAX_WORDS,
@@ -596,6 +631,7 @@ __all__ = [
     "SAMPLED_HISTORY_CODE",
     "SCORE_COLUMNS",
     "SCORE_RECORD_NAME",
+    "SIGNAL_AUTHOR_COMPONENT_NAME",
     "SIGNAL_SOURCE_FILENAME",
     "STATED_MECHANISM_CODE",
     "STATED_MECHANISM_COMPONENT_NAME",
@@ -610,6 +646,9 @@ __all__ = [
     "AntiConvergenceGate",
     "AntiConvergenceReason",
     "AntiConvergenceVerdict",
+    "AuthoredOutputError",
+    "AuthoredSignal",
+    "AuthoringRefusedError",
     "CANDIDATE_TABLE",
     "CandidateModelError",
     "DeadTerritory",
@@ -629,6 +668,7 @@ __all__ = [
     "HistoryVerdict",
     "IllegalThemeError",
     "InjectedGuidanceError",
+    "LLMSignalAuthor",
     "LegalThemes",
     "LocatedDefect",
     "MechanismColumnError",
@@ -644,6 +684,7 @@ __all__ = [
     "MechanismStore",
     "MechanismStoreUnavailableError",
     "ModelDiscrimination",
+    "ParsedProposal",
     "PriorProposal",
     "PromptGuidanceGate",
     "ProposalConflictError",
@@ -667,6 +708,7 @@ __all__ = [
     "TruncatedHistoryError",
     "anti_convergence_gate",
     "build_anti_convergence",
+    "build_authoring_prompt",
     "build_dead_territory_gate",
     "build_mechanism_diagnosis",
     "build_proposal_history",
@@ -693,6 +735,7 @@ __all__ = [
     "mechanism_digest",
     "mechanism_discrimination",
     "mechanism_discrimination_by_model",
+    "parse_authored",
     "prompt_guidance_gate",
     "proposal_history",
     "proposal_history_store",
@@ -1254,3 +1297,125 @@ def build_proposal_history_store() -> ProposalHistoryStore:
     proposal enters the history.
     """
     return proposal_history_store()
+
+
+#: The component name the Authoring Foundation's author registers under, and
+#: the tenth component this member contributes.  Defined here rather than
+#: imported from :mod:`signal_agent._llm_author`, unlike the nine names
+#: above: those submodules own their own laws and spell their seats beside
+#: them, while feature 7's module owns the author and this feature owns
+#: only its *seat* — the same split :data:`COMPONENT_NAME` makes for feature
+#: 205 — so the submodule carries no spelling of it and a second literal
+#: there would be the drift the single spelling exists to prevent.
+#:
+#: Prefixed, for the same reason the nine before it are — an unprefixed
+#: ``signal-agent`` a tenth time would *replace* feature 205's law rather
+#: than sit beside it, which is the registry-replacement hazard
+#: :data:`sandbox.imports.IMPORTS_COMPONENT_NAME` names for its own member.
+#: ``signal-author`` sorts after every ``signal-agent-*`` name in the
+#: name-sorted ``app.order``, so the member's nine laws stay contiguous and
+#: the author sits immediately after the category it serves.
+SIGNAL_AUTHOR_COMPONENT_NAME = "signal-author"
+
+
+@register(SIGNAL_AUTHOR_COMPONENT_NAME)
+def build_signal_author() -> LLMSignalAuthor | None:
+    """Contribute the Authoring Foundation's author to the composed application.
+
+    The tenth component this member contributes, and the first of its
+    builders that holds a model path rather than judging one: the value is
+    feature 7's :class:`~signal_agent.LLMSignalAuthor` — the callable a
+    campaign driver hands to ``discovery.NodeExpansion`` in place of the
+    stub agent — wired to this member's own laws and to a
+    ``providers.AuthoringSession`` over the ``live-providers`` resolver.
+    Like the nine builders above it takes no arguments (the factory's
+    registration protocol); unlike them it answers ``None``, and the
+    ``None`` is the feature's other half.
+
+    **It reads ``NULLIUS_AUTHORING_CONFIG``, and nothing else.**
+    :func:`providers.load_authoring_config` is the one door — called with
+    no mapping, so it reads the environment of the moment the builder fires
+    — and unset answers ``None`` on the discoverable-state grounds every
+    store in this workspace states for its own: a deployment that authors
+    nothing (a CI run, an offline replay against recorded fixtures) is a
+    real state, and a builder that raised would take composition down for
+    exactly the runs that must never touch a model.  The caller that
+    *must* author is the caller that must not find itself in the ``None``,
+    and that refusal is the driver's to make at call time, not this
+    builder's at composition.
+
+    **A named file that is wrong raises, and the raising is the door's.**
+    :class:`providers.AuthoringConfigError` propagates through composition
+    rather than being caught here, and the difference from the
+    drifted-artifact builders above is the whole of the decision: those
+    artifacts ship inside this package — the operator named nothing — so
+    their builders compose a degraded gate rather than take the workspace
+    down, while this file the operator *explicitly named*, and a deployment
+    that named a config it cannot parse has stated an authoring it does not
+    have.  Composing ``None`` instead would be the quieter failure the
+    door's own docstring refuses — the campaign would run with no model
+    behind it, the spend without the search — and re-wrapping the error
+    would put a vaguer sentence in front of the one that names the key.
+
+    **No model call, no credential — composition stays off the wire.**  The
+    session resolves a pin only inside ``provider_for``, and the resolver
+    reads a key only inside ``resolve()``, so building this component
+    places no call and reads no API key: an application composed on a box
+    with no keys at all carries the author exactly as a production
+    deployment does, and the first credential question is asked at the
+    first call, where :class:`providers.ProviderNotConfiguredError` names
+    the variable an operator acts on.  ``max_retries`` is left at its
+    default — one, §14.1's stance that a model shown its defect once either
+    answers or does not — because the deployment states its budgets in the
+    config file and this builder adds no knob of its own.
+
+    **Wired to this member's own components, by calling their builders.**
+    The contract, the anti-convergence gate, the guidance gate and the
+    proposal-history store come from :func:`build_signal_contract`,
+    :func:`build_anti_convergence`, :func:`build_prompt_guidance` and
+    :func:`build_proposal_history_store` — the same functions the registry
+    calls under those names — so the author holds the same values the
+    composed application carries, degraded fallbacks included: a drifted
+    anti-convergence artifact composes the fail-closed gate here exactly as
+    it does under ``signal-agent-anti-convergence``, rather than raising
+    out of composition through the convenience's compiler.  The history
+    store resolves ``DATABASE_URL`` as its own builder does and opens
+    nothing at composition, so a deployment that names no database gets
+    the store-carrying law whose persist verbs refuse by name at call
+    time — a fact for the driver, not for composition.
+
+    **The resolver is built here, and it is the ``live-providers`` law all
+    the same.**  The factory's protocol hands a builder no reference to the
+    application under construction, so the composed ``live-providers``
+    component cannot be asked for; the resolver is stateless — one method
+    and no state, its own docstring — so the instance built here answers
+    identically to the one the registry composes under that name, and the
+    author holds its bound ``resolve``.  Nothing is lost by a second
+    instance because there is no state to share.
+
+    **``providers`` is imported in the body, not at module scope** — the
+    scan-order discipline this member states: the factory's scan imports
+    this package with one member's ``src/`` on ``sys.path`` at a time, so a
+    module-scope import of a sibling member would make this file
+    unimportable before its dependency is on the path.  ``providers`` is a
+    declared dependency of this member (the addition's feature 1), and the
+    builder runs after the scan, when the workspace is importable again.
+    """
+    import providers
+
+    config = providers.load_authoring_config()
+    if config is None:
+        return None
+
+    # Stateless by its own docstring, so this instance is the same law the
+    # registry composes under "live-providers"; the session holds its bound
+    # resolve and calls it lazily, inside provider_for.
+    resolver = providers.LiveProviderResolver()
+    return LLMSignalAuthor(
+        providers.AuthoringSession(config, resolver.resolve),
+        history_store=build_proposal_history_store(),
+        contract=build_signal_contract(),
+        anti_convergence=build_anti_convergence(),
+        guidance=build_prompt_guidance(),
+        config=config,
+    )

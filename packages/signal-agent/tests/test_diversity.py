@@ -884,13 +884,25 @@ def test_the_feature_registers_no_component_and_no_seat() -> None:
         for name, value in vars(member).items()
         if name.endswith("_COMPONENT_NAME") and isinstance(value, str)
     }
-    assert len(declared) == 8, (
-        f"the member declares {len(declared)} prefixed component names; feature "
-        f"215 adds a ninth only if the suite is edited to say so: "
+    assert len(declared) == 9, (
+        f"the member declares {len(declared)} prefixed component names; the "
+        f"Authoring Foundation's author (additions_spec_llm_authoring.xml, "
+        f"feature 8) added the ninth under 'signal-author' — a name the "
+        f"prefix filter above does not count, deliberately, because it is a "
+        f"new category's seat rather than a tenth law in this one — and a "
+        f"tenth arrives only if this suite is edited to say so: "
         f"{sorted(declared)}"
     )
-    # ``signal-agent`` itself is the member's own law and the nine prefixed
-    # names are the nine features that compose on top of it, so the composed
-    # application's surface is exactly those.  A tenth name from feature 215
-    # would appear in ``registered`` and in neither term of this equality.
-    assert registered == sorted(declared | {member.COMPONENT_NAME})
+    # ``signal-agent`` itself is the member's own law and the prefixed names
+    # that share its prefix are the features that compose on top of it, so
+    # the composed application's surface is exactly those.  Both terms use
+    # the prefix filter, because the Authoring Foundation's ``signal-author``
+    # is a declared name of a *new category's* seat rather than a law in this
+    # one — it belongs to the count above and to neither side of this
+    # equality.  A tenth law from a later feature would appear in
+    # ``registered`` and in neither term of this equality.
+    assert registered == sorted(
+        name
+        for name in declared | {member.COMPONENT_NAME}
+        if name.split("-", 2)[:2] == ["signal", "agent"]
+    )
