@@ -1,0 +1,38 @@
+<bug_spec>
+  <!-- Found + fix validated 2026-10-06 against the real runsc on this host.
+       Rootless runsc cannot boot a sandbox when the bundle carries ANY bind
+       mount (the child bootstrap): sandbox creation fails with "cannot read
+       client sync file: EOF". Baking the child into the runtime root and
+       running it no-bind boots cleanly and returns a result envelope. The
+       fake-runsc unit tests cannot see this. Core shape, explicit
+       touches_files: plan-bugs ignores <layout>. -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/orchestrator/src/orchestrator/_oci_bundle.py,packages/orchestrator/src/orchestrator/_gvisor.py,deploy/gvisor/provision_runtime.sh,packages/orchestrator/tests/test_oci_bundle.py,packages/orchestrator/tests/test_gvisor.py">
+    <title>GVisorSandbox cannot boot any container, because the bundle binds the child bootstrap and rootless runsc fails sandbox creation on any bind mount</title>
+    <symptoms>
+      The OCI bundle binds the child bootstrap into the container (orchestrator._oci_bundle binds child_path; GVisorSandbox passes the host path orchestrator._hardened_sandbox._CHILD_PATH). Under the real runsc in rootless mode — the mode GVisorSandbox launches (`runsc --rootless --network=none run`) — any bind mount makes sandbox creation fail: `runsc run` exits 128 with "cannot create sandbox: cannot read client sync file: waiting for sandbox to start: EOF", and the debug log shows "Error reading mounts file: error unmarshaling mounts: unexpected end of JSON input". GVisorSandbox.run then reports "the child exited (code 128) without writing a result envelope" for every signal.
+      Proven on this host: a bundle whose only mounts are the source-less /proc, /dev, /sys and tmpfs /tmp boots and runs the interpreter (rc 0); adding one bind mount — the child as a file, or its parent directory — fails with the error above. So the gVisor executor never runs a single signal.
+      The unit tests pass because they drive a fake runsc and never boot a sandbox.
+    </symptoms>
+    <reproduction_steps>
+      Build a bundle with build_bundle (which binds the child) over the provisioned runtime root and run it under the real runsc in rootless mode: it exits 128 at sandbox creation. Remove the bind and run the child from inside the root instead: it exits 0 and writes its result envelope.
+    </reproduction_steps>
+    <expected>
+      - The bundle carries no bind mount. Its mounts are exactly the source-less virtual filesystems /proc, /dev (tmpfs), /sys (sysfs) and a 64 MiB tmpfs /tmp. The child bootstrap is not bound in.
+      - build_bundle's child_path names a path inside the runtime root (for example /sandbox_child.py), and the process args are /usr/bin/python3 -I that-path. build_bundle no longer takes or binds a host child path.
+      - deploy/gvisor/provision_runtime.sh copies packages/orchestrator/src/orchestrator/_sandbox_child.py into the runtime root at that same fixed path during provisioning, beside the contract and app packages it already installs, and records it in the manifest. Re-running the script refreshes it.
+      - GVisorSandbox builds the bundle with the in-root child path, and at construction verifies the runtime root contains the child bootstrap, raising GVisorUnavailableError (code word isolation_required) naming the missing file when it does not. It no longer references _hardened_sandbox._CHILD_PATH for the bundle.
+      - validate_mounts accepts exactly /proc, /dev, /sys and /tmp and refuses any bind or any fifth mount.
+      - A test marked to run only when runsc is on PATH and NULLIUS_GVISOR_RUNTIME_ROOT is set boots a real container from a generated bundle whose root has the baked-in child, and asserts the child returns a result envelope; it skips with a reason otherwise. The fake-runsc tests assert the new mount set and the in-root child path.
+      - The read-only root, empty network namespace, user 65534, cgroup limits and JSON determinism are unchanged.
+    </expected>
+    <actual>Root cause: packages/orchestrator/src/orchestrator/_oci_bundle.py adds a bind mount for the child, and packages/orchestrator/src/orchestrator/_gvisor.py supplies the host child path to bind. Rootless runsc's gofer cannot set up a bind mount in this configuration and the sandbox dies before starting. additions_spec_gvisor_executor.xml feature 4 said "child_path bound read-only", which does not work under the rootless runsc feature 5 launches.</actual>
+    <constraints>
+      The child reaches the container only by being part of the read-only runtime root, never by a bind mount; no host path is mounted in
+      No test opens a network connection or reads a real credential; the real-runsc test skips when runsc is absent
+      No file outside the five listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
