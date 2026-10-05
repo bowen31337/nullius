@@ -13,6 +13,12 @@
 # the OCI bundle mounts it read-only. A manifest of versions and a tree
 # digest is written beside it as ROOT.manifest.json.
 #
+# bug_spec_gvisor_bind_boot.xml: rootless runsc cannot boot a sandbox whose
+# bundle carries a bind mount, so the child bootstrap (orchestrator's
+# _sandbox_child.py) is baked into the root at /sandbox_child.py — the same
+# path orchestrator._oci_bundle.CHILD_BOOTSTRAP_PATH names — instead of
+# being bind-mounted in at run time. Re-running this script refreshes it.
+#
 # Needs: sudo, debootstrap, uv, network access to the Ubuntu mirror and PyPI.
 set -euo pipefail
 
@@ -46,6 +52,16 @@ find "$STAGE/site" -name __pycache__ -prune -exec rm -rf {} +
 sudo mkdir -p "$ROOT.new/$SITE"
 sudo cp -a "$STAGE/site/." "$ROOT.new/$SITE/"
 
+# bug_spec_gvisor_bind_boot.xml: baked in, not bind-mounted — rootless runsc
+# cannot boot a sandbox whose bundle carries any bind mount. This is the same
+# path orchestrator._oci_bundle.CHILD_BOOTSTRAP_PATH names.
+CHILD_RELPATH=sandbox_child.py
+echo "→ bake the child bootstrap into the root at /$CHILD_RELPATH"
+sudo cp -a "$REPO/packages/orchestrator/src/orchestrator/_sandbox_child.py" "$ROOT.new/$CHILD_RELPATH"
+sudo chown root:root "$ROOT.new/$CHILD_RELPATH"
+sudo chmod 0444 "$ROOT.new/$CHILD_RELPATH"
+CHILD_DIGEST="$(sudo sha256sum "$ROOT.new/$CHILD_RELPATH" | cut -d' ' -f1)"
+
 echo "→ trim caches, docs and locales"
 sudo rm -rf "$ROOT.new"/var/cache/apt/* "$ROOT.new"/var/lib/apt/lists/* \
   "$ROOT.new"/usr/share/doc/* "$ROOT.new"/usr/share/man/* "$ROOT.new"/usr/share/locale/*
@@ -61,6 +77,7 @@ COMMIT="$(git -c safe.directory="$REPO" -C "$REPO" rev-parse HEAD)"
 sudo tee "$ROOT.new.manifest.json" >/dev/null <<EOF
 {"root": "$ROOT", "suite": "$SUITE", "python": "$PY", "polars": "$POLARS",
  "pyarrow": "$PYARROW", "contract_from_commit": "$COMMIT", "tree_sha256": "$DIGEST",
+ "child_bootstrap_path": "/$CHILD_RELPATH", "child_bootstrap_sha256": "$CHILD_DIGEST",
  "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
 

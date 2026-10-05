@@ -9,13 +9,22 @@ this suite writes and ``chmod +x``'s — never a real, provisioned gVisor
 runtime. The fake script does two things real ``runsc`` would: it records
 every invocation (argv and environment) under the ``--root`` state directory
 it was given, so this suite can assert on them afterward, and for ``run`` it
-reads the bundle's own ``config.json`` and execs the named bootstrap
+reads the bundle's own ``config.json``, maps the child bootstrap's in-root
+path onto the bundle's own ``root.path`` (the same mapping a real mount
+namespace performs for an absolute path inside a container), and execs it
 directly — "a script that runs the bootstrap directly", exactly as the
 feature's own test note asks for — rather than actually sandboxing anything.
 That is enough to exercise :class:`GVisorSandbox`'s whole contract: the exact
 argv it launches, the bundle feature 4 built for it, the cleanup it always
 performs, and that no variable from this test process's own environment
 reaches the spawned command.
+
+bug_spec_gvisor_bind_boot.xml: rootless ``runsc`` cannot boot a sandbox whose
+bundle carries a bind mount at all, so the fixture runtime root this suite
+builds (:func:`_provision_runtime_root`) carries a real, baked-in copy of
+``orchestrator._sandbox_child`` at :data:`CHILD_BOOTSTRAP_PATH` — the same
+thing ``deploy/gvisor/provision_runtime.sh`` does for a real runtime — rather
+than relying on a bind mount this module no longer produces.
 """
 
 from __future__ import annotations
@@ -32,10 +41,29 @@ import pytest
 from contract.window import MarketWindow
 from evaluator import EvaluatorSandboxError, SandboxResult
 from orchestrator import _gvisor as gv
+from orchestrator import _sandbox_child as _real_child
 from orchestrator._hardened_sandbox import HardenedLimits
-from orchestrator._oci_bundle import BundleError
+from orchestrator._oci_bundle import CHILD_BOOTSTRAP_PATH, BundleError
 
 _UNIVERSE = ("AAA", "BBB")
+
+# -- a provisioned runtime root, the way deploy/gvisor/provision_runtime.sh
+# -- bakes one in for real -----------------------------------------------------
+
+
+def _provision_runtime_root(root: Path) -> Path:
+    """Create ``root`` and bake a real copy of the child bootstrap into it.
+
+    Mirrors what ``deploy/gvisor/provision_runtime.sh`` does to a real
+    runtime root: the child bootstrap lands at :data:`CHILD_BOOTSTRAP_PATH`
+    (relative to ``root``), never bind-mounted in at run time.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    dest = root / CHILD_BOOTSTRAP_PATH.lstrip("/")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(Path(_real_child.__file__).read_bytes())
+    return root
+
 
 # -- the fake runsc executables ------------------------------------------------
 #
@@ -45,20 +73,21 @@ _UNIVERSE = ("AAA", "BBB")
 # spawned without needing a real container to still exist afterward.
 #
 # The "proxy" script is the main double: for ``run`` it reads the bundle's
-# ``config.json``, finds the bootstrap path feature 4 wrote into
-# ``process.args``, and execs it directly with the *real* interpreter this
-# test suite itself runs under (not ``sys.executable`` as the fake script's
-# own process would see it — that process is spawned with GVisorSandbox's
-# own stripped ``env={"PATH": "/usr/bin:/bin"}``, which would resolve a bare
-# ``python3`` to the host's system interpreter, not this workspace's venv —
-# so the real interpreter's path is baked into the script's source text at
-# write time instead, a fact about the test double, not about the env the
-# launcher itself spawns with). It records the bootstrap's pid so a later
-# ``kill`` invocation of the same script (a separate process) can actually
-# signal it — real ``runsc kill`` reaches into gVisor's own process
-# namespace; this stand-in has to reach across two of its own host
-# processes instead, which is the one thing it does that real runsc would
-# not need to.
+# ``config.json``, finds the bootstrap's in-root path feature 4 wrote into
+# ``process.args``, resolves it against the bundle's own ``root.path`` (the
+# same mapping a real mount namespace would perform for that absolute path),
+# and execs it directly with the *real* interpreter this test suite itself
+# runs under (not ``sys.executable`` as the fake script's own process would
+# see it — that process is spawned with GVisorSandbox's own stripped
+# ``env={"PATH": "/usr/bin:/bin"}``, which would resolve a bare ``python3`` to
+# the host's system interpreter, not this workspace's venv — so the real
+# interpreter's path is baked into the script's source text at write time
+# instead, a fact about the test double, not about the env the launcher
+# itself spawns with). It records the bootstrap's pid so a later ``kill``
+# invocation of the same script (a separate process) can actually signal it —
+# real ``runsc kill`` reaches into gVisor's own process namespace; this
+# stand-in has to reach across two of its own host processes instead, which
+# is the one thing it does that real runsc would not need to.
 _PROXY_RUNSC_SOURCE = '''#!/usr/bin/env python3
 import json, os, signal, subprocess, sys
 from pathlib import Path
@@ -89,7 +118,9 @@ def main() -> int:
     if "run" in argv:
         container_id = argv[-1]
         config = entry["bundle_config"]
-        child_path = config["process"]["args"][-1]
+        root_path = config["root"]["path"]
+        child_in_root = config["process"]["args"][-1].lstrip("/")
+        child_path = str(Path(root_path) / child_in_root)
         proc = subprocess.Popen(
             [REAL_PYTHON, "-I", child_path],
             stdin=sys.stdin.fileno(),
@@ -191,9 +222,11 @@ def _fast_limits(**overrides: object) -> HardenedLimits:
 
 
 def _sandbox(tmp_path: Path, runsc: Path, **overrides: object) -> gv.GVisorSandbox:
+    runtime_root = Path(overrides.pop("runtime_root", tmp_path / "runtime-root"))
+    _provision_runtime_root(runtime_root)
     kwargs: dict[str, object] = {
         "runsc": str(runsc),
-        "runtime_root": tmp_path / "runtime-root",
+        "runtime_root": runtime_root,
         "state_root": tmp_path / "state",
         "limits": _fast_limits(),
         "lake_roots": (),
@@ -245,12 +278,37 @@ def test_a_directory_at_the_runsc_path_is_not_executable(tmp_path: Path) -> None
         )
 
 
+# -- construction: a runtime root missing the baked-in child is refused ------
+
+
+def test_missing_child_bootstrap_raises_gvisor_unavailable(tmp_path: Path, fake_runsc: Path) -> None:
+    runtime_root = tmp_path / "runtime-root"
+    runtime_root.mkdir()  # provisioned enough to exist, but no child bootstrap baked in
+    with pytest.raises(gv.GVisorUnavailableError, match=gv.GVISOR_UNAVAILABLE_CODE) as excinfo:
+        gv.GVisorSandbox(
+            runsc=str(fake_runsc),
+            runtime_root=runtime_root,
+            state_root=tmp_path / "state",
+        )
+    assert CHILD_BOOTSTRAP_PATH in str(excinfo.value)
+
+
+def test_an_unprovisioned_runtime_root_is_refused_the_same_way(tmp_path: Path, fake_runsc: Path) -> None:
+    with pytest.raises(gv.GVisorUnavailableError, match=gv.GVISOR_UNAVAILABLE_CODE):
+        gv.GVisorSandbox(
+            runsc=str(fake_runsc),
+            runtime_root=tmp_path / "does" / "not" / "exist",
+            state_root=tmp_path / "state",
+        )
+
+
 def test_runsc_as_a_path_object_not_just_a_string(tmp_path: Path, fake_runsc: Path) -> None:
     # PathLike means a Path works too, not just str — for every one of the
     # three path-shaped constructor keywords.
+    runtime_root = _provision_runtime_root(tmp_path / "runtime-root")
     sandbox_instance = gv.GVisorSandbox(
         runsc=fake_runsc,
-        runtime_root=tmp_path / "runtime-root",
+        runtime_root=runtime_root,
         state_root=tmp_path / "state",
     )
     result = sandbox_instance.run(_BENIGN, _window(), seed=1)
@@ -267,9 +325,10 @@ def test_default_limits_come_from_the_sandbox_member_policies(tmp_path: Path, fa
     import sandbox
     from orchestrator._hardened_sandbox import _default_limits
 
+    runtime_root = _provision_runtime_root(tmp_path / "runtime-root")
     sandbox_instance = gv.GVisorSandbox(
         runsc=str(fake_runsc),
-        runtime_root=tmp_path / "runtime-root",
+        runtime_root=runtime_root,
         state_root=tmp_path / "state",
     )
     assert sandbox_instance.limits == _default_limits()
@@ -374,12 +433,10 @@ def test_no_environment_variable_from_the_parent_leaks(
         assert "do-not-leak" not in json.dumps(env)
 
 
-# -- the bundle contents match feature 4's own contract ------------------------
+# -- the bundle contents match feature 4's own contract (post-fix shape) ------
 
 
 def test_bundle_contents_match_feature_4(tmp_path: Path, fake_runsc: Path) -> None:
-    from orchestrator._hardened_sandbox import _CHILD_PATH
-
     state_root = tmp_path / "state"
     runtime_root = tmp_path / "runtime-root"
     limits = _fast_limits(runner_mem_mb=2048, pids=16)
@@ -391,7 +448,7 @@ def test_bundle_contents_match_feature_4(tmp_path: Path, fake_runsc: Path) -> No
     run_calls = [c for c in _calls(state_root) if "run" in c["argv"]]
     config = run_calls[0]["bundle_config"]
 
-    assert config["process"]["args"] == ["/usr/bin/python3", "-I", str(_CHILD_PATH.resolve())]
+    assert config["process"]["args"] == ["/usr/bin/python3", "-I", CHILD_BOOTSTRAP_PATH]
     assert config["process"]["env"] == [
         "PATH=/usr/bin:/bin",
         "OMP_NUM_THREADS=1",
@@ -402,8 +459,12 @@ def test_bundle_contents_match_feature_4(tmp_path: Path, fake_runsc: Path) -> No
     assert all(not var.startswith("NULLIUS_SIGNAL_SEED") for var in config["process"]["env"])
     assert config["root"] == {"path": str(runtime_root.resolve()), "readonly": True}
 
+    # The regression this bug fixes: no mount carries the child bootstrap (or
+    # anything else) as a bind — rootless runsc cannot boot a sandbox whose
+    # bundle carries one at all (bug_spec_gvisor_bind_boot.xml).
     destinations = {m["destination"] for m in config["mounts"]}
-    assert destinations == {"/proc", "/tmp", str(_CHILD_PATH.resolve())}
+    assert destinations == {"/proc", "/dev", "/sys", "/tmp"}
+    assert all(m["type"] != "bind" for m in config["mounts"])
 
     assert config["linux"]["resources"]["memory"]["limit"] == 2048 * 1024 * 1024
     assert config["linux"]["resources"]["pids"]["limit"] == 16

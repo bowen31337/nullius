@@ -66,6 +66,7 @@ from orchestrator._context import (
 from orchestrator._evaluate import SandboxExecutionError, evaluate_node
 from orchestrator._gvisor import GVisorSandbox
 from orchestrator._hardened_sandbox import HardenedSubprocessSandbox
+from orchestrator._oci_bundle import CHILD_BOOTSTRAP_PATH
 from snapshot import SnapshotService
 
 #: The marker for "this key is absent" — test_context.py's own idiom, local
@@ -210,6 +211,14 @@ def test_signal_sandbox_answers_gvisor_sandbox_for_gvisor(
     runtime_root = tmp_path / "runtime-root"
     state_root = tmp_path / "state-root"
     lake_root = tmp_path / "lake"
+
+    # bug_spec_gvisor_bind_boot.xml: GVisorSandbox now verifies at
+    # construction that the runtime root already carries the child
+    # bootstrap baked in (never bind-mounted) — a stub file is enough here,
+    # since this test never actually runs a signal through it.
+    child_path = runtime_root / CHILD_BOOTSTRAP_PATH.lstrip("/")
+    child_path.parent.mkdir(parents=True, exist_ok=True)
+    child_path.write_text("", encoding="utf-8")
 
     context = _bare_context(
         sandbox_runtime="gvisor",

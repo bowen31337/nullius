@@ -8,16 +8,23 @@ path.*  docs/nullius-tech-architecture.md §5.2's isolation row is "gVisor
 (runsc)"; this module is the config.json a `runsc run --bundle` call
 reads, built fresh for one run and torn down after it (feature 5's job).
 
-The bundle this module writes is deliberately small: one process
-(feature 2's hardened child bootstrap, invoked the same way), one
-read-only root (the provisioned runtime, never the host filesystem a
-signal might read from), five mounts and nothing else — ``/proc``, the
-source-less ``/dev`` and ``/sys`` gVisor needs to boot its sandbox at
-all, a tmpfs ``/tmp``, and the child bind. There is no caller-supplied
-mount list and no caller-supplied process — every field is derived from
-``runtime_root``, ``child_path`` and ``limits``, so the one thing left
-to police is whether those three arguments themselves name a path under
-the data lake, which is :func:`build_bundle`'s own refusal.
+bug_spec_gvisor_bind_boot.xml: rootless ``runsc``'s gofer cannot set up a
+bind mount at all (sandbox creation fails before the child ever runs), so
+this module mounts nothing from the host beyond the read-only runtime
+root itself. The bundle this module writes is deliberately small: one
+process (feature 2's hardened child bootstrap, invoked the same way),
+one read-only root (the provisioned runtime, never the host filesystem a
+signal might read from), and four mounts and nothing else — ``/proc``,
+the source-less ``/dev`` and ``/sys`` gVisor needs to boot its sandbox at
+all, and a tmpfs ``/tmp``. The child bootstrap reaches the container only
+by already being baked into the runtime root at provisioning time
+(``deploy/gvisor/provision_runtime.sh``); :func:`build_bundle` only
+points ``process.args`` at :data:`CHILD_BOOTSTRAP_PATH`, the fixed path
+inside that root — it never binds a host path in. There is no
+caller-supplied mount list and no caller-supplied process — every field
+is derived from ``runtime_root``, ``child_path`` and ``limits``, so the
+one thing left to police is whether ``runtime_root`` itself names a path
+under the data lake, which is :func:`build_bundle`'s own refusal.
 
 The JSON is deterministic for equal inputs: nothing here reads a clock,
 a random source or an environment variable, so two bundles built from
@@ -37,6 +44,7 @@ from typing import Any, Final, Union
 
 __all__ = [
     "BUNDLE_ERROR_CODE",
+    "CHILD_BOOTSTRAP_PATH",
     "CONFIG_FILENAME",
     "FEATURE_2_ENV",
     "NAMESPACES",
@@ -54,6 +62,14 @@ BUNDLE_ERROR_CODE: Final[str] = "oci_bundle"
 #: The file a bundle directory holds — the OCI spec's own name, and the
 #: file ``runsc run --bundle DIR`` reads.
 CONFIG_FILENAME: Final[str] = "config.json"
+
+#: The fixed path the child bootstrap lives at *inside* the runtime root —
+#: never a host path, never bind-mounted. ``deploy/gvisor/provision_runtime.sh``
+#: copies ``_sandbox_child.py`` to this same path (relative to the runtime
+#: root) at provisioning time; :class:`~orchestrator._gvisor.GVisorSandbox`
+#: checks for it at construction and passes it, unchanged, as
+#: :func:`build_bundle`'s ``child_path``.
+CHILD_BOOTSTRAP_PATH: Final[str] = "/sandbox_child.py"
 
 _OCI_VERSION: Final[str] = "1.0.2"
 _UID: Final[int] = 65534
@@ -108,14 +124,15 @@ PathLike = Union[str, "os.PathLike[str]"]
 class BundleError(Exception):
     """A bundle configuration this module refuses to write.
 
-    Raised, with :data:`BUNDLE_ERROR_CODE`, for exactly two shapes of
-    drift the feature names: a root or a mount source that lies under one
-    of ``lake_roots`` (the data lake reaches a signal only as the IPC
-    window, never a bind mount), and a mount set that is not precisely
-    the five the feature lists. Also raised for a ``limits`` object that
-    cannot be read as the two counts this bundle needs — a configuration
-    this module cannot write is refused rather than written with a
-    guessed number.
+    Raised, with :data:`BUNDLE_ERROR_CODE`, for a ``runtime_root`` that
+    lies under one of ``lake_roots`` (the data lake reaches a signal only
+    as the IPC window, never a mount), a ``child_path`` that is not an
+    absolute path inside the runtime root, and a mount set that is not
+    precisely the four the feature lists — including any mount of type
+    ``bind``, which rootless ``runsc`` cannot boot at all (see the module
+    docstring). Also raised for a ``limits`` object that cannot be read
+    as the two counts this bundle needs — a configuration this module
+    cannot write is refused rather than written with a guessed number.
     """
 
 
@@ -143,6 +160,27 @@ def _as_path(value: PathLike, *, what: str) -> Path:
         raise BundleError(
             f"{BUNDLE_ERROR_CODE}: {what} must be a path, got {value!r}"
         ) from exc
+
+
+def _child_bootstrap_path(value: PathLike) -> str:
+    """The child bootstrap's path *inside* the runtime root.
+
+    Never resolved against the host filesystem (there is nothing to
+    resolve: the file this names lives only inside the container's own
+    root, baked in at provisioning time) — just read as text and checked
+    for the one shape a container-internal path must have.
+    """
+    text = os.fspath(value)
+    if isinstance(text, bytes):
+        text = text.decode("utf-8")
+    if not text.startswith("/"):
+        raise BundleError(
+            f"{BUNDLE_ERROR_CODE}: child_path must be an absolute path "
+            f"inside the runtime root (for example {CHILD_BOOTSTRAP_PATH!r}), "
+            f"got {value!r} — the child bootstrap is baked into the runtime "
+            "root at provisioning time, never bind-mounted from the host"
+        )
+    return text
 
 
 def _lake_violation(path: Path, lake_roots: Sequence[Path]) -> Path | None:
@@ -188,13 +226,15 @@ def _limit(limits: Any, name: str) -> int:
     return _read_count(value, what=f"limits.{name}")
 
 
-def _mounts(child_path: Path) -> list[dict[str, Any]]:
-    """The exactly-five mounts every bundle carries, in document order.
+def _mounts() -> list[dict[str, Any]]:
+    """The exactly-four mounts every bundle carries, in document order.
 
-    ``/dev`` and ``/sys`` are gVisor's own virtual filesystems — neither
-    carries a host path as its source, so the "no host data mount"
-    guarantee is unchanged. Without them, ``runsc`` cannot boot its
-    sandbox at all: it exits before the child ever runs.
+    None of these carries a host path as its source — ``/dev`` and
+    ``/sys`` are gVisor's own virtual filesystems, and ``/proc``/``/tmp``
+    are source-less by OCI convention — so there is no bind mount for
+    rootless ``runsc`` to fail setting up (bug_spec_gvisor_bind_boot.xml).
+    Without ``/dev`` and ``/sys``, ``runsc`` cannot boot its sandbox at
+    all: it exits before the child ever runs.
     """
     return [
         {
@@ -221,60 +261,56 @@ def _mounts(child_path: Path) -> list[dict[str, Any]]:
             "source": "tmpfs",
             "options": ["nosuid", "nodev", "mode=1777", _TMPFS_SIZE_OPTION],
         },
-        {
-            "destination": str(child_path),
-            "type": "bind",
-            "source": str(child_path),
-            "options": ["bind", "ro"],
-        },
     ]
 
 
-def _validate_mounts(
-    mounts: Sequence[Mapping[str, Any]],
-    child_path: Path,
-    lake_roots: Sequence[Path],
-) -> None:
-    """Refuse anything but the five mounts the feature names.
+def _validate_mounts(mounts: Sequence[Mapping[str, Any]]) -> None:
+    """Refuse anything but the four source-less mounts the feature names.
 
     Checked as its own step — reachable with a hand-built ``mounts`` list
     as well as through :func:`build_bundle` — because the feature's own
-    sentence names this as a refusal in its own right: a bundle "adds a
-    mount beyond the five listed" is refused the same way one whose root
-    lies under the lake is, not merely prevented by this module never
-    constructing a sixth.
+    sentence names this as a refusal in its own right: a bundle that adds
+    a fifth mount, or any mount of type ``bind``, is refused the same way
+    one whose root lies under the lake is, not merely prevented by this
+    module never constructing one. Rootless ``runsc`` cannot set up a
+    bind mount at all (bug_spec_gvisor_bind_boot.xml): sandbox creation
+    dies before the child ever runs, so a bind mount is refused
+    unconditionally here, never merely discouraged.
     """
-    if len(mounts) != 5:
-        raise BundleError(
-            f"{BUNDLE_ERROR_CODE}: a signal's bundle carries exactly five "
-            "mounts (proc, dev, sys, a 64 MiB tmpfs at /tmp, and the child "
-            f"bootstrap bound read-only) — got {len(mounts)}"
-        )
     expected = {
         _MOUNT_DESTINATION_PROC,
         _MOUNT_DESTINATION_DEV,
         _MOUNT_DESTINATION_SYS,
         _MOUNT_DESTINATION_TMP,
-        str(child_path),
     }
+    if len(mounts) != len(expected):
+        raise BundleError(
+            f"{BUNDLE_ERROR_CODE}: a signal's bundle carries exactly four "
+            "mounts (proc, dev, sys, and a 64 MiB tmpfs at /tmp) — the child "
+            "bootstrap is baked into the read-only runtime root, never "
+            f"mounted — got {len(mounts)}"
+        )
+    for mount in mounts:
+        if mount.get("type") == "bind":
+            raise BundleError(
+                f"{BUNDLE_ERROR_CODE}: a bundle mounts no bind — rootless "
+                "runsc cannot set up a bind mount at all (sandbox creation "
+                "fails before the child ever runs); got a bind mount at "
+                f"{mount.get('destination')!r}"
+            )
     destinations = {mount.get("destination") for mount in mounts}
     if destinations != expected:
         raise BundleError(
             f"{BUNDLE_ERROR_CODE}: a bundle's mounts must land at exactly "
             f"{sorted(expected)!r} — got {sorted(d for d in destinations if d is not None)!r}"
         )
-    for mount in mounts:
-        if mount.get("type") == "bind":
-            _require_outside_lake(
-                Path(mount["source"]), lake_roots, what="a mount source"
-            )
 
 
-def _process(child_path: Path) -> dict[str, Any]:
+def _process(child_path: str) -> dict[str, Any]:
     return {
         "terminal": False,
         "user": {"uid": _UID, "gid": _GID},
-        "args": [_PYTHON, "-I", str(child_path)],
+        "args": [_PYTHON, "-I", child_path],
         "env": list(FEATURE_2_ENV),
         "cwd": _CWD,
         "noNewPrivileges": True,
@@ -309,11 +345,16 @@ def build_bundle(
     """Write one OCI bundle's ``config.json`` and answer its path.
 
     ``directory`` is created if it does not already exist. ``runtime_root``
-    and ``child_path`` are resolved and checked against ``lake_roots``
-    before anything is written: a root or a bind-mount source that lies
-    under one of them is refused with :class:`BundleError`, never
-    written. ``limits`` supplies the two counts ``linux.resources`` needs
-    (``runner_mem_mb``, ``pids``) — see :class:`BundleLimits`.
+    is resolved and checked against ``lake_roots`` before anything is
+    written: a root that lies under one of them is refused with
+    :class:`BundleError`, never written. ``child_path`` names the child
+    bootstrap's path *inside* that root (for example
+    :data:`CHILD_BOOTSTRAP_PATH`) — it is never resolved against the host
+    filesystem and never bind-mounted; the bootstrap reaches the
+    container only by already being baked into ``runtime_root`` at
+    provisioning time. ``limits`` supplies the two counts
+    ``linux.resources`` needs (``runner_mem_mb``, ``pids``) — see
+    :class:`BundleLimits`.
 
     The write is a single ``json.dumps`` with sorted keys, so two calls
     with equal arguments (even into two different directories) produce
@@ -322,14 +363,13 @@ def build_bundle(
     """
     out_dir = Path(directory)
     root = _as_path(runtime_root, what="runtime_root")
-    child = _as_path(child_path, what="child_path")
+    child = _child_bootstrap_path(child_path)
     lakes = tuple(_as_path(p, what="a lake root") for p in lake_roots)
 
     _require_outside_lake(root, lakes, what="the runtime root")
-    _require_outside_lake(child, lakes, what="the child bootstrap path")
 
-    mounts = _mounts(child)
-    _validate_mounts(mounts, child, lakes)
+    mounts = _mounts()
+    _validate_mounts(mounts)
 
     config: dict[str, Any] = {
         "ociVersion": _OCI_VERSION,

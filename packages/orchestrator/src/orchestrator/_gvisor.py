@@ -87,7 +87,7 @@ from . import _hardened_sandbox as hs
 from . import _oci_bundle as bundle
 from . import _sandbox_child as _child
 from ._hardened_sandbox import HardenedLimits
-from ._oci_bundle import PathLike
+from ._oci_bundle import CHILD_BOOTSTRAP_PATH, PathLike
 
 __all__ = [
     "GVISOR_UNAVAILABLE_CODE",
@@ -166,6 +166,28 @@ def _require_runsc(runsc: PathLike) -> Path:
     return Path(resolved)
 
 
+def _require_child_bootstrap(runtime_root: PathLike) -> None:
+    """Raise unless ``runtime_root`` already carries the baked-in child.
+
+    bug_spec_gvisor_bind_boot.xml: the child bootstrap reaches the
+    container only by being part of the read-only runtime root
+    (``deploy/gvisor/provision_runtime.sh`` bakes it in at
+    :data:`~orchestrator._oci_bundle.CHILD_BOOTSTRAP_PATH`), never by a
+    bind mount. Checked once, at construction, rather than discovered at
+    the first signal's expense — the same "fail at construction" stance
+    :func:`_require_runsc` already takes for a missing ``runsc``.
+    """
+    child = Path(runtime_root) / CHILD_BOOTSTRAP_PATH.lstrip("/")
+    if not child.is_file():
+        raise GVisorUnavailableError(
+            f"{GVISOR_UNAVAILABLE_CODE}: the runtime root ({runtime_root!r}) "
+            f"carries no {CHILD_BOOTSTRAP_PATH} — deploy/gvisor/provision_runtime.sh "
+            "bakes the child bootstrap into the runtime root at that path; a "
+            "GVisorSandbox has nothing to run a signal with until it is "
+            "provisioned there."
+        )
+
+
 def _reports_sandbox_violation(stderr: bytes) -> bool:
     """Whether ``runsc``'s own stderr names a sandbox violation.
 
@@ -200,6 +222,7 @@ class GVisorSandbox:
         lake_roots: Sequence[PathLike] = (),
     ) -> None:
         self.runsc: Path = _require_runsc(runsc)
+        _require_child_bootstrap(runtime_root)
         self.runtime_root = runtime_root
         self.state_root: Path = Path(state_root).resolve()
         self.state_root.mkdir(parents=True, exist_ok=True)
@@ -250,7 +273,7 @@ class GVisorSandbox:
                 bundle.build_bundle(
                     bundle_dir,
                     runtime_root=self.runtime_root,
-                    child_path=hs._CHILD_PATH,
+                    child_path=CHILD_BOOTSTRAP_PATH,
                     limits=self.limits,
                     lake_roots=self.lake_roots,
                 )
