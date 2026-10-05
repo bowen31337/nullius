@@ -550,6 +550,7 @@ from ._authoring import (
     AuthoringRecord,
     load_authoring_config,
 )
+from ._authoring_store import record_authoring, record_campaign_cache_rate
 from ._batch import (
     BATCH_ENDPOINT,
     BATCH_RATE_MULTIPLE,
@@ -921,6 +922,8 @@ __all__ = [
     "measure_cache_rate",
     "prompt_hash",
     "published_figure",
+    "record_authoring",
+    "record_campaign_cache_rate",
     "record_root_provider",
     "require_agent_ckpt_hash",
     "require_agent_model_id",
