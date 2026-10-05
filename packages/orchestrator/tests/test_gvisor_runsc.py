@@ -37,9 +37,11 @@ actually needs), and a sample of the hostile cases — a network attempt, a
 planted-data read, and a disallowed import by name — still land exactly as
 they do unisolated, plus the one behavior only gVisor's own process
 lifecycle can prove: a hung signal is killed at the wall and ``runsc``'s own
-``--root`` state directory is clean afterward, evidence the cleanup feature
-5 describes (``runsc delete -force``, always) actually ran against a real
-container rather than a double that merely logged the call.
+``--root`` state directory carries no per-container state afterward — only
+the one shared ``--network=none`` handle every container leaves behind,
+never one entry per run — evidence the cleanup feature 5 describes (``runsc
+delete -force``, always) actually ran against a real container rather than a
+double that merely logged the call.
 
 No test here opens a network connection to a non-loopback host (the one
 ``socket()`` call exercised never reaches ``connect``; the import guard
@@ -82,6 +84,17 @@ _RUNTIME_ROOT_ENV = "NULLIUS_GVISOR_RUNTIME_ROOT"
 #: reason the binary name above is: this gate must not import the module
 #: whose own construction-time check it is standing in front of.
 _RUNTIME_PYTHON_RELPATH = "usr/bin/python3"
+
+#: The one entry a real ``runsc --root`` state directory never loses: the
+#: network-namespace handle it creates for a ``--network=none`` container
+#: (every container this suite runs is one — see ``_sandbox``'s argv in
+#: ``orchestrator._gvisor.GVisorSandbox.run``). It is created once per state
+#: root and shared across every container run against it, not per-container,
+#: so three runs leave exactly this one entry rather than three. `runsc
+#: delete -force` (feature 5's own cleanup) removes each container's own
+#: state correctly; it is not, and should not be, expected to remove this
+#: shared handle too.
+_SHARED_NETNS_HANDLE = "null-netns"
 
 
 def _missing_piece() -> str | None:
@@ -249,5 +262,8 @@ def test_infinite_loop_is_a_timeout_and_the_state_dir_is_empty_afterward(
     # `runsc delete -force` always runs (feature 5); a real container's own
     # per-run state under `--root` is gone afterward, not merely the bundle
     # directory (`test_gvisor.py`'s own fake-runsc suite already covers that
-    # the *call* happens — this is the real runtime proving it worked).
-    assert list(state_root.iterdir()) == []
+    # the *call* happens — this is the real runtime proving it worked). The
+    # directory is not expected to be wholly empty, though: a real `runsc`
+    # leaves its one shared `--network=none` handle (`_SHARED_NETNS_HANDLE`)
+    # behind regardless of how many containers ran, or how they exited.
+    assert {entry.name for entry in state_root.iterdir()} <= {_SHARED_NETNS_HANDLE}
