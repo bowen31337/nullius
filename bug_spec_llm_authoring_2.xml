@@ -1,0 +1,61 @@
+<bug_spec>
+  <!-- Found 2026-10-05 reviewing additions_spec_llm_authoring.xml features
+       7 (LLMSignalAuthor) and 9 (LLMReviser) as they merged. Core shape with
+       explicit touches_files: plan-bugs ignores <layout>. -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/signal-agent/src/signal_agent/_llm_author.py,packages/signal-agent/tests/test_llm_author.py">
+    <title>LLMSignalAuthor hands the anti-convergence gate raw proposal.md text instead of prior code, so an exact repeat of a prior signal is admitted as novel</title>
+    <symptoms>
+      LLMSignalAuthor checks each answer with anti_convergence.admit(parsed.code, held=held), where held carries the history's prior proposals as raw proposal.md text: a Mechanism line, prose and a ```python fence.
+      The gate compares source structure with its numbers erased. Markdown is not Python source, so nothing matches.
+      Probe: with a prior proposal "Mechanism: momentum" wrapping the source `def signal(ctx, seed): return ctx.closes().pct_change()`, an answer repeating that exact source is admitted on the first call.
+      - admit(src, held=[("n1", markdown)]) gives reason "novel".
+      - admit(src, held=[("n1", src)]) gives reason "parameter_tweak".
+      The anti-convergence safeguard (feature 210; architecture section 14.1: "a converged tree is not caught by anything") is therefore silently disabled for every live authoring.
+    </symptoms>
+    <reproduction_steps>
+      Build an LLMSignalAuthor with the real "signal-agent-anti-convergence" gate, and a history store whose single prior proposal wraps source S in a ```python fence. Answer the first call with the same fenced S. The author returns it without a retry.
+    </reproduction_steps>
+    <expected>
+      - held is built from each prior proposal's code: (node_id, parse_authored(prior.proposal).code) for every prior whose proposal parses.
+      - A prior whose proposal does not parse (AuthoredOutputError) contributes (node_id, prior.code_hash) when its code_hash is non-blank, a digest form the gate accepts, and is skipped otherwise.
+      - An answer whose code repeats a prior's structure, with only its numbers changed or with none changed, is refused by the gate. The refusal goes through the existing retry path, naming the gate's reason code (parameter_tweak), and AuthoringRefusedError follows after max_retries.
+      - A genuinely different signal is still admitted on the first call.
+      - Tests cover an exact repeat, a numbers-only tweak, a novel signal, and an unparsable prior proposal, all with the real gate.
+    </expected>
+    <actual>Root cause: packages/signal-agent/src/signal_agent/_llm_author.py builds held from PriorProposal.proposal, the raw markdown, rather than from the code extracted from it. additions_spec_llm_authoring.xml feature 7 said "held=the history's prior proposals" without saying which part.</actual>
+    <constraints>
+      Every other behaviour of LLMSignalAuthor and its existing tests is kept
+      No network access and no real credential in any test
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="medium"
+       touches_files="packages/dreaming/src/dreaming/llm_reviser.py,packages/dreaming/tests/test_llm_reviser.py">
+    <title>LLMReviser's identical-to-incumbent check compares raw strings, so an unchanged module differing only in a trailing newline is accepted as a revision</title>
+    <symptoms>
+      dreaming.llm_reviser refuses an answer identical to the incumbent with `if code == incumbent_source:` (line 427).
+      The extracted fenced block never carries the incumbent's trailing newline. So with incumbent "def select(view):\n    return []\n" and the answer ```python + that same module + ```, the revision is accepted and revise_policy yields a candidate identical to the incumbent.
+      Whitespace-only differences pass the same way: CRLF line endings, trailing spaces, and leading or trailing blank lines.
+    </symptoms>
+    <reproduction_steps>
+      LLMReviser over a fake provider answering the incumbent's own source in a python fence. Call revise_policy(incumbent, 1, reviser=reviser). One candidate is returned, where ReviserOutputError was expected.
+    </reproduction_steps>
+    <expected>
+      - Before comparing, both texts are normalised: CRLF to LF, trailing whitespace stripped from every line, and leading and trailing blank lines dropped.
+      - An answer equal to the incumbent after normalisation raises ReviserOutputError (code word reviser_output) naming revision_index.
+      - A change of any token, including inside a string or a comment, is still accepted as a revision.
+      - Tests cover a trailing-newline-only difference, CRLF, trailing spaces, extra blank lines (all refused), and a one-character change (accepted).
+    </expected>
+    <actual>Root cause: packages/dreaming/src/dreaming/llm_reviser.py compares the extracted code with the incumbent by exact string equality.</actual>
+    <constraints>
+      Every other behaviour of LLMReviser and its existing tests is kept
+      No network access and no real credential in any test
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
