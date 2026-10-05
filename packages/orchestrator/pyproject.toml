@@ -1,13 +1,59 @@
+# nullius workspace member: the orchestrator
+# (additions_spec_live_evaluation.xml, "Orchestrator Member", feature 1;
+# docs/nullius-tech-architecture.md §3 for the component map that places it
+# — the discovery orchestrator is the node whose edges run to the frozen
+# evaluator, the null oracle and the trial ledger, to the artifact store,
+# and to the signal agent and the policy runtime — and §9's layout line for
+# what it is: "orchestrator/ # campaign driver").
+#
+# Joins the uv workspace by convention — packages/orchestrator with this
+# file — so the module loader (src/app/module_loader.py) discovers it by
+# scanning the members the root pyproject.toml declares.  No edit to any
+# central registry, router table or app factory is needed or wanted to
+# wire this package in, and the root pyproject.toml is deliberately not
+# touched: its packages/* glob already declares this member, so the root
+# stays outside every feature's file claim.
+#
+# Dependencies: the eight members this one calls and never edits, in the
+# spec sentence's own order — the evaluator, nulloracle and ledger of the
+# read-only trust zone Z0, the artifacts and discovery members that own
+# what an evaluation persists, and the signal-agent, providers and
+# policy-runtime members the campaign loop drives.  Every one is a
+# workspace member carrying a [tool.uv.sources] workspace = true entry,
+# so this package adds no third-party dependency and the lockfile gains
+# no registry edge from it.  The declaration is the calling direction
+# made checkable: Z0 is called, never changed, and a member that could
+# not name what it calls would be a member nothing pins.
+
 [project]
 name = "orchestrator"
 version = "0.1.0"
-description = "The orchestrator: live node evaluation and the campaign driver (stub; additions_spec_live_evaluation.xml feature 1 declares its dependencies)."
+description = "The orchestrator: one-call live node evaluation over the frozen evaluator, the null oracle, the trial ledger and the artifact stores (campaign driver, spec A)."
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "evaluator",
+    "nulloracle",
+    "ledger",
+    "artifacts",
+    "discovery",
+    "signal-agent",
+    "providers",
+    "policy-runtime",
+]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv.sources]
+evaluator = { workspace = true }
+nulloracle = { workspace = true }
+ledger = { workspace = true }
+artifacts = { workspace = true }
+discovery = { workspace = true }
+signal-agent = { workspace = true }
+providers = { workspace = true }
+policy-runtime = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/orchestrator"]

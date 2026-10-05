@@ -428,6 +428,28 @@ requires-dist = [
 name = "orchestrator"
 version = "0.1.0"
 source = { editable = "packages/orchestrator" }
+dependencies = [
+    { name = "artifacts" },
+    { name = "discovery" },
+    { name = "evaluator" },
+    { name = "ledger" },
+    { name = "nulloracle" },
+    { name = "policy-runtime" },
+    { name = "providers" },
+    { name = "signal-agent" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "artifacts", editable = "packages/artifacts" },
+    { name = "discovery", editable = "packages/discovery" },
+    { name = "evaluator", editable = "packages/evaluator" },
+    { name = "ledger", editable = "packages/ledger" },
+    { name = "nulloracle", editable = "packages/nulloracle" },
+    { name = "policy-runtime", editable = "packages/policy-runtime" },
+    { name = "providers", editable = "packages/providers" },
+    { name = "signal-agent", editable = "packages/signal-agent" },
+]
 
 [[package]]
 name = "packaging"
