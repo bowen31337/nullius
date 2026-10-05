@@ -74,6 +74,7 @@ it.
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -104,6 +105,17 @@ SIGNAL_ENTRYPOINT = "signal"
 #: two halves of the signature — the name and its second parameter — share
 #: one source of truth.
 SIGNAL_SEED_ARG = "seed"
+
+#: The filename agent-emitted source is read under — parsed by
+#: :func:`validate_signal_signature`, compiled by
+#: :func:`_require_signal_module` on the sandbox's load path.  Spelled
+#: identically in the evaluator sandbox's embedded child runner and in the
+#: signal agent's diagnosis law: a defect located in a proposal must name a
+#: place in the source every other reader of that source can find, so the
+#: anchor is one string held by spelling (the members sit on opposite sides
+#: of the Z0 boundary and must not import each other for a literal), pinned
+#: by tests on both sides rather than shared by import.
+_SIGNAL_SOURCE_FILENAME = "<signal-source>"
 
 
 class SignalSignature(NamedTuple):
@@ -151,13 +163,16 @@ def describe_signal_signature() -> SignalSignature:
 def _require_signal_module(code: str) -> Any:
     """Import the agent-emitted source under a private module name.
 
-    The sandbox executes a node's code the same way — by compiling the source
-    and reading the entrypoint out of the resulting namespace — so this is the
-    host-side mirror of the sandbox's own load path, not a second, divergent
-    one.  A private module name (rather than ``exec`` into the caller's
-    namespace) keeps the node's globals off the host: a signal's module-level
-    statements must not leak into whoever is validating it, exactly as they
-    must not leak into the sandbox host.
+    **This is the sandbox's own child load path, and nothing else's.**  It
+    compiles the source and executes it into a fresh module namespace —
+    which is what *running* untrusted code means, and precisely why no
+    host-side caller may reach it: :func:`validate_signal_signature` reads
+    the syntax tree and never executes a byte of what it is judging, so the
+    module-level statements of an agent's answer cannot reach the
+    orchestrator's environment, network or filesystem through adoption.  A
+    private module name (rather than ``exec`` into the caller's namespace)
+    keeps the node's globals off whoever loads it, exactly as they must not
+    leak into the sandbox host.
 
     Raises the compilation error verbatim, so a syntax error in the agent's
     source surfaces as the Python error it is, with its line number, rather
@@ -167,15 +182,109 @@ def _require_signal_module(code: str) -> Any:
     import types
 
     try:
-        compiled = compile(code, "<signal-source>", "exec")
+        compiled = compile(code, _SIGNAL_SOURCE_FILENAME, "exec")
     except SyntaxError as exc:  # pragma: no cover - surfaced verbatim
         raise
 
     module = types.ModuleType("_nullius_signal_source")
-    exec(compiled, module.__dict__)  # noqa: S102 - this is the sandbox's own load path,
-    # mirrored host-side on untrusted source; the sandbox applies the same
-    # compile+exec under its resource and import limits.
+    exec(compiled, module.__dict__)  # noqa: S102 - the sandbox child's own load
+    # path, executing untrusted source in a throwaway namespace under the
+    # sandbox's resource and import limits; no host-side caller reaches this
+    # (validate_signal_signature parses instead of executing).
     return module
+
+
+def _binds_name(target: ast.expr, name: str) -> bool:
+    """Whether ``target`` is an assignment target that binds ``name``.
+
+    Walks the tuple/list/starred shapes a statement can bind through, so
+    ``signal, aux = ...`` counts as a binding of ``signal`` exactly as it
+    would at execution time.
+    """
+    if isinstance(target, ast.Name):
+        return target.id == name
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return any(_binds_name(element, name) for element in target.elts)
+    if isinstance(target, ast.Starred):
+        return _binds_name(target.value, name)
+    return False
+
+
+def _statement_binds_name(stmt: ast.stmt, name: str) -> bool:
+    """Whether a module-level ``stmt`` binds ``name``.
+
+    This is the static stand-in for "the module namespace holds this name
+    once the source has run", and it deliberately covers only the statements
+    that *define* a name at module level: ``def`` and ``class`` bodies,
+    assignments (plain, annotated-with-a-value, augmented) and imports.  A
+    def nested inside an ``if``/``try``/loop is not a *module-level* def —
+    whether it runs is a runtime fact, and the only way to find out would be
+    to execute the source, which is the one thing this validator must not
+    do — and a name bound only by flow control (``for signal in ...``,
+    ``with ... as signal``) is not an entrypoint definition.  Both fall
+    through to the no-entrypoint refusal: the static answer fails closed.
+
+    ``async def`` is pointedly absent from the list.  The entrypoint is the
+    *synchronous* function the sandbox invokes as ``signal(window, seed)``;
+    an ``async def`` of the same name would hand the sandbox a coroutine
+    instead of a series, so it is not the def the contract names and does
+    not bind the entrypoint here.
+    """
+    if isinstance(stmt, (ast.FunctionDef, ast.ClassDef)):
+        return stmt.name == name
+    if isinstance(stmt, ast.Assign):
+        return any(_binds_name(target, name) for target in stmt.targets)
+    if isinstance(stmt, ast.AnnAssign):
+        # An annotation alone (``signal: int``) binds nothing at execution
+        # time; only the valued form does.
+        return stmt.value is not None and _binds_name(stmt.target, name)
+    if isinstance(stmt, ast.AugAssign):
+        return _binds_name(stmt.target, name)
+    if isinstance(stmt, ast.Import):
+        return any(
+            alias.asname == name
+            or (
+                alias.asname is None
+                and alias.name == name
+                and "." not in alias.name
+            )
+            for alias in stmt.names
+        )
+    if isinstance(stmt, ast.ImportFrom):
+        return any(
+            alias.asname == name or (alias.asname is None and alias.name == name)
+            for alias in stmt.names
+        )
+    return False
+
+
+def _entrypoint_node(
+    binding: ast.stmt | None, name: str
+) -> ast.FunctionDef | ast.Lambda | None:
+    """The function node a module-level binding of ``name`` defines.
+
+    A ``def`` is the entrypoint every downstream consumer invokes; a lambda
+    bound by assignment is the same callable by another spelling, so it is
+    read the same way.  Any other binding — ``signal = 42``, a class, an
+    import — yields ``None``: the tree can say the name is *defined*, but
+    which value an assignment lands in is a runtime fact, and the one
+    runtime this validator never observes is the source's own.
+    """
+    if isinstance(binding, ast.FunctionDef):
+        return binding
+    if (
+        isinstance(binding, ast.Assign)
+        and isinstance(binding.value, ast.Lambda)
+        and any(_binds_name(target, name) for target in binding.targets)
+    ):
+        return binding.value
+    if (
+        isinstance(binding, ast.AnnAssign)
+        and isinstance(binding.value, ast.Lambda)
+        and _binds_name(binding.target, name)
+    ):
+        return binding.value
+    return None
 
 
 def validate_signal_signature(code: str) -> list[str]:
@@ -184,26 +293,44 @@ def validate_signal_signature(code: str) -> list[str]:
     Feature 205's half of the contract: the agent emits source, and the system
     must be able to tell whether that source exposes the entrypoint with the
     declared shape.  This is the positive check — *does the source define a
-    callable named :data:`SIGNAL_ENTRYPOINT` whose parameters are the window
-    then the seed?* — and it returns a list of human-readable problems, empty
-    when the source conforms.  It does not raise on a non-conforming source:
-    a problem list is the shape a caller turns into whatever response the
-    authoring loop records (a retry, a rejected proposal), and raising here
-    would steal that decision from the caller.
+    module-level function named :data:`SIGNAL_ENTRYPOINT` whose parameters
+    are the window then the seed?* — and it returns a list of human-readable
+    problems, empty when the source conforms.  It does not raise on a
+    non-conforming source: a problem list is the shape a caller turns into
+    whatever response the authoring loop records (a retry, a rejected
+    proposal), and raising here would steal that decision from the caller.
 
-    The check is deliberately structural and light: it compiles the source
-    (so a syntax error is reported as the error it is) and inspects the
-    resulting function's parameters.  It does not *run* the function — running
-    untrusted signal code is the sandbox's job, under its limits, and a
-    signature validator that executed the source would both widen the trust
-    boundary and need polars, numpy and a window it cannot have.  What it
-    verifies is exactly the entrypoint contract:
+    **The check is a read of the syntax tree, and nothing more — and this is
+    load-bearing.**  The source is agent-authored and therefore untrusted
+    (architecture §5.2: "LLM-authored code is untrusted code"), and this
+    validator runs host-side, in the orchestrator's process, with its
+    environment, its network and its filesystem.  The one thing it must
+    never do is run what it is reading.  So :func:`ast.parse` builds the
+    tree — a parse, not an execution; a syntax error is reported as the
+    error it is, under the ``<signal-source>`` filename every other reader
+    of a proposal uses — and every check below is a walk over module-level
+    nodes: no statement runs, no import loads, no decorator is called, no
+    annotation evaluates, and a hostile module level (a file write, an
+    environment read, an infinite loop) costs the orchestrator nothing.
+    Running untrusted signal code is the sandbox's job, under its limits;
+    the validator that gates *adoption* sits outside that boundary and
+    treats the source as hostile, because it is.
 
-    * a callable named :data:`SIGNAL_ENTRYPOINT` exists in the source;
+    What it verifies is exactly the entrypoint contract:
+
+    * a module-level ``def`` named :data:`SIGNAL_ENTRYPOINT` binds the
+      entrypoint name — the *last* such binding wins, the same rule the
+      sandbox's own module namespace follows.  ``async def`` does not
+      qualify: the sandbox calls ``signal(window, seed)`` and needs a
+      series back, not a coroutine;
     * its first parameter accepts the window (named ``ctx``);
     * its second parameter is the seed (named :data:`SIGNAL_SEED_ARG`);
-    * the seed is required, so a signal cannot silently sample randomness with
-      a default and defeat the determinism contract.
+    * the seed is required, so a signal cannot silently sample randomness
+      with a default and defeat the determinism contract.
+
+    A binding of the entrypoint name that is not a function definition —
+    ``signal = 42`` is the plain case — is refused as not callable, the
+    same sentence the executed check used.
 
     A signal may take more than two parameters only if the extras are
     optional — a keyword-only default, say — because the sandbox invokes it
@@ -216,57 +343,61 @@ def validate_signal_signature(code: str) -> list[str]:
     problems: list[str] = []
 
     try:
-        import inspect
-    except ImportError:  # pragma: no cover - inspect is stdlib
-        return ["cannot validate signal signature: inspect is unavailable"]
-
-    try:
-        module = _require_signal_module(code)
+        tree = ast.parse(code, filename=_SIGNAL_SOURCE_FILENAME)
     except SyntaxError as exc:
         return [f"signal source does not compile: {exc}"]
 
-    fn = getattr(module, sig.entrypoint, None)
-    if fn is None:
+    # The last module-level binding of the entrypoint name wins — the rule
+    # the sandbox's own exec applies to the module namespace it builds, read
+    # off the tree instead of off a run.
+    binding: ast.stmt | None = None
+    for stmt in tree.body:
+        if _statement_binds_name(stmt, sig.entrypoint):
+            binding = stmt
+
+    entry = _entrypoint_node(binding, sig.entrypoint) if binding is not None else None
+
+    if binding is None:
         return [
             f"source defines no {sig.entrypoint!r} entrypoint: the sandbox "
             f"executes a node by calling {sig.entrypoint!r}(window, seed), so "
             f"the emitted function must be named {sig.entrypoint!r}"
         ]
-    if not callable(fn):
+    if entry is None:
         return [f"{sig.entrypoint!r} is defined but is not callable"]
 
-    try:
-        params = inspect.signature(fn).parameters
-    except (TypeError, ValueError) as exc:
-        # A builtin, C function or otherwise uninspectable object: the sandbox
-        # could not call it as signal(window, seed) with a known shape either.
-        return [f"{sig.entrypoint!r} is not a Python function: {exc}"]
+    arguments = entry.args
+    # inspect's "positional" (POSITIONAL_ONLY then POSITIONAL_OR_KEYWORD) is
+    # posonlyargs then args, in declaration order — the two readings of the
+    # same parameter list.
+    positional = [*arguments.posonlyargs, *arguments.args]
+    n_positional = len(positional)
+    # ast.arguments.defaults lines up with the *tail* of the positional list,
+    # which is exactly where inspect reports the defaulted parameters.
+    n_defaults = len(arguments.defaults)
 
-    positional = [
-        p
-        for p in params.values()
-        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
-    ]
+    def _is_defaulted(index: int) -> bool:
+        return index >= n_positional - n_defaults
 
-    if len(positional) < 1 or positional[0].name != sig.window_arg:
+    if n_positional < 1 or positional[0].arg != sig.window_arg:
         problems.append(
             f"{sig.entrypoint!r} must take the MarketWindow first, as a "
             f"parameter named {sig.window_arg!r}"
         )
 
-    if len(positional) < 2:
+    if n_positional < 2:
         problems.append(
             f"{sig.entrypoint!r} must take an integer seed as its second "
             f"argument, named {sig.seed_arg!r}"
         )
     else:
-        seed_param = positional[1]
-        if seed_param.name != sig.seed_arg:
+        seed_arg = positional[1]
+        if seed_arg.arg != sig.seed_arg:
             problems.append(
                 f"the seed argument must be named {sig.seed_arg!r}, got "
-                f"{seed_param.name!r}"
+                f"{seed_arg.arg!r}"
             )
-        elif seed_param.default is not inspect.Parameter.empty:
+        elif _is_defaulted(1):
             problems.append(
                 f"the {sig.seed_arg!r} argument must be required, not defaulted: "
                 "a defaulted seed lets a signal sample randomness without "
@@ -276,12 +407,7 @@ def validate_signal_signature(code: str) -> list[str]:
     # A third *required* parameter would break the sandbox's positional call.
     # Optional extras are accepted — a signal may add keyword-only knobs — so
     # only a second required positional after the seed is a problem.
-    extra_required = [
-        p
-        for p in positional[2:]
-        if p.default is inspect.Parameter.empty
-    ]
-    if extra_required:
+    if any(not _is_defaulted(index) for index in range(2, n_positional)):
         problems.append(
             f"{sig.entrypoint!r} takes more required arguments than the "
             "entrypoint allows: the sandbox invokes signal(window, seed), so "

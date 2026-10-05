@@ -38,6 +38,8 @@ features are pinned independently.
 
 from __future__ import annotations
 
+import sys
+
 import polars as pl
 import pytest
 
@@ -181,6 +183,192 @@ def test_validate_signature_is_deterministic():
     # Pure over the source: two calls give identical results, so a replay
     # reaches the same verdict.
     assert validate_signal_signature(GOOD_SIGNAL) == validate_signal_signature(GOOD_SIGNAL)
+
+
+# --------------------------------------------------------------------------
+# validate_signal_signature — the tree, never the running module
+# --------------------------------------------------------------------------
+#
+# bug_spec_signature_host_exec: the validator used to obtain the entrypoint by
+# *executing* the source in the calling process, so every module-level
+# statement of a model's answer ran with the orchestrator's environment,
+# network and filesystem — before any sandbox, import screen or resource
+# limit.  The tests in this section hold the fixed shape: the source is
+# *parsed* (ast.parse) and the syntax tree inspected, and no part of it — not
+# an import, not a call, not a loop, not a decorator, not an annotation — is
+# ever executed, imported or evaluated host-side.
+
+
+def test_module_level_side_effect_is_never_run(tmp_path):
+    # The spec's own proof shape: a source whose module level writes a
+    # sentinel file, and the file never appears.  The write sits inside a
+    # module-level loop and a call, so the one sentinel proves all three
+    # statement kinds stay unrun.  A conforming shape plus a hostile module
+    # level must validate cleanly *without* the write happening — the write
+    # is exactly what running the orchestrator's credentials and filesystem
+    # out of the validator would look like.
+    sentinel = tmp_path / "sentinel.txt"
+    source = (
+        "from pathlib import Path\n"
+        "for attempt in range(3):\n"
+        f"    Path({str(sentinel)!r}).write_text(f'side effect {{attempt}}')\n"
+        "\n"
+        "def signal(ctx, seed):\n"
+        "    return ctx\n"
+    )
+    assert validate_signal_signature(source) == []
+    assert not sentinel.exists()
+
+
+def test_module_level_import_is_never_executed():
+    # The import screen belongs to the sandbox, not to the validator: a
+    # module-level ``import`` must not even load a module into this process.
+    # ``colorsys`` is a stdlib leaf nothing here depends on, popped first so
+    # the assertion is about this call alone.
+    sys.modules.pop("colorsys", None)
+    source = "import colorsys\n\ndef signal(ctx, seed):\n    return ctx\n"
+    assert validate_signal_signature(source) == []
+    assert "colorsys" not in sys.modules
+
+
+def test_host_environment_is_never_read_during_validation(tmp_path, monkeypatch):
+    # The credential-reach half of the bug: module-level code reading
+    # ``os.environ`` must not run, so no NULLIUS_*_API_KEY can leave the
+    # process through validation.  A marker variable — a value no real
+    # credential ever holds — stands in for one; no network and no real
+    # credential is touched anywhere in this suite.
+    monkeypatch.setenv("NULLIUS_VALIDATOR_MARKER", "host-only-marker")
+    leak = tmp_path / "leak.txt"
+    source = (
+        "import os\n"
+        "from pathlib import Path\n"
+        f"Path({str(leak)!r}).write_text("
+        "os.environ.get('NULLIUS_VALIDATOR_MARKER', ''))\n"
+        "\n"
+        "def signal(ctx, seed):\n"
+        "    return ctx\n"
+    )
+    assert validate_signal_signature(source) == []
+    assert not leak.exists()
+
+
+def test_raising_module_level_statement_does_not_crash_the_validator():
+    # The exec path let a module-level raise escape the validator and take
+    # the caller with it — the same class as the infinite loop that hangs
+    # the orchestrator.  Reading the tree cannot raise the source's errors.
+    source = "1 / 0\n\ndef signal(ctx, seed):\n    return ctx\n"
+    assert validate_signal_signature(source) == []
+
+
+def test_decorator_and_annotation_are_never_evaluated():
+    # A decorator call and an annotation are expressions in the tree, not
+    # code the validator owes an evaluation.  An unresolvable name in either
+    # position must not escape the call: the exec path raised NameError out
+    # of the validator for the decorator.
+    source = (
+        "@unknown_decorator\n"
+        "def signal(ctx, seed) -> pl.Series:\n"
+        "    return ctx\n"
+    )
+    assert validate_signal_signature(source) == []
+
+
+def test_return_annotation_is_accepted_as_today():
+    # The annotation half of the ABI is untouched: a present return
+    # annotation is accepted exactly as before, whatever it names.
+    source = (
+        "import polars as pl\n"
+        "\n"
+        "def signal(ctx, seed) -> pl.Series:\n"
+        "    return pl.Series([0.5, -0.5, 0.0])\n"
+    )
+    assert validate_signal_signature(source) == []
+
+
+def test_async_entrypoint_is_refused():
+    # The entrypoint is the *synchronous* def the sandbox invokes as
+    # signal(window, seed); an ``async def`` would hand the sandbox a
+    # coroutine instead of a series.  The scan looks for a module-level def,
+    # so an async def leaves the source without the entrypoint the contract
+    # names — the existing refusal sentence, vocabulary unchanged.
+    problems = validate_signal_signature(
+        "async def signal(ctx, seed):\n    return ctx\n"
+    )
+    assert len(problems) == 1
+    assert "no 'signal' entrypoint" in problems[0]
+
+
+def test_def_inside_a_module_level_if_is_not_the_entrypoint():
+    # A def under an ``if`` is not a module-level def: whether it runs is a
+    # runtime fact the tree cannot promise, and finding out would mean
+    # executing the source — the very thing this validator must not do.  The
+    # exec path defined it by running the branch; the tree-reading path
+    # refuses instead of finding out.
+    problems = validate_signal_signature(
+        "if True:\n    def signal(ctx, seed):\n        return ctx\n"
+    )
+    assert len(problems) == 1
+    assert "no 'signal' entrypoint" in problems[0]
+
+
+def test_star_and_kwargs_extras_still_conform():
+    # Parity with the inspect-based check the exec path used: ``*args`` and
+    # ``**kwargs`` extras after the declared pair do not break the sandbox's
+    # positional signal(window, seed) call, so they stay accepted.  (The
+    # declared pair itself must be the two named parameters —
+    # ``def signal(*args, seed)`` is refused by the window/seed checks
+    # above.)
+    star_args = "def signal(ctx, seed, *args):\n    return ctx\n"
+    star_kwargs = "def signal(ctx, seed, **kwargs):\n    return ctx\n"
+    assert validate_signal_signature(star_args) == []
+    assert validate_signal_signature(star_kwargs) == []
+
+
+def test_lambda_entrypoint_still_conforms():
+    # A module-level lambda binding the entrypoint name with the declared
+    # parameters is as conforming as the def: the sandbox looks the name up
+    # and calls it, and could not tell the difference.
+    assert validate_signal_signature("signal = lambda ctx, seed: ctx\n") == []
+
+
+def test_last_binding_of_the_entrypoint_name_wins():
+    # The module namespace the sandbox builds keeps the last binding the
+    # source executes, so ``def signal`` twice means the second one; the
+    # tree-reading path applies the same rule to the module body.
+    good_then_conforming = (
+        "def signal(ctx):\n    return ctx\n"
+        "def signal(ctx, seed):\n    return ctx\n"
+    )
+    assert validate_signal_signature(good_then_conforming) == []
+
+    conformed_then_broken = (
+        "def signal(ctx, seed):\n    return ctx\n"
+        "def signal(ctx):\n    return ctx\n"
+    )
+    problems = validate_signal_signature(conformed_then_broken)
+    assert len(problems) == 1
+    assert "must take an integer seed" in problems[0]
+
+
+def test_import_binding_the_entrypoint_name_is_refused():
+    # ``import os as signal`` binds the entrypoint name to a module: the
+    # name is defined, and it is not the callable entrypoint.  A binding
+    # that is not a def (or a lambda) is the existing not-callable refusal.
+    problems = validate_signal_signature("import os as signal\n")
+    assert len(problems) == 1
+    assert "not callable" in problems[0]
+
+
+def test_the_sandbox_load_path_helper_remains_available():
+    # ``_require_signal_module`` is the sandbox's own child load path — the
+    # one place agent source is *meant* to be materialised — and it stays
+    # available for exactly that.  Pinned here so the fix cannot quietly
+    # remove the door the sandbox opens; no host-side caller reaches it
+    # anymore (validate_signal_signature reads the tree instead).
+    from contract.signal import _require_signal_module
+
+    module = _require_signal_module("def signal(ctx, seed):\n    return ctx\n")
+    assert callable(module.signal)
 
 
 # --------------------------------------------------------------------------
