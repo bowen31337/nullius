@@ -74,8 +74,10 @@ What is retried, and what is not
 Once the answer is in hand it is read by feature 6 (``parse_authored``) and,
 if it parses, judged by feature 205's contract (:meth:`~signal_agent.
 SignalContract.adopt`) and feature 210's anti-convergence gate
-(:meth:`~signal_agent.AntiConvergenceGate.admit`, ``held`` = the history's own
-prior proposals).  Three failures are *the model's to repair* and are retried
+(:meth:`~signal_agent.AntiConvergenceGate.admit`, ``held`` = the *code* read
+out of each prior proposal — feature 6's parse again, with a prior whose
+document does not parse held at its recorded ``code_hash``; see
+:meth:`_held_code`).  Three failures are *the model's to repair* and are retried
 up to ``max_retries`` times: an unparseable answer, a source that does not
 conform, and a structure the campaign already holds.  Each retry appends the
 assistant's answer as a turn and a user turn naming the defect — the refusal's
@@ -344,7 +346,7 @@ class LLMSignalAuthor:
 
         history = self._read_history(campaign_id)
         entries = self._pair_scores(history)
-        held = tuple((prior.node_id, prior.proposal) for prior in history)
+        held = self._held_code(history)
 
         parts = build_authoring_prompt(
             workspace, entries, clause=self._anti_convergence
@@ -404,6 +406,44 @@ class LLMSignalAuthor:
             record = self._history_store.load(prior.node_id)
             pairs.append((prior, record.score if record is not None else None))
         return tuple(pairs)
+
+    def _held_code(self, history: Iterable[Any]) -> tuple[tuple[str, str], ...]:
+        """Each prior node beside the *code* its proposal document holds.
+
+        The gate compares skeletons, and a skeleton is read from **source**;
+        a prior ``proposal`` is a *document* — a ``Mechanism:`` line, prose
+        and the ```` ```python ```` fence — because feature 6 pins
+        ``proposal`` as the model's full raw answer and feature 207 persists
+        that field verbatim.  Handing the gate the raw markdown would hand it
+        nothing it can parse, and :func:`~signal_agent._anti_convergence.
+        _held_digests` *skips* what it cannot read rather than refusing: the
+        comparison set would arrive empty behind the author's back and every
+        answer would be admitted as novel — §14.1's "a converged tree is not
+        caught by anything", arriving as the gate's own silence.  What reaches
+        the gate is therefore the same reading feature 6 gives an *answer*:
+        ``parse_authored(prior.proposal).code``, the source the prior's own
+        fence holds, which is what the campaign actually holds at that
+        structure.
+
+        A proposal that does not parse still contributes the ``code_hash`` the
+        node's row recorded, when one is recorded: a 64-hex digest, which is
+        the form the gate accepts, so a prior that cannot be re-read is held
+        at the identity its own record names rather than dropped from the
+        set.  With no code hash either, the prior contributes nothing — the
+        gate has no opinion about an entry it cannot read, which is its own
+        documented stance for an unparseable held entry, taken here so the
+        set this author hands in is exactly the set it meant to compare
+        against.
+        """
+        held: list[tuple[str, str]] = []
+        for prior in history:
+            try:
+                held.append((prior.node_id, parse_authored(prior.proposal).code))
+            except AuthoredOutputError:
+                code_hash = prior.code_hash
+                if isinstance(code_hash, str) and code_hash.strip():
+                    held.append((prior.node_id, code_hash))
+        return tuple(held)
 
     # -- The call loop --------------------------------------------------------
 

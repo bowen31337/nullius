@@ -14,7 +14,9 @@ builder:
   verbatim, paired with its score, and both feature 208's guidance gate and
   feature 210's clause gate screen it *before* a call is placed;
 * the **acceptance** — the answer is read by feature 6, adopted by feature
-  205's contract, and admitted by feature 210's structural gate;
+  205's contract, and admitted by feature 210's structural gate against the
+  *code* each prior proposal holds (an unparsable prior is held at its
+  recorded ``code_hash``), never against the proposals' raw markdown;
 * the **retry** — a model-repairable defect (parse, adoption or structure) is
   shown back to the model up to ``max_retries`` times, and the whole authoring
   is refused as :class:`~signal_agent.AuthoringRefusedError` after the last;
@@ -58,6 +60,7 @@ from signal_agent import (
     anti_convergence_gate,
     prompt_guidance_gate,
     signal_contract,
+    skeleton_digest,
 )
 from signal_agent._llm_author import (
     AUTHORING_REFUSED_CODE,
@@ -90,6 +93,30 @@ CONFORMING_CODE = (
 #: equal to this one is novel, so a test that wants the first answer accepted
 #: must not hand the same skeleton in as a prior.
 PRIOR_CODE = "def signal(ctx, seed):\n    return ctx.close.ewm_mean(span=10)"
+
+#: The held-set fixtures' prior code — one-indicator momentum, the source the
+#: bug report's own probe used.  An answer repeating it exactly, or with only
+#: its numbers changed, is the convergence feature 210 exists to refuse.
+MOMENTUM_CODE = "def signal(ctx, seed):\n    return ctx.closes().pct_change()"
+
+#: The same structure with a number in it, and the same structure with that
+#: number changed — a parameter tweak, the shape §14.1's "400th variant of one
+#: indicator" is four hundred of.
+MOMENTUM_WINDOW_20 = (
+    "def signal(ctx, seed):\n"
+    "    return ctx.closes().pct_change().rolling_mean(20)"
+)
+MOMENTUM_WINDOW_60 = (
+    "def signal(ctx, seed):\n"
+    "    return ctx.closes().pct_change().rolling_mean(60)"
+)
+
+#: A prior proposal document that carries no python fence at all, so feature
+#: 6's parse cannot read code out of it — the shape whose only structure is
+#: the ``code_hash`` its row recorded.
+LOST_SOURCE_DOC = (
+    "Mechanism: momentum.\n\n(The source block was lost in transit.)"
+)
 
 #: The same source, non-conforming: the second parameter is misnamed.
 NON_CONFORMING_CODE = (
@@ -254,8 +281,30 @@ def workspace(depth: int = 0, node_id: str = PARENT) -> discovery.NodeWorkspace:
     )
 
 
-def prior(node_id: str, proposal: str = PRIOR_CODE) -> PriorProposal:
-    return PriorProposal(node_id=node_id, proposal=proposal, code_hash="c" * 64)
+def prior(
+    node_id: str, proposal: str = PRIOR_CODE, code_hash: str = "c" * 64
+) -> PriorProposal:
+    return PriorProposal(node_id=node_id, proposal=proposal, code_hash=code_hash)
+
+
+def proposal_document(
+    code: str, mechanism: str = "momentum over the prior close."
+) -> str:
+    """A prior proposal as the history actually persists one (feature 207).
+
+    Feature 6 pins ``proposal`` as the model's *full raw answer* — the
+    ``Mechanism:`` line, the prose and the ```` ```python ```` fence — and
+    feature 207 persists that field verbatim, so this is the shape a real
+    ``PriorProposal.proposal`` holds.  A bare source string is not: no store
+    records one as a proposal document, and a held-set test that handed the
+    gate bare source would be testing a history no campaign ever had.
+    """
+    return f"Mechanism: {mechanism}\n\n```python\n{code}\n```\n"
+
+
+def fenced_answer(code: str, mechanism: str = "momentum over the prior close.") -> str:
+    """An answer in the authoring format around ``code`` — the model's shape."""
+    return f"```python\n{code}\n```\n\nMechanism: {mechanism}\n"
 
 
 def build_author(
@@ -468,8 +517,11 @@ def test_non_conforming_source_is_retried_then_accepted() -> None:
 def test_converged_structure_is_retried_then_accepted() -> None:
     # A prior proposal whose skeleton equals CONFORMING_ANSWER's, so the first
     # answer is a parameter tweak and is refused; the second is a genuinely
-    # different structure and is admitted.
-    store = FakeHistoryStore(priors=(prior(str(uuid.uuid4()), CONFORMING_CODE),))
+    # different structure and is admitted.  The prior is a *document* — the
+    # fence and the Mechanism line a real history persists — holding that code.
+    store = FakeHistoryStore(
+        priors=(prior(str(uuid.uuid4()), proposal_document(CONFORMING_CODE)),)
+    )
     different_answer = (
         "```python\n"
         "def signal(ctx, seed):\n"
@@ -498,7 +550,9 @@ def test_converged_structure_is_retried_then_accepted() -> None:
 
 
 def test_converged_structure_refused_twice_raises_authoring_refused() -> None:
-    store = FakeHistoryStore(priors=(prior(str(uuid.uuid4()), CONFORMING_CODE),))
+    store = FakeHistoryStore(
+        priors=(prior(str(uuid.uuid4()), proposal_document(CONFORMING_CODE)),)
+    )
     # Both answers hold the prior's skeleton (one differing only in a literal),
     # so the negative constraint refuses each and the whole authoring is refused.
     tweak = CONFORMING_ANSWER.replace("[1.0]", "[2.0]")
@@ -514,6 +568,108 @@ def test_converged_structure_refused_twice_raises_authoring_refused() -> None:
         author(workspace())
     assert AUTHORING_REFUSED_CODE in str(caught.value)
     assert "parameter_tweak" in str(caught.value)
+
+
+# ── The held set: prior code, not prior prose ─────────────────────────────────
+
+
+def test_an_exact_repeat_of_a_prior_proposals_code_is_refused() -> None:
+    # The bug's own reproduction: the prior proposal is a document — a
+    # Mechanism line, prose and the fence — and the answer repeats the exact
+    # source inside it.  Handing the gate the markdown left it nothing it
+    # could parse, so the repeat was admitted as novel on the first call.
+    store = FakeHistoryStore(
+        priors=(prior(str(uuid.uuid4()), proposal_document(MOMENTUM_CODE)),)
+    )
+    repeat = fenced_answer(MOMENTUM_CODE, mechanism="momentum again.")
+    provider = FakeProvider(
+        [completion(repeat, model=ROOT_MODEL), completion(repeat, model=ROOT_MODEL)],
+        model=ROOT_MODEL,
+    )
+    author = build_author(provider=provider, history_store=store, max_retries=1)
+    with pytest.raises(AuthoringRefusedError) as caught:
+        author(workspace())
+    assert "parameter_tweak" in str(caught.value)
+    assert provider.calls == 2
+    # The refusal went through the existing retry path and named the gate's
+    # own code word, so the model was told what to repair.
+    assert "parameter_tweak" in provider.requests[1].messages[-1].content
+
+
+def test_a_numbers_only_tweak_of_a_prior_proposals_code_is_refused() -> None:
+    # The same structure with one literal changed — §14.1's "400th variant of
+    # one indicator" — is the same hypothesis re-submitted, not a new one.
+    store = FakeHistoryStore(
+        priors=(prior(str(uuid.uuid4()), proposal_document(MOMENTUM_WINDOW_20)),)
+    )
+    tweak = fenced_answer(MOMENTUM_WINDOW_60, mechanism="momentum, smoothed.")
+    provider = FakeProvider(
+        [completion(tweak, model=ROOT_MODEL), completion(tweak, model=ROOT_MODEL)],
+        model=ROOT_MODEL,
+    )
+    author = build_author(provider=provider, history_store=store, max_retries=1)
+    with pytest.raises(AuthoringRefusedError) as caught:
+        author(workspace())
+    assert "parameter_tweak" in str(caught.value)
+    assert provider.calls == 2
+
+
+def test_a_structurally_new_signal_is_admitted_on_the_first_call() -> None:
+    # The negative constraint refuses repeats, not novelty: against a prior
+    # document holding MOMENTUM_CODE, a genuinely different structure — a new
+    # term, not a new literal — is admitted without spending a retry.
+    store = FakeHistoryStore(
+        priors=(prior(str(uuid.uuid4()), proposal_document(MOMENTUM_CODE)),)
+    )
+    provider = FakeProvider([completion(CONFORMING_ANSWER, model=ROOT_MODEL)], model=ROOT_MODEL)
+    author = build_author(provider=provider, history_store=store)
+    result = author(workspace())
+    assert result.code == CONFORMING_CODE
+    assert provider.calls == 1
+
+
+def test_an_unparsable_prior_proposal_is_held_at_its_recorded_code_hash() -> None:
+    # A document with no python fence cannot be re-read for code, so the prior
+    # is held at the digest its row recorded.  The fixture sets that hash to
+    # the skeleton digest of the answer's own code, so a refusal here is the
+    # code_hash fallback reaching the gate — the parse path never ran.
+    store = FakeHistoryStore(
+        priors=(
+            prior(
+                str(uuid.uuid4()),
+                LOST_SOURCE_DOC,
+                code_hash=skeleton_digest(MOMENTUM_CODE),
+            ),
+        )
+    )
+    repeat = fenced_answer(MOMENTUM_CODE)
+    provider = FakeProvider(
+        [completion(repeat, model=ROOT_MODEL), completion(repeat, model=ROOT_MODEL)],
+        model=ROOT_MODEL,
+    )
+    author = build_author(provider=provider, history_store=store, max_retries=1)
+    with pytest.raises(AuthoringRefusedError) as caught:
+        author(workspace())
+    assert "parameter_tweak" in str(caught.value)
+    assert provider.calls == 2
+
+
+def test_an_unparsable_prior_proposal_with_no_code_hash_is_skipped() -> None:
+    # Nothing to hold the prior at — no code to read, no hash recorded — so
+    # the comparison set the gate sees is empty and the repeat is admitted as
+    # the campaign's first structure.  A prior the gate cannot read is one it
+    # has no opinion about, which is the gate's own stance.
+    store = FakeHistoryStore(
+        priors=(prior(str(uuid.uuid4()), LOST_SOURCE_DOC, code_hash=""),)
+    )
+    provider = FakeProvider(
+        [completion(fenced_answer(MOMENTUM_CODE), model=ROOT_MODEL)],
+        model=ROOT_MODEL,
+    )
+    author = build_author(provider=provider, history_store=store)
+    result = author(workspace())
+    assert result.code == MOMENTUM_CODE
+    assert provider.calls == 1
 
 
 def test_retries_spent_raises_authoring_refused_naming_the_last_defect() -> None:
