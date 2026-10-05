@@ -110,6 +110,21 @@ require_served` has already checked it is the pinned one), and — for a root �
 the declared frontier tier, which feature 4's recorder files against the
 rotation.
 
+A campaign's opening signal: ``author_root``
+---------------------------------------------
+
+additions_spec_campaign_driver.xml, "Roots" feature 1: a root has no parent to
+derive a child id from, so :meth:`LLMSignalAuthor.author_root` takes the
+caller's own ``root_id`` as the node being authored, fixes its depth at 0 and
+its role at ``"root"``, and otherwise walks the *same* path ``__call__`` does
+— the same history read, the same prompt build and pre-call gates (feature
+208's guidance gate, feature 210's clause gate), the same parse/adopt/
+anti-convergence retry loop (:meth:`_author`, unchanged and shared by both),
+and the same two propagated refusals.  ``__call__`` itself is untouched: the
+two callers build their own workspace-shaped value and their own prompt
+inline, rather than share a third method, so ``__call__``'s own body and its
+existing tests are exactly what they were before this method existed.
+
 Stdlib only, plus this member's own submodules at module scope
 (:mod:`signal_agent._authored` and :mod:`signal_agent._authoring_prompt`) and
 ``providers``/``discovery`` deferred to first use.  The deferral is the same
@@ -118,13 +133,16 @@ state: the factory's workspace scan imports every member one at a time with
 that member's own ``src/`` on ``sys.path``, so a module-scope import of a
 sibling *member* would make this file unimportable before its dependencies are
 on the path.  ``providers`` and ``discovery`` are declared dependencies of
-this member (feature 1) and reached only inside :meth:`LLMSignalAuthor.__call__`.
+this member (feature 1) and reached only inside :meth:`LLMSignalAuthor.__call__`
+and :meth:`LLMSignalAuthor.author_root` (``discovery`` only from the former,
+since a root's id is given rather than derived).
 """
 
 from __future__ import annotations
 
 import uuid
 from collections.abc import Iterable
+from types import SimpleNamespace
 from typing import Any, Final
 
 from ._authored import AUTHORED_OUTPUT_CODE, AuthoredOutputError, parse_authored
@@ -373,6 +391,82 @@ class LLMSignalAuthor:
             pin=pin,
             campaign_id=campaign_id,
             child_id=child_id,
+            child_depth=child_depth,
+            role=role,
+            held=held,
+        )
+
+    # -- The callable a campaign driver plants a root with -------------------
+
+    def author_root(
+        self, campaign_id: str, theme_root: str, *, root_id: Any
+    ) -> AuthoredSignal:
+        """Author a campaign's opening signal — a root at depth 0.
+
+        additions_spec_campaign_driver.xml, "Roots" feature 1: the root's own
+        id is the caller's ``root_id`` rather than a derived child id (a root
+        has no parent to derive it from), its depth is fixed at 0 and its
+        role is fixed at :data:`_ROOT_ROLE` — unlike :meth:`__call__`, which
+        reads the role off a *derived* child's depth, a root's role is never
+        in question. ``session.provider_for("root", campaign_id=…,
+        node_id=root_id)`` is what lets the root rotation (feature 3 of
+        additions_spec_llm_authoring.xml) decide the model, the same call the
+        rotation's own recorder later replays to check the serving provider
+        against.
+
+        The prompt, the history, the gates, the retry and the record are
+        built the same way :meth:`__call__`'s are, over a workspace-shaped
+        value built here instead of handed in, because build_authoring_prompt
+        reads only ``campaign_id``, ``theme_root`` and ``depth`` off it
+        (feature 5) and a root has no other workspace fact to contribute.
+        The campaign's history is read the same way an expansion's is —
+        whole, from ``history_store.history(campaign_id)`` — and is empty
+        for a campaign's first root, which feature 5's own history renders
+        as the honest "no prior proposals exist yet" rather than a refusal.
+        """
+        import providers
+
+        campaign_id = str(campaign_id)
+        root_id = str(root_id)
+        role = _ROOT_ROLE
+        child_depth = 0
+
+        provider, pin = self._session.provider_for(
+            role, campaign_id=campaign_id, node_id=root_id
+        )
+
+        history = self._read_history(campaign_id)
+        entries = self._pair_scores(history)
+        held = self._held_code(history)
+
+        workspace = SimpleNamespace(
+            campaign_id=campaign_id, theme_root=theme_root, depth=child_depth
+        )
+        parts = build_authoring_prompt(
+            workspace, entries, clause=self._anti_convergence
+        )
+        # Feature 208 first, on the named parts — the gate reads the prompt's
+        # structure, which is what feature 5 built.  It never raises on
+        # admission; ``require`` is the one place it raises on a refusal.
+        self._guidance.require(parts)
+        request = to_request(
+            parts,
+            model=pin.model,
+            temperature=float(self._config.temperature),
+            max_tokens=int(self._config.max_tokens),
+        )
+        # Feature 210's prompt half, on the rendered system message: the
+        # committed clause must appear verbatim in what ships.  Both screens
+        # run before the first call, so a refused prompt spends nothing.
+        self._anti_convergence.require_in(request.messages[0].content)
+
+        return self._author(
+            providers,
+            request=request,
+            provider=provider,
+            pin=pin,
+            campaign_id=campaign_id,
+            child_id=root_id,
             child_depth=child_depth,
             role=role,
             held=held,
