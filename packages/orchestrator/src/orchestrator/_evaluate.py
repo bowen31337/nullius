@@ -41,6 +41,27 @@ not silently treated as "scored nothing" — it is raised here, as
 :class:`SandboxExecutionError`, specifically so it takes the same path as
 every other pipeline failure and is never scored past.
 
+**``execute_signal`` always runs under the orchestrator's own executor, and
+the generic ``SandboxExecutionError`` name is narrowed where the executor
+said more.**  additions_spec_gvisor_executor.xml, "Executor Selection",
+feature 7, adds the one call that chooses it:
+:func:`orchestrator._context.signal_sandbox` reads ``context.sandbox_runtime``
+and answers a :class:`~orchestrator._gvisor.GVisorSandbox` or a
+:class:`~orchestrator._hardened_sandbox.HardenedSubprocessSandbox` — never
+the evaluator's own unconfined default — and this module hands its answer to
+every ``execute_signal`` call.  :class:`~evaluator.RawScoreVector` has no
+``fail_class`` or ``detail`` field at all, so the executor's own last
+:class:`~evaluator.SandboxResult` (remembered on ``last_result``, the one
+attribute :func:`~orchestrator._context.signal_sandbox` always attaches) is
+the only place either value survives past ``execute_signal`` returning.
+:func:`_fail_class` reads it: a specific reported class (``"timeout"``,
+``"oom"``, ``"violation"``, ``"payload"``, ``"empty"``, gVisor's own
+``"sandbox_escape"``) replaces the generic ``SandboxExecutionError`` name on
+``NodeEvaluation.fail_class``; the one fail_class the executor itself
+defines as a catch-all (``"crash"`` — "the signal raised or the child died
+to a limit") stays mapped to ``SandboxExecutionError``, which is already
+what a signal that merely raises would be named by this module's own rule.
+
 **``compute_marginal_ir`` runs against an empty book, by the spec's own
 words, and the evaluator's own refusal says what to do about it.**  There is
 no resident book in spec A — the campaign loop that would hold one is spec
@@ -130,7 +151,7 @@ from signal_agent import ScoreRecord
 
 from ._artifact_writer import ArtifactStoreWriter
 from ._charge import charge_failed_node, charge_node
-from ._context import BARS_STREAM, EvaluationContext
+from ._context import BARS_STREAM, EvaluationContext, signal_sandbox
 from ._tree_writer import NodeMetricsWriter
 
 __all__ = [
@@ -475,6 +496,60 @@ def _persist(
     )
 
 
+# -- The executor's own failure, read past what RawScoreVector drops -----------
+
+#: The one sandbox ``fail_class`` that maps back to this module's own
+#: generic ``SandboxExecutionError`` rather than surfacing verbatim.  The
+#: evaluator's own vocabulary defines ``"crash"`` as "the signal raised or
+#: the child died to a limit" (:class:`evaluator.SandboxResult`'s own
+#: docstring) — exactly the shape "the failure's class name" already covers
+#: for every other pipeline exception, so collapsing it here keeps that one
+#: rule rather than adding a second vocabulary beside it for the single
+#: fail_class that is itself already a catch-all.
+_GENERIC_SANDBOX_FAIL_CLASS = "crash"
+
+
+def _executor_failure(executor: object) -> str:
+    """The executor's own last reported shape, for a richer refusal message.
+
+    :class:`~evaluator.RawScoreVector` drops ``fail_class`` and ``detail``
+    entirely, so this is where they are read back — off the ``last_result``
+    attribute :func:`orchestrator._context.signal_sandbox` always attaches
+    to the executor it hands back (see that function's own docstring).
+    Answers the old placeholder text when the executor never ran, or ran
+    and recorded no failure — both are "there is nothing more specific to
+    say" states.
+    """
+    last = getattr(executor, "last_result", None)
+    if last is not None and last.fail_class is not None:
+        return f"{last.fail_class}: {last.detail}"
+    return "no scores (a resource or channel failure)"
+
+
+def _fail_class(exc: Exception, executor: object) -> str:
+    """``type(exc).__name__`` — or the executor's own reported ``fail_class``
+    when ``exc`` is a :class:`SandboxExecutionError` and that fail_class is
+    more specific than the generic catch-all (see
+    :data:`_GENERIC_SANDBOX_FAIL_CLASS`).
+
+    Feature 7's own rule: *"The fail_class and detail that the executor
+    reports are carried into NodeEvaluation.fail_class ... evaluate_node
+    reads them from the executor's last result."*  Every other pipeline
+    exception (a window, a cost, a metrics failure) is still named by its
+    own class, unchanged — this only narrows the one generic bucket
+    ``SandboxExecutionError`` already was.
+    """
+    if isinstance(exc, SandboxExecutionError):
+        last = getattr(executor, "last_result", None)
+        if (
+            last is not None
+            and last.fail_class is not None
+            and last.fail_class != _GENERIC_SANDBOX_FAIL_CLASS
+        ):
+            return last.fail_class
+    return type(exc).__name__
+
+
 # -- The one call ---------------------------------------------------------------
 
 
@@ -506,13 +581,27 @@ def evaluate_node(
     refuses unconditionally; that refusal is caught narrowly and
     ``ir_marginal`` falls back to ``metrics.ir_standalone``, the number the
     evaluator's own refusal message names for "nothing to be marginal
-    against yet" (see the module docstring).
+    against yet" (see the module docstring). ``execute_signal`` is always
+    handed :func:`orchestrator._context.signal_sandbox(context)
+    <orchestrator._context.signal_sandbox>` as its ``sandbox`` — a
+    :class:`~orchestrator._gvisor.GVisorSandbox` or a
+    :class:`~orchestrator._hardened_sandbox.HardenedSubprocessSandbox`,
+    never the evaluator's own unconfined default (additions_spec_gvisor_executor.xml,
+    "Executor Selection", feature 7).
 
     Any exception the chain raises — the window, the signal, the oracle,
     the cost schedule, the metrics — is charged with
     :func:`orchestrator._charge.charge_failed_node` and named as
     ``fail_class`` by its class, and the node's metrics and persistence are
-    both ``None``. Nothing is retried.
+    both ``None``. Nothing is retried. The one exception to "named by its
+    class": when a rebalance date's score vector is not conforming and the
+    executor's own last :class:`~evaluator.SandboxResult` names a specific
+    ``fail_class`` (``"timeout"``, ``"oom"``, ``"violation"``, ``"payload"``,
+    ``"empty"``, or gVisor's own ``"sandbox_escape"``) rather than the
+    generic ``"crash"``, that fail_class is what lands on ``NodeEvaluation``
+    — read off the executor after the fact, because
+    :class:`~evaluator.RawScoreVector` drops both ``fail_class`` and
+    ``detail`` (see :func:`_fail_class`).
 
     On success, the node's row is written and its artifacts staged and
     flushed (see :func:`_persist`), the node is charged with
@@ -554,6 +643,7 @@ def evaluate_node(
             debit=debited,
         )
 
+    executor = signal_sandbox(context)
     charges_budget = True
     try:
         decision_time = dt.datetime.combine(
@@ -565,6 +655,7 @@ def evaluate_node(
             code,
             seed=context.seed,
             rebalance_dates=context.evaluation_dates,
+            sandbox=executor,
             materialize=_materialize_from_context(context),
         )
         for day in execution.dates():
@@ -573,7 +664,7 @@ def evaluate_node(
                 raise SandboxExecutionError(
                     f"the sandbox did not return a conforming score vector "
                     f"for node {node_id!r} at {day.isoformat()}: "
-                    f"{vector.problems or 'no scores (a resource or channel failure)'}"
+                    f"{vector.problems or _executor_failure(executor)}"
                 )
 
         scores = {
@@ -607,7 +698,7 @@ def evaluate_node(
         else:  # pragma: no cover - unreachable while the book stays empty
             ir_marginal = marginal.ir_marginal
     except Exception as exc:  # noqa: BLE001 - every pipeline failure is charged, by name
-        fail_class = type(exc).__name__
+        fail_class = _fail_class(exc, executor)
         debited = charge_failed_node(
             node_id,
             campaign_id,

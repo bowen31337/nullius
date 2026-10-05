@@ -145,6 +145,7 @@ from evaluator import (
     EvaluatorConfigError,
     EvaluatorImageError,
     EvaluatorService,
+    SandboxResult,
 )
 from snapshot import (
     MANIFEST_NAME,
@@ -153,18 +154,25 @@ from snapshot import (
     SnapshotMount,
 )
 
+from ._gvisor import GVisorSandbox
+from ._hardened_sandbox import HardenedSubprocessSandbox
+
 __all__ = [
     "ACKNOWLEDGE_UNISOLATED_KEY",
     "BARS_STREAM",
     "EVALUATION_CONFIG_CODE",
     "EVALUATION_CONFIG_ENV",
     "GVISOR_RUNTIME",
+    "GVISOR_RUNTIME_ROOT_KEY",
+    "GVISOR_STATE_ROOT_KEY",
     "ISOLATION_REQUIRED",
+    "LAKE_ROOTS_KEY",
     "REQUIRED_KEYS",
     "SANDBOX_RUNTIMES",
     "EvaluationConfigError",
     "EvaluationContext",
     "load_evaluation_context",
+    "signal_sandbox",
 ]
 
 #: The environment variable naming the JSON file that configures a live
@@ -199,6 +207,15 @@ ACKNOWLEDGE_UNISOLATED_KEY: Final[str] = "acknowledge_unisolated"
 #: The two runtimes ``sandbox_runtime`` accepts.  A gVisor *executor* is
 #: a later spec; what this member holds is the gate, not the runner.
 SANDBOX_RUNTIMES: Final[tuple[str, str]] = ("gvisor", "unisolated")
+
+#: The three keys a ``"gvisor"`` runtime also needs, read straight off the
+#: document rather than through :data:`REQUIRED_KEYS`: they are conditional
+#: on the runtime, the same shape :data:`ACKNOWLEDGE_UNISOLATED_KEY` takes
+#: for ``"unisolated"`` — present and refused by name when absent only once
+#: the gate has already accepted ``"gvisor"``.
+GVISOR_RUNTIME_ROOT_KEY: Final[str] = "gvisor_runtime_root"
+GVISOR_STATE_ROOT_KEY: Final[str] = "gvisor_state_root"
+LAKE_ROOTS_KEY: Final[str] = "lake_roots"
 
 #: The OCI runtime gVisor ships — the binary ``"gvisor"`` demands on
 #: ``PATH``.  The same spelling as the sandbox member's own
@@ -307,6 +324,18 @@ class EvaluationContext:
     #: ``runsc`` verified on ``PATH``) or ``"unisolated"`` (with the
     #: document's acknowledgement).
     sandbox_runtime: str
+    #: The read-only gVisor runtime root :func:`signal_sandbox` builds a
+    #: :class:`~orchestrator._gvisor.GVisorSandbox` over — required (and
+    #: refused by name when missing) only when ``sandbox_runtime`` is
+    #: ``"gvisor"``; ``None`` for ``"unisolated"``, where no executor reads it.
+    gvisor_runtime_root: Path | None = None
+    #: Where that executor keeps ``runsc``'s per-container state — the same
+    #: conditional shape as ``gvisor_runtime_root``.
+    gvisor_state_root: Path | None = None
+    #: The data lake roots a gVisor bundle must never mount under (feature
+    #: 4's own refusal) — a possibly-empty tuple, required only when
+    #: ``sandbox_runtime`` is ``"gvisor"``; empty for ``"unisolated"``.
+    lake_roots: tuple[Path, ...] = ()
 
 
 def load_evaluation_context(
@@ -347,6 +376,9 @@ def load_evaluation_context(
     _refuse_unknown_keys(document, named)
     values = {key: _required(document, key, named) for key in REQUIRED_KEYS}
     runtime = _sandbox_runtime(values, document, named, source)
+    gvisor_runtime_root, gvisor_state_root, lake_roots = _gvisor_inputs(
+        document, named, runtime
+    )
     dates = _evaluation_dates(values, named)
     horizon = _horizon(values, named)
     seed = _seed(values, named)
@@ -377,6 +409,9 @@ def load_evaluation_context(
         horizon=horizon,
         evaluation_dates=dates,
         sandbox_runtime=runtime,
+        gvisor_runtime_root=gvisor_runtime_root,
+        gvisor_state_root=gvisor_state_root,
+        lake_roots=lake_roots,
     )
 
 
@@ -434,7 +469,15 @@ def _refuse_unknown_keys(document: Mapping[str, Any], named: str) -> None:
     refused by name — the seven of :data:`REQUIRED_KEYS`, the one
     conditional :data:`ACKNOWLEDGE_UNISOLATED_KEY`, and nothing else.
     """
-    allowed = frozenset(REQUIRED_KEYS + (ACKNOWLEDGE_UNISOLATED_KEY,))
+    allowed = frozenset(
+        REQUIRED_KEYS
+        + (
+            ACKNOWLEDGE_UNISOLATED_KEY,
+            GVISOR_RUNTIME_ROOT_KEY,
+            GVISOR_STATE_ROOT_KEY,
+            LAKE_ROOTS_KEY,
+        )
+    )
     for key in document:
         if key not in allowed:
             raise EvaluationConfigError(
@@ -442,7 +485,9 @@ def _refuse_unknown_keys(document: Mapping[str, Any], named: str) -> None:
                 f"evaluation configuration at {named!r} (the keys are "
                 f"{', '.join(REQUIRED_KEYS)}, plus "
                 f"{ACKNOWLEDGE_UNISOLATED_KEY!r} when the runtime is "
-                "unisolated); the file never holds a credential — every "
+                f"unisolated, and {GVISOR_RUNTIME_ROOT_KEY!r}, "
+                f"{GVISOR_STATE_ROOT_KEY!r} and {LAKE_ROOTS_KEY!r} when it "
+                "is gvisor); the file never holds a credential — every "
                 "key is one the loader defines, and an unknown key is "
                 "refused rather than read past. Credentials live where "
                 "the members already read them: the sidecar key in "
@@ -668,6 +713,78 @@ def _sandbox_runtime(
             "scrolls past and an unisolated run does not"
         )
     return runtime
+
+
+def _gvisor_inputs(
+    document: Mapping[str, Any], named: str, runtime: str
+) -> tuple[Path | None, Path | None, tuple[Path, ...]]:
+    """``gvisor_runtime_root``, ``gvisor_state_root`` and ``lake_roots`` — or
+    ``(None, None, ())`` for ``"unisolated"``, which builds no executor that
+    reads them.
+
+    Checked immediately after the gate accepts ``runtime``, before a single
+    byte of the snapshot or the cost model is touched — the same "the gate
+    precedes every read" ordering :func:`_sandbox_runtime` itself holds, so
+    a ``"gvisor"`` configuration missing one of these three still refuses
+    before the mount is reached.
+    """
+    if runtime != "gvisor":
+        return None, None, ()
+    runtime_root = _gvisor_path(document, named, GVISOR_RUNTIME_ROOT_KEY)
+    state_root = _gvisor_path(document, named, GVISOR_STATE_ROOT_KEY)
+    lake_roots = _lake_roots(document, named)
+    return runtime_root, state_root, lake_roots
+
+
+def _gvisor_path(document: Mapping[str, Any], named: str, key: str) -> Path:
+    """One gVisor-only path key: a non-blank string, refused by name when
+    missing or malformed — there is no default once ``"gvisor"`` is chosen.
+    """
+    if key not in document:
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {key!r} is missing from the "
+            f"evaluation configuration at {named!r}; sandbox_runtime is "
+            f"'gvisor', which needs {key!r} to build the executor "
+            "(orchestrator._context.signal_sandbox), and there is no default"
+        )
+    raw = document[key]
+    if not isinstance(raw, str) or not raw.strip():
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {key!r} must be a non-blank path "
+            f"string, got {raw!r} ({type(raw).__name__})"
+        )
+    return Path(raw)
+
+
+def _lake_roots(document: Mapping[str, Any], named: str) -> tuple[Path, ...]:
+    """``lake_roots``: a list of path strings (possibly empty), refused by
+    name when missing or malformed.  The gVisor bundle (feature 4) refuses
+    any mount under one of these, so a missing list is a missing guarantee
+    — not a default an executor could fall back to.
+    """
+    key = LAKE_ROOTS_KEY
+    if key not in document:
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {key!r} is missing from the "
+            f"evaluation configuration at {named!r}; sandbox_runtime is "
+            f"'gvisor', which needs {key!r} to build the executor "
+            "(orchestrator._context.signal_sandbox), and there is no default"
+        )
+    raw = document[key]
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {key!r} must be a list of path "
+            f"strings, got {type(raw).__name__}"
+        )
+    roots: list[Path] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            raise EvaluationConfigError(
+                f"{EVALUATION_CONFIG_CODE}: {key!r} must hold non-blank "
+                f"path strings, got {item!r} ({type(item).__name__})"
+            )
+        roots.append(Path(item))
+    return tuple(roots)
 
 
 # -- The environment ----------------------------------------------------------
@@ -952,3 +1069,77 @@ def _cost_inputs(
             "refuses is a configuration this loader refuses"
         ) from exc
     return cost_model, cost_schedule, cost_model_hash
+
+
+# -- The executor ---------------------------------------------------------------
+
+
+def signal_sandbox(context: EvaluationContext) -> object:
+    """Build this evaluation's signal executor from its own context.
+
+    additions_spec_gvisor_executor.xml, "Executor Selection", feature 7:
+    *orchestrator._context.signal_sandbox(context) answers a GVisorSandbox
+    for sandbox_runtime "gvisor", or a HardenedSubprocessSandbox for
+    "unisolated".*  Both are drop-ins for :func:`evaluator.execute_signal`'s
+    ``sandbox`` argument, and :func:`orchestrator._evaluate.evaluate_node`
+    always passes this function's answer to it — the evaluator's own
+    default :class:`~evaluator.SignalSandbox` (a plain, unconfined
+    subprocess) is never asked to run agent-authored code.
+
+    ``"gvisor"`` builds a fresh :class:`~orchestrator._gvisor.GVisorSandbox`
+    over the context's own ``gvisor_runtime_root``, ``gvisor_state_root``
+    and ``lake_roots`` — already loaded and validated once, at
+    :func:`load_evaluation_context` time (the missing-key refusal this
+    feature names happens there, not here). ``"unisolated"`` builds a fresh
+    :class:`~orchestrator._hardened_sandbox.HardenedSubprocessSandbox`,
+    taking its defaults.  ``context.sandbox_runtime`` is one of
+    :data:`SANDBOX_RUNTIMES` by construction (the gate already checked it),
+    so there is no third branch.
+
+    The answer also remembers its own last :class:`~evaluator.SandboxResult`
+    on ``last_result`` (see :func:`_track_last_result`): a fresh executor
+    per call, built once per evaluated node and reused for every rebalance
+    date within it, the same "construct once, run many" shape both
+    executors' own docstrings already state.
+    """
+    if context.sandbox_runtime == "gvisor":
+        sandbox_instance: object = GVisorSandbox(
+            runsc=GVISOR_RUNTIME,
+            runtime_root=context.gvisor_runtime_root,
+            state_root=context.gvisor_state_root,
+            lake_roots=context.lake_roots,
+        )
+    else:
+        sandbox_instance = HardenedSubprocessSandbox()
+    return _track_last_result(sandbox_instance)
+
+
+def _track_last_result(sandbox_instance: Any) -> Any:
+    """Wrap ``sandbox_instance.run`` so it remembers its own last answer.
+
+    :class:`~evaluator.RawScoreVector` drops the executor's ``fail_class``
+    and ``detail`` entirely (neither field exists on it) — the only trace
+    of *why* a rebalance date's run failed is the
+    :class:`~evaluator.SandboxResult` :meth:`run` answered for it, and
+    ``execute_signal`` holds that value only as a local variable before
+    discarding it. This is the one seam that survives: an instance
+    attribute override (never a subclass), so
+    ``isinstance(signal_sandbox(context), GVisorSandbox)`` — feature 7's own
+    sentence — still holds for the gVisor branch, and the same for
+    :class:`~orchestrator._hardened_sandbox.HardenedSubprocessSandbox` on
+    the other. :func:`orchestrator._evaluate.evaluate_node` reads
+    ``last_result`` off the executor it was handed once
+    :class:`~evaluator.RawScoreVector`'s own ``conforming`` says a date
+    failed, which is exactly feature 7's "evaluate_node reads them from the
+    executor's last result."
+    """
+    original_run = sandbox_instance.run
+
+    def run(code: str, window: object, *, seed: int) -> SandboxResult:
+        result = original_run(code, window, seed=seed)
+        sandbox_instance.last_result = result
+        return result
+
+    sandbox_instance.last_result = None
+    sandbox_instance.run = run
+    return sandbox_instance

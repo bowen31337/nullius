@@ -659,12 +659,24 @@ def test_gvisor_loads_with_runsc_on_the_path(live: LiveWorld) -> None:
     # gVisor install (no host install is assumed), looked up on the PATH
     # the same environment names.  The spelling is compared casefolded
     # and carried canonically, so "gVisor" is one runtime, not two.
-    config = _config_file(live, sandbox_runtime=" gVisor ")
+    # additions_spec_gvisor_executor.xml, "Executor Selection", feature 7:
+    # "gvisor" also needs gvisor_runtime_root, gvisor_state_root and
+    # lake_roots, so this fixture's gvisor config names them too.
+    config = _config_file(
+        live,
+        sandbox_runtime=" gVisor ",
+        gvisor_runtime_root=str(live.bare_path / "gvisor-runtime"),
+        gvisor_state_root=str(live.bare_path / "gvisor-state"),
+        lake_roots=[],
+    )
     context = load_evaluation_context(
         _environment(live, config, PATH=str(live.runsc_path))
     )
     assert context is not None
     assert context.sandbox_runtime == "gvisor"
+    assert context.gvisor_runtime_root == live.bare_path / "gvisor-runtime"
+    assert context.gvisor_state_root == live.bare_path / "gvisor-state"
+    assert context.lake_roots == ()
 
 
 def test_gvisor_without_runsc_names_isolation_required(live: LiveWorld) -> None:

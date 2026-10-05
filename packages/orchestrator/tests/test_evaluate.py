@@ -107,7 +107,14 @@ CAMPAIGN_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 #: the trailing price change over the window's own lookback bars.  Written
 #: the way the momentum e2e journey's own signal is, so a genuine sandbox
 #: spawn produces a real, varying cross-section every rebalance date.
+#: Imports polars explicitly: unlike the evaluator's own embedded
+#: SignalSandbox (which pre-seeds "pl" in the signal's namespace),
+#: orchestrator._sandbox_child's bootstrap (feature 7's own executor) gives
+#: the signal nothing it did not import itself — "polars" is on the
+#: committed allowlist precisely so a signal can do this.
 MOMENTUM_SIGNAL_CODE = f"""
+import polars as pl
+
 def signal(ctx, seed):
     bars = ctx.bars("1d")
     if len(bars) <= 0:

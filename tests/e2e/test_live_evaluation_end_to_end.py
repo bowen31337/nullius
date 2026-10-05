@@ -155,8 +155,14 @@ TEST_KEY_HEX = "11" * 32
 
 #: A hand-written momentum signal, the same shape ``test_evaluate.py``'s own
 #: ``MOMENTUM_SIGNAL_CODE`` is: a real sandbox spawn per rebalance date,
-#: scoring the sealed bars rather than a stand-in.
+#: scoring the sealed bars rather than a stand-in. Imports polars
+#: explicitly: orchestrator._sandbox_child's bootstrap (the executor
+#: additions_spec_gvisor_executor.xml's "Executor Selection" feature wires
+#: evaluate_node through) gives the signal nothing it did not import
+#: itself, unlike the evaluator's own embedded SignalSandbox.
 MOMENTUM_SIGNAL_CODE = f"""
+import polars as pl
+
 def signal(ctx, seed):
     bars = ctx.bars("1d")
     if len(bars) <= 0:
