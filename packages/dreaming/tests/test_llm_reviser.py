@@ -104,6 +104,19 @@ def fenced(source: str, *, language: str = "python", prose: str = "") -> str:
     return f"{prefix}```{language}\n{source}\n```\n"
 
 
+def echoed(source: str) -> str:
+    """A fenced answer with the closing fence immediately after ``source``.
+
+    Unlike :func:`fenced`, which inserts its own ``\\n`` ahead of the closing
+    fence, this is how a real model echoes a module back: the source's own
+    trailing newline is the last thing before the fence line, so when
+    ``source`` already ends in ``\\n`` (as every module here does), the
+    extracted body loses that trailing newline — the exact shape the
+    identical-to-incumbent bug needs to reproduce.
+    """
+    return f"```python\n{source}```\n"
+
+
 def revised_module(index: int) -> str:
     """A distinct, importable module for revision ``index``.
 
@@ -273,6 +286,45 @@ def test_an_unterminated_fence_is_refused():
 def test_an_answer_identical_to_the_incumbent_is_refused_naming_the_index():
     refusal = _refusal(fenced(INCUMBENT), revision_index=4)
     assert "4" in str(refusal)
+
+
+def test_an_echo_missing_only_the_trailing_newline_is_refused():
+    # A real model's fence closes right after the source's own trailing
+    # newline, with no extra blank line — the shape `fenced()` never
+    # produces, and the one the raw-string compare let through.
+    refusal = _refusal(echoed(INCUMBENT), revision_index=6)
+    assert "6" in str(refusal)
+
+
+def test_an_echo_is_refused_when_the_incumbent_uses_crlf_line_endings():
+    # The incumbent module may be stored with CRLF endings while the answer
+    # the reviser reads is always normalised to LF; content-identical text
+    # must still be refused rather than compared across the two spellings.
+    crlf_incumbent = INCUMBENT.replace("\n", "\r\n")
+    provider = FakeProvider(lambda request: echoed(INCUMBENT))
+    reviser, _session, _provider = make_reviser(provider)
+    with pytest.raises(ReviserOutputError) as caught:
+        reviser(crlf_incumbent, 7, 0)
+    assert REVISER_OUTPUT_CODE in str(caught.value)
+
+
+def test_an_echo_with_trailing_spaces_on_every_line_is_refused():
+    padded = "\n".join(f"{line}  " for line in INCUMBENT.split("\n"))
+    _refusal(echoed(padded), revision_index=8)
+
+
+def test_an_echo_with_extra_blank_lines_around_the_body_is_refused():
+    padded = f"\n\n{INCUMBENT}\n\n"
+    _refusal(echoed(padded), revision_index=9)
+
+
+def test_a_change_inside_a_comment_is_still_accepted_as_a_revision():
+    # Expected #3: a change of any token, including inside a comment, is a
+    # real revision and must not be folded into the identity check.
+    changed = INCUMBENT.rstrip("\n") + "  # tweaked\n"
+    provider = FakeProvider(lambda request: fenced(changed))
+    reviser, _session, _provider = make_reviser(provider)
+    assert reviser(INCUMBENT, 1, 0) == changed
 
 
 def test_the_refusal_is_a_dreaming_error():

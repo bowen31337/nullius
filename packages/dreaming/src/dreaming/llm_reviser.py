@@ -282,6 +282,33 @@ def _normalised_lines(text: str) -> list[str]:
     return text.replace("\r\n", "\n").split("\n")
 
 
+def _comparable(text: str) -> str:
+    """``text`` reduced to the form the incumbent-identity check compares.
+
+    The extracted fenced block and the incumbent source can differ in ways
+    that carry no revision at all: the dedent in :func:`_python_block_bodies`
+    drops the source's own trailing newline whenever the closing fence
+    follows it with no blank line between (the common shape a model's echo
+    takes), the incumbent may be stored with ``\\r\\n`` endings while a read
+    answer is always folded to ``\\n`` by :func:`_normalised_lines`, and a
+    model may pad lines with trailing spaces or wrap the body in extra blank
+    lines without touching a single token. None of those is content, so
+    before the two are compared each is folded to ``\\n`` line endings,
+    trimmed of trailing whitespace line by line, and stripped of leading and
+    trailing blank lines. A change of any other token — including one inside
+    a string or a comment — still differs after this folding and is accepted
+    as a revision, exactly as the feature's sentence requires.
+    """
+    lines = [line.rstrip() for line in _normalised_lines(text)]
+    start = 0
+    end = len(lines)
+    while start < end and not lines[start]:
+        start += 1
+    while end > start and not lines[end - 1]:
+        end -= 1
+    return "\n".join(lines[start:end])
+
+
 def _leading_whitespace(line: str) -> str:
     """A line's leading blanks — the indentation a fence or body line wears."""
     stripped = line.lstrip(" \t")
@@ -381,7 +408,9 @@ def _revised_source(text: Any, incumbent_source: str, revision_index: int) -> st
     The reading half of :meth:`LLMReviser.__call__`, split out so it is a pure
     function of the answer and the incumbent: zero python blocks is refused, a
     blank block body is refused, several python blocks are refused, and an
-    answer whose single block is byte-identical to the incumbent is refused
+    answer whose single block is identical to the incumbent, modulo line
+    endings, trailing whitespace and surrounding blank lines (see
+    :func:`_comparable`), is refused
     **naming the revision index** — because a model that echoed the incumbent
     produced no revision, and returning it would collapse ``revise_policy``'s
     distinctness check onto one source.  Each refusal opens with
@@ -424,7 +453,7 @@ def _revised_source(text: Any, incumbent_source: str, revision_index: int) -> st
             f"than letting a blank reach the gate as a source defect it is not "
             f"(feature 9)."
         )
-    if code == incumbent_source:
+    if _comparable(code) == _comparable(incumbent_source):
         raise ReviserOutputError(
             f"{REVISER_OUTPUT_CODE}: revision {revision_index} answered with the "
             f"incumbent module unchanged. A revision that is not a revision "
