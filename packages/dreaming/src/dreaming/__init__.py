@@ -22,8 +22,8 @@ and the part that refuses the moving.
 What it is
 ----------
 
-One component, :data:`COMPONENT_NAME`, sitting over the database the replay
-pool already lives in.  :meth:`~dreaming.cycle.CycleFreeze.open` writes a hold
+Its founding component, :data:`COMPONENT_NAME`, sitting over the database the
+replay pool already lives in.  :meth:`~dreaming.cycle.CycleFreeze.open` writes a hold
 row naming the iteration and recording the pool's **commitment** — a digest
 over which worlds the tournament is held over — and installing a
 ``BEFORE INSERT``/``UPDATE``/``DELETE`` guard per pool table per operation;
@@ -380,12 +380,40 @@ anything**, because §C5's hold is *per outer iteration* and an application that
 acquired one at composition time would be holding a pool for as long as the
 process lived.
 
-**One component, and it may be ``None``.**  ``"dreaming"`` is the member's
-first and only component, registered unprefixed, following the ``ledger`` /
-``artifacts`` / ``discovery`` precedent for a member whose first component is
-the whole of what it contributes.  The name sorts after ``discovery`` and
-before ``evaluator``, so every name-sorted ``app.order`` adjacency in the
-existing suite is untouched.
+**The ``dreaming`` component may be ``None``.**  ``"dreaming"`` is registered
+unprefixed, following the ``ledger`` / ``artifacts`` / ``discovery`` precedent
+for a member whose first component was the whole of what it contributed at its
+founding.  The name sorts after ``discovery`` and before ``evaluator``, so
+every name-sorted ``app.order`` adjacency in the existing suite is untouched.
+
+**A second component, the policy reviser, registered beside it.**  The
+policy-development authoring addition wires feature 9's
+:class:`~dreaming.llm_reviser.LLMReviser` into the composed application under
+:data:`POLICY_REVISER_COMPONENT` (``policy-reviser``).  Its builder
+(:func:`build_policy_reviser`) reads the one variable the addition's front
+door reads — ``NULLIUS_AUTHORING_CONFIG``, through
+:func:`providers.load_authoring_config` — and answers ``None`` when that door
+answers ``None``: a deployment that authors nothing (a CI run, an offline
+replay against recorded fixtures) composes no reviser, the same discoverable
+state the freeze answers ``None`` for when no database is named.  When a
+config is named, the builder answers the reviser over a
+:class:`providers.AuthoringSession` whose resolver is the **live-providers**
+one — reached by calling that component's own registered builder,
+:func:`providers.build_live_providers`, the factory's construction path for
+it — because a builder is passed nothing and cannot read the application it
+is being composed into.  The builder performs **no model call and reads no
+credential**: the resolver reads the environment only inside ``resolve()``,
+the session resolves a pin only at ``provider_for``, and the reviser calls a
+provider only when a revision asks it to, so an application composed on a box
+with no ``NULLIUS_*`` keys at all carries the reviser whole — the first
+refusal it can meet, a ``ProviderNotConfiguredError`` naming the variable and
+never its value, belongs to the first revision, where an operator is asking
+for a model.  The name sorts between ``ops-type-b-depth`` and
+``policy-runtime``, so the adjacencies the existing suite asserts over
+``app.order`` are untouched there too.  And the sweep this reviser serves is
+unmoved: :func:`dreaming.reviser.revise_policy`'s default reviser stays
+:func:`~dreaming.reviser.default_reviser` — this component is a deployment's
+*wiring* of feature 9's reviser, not a change to feature 271's contract.
 
 The composed ``dreaming`` component answers exactly one question —
 *what is the composed cycle freeze?* — and re-exports nothing of the member's
@@ -479,6 +507,7 @@ from .layout import (
     pool_bootstrap_schema,
     pool_tables_present,
 )
+from .llm_reviser import LLMReviser, ReviserOutputError
 from .paired import (
     PAIRED_CODE,
     PAIRED_LEVEL,
@@ -550,6 +579,7 @@ __all__ = [
     "LADDER_FLOOR_WORLDS",
     "PAIRED_CODE",
     "PAIRED_LEVEL",
+    "POLICY_REVISER_COMPONENT",
     "POOL_SCHEMA_BY_TABLE",
     "POOL_TABLES",
     "POOL_TOO_THIN_CODE",
@@ -585,12 +615,14 @@ __all__ = [
     "HoldoutRequestError",
     "IncumbentCandidate",
     "IncumbentRequestError",
+    "LLMReviser",
     "PairedComparisonError",
     "PairedDifference",
     "PoolFrozenError",
     "PoolSplit",
     "PoolTooThinError",
     "ProportionComparisonError",
+    "ReviserOutputError",
     "RevisionCeilingError",
     "RevisionError",
     "RevisionRequestError",
@@ -606,6 +638,7 @@ __all__ = [
     "TransferRequestError",
     "TransferStoreError",
     "build_cycle_freeze",
+    "build_policy_reviser",
     "candidate_module",
     "commit_selection",
     "cycle_bar",
@@ -656,6 +689,14 @@ __all__ = [
 #: this workspace exports for the key the composed application is read by.
 COMPONENT_NAME = POOL_FREEZE_COMPONENT_NAME
 
+#: The name the policy-development reviser registers under — the authoring
+#: addition's own spelling, ``policy-reviser``, following the same unprefixed
+#: precedent as :data:`COMPONENT_NAME` and named after the *thing composed*
+#: rather than the member: a deployment reads
+#: ``create_app().get("policy-reviser")`` for the reviser it authors policy
+#: with, beside the ``live-providers`` resolver that reviser's session holds.
+POLICY_REVISER_COMPONENT = "policy-reviser"
+
 #: The ladder floor's world count — §12.1's 20, the floor a dreaming run must
 #: meet.  Re-exported from :mod:`dreaming.ladder` under the friendlier name the
 #: seat and a caller reach for, the way :data:`POOL_FREEZE_COMPONENT_NAME` is
@@ -703,3 +744,88 @@ def build_cycle_freeze() -> CycleFreeze | None:
     process lived, which would be a dreaming cycle that never ended.
     """
     return CycleFreeze.resolve()
+
+
+@register(POLICY_REVISER_COMPONENT)
+def build_policy_reviser() -> LLMReviser | None:
+    """Component builder: the model-driven reviser this deployment authors with.
+
+    The policy-development authoring addition's contribution to the composed
+    application: feature 9's
+    :class:`~dreaming.llm_reviser.LLMReviser` — the pluggable
+    ``(incumbent_source, revision_index, seed) -> source`` transform feature
+    271's seam was built to take — wired over a
+    :class:`providers.AuthoringSession` so a whole campaign's revisions draw
+    on one budget per pinned model.  Takes no arguments — the factory's
+    registration protocol — and reads the one variable the addition's front
+    door reads: ``NULLIUS_AUTHORING_CONFIG``, through
+    :func:`providers.load_authoring_config`.
+
+    Answers ``None`` when that door answers ``None`` — the variable unset or
+    blank — which is deliberately not a reviser over no model: it is a
+    deployment that authors nothing (a CI run, an offline replay against
+    recorded fixtures), the same discoverable state
+    :func:`build_cycle_freeze` answers ``None`` for when no database is
+    named.  A caller that *must* revise through a model is the caller that
+    must treat the ``None`` as a refusal to proceed, exactly as it treats the
+    freeze's.
+
+    The builder makes **no model call and reads no API key**.  Everything it
+    constructs is lazy: the resolver reads ``os.environ`` only inside its
+    ``resolve()``, the session resolves a pin only at
+    :meth:`~providers.AuthoringSession.provider_for`, and the reviser calls a
+    provider only when a revision asks it to — so an application composed on
+    a box with no ``NULLIUS_*`` credentials at all carries the reviser whole,
+    and the first refusal it can meet, a
+    :class:`~providers.ProviderNotConfiguredError` naming the variable and
+    never its value, belongs to the first revision, where an operator is
+    asking for a model and can act on the name.
+
+    The session's resolver is the **live-providers** one, reached by calling
+    that component's own registered builder,
+    :func:`providers.build_live_providers` — the same construction path the
+    factory itself takes for the ``"live-providers"`` component — rather than
+    by reading the composed application, because the factory passes a builder
+    nothing (and ``create_app()`` called from inside a builder would compose
+    the application inside its own composition, forever).  The resolver is
+    stateless, so the component's instance and the session's are one
+    behaviour by construction.
+
+    :mod:`providers` is imported **inside the builder** and never at module
+    scope, for the reason :func:`dreaming.llm_reviser._providers` states: the
+    scan imports this package with only its own ``src/`` necessarily on
+    ``sys.path``, so a module-scope import would make this package's
+    registration depend on scan order.  At build time the scan has finished
+    and the process is one that can import the member at all — the same
+    deferred-import discipline every cross-member read in this workspace
+    follows.
+
+    A config file that is named but wrong **raises**
+    :class:`providers.AuthoringConfigError` — ``load_authoring_config``'s own
+    refusal, deliberately not swallowed.  The degrade-don't-break rule covers
+    the *absent* variable; a file that is there and will not parse is a
+    deployment that stated an authoring it does not have, and quietly
+    composing no reviser instead would be the quieter failure the front
+    door's own docstring refuses — the campaign would run with no model
+    behind it and learn nothing, which is the spend without the search.
+
+    The sweep this reviser serves is untouched by the wiring:
+    :func:`dreaming.reviser.revise_policy`'s default reviser stays
+    :func:`~dreaming.reviser.default_reviser`, and this component is a
+    deployment's *substitution* of feature 9's reviser into feature 271's
+    seam, not a move of the contract — a deployment that composes no reviser
+    still sweeps, on the seeded magnitude perturbation.
+    """
+    import providers
+
+    config = providers.load_authoring_config()
+    if config is None:
+        return None
+    # The live-providers component's own builder, not the composed
+    # application's copy of it: the factory passes a builder nothing, and the
+    # resolver is stateless, so this is the same value the application holds
+    # under "live-providers" — read the pin through the bound method the
+    # session wants, a callable `pin -> Provider`.
+    resolver = providers.build_live_providers()
+    session = providers.AuthoringSession(config, resolver.resolve)
+    return LLMReviser(session, config=config)
