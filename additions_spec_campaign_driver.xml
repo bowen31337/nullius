@@ -1,0 +1,302 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — campaign driver (orchestrator member, spec B)</project_name>
+  <addition_summary>
+    Run a live exploration campaign end to end: the inner loop of
+    docs/alpha-engine-prd.md section 5 and docs/nullius-tech-architecture.md.
+    It builds on spec A (additions_spec_live_evaluation.xml: the
+    orchestrator member and its "live-evaluator" component) and on
+    additions_spec_llm_authoring.xml (the "signal-author" component). It
+    adds the pieces nothing has yet:
+    - root planting: a root is an authored opening signal at depth 0, in a
+      freshly assigned theme;
+    - Type-R null sealing at the right moment;
+    - a live CampaignTree view for the exploration policy;
+    - the exploration policy itself: the admitted incumbent policy module,
+      with a built-in baseline when none is configured;
+    - the expand, record, evaluate and persist worker;
+    - the round loop with its stopping rules, and the campaign finish;
+    - a command, `python -m orchestrator.campaign`.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / SQLite or PostgreSQL via DATABASE_URL / pytest (ruff conventions)</stack>
+    <test_baseline>Measured 2026-10-06 on main (HEAD 33af1fa): workspace tests/ 1614 passed; orchestrator 133 (pre-OCI-2), signal-agent 761, discovery 678, policy-runtime green.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md: members only; @register only in __init__.py;
+      components via create_app().get(name); typed refusals with a code word
+      in the raising module; and no network or credential in tests.
+
+      Existing pieces (read, do not edit unless a feature names the file):
+      - orchestrator (spec A):
+        - LiveEvaluator.evaluate(node_id, campaign_id, depth, code) -&gt;
+          NodeEvaluation(node_id, metrics, score, charges_budget, fail_class,
+          persistence, debit).
+        - load_evaluation_context(env) -&gt; EvaluationContext, which carries
+          the provenance trio, epoch_id, database_url and artifact_dir.
+        - The "live-evaluator" component.
+      - signal_agent (llm_authoring):
+        - LLMSignalAuthor(workspace) -&gt; AuthoredSignal(code,
+          stated_mechanism, proposal, record), which expands an existing
+          node. record is a providers.AuthoringRecord with
+          attempt_provenance_terms().
+        - The "signal-author" component, and ProposalHistoryStore.persist(
+          node_id, proposal, *, score=None).
+      - providers: record_authoring(record, *, database_url) and
+        record_campaign_cache_rate(campaign_id, records, *, database_url).
+      - discovery:
+        - create_campaign(campaign_type, workspace_count, *, database_url)
+          -&gt; CampaignRecord.
+        - assign_theme(...) and legal_themes_from_env(env).
+        - NodeExpansion(agent, database_url)(node_id) -&gt; RefinedSignal.
+        - persist.Attempt.from_signal(signal, provenance, *, fail_class,
+          ...), which refuses depth 0. AttemptLog(database_url,
+          directory).record(attempt). AttemptProvenance(evaluator_hash,
+          snapshot_hash, cost_model_hash, agent_model_id, agent_sampling,
+          agent_ckpt_hash).
+        - workers.run_batch(worker, jobs, *, width) and
+          retry.retry_interrupted(worker, results, *, retries, width), where
+          WorkerInterrupted is retryable and every other error is final.
+        - manifest.finish_campaign(campaign_id, *, database_url).
+        - Feature 242: a campaign ends when the policy selects no batch.
+      - nulloracle: TypeRSelection(database_url,
+        sidecar).persist(campaign_id) seals the campaign's roots. It reads
+        phi and W from the campaign row, so it must run after the roots are
+        planted and before any evaluation. The component is
+        "nulloracle-type-r-selection".
+      - policy_runtime:
+        - CampaignTree.freeze({node_id: (parent_id, depth, payload)}) and
+          PolicyQuestion(tree, budget). PolicyQuestion offers reveal_many,
+          observed, legal_roots and legal_actions.
+        - prefix_view(question) -&gt; PrefixView, whose cells are
+          PolicyObservation(node_id, r2_insample, ic_insample, n_periods,
+          n_features), read from the node payload.
+        - budget_account(allowance, rows) -&gt; BudgetAccount (.remaining,
+          .exhausted).
+        - screen_policy(source) -&gt; PolicyAdmissionDecision,
+          guard_policy(policy_module=POLICY_MODULE_NAME, ...) and
+          POLICY_MODULE_NAME.
+        - The policy contract is policy.select(prefix_view) -&gt; a batch of
+          node ids, as replay calls it.
+      - The node table carries id, parent_id, campaign_id, theme_root, depth
+        and the 0114 to 0117 columns (metrics, agent trio, provenance trio,
+        code_hash, artifact_uri, stated_mechanism). The artifacts member's
+        ArtifactStore stores code. CLI modules follow the
+        providers.live_check pattern: main(argv=None, *, env=None, ...) -&gt;
+        int.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Roots">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/signal-agent/src/signal_agent/_llm_author.py,packages/signal-agent/tests/test_llm_author_root.py">
+        System creates a campaign's opening signal with
+        LLMSignalAuthor.author_root(campaign_id, theme_root, *, root_id),
+        which answers an AuthoredSignal whose record has depth 0 and role
+        root.
+        - The root id is the caller's root_id (a UUID). The model is chosen
+          with session.provider_for("root", campaign_id, node_id=root_id),
+          so the root rotation decides it.
+        - The prompt is signal_agent's build_authoring_prompt (the C3
+          prompt of additions_spec_llm_authoring.xml) for depth 0 in theme_root,
+          with the campaign's history, which is empty for the first root.
+        - The answer goes through the same parse, adopt, anti-convergence
+          and retry path as an expansion. Refusals are unchanged
+          (AuthoringRefusedError, BudgetExhaustedError and
+          ServedModelMismatchError).
+        - The existing __call__(workspace) is unchanged, and its tests stay
+          green.
+      </feature>
+      <feature index="2" shape="core" depends_on=""
+               touches_files="packages/orchestrator/pyproject.toml,packages/orchestrator/src/orchestrator/_roots.py,packages/orchestrator/tests/test_roots.py">
+        System persists a planted root as a depth-0 node row with
+        orchestrator._roots.plant_root(campaign_id, theme_root, authored, *,
+        context, artifact_store), and it answers the root's node id.
+        - The row is id = authored.record.node_id, parent_id NULL, depth 0,
+          campaign_id and theme_root.
+        - code_hash is the signal_agent source_code_hash of authored.code,
+          and artifact_uri is where the code is written through the
+          ArtifactStore. stated_mechanism is authored.stated_mechanism.
+        - agent_model_id and agent_sampling come from
+          authored.record.attempt_provenance_terms(). The provenance trio
+          comes from context.
+        - Planting the same root twice with identical values answers the
+          same id and writes nothing. Different values for an existing id
+          raise RootPlantError (code word root_plant).
+        - An authored record whose depth is not 0 raises RootPlantError.
+        - Tests use a migrated throwaway SQLite database.
+        - This feature claims packages/orchestrator/pyproject.toml so that no
+          other feature touches it, and it leaves the file unchanged: spec A
+          already declared every workspace dependency the driver needs.
+      </feature>
+    </category>
+    <category name="Exploration Policy">
+      <feature index="3" shape="core" depends_on=""
+               touches_files="packages/orchestrator/src/orchestrator/_live_tree.py,packages/orchestrator/tests/test_live_tree.py">
+        System creates a live policy question over a running campaign with
+        orchestrator._live_tree.live_question(campaign_id, *, database_url,
+        evaluation_periods, budget=None). It answers a
+        policy_runtime.PolicyQuestion over a CampaignTree frozen from the
+        campaign's node rows.
+        - Every evaluated node is revealed.
+        - Each node's payload is {ic_insample: ic_mean, r2_insample:
+          ic_mean squared, n_periods: evaluation_periods, n_features: 1}.
+          A node with no metrics, because it failed or is not yet evaluated,
+          has a payload of None and is not revealed.
+        - The tree is rebuilt from the rows on every call, so a new child is
+          visible in the next round.
+        - The module reads only the node table's id, parent_id, depth and
+          metric columns. It never reads the null sidecar, and never reads
+          a null bit.
+      </feature>
+      <feature index="4" shape="core" depends_on="3"
+               touches_files="packages/orchestrator/src/orchestrator/_policy.py,packages/orchestrator/tests/test_policy.py">
+        System creates the exploration policy that selects the next batch
+        of nodes to expand, with
+        orchestrator._policy.load_exploration_policy(env=None). The policy's select(prefix_view) answers a list of node
+        ids.
+        - When NULLIUS_EXPLORATION_POLICY names a source file, its text must
+          be admitted by policy_runtime.screen_policy. A refusal raises
+          PolicyLoadError (code word policy_load) carrying the decision's
+          reason. An admitted file is imported as POLICY_MODULE_NAME under
+          guard_policy, and its top-level select function is the policy.
+        - When the variable is unset, the policy is BaselinePolicy(width).
+          It answers up to width revealed node ids, highest ic_insample
+          first, at most one per theme root per batch, with ties broken by
+          node id. A view with no revealed node answers [].
+        - The answer is checked: ids not in the view, duplicates, or a
+          non-list raise PolicyLoadError.
+      </feature>
+    </category>
+    <category name="Campaign Loop">
+      <feature index="5" shape="core" depends_on=""
+               touches_files="packages/orchestrator/src/orchestrator/_worker.py,packages/orchestrator/tests/test_worker.py">
+        System expands and evaluates one parent node with
+        orchestrator._worker.NodeWorker(author, evaluator, *, context,
+        artifact_directory, history_store), and it creates the child's
+        ChildOutcome(node_id, depth, fail_class, score, charges_budget,
+        record).
+        - NodeWorker(parent_id) runs discovery.NodeExpansion(author,
+          database_url)(parent_id), and builds Attempt.from_signal with
+          AttemptProvenance from context and the author's
+          record.attempt_provenance_terms(). It records the attempt with
+          AttemptLog, then calls providers.record_authoring(record).
+        - It then calls evaluator.evaluate(child id, campaign_id, depth,
+          code), and persists the proposal and its score with
+          history_store.persist(child id, proposal, score=evaluation.score).
+        - An AuthoringRefusedError is recorded as a failed attempt, with
+          fail_class authoring_refused, and is not evaluated.
+          BudgetExhaustedError propagates and stops the campaign.
+          WorkerInterrupted propagates for retry_interrupted.
+        - Running the same parent twice is idempotent: the child's uuid5
+          id, the ledger's per-node debit and the stores' conflict rules
+          answer the first outcome.
+        - Tests use fake author and evaluator objects.
+      </feature>
+      <feature index="6" shape="core" depends_on="1,2,4,5"
+               touches_files="packages/orchestrator/src/orchestrator/_campaign.py,packages/orchestrator/tests/test_campaign.py">
+        System runs one campaign with orchestrator._campaign.run_campaign(*,
+        campaign_type, workspaces, rounds, width, allowance, author,
+        evaluator, policy, context, sidecar_selection, emit), and it creates
+        a CampaignResult(campaign_id, roots, nodes, rounds_run, stop_reason,
+        manifest).
+        - Plant: create_campaign(campaign_type, workspaces). Then for each
+          of the workspaces roots: assign_theme, author.author_root,
+          plant_root, record_authoring, and proposal persistence.
+        - Seal: after all roots are planted and before any evaluation,
+          sidecar_selection.persist(campaign_id).
+        - Evaluate every root with evaluator.evaluate, and persist each
+          root's score.
+        - Loop for up to rounds rounds:
+          - Build live_question with budget_account(allowance, ledger rows).
+          - batch = policy.select(prefix_view(question))[:width].
+          - Run the batch with run_batch(NodeWorker, batch, width=width)
+            wrapped in retry_interrupted(retries=2).
+        - Stop on the first of these. stop_reason is the matching word:
+          - the policy answers an empty batch (no_batch, feature 242);
+          - the budget is exhausted (budget_exhausted);
+          - a BudgetExhaustedError from the token budget (token_budget);
+          - the round cap (round_cap).
+        - Finish: finish_campaign(campaign_id), and
+          record_campaign_cache_rate(campaign_id, records) when any depth
+          record exists.
+        - emit receives one JSON-ready dict per planted root, per evaluated
+          node and per round, plus a final summary.
+        - The function never reads a null bit. Tests drive it with fakes and
+          a migrated SQLite database.
+      </feature>
+      <feature index="7" shape="core" depends_on="6"
+               touches_files="packages/orchestrator/src/orchestrator/campaign.py,packages/orchestrator/tests/test_campaign_cli.py">
+        System runs a campaign from `python -m orchestrator.campaign --type
+        TYPE --workspaces W --rounds R [--width N] [--allowance UNITS]` and
+        prints one JSON line per emitted event, followed by the summary
+        line.
+        - The command takes the "signal-author", "live-evaluator" and
+          "nulloracle-type-r-selection" components from create_app(), and
+          loads the policy with load_exploration_policy.
+        - It refuses to start with exit 2 and one stderr line naming the
+          missing piece when a component answers None, meaning an
+          unconfigured author or evaluator.
+        - Exit codes: 0 when the campaign finished (any stop_reason), 1 on a
+          refusal raised mid-campaign (its code word on stderr), 2 on bad
+          arguments or missing configuration.
+        - main(argv=None, *, env=None, app=None, emit=print) is injectable.
+          No API key or credential is ever printed.
+      </feature>
+    </category>
+    <category name="Campaign Verification">
+      <feature index="8" shape="core" depends_on="6"
+               touches_files="tests/e2e/test_live_campaign_end_to_end.py">
+        System verifies a small live campaign end to end with no network in
+        tests/e2e/test_live_campaign_end_to_end.py.
+        - Setup: W=2 roots and 2 rounds of width 2, a seeded snapshot, a
+          throwaway sidecar and SQLite database, and an LLMSignalAuthor whose
+          session answers RecordedProvider fixtures. The fixtures are valid
+          signal sources with Mechanism lines.
+        - It uses the real live evaluator, and the baseline policy.
+        - The test asserts that both roots are depth-0 rows with code_hash,
+          agent and provenance columns, and that the roots were sealed
+          before the first evaluation.
+        - It asserts that every node row has metrics or a fail_class, and
+          that the ledger holds exactly one debit per node with the oracle's
+          charges_budget.
+        - It asserts that each node's proposal and score are persisted, that
+          the manifest is finished, and that stop_reason is round_cap or
+          no_batch.
+        - A second run with a policy that answers [] at once stops with
+          no_batch after the roots.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    New modules in packages/orchestrator: _roots, _live_tree, _policy,
+    _worker and _campaign, plus the runnable orchestrator.campaign.
+    signal_agent._llm_author gains author_root (feature 1).
+    No new component is registered: the command composes the existing
+    components.
+    Every new file is committed as an empty stub so its claim resolves.
+    Wiring the command into run.sh, with its 1Password template for the
+    NULLIUS_*_API_KEY variables, is an operator step and outside this spec.
+  </integration_points>
+  <constraints>
+    - No orchestrator module reads a node's null status, the sidecar key or
+      an is_null value. Only nulloracle's own TypeRSelection.persist touches
+      the sidecar.
+    - Every evaluated node, failed ones included, is debited once.
+      Authoring refusals are recorded as failed attempts.
+    - Do not edit the evaluator, nulloracle, ledger, artifacts, discovery,
+      policy-runtime or providers members, the migrations, or the root
+      pyproject.toml.
+    - No test opens a network connection or reads a real credential. No
+      third-party dependency is added.
+    - Do not edit run.sh, the .env templates, claw-forge.yaml or
+      docs/user-journeys/.
+    - All existing workspace tests and the member suites of orchestrator,
+      signal-agent, discovery and policy-runtime stay green.
+  </constraints>
+  <implementation_steps>
+    <step>Phase 1: author_root (feature 1), the root planter (feature 2), the live tree (feature 3) and the worker (feature 5), in parallel.</step>
+    <step>Phase 2: the policy loader with the baseline (feature 4).</step>
+    <step>Phase 3: the campaign loop (feature 6).</step>
+    <step>Phase 4: the command (feature 7) and the end-to-end verification (feature 8).</step>
+  </implementation_steps>
+</project_specification>
