@@ -544,6 +544,12 @@ import os
 from app.module_loader import register
 
 from ._anthropic import AnthropicProvider, ProviderRequestError
+from ._authoring import (
+    AuthoringConfig,
+    AuthoringConfigError,
+    AuthoringRecord,
+    load_authoring_config,
+)
 from ._batch import (
     BATCH_ENDPOINT,
     BATCH_RATE_MULTIPLE,
@@ -809,6 +815,9 @@ __all__ = [
     "AgentSamplingMalformedError",
     "AgentWeights",
     "AnthropicProvider",
+    "AuthoringConfig",
+    "AuthoringConfigError",
+    "AuthoringRecord",
     "BatchCompletion",
     "BatchEndpoint",
     "BatchPricing",
@@ -908,6 +917,7 @@ __all__ = [
     "flat_pricing",
     "hosted_api_weights",
     "live_provider",
+    "load_authoring_config",
     "measure_cache_rate",
     "prompt_hash",
     "published_figure",
