@@ -55,9 +55,11 @@ from ledger import (
     TrialRecordError,
 )
 
-NODE_A = uuid.uuid4()
-NODE_B = uuid.uuid4()
-CAMPAIGN = uuid.uuid4()
+# Fixed (uuid5, not uuid4): these feed @pytest.mark.parametrize ids, and
+# pytest-xdist requires every worker to collect identical test ids.
+NODE_A = uuid.uuid5(uuid.NAMESPACE_URL, "nullius:ledger-tests:test_debit:NODE_A")
+NODE_B = uuid.uuid5(uuid.NAMESPACE_URL, "nullius:ledger-tests:test_debit:NODE_B")
+CAMPAIGN = uuid.uuid5(uuid.NAMESPACE_URL, "nullius:ledger-tests:test_debit:CAMPAIGN")
 STAMP = datetime(2026, 9, 20, 5, 0, 0, tzinfo=timezone.utc)
 LATER = datetime(2026, 9, 20, 6, 0, 0, tzinfo=timezone.utc)
 # The outcome these feature-95 tests charge with — any of the four

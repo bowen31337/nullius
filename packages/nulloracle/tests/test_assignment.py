@@ -132,8 +132,12 @@ class TestTheNodeIdentity:
     def test_surrounding_whitespace_is_tolerated(self, node_id: str) -> None:
         assert assignment(f"  {node_id}\n").node_id == node_id
 
+    # The last value is 31 hex chars, one short of a UUID. It is a fixed
+    # literal (not uuid4().hex[:-1]) so every pytest-xdist worker collects
+    # identical parametrize ids.
     @pytest.mark.parametrize(
-        "value", ["", "   ", "not-a-uuid", "1234", None, 7, [], uuid.uuid4().hex[:-1]]
+        "value",
+        ["", "   ", "not-a-uuid", "1234", None, 7, [], "0123456789abcdef0123456789abcde"],
     )
     def test_a_non_uuid_is_refused(self, value: object) -> None:
         with pytest.raises(SidecarError, match="not a UUID"):

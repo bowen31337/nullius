@@ -45,9 +45,11 @@ from ledger import (
 )
 from ledger.record import utc_now
 
-NODE_A = uuid.uuid4()
-NODE_B = uuid.uuid4()
-CAMPAIGN = uuid.uuid4()
+# Fixed (uuid5, not uuid4): these feed @pytest.mark.parametrize ids, and
+# pytest-xdist requires every worker to collect identical test ids.
+NODE_A = uuid.uuid5(uuid.NAMESPACE_URL, "nullius:ledger-tests:test_append:NODE_A")
+NODE_B = uuid.uuid5(uuid.NAMESPACE_URL, "nullius:ledger-tests:test_append:NODE_B")
+CAMPAIGN = uuid.uuid5(uuid.NAMESPACE_URL, "nullius:ledger-tests:test_append:CAMPAIGN")
 # The outcome these feature-86 tests debit with: any of the four would
 # do, and 'ok' is the one an evaluation that ran to its persist step
 # ends in.  The outcome's own behaviour — persistence, refusal, the
