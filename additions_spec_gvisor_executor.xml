@@ -1,0 +1,282 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — gVisor executor for agent-authored signals (orchestrator member, spec C)</project_name>
+  <addition_summary>
+    Run model-authored signal code the way docs/nullius-tech-architecture.md
+    section 5.2 requires:
+    - Isolation: gVisor (runsc).
+    - Network: a namespace with no interfaces.
+    - Filesystem: no mounts; data arrives over IPC only.
+    - Resources: cgroup v2 cpu.max, memory.max and pids.max.
+    - Determinism: thread pins, seeded, and no wall clock.
+    Today nothing launches runsc. The evaluator's SignalSandbox is a plain
+    subprocess with four defects that model-written code can exploit:
+    - It hands the child the whole host environment (API keys,
+      DATABASE_URL).
+    - It never blocks imports inside the child, because exec runs with full
+      builtins.
+    - It reads the result from stdout, which the signal can also write to.
+    - It leaves POLARS_MAX_THREADS unset.
+    The sandbox member holds the policies (isolation, network, imports,
+    budget, timeout, pinning, seed and fail class) as decision-only laws
+    with no caller.
+    This spec adds, in the orchestrator member and without editing the
+    evaluator or sandbox members (Z0):
+    - a hardened child bootstrap;
+    - a hardened subprocess executor, which the "unisolated" mode now uses
+      in place of the evaluator's default;
+    - an OCI bundle generator;
+    - GVisorSandbox, which runs the same bootstrap under runsc;
+    - executor selection from the evaluation context;
+    - a hostile-signal suite, and a runsc integration test that runs only
+      where runsc is installed.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / Polars + pyarrow / pytest (ruff conventions). runsc release-20260928.0 IS installed on the development host (rootless works via an AppArmor userns profile), and the runtime root is provisioned at /opt/nullius/gvisor-runtime by deploy/gvisor/provision_runtime.sh; docker is not installed.</stack>
+    <test_baseline>Measured 2026-10-05 on main (HEAD e4cd033): workspace tests/ 1614 passed; packages/orchestrator/tests 133, evaluator 558, nulloracle 1340, ledger 469, signal-agent 761, providers 1382 passed (member suites with -n 4).</test_baseline>
+    <conventions>
+      Follow CLAUDE.md: members only; components via create_app().get(name);
+      typed refusals with a code word in the raising module; and no network
+      or credential in tests.
+
+      Existing pieces (read, never edit):
+      - evaluator.execute_signal(resolution, code, *, seed, rebalance_dates=None,
+        sandbox=None, materialize=None) calls sandbox.run(code, window, *,
+        seed). It reads result.scores (pl.Series or None), result.problems
+        (list), result.seed and result.contract_version.
+      - The window has to_arrow(), which gives Arrow IPC framed by
+        contract/payload.py (magic NLSWIPC), and universe.
+      - The evaluator's SandboxLimits(wall_s=30, cpu_s=30, mem_mb=4096,
+        pids=32, network=False, filesystem=False), and its fail classes
+        timeout, oom, crash, violation, payload and empty.
+      - The child contract today:
+        - MarketWindowPayload.from_bytes(data).materialize() rebuilds the
+          window;
+        - the SIGNAL_ENTRYPOINT function is called as fn(window, seed);
+        - validate_signal_return(result, window.universe) checks the return.
+      - sandbox member laws, used here as configuration sources:
+        - SandboxImports.screen(source) and imports_allowlist.json;
+        - budget_policy.json (cpu_s 30, mem_mb 2048, pids 32,
+          runner_mem_mb 4096) and timeout_policy.json (wall_s 30);
+        - pinning_policy.json (OMP_NUM_THREADS=1, MKL_NUM_THREADS=1, the
+          POLARS_MAX_THREADS floor);
+        - SandboxSeed (NULLIUS_SIGNAL_SEED);
+        - NetworkNamespace(...).specification() -&gt; {"NetworkMode":
+          "none"};
+        - isolation_policy.json (mechanism gvisor, runtime runsc).
+      - The committed syscalls allowlist would kill CPython+polars (it lacks
+        openat, clone and getrandom). gVisor's Sentry is the syscall
+        boundary, so it is not applied here. Reconciling it is out of scope.
+      - orchestrator (spec A): EvaluationContext.sandbox_runtime ("gvisor"
+        or "unisolated"), and evaluate_node, which calls execute_signal.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Hardened Child">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/orchestrator/pyproject.toml,packages/orchestrator/src/orchestrator/_sandbox_child.py,packages/orchestrator/tests/test_sandbox_child.py">
+        System runs one signal inside a sandbox process through the
+        bootstrap orchestrator/_sandbox_child.py, run as `python -I
+        _sandbox_child.py` (not -S: the runtime's packages live in
+        dist-packages, which site adds). It writes exactly one framed result to a private
+        descriptor, never to stdout.
+        - Input: one length-framed request on stdin: the signal source, the
+          seed, and the NLSWIPC window payload. Nothing travels in the
+          environment except the pins and NULLIUS_SIGNAL_SEED.
+        - Before running any agent code, the bootstrap:
+          - duplicates fd 1 to a private descriptor, and points fd 1 and fd 2
+            at /dev/null, so the signal's prints cannot reach the result
+            channel;
+          - installs an import guard (a meta-path finder plus a
+            builtins.__import__ wrapper) that admits only the modules
+            imports_allowlist.json lists, and the modules polars, numpy and
+            pyarrow themselves load. The agent's own top-level imports are
+            still checked by name;
+          - removes open, exec, eval, compile, input, breakpoint and
+            __import__ access from the builtins the signal sees;
+          - builds the window from the payload.
+        - It then executes the source in a fresh module namespace, calls
+          signal(window, seed), and validates the return.
+        - Output: one framed JSON result (fail_class, detail, base64 scores,
+          contract_version) on the private descriptor. The fail classes
+          match the evaluator's: timeout, oom, crash, violation, payload and
+          empty.
+        - The bootstrap imports only the standard library, polars, pyarrow
+          and the contract member's payload and signal modules.
+        - Tests run it in a plain subprocess with framed requests.
+        - This feature claims packages/orchestrator/pyproject.toml so that no
+          other feature touches it, and it leaves the file unchanged: the
+          executor adds no dependency.
+      </feature>
+      <feature index="2" shape="core" depends_on="1"
+               touches_files="packages/orchestrator/src/orchestrator/_hardened_sandbox.py,packages/orchestrator/tests/test_hardened_sandbox.py">
+        System creates each signal's result in a hardened subprocess with
+        orchestrator._hardened_sandbox.HardenedSubprocessSandbox(limits=None).
+        It is a drop-in for execute_signal's sandbox argument: run(code,
+        window, *, seed) answers an object with scores, problems, seed,
+        contract_version, fail_class and detail.
+        - The child is spawned with feature 1's bootstrap, and with an
+          environment built from scratch, never copied from os.environ:
+          PATH=/usr/bin:/bin, OMP_NUM_THREADS=1, MKL_NUM_THREADS=1,
+          POLARS_MAX_THREADS=1, PYTHONHASHSEED=0, NULLIUS_SIGNAL_SEED, and
+          nothing else.
+        - Limits come from the sandbox member's policies: RLIMIT_CPU (cpu_s),
+          RLIMIT_AS (runner_mem_mb), RLIMIT_NPROC (pids), RLIMIT_FSIZE (0),
+          and a wall-clock watchdog (wall_s) that kills the process group.
+        - The child starts in a new session, in an empty temporary working
+          directory, with stdin closed after the request.
+        - The result is read only from the private descriptor. stdout and
+          stderr are discarded, capped at 64 KiB each.
+        - A child that exits without writing a result is classified crash
+          (or timeout or oom, by signal and limit).
+        - Before spawning, the code is screened with sandbox.SandboxImports.
+          A disallowed import answers fail_class crash with a detail naming
+          disallowed_import, without spawning.
+      </feature>
+      <feature index="3" shape="core" depends_on="2"
+               touches_files="packages/orchestrator/tests/test_hostile_signals.py">
+        System emits a contained, named result for every hostile signal in
+        the hardened sandbox, as shown by
+        orchestrator tests/test_hostile_signals.py with real subprocesses.
+        Each case answers its named fail_class, or a clean result, and leaves
+        no side effect on the host:
+        - reading os.environ, with secrets planted in the parent's
+          environment: the child sees none, and `import os` is refused;
+        - opening a planted host file or a planted lake path: refused (no open);
+        - a socket connection: `import socket` is refused;
+        - printing a forged success line to stdout: ignored, and the real
+          result stands;
+        - an infinite loop: timeout;
+        - allocating 10 GB: oom;
+        - forking repeatedly: refused or killed, and the parent survives;
+        - reading the wall clock (`import time` or `datetime.now`): refused
+          by the guard;
+        - a signal that writes a sentinel file at module level: no file
+          appears;
+        - a benign momentum signal: scores, identical across two runs.
+      </feature>
+    </category>
+    <category name="gVisor Executor">
+      <feature index="4" shape="core" depends_on="1"
+               touches_files="packages/orchestrator/src/orchestrator/_oci_bundle.py,packages/orchestrator/tests/test_oci_bundle.py">
+        System creates an OCI runtime bundle for one signal run with
+        orchestrator._oci_bundle.build_bundle(directory, *, runtime_root,
+        child_path, limits, lake_roots). It writes config.json and answers
+        its path.
+        - The process is args [/usr/bin/python3, "-I", child_path], with
+          the env of feature 2 exactly, cwd "/tmp", user 65534:65534,
+          noNewPrivileges true, and terminal false.
+        - The root is runtime_root, the read-only runtime root that
+          deploy/gvisor/provision_runtime.sh builds (default
+          /opt/nullius/gvisor-runtime): Ubuntu noble minbase, python3 3.12,
+          polars and pyarrow at uv.lock's pins, and the contract and app
+          packages in /usr/local/lib/python3.12/dist-packages. It has no
+          numpy, matching the evaluator's environment.
+          Mounts are only proc, a 64 MiB tmpfs at /tmp, and child_path
+          bound read-only. There is no bind of any host data directory.
+        - Namespaces are pid, ipc, uts, mount and network. The empty network
+          namespace leaves only loopback, so there is no egress, matching
+          the network law.
+        - linux.resources: memory.limit is runner_mem_mb MiB, pids.limit is
+          pids, and the cpu quota is 1 CPU, all from the sandbox member's
+          policies.
+        - The bundle refuses, with BundleError (code word oci_bundle), any
+          configuration whose root or mount source lies under one of
+          lake_roots, or that adds a mount beyond the three listed.
+        - The JSON is deterministic for equal inputs. Tests are pure and
+          need no runsc.
+      </feature>
+      <feature index="5" shape="core" depends_on="2,4"
+               touches_files="packages/orchestrator/src/orchestrator/_gvisor.py,packages/orchestrator/tests/test_gvisor.py">
+        System executes a signal under gVisor with
+        orchestrator._gvisor.GVisorSandbox(*, runsc, runtime_root,
+        state_root, limits=None, lake_roots=()). It is the same drop-in
+        interface as HardenedSubprocessSandbox.
+        - For each run it builds a fresh bundle with feature 4, and launches
+          `runsc --rootless --network=none --root STATE run --bundle
+          BUNDLE ID`. ID is a uuid4.
+        - It writes the framed request to the container's stdin, reads the
+          framed result from the container's stdout pipe (the bootstrap
+          points the signal's fd 1 and fd 2 at /dev/null, so only the
+          bootstrap's private duplicate writes there), applies the wall
+          watchdog with `runsc kill`, and always runs `runsc delete -force`
+          and removes the bundle.
+        - It runs the same SandboxImports screen first. Fail classes are as
+          in feature 2, plus sandbox_escape when runsc reports a sandbox
+          violation.
+        - A missing or non-executable runsc raises
+          GVisorUnavailableError (code word isolation_required) at
+          construction.
+        - Tests inject a fake runsc executable, a script that runs the
+          bootstrap directly, and assert the exact argv, the bundle
+          contents, the cleanup, and that no environment variable from the
+          parent leaks into the spawned command.
+      </feature>
+      <feature index="6" shape="core" depends_on="5"
+               touches_files="packages/orchestrator/tests/test_gvisor_runsc.py">
+        System emits a skip reason naming the missing piece, or a passing
+        verdict against a real runsc, in
+        packages/orchestrator/tests/test_gvisor_runsc.py.
+        - The test is skipped, with a reason naming the missing piece, unless
+          runsc is on PATH and NULLIUS_GVISOR_RUNTIME_ROOT names a
+          provisioned runtime.
+        - When it runs, a benign signal scores, and is deterministic across
+          two runs.
+        - A socket connection and a read of a planted lake directory both
+          fail, and the import guard refuses `import os`.
+        - An infinite loop is a timeout, and the container state directory
+          is empty afterwards.
+      </feature>
+    </category>
+    <category name="Executor Selection">
+      <feature index="7" shape="core" depends_on="2,5"
+               touches_files="packages/orchestrator/src/orchestrator/_context.py,packages/orchestrator/src/orchestrator/_evaluate.py,packages/orchestrator/tests/test_executor_selection.py">
+        System creates the signal executor from the evaluation context:
+        orchestrator._context.signal_sandbox(context) answers a
+        GVisorSandbox for sandbox_runtime "gvisor", or a
+        HardenedSubprocessSandbox for "unisolated".
+        - "gvisor" also needs gvisor_runtime_root, gvisor_state_root and
+          lake_roots from the evaluation config, and refuses with
+          EvaluationConfigError naming the missing key.
+        - evaluate_node always passes signal_sandbox(context) to
+          execute_signal. The evaluator's default SignalSandbox is never
+          used for agent code.
+        - The fail_class and detail that the executor reports are carried
+          into NodeEvaluation.fail_class. The evaluator's RawScoreVector
+          drops them, so evaluate_node reads them from the executor's
+          last result.
+        - Every existing orchestrator test stays green.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    New modules in packages/orchestrator: _sandbox_child, _hardened_sandbox,
+    _oci_bundle and _gvisor. Feature 7 edits _context.py and _evaluate.py,
+    both from spec A. The new tests are test_hostile_signals and
+    test_gvisor_runsc (skipped without runsc).
+    Provisioning runsc and the read-only runtime root
+    (NULLIUS_GVISOR_RUNTIME_ROOT) on a host is an operator step, and so is
+    building a digest-pinned runner image.
+    Every new file is committed as an empty stub so its claim resolves.
+  </integration_points>
+  <constraints>
+    - Agent-authored code never runs in the orchestrator process, and never
+      in a child whose environment was copied from the parent.
+    - Do not edit the evaluator, sandbox, contract or nulloracle members, or
+      the root pyproject.toml.
+    - No host data directory is mounted into a gVisor bundle. The data lake
+      reaches a signal only as the IPC window.
+    - No test opens a network connection to a non-loopback host, or reads a
+      real credential. No third-party dependency is added.
+    - Do not edit run.sh, the .env templates, claw-forge.yaml or
+      docs/user-journeys/.
+    - All existing workspace tests and the orchestrator and evaluator member
+      suites stay green.
+  </constraints>
+  <implementation_steps>
+    <step>Phase 1: the hardened child bootstrap (feature 1).</step>
+    <step>Phase 2: the hardened subprocess executor (feature 2) and the OCI bundle (feature 4).</step>
+    <step>Phase 3: the hostile-signal suite (feature 3) and the gVisor executor (feature 5).</step>
+    <step>Phase 4: the runsc integration test (feature 6) and executor selection (feature 7).</step>
+  </implementation_steps>
+</project_specification>
