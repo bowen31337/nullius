@@ -1,0 +1,65 @@
+<bug_spec>
+  <!-- Found on 2026-10-05 reviewing additions_spec_llm_authoring.xml as it
+       merged: feature 6 (parse_authored) probed with realistic model answers,
+       and feature 2's config probe exposing feature 203's pin rule. Core shape
+       with explicit touches_files: plan-bugs ignores <layout>. -->
+
+  <bug index="1" shape="core" severity="medium"
+       touches_files="packages/signal-agent/src/signal_agent/_authored.py,packages/signal-agent/tests/test_authored.py">
+    <title>parse_authored mishandles four common shapes of a model's answer: CRLF line endings, an unterminated fence, a bold Mechanism label, and an indented fence</title>
+    <symptoms>
+      signal_agent._authored.parse_authored(text) behaves as follows (``` stands for a three-backtick fence):
+      - A CRLF answer "Mechanism: m\r\n```python\r\ncode()\r\n```\r\n" gives code "code()\r". Every line keeps a carriage return, so the same source from a CRLF answer and an LF answer has a different code_hash, and the anti-convergence check can miss a repeat.
+      - An unterminated block "```python\ncode\n" (an answer cut off at max_tokens) is accepted as code "code\n". A truncated signal is not a complete fenced block.
+      - "**Mechanism:** order-flow imbalance" gives stated_mechanism None. Models routinely bold or bullet a label, so the stated mechanism is silently lost.
+      - A fence indented inside a list ("    ```python\n    c\n    ```") gives code "    c". The leading indentation makes contract.adopt fail with an IndentationError and wastes a retry.
+    </symptoms>
+    <reproduction_steps>
+      Call parse_authored on each of the four texts above and read .code and .stated_mechanism.
+    </reproduction_steps>
+    <expected>
+      - Line endings are normalised to "\n" before parsing, so code never contains "\r". code_hash of an LF answer and of the same answer in CRLF are equal.
+      - A python fence that opens but never closes raises AuthoredOutputError (code word authored_output), naming an unterminated block.
+      - The Mechanism label is recognised when a line, after optional leading whitespace and optional markdown markers ("**", "__", "*", "_", "#", "-", "&gt;"), starts with "Mechanism:" case-insensitively. Closing markers around the label are stripped, as in "**Mechanism:** x" or "**Mechanism**: x". A "Mechanism:" line inside the code block is still ignored.
+      - An indented fence is accepted. The code is dedented by the opening fence's indentation, so "    ```python\n    c\n    ```" gives code "c".
+      - Every existing behaviour and test is kept: a single python block, the refusal of zero or several blocks, a blank body, case-insensitive "Python", and a fence string inside the code.
+    </expected>
+    <actual>Root cause: packages/signal-agent/src/signal_agent/_authored.py parses the raw text without normalising line endings, accepts a fence with no closing line, matches the mechanism label only at column 0 in plain text, and keeps the fence's indentation in the extracted body.</actual>
+    <constraints>
+      The module still imports nothing outside the standard library and the signal_agent package
+      No network access and no real credential in any test
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="medium"
+       touches_files="packages/providers/src/providers/_pinning.py,packages/providers/tests/test_pinning.py">
+    <title>require_agent_model_id accepts a pin whose version is a moving marker such as "latest", which defeats agent_model_id pinning</title>
+    <symptoms>
+      providers.require_agent_model_id("deepseek/deepseek-flash/latest") answers a ModelPin. The pin rule (feature 203) refuses a rolling alias only when the identifier is not a provider/model/version triple.
+      A version that names no fixed snapshot ("latest", "current", "stable", "default", "newest", "live", "auto") is a rolling alias in triple form. Two campaigns pinned "…/latest" a month apart can be authored by different models: the DeepSeek retirement case that docs/nullius-tech-architecture.md section 14.1 cites.
+      A model name that embeds the marker ("openai/chatgpt-4o-latest/2024-08-06") is the same alias, and also passes.
+      Every consumer inherits the loophole: providers.load_authoring_config, AgentModelPins.persist, and the read-back of a stored node.agent_model_id.
+    </symptoms>
+    <reproduction_steps>
+      require_agent_model_id("deepseek/deepseek-flash/latest") and require_agent_model_id("openai/chatgpt-4o-latest/1") both answer a ModelPin, where RollingAliasError was expected.
+    </reproduction_steps>
+    <expected>
+      - require_agent_model_id raises RollingAliasError when the version, compared case-insensitively, is one of the moving markers latest, current, stable, default, newest, live or auto.
+      - It also raises RollingAliasError when the model name, compared case-insensitively, ends with "-latest" or equals "latest".
+      - The message names the triple and the marker. A module constant ROLLING_VERSION_MARKERS (a frozenset) holds the version words.
+      - Dated and numbered versions ("20260401", "2026-03-01", "v4.1", "1") and models that merely contain a marker word elsewhere ("stable-diffusion-3" with version "1") are accepted, as today.
+      - ModelPin construction applies the same rule, so no path builds a pin that require_agent_model_id would refuse.
+      - A stored node.agent_model_id holding such a pin is refused with RollingAliasError when read back, never silently accepted.
+      - Tests cover each marker in mixed case, the "-latest" model suffix, and the accepted near-misses.
+    </expected>
+    <actual>Root cause: packages/providers/src/providers/_pinning.py require_agent_model_id (and ModelPin) check only the triple's shape (three non-blank parts) and never the meaning of the version, so a moving marker in the version slot passes.</actual>
+    <constraints>
+      The triple format, ModelPin's fields and the agent_model_id column format are unchanged
+      No network access and no real credential in any test
+      No file outside the two listed is edited; the existing pin, pin-store and authoring-config tests stay green
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
