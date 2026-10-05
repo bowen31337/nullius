@@ -1,0 +1,34 @@
+<bug_spec>
+  <!-- Found 2026-10-05 reviewing additions_spec_gvisor_executor.xml feature 1
+       as it merged. The hardened child's import guard admits a disallowed
+       import issued from a callback the signal hands to a trusted library.
+       Contained by gVisor (feature 5); the hole is real only in the
+       unisolated hardened-subprocess mode (feature 2). Core shape, explicit
+       touches_files: plan-bugs ignores <layout>. -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/orchestrator/src/orchestrator/_sandbox_child.py,packages/orchestrator/tests/test_sandbox_child.py">
+    <title>The hardened child admits a disallowed import issued from inside a callback the signal passes to a trusted library, because the guard trusts any trusted frame anywhere up the stack</title>
+    <symptoms>
+      orchestrator._sandbox_child._admit admits a non-allowlisted import when _trusted_root_in_stack finds a frame belonging to polars, numpy, pyarrow or contract anywhere above the importing frame. A signal that passes a Python callback to a trusted library runs that callback with the library's own frames on the stack, so a disallowed import performed inside the callback is admitted. A top-level disallowed import is still correctly refused, and a benign signal still runs; only the via-callback path escapes.
+      In the unisolated hardened-subprocess executor (feature 2) the import guard is the only barrier, so this lets agent-authored code reach the host filesystem and process APIs. Under gVisor (feature 5) the same attempt is contained by the sandbox, so this is defense-in-depth there and a true escape only when unisolated.
+    </symptoms>
+    <reproduction_steps>
+      Run the child bootstrap over a signal whose body invokes a trusted library's row-wise callback mechanism, and whose callback performs an import outside AGENT_IMPORTS_ALLOWLIST. The import is admitted and the callback's side effect reaches the host, where a top-level import of the same name raises disallowed_import.
+    </reproduction_steps>
+    <expected>
+      - The signal source frame (SIGNAL_SOURCE_FILENAME) poisons an import: when any frame in the importing call stack belongs to the signal source, only a name on AGENT_IMPORTS_ALLOWLIST is admitted, no matter what trusted frames sit above or below it. A disallowed import reachable from agent code — directly or through a library callback — is refused with the existing disallowed_import ImportError and classified crash.
+      - A trusted library's own lazy import during execution, with no signal-source frame in its stack, is still admitted, so legitimate polars/numpy/pyarrow lazy imports keep working. The existing module-load-time trusted-dependency chain is unchanged.
+      - The allowlisted names still import from anywhere, including from a callback.
+      - Tests, driven through the real child subprocess, cover: a disallowed import inside a library callback (refused, no host side effect); a disallowed import nested one callback deeper (refused); an allowlisted import inside a callback (admitted); and a benign signal that uses a library callback without importing (clean scores). A test asserts no sentinel file the signal attempts to create ever appears.
+    </expected>
+    <actual>Root cause: packages/orchestrator/src/orchestrator/_sandbox_child.py _admit returns True whenever _trusted_root_in_stack(sys._getframe(2)) finds a trusted root in the chain. The walk was meant to let a trusted package's own deep dependency loading through, but it also trusts agent code executing within a trusted library's callback, because that agent frame sits below the library's frames in the same stack.</actual>
+    <constraints>
+      The bootstrap still imports only the standard library, polars, pyarrow and the contract member
+      No network access and no real credential in any test
+      No file outside the two listed is edited
+      The result channel, the request framing and the fail-class vocabulary are unchanged
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
