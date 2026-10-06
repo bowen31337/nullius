@@ -1,0 +1,249 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — the real campaign path: market data to sealed snapshot to an evaluated, provenance-pinned campaign</project_name>
+  <addition_summary>
+    On 2026-10-06 the operator ran every free preparation step for a first real
+    campaign (journey J16) and found that a campaign launched through the
+    shipped CLI cannot evaluate anything, even with a valid LLM key:
+    - No code fetches market data over HTTP; nullius_ingest only parses klines,
+      writes JSON .bin staging files the evaluator cannot read, and its kline
+      parser reads the trade count from the wrong array index.
+    - Nothing converts staging into the bars Parquet partitions the evaluator
+      reads, and snapshot sealing has no command.
+    - The composed nulloracle target route has no forward-return supply, so
+      LiveEvaluator refuses every node.
+    - The Anthropic live backend always sends temperature; claude-opus-5-5
+      rejects temperature/top_p/top_k with HTTP 400 and claude-sonnet-5-5
+      rejects non-default values (verified: "`temperature` is deprecated for
+      this model"). Effort (output_config.effort) is the control on those models.
+    - NULLIUS_EVALUATOR_IMAGE must be a digest-pinned image, and no evaluator
+      image recipe exists, so evaluator_hash cannot be computed honestly.
+    The operator produced a smoke snapshot by hand (~/.local/share/nullius/lake,
+    sealed 2026-10-06T00:00:00Z_155955, 40 symbols x 735 days, survivorship-biased).
+    This spec makes that path a product: repeatable, survivorship-aware, and
+    ending in a campaign that evaluates real forward returns.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / SQLite via DATABASE_URL / pyarrow Parquet / pytest / podman+buildah on the host (no docker).</stack>
+    <test_baseline>main after Run 9 (docs/user-journeys/_run-log.md): acceptance gate green; member suites canary 790, orchestrator 412 (+5 runsc skips), all green.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md. House CLI pattern as in orchestrator/dream.py and
+      canary/run.py (argparse prog "python -m pkg.mod"; main(argv=None, *,
+      env=None, ...) -> int; exit 0 done, 1 refused, 2 bad argument or config;
+      one JSON line per event; one stderr line per refusal, prefixed with a
+      code word, no traceback). A new CLI module must NOT be imported eagerly by
+      its package __init__ (runpy RuntimeWarning, fixed in bug_spec_run8 bug 5).
+      Tests never reach the network or read a credential: HTTP goes through an
+      injectable fetch/transport and tests pass recorded payloads. Tests pass
+      under pytest-xdist with tmp stores.
+
+      Facts the features rely on:
+      - The evaluator reads &lt;snapshot&gt;/bars/symbol=&lt;S&gt;/date=&lt;YYYY-MM-DD&gt;/part-0.parquet
+        with columns symbol (string), open_time (timestamp UTC), close (string),
+        volume (string), exactly one row per symbol and day
+        (tests/e2e/test_live_campaign_end_to_end.py writes this shape).
+      - snapshot.seal_snapshot(source=None, *, sealed_at=None, universe=None,
+        lake_root=None) seals &lt;lake&gt;/staging into
+        &lt;lake&gt;/snapshots/&lt;sealed_at&gt;_&lt;hash6&gt;/ with MANIFEST.json, copying
+        and hashing every file in the source.
+      - nullius_ingest.klines.KlineBackfiller(staging, fetch, interval).page(...)
+        parses Binance positional arrays; _parse_candle reads trade count from
+        index 7, which in Binance's array is quote-asset volume (index 8 is the
+        trade count).
+      - orchestrator.LiveEvaluator.evaluate resolves "nulloracle-target-route"
+        at call time; nulloracle.build_target_route builds
+        TargetEndpoint(sidecar, permute=...) with no targets.
+      - providers._anthropic builds body["temperature"] = request.temperature
+        unconditionally; AuthoringConfig carries temperature.
+      - evaluator.EvaluatorService.identity() folds NULLIUS_EVALUATOR_IMAGE (an
+        image reference pinned by @sha256 digest) and the resolved config.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Market Data to Sealed Snapshot">
+      <feature index="9" shape="core" depends_on=""
+               touches_files="packages/ingest/pyproject.toml,uv.lock">
+        System declares the ingest member's runtime dependency on pyarrow, so `uv sync --all-packages` installs what feature 1's bars writer imports and `python -c "import nullius_ingest.bars_backfill"` returns without ImportError in a fresh environment.
+        - packages/ingest/pyproject.toml lists pyarrow, with the same version
+          constraint the workspace root already resolves. uv.lock is
+          regenerated with `uv lock` and changes only for that edge.
+        - No other dependency is added. The fetch uses the standard
+          library's urllib.
+      </feature>
+      <feature index="1" shape="core" depends_on="9"
+               touches_files="packages/ingest/src/nullius_ingest/bars_backfill.py,packages/ingest/tests/test_lake_backfill.py,packages/ingest/src/nullius_ingest/klines.py,packages/ingest/tests/test_klines.py">
+        System backfills daily bars from Binance's public REST API into the evaluator's bars Parquet layout with `python -m nullius_ingest.bars_backfill --lake LAKE --first YYYY-MM-DD --last YYYY-MM-DD (--symbols S,S,... | --top N)` and displays one JSON line per symbol and a summary line, with no API key.
+        - It writes &lt;LAKE&gt;/staging/bars/symbol=&lt;S&gt;/date=&lt;D&gt;/part-0.parquet
+          in exactly the shape the evaluator reads: one row per symbol and day,
+          and positive closes only (a non-positive close is skipped and counted).
+        - --top N picks the top N TRADING USDT spot pairs by 24h quote volume,
+          excluding stablecoin bases and leveraged tokens.
+        - It writes &lt;LAKE&gt;/universe.json beside staging, never inside it.
+          The file records source, selection rule, fetched_at, first, last,
+          symbols, and survivorship_free (false for the REST source, which
+          only lists current symbols).
+        - Paging stays within one Binance page (1000 candles) per request,
+          with a small delay between requests. HTTP 418/429 is retried after its retry-after delay, up to a bound. Past the bound the symbol is refused with an error message naming it.
+        - Rerunning with the same arguments rewrites identical files.
+        - HTTP goes through an injectable fetch callable (default urllib to
+          https://data-api.binance.vision/api/v3); tests pass recorded JSON
+          and make no network call.
+        - klines._parse_candle reads the trade count from Binance's index 8,
+          not 7. test_klines.py gains a test pinning the index against a
+          recorded Binance row.
+        - Tests cover layout and schema, the universe.json fields, a skipped
+          non-positive close, a 429 then success, and idempotent rerun.
+      </feature>
+      <feature index="2" shape="core" depends_on="1"
+               touches_files="packages/ingest/src/nullius_ingest/bars_backfill.py,packages/ingest/tests/test_lake_backfill.py">
+        System saves survivorship-free daily bars to the lake with `python -m nullius_ingest.bars_backfill --source archive` and displays the same JSON lines, which reads Binance's public data archive (data.binance.vision spot monthly 1d klines). The archive lists delisted symbols, so the universe keeps the dead names PRD §C1 requires, and universe.json records survivorship_free true.
+        - Archive mode lists the USDT spot symbols present in the archive
+          for the date range. Delisted symbols are included, each with the
+          last month the archive holds for it. Each monthly zip's sibling
+          .CHECKSUM (sha256) is verified before the rows are used, and a
+          mismatch is refused, naming the file.
+        - The output layout is identical to feature 1's.
+        - --top N in archive mode ranks by median daily quote volume over
+          the window, a causal rank fixed at the window end (documented).
+        - Tests use small recorded archive zips and checksum files with an
+          injected fetch: one live symbol, one delisted symbol and one bad
+          checksum. They make no network call.
+      </feature>
+      <feature index="3" shape="core" depends_on=""
+               touches_files="packages/snapshot/src/snapshot/seal.py,packages/snapshot/tests/test_seal_cli.py">
+        System seals the staging area with `python -m snapshot.seal --lake LAKE [--sealed-at ISO]` and displays one JSON line with the snapshot name, path, full hash, file count and row count.
+        - It reads &lt;LAKE&gt;/universe.json when present, passes it as the
+          seal's universe, and keeps it out of the sealed tree.
+        - It refuses to seal with exit 1 when staging holds anything but bars/
+          partitions, naming the stray path, so a sealed snapshot holds only
+          what the evaluator reads.
+        - It refuses with exit 1 when the target snapshot name already exists.
+        - With DATABASE_URL set it records the snapshot_manifest row, as
+          seal_snapshot does. No DATABASE_URL is allowed and says so on stderr.
+        - Tests seal a tmp staging tree, assert the manifest, the hash and the
+          excluded universe.json, and cover each refusal.
+      </feature>
+    </category>
+    <category name="Campaign Evaluation Path">
+      <feature index="4" shape="core" depends_on=""
+               touches_files="packages/orchestrator/src/orchestrator/_targets.py,packages/orchestrator/src/orchestrator/__init__.py,packages/orchestrator/tests/test_snapshot_targets.py,packages/orchestrator/tests/test_live_evaluator_component.py">
+        System supplies forward returns from the evaluation context's own sealed snapshot to the null oracle, so `LiveEvaluator.evaluate` returns a scored node, not a refusal, when the composed target route carries no target supply.
+        - orchestrator._targets.snapshot_forward_returns(context) returns a
+          callable (request) -> {date: {symbol: return}}. Each value is the
+          close-to-close simple return over context.horizon trading days,
+          read only from context.snapshot_mount through the existing closes
+          reader. Symbols or dates without a close h days ahead are omitted,
+          never zero-filled.
+        - LiveEvaluator.evaluate builds the oracle from the composed sidecar
+          and that supply, keeping nulloracle's stored-seed block permutation
+          for null nodes, whenever the composed route has no targets. A
+          composed route that does carry targets is used unchanged.
+        - The barrier stays intact: the oracle's response shape is identical
+          for null and real nodes, and is_null never reaches orchestrator
+          code (PRD §4.2).
+        - Tests: forward returns over a tiny sealed snapshot match
+          hand-computed values. A missing forward close is omitted. A real
+          node and a null node both evaluate to scored rows over the same
+          snapshot, and their oracle responses have identical keys.
+      </feature>
+      <feature index="5" shape="core" depends_on=""
+               touches_files="packages/providers/src/providers/_anthropic.py,packages/providers/src/providers/_authoring.py,packages/providers/tests/test_anthropic_sampling.py">
+        System sends Claude models only the sampling controls each model accepts, so authoring calls to claude-opus-5-5 and claude-sonnet-5-5 return 200 instead of the 400 "`temperature` is deprecated for this model".
+        - A per-model sampling table in _anthropic.py (documented with its
+          source date) decides what is sent:
+          - claude-opus-5-5, claude-opus-5, claude-sonnet-5-5,
+            claude-sonnet-5 and the Fable family get no temperature, top_p
+            or top_k, and get output_config.effort when the config names one.
+          - claude-haiku-4-5 and older keep temperature.
+          - An unknown model is treated as no-sampling (the safe default), and
+            the decision is logged once.
+        - AuthoringConfig gains an optional effort (low, medium, high, xhigh
+          or max). temperature becomes optional. A config that sets
+          temperature for a model that rejects it is refused at load with
+          code word unsupported_sampling naming the pin, and is never
+          silently dropped.
+        - The node's recorded agent_sampling holds what was actually sent
+          (for example {"effort": "high", "thinking": "adaptive"}), never a
+          temperature the vendor did not apply.
+        - Tests use a recording transport: the request bodies for each model
+          class, the load-time refusal, the agent_sampling content, and an
+          unknown model. No network, no credential.
+      </feature>
+      <feature index="6" shape="core" depends_on=""
+               touches_files="deploy/evaluator/Containerfile,deploy/evaluator/build_image.sh,tests/test_evaluator_image_recipe.py">
+        System builds a reproducible evaluator image with `deploy/evaluator/build_image.sh` (podman or buildah, no docker) and displays the digest-pinned reference to put in NULLIUS_EVALUATOR_IMAGE, so evaluator_hash names real, rebuildable content and never a made-up digest.
+        - The Containerfile starts from a digest-pinned python:3.12-slim
+          base. It installs the evaluator, cost-model, contract, snapshot
+          and nulloracle members from the workspace's uv.lock with --frozen
+          (no runtime pip install, architecture §12), and sets
+          OMP_NUM_THREADS=1, MKL_NUM_THREADS=1, POLARS_MAX_THREADS=1 and
+          PYTHONHASHSEED=0.
+        - build_image.sh builds with SOURCE_DATE_EPOCH set to the HEAD commit
+          time, tags the image localhost/nullius-evaluator:&lt;short-sha&gt;,
+          and prints one line: localhost/nullius-evaluator@sha256:&lt;digest&gt;.
+          It exits 1 when the working tree has uncommitted changes under the
+          copied paths (an image must name a commit).
+        - The image is the provenance carrier today. Running evaluation inside
+          it is out of scope and recorded as such in the Containerfile header.
+        - tests/test_evaluator_image_recipe.py statically checks that the
+          base is digest-pinned, that the install uses --frozen against
+          uv.lock, that the four thread/hash variables are set, and that the
+          script prints an @sha256 reference. It does not run podman.
+      </feature>
+    </category>
+    <category name="Operator Wiring and Proof">
+      <feature index="7" shape="core" depends_on="1,3,6"
+               touches_files="run.sh,.env.campaign.tpl.example,README.md">
+        System wires the real-campaign path into the operator's entry points, so `./run.sh help` displays the new verbs and the campaign template names every variable a real campaign reads.
+        - run.sh gains three verbs that never use op run, because none needs
+          a secret:
+          - `lake-backfill` (python -m nullius_ingest.bars_backfill, LAKE
+            defaulting to $HOME/.local/share/nullius/lake)
+          - `lake-seal` (python -m snapshot.seal, same default, and
+            DATABASE_URL defaulting as the campaign verb does)
+          - `evaluator-image` (deploy/evaluator/build_image.sh)
+        - .env.campaign.tpl.example gains:
+          - LAKE_ROOT
+          - NULL_SIDECAR_PATH
+          - NULL_SIDECAR_KEY_REF, as an op:// reference whose value is
+            "hex:&lt;64 hex&gt;", with the warning that losing the key makes all
+            FDR history uninterpretable
+          - NULLIUS_EVALUATOR_IMAGE, the output of `./run.sh evaluator-image`
+          - a single-vendor Anthropic example
+          - an authoring-config note that the 5.x models take effort, not
+            temperature
+        - README.md's Running section documents the order: migrate, then
+          lake-backfill (archive source for M3-feeding work), lake-seal,
+          evaluator-image, canary --freeze-reference, bootstrap-fill, then
+          campaign.
+      </feature>
+      <feature index="8" shape="core" depends_on="1,3,4,5"
+               touches_files="tests/e2e/test_real_data_campaign_e2e.py">
+        System passes an end-to-end test that runs the shipped path offline and shows that a campaign scores real forward returns:
+        1. bars_backfill with recorded Binance JSON into a tmp lake
+        2. snapshot.seal
+        3. app.migrate
+        4. one Type-R campaign through python -m orchestrator.campaign's main()
+        - Step 4 uses a recorded provider fixture for the signal author (no
+          network, no credential), the unisolated sandbox with
+          acknowledge_unisolated (or runsc when available), and a sidecar
+          with a hex key generated in the test.
+        - The campaign exits 0. At least one root carries a non-null ic_mean
+          computed from the snapshot's forward returns. The close-out line
+          prints sensitivity and specificity. No stdout line pairs a node id
+          with null status.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Feature 9 (the manifest edge) comes first; feature 2 extends feature 1's module. Feature 7 wires features 1, 3 and 6.
+    Feature 8 proves features 1, 3, 4 and 5 together. Features 3, 4, 5 and 6
+    are independent.
+  </integration_points>
+  <out_of_scope>
+    Running evaluation inside the evaluator image (the image is the
+    provenance carrier for now). Intraday bars, trades, L2 and funding
+    backfill. Live websocket ingest. Spending on a real campaign; that is the
+    owner's call once this lands.
+  </out_of_scope>
+</project_specification>
