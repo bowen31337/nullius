@@ -1,0 +1,142 @@
+<bug_spec>
+  <!-- RUN8. Found 2026-10-06 by journey Run 8 (docs/user-journeys/_run-log.md,
+       "Findings for the next fix round"), after additions_spec_operator_surfaces.xml
+       merged. J17 (the dreaming cycle) fails for a real operator because a fresh
+       research store cannot be prepared; the rest are operator-facing polish and
+       one pre-existing order-dependent test. Core shape, explicit touches_files. -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="migrations/versions/0113_node_indexes.py,migrations/versions/0118_node_table.py,tests/test_migration_tree_fresh.py">
+    <title>The migration tree cannot build a fresh database: 0113–0117 alter the node table before 0118 creates it</title>
+    <symptoms>
+      Applying every file in migrations/versions/ in its declared chain order (each file's own apply(database_url)) to an empty SQLite database fails at 0113_node_indexes with sqlite3.OperationalError "no such table: main.node". Applied one by one, 0113, 0114, 0115, 0116 and 0117 all fail with "no such table: node", and 0118_node_table (which creates the five-column node skeleton) succeeds only afterwards. So no operator can bring an empty research store to head. Journey J17 step 1b (docs/user-journeys/screenshots/run-8/J17-step0b-apply-tree-workaround.txt) shows the crash.
+    </symptoms>
+    <reproduction_steps>
+      For each migrations/versions/0*.py in sorted order, import it by path and call apply("sqlite:///&lt;tmp&gt;/x.db") on a new empty file: 0107–0112 succeed, and 0113 raises "no such table: main.node".
+    </reproduction_steps>
+    <expected>
+      - Applying the whole tree in chain order to an empty SQLite database succeeds, with every file's apply() returning normally.
+      - The first migration that touches node (0113) creates the node skeleton when it is absent, with DDL identical to 0118's (CREATE TABLE IF NOT EXISTS, the same five columns and the same self-referencing parent_id foreign key). 0118 is then a no-op on a database that already holds node, and still creates it on a database where a store or an older chain made everything else. No revision id, filename or chain link changes, because the ids are chain positions.
+      - The node table a fresh build produces has the same columns and indexes (compare PRAGMA table_info and index_list) as one produced by applying the tree to a database where node already existed before 0113.
+      - Applying the tree twice changes nothing on the second pass.
+      - tests/test_migration_tree_fresh.py builds a fresh database from the tree, asserts head is reached, asserts the node schema equality above and the idempotent second pass, and asserts the tables the operator CLIs read (replay_score, policy_revision, node, campaign, trial_ledger, canary_reference) exist. It passes under pytest-xdist with a tmp database per test.
+    </expected>
+    <actual>Root cause: feature 97's node table migration was numbered 0118, after the migrations (0113–0117) that index and widen node, so the declared chain order cannot build node from nothing. Stores create node at runtime, which hid this until an operator needed a migrated fresh store.</actual>
+    <constraints>
+      No migration revision id, DOWN_REVISION or filename changes
+      Every apply() stays safe to call repeatedly
+      No file outside the three listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="high" depends_on="1"
+       touches_files="src/app/migrate.py,tests/test_migrate_cli.py,run.sh">
+    <title>./run.sh migrate is broken: it runs `alembic upgrade`, but the repository has no Alembic configuration</title>
+    <symptoms>
+      `./run.sh migrate` exits 2 with "error: Failed to spawn: `alembic` — No such file or directory". There is no alembic.ini, and the migration tree is a set of files that each expose apply(database_url). The verb also runs under op run with .env.tpl, which injects every key, although migrating needs no secret. Evidence: docs/user-journeys/screenshots/run-8/J17-step0a-run-sh-migrate.txt.
+    </symptoms>
+    <reproduction_steps>
+      DATABASE_URL=sqlite:///&lt;tmp&gt;/x.db ./run.sh migrate gives exit 2, "Failed to spawn: alembic".
+    </reproduction_steps>
+    <expected>
+      - `python -m app.migrate` applies every migrations/versions/0*.py file in chain order (it follows REVISION/DOWN_REVISION from the first file whose DOWN_REVISION names no file in the tree, never filename sort alone). Each file is imported by path and its apply(DATABASE_URL) called. It prints one JSON line per file ({"revision": ..., "statements": N}) and then {"head": "&lt;last revision&gt;"}, and exits 0.
+      - No DATABASE_URL gives exit 2 with one line. A file that raises gives exit 1 with one line naming the revision and the error, and no traceback.
+      - Running it twice exits 0 and changes nothing.
+      - run.sh's migrate verb runs `uv run --all-packages python -m app.migrate "$@"`, without op run (migration needs no secret), and defaults DATABASE_URL to sqlite:///$HOME/.local/share/nullius/research.db as the campaign verb does. `./run.sh help` still lists it.
+      - tests/test_migrate_cli.py covers a fresh database reaching head, an idempotent rerun, the missing DATABASE_URL exit 2, and a raising migration (a tmp copy of the tree with one broken file) giving exit 1. It passes under pytest-xdist.
+    </expected>
+    <actual>Root cause: run.sh's migrate verb was scaffolded for Alembic, which this repository never adopted. The tree's own per-file apply() has no runner, so nothing an operator can invoke applies it.</actual>
+    <constraints>
+      src/app/migrate.py imports no workspace member (the migrations are plain files); it uses only the standard library
+      No file outside the three listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="3" shape="core" severity="medium"
+       touches_files="deploy/dreaming/incumbent.example.py,packages/orchestrator/tests/test_incumbent_example.py">
+    <title>`dream --incumbent PATH` requires a screened policy file, but the repository ships none an operator can start from</title>
+    <symptoms>
+      `./run.sh dream` needs --incumbent naming a policy source that passes policy_runtime.screen_policy. The only admissible incumbent in the repository is the INCUMBENT_SOURCE string inside packages/orchestrator/tests/test_dream_cli.py. An operator following J17 has to write an exploration policy from scratch before the first cycle.
+    </symptoms>
+    <reproduction_steps>
+      Search deploy/ and docs/ for a policy source to pass to `./run.sh dream --incumbent`: none exists.
+    </reproduction_steps>
+    <expected>
+      - deploy/dreaming/incumbent.example.py is a complete exploration policy, with the same contract as test_dream_cli.INCUMBENT_SOURCE, that passes policy_runtime.screen_policy. It commits on every terminating path, uses no literal node ids or absolute score constants, and routes its thresholds through one _schedule(beta) dict. Its docstring says it is a starting incumbent for `./run.sh dream --incumbent deploy/dreaming/incumbent.example.py`.
+      - packages/orchestrator/tests/test_incumbent_example.py asserts the file is admitted by screen_policy, that orchestrator._bootstrap_eval.score_on_world over one persisted bootstrap world returns a committed pick with a finite score, and that one dream cycle over a 40-world tmp pool exits 0 with it. It passes under pytest-xdist.
+    </expected>
+    <actual>Root cause: feature 11 of additions_spec_operator_surfaces.xml added the --incumbent flag but shipped no example, unlike the campaign verb's deploy/campaign/*.example.json.</actual>
+    <constraints>
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="4" shape="core" severity="medium"
+       touches_files="packages/orchestrator/src/orchestrator/closeout.py,packages/orchestrator/tests/test_closeout_cli.py">
+    <title>orchestrator.closeout answers a store whose node rows carry no metric columns with a raw "no such column: ic_mean"</title>
+    <symptoms>
+      `python -m orchestrator.closeout --campaign-id 00000000-0000-4000-8000-000000000003` against the store `python -m nullius_api.demo` seeds (whose node table has only the structural columns) exits 1 and prints only "no such column: ic_mean". There is no code word, no campaign id and no repair. Evidence: docs/user-journeys/screenshots/run-8/J16-step6c-closeout-demo-campaign.txt.
+    </symptoms>
+    <reproduction_steps>
+      Seed a tmp store with python -m nullius_api.demo, export its NULL_SIDECAR_* lines, then run python -m orchestrator.closeout --campaign-id 00000000-0000-4000-8000-000000000003.
+    </reproduction_steps>
+    <expected>
+      - Before reading metrics, closeout checks the node table carries the metric columns it reads (ic_mean, ic_tstat; fail_class optional as today). When they are absent, it exits 1 with one line beginning closeout_unevaluated, naming the campaign id and saying no evaluation has written metrics for it, so there is nothing to calibrate.
+      - Any other sqlite3.Error while reading is translated into one line beginning closeout: that names the campaign and the database, with exit 1 and no traceback.
+      - Exit codes and behaviour on an evaluated campaign are unchanged.
+      - test_closeout_cli.py gains tests for the metric-less node table and for a translated sqlite error. They pass under pytest-xdist.
+    </expected>
+    <actual>Root cause: closeout's node read issues SELECT id, fail_class, ic_mean, ic_tstat directly and lets sqlite3.OperationalError reach the CLI's generic refusal printer.</actual>
+    <constraints>
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="5" shape="core" severity="low"
+       touches_files="packages/canary/src/canary/__init__.py,packages/tripwires/src/tripwires/__init__.py,packages/canary/tests/test_canary_run.py,packages/tripwires/tests/test_triage_cli.py">
+    <title>`python -m canary.run` and `python -m tripwires.triage` print a RuntimeWarning on every invocation</title>
+    <symptoms>
+      Every `./run.sh canary` and `./run.sh triage` writes "&lt;frozen runpy&gt;:128: RuntimeWarning: 'canary.run' found in sys.modules after import of package 'canary', but prior to execution of 'canary.run'; this may result in unpredictable behaviour" (and the same for tripwires.triage) to stderr, ahead of the command's own output. Evidence: docs/user-journeys/screenshots/run-8/J18-step3d-run.txt and J19-step2-triage.txt.
+    </symptoms>
+    <reproduction_steps>
+      DATABASE_URL=sqlite:///&lt;tmp&gt;/x.db python -m canary.run --help 2&gt;&amp;1 | head -1; python -m tripwires.triage --help 2&gt;&amp;1 | head -1
+    </reproduction_steps>
+    <expected>
+      - canary/__init__.py and tripwires/__init__.py no longer import their run / triage CLI modules eagerly. Names they re-export from those modules are provided lazily (a module-level __getattr__) or moved, so `from canary import CanaryRunStore` and every existing public name keeps working, and the "canary-run-store" component still registers.
+      - `python -m canary.run --help` and `python -m tripwires.triage --help` write nothing to stderr.
+      - Each test file gains one test running the module as a subprocess (`python -m ... --help`) and asserting stderr is empty. The member suites pass unchanged otherwise.
+    </expected>
+    <actual>Root cause: each package's __init__ imports the CLI module that `python -m` then executes as __main__. runpy warns when the target module is already in sys.modules.</actual>
+    <constraints>
+      Every name currently exported from canary and tripwires stays importable from the package
+      @register builders stay in the package __init__ (the module loader scans only __init__)
+      No file outside the four listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="6" shape="core" severity="low"
+       touches_files="packages/canary/tests/test_threads.py">
+    <title>Two canary thread-span tests fail under pytest-xdist whenever an earlier test in the worker imported polars</title>
+    <symptoms>
+      `pytest -n 4 packages/canary/tests` fails test_the_span_yields_the_verdict and test_the_span_does_not_mask_the_body_failure with CanaryThreadError "the numerics loaded in this process report a thread pool of 16 …". The file alone passes (98 passed). This was already failing at e4bd380, before the operator-surfaces run.
+    </symptoms>
+    <reproduction_steps>
+      uv run --all-packages pytest -q -n 4 packages/canary/tests gives 2 failed. uv run --all-packages pytest -q packages/canary/tests/test_threads.py passes.
+    </reproduction_steps>
+    <expected>
+      - The two tests pin the span's behaviour without depending on which numerics modules other tests left in sys.modules. They pass the span the measured-pool seam its sibling test (test_the_span_refuses_a_pool_that_widened_inside_it) already uses, or an explicit empty module list, so the verdict is the declared caps' own.
+      - `pytest -n 4 packages/canary/tests` passes, and so does the file alone and in reverse order (-p no:randomly with the file listed after a test that imports polars).
+      - canary._threads itself is unchanged: its process-global measurement is the production behaviour architecture §12 wants.
+    </expected>
+    <actual>Root cause: single_threaded() measures the thread pool of whatever numerics modules are already loaded in sys.modules (process-global state). In an xdist worker where an earlier test imported polars without POLARS_MAX_THREADS, polars reports one thread per core (16) and the span refuses.</actual>
+    <constraints>
+      Only the test file changes; canary/_threads.py is not edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
