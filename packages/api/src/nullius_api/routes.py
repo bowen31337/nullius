@@ -139,9 +139,13 @@ API_ROUTES: tuple[ApiRoute, ...] = (
     ApiRoute("/forward/promote", "POST", "forward", RESEARCH, wrap=PROMOTE_WRAP),
     ApiRoute("/ledger/debit", "POST", "ledger-debit", EVALUATOR),
     ApiRoute("/ledger/k-effective", "GET", "ledger-k-effective", EVALUATOR),
+    ApiRoute("/metrics/discovery-rate", "GET", "ops-discovery-rate-route", METRICS_READ),
     ApiRoute("/metrics/fdr-deploy", "GET", "ops-fdr-deploy", METRICS_READ),
     ApiRoute("/metrics/instrument-status", "GET", "ops-instrument-status", METRICS_READ),
+    ApiRoute("/metrics/meta-overfit", "GET", "ops-meta-overfit-route", METRICS_READ),
+    ApiRoute("/metrics/null-calibration", "GET", "ops-null-calibration-route", METRICS_READ),
     ApiRoute("/metrics/regime-coverage", "GET", "ops-regime-coverage", METRICS_READ),
+    ApiRoute("/metrics/type-b-depth", "GET", "ops-type-b-depth-route", METRICS_READ),
     ApiRoute(
         "/promotion/pre-register",
         "POST",

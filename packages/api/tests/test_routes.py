@@ -59,15 +59,20 @@ class _FakeEndpoint:
 
 
 def test_the_table_is_the_spec_summary_restated() -> None:
-    """Ten routes, the paths and verbs app_spec.xml's summary states."""
+    """Fourteen routes: the ten paths and verbs app_spec.xml's summary
+    states, plus feature 6's four gate-evidence routes."""
     assert [(row.path, row.verb) for row in API_ROUTES] == [
         ("/forward/decay", "GET"),
         ("/forward/promote", "POST"),
         ("/ledger/debit", "POST"),
         ("/ledger/k-effective", "GET"),
+        ("/metrics/discovery-rate", "GET"),
         ("/metrics/fdr-deploy", "GET"),
         ("/metrics/instrument-status", "GET"),
+        ("/metrics/meta-overfit", "GET"),
+        ("/metrics/null-calibration", "GET"),
         ("/metrics/regime-coverage", "GET"),
+        ("/metrics/type-b-depth", "GET"),
         ("/promotion/pre-register", "POST"),
         ("/target", "POST"),
         ("/risk/halt", "POST"),
@@ -78,9 +83,13 @@ def test_the_table_agrees_with_the_members_route_constants() -> None:
     """Every route this transport serves is spelled by the member that
     owns it — the pairing cannot drift from the members' own constants."""
     members_spellings = {
+        "/metrics/discovery-rate": ops.DISCOVERY_RATE_ROUTE,
         "/metrics/fdr-deploy": ops.FDR_DEPLOY_ROUTE,
         "/metrics/instrument-status": ops.INSTRUMENT_STATUS_ROUTE,
+        "/metrics/meta-overfit": ops.META_OVERFIT_ROUTE,
+        "/metrics/null-calibration": ops.NULL_CALIBRATION_ROUTE,
         "/metrics/regime-coverage": ops.REGIME_COVERAGE_ROUTE,
+        "/metrics/type-b-depth": ops.TYPE_B_DEPTH_ROUTE,
         "/ledger/debit": ledger.DEBIT_ROUTE,
         "/ledger/k-effective": ledger.KEFFECTIVE_ROUTE,
         "/promotion/pre-register": promotion.PRE_REGISTER_ROUTE,
@@ -98,9 +107,13 @@ def test_the_table_names_the_composed_components() -> None:
     the spellings the factory's registry and the app package seats
     already pin."""
     assert {row.component for row in API_ROUTES} == {
+        "ops-discovery-rate-route",
         "ops-fdr-deploy",
         "ops-instrument-status",
+        "ops-meta-overfit-route",
+        "ops-null-calibration-route",
         "ops-regime-coverage",
+        "ops-type-b-depth-route",
         "ledger-debit",
         "ledger-k-effective",
         "nulloracle-target-route",
@@ -209,6 +222,14 @@ def test_the_composed_application_resolves_real_components(
     application = create_app()
     resolved = {row.route.path: row.endpoint for row in resolve_routes(application)}
     assert type(resolved["/metrics/fdr-deploy"]).__name__ == "FdrDeployEndpoint"
+    assert type(resolved["/metrics/null-calibration"]).__name__ == (
+        "NullCalibrationEndpoint"
+    )
+    assert type(resolved["/metrics/type-b-depth"]).__name__ == "TypeBDepthEndpoint"
+    assert type(resolved["/metrics/discovery-rate"]).__name__ == (
+        "DiscoveryRateEndpoint"
+    )
+    assert type(resolved["/metrics/meta-overfit"]).__name__ == "MetaOverfitEndpoint"
     assert type(resolved["/ledger/debit"]).__name__ == "DebitEndpoint"
     assert type(resolved["/risk/halt"]).__name__ == "HaltEndpoint"
     assert type(resolved["/forward/decay"]).__name__ == "DecayCurveEndpoint"

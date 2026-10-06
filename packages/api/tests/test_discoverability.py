@@ -10,9 +10,9 @@ envelope as a table route when asked with the wrong verb.
 
 The two routes are *meta* routes — the transport describing its own
 surface, and a liveness probe — not a composed component's answer, so
-they are not rows in the ten-route table and not entries in the
-adapter map; the tests assert that separation holds, so a route added
-to the table never silently becomes a meta-route or vice versa.
+they are not rows in the route table and not entries in the adapter
+map; the tests assert that separation holds, so a route added to the
+table never silently becomes a meta-route or vice versa.
 
 The endpoints here are fakes for the transport's own behaviour, the
 same discipline :mod:`test_server` states: the index's configured
@@ -128,10 +128,11 @@ def test_the_index_is_the_resolved_table_rendered(boot: _Boot) -> None:
     configured state the page shows is the state the server serves."""
     server = boot({"ops-fdr-deploy": _GetEndpoint()})
     _, _, body = _ask_raw(server, "GET", INDEX_PATH, INDEX_SCOPE)
-    # All ten routes are declared; exactly one is configured (the one
-    # component booted), the rest unconfigured — the page's count says
-    # which, so the index reflects the resolved table, not a constant.
-    assert "10 routes declared, 1 configured." in body
+    # All fourteen routes are declared; exactly one is configured (the
+    # one component booted), the rest unconfigured — the page's count
+    # says which, so the index reflects the resolved table, not a
+    # constant.
+    assert "14 routes declared, 1 configured." in body
 
 
 def test_the_index_builds_from_the_resolved_routes() -> None:
@@ -206,9 +207,10 @@ def test_a_wrong_verb_on_healthz_answers_405(boot: _Boot) -> None:
 
 def test_the_meta_routes_are_not_rows_in_the_table() -> None:
     """The index and the probe are meta-routes, not composed routes:
-    they are not rows in the ten-route table and not entries in the
-    adapter map, so the table's "ten routes, ten adapters" law is
-    untouched and a route added to either half never collides."""
+    they are not rows in the route table and not entries in the
+    adapter map, so the table's "every declared row carries an
+    adapter" law is untouched and a route added to either half never
+    collides."""
     from nullius_api.server import HTTP_ADAPTERS
 
     paths = {row.path for row in API_ROUTES}

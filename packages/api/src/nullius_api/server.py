@@ -387,16 +387,16 @@ def error_payload(
 
 # -- The discoverability surface ---------------------------------------------------
 #
-# Two routes sit outside the ten-route table app_spec.xml's summary
-# promises and :data:`API_ROUTES` spells: ``GET /`` and ``GET /healthz``
-# (additions_spec_journeys.xml feature 12).  They are *meta* routes —
-# the transport describing its own surface, and a liveness probe — not
-# a composed component's answer, so they are not rows in the table and
-# not entries in HTTP_ADAPTERS: a row in the table would break the
-# "ten routes, ten adapters" law the route and server suites pin, and
-# an adapter would imply a composed endpoint behind it.  They are
-# served by the dispatch directly, from the resolved route table the
-# server already holds.
+# Two routes sit outside the table :data:`API_ROUTES` spells: ``GET /``
+# and ``GET /healthz`` (additions_spec_journeys.xml feature 12).  They
+# are *meta* routes — the transport describing its own surface, and a
+# liveness probe — not a composed component's answer, so they are not
+# rows in the table and not entries in HTTP_ADAPTERS: a row in the
+# table would break the "every declared row, and only a declared row,
+# carries an adapter" law the route and server suites pin, and an
+# adapter would imply a composed endpoint behind it.  They are served
+# by the dispatch directly, from the resolved route table the server
+# already holds.
 
 #: The path of the HTML index of every served route.
 INDEX_PATH = "/"
@@ -541,7 +541,8 @@ class ApiRequest:
 def _no_argument_get(endpoint: Any, request: ApiRequest) -> tuple[int, Any]:
     """Serve a GET whose endpoint answers ``get()`` with no arguments.
 
-    The four no-argument reads — the three metrics routes and
+    The eight no-argument reads — the seven metrics routes (the three
+    Observability routes and feature 6's four gate-evidence routes) and
     ``/ledger/k-effective`` (feature 94's per-epoch ``K_effective``,
     the deflation input §10.3's term consumes) — where the whole of
     serving is asking the composed endpoint and answering what it said,
@@ -1459,9 +1460,13 @@ def _is_promotion_parent_absent_refusal(exc: BaseException) -> bool:
 #: the wrong-verb refusal and the index, and the serving behaviour is
 #: said by the adapter rather than by the row.
 HTTP_ADAPTERS: dict[tuple[str, str], Callable[[Any, ApiRequest], tuple[int, Any]]] = {
+    ("GET", "/metrics/discovery-rate"): _no_argument_get,
     ("GET", "/metrics/fdr-deploy"): _no_argument_get,
     ("GET", "/metrics/instrument-status"): _no_argument_get,
+    ("GET", "/metrics/meta-overfit"): _no_argument_get,
+    ("GET", "/metrics/null-calibration"): _no_argument_get,
     ("GET", "/metrics/regime-coverage"): _no_argument_get,
+    ("GET", "/metrics/type-b-depth"): _no_argument_get,
     ("GET", "/ledger/k-effective"): _no_argument_get,
     ("POST", "/ledger/debit"): _debit_post,
     ("GET", "/forward/decay"): _forward_decay_get,

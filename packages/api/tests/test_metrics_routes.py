@@ -1,12 +1,21 @@
 """``GET /metrics/fdr-deploy``, ``GET /metrics/instrument-status`` and
-``GET /metrics/regime-coverage`` over HTTP.
+``GET /metrics/regime-coverage`` over HTTP, and feature 6's four
+gate-evidence routes beside them.
 
 The three Observability routes features 341-343 expose in-process, held
 to this build's own sentence: *System serves GET /metrics/fdr-deploy,
 GET /metrics/instrument-status and GET /metrics/regime-coverage as
 JSON, which returns 200 with null or empty fields when the store holds
 no rows rather than a fabricated zero, and 503 with the code word for a
-store failure.*
+store failure.*  Feature 6 of additions_spec_operator_surfaces.xml adds
+``GET /metrics/null-calibration``, ``/metrics/type-b-depth``,
+``/metrics/discovery-rate`` and ``/metrics/meta-overfit`` under the
+same sentence, over four stores and endpoints that are ``ops.gate_evidence``'s
+own (already held to their own law in ``packages/ops/tests``); this
+member's own footprint is only the HTTP wiring
+(:data:`nullius_api.routes.API_ROUTES`, :data:`nullius_api.server.HTTP_ADAPTERS`),
+so the section below drives all four through the real composed server
+over a store this suite populates itself.
 
 Two clauses, each its own section below, pinned through the real
 composed application rather than a fake — the transport's own dispatch
@@ -43,11 +52,14 @@ laws a fake endpoint could not misstate on the transport's behalf.
 
 from __future__ import annotations
 
+import dataclasses
 import http.client
 import json
 import threading
+import uuid
 from typing import Any
 
+import ops
 import pytest
 from conftest import TEST_TOKENS, token_for
 from nullius_api import ApiServer
@@ -249,6 +261,10 @@ def test_regime_coverage_never_folds_an_absent_stratum_into_a_zero(
         ("/metrics/fdr-deploy", "FdrDeployMetricError"),
         ("/metrics/instrument-status", "InstrumentStatusError"),
         ("/metrics/regime-coverage", "RegimeCoverageMetricError"),
+        ("/metrics/null-calibration", "GateEvidenceMetricError"),
+        ("/metrics/type-b-depth", "GateEvidenceMetricError"),
+        ("/metrics/discovery-rate", "GateEvidenceMetricError"),
+        ("/metrics/meta-overfit", "GateEvidenceMetricError"),
     ],
 )
 def test_a_store_the_member_cannot_open_answers_503_member_refusal(
@@ -282,3 +298,101 @@ def test_no_store_failure_body_carries_a_traceback_or_a_filesystem_path(
     assert "Traceback" not in text
     assert str(tmp_path) not in text
     assert ".py" not in text
+
+
+# -- Feature 6's four gate-evidence routes --------------------------------------------
+#
+# additions_spec_operator_surfaces.xml feature 6: GET /metrics/null-calibration,
+# /metrics/type-b-depth, /metrics/discovery-rate and /metrics/meta-overfit. The
+# four stores and endpoints these routes read are ops.gate_evidence's own,
+# already held to their law in packages/ops/tests; what this transport's own
+# footprint adds is the HTTP wiring (the API_ROUTES rows and HTTP_ADAPTERS
+# entries), so this suite drives each route through the real composed server
+# on an ephemeral port over a store this test populated itself — the one way
+# to prove a real row (not a fake endpoint) reaches the wire through
+# json_encoding, with no traceback, exactly as the three Observability routes
+# above are already proven.
+
+GATE_EVIDENCE_ROUTES: tuple[str, ...] = (
+    "/metrics/null-calibration",
+    "/metrics/type-b-depth",
+    "/metrics/discovery-rate",
+    "/metrics/meta-overfit",
+)
+
+
+def _seed_gate_evidence_stores() -> dict[str, Any]:
+    """Record one row into each of feature 6's four stores, resolved
+    against this test's own isolated ``DATABASE_URL`` — and return the
+    row each store answered, keyed by the route that reads it back.
+
+    Seeded through the stores' own public ``record()``, exactly as a
+    closed-out campaign or cycle would write it, never a direct table
+    write: this suite's whole concern is the four *routes*, and seeding
+    any other way could pass even if the route read the wrong table.
+    """
+    campaign_id = str(uuid.uuid4())
+    iteration_id = str(uuid.uuid4())
+    return {
+        "/metrics/null-calibration": ops.NullCalibrations.resolve().record(
+            campaign_id, sensitivity=0.8, specificity=0.9
+        ),
+        "/metrics/type-b-depth": ops.TypeBDepths.resolve().record(
+            campaign_id, depth_past_flip_errors=3
+        ),
+        "/metrics/discovery-rate": ops.DiscoveryRates.resolve().record(
+            campaign_id,
+            discoveries=5,
+            budget_charging_trials=100,
+            ledger_trials=120,
+        ),
+        "/metrics/meta-overfit": ops.MetaOverfitGaps.resolve().record(
+            iteration_id,
+            train_mean=0.6,
+            holdout_mean=0.55,
+            train_worlds=10,
+            holdout_worlds=10,
+        ),
+    }
+
+
+@pytest.mark.parametrize("path", GATE_EVIDENCE_ROUTES)
+def test_gate_evidence_route_answers_the_seeded_row_over_the_real_server(
+    boot, test_database_url: str, path: str
+) -> None:
+    """Each of feature 6's four routes, driven through the real,
+    composed server on port 0 (``boot`` binds ``("127.0.0.1", 0)``)
+    over a store this test populated: 200, the seeded row as
+    ``newest`` beside the one-row ``history`` it is drawn from, and a
+    body that reached the wire through :mod:`nullius_api.json_encoding`
+    rather than around it — every field the seeded row carries present
+    and unchanged, and no traceback.
+    """
+    rows = _seed_gate_evidence_stores()
+    server = boot(create_app())
+    status, headers, body = _get(server, path)
+    assert status == 200
+    assert headers["content-type"] == "application/json"
+    assert len(body["history"]) == 1
+    assert body["newest"] is not None
+    expected = rows[path]
+    for field in dataclasses.fields(expected):
+        assert body["newest"][field.name] == getattr(expected, field.name)
+    assert body["history"][0] == body["newest"]
+    text = json.dumps(body)
+    assert "Traceback" not in text
+    assert ".py" not in text
+
+
+def test_gate_evidence_route_over_an_empty_store_answers_the_honest_absence(
+    boot, test_database_url: str
+) -> None:
+    """A deployment that has closed no campaign or cycle out answers an
+    empty history and a ``newest`` of ``None`` — never a fabricated
+    zero standing in for a measurement nobody made."""
+    server = boot(create_app())
+    for path in GATE_EVIDENCE_ROUTES:
+        status, _, body = _get(server, path)
+        assert status == 200
+        assert body["history"] == []
+        assert body["newest"] is None
