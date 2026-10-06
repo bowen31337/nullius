@@ -228,7 +228,20 @@ def _tree_sha256(runtime_root: PathLike) -> str:
     """
     root = Path(runtime_root)
     relpaths: list[str] = []
-    for dirpath, _dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Prune directories a non-root user cannot traverse (other-exec bit
+        # clear), by mode alone — so the digest selects the same files
+        # whether root (the provisioner) or an ordinary user (the verifier)
+        # walks the tree. A root-run ``find`` would otherwise descend into a
+        # 0700 dir such as ``/root`` and hash a world-readable file inside it
+        # (``/root/.bashrc``) that the non-root launcher can never reach. The
+        # provisioning script prunes the same dirs with ``-perm -001``.
+        dirnames[:] = [
+            d
+            for d in dirnames
+            if (Path(dirpath) / d).is_symlink()
+            or ((Path(dirpath) / d).stat().st_mode & 0o001)
+        ]
         for name in filenames:
             candidate = Path(dirpath) / name
             if candidate.is_symlink() or not candidate.is_file():

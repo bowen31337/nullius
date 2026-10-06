@@ -94,7 +94,13 @@ sudo chroot "$ROOT.new" /usr/bin/python3 -I -c \
 # dozen root-only files a debootstrap root carries (/etc/shadow and the
 # like), but a non-root verifier cannot, so both sides hash only the files
 # every reader can open.
-DIGEST="$(cd "$ROOT.new" && sudo find . -type f -perm -004 -print0 | LC_ALL=C sort -z | sudo xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+# Prune directories a non-root user cannot traverse (other-exec bit clear,
+# e.g. /root at 0700) before selecting world-readable files, so this
+# root-run digest matches what orchestrator._gvisor._tree_sha256 computes
+# as the ordinary (non-root) launcher — which cannot descend into those
+# dirs. Without the prune, find-as-root would hash /root/.bashrc and the
+# verifier never could, and the digests would never agree.
+DIGEST="$(cd "$ROOT.new" && sudo find . -type d ! -perm -001 -prune -o -type f -perm -004 -print0 | LC_ALL=C sort -z | sudo xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
 PY="$(sudo chroot "$ROOT.new" /usr/bin/python3 -c 'import sys; print(sys.version.split()[0])')"
 COMMIT="$(git -c safe.directory="$REPO" -C "$REPO" rev-parse HEAD)"
 sudo tee "$ROOT.new.manifest.json" >/dev/null <<EOF

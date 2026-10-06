@@ -409,6 +409,27 @@ def test_tree_sha256_ignores_a_root_only_file(tmp_path: Path) -> None:
     assert gv._tree_sha256(root) == expected
 
 
+def test_tree_sha256_ignores_files_under_a_non_traversable_dir(tmp_path: Path) -> None:
+    # The DIGEST-2 bug: a provisioned root carries a 0700 directory (/root)
+    # holding world-readable files (/root/.bashrc). A root-run find descends
+    # into it; a non-root launcher cannot. _tree_sha256 must prune a dir
+    # whose other-exec bit is clear, by mode alone, so the two agree.
+    root = tmp_path / "tiny-root"
+    root.mkdir()
+    (root / "world-readable.txt").write_bytes(b"readable")
+    locked = root / "locked-dir"
+    locked.mkdir()
+    (locked / "world-readable-but-unreachable.txt").write_bytes(b"inside")
+    locked.chmod(0o700)
+
+    lines = [f"{hashlib.sha256(b'readable').hexdigest()}  ./world-readable.txt\n"]
+    expected = hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()
+    assert gv._tree_sha256(root) == expected
+
+    # restore perms so pytest can clean the tmp tree up
+    locked.chmod(0o755)
+
+
 def test_tree_sha256_still_reacts_to_a_changed_world_readable_file(tmp_path: Path) -> None:
     root = tmp_path / "tiny-root"
     root.mkdir()
