@@ -14,7 +14,7 @@
 # touched: its packages/* glob already declares this member, so the root
 # stays outside every feature's file claim.
 #
-# Dependencies: the eight members this one calls and never edits, in the
+# Dependencies: the members this one calls and never edits, in the
 # spec sentence's own order — the evaluator, nulloracle and ledger of the
 # read-only trust zone Z0, the artifacts and discovery members that own
 # what an evaluation persists, and the signal-agent, providers and
@@ -24,6 +24,18 @@
 # no registry edge from it.  The declaration is the calling direction
 # made checkable: Z0 is called, never changed, and a member that could
 # not name what it calls would be a member nothing pins.
+#
+# Feature 11 (the dreaming cycle CLI, additions_spec_operator_surfaces.xml)
+# adds the five members its own join reaches for: dreaming (the loop's
+# library — the pool freeze, the revision sweep, the split, the sweep and
+# the selection), bootstrap (the pool's world census and its own worlds,
+# the store score_on_world reads a world from), canary (require_dreaming_
+# allowed, the halt the cycle must not run past) and replay (the composed
+# "replay" component dreaming.sweep_candidates persists through — named
+# here even though no module imports it directly, because the dependency
+# is real: a deployment without it cannot run a cycle). ops is already a
+# dependency (feature 348's evaluation log); feature 11 is a second,
+# unrelated reason for it to stay one (feature 347's MetaOverfitGaps).
 
 [project]
 name = "orchestrator"
@@ -41,6 +53,10 @@ dependencies = [
     "policy-runtime",
     "scoring",
     "ops",
+    "dreaming",
+    "bootstrap",
+    "canary",
+    "replay",
 ]
 
 [build-system]
@@ -58,6 +74,10 @@ providers = { workspace = true }
 policy-runtime = { workspace = true }
 scoring = { workspace = true }
 ops = { workspace = true }
+dreaming = { workspace = true }
+bootstrap = { workspace = true }
+canary = { workspace = true }
+replay = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/orchestrator"]

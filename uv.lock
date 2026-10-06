@@ -430,13 +430,17 @@ version = "0.1.0"
 source = { editable = "packages/orchestrator" }
 dependencies = [
     { name = "artifacts" },
+    { name = "bootstrap" },
+    { name = "canary" },
     { name = "discovery" },
+    { name = "dreaming" },
     { name = "evaluator" },
     { name = "ledger" },
     { name = "nulloracle" },
     { name = "ops" },
     { name = "policy-runtime" },
     { name = "providers" },
+    { name = "replay" },
     { name = "scoring" },
     { name = "signal-agent" },
 ]
@@ -444,13 +448,17 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "artifacts", editable = "packages/artifacts" },
+    { name = "bootstrap", editable = "packages/bootstrap" },
+    { name = "canary", editable = "packages/canary" },
     { name = "discovery", editable = "packages/discovery" },
+    { name = "dreaming", editable = "packages/dreaming" },
     { name = "evaluator", editable = "packages/evaluator" },
     { name = "ledger", editable = "packages/ledger" },
     { name = "nulloracle", editable = "packages/nulloracle" },
     { name = "ops", editable = "packages/ops" },
     { name = "policy-runtime", editable = "packages/policy-runtime" },
     { name = "providers", editable = "packages/providers" },
+    { name = "replay", editable = "packages/replay" },
     { name = "scoring", editable = "packages/scoring" },
     { name = "signal-agent", editable = "packages/signal-agent" },
 ]

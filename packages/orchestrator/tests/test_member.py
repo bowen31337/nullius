@@ -22,14 +22,16 @@ Five contracts, one per claim a member's first feature makes:
   the root pyproject.toml (the file claim asserts the same thing
   statically — this test holds it live).
 
-* **the declaration** — the pyproject names exactly the ten members this
-  member now calls: the eight the spec sentence names plus the two
-  feature 13 (close-out) added later (``scoring``, ``ops``), each with a
-  ``workspace = true`` source and nothing else in ``[tool.uv.sources]``.
-  That "nothing else" is the whole of *it adds no third-party package*:
-  a registry dependency would be a dependency with no workspace source,
-  and the ten names are all members, so the dependencies list and the
-  sources table cover one another exactly.
+* **the declaration** — the pyproject names exactly the fourteen members
+  this member now calls: the eight the spec sentence names, the two
+  feature 13 (close-out) added later (``scoring``, ``ops``), and the four
+  feature 11 (the dreaming-cycle CLI, additions_spec_operator_surfaces.xml)
+  added after that (``dreaming``, ``bootstrap``, ``canary``, ``replay``) —
+  each with a ``workspace = true`` source and nothing else in
+  ``[tool.uv.sources]``. That "nothing else" is the whole of *it adds no
+  third-party package*: a registry dependency would be a dependency with
+  no workspace source, and the fourteen names are all members, so the
+  dependencies list and the sources table cover one another exactly.
 
 * **the module surface** — ``orchestrator`` imports, carries a module
   docstring, and answers an empty ``__all__``: the member's public
@@ -44,11 +46,11 @@ Five contracts, one per claim a member's first feature makes:
 * **composition still composes** — the full default-roots
   ``create_app()`` answers an :class:`~app.module_loader.Application`
   whose registry still carries each dependency member's own component —
-  one name per member of the eight declared, so the member's arrival
-  removed nothing and hid nothing.  The names are pinned in this module
-  rather than imported, the same discipline the sibling member suites
-  state for theirs: a suite that read the name off the code it tests
-  would follow the code instead of the spec.
+  one name per member declared, so the member's arrival removed nothing
+  and hid nothing.  The names are pinned in this module rather than
+  imported, the same discipline the sibling member suites state for
+  theirs: a suite that read the name off the code it tests would follow
+  the code instead of the spec.
 
 No test in this file opens a network connection, reads a real
 credential, or writes outside a pytest temporary directory.  The
@@ -75,9 +77,14 @@ PYPROJECT = MEMBER_SRC.parent / "pyproject.toml"
 #: The eight members feature 1's spec sentence names, plus the two feature
 #: 13 (close-out) later added — ``scoring`` (the scorer process and
 #: FDR_deploy store) and ``ops`` (the three research-metrics stores
-#: close-out persists into).  Spelled here rather than read back off the
-#: pyproject, so a dependency dropped or reordered is a failing test about
-#: *the feature text*.
+#: close-out persists into) — plus the four feature 11 (the dreaming-cycle
+#: CLI) added after that: ``dreaming`` (the pool freeze, the revision
+#: sweep, the split, the sweep and the selection), ``bootstrap`` (the
+#: pool's world census and the worlds ``score_on_world`` reads), ``canary``
+#: (``require_dreaming_allowed``) and ``replay`` (the composed component
+#: ``dreaming.sweep_candidates`` persists through).  Spelled here rather
+#: than read back off the pyproject, so a dependency dropped or reordered
+#: is a failing test about *the feature text*.
 DEPENDENCIES = (
     "evaluator",
     "nulloracle",
@@ -89,6 +96,10 @@ DEPENDENCIES = (
     "policy-runtime",
     "scoring",
     "ops",
+    "dreaming",
+    "bootstrap",
+    "canary",
+    "replay",
 )
 
 #: One component name per dependency member — each member's own first
@@ -106,6 +117,10 @@ COMPONENTS_BY_MEMBER = {
     "policy-runtime": "policy-runtime",
     "scoring": "scoring",
     "ops": "ops-fdr-deploy",
+    "dreaming": "dreaming",
+    "bootstrap": "bootstrap-pool",
+    "canary": "canary",
+    "replay": "replay",
 }
 
 
@@ -120,12 +135,13 @@ def test_the_member_is_a_declared_workspace_member() -> None:
     assert MEMBER_SRC.is_dir()
 
 
-def test_the_pyproject_declares_the_eight_workspace_dependencies() -> None:
+def test_the_pyproject_declares_the_fourteen_workspace_dependencies() -> None:
     # The spec sentence's own list, exactly: the eight members it names,
-    # every one with a workspace = true source, and no other dependency
-    # and no other source.  A third-party package would be a dependency
-    # without a workspace source — so the two sets covering each other
-    # exactly *is* "it adds no third-party package".
+    # the two feature 13 added, and the four feature 11 added, every one
+    # with a workspace = true source, and no other dependency and no other
+    # source.  A third-party package would be a dependency without a
+    # workspace source — so the two sets covering each other exactly *is*
+    # "it adds no third-party package".
     with PYPROJECT.open("rb") as handle:
         project = tomllib.load(handle)
 
