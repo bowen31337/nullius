@@ -39,6 +39,8 @@ dependencies = [
     "signal-agent",
     "providers",
     "policy-runtime",
+    "scoring",
+    "ops",
 ]
 
 [build-system]
@@ -54,6 +56,8 @@ discovery = { workspace = true }
 signal-agent = { workspace = true }
 providers = { workspace = true }
 policy-runtime = { workspace = true }
+scoring = { workspace = true }
+ops = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/orchestrator"]

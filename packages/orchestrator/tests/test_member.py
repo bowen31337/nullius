@@ -22,13 +22,14 @@ Five contracts, one per claim a member's first feature makes:
   the root pyproject.toml (the file claim asserts the same thing
   statically — this test holds it live).
 
-* **the declaration** — the pyproject names exactly the eight members
-  the spec sentence names, each with a ``workspace = true`` source and
-  nothing else in ``[tool.uv.sources]``.  That "nothing else" is the
-  whole of *it adds no third-party package*: a registry dependency
-  would be a dependency with no workspace source, and the eight names
-  are all members, so the dependencies list and the sources table cover
-  one another exactly.
+* **the declaration** — the pyproject names exactly the ten members this
+  member now calls: the eight the spec sentence names plus the two
+  feature 13 (close-out) added later (``scoring``, ``ops``), each with a
+  ``workspace = true`` source and nothing else in ``[tool.uv.sources]``.
+  That "nothing else" is the whole of *it adds no third-party package*:
+  a registry dependency would be a dependency with no workspace source,
+  and the ten names are all members, so the dependencies list and the
+  sources table cover one another exactly.
 
 * **the module surface** — ``orchestrator`` imports, carries a module
   docstring, and answers an empty ``__all__``: the member's public
@@ -71,9 +72,12 @@ MEMBER_SRC = Path(orchestrator.__file__).resolve().parent.parent
 #: The member's own project file — the declaration this feature lands.
 PYPROJECT = MEMBER_SRC.parent / "pyproject.toml"
 
-#: The eight members the spec sentence names, in its own order.  Spelled
-#: here rather than read back off the pyproject, so a dependency dropped
-#: or reordered is a failing test about *the feature text*.
+#: The eight members feature 1's spec sentence names, plus the two feature
+#: 13 (close-out) later added — ``scoring`` (the scorer process and
+#: FDR_deploy store) and ``ops`` (the three research-metrics stores
+#: close-out persists into).  Spelled here rather than read back off the
+#: pyproject, so a dependency dropped or reordered is a failing test about
+#: *the feature text*.
 DEPENDENCIES = (
     "evaluator",
     "nulloracle",
@@ -83,6 +87,8 @@ DEPENDENCIES = (
     "signal-agent",
     "providers",
     "policy-runtime",
+    "scoring",
+    "ops",
 )
 
 #: One component name per dependency member — each member's own first
@@ -98,6 +104,8 @@ COMPONENTS_BY_MEMBER = {
     "signal-agent": "signal-agent",
     "providers": "providers",
     "policy-runtime": "policy-runtime",
+    "scoring": "scoring",
+    "ops": "ops-fdr-deploy",
 }
 
 
@@ -158,7 +166,7 @@ def test_create_app_still_composes() -> None:
     # declared workspace scans, the new member's package imports under
     # the loader's synthetic name without registering anything, and the
     # composed application still answers every dependency member's own
-    # component — one name per member of the eight declared, so the
+    # component — one name per member of the ten declared, so the
     # member's arrival removed nothing and hid nothing.
     app = create_app()
     assert isinstance(app, Application)

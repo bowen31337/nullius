@@ -434,8 +434,10 @@ dependencies = [
     { name = "evaluator" },
     { name = "ledger" },
     { name = "nulloracle" },
+    { name = "ops" },
     { name = "policy-runtime" },
     { name = "providers" },
+    { name = "scoring" },
     { name = "signal-agent" },
 ]
 
@@ -446,8 +448,10 @@ requires-dist = [
     { name = "evaluator", editable = "packages/evaluator" },
     { name = "ledger", editable = "packages/ledger" },
     { name = "nulloracle", editable = "packages/nulloracle" },
+    { name = "ops", editable = "packages/ops" },
     { name = "policy-runtime", editable = "packages/policy-runtime" },
     { name = "providers", editable = "packages/providers" },
+    { name = "scoring", editable = "packages/scoring" },
     { name = "signal-agent", editable = "packages/signal-agent" },
 ]
 
