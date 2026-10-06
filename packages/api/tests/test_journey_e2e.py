@@ -341,8 +341,12 @@ def test_healthz_refuses_a_wrong_verb(deployment) -> None:
 
 def test_the_three_metrics_routes_answer_200_populated(deployment) -> None:
     """J8's observability routes over a store that has something in it: the
-    three closed campaigns, the lit canary rail, the seeded regime census —
-    each populated, never the empty-store absence the metrics suites pin."""
+    three closed campaigns, the lit KS guard, the seeded regime census —
+    each populated, never the empty-store absence the metrics suites pin.
+    The canary lamp is the one exception: the demo seeds no canary run (its
+    freshness window is relative to wall-clock *now*, which a fixed,
+    idempotently-reseedable demo row cannot satisfy), so it answers the
+    same honest *no reading* an empty store would."""
     fdr = _get(deployment, "/metrics/fdr-deploy", "metrics:read")
     assert fdr.status == 200
     assert len(fdr.body["history"]) == 3
@@ -350,7 +354,7 @@ def test_the_three_metrics_routes_answer_200_populated(deployment) -> None:
 
     status = _get(deployment, "/metrics/instrument-status", "metrics:read")
     assert status.status == 200
-    assert status.body["canary"] is True
+    assert status.body["canary"] is None
     _assert_no_traceback(status)
 
     coverage = _get(deployment, "/metrics/regime-coverage", "metrics:read")

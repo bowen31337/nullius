@@ -23,27 +23,38 @@ This suite pins the *route's* law — the seam, not the three instruments:
   never one instrument's detail, because the sentence asks for *three
   binary lamps*;
 * each lamp is the owning member's own read, never re-spelled here:
-  §12's halt through feature 143's canary store, §7.4's detectability
-  reading through feature 123's nulloracle journal judged against feature
-  124's own ``VOID_THRESHOLD``, and the recorded feed silence through this
-  member's own feature-350 row — pinned by pointing the endpoint at a
-  *real* SQLite file, writing each lamp through the owning member's own
-  verb, and asserting the answer agrees;
+  §12's halt *and* feature 1's own run history through the canary member,
+  §7.4's detectability reading through feature 123's nulloracle journal
+  judged against feature 124's own ``VOID_THRESHOLD``, and the recorded
+  feed silence through this member's own feature-350 row — pinned by
+  pointing the endpoint at a *real* SQLite file, writing each lamp through
+  the owning member's own verb, and asserting the answer agrees;
+* the canary lamp is ``Optional[bool]``, three states rather than two: a
+  halt (feature 143's monotone bit) wins over everything and answers
+  ``False``; short of a halt, the lamp is ``True`` only when feature 1's
+  newest run (:class:`~canary.CanaryRunStore`) both passed and is within
+  ``CANARY_MAX_AGE_HOURS`` (36) of the read; everything else — no run
+  ever recorded, or the newest one too old — is ``None``, *no reading*.
+  ``canary_last_run_at`` carries the newest run's own instant whenever one
+  is on record, independent of the bit;
 * the KS lamp reports on the campaign the *top-line figure* is attributed
   to (the newest row of feature 267's own trend read), and the answer
   carries that campaign and the p-value, so the bit is reconstructible;
-* the three absences are held apart from one another and from a broken
-  read: no campaign closed out, no guard run for the named campaign, no
-  recorded feed reading, no configured band — each answered as an absence,
-  never as a lit lamp and never as a refusal; and the two halves of the
-  ingest watchdog stay distinguishable on the answer;
+* the three lamps' absences are held apart from one another and from a
+  broken read: no canary run recent enough, no campaign closed out, no
+  guard run for the named campaign, no recorded feed reading, no
+  configured band — each answered as an absence, never as a lit lamp and
+  never as a refusal; and the two halves of the ingest watchdog stay
+  distinguishable on the answer;
 * the response validates what it holds (a lamp that is not a genuine bool
   with ``int`` refused first, a p-value outside ``[0, 1]``, a negative or
   non-finite silence, a band that is not strictly positive, a lamp carried
   without the number that decides it, a bit that *disagrees with its own
-  number*), and is frozen;
+  number*, a lit canary lamp with no run instant behind it), and is
+  frozen;
 * a read that fails is translated into this member's vocabulary — once per
-  lamp, chained, and never answered around with a lamp nobody read; and
+  lamp (the canary lamp has two reads: the halt and the run history),
+  chained, and never answered around with a lamp nobody read; and
 * building performs no I/O of any kind, and this module reaches no sibling
   member at module scope or build time — the cross-member reads are the
   deferred, declared ``canary`` and ``nulloracle`` doors (and the scoring
@@ -61,7 +72,7 @@ import ast
 import dataclasses
 import inspect
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import canary
@@ -69,6 +80,7 @@ import nulloracle
 import pytest
 import scoring
 from ops import (
+    CANARY_MAX_AGE_HOURS,
     FEED_STALENESS_METRIC,
     FEED_STALENESS_THRESHOLD_ENV,
     INSTRUMENT_STATUS_ROUTE,
@@ -90,6 +102,12 @@ CAMPAIGN = "11111111-1111-4111-8111-111111111111"
 #: A second campaign, so *newest* is a real ordering rather than a single
 #: row — the attribution's whole point.
 NEWER_CAMPAIGN = "22222222-2222-4222-8222-222222222222"
+
+#: A fixed, valid UUID for canary run rows.  ``CanaryRunStore`` enforces no
+#: foreign key to a reference pair (see feature 1's own module), so any
+#: well-formed UUID names "the run that happened" — the same stance
+#: ``CAMPAIGN`` takes for the guard and trend stores.
+REFERENCE_ID = "33333333-3333-4333-8333-333333333333"
 
 #: A recorded silence, in seconds — docs §5.4's own example reading
 #: (``ingest 1.2s``).
@@ -128,6 +146,12 @@ def store_url(store_path: Path) -> str:
 def halt_store(store_url: str) -> canary.CanaryHaltStore:
     """The *canary member's own* halt store over the test database."""
     return canary.CanaryHaltStore(store_url)
+
+
+@pytest.fixture
+def run_store(store_url: str) -> canary.CanaryRunStore:
+    """The *canary member's own* run-history store over the test database."""
+    return canary.CanaryRunStore(store_url)
 
 
 @pytest.fixture
@@ -239,6 +263,36 @@ def _record_halt(halt_store: canary.CanaryHaltStore) -> canary.DreamHalt:
     )
 
 
+def _record_run(
+    run_store: canary.CanaryRunStore,
+    *,
+    within_tolerance: bool = True,
+    ran_at: datetime | None = None,
+) -> canary.CanaryRun:
+    """Record one canary run through feature 1's own writer.
+
+    ``CanaryRun`` enforces its own arithmetic (``deviation`` must equal
+    ``abs(score - recorded_score)``, and ``within_tolerance`` must equal
+    ``deviation <= tolerance``), so one self-consistent passing shape and
+    one self-consistent failing shape are reused everywhere this suite
+    needs a verdict — the comparison's own numbers are never this route's
+    business, only the verdict and the instant are.
+    """
+    if within_tolerance:
+        score, recorded_score, deviation, tolerance = 0.5, 0.5, 0.0, 1e-12
+    else:
+        score, recorded_score, deviation, tolerance = 0.5, 0.9, 0.4, 1e-12
+    return run_store.record(
+        REFERENCE_ID,
+        score=score,
+        recorded_score=recorded_score,
+        deviation=deviation,
+        tolerance=tolerance,
+        within_tolerance=within_tolerance,
+        ran_at=ran_at,
+    )
+
+
 def _guard_campaign(
     guard: nulloracle.KsGuard,
     campaign: str,
@@ -296,12 +350,20 @@ def test_the_ingest_lamp_reads_a_metric_the_store_publishes() -> None:
     assert FEED_STALENESS_METRIC in LIVE_METRICS
 
 
+def test_the_canary_freshness_window_is_the_features_own_number() -> None:
+    # Fixed, not configurable — §12's clause names 36 itself, and a second
+    # place to set it would be a second place it could drift from that
+    # number.
+    assert CANARY_MAX_AGE_HOURS == 36
+
+
 # -- The route's answer --------------------------------------------------------
 
 
 def test_the_route_answers_three_lamps(
     endpoint: InstrumentStatusEndpoint,
     halt_store: canary.CanaryHaltStore,
+    run_store: canary.CanaryRunStore,
     guard: nulloracle.KsGuard,
     trend: scoring.FdrDeployStore,
     live: LiveMetricsStore,
@@ -309,6 +371,7 @@ def test_the_route_answers_three_lamps(
     # The feature sentence at its seam: canary, KS guard and ingest lag,
     # one bit each, with the top-line figure's campaign attributed beside
     # them.
+    run = _record_run(run_store)
     _plan_campaign(guard, CAMPAIGN)
     _guard_campaign(guard, CAMPAIGN, samples=SAME_SAMPLES)
     _close_campaign(trend, CAMPAIGN, computed_at="2026-08-01T00:00:00Z")
@@ -316,6 +379,7 @@ def test_the_route_answers_three_lamps(
     response = endpoint.get()
     assert isinstance(response, InstrumentStatusResponse)
     assert response.canary is True
+    assert response.canary_last_run_at == run.ran_at.isoformat()
     assert response.ks_guard is True
     assert response.ingest is True
     assert response.campaign == CAMPAIGN
@@ -323,20 +387,6 @@ def test_the_route_answers_three_lamps(
     assert response.absent == ()
     assert response.failing == ()
     assert bool(response) is True
-
-
-def test_the_canary_lamp_is_feature_143s_own_bit(
-    endpoint: InstrumentStatusEndpoint, halt_store: canary.CanaryHaltStore
-) -> None:
-    # The lamp is the canary member's monotone halt, read through its own
-    # store, in both directions — a second spelling of *has a break been
-    # recorded* here would be a second place §12's halt could drift from
-    # the bit that pages an operator.
-    assert endpoint.get().canary is True
-    assert halt_store.halted() is False
-    _record_halt(halt_store)
-    assert halt_store.halted() is True
-    assert endpoint.get().canary is False
 
 
 def test_the_ks_lamp_is_feature_123s_reading_against_feature_124s_level(
@@ -439,10 +489,12 @@ def test_the_ingest_lamp_judges_section_13_3s_boundary_strictly(
 def test_the_route_reads_no_clock(
     endpoint: InstrumentStatusEndpoint, live: LiveMetricsStore
 ) -> None:
-    # The reading's instant is the row's own label, carried rather than
-    # re-stamped: a route that measured the silence from its own wall
+    # The ingest reading's instant is the row's own label, carried rather
+    # than re-stamped: a route that measured the silence from its own wall
     # clock could not be reconciled with feature 350's `logged_at` and
-    # would be answering a different quantity on every call.
+    # would be answering a different quantity on every call.  (The canary
+    # lamp is the one lamp that *does* read a clock — see the "three
+    # states" section below — but that read never reaches this field.)
     live.record(FEED_STALENESS_METRIC, LAG_SECONDS, logged_at=LAG_AT)
     response = endpoint.get()
     assert response.ingest_read_at == LAG_AT
@@ -450,6 +502,7 @@ def test_the_route_reads_no_clock(
 
 def test_the_answer_exposes_the_rail_as_a_mapping(
     endpoint: InstrumentStatusEndpoint,
+    run_store: canary.CanaryRunStore,
     guard: nulloracle.KsGuard,
     trend: scoring.FdrDeployStore,
     live: LiveMetricsStore,
@@ -459,6 +512,7 @@ def test_the_answer_exposes_the_rail_as_a_mapping(
     # is out or absent still holds its seat in the mapping — a render that
     # dropped an unmeasured lamp would draw a shorter rail than the design
     # and hide the missing instrument rather than showing it dark.
+    _record_run(run_store)
     _plan_campaign(guard, CAMPAIGN)
     _guard_campaign(guard, CAMPAIGN, samples=SAME_SAMPLES)
     _close_campaign(trend, CAMPAIGN, computed_at="2026-08-01T00:00:00Z")
@@ -471,24 +525,24 @@ def test_the_answer_exposes_the_rail_as_a_mapping(
 def test_the_rail_mapping_keeps_a_seat_for_an_absent_lamp(
     endpoint: InstrumentStatusEndpoint,
 ) -> None:
-    # An absent lamp keeps its seat in the mapping and holds None there: a
-    # render that dropped an unmeasured lamp would draw a shorter rail than
-    # the design draws and hide the missing instrument rather than showing
-    # it dark.
+    # A freshly composed, empty database: every lamp keeps its seat in the
+    # mapping and holds None there — a render that dropped an unmeasured
+    # lamp would draw a shorter rail than the design draws and hide the
+    # missing instrument rather than showing it dark.
     lamps = endpoint.get().lamps
     assert list(lamps) == list(LAMP_NAMES)
-    assert lamps == {"canary": True, "ks_guard": None, "ingest": None}
+    assert lamps == {"canary": None, "ks_guard": None, "ingest": None}
 
 
 def test_the_lamps_mapping_is_a_fresh_view_each_time() -> None:
     # The mapping is a view *over* the three fields, not a second record
     # of the rail: a caller that mutates the dict it was handed cannot
     # change this value's answer.
-    response = InstrumentStatusResponse(canary=True)
+    response = InstrumentStatusResponse(canary=None)
     lamps = response.lamps
     lamps["canary"] = False
     lamps["ks_guard"] = True
-    assert response.lamps == {"canary": True, "ks_guard": None, "ingest": None}
+    assert response.lamps == {"canary": None, "ks_guard": None, "ingest": None}
 
 
 def test_get_takes_no_arguments() -> None:
@@ -499,17 +553,134 @@ def test_get_takes_no_arguments() -> None:
     assert list(signature.parameters) == ["self"]
 
 
-# -- Absent lamps, held apart --------------------------------------------------
+# -- The canary lamp: three states ----------------------------------------------
 
 
-def test_the_canary_lamp_is_never_absent(endpoint: InstrumentStatusEndpoint) -> None:
-    # A database the store can open answers one bit: *no rows* is
-    # *dreaming runs*, which is a measurement of the halt table's content
-    # and not the absence of one.  So this lamp is the one that is never
-    # absent on a composed route.
+def test_the_canary_lamp_is_no_reading_when_the_canary_has_never_run(
+    endpoint: InstrumentStatusEndpoint,
+) -> None:
+    # No halt, and no run ever recorded: there is no reading to report,
+    # and the lamp must not default to green for a canary nobody has run.
+    response = endpoint.get()
+    assert response.canary is None
+    assert response.canary_last_run_at is None
+    assert "canary" in response.absent
+
+
+def test_the_canary_lamp_is_lit_when_the_newest_run_passed_and_is_fresh(
+    endpoint: InstrumentStatusEndpoint, run_store: canary.CanaryRunStore
+) -> None:
+    run = _record_run(run_store, within_tolerance=True)
     response = endpoint.get()
     assert response.canary is True
+    assert response.canary_last_run_at == run.ran_at.isoformat()
     assert "canary" not in response.absent
+
+
+def test_the_canary_lamp_is_no_reading_when_the_newest_run_is_too_old(
+    endpoint: InstrumentStatusEndpoint, run_store: canary.CanaryRunStore
+) -> None:
+    stale = datetime.now(UTC) - timedelta(hours=CANARY_MAX_AGE_HOURS, seconds=5)
+    run = _record_run(run_store, within_tolerance=True, ran_at=stale)
+    response = endpoint.get()
+    assert response.canary is None
+    assert response.canary_last_run_at == run.ran_at.isoformat()
+    assert "canary" in response.absent
+
+
+def test_the_canary_lamp_stays_lit_just_inside_the_window(
+    endpoint: InstrumentStatusEndpoint, run_store: canary.CanaryRunStore
+) -> None:
+    # A few seconds inside the window rather than the exact boundary
+    # instant, which a wall-clock test cannot pin without racing the
+    # route's own `now()` read.
+    just_inside = (
+        datetime.now(UTC) - timedelta(hours=CANARY_MAX_AGE_HOURS) + timedelta(seconds=10)
+    )
+    _record_run(run_store, within_tolerance=True, ran_at=just_inside)
+    assert endpoint.get().canary is True
+
+
+def test_the_canary_lamp_is_no_reading_when_the_newest_run_failed_but_is_fresh(
+    endpoint: InstrumentStatusEndpoint, run_store: canary.CanaryRunStore
+) -> None:
+    # Fresh, but not passing, with no halt on record (a row a test wrote
+    # directly, rather than through `python -m canary.run`, which would
+    # have halted dreaming on this same verdict): "True only when ...
+    # passed and is recent" leaves everything else at *no reading*, never
+    # a dark lamp a halt alone earns.
+    run = _record_run(run_store, within_tolerance=False)
+    response = endpoint.get()
+    assert response.canary is None
+    assert response.canary_last_run_at == run.ran_at.isoformat()
+
+
+def test_a_halt_overrides_a_fresh_passing_run(
+    endpoint: InstrumentStatusEndpoint,
+    run_store: canary.CanaryRunStore,
+    halt_store: canary.CanaryHaltStore,
+) -> None:
+    # A halt wins over everything, as today — even a run on record that
+    # passed and is fresh.
+    _record_run(run_store, within_tolerance=True)
+    _record_halt(halt_store)
+    response = endpoint.get()
+    assert response.canary is False
+    assert response.canary_last_run_at is not None
+    assert response.failing == ("canary",)
+
+
+def test_a_halt_with_no_run_on_record_still_answers_false(
+    endpoint: InstrumentStatusEndpoint, halt_store: canary.CanaryHaltStore
+) -> None:
+    _record_halt(halt_store)
+    response = endpoint.get()
+    assert response.canary is False
+    assert response.canary_last_run_at is None
+
+
+def test_canary_last_run_at_is_carried_independently_of_the_bit(
+    endpoint: InstrumentStatusEndpoint, run_store: canary.CanaryRunStore
+) -> None:
+    # The instant is feature 1's own history, not this lamp's verdict: it
+    # is present whenever a run is on record, whether or not that run is
+    # recent enough or passing enough to light the lamp.
+    stale = datetime.now(UTC) - timedelta(hours=CANARY_MAX_AGE_HOURS * 2)
+    run = _record_run(run_store, within_tolerance=False, ran_at=stale)
+    response = endpoint.get()
+    assert response.canary is None
+    assert response.canary_last_run_at == run.ran_at.isoformat()
+
+
+def test_a_canary_run_history_read_that_fails_is_translated_not_answered_around() -> None:
+    # The member-seam law, for the canary lamp's second read: a caller
+    # that wrote `except InstrumentStatusError` must not be taken down by
+    # the canary member's own error class — translated at the seam,
+    # chained, and never caught *into* a lamp.
+    class Refusing:
+        def canary_halted(self) -> bool:
+            return False
+
+        def canary_last_run(self) -> None:
+            raise canary.CanaryError("the run history's own words")
+
+        def campaign(self) -> None:
+            return None
+
+        def ks_pvalue(self, campaign: str) -> None:
+            return None
+
+        def feed_reading(self) -> None:
+            return None
+
+    with pytest.raises(InstrumentStatusError) as caught:
+        InstrumentStatusEndpoint(Refusing()).get()
+    assert INSTRUMENT_STATUS_ROUTE in str(caught.value)
+    assert isinstance(caught.value.__cause__, canary.CanaryError)
+    assert "the run history's own words" in str(caught.value.__cause__)
+
+
+# -- Absent lamps, held apart --------------------------------------------------
 
 
 def test_the_ks_lamp_is_absent_when_no_campaign_is_closed_out(
@@ -527,13 +698,16 @@ def test_the_ks_lamp_is_absent_when_no_campaign_is_closed_out(
 
 
 def test_the_ks_lamp_is_absent_when_the_guard_has_not_run(
-    endpoint: InstrumentStatusEndpoint, trend: scoring.FdrDeployStore
+    endpoint: InstrumentStatusEndpoint,
+    run_store: canary.CanaryRunStore,
+    trend: scoring.FdrDeployStore,
 ) -> None:
     # The campaign is known and the finding is not: feature 123's own
     # `load` answers None for *"a campaign the orchestrator has created and
     # no job has read yet"*, and an unguarded campaign is **not** a passing
     # one — `ks_pvalue` is NULL until the guard fills it, so a lamp that
     # read green here would certify the one state §7.4 exists to catch.
+    _record_run(run_store)
     _close_campaign(trend, CAMPAIGN, computed_at="2026-08-01T00:00:00Z")
     response = endpoint.get()
     assert response.campaign == CAMPAIGN
@@ -669,11 +843,11 @@ def test_the_knob_is_derived_from_the_halves_it_names() -> None:
     # own answer cannot disagree — the same discipline that re-derives
     # each carried bit from the number beside it.
     half_wired = InstrumentStatusResponse(
-        canary=True, ingest_lag_seconds=LAG_SECONDS, ingest_read_at=LAG_AT
+        canary=None, ingest_lag_seconds=LAG_SECONDS, ingest_read_at=LAG_AT
     )
     assert half_wired.ingest_threshold_env == FEED_STALENESS_THRESHOLD_ENV
     judged = InstrumentStatusResponse(
-        canary=True,
+        canary=None,
         ingest=True,
         ingest_lag_seconds=LAG_SECONDS,
         ingest_read_at=LAG_AT,
@@ -683,12 +857,13 @@ def test_the_knob_is_derived_from_the_halves_it_names() -> None:
 
 
 def test_an_absent_lamp_is_not_a_failing_one(
-    endpoint: InstrumentStatusEndpoint,
+    endpoint: InstrumentStatusEndpoint, run_store: canary.CanaryRunStore
 ) -> None:
     # The conflation this route refuses: a caller that treated *never
     # read* as *out* would report an unmeasured instrument as a broken one
     # — and would turn the rail dark for a deployment that has simply not
     # run a census yet.
+    _record_run(run_store)
     response = endpoint.get()
     assert response.absent == ("ks_guard", "ingest")
     assert response.failing == ()
@@ -698,12 +873,13 @@ def test_an_absent_lamp_is_not_a_lit_one() -> None:
     # The other direction: a rail with an unmeasured instrument is not a
     # rail that may be believed, so `bool` is conservative — §5.4's
     # *"everything below them is worthless if any is out"*.
-    assert bool(InstrumentStatusResponse(canary=True)) is False
+    assert bool(InstrumentStatusResponse(canary=True, canary_last_run_at=LAG_AT)) is False
     assert bool(InstrumentStatusResponse(canary=False)) is False
     assert (
         bool(
             InstrumentStatusResponse(
                 canary=True,
+                canary_last_run_at=LAG_AT,
                 ks_guard=True,
                 ingest=True,
                 campaign=CAMPAIGN,
@@ -719,6 +895,7 @@ def test_an_absent_lamp_is_not_a_lit_one() -> None:
 
 def test_a_dark_rail_is_falsy_and_names_the_lamp(
     endpoint: InstrumentStatusEndpoint,
+    run_store: canary.CanaryRunStore,
     halt_store: canary.CanaryHaltStore,
     trend: scoring.FdrDeployStore,
     guard: nulloracle.KsGuard,
@@ -726,6 +903,7 @@ def test_a_dark_rail_is_falsy_and_names_the_lamp(
 ) -> None:
     # Every lamp lit but one: the rail is falsy and `failing` names
     # exactly the lamp that is out.
+    _record_run(run_store)
     _plan_campaign(guard, CAMPAIGN)
     _guard_campaign(guard, CAMPAIGN, samples=SAME_SAMPLES)
     _close_campaign(trend, CAMPAIGN, computed_at="2026-08-01T00:00:00Z")
@@ -769,11 +947,31 @@ def test_a_lamp_refuses_everything_that_is_not_a_bool(value: object) -> None:
         InstrumentStatusResponse(canary=value)
 
 
+def test_a_canary_lamp_without_its_last_run_instant_is_refused() -> None:
+    # The lamp *is* the verdict on a specific, recent canary run: a lamp
+    # without the run's own instant is a verdict nothing stands behind.
+    with pytest.raises(InstrumentStatusError) as caught:
+        InstrumentStatusResponse(canary=True)
+    assert "last-run instant" in str(caught.value)
+
+
+def test_a_canary_last_run_at_with_no_lit_lamp_is_allowed() -> None:
+    # The pairing is one-directional: the instant is carried independently
+    # of the bit (it names feature 1's history, not this lamp's verdict),
+    # so a dark or absent lamp may still carry it.
+    false_with_instant = InstrumentStatusResponse(canary=False, canary_last_run_at=LAG_AT)
+    assert false_with_instant.canary is False
+    assert false_with_instant.canary_last_run_at == LAG_AT
+    absent_with_instant = InstrumentStatusResponse(canary=None, canary_last_run_at=LAG_AT)
+    assert absent_with_instant.canary is None
+    assert absent_with_instant.canary_last_run_at == LAG_AT
+
+
 def test_a_ks_lamp_without_its_number_is_refused() -> None:
     # The lamp *is* the verdict on feature 123's number: a lamp without it
     # is a verdict nothing stands behind.
     with pytest.raises(InstrumentStatusError) as caught:
-        InstrumentStatusResponse(canary=True, ks_guard=True, campaign=CAMPAIGN)
+        InstrumentStatusResponse(canary=None, ks_guard=True, campaign=CAMPAIGN)
     assert "p-value" in str(caught.value)
 
 
@@ -781,7 +979,7 @@ def test_a_ks_number_without_its_lamp_is_refused() -> None:
     # And the reverse: a finding nobody rendered.
     with pytest.raises(InstrumentStatusError):
         InstrumentStatusResponse(
-            canary=True, ks_pvalue=INDISTINGUISHABLE_P, campaign=CAMPAIGN
+            canary=None, ks_pvalue=INDISTINGUISHABLE_P, campaign=CAMPAIGN
         )
 
 
@@ -790,7 +988,7 @@ def test_a_ks_lamp_without_a_campaign_is_refused() -> None:
     # campaign is an instrument status nobody can attribute.
     with pytest.raises(InstrumentStatusError) as caught:
         InstrumentStatusResponse(
-            canary=True, ks_guard=True, ks_pvalue=INDISTINGUISHABLE_P
+            canary=None, ks_guard=True, ks_pvalue=INDISTINGUISHABLE_P
         )
     assert "campaign" in str(caught.value)
 
@@ -799,7 +997,7 @@ def test_a_ks_lamp_without_a_campaign_is_refused() -> None:
 def test_a_pvalue_outside_the_unit_interval_is_refused(value: object) -> None:
     with pytest.raises(InstrumentStatusError):
         InstrumentStatusResponse(
-            canary=True, ks_guard=True, ks_pvalue=value, campaign=CAMPAIGN
+            canary=None, ks_guard=True, ks_pvalue=value, campaign=CAMPAIGN
         )
 
 
@@ -810,7 +1008,7 @@ def test_a_ks_lamp_that_disagrees_with_its_own_number_is_refused() -> None:
     # an indistinguishable one.
     with pytest.raises(InstrumentStatusError) as caught:
         InstrumentStatusResponse(
-            canary=True,
+            canary=None,
             ks_guard=True,
             ks_pvalue=0.001,
             campaign=CAMPAIGN,
@@ -818,7 +1016,7 @@ def test_a_ks_lamp_that_disagrees_with_its_own_number_is_refused() -> None:
     assert "strictly below" in str(caught.value)
     with pytest.raises(InstrumentStatusError):
         InstrumentStatusResponse(
-            canary=True,
+            canary=None,
             ks_guard=False,
             ks_pvalue=INDISTINGUISHABLE_P,
             campaign=CAMPAIGN,
@@ -832,12 +1030,12 @@ def test_the_ks_boundary_keeps_a_campaign_in() -> None:
     # member's own constant rather than against a literal 0.05.
     level = float(nulloracle.VOID_THRESHOLD)
     at_level = InstrumentStatusResponse(
-        canary=True, ks_guard=True, ks_pvalue=level, campaign=CAMPAIGN
+        canary=None, ks_guard=True, ks_pvalue=level, campaign=CAMPAIGN
     )
     assert at_level.ks_guard is True
     with pytest.raises(InstrumentStatusError):
         InstrumentStatusResponse(
-            canary=True, ks_guard=False, ks_pvalue=level, campaign=CAMPAIGN
+            canary=None, ks_guard=False, ks_pvalue=level, campaign=CAMPAIGN
         )
 
 
@@ -845,18 +1043,18 @@ def test_an_ingest_lamp_without_both_halves_is_refused() -> None:
     # A lit-or-dark lamp needs the reading *and* the band: half a watchdog
     # is an absence, never a verdict.
     with pytest.raises(InstrumentStatusError) as caught:
-        InstrumentStatusResponse(canary=True, ingest=True)
+        InstrumentStatusResponse(canary=None, ingest=True)
     assert "half a watchdog" in str(caught.value)
     with pytest.raises(InstrumentStatusError):
         InstrumentStatusResponse(
-            canary=True,
+            canary=None,
             ingest=True,
             ingest_lag_seconds=LAG_SECONDS,
             ingest_read_at=LAG_AT,
         )
     with pytest.raises(InstrumentStatusError):
         InstrumentStatusResponse(
-            canary=True, ingest=True, threshold_seconds=BAND_SECONDS
+            canary=None, ingest=True, threshold_seconds=BAND_SECONDS
         )
 
 
@@ -867,7 +1065,7 @@ def test_a_silence_that_is_not_a_non_negative_real_is_refused(value: object) -> 
     # to the same quantity on this rail.
     with pytest.raises(InstrumentStatusError):
         InstrumentStatusResponse(
-            canary=True,
+            canary=None,
             ingest=True,
             ingest_lag_seconds=value,
             ingest_read_at=LAG_AT,
@@ -882,7 +1080,7 @@ def test_a_band_that_is_not_strictly_positive_is_refused(value: object) -> None:
     # is a dark lamp rather than a tolerance.
     with pytest.raises(InstrumentStatusError):
         InstrumentStatusResponse(
-            canary=True,
+            canary=None,
             ingest=True,
             ingest_lag_seconds=0.0,
             ingest_read_at=LAG_AT,
@@ -893,7 +1091,7 @@ def test_a_band_that_is_not_strictly_positive_is_refused(value: object) -> None:
 def test_an_ingest_lamp_that_disagrees_with_its_own_reading_is_refused() -> None:
     with pytest.raises(InstrumentStatusError) as caught:
         InstrumentStatusResponse(
-            canary=True,
+            canary=None,
             ingest=True,
             ingest_lag_seconds=BAND_SECONDS * 2,
             ingest_read_at=LAG_AT,
@@ -902,7 +1100,7 @@ def test_an_ingest_lamp_that_disagrees_with_its_own_reading_is_refused() -> None
     assert "staleness > threshold" in str(caught.value)
     with pytest.raises(InstrumentStatusError):
         InstrumentStatusResponse(
-            canary=True,
+            canary=None,
             ingest=False,
             ingest_lag_seconds=LAG_SECONDS,
             ingest_read_at=LAG_AT,
@@ -915,24 +1113,26 @@ def test_a_silence_without_its_instant_is_refused() -> None:
     # `(metric, logged_at)` key), so an age without its instant could not
     # be ordered against anything.
     with pytest.raises(InstrumentStatusError) as caught:
-        InstrumentStatusResponse(canary=True, ingest_lag_seconds=LAG_SECONDS)
+        InstrumentStatusResponse(canary=None, ingest_lag_seconds=LAG_SECONDS)
     assert "instant" in str(caught.value)
     with pytest.raises(InstrumentStatusError):
-        InstrumentStatusResponse(canary=True, ingest_read_at=LAG_AT)
+        InstrumentStatusResponse(canary=None, ingest_read_at=LAG_AT)
 
 
 def test_a_blank_campaign_or_instant_is_refused() -> None:
     with pytest.raises(InstrumentStatusError):
         InstrumentStatusResponse(
-            canary=True,
+            canary=None,
             ks_guard=True,
             ks_pvalue=INDISTINGUISHABLE_P,
             campaign="   ",
         )
     with pytest.raises(InstrumentStatusError):
         InstrumentStatusResponse(
-            canary=True, ingest_lag_seconds=LAG_SECONDS, ingest_read_at=" "
+            canary=None, ingest_lag_seconds=LAG_SECONDS, ingest_read_at=" "
         )
+    with pytest.raises(InstrumentStatusError):
+        InstrumentStatusResponse(canary=None, canary_last_run_at="   ")
 
 
 def test_the_response_strips_a_padded_campaign_and_instant() -> None:
@@ -940,7 +1140,8 @@ def test_the_response_strips_a_padded_campaign_and_instant() -> None:
     # the same name — and holding it unstripped would answer a *second*
     # campaign for one id.
     response = InstrumentStatusResponse(
-        canary=True,
+        canary=None,
+        canary_last_run_at=f"  {LAG_AT}  ",
         ks_guard=True,
         ks_pvalue=INDISTINGUISHABLE_P,
         campaign=f"  {CAMPAIGN}  ",
@@ -949,6 +1150,7 @@ def test_the_response_strips_a_padded_campaign_and_instant() -> None:
         ingest_read_at=f"  {LAG_AT}  ",
         threshold_seconds=BAND_SECONDS,
     )
+    assert response.canary_last_run_at == LAG_AT
     assert response.campaign == CAMPAIGN
     assert response.ingest_read_at == LAG_AT
 
@@ -956,7 +1158,7 @@ def test_the_response_strips_a_padded_campaign_and_instant() -> None:
 def test_the_response_is_frozen() -> None:
     # The response is the route's testimony about the instruments at the
     # moment it was read; nothing on it is a knob to adjust.
-    response = InstrumentStatusResponse(canary=True)
+    response = InstrumentStatusResponse(canary=None)
     with pytest.raises(dataclasses.FrozenInstanceError):
         response.canary = False
 
@@ -976,7 +1178,7 @@ def test_a_refused_rail_names_the_feature_and_the_route() -> None:
 
 def test_the_endpoint_refuses_a_carrier_that_cannot_read_the_rail() -> None:
     # Duck-checked, never isinstance-guarded: a carrier that cannot answer
-    # one of the four facts leaves that lamp unreadable, and the refusal
+    # one of the five facts leaves that lamp unreadable, and the refusal
     # names the missing read because the repair differs by lamp.
     with pytest.raises(TypeError) as caught:
         InstrumentStatusEndpoint(object())
@@ -989,6 +1191,9 @@ def test_a_carrier_missing_one_read_is_refused_by_that_reads_name() -> None:
     class Partial:
         def canary_halted(self) -> bool:
             return False
+
+        def canary_last_run(self) -> None:
+            return None
 
         def campaign(self) -> None:
             return None
@@ -1010,6 +1215,9 @@ def test_a_canary_read_that_fails_is_translated_not_answered_around() -> None:
         def canary_halted(self) -> bool:
             raise canary.CanaryError("the halt store's own words")
 
+        def canary_last_run(self) -> None:
+            return None
+
         def campaign(self) -> None:
             return None
 
@@ -1030,6 +1238,9 @@ def test_a_guard_read_that_fails_is_translated_not_answered_around() -> None:
     class Refusing:
         def canary_halted(self) -> bool:
             return False
+
+        def canary_last_run(self) -> None:
+            return None
 
         def campaign(self) -> str:
             return CAMPAIGN
@@ -1055,6 +1266,9 @@ def test_a_trend_read_that_fails_is_translated_not_answered_around() -> None:
         def canary_halted(self) -> bool:
             return False
 
+        def canary_last_run(self) -> None:
+            return None
+
         def campaign(self) -> None:
             raise scoring.FdrDeployError("the trend's own words")
 
@@ -1078,6 +1292,9 @@ def test_a_live_metrics_read_that_fails_is_translated() -> None:
         def canary_halted(self) -> bool:
             return False
 
+        def canary_last_run(self) -> None:
+            return None
+
         def campaign(self) -> None:
             return None
 
@@ -1100,6 +1317,9 @@ def test_a_carrier_bug_is_not_dressed_up_as_a_store_failure() -> None:
     class Buggy:
         def canary_halted(self) -> bool:
             raise ValueError("a bug, not a refusal")
+
+        def canary_last_run(self) -> None:
+            return None
 
         def campaign(self) -> None:
             return None
@@ -1158,6 +1378,9 @@ def test_the_endpoint_holds_the_carrier_it_was_given() -> None:
     class Carrier:
         def canary_halted(self) -> bool:
             return True
+
+        def canary_last_run(self) -> None:
+            return None
 
         def campaign(self) -> None:
             return None
@@ -1272,6 +1495,7 @@ def test_the_deferred_carrier_reaches_every_sibling_read(
 
     response = endpoint.get()
     assert response.canary is False
+    assert response.canary_last_run_at is None
     assert response.ks_guard is True
     assert response.ingest is True
     assert response.campaign == CAMPAIGN
@@ -1280,6 +1504,7 @@ def test_the_deferred_carrier_reaches_every_sibling_read(
 
 def test_the_composed_route_and_the_members_own_stores_agree(
     endpoint: InstrumentStatusEndpoint,
+    run_store: canary.CanaryRunStore,
     halt_store: canary.CanaryHaltStore,
     guard: nulloracle.KsGuard,
     trend: scoring.FdrDeployStore,
@@ -1287,6 +1512,7 @@ def test_the_composed_route_and_the_members_own_stores_agree(
 ) -> None:
     # Both directions, over the same rows: the route re-derives nothing,
     # and each lamp's bit is the owning read's own answer.
+    _record_run(run_store)
     _plan_campaign(guard, CAMPAIGN)
     pvalue = _guard_campaign(guard, CAMPAIGN, samples=SAME_SAMPLES)
     _close_campaign(trend, CAMPAIGN, computed_at="2026-08-01T00:00:00Z")
@@ -1329,6 +1555,7 @@ def test_the_module_imports_no_sibling_at_scope() -> None:
         "canary",
         "collections",
         "dataclasses",
+        "datetime",
         "errors",
         "fdr_route",
         "live_metrics",
@@ -1342,11 +1569,13 @@ def test_the_module_imports_no_sibling_at_scope() -> None:
     # this route re-derives no figure of its own.
     for sibling in ("scoring", "regime", "promotion", "ledger", "dreaming", "risk"):
         assert sibling not in imported
-    # And no clock: the rail is a reading, and nothing here stamps an
-    # instant of its own.
+    # And no measurement of its own stamped: the KS and ingest lamps read
+    # no clock at all, and the canary lamp's one clock read
+    # (`datetime.now`, for "is the newest run still within the window?")
+    # is the feature's own comparison, never a second timer or a cached
+    # instant.
     names = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
     assert "perf_counter" not in names
-    assert "now" not in names
     assert "utcnow" not in names
 
 

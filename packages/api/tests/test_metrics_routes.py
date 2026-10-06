@@ -19,10 +19,11 @@ and this member's own live-metrics store):
 
 * **200 with null/empty fields, never a fabricated zero** — a freshly
   composed, empty database answers each route's own honest absence:
-  ``history: []`` (never ``fdr_deploy: 0.0``), a rail whose only bit
-  that can ever be true or false without a reading is ``canary`` (a halt
-  table with no rows *is* "not halted", never an absence), and
-  ``strata: []`` (never a zero for a stratum nobody has named).
+  ``history: []`` (never ``fdr_deploy: 0.0``), a rail whose every lamp —
+  canary included — answers ``None`` rather than a fabricated bit when
+  there is nothing to report (the canary has never run, so there is no
+  reading to claim "replay is deterministic" with), and ``strata: []``
+  (never a zero for a stratum nobody has named).
 * **503 with the ``member_refusal`` code word for a store failure** — a
   ``DATABASE_URL`` whose scheme none of the sibling stores can speak
   composes every route (composition only asks whether the variable is
@@ -139,14 +140,15 @@ def test_fdr_deploy_over_an_empty_store_answers_the_honest_absence(
 def test_instrument_status_over_an_empty_store_answers_the_honest_absence(
     boot, test_database_url: str
 ) -> None:
-    """A fresh database's rail: canary is never absent (no halt row is
-    *not halted*, a real bit), while the KS guard and ingest lamps —
-    which have nothing to report yet — answer ``None``, never a lit or
-    dark lamp nobody measured."""
+    """A fresh database's rail: the canary has never run, so there is no
+    reading to report — ``None``, the same honest absence the KS guard
+    and ingest lamps answer for nothing yet measured, never a lit or dark
+    lamp nobody checked."""
     server = boot(create_app())
     status, _, body = _get(server, "/metrics/instrument-status")
     assert status == 200
-    assert body["canary"] is True
+    assert body["canary"] is None
+    assert body["canary_last_run_at"] is None
     assert body["ks_guard"] is None
     assert body["ingest"] is None
     assert body["campaign"] is None

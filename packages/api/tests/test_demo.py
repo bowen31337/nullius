@@ -318,14 +318,17 @@ def test_seeds_regime_coverage_including_an_honest_zero(
 # -- Instrument readings -------------------------------------------------------
 
 
-def test_seeds_instrument_readings_canary_healthy_ks_lit_feed_recorded(
+def test_seeds_instrument_readings_canary_no_reading_ks_lit_feed_recorded(
     test_database_url: str, report: DemoSeedReport
 ) -> None:
-    """J4's precondition: canary healthy, KS guard reading present, feed
-    staleness recorded.  Canary needs no seed — an empty halt table is
-    the honest *dreaming runs* answer."""
+    """J4's precondition: KS guard reading present, feed staleness
+    recorded.  The canary lamp seeds no run of its own (feature 342's
+    freshness window is relative to wall-clock *now*, which a demo's
+    fixed, idempotently-reseedable rows cannot satisfy), so it answers
+    the honest *no reading* rather than a fabricated healthy bit."""
     status = ops.InstrumentStatusEndpoint.from_env().get()
-    assert status.canary is True
+    assert status.canary is None
+    assert status.canary_last_run_at is None
     assert status.ks_guard is True
     assert status.campaign == report.campaign_ids[-1]
     assert status.ks_pvalue >= nulloracle.VOID_THRESHOLD

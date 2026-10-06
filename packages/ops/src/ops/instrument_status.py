@@ -37,16 +37,21 @@ route established the door, feature 343's the second).  This route holds
 that law three times over, and the three cases are genuinely different
 shapes:
 
-* **canary** — §12's determinism halt.  Feature 143 persists a break in
-  :class:`~canary.CanaryHaltStore` and answers the deployment-level
-  question *is dreaming halted?* as one bit
-  (:meth:`~canary.CanaryHaltStore.halted`), monotone once set.  The lamp is
-  that bit, inverted by nothing: dreaming either runs or it does not, and
-  §5.4's own copy beside the lamp (*"replay is deterministic"*) is the
-  state the bit names.  No campaign, no number, no threshold — the halt is
-  the deployment's, and a route that invented a campaign scope for it would
-  be reporting a break on one campaign's replay where the store records
-  none on any.
+* **canary** — §12's determinism halt, *and* feature 1's own run history,
+  read together.  A halt is feature 143's monotone break
+  (:class:`~canary.CanaryHaltStore`, :meth:`~canary.CanaryHaltStore.halted`)
+  and wins over everything: halted is ``False``, full stop, no campaign, no
+  number, no threshold, the deployment's own fact.  Short of a halt, the
+  lamp is not a standing *"replay is deterministic"* bit — it is a claim
+  about a **specific, recent** replay, so it answers ``True`` only when
+  feature 1's own history (:meth:`~canary.CanaryRunStore.newest`) names a
+  run that both passed (``within_tolerance``) and is still recent
+  (:data:`CANARY_MAX_AGE_HOURS`).  Anything else — no run ever recorded, or
+  the newest one older than that window — is *no reading*, ``None``: a
+  canary that has not run tonight has not told anyone replay is
+  deterministic tonight, and a lamp that read that silence as green would
+  be exactly the *"bad data quietly aging into good data"* §5.4 draws this
+  surface to prevent.
 * **ks guard** — §7.4's detectability reading.  Feature 123's
   :class:`~nulloracle.KsGuard` persists the two-sample p-value against its
   campaign and reads it back through :meth:`~nulloracle.KsGuard.load`,
@@ -99,10 +104,20 @@ and 343's routes) is that an absent figure is *answered as an absence*
 while a broken one is *refused*.  Each lamp has its own honest absence, and
 none of them is ever answered with a lit lamp:
 
-* **canary is never absent.**  The halt store answers one bit for a
-  database it can open — no rows is *dreaming runs*, which is a measurement
-  of the halt table's content, not the absence of one.  A store that cannot
-  be opened or read is refused (translated, below), never answered green.
+* **the canary lamp is absent for "no reading"** — either the canary has
+  never run (:meth:`~canary.CanaryRunStore.newest` answers ``None``) or the
+  newest run is older than :data:`CANARY_MAX_AGE_HOURS`.  Both are the same
+  honest silence: nobody can say tonight's replay is deterministic when
+  nobody replayed it tonight.  This is **not** the halt store's own
+  absence — a halt table with no rows *is* "not halted" (a real
+  measurement of that table's content), and the two reads are combined
+  rather than conflated: a halt (however stale the run history) still
+  answers ``False``, because a halt wins over everything, as it does today;
+  the "no reading" state is reached only when there is *no halt* and the
+  run history has nothing recent enough to stand behind a lit lamp either.
+  A store that cannot be opened or read — the halt store or the run store —
+  is refused (translated, below), never answered green and never answered
+  with the absence.
 * **the KS lamp is absent when there is no finding to report** — either the
   trend names no campaign (no campaign has been closed out, so there is no
   guard reading to judge) or the guard has not run for the campaign the
@@ -130,16 +145,27 @@ none of them is ever answered with a lit lamp:
   reading* — the two states the J04 journey step 3 holds apart, answered
   apart here so no surface downstream can collapse them.
 
-**The route reads no clock, and that is what keeps the lamps comparable.**
-Every lamp is a reading *of a store*, taken at the instant the store is
-read: the halt table's content, the guard's persisted number, the recorded
-silence.  Nothing here calls :func:`datetime.now`, stamps an instant of its
-own or compares two clocks — a route that measured the feed's silence from
-its own wall clock would be answering a different quantity on every call,
-could not be reconciled with the ``logged_at`` label the row carries, and
-would re-derive a figure the risk member owns.  So the ingest lamp's
-provenance is the row's own instant (``ingest_read_at``), rendered exactly
-as feature 350 stored it.
+**The KS and ingest lamps read no clock; the canary lamp reads exactly
+one, for "the instant of the read" the feature sentence itself names.**
+The guard's persisted number and the recorded silence are readings *of a
+store*, taken whole — nothing here stamps an instant of its own for either,
+or compares two clocks, or re-derives a figure the risk or nulloracle
+member owns; the ingest lamp's provenance is the row's own instant
+(``ingest_read_at``), rendered exactly as feature 350 stored it.  The
+canary lamp is different in exactly the way its own clause is different:
+*"ran within CANARY_MAX_AGE_HOURS of the read"* is a comparison between
+feature 1's stamped ``ran_at`` and **now**, and a route that refused to ask
+the one clock that comparison needs could not answer it at all.  So
+:func:`datetime.datetime.now` is called exactly once, inline at the
+comparison, and nothing else — the result is never stored on the response
+(the figure the response carries is the run's own ``ran_at``, not the
+instant it was judged against, the same "carry the provenance, not the
+verdict's scratch work" discipline the KS lamp's stored p-value already
+keeps), so two calls to :meth:`~InstrumentStatusEndpoint.get` a second
+apart may answer differently for the same stored run — which is the
+feature's own point: the lamp is a claim about *freshness*, and a stale
+claim must eventually go dark on its own, without a fresh write from
+anyone.
 
 **A read that fails is refused, translated, and never answered around.**
 Each lamp's sibling failure is translated into this member's vocabulary
@@ -165,13 +191,21 @@ dark rail green), a p-value a probability in ``[0, 1]``, a lag a finite
 non-negative real, a band a strictly positive finite real, a campaign a
 non-empty name — **and then checks each carried bit against its own
 numbers**: the KS lamp must equal ``ks_pvalue >= VOID_THRESHOLD`` and the
-ingest lamp must equal ``lag <= threshold``.  A rail whose bits disagreed
-with the readings beside them would report an instrument status the
-operator's own numbers contradict, and §5.4's whole purpose is that the
-rail can be trusted *instead of* the numbers.
+ingest lamp must equal ``lag <= threshold``.  The canary lamp carries no
+number the freshness verdict could be re-derived from at construction time
+(the verdict is a comparison against *now*, which the response never reads
+— see above), so its own check is narrower and asks only what the response
+*can* answer without a clock: a lit canary lamp must carry the run instant
+it is a verdict on (:attr:`~InstrumentStatusResponse.canary_last_run_at`),
+because a ``True`` with no run behind it is a verdict nothing stands
+behind, the same standing the KS lamp's own p-value pairing holds.  A rail
+whose bits disagreed with the readings beside them would report an
+instrument status the operator's own numbers contradict, and §5.4's whole
+purpose is that the rail can be trusted *instead of* the numbers.
 
 Stdlib-only, like the rest of the member: :mod:`dataclasses` for the
-response, :mod:`math` for the figures, :mod:`os` for the environment,
+response, :mod:`datetime` for the canary lamp's freshness comparison,
+:mod:`math` for the figures, :mod:`os` for the environment,
 :mod:`collections.abc` for the mapping check, :mod:`typing` for
 ``Optional`` — and the cross-member imports (:mod:`canary`, :mod:`nulloracle`
 and, through :func:`~ops.fdr_route.require_scoring`, the scoring member's
@@ -183,6 +217,7 @@ depends on a sibling's presence on ``sys.path``.
 
 from __future__ import annotations
 
+import datetime as dt
 import math
 import os
 from collections.abc import Mapping
@@ -194,6 +229,7 @@ from .fdr_route import require_scoring
 from .live_metrics import DATABASE_URL_ENV, LIVE_METRICS, LiveMetricsStore
 
 __all__ = [
+    "CANARY_MAX_AGE_HOURS",
     "FEED_STALENESS_METRIC",
     "FEED_STALENESS_THRESHOLD_ENV",
     "INSTRUMENT_STATUS_ROUTE",
@@ -204,6 +240,19 @@ __all__ = [
     "require_canary",
     "require_nulloracle",
 ]
+
+#: How recent the newest canary run must be for its *pass* to still count
+#: as "replay is deterministic" right now.  The feature's own number: a
+#: lamp that only ever answered the newest run's verdict, however old,
+#: would eventually be reporting on a replay from weeks ago as if it were
+#: tonight's — exactly the *"bad data quietly aging into good data"* §5.4
+#: draws this whole surface to prevent.  Fixed here rather than read from
+#: the environment, unlike :data:`FEED_STALENESS_THRESHOLD_ENV`: §13.3
+#: names no ingest band because that one is a deployment's own tolerance,
+#: while this window is the feature sentence's own literal (36), so a
+#: second place to configure it would only be a second place it could
+#: drift from the number the sentence states.
+CANARY_MAX_AGE_HOURS = 36
 
 # The store's own name, selected out of the member's published vocabulary
 # rather than re-typed beside it: ``LIVE_METRICS`` is the store's contract
@@ -280,7 +329,11 @@ def require_canary() -> Any:
     341's route opened for the scoring member: §12's halt is feature 143's
     store, its monotone bit is the store's own read, and this route asks for
     the lamp through that one spelling rather than re-deriving *has a
-    determinism break been recorded* from the halt table's rows.
+    determinism break been recorded* from the halt table's rows.  The same
+    door now also reaches feature 1's own run history
+    (:class:`~canary.CanaryRunStore`), because the canary lamp needs the
+    one sibling fact the halt store cannot answer — *did the canary run
+    recently, and did it pass* — and that history lives in the same member.
     """
     try:
         import canary
@@ -549,26 +602,36 @@ class InstrumentStatusResponse:
     docs/design.md §5.4's rail as a value — ``canary``, ``ks_guard``,
     ``ingest`` — each one bit, each *absent* (``None``) rather than lit when
     the store it would be read from holds nothing to judge, and each carrying
-    the provenance that makes its bit reconstructible: the campaign and
-    p-value behind the KS lamp, the recorded silence and the configured band
-    behind the ingest lamp.  The ingest lamp's absence keeps its two reasons
-    apart on the answer itself: no recorded reading is *no reading*, while a
-    recorded reading with no configured band carries
+    the provenance that makes its bit reconstructible: the run instant behind
+    the canary lamp, the campaign and p-value behind the KS lamp, the
+    recorded silence and the configured band behind the ingest lamp.  All
+    three lamps share one honest-absence law: *no reading* is never folded
+    into a lit or a dark lamp.  The canary lamp's own absence is **not** "a
+    database with no halt row" (that is a real measurement — *not halted* —
+    and it answers the bit ``False`` would otherwise contradict); it is *no
+    run recent enough to stand behind a claim of "replay is deterministic
+    right now"* — no run ever recorded, or the newest one older than
+    :data:`CANARY_MAX_AGE_HOURS`.  The ingest lamp's absence keeps its two
+    reasons apart on the answer itself: no recorded reading is *no reading*,
+    while a recorded reading with no configured band carries
     :attr:`ingest_threshold_env` naming the knob the deployment would set —
     *unconfigured*, never to be mistaken for a feed nobody measured.
-    ``canary`` is never absent: a database that can
-    be opened answers one bit, and a database that cannot is refused rather
-    than answered.
 
-    **The bits are checked against their own numbers.**  ``ks_guard`` must
-    equal ``ks_pvalue >= VOID_THRESHOLD`` and ``ingest`` must equal
+    **The bits are checked against their own numbers, where a number is
+    carried to check against.**  ``ks_guard`` must equal
+    ``ks_pvalue >= VOID_THRESHOLD`` and ``ingest`` must equal
     ``ingest_lag_seconds <= threshold_seconds`` — both re-derived at
     construction, the discipline every value in this workspace applies to its
     own terms (feature 328's :class:`~risk.FeedStaleness`, feature 124's
-    :class:`~nulloracle.Verdict`).  A rail whose lamp disagreed with the
-    reading beside it would render an instrument state the operator's own
-    numbers contradict, and §5.4's whole purpose is that the rail can be
-    trusted *instead of* the numbers.
+    :class:`~nulloracle.Verdict`).  ``canary`` carries no such number — its
+    verdict is a comparison against *now*, which this frozen value never
+    reads (see :meth:`InstrumentStatusEndpoint.get`) — so its own check is
+    narrower: a lit canary lamp must carry the run instant it is a verdict
+    on (:attr:`canary_last_run_at`), the one thing construction *can* confirm
+    without a clock.  A rail whose lamp disagreed with the reading beside it
+    would render an instrument state the operator's own numbers contradict,
+    and §5.4's whole purpose is that the rail can be trusted *instead of*
+    the numbers.
 
     Frozen, because the response is the route's testimony about the
     deployment's instruments at the moment it was read: re-reading answers a
@@ -577,13 +640,31 @@ class InstrumentStatusResponse:
     nothing here is a knob to adjust.
     """
 
-    #: §12's determinism lamp — ``True`` lit (*replay is deterministic*),
-    #: ``False`` out.  The canary member's own monotone bit, inverted by
-    #: nothing: ``False`` is a break on record, which halts dreaming until an
-    #: operator's recovery (§15: bisect the image diff) is recorded as a fresh
-    #: reference pair.  Never absent — the halt store answers one bit for a
-    #: database it can open, and a database it cannot is refused.
-    canary: bool
+    #: §12's determinism lamp — ``False`` out (feature 143's halt is on
+    #: record; a halt wins over everything, so this is answered whatever
+    #: feature 1's run history says), ``True`` lit (*replay is
+    #: deterministic*: not halted, and the newest recorded run
+    #: (:attr:`canary_last_run_at`) both passed and is within
+    #: :data:`CANARY_MAX_AGE_HOURS` of the read), or ``None`` — *no
+    #: reading* — when neither holds: no run ever recorded, or the newest
+    #: one too old to stand behind a claim about *right now*.  Unlike
+    #: ``ks_guard`` and ``ingest``, the halt half of this bit is a
+    #: standing fact (it does not go stale), while the pass half does —
+    #: which is exactly why a passing run many days old must still read
+    #: as *no reading* rather than as a lit lamp telling the operator
+    #: something nobody checked tonight.
+    canary: Optional[bool] = None
+
+    #: The instant of the newest recorded canary run
+    #: (:meth:`~canary.CanaryRunStore.newest`, ISO 8601), or ``None`` when
+    #: the canary has never run.  Carried independently of the ``canary``
+    #: bit and of any halt — it is feature 1's own history, not this
+    #: lamp's verdict, so it is present whenever a run is on record even
+    #: when that run is too old to light the lamp, or when a halt (from
+    #: any run, on any night) has already forced the lamp dark.  A lit
+    #: lamp always carries this field: see the lamp's own cross-check in
+    #: :meth:`InstrumentStatusResponse.__post_init__`.
+    canary_last_run_at: Optional[str] = None
 
     #: §7.4's detectability lamp — ``True`` lit (*nulls indistinguishable*),
     #: ``False`` out (the guard's p-value fell strictly below the level), or
@@ -657,7 +738,10 @@ class InstrumentStatusResponse:
         # frozen+slots forbids plain assignment, so normalisation writes
         # through object.__setattr__ — the same discipline feature 341's
         # response and feature 343's ledger follow.
-        object.__setattr__(self, "canary", _require_lamp(self.canary, "canary"))
+        canary_bit = _optional_lamp(self.canary, "canary")
+        canary_last_run_at = _optional_name(
+            self.canary_last_run_at, "the canary lamp's last run instant"
+        )
         ks_guard = _optional_lamp(self.ks_guard, "ks_guard")
         ingest = _optional_lamp(self.ingest, "ingest")
         campaign = _optional_name(self.campaign, "the KS lamp's campaign")
@@ -670,6 +754,14 @@ class InstrumentStatusResponse:
             else _require_threshold(self.threshold_seconds)
         )
 
+        if canary_bit is True and canary_last_run_at is None:
+            raise InstrumentStatusError(
+                f"a GET {INSTRUMENT_STATUS_ROUTE} answer reports the canary "
+                f"lamp as True with no last-run instant; the lamp is the "
+                f"verdict on a specific, recent canary run (feature 1's "
+                f"newest recorded row), so a lit lamp with no run behind it "
+                f"is a verdict nothing stands behind (feature 342, prd §12)"
+            )
         if (ks_guard is None) != (pvalue is None):
             raise InstrumentStatusError(
                 f"a GET {INSTRUMENT_STATUS_ROUTE} answer reports the KS-guard "
@@ -744,6 +836,8 @@ class InstrumentStatusResponse:
                     f"say so (feature 342, prd §13.3)"
                 )
 
+        object.__setattr__(self, "canary", canary_bit)
+        object.__setattr__(self, "canary_last_run_at", canary_last_run_at)
         object.__setattr__(self, "ks_guard", ks_guard)
         object.__setattr__(self, "ingest", ingest)
         object.__setattr__(self, "campaign", campaign)
@@ -822,7 +916,7 @@ class InstrumentStatusResponse:
 
 
 class _DeferredInstrumentReadings:
-    """The four readings a composed route takes, resolved at first read.
+    """The five readings a composed route takes, resolved at first read.
 
     :meth:`InstrumentStatusEndpoint.from_env` reads ``DATABASE_URL`` eagerly
     — whether a route composes at all is a fact about the deployment, and the
@@ -843,10 +937,12 @@ class _DeferredInstrumentReadings:
     that lamp and therefore runs somewhere the declared dependency is
     importable.
 
-    Four reads, one per fact the route needs — the shape the lamps demand
+    Five reads, one per fact the route needs — the shape the lamps demand
     rather than a convenience surface:
 
     * :meth:`canary_halted` — the canary member's own monotone bit;
+    * :meth:`canary_last_run` — feature 1's own newest recorded run, as the
+      ``(ran_at, within_tolerance)`` pair the store labels it with;
     * :meth:`campaign` — the newest campaign of the scoring member's own
       trend read, which is also how this member's neighbouring route
       attributes its top-line figure;
@@ -857,17 +953,18 @@ class _DeferredInstrumentReadings:
       ``feed_staleness_s`` row, as the ``(logged_at, seconds)`` pair the
       store labels it with.
 
-    Duck-shaped exactly as the endpoint's check demands — those four names and
-    nothing else — because that is the whole contract; nothing here re-spells
-    a store behaviour, it only moves each store's construction from a moment
-    the import cannot happen to the first moment it must.
+    Duck-shaped exactly as the endpoint's check demands — those five names
+    and nothing else — because that is the whole contract; nothing here
+    re-spells a store behaviour, it only moves each store's construction
+    from a moment the import cannot happen to the first moment it must.
     """
 
-    __slots__ = ("_url", "_halt", "_fdr", "_guard", "_live")
+    __slots__ = ("_url", "_halt", "_run", "_fdr", "_guard", "_live")
 
     def __init__(self, database_url: str) -> None:
         self._url = database_url
         self._halt: Any = None
+        self._run: Any = None
         self._fdr: Any = None
         self._guard: Any = None
         self._live: Any = None
@@ -891,6 +988,31 @@ class _DeferredInstrumentReadings:
             canary = require_canary()
             self._halt = canary.CanaryHaltStore(self._url)
         return self._halt.halted()
+
+    def canary_last_run(self) -> Optional[tuple[dt.datetime, bool]]:
+        """Feature 1's newest recorded run, as ``(ran_at, within_tolerance)``.
+
+        Read through :meth:`canary.CanaryRunStore.newest`, the member's own
+        history read, which reconstructs the row through its own validation
+        (so a row edited outside that package cannot reach this route as a
+        plausible-looking run).  ``ran_at`` is handed through as the
+        timezone-aware :class:`datetime.datetime` the store already parsed
+        it into — a stdlib type, not the member's own :class:`~canary.CanaryRun`,
+        so nothing of the canary member's own class crosses this seam, the
+        same "plain data" shape :meth:`feed_reading` hands back for its row.
+
+        ``None`` when the canary has never run — a discoverable state, not
+        an error, the same stance an empty trend takes for :meth:`campaign`.
+        A store that cannot be opened or read raises the canary member's own
+        error, translated at the route and never answered around.
+        """
+        if self._run is None:
+            canary = require_canary()
+            self._run = canary.CanaryRunStore(self._url)
+        record = self._run.newest()
+        if record is None:
+            return None
+        return (record.ran_at, bool(record.within_tolerance))
 
     def campaign(self) -> Optional[str]:
         """The newest campaign of the scoring member's own trend read.
@@ -968,10 +1090,10 @@ class InstrumentStatusEndpoint:
     """Serves GET /metrics/instrument-status over the deployment's stores.
 
     The rail's three facts are each the owning member's own read — the canary
-    member's halt bit, the nulloracle member's guard journal, the scoring
-    member's trend for the campaign attribution, this member's own recorded
-    live reading for the silence — reached through those members rather than
-    re-implemented here; see the module docstring for the law and
+    member's halt bit and run history, the nulloracle member's guard journal,
+    the scoring member's trend for the campaign attribution, this member's own
+    recorded live reading for the silence — reached through those members
+    rather than re-implemented here; see the module docstring for the law and
     :func:`require_canary` / :func:`require_nulloracle` for the doors.
     Constructed with the readings it takes; :meth:`get` is the route.
 
@@ -980,13 +1102,16 @@ class InstrumentStatusEndpoint:
     moment it is asked for: the nightly runner writes a halt, a campaign job
     writes a guard reading, the order path records a live metric, and a cached
     rail would make the operator's view a fact about when the surface happened
-    to start rather than about what the system is doing now.
+    to start rather than about what the system is doing now.  The canary
+    lamp carries this furthest: even an unchanged run history answers
+    differently from one call to the next once the newest run ages past
+    :data:`CANARY_MAX_AGE_HOURS`, because the comparison is against *now*.
 
     The carrier is duck-checked, never ``isinstance``-guarded, for the reason
     every seam in this workspace gives: the factory's scan imports members
     under synthetic names, so a *composed* carrier is structurally this
     module's and never the same class object a direct import yields.  The
-    contract is the four reads the three lamps need, and each is named in the
+    contract is the five reads the three lamps need, and each is named in the
     refusal when it is missing — because the repair differs by lamp (*wire the
     halt store* is not *wire the trend read*), and a caller that was told only
     "the carrier is wrong" would not know which lamp went dark.
@@ -998,7 +1123,13 @@ class InstrumentStatusEndpoint:
     route = INSTRUMENT_STATUS_ROUTE
 
     def __init__(self, readings: Any, *, threshold_seconds: Any = None) -> None:
-        for read in ("canary_halted", "campaign", "ks_pvalue", "feed_reading"):
+        for read in (
+            "canary_halted",
+            "canary_last_run",
+            "campaign",
+            "ks_pvalue",
+            "feed_reading",
+        ):
             if not callable(getattr(readings, read, None)):
                 raise TypeError(
                     "InstrumentStatusEndpoint speaks an instrument-reading "
@@ -1006,7 +1137,7 @@ class InstrumentStatusEndpoint:
                     f"{type(readings).__name__}. The route returns canary, KS "
                     "guard and ingest lag as three binary lamps (feature 342, "
                     "docs §5.4), and each lamp is the owning member's own read "
-                    "— a carrier that cannot answer one of the four facts "
+                    "— a carrier that cannot answer one of the five facts "
                     "would leave that lamp unreadable."
                 )
         self._readings = readings
@@ -1062,7 +1193,7 @@ class InstrumentStatusEndpoint:
 
     @property
     def readings(self) -> Any:
-        """The carrier this endpoint reads — the four instrument reads, held
+        """The carrier this endpoint reads — the five instrument reads, held
         duck-typed across the member seams.  For an endpoint built by
         :meth:`from_env` this is the deferred carrier
         (:class:`_DeferredInstrumentReadings`) until the first read: it
@@ -1099,6 +1230,19 @@ class InstrumentStatusEndpoint:
         fallback this route could add is a lamp state nobody read (*"bad data
         does not quietly age into good data"*, docs §5.4).
 
+        The canary lamp is read in two parts, both through the canary
+        member: the halt (:meth:`~_DeferredInstrumentReadings.canary_halted`)
+        and the newest run
+        (:meth:`~_DeferredInstrumentReadings.canary_last_run`).  A halt wins
+        over everything — ``False``, regardless of what the run history
+        says — exactly as it does today; short of a halt, the lamp is
+        ``True`` only when a run is on record, it passed, and it is within
+        :data:`CANARY_MAX_AGE_HOURS` of **this** read (the one clock read
+        this route makes, inline, never stored); anything else is ``None``.
+        ``canary_last_run_at`` carries the newest run's own instant whenever
+        one is on record, independent of the bit, so an operator reading a
+        halted or absent lamp can still see when the canary last spoke.
+
         The ingest lamp is the one lamp that may be absent for two different
         reasons, and the answer keeps them apart: no recorded reading (the
         store's series is empty) and no configured band (the deployment wired
@@ -1126,6 +1270,35 @@ class InstrumentStatusEndpoint:
                 f"(the original refusal is chained), never a default "
                 f"(feature 342, docs §5.4)"
             ) from exc
+
+        try:
+            last_run = self._readings.canary_last_run()
+        except canary.CanaryError as exc:
+            raise InstrumentStatusError(
+                f"could not answer GET {INSTRUMENT_STATUS_ROUTE}: the canary "
+                f"member's run history refused the read: {exc!r}. The canary "
+                f"lamp's *no reading* state is only honest when the run "
+                f"history was actually asked and found empty or stale — a "
+                f"history that cannot be asked is surfaced rather than "
+                f"answered around with no reading or a lit lamp; the repair "
+                f"is the store's (the original refusal is chained), never a "
+                f"default (feature 342, prd §12)"
+            ) from exc
+
+        canary_last_run_at: Optional[str] = None
+        canary_lit: Optional[bool] = None
+        if last_run is not None:
+            ran_at, within_tolerance = last_run
+            canary_last_run_at = ran_at.isoformat()
+            fresh = (dt.datetime.now(dt.UTC) - ran_at) <= dt.timedelta(
+                hours=CANARY_MAX_AGE_HOURS
+            )
+            if within_tolerance and fresh:
+                canary_lit = True
+        if halted:
+            # A halt wins over everything, as today — whatever the run
+            # history says, however fresh.
+            canary_lit = False
 
         campaign: Optional[str] = None
         pvalue: Optional[float] = None
@@ -1192,7 +1365,8 @@ class InstrumentStatusEndpoint:
             ingest = lag <= threshold
 
         return InstrumentStatusResponse(
-            canary=not halted,
+            canary=canary_lit,
+            canary_last_run_at=canary_last_run_at,
             ks_guard=(
                 None if pvalue is None else pvalue >= float(nulloracle.VOID_THRESHOLD)
             ),

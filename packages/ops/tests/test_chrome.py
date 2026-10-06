@@ -530,20 +530,20 @@ def test_an_unmeasured_deployment_renders_the_absences_as_words(
     test_database_url: str,
 ) -> None:
     # The deployment's first page, over the database in which no
-    # instrument has been measured: the canary lamp is lit (no halt
-    # row is a deterministic replay — feature 342's own derivation,
-    # `not halted`), and the KS guard and ingest lamps each render
-    # *no reading* in their own seat.  Three states visible on one
-    # honest page, and none folded: an unmeasured instrument is not a
-    # healthy one, and this is the page where that difference is most
-    # likely to be read.
+    # instrument has been measured: the canary has never run (feature
+    # 342's own three-state rule — a lit lamp needs a recent, passing
+    # run on record, which an empty database has none of), and all
+    # three lamps render *no reading* in their own seat.  Three states
+    # visible on one honest page, and none folded: an unmeasured
+    # instrument is not a healthy one, and this is the page where that
+    # difference is most likely to be read.
     page = OperatorDashboard(
         FdrDeployEndpoint(scoring.FdrDeployStore(test_database_url)),
         EpochCountGauge(test_database_url),
         _rail(test_database_url),
     ).page()
     assert page.lamps.states == {
-        "canary": LIT_STATE,
+        "canary": NO_READING_STATE,
         "ks_guard": NO_READING_STATE,
         "ingest": NO_READING_STATE,
     }
@@ -560,8 +560,8 @@ def test_a_reading_with_no_band_renders_unconfigured_naming_the_knob(
     # feed instead of a missing setting.  The knob's name is the
     # route's own spelling, carried on the response: the strip renders
     # what the route states and spells no configuration of its own.
-    # The other two seats are untouched — canary reads its bit, the KS
-    # guard its absence — because only the ingest lamp has a
+    # The other two seats are untouched — canary and the KS guard both
+    # render their own absence — because only the ingest lamp has a
     # configuration half to be missing.
     LiveMetricsStore(test_database_url).record(
         FEED_STALENESS_METRIC, 1.2, logged_at="2026-09-01T00:00:00Z"
@@ -571,7 +571,7 @@ def test_a_reading_with_no_band_renders_unconfigured_naming_the_knob(
         EpochCountGauge(test_database_url),
         _rail(test_database_url),
     ).page()
-    assert page.lamps.states["canary"] == LIT_STATE
+    assert page.lamps.states["canary"] == NO_READING_STATE
     assert page.lamps.states["ks_guard"] == NO_READING_STATE
     assert page.lamps.states["ingest"] == UNCONFIGURED_STATE
     (ingest_line,) = [

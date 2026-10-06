@@ -347,6 +347,7 @@ from .gate_evidence import (
     TypeBDepthHistoryResponse,
 )
 from .instrument_status import (
+    CANARY_MAX_AGE_HOURS,
     FEED_STALENESS_METRIC,
     FEED_STALENESS_THRESHOLD_ENV,
     INSTRUMENT_STATUS_ROUTE,
@@ -398,6 +399,7 @@ from .type_b_depth import (
 )
 
 __all__ = [
+    "CANARY_MAX_AGE_HOURS",
     "DASHBOARD_PAGE_TITLE",
     "DASHBOARD_TITLE",
     "DATABASE_URL_ENV",

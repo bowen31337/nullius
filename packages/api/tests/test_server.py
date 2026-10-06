@@ -761,7 +761,7 @@ def test_the_transport_serves_the_composed_application(
 
     status, _, body = _ask(server, "GET", "/metrics/instrument-status")
     assert status == 200
-    assert body["canary"] is True
+    assert body["canary"] is None  # no canary run ever recorded: no reading
     assert body["ks_guard"] is None  # absent lamp: null, never lit
 
     status, _, body = _ask(server, "GET", "/metrics/regime-coverage")

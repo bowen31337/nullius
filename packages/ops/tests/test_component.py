@@ -739,10 +739,11 @@ def test_the_composed_instrument_status_route_reaches_the_sibling_members(
     component = app.get(ops.OPS_INSTRUMENT_STATUS_COMPONENT_NAME)
     assert component is not None
     response = component.get()
-    # Nothing has been recorded, so the halt table is empty and dreaming
-    # runs; the other two lamps are absent rather than lit.
-    assert response.canary is True
-    assert response.absent == ("ks_guard", "ingest")
+    # Nothing has been recorded: no halt, and no canary run ever on
+    # record, so there is no reading to report — all three lamps are
+    # absent rather than lit.
+    assert response.canary is None
+    assert response.absent == ("canary", "ks_guard", "ingest")
 
 
 def test_the_application_exposes_the_composed_route(test_database_url: str) -> None:
