@@ -8,7 +8,6 @@
 #   ./run.sh state              start claw-forge state service (port 8420)
 #   ./run.sh app                start FastAPI dev server (uvicorn --reload)
 #   ./run.sh agent  "desc"      run claw-forge with a feature description
-#   ./run.sh migrate [head]     run alembic upgrade (default: head)
 #   ./run.sh worker             start the report generation worker (Dramatiq + asyncpg pool)
 #   ./run.sh test   [args]      run pytest
 #   ./run.sh shell              drop into a shell with secrets injected
@@ -33,6 +32,8 @@
 #   ./run.sh bootstrap-fill [args] python -m bootstrap.fill
 #   ./run.sh dream          [args] python -m orchestrator.dream
 #   ./run.sh triage         [args] python -m tripwires.triage
+#   ./run.sh migrate             python -m app.migrate: apply every
+#                               migrations/versions/0*.py file in chain order
 #   ./run.sh stack              boot docker dev stack + emit per-service readiness
 #   ./run.sh stack-down         stop the docker dev stack
 #   ./run.sh install            uv sync (Python deps)
@@ -69,7 +70,7 @@ shift || true
 # Only enforce 1Password / .env.tpl when the requested command needs secrets.
 needs_secrets() {
   case "$1" in
-    forge|state|agent|app|migrate|worker|test|shell) return 0 ;;
+    forge|state|agent|app|worker|test|shell) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -125,12 +126,6 @@ case "${cmd}" in
       --reload-dir engine \
       --reload-include 'main.py' \
       --host 0.0.0.0 --port "${API_PORT:-8000}" "$@"
-    ;;
-
-  migrate)
-    target="${1:-head}"
-    echo "→ Running alembic upgrade ${target}..."
-    exec ${OP} uv run alembic upgrade "${target}"
     ;;
 
   worker)
@@ -241,7 +236,7 @@ case "${cmd}" in
     exec docker compose -f "${SCRIPT_DIR}/docker-compose.yml" down
     ;;
 
-  canary|bootstrap-fill|dream|triage)
+  canary|bootstrap-fill|dream|triage|migrate)
     # None of these needs a secret, so they run with a CLEAN env, like the
     # other no-secret commands above — never wrapped in `op run`. Each shares
     # the research store with `campaign`, defaulting to the same path.
@@ -253,6 +248,7 @@ case "${cmd}" in
       bootstrap-fill) module="bootstrap.fill" ;;
       dream)          module="orchestrator.dream" ;;
       triage)         module="tripwires.triage" ;;
+      migrate)        module="app.migrate" ;;
     esac
     exec uv run --all-packages python -m "${module}" "$@"
     ;;
