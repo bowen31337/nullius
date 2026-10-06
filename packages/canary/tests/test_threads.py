@@ -666,7 +666,11 @@ def test_the_child_environment_never_mutates_what_it_was_given() -> None:
 
 
 def test_the_span_yields_the_verdict() -> None:
-    with single_threaded(env=_CAPPED) as caps:
+    # Pinned to the declared caps alone (``modules=()``), not to whatever
+    # numerics an earlier test in this process happened to import: the span's
+    # own verdict is under test here, not the ambient ``sys.modules`` a
+    # worker accumulates across a suite.
+    with single_threaded(env=_CAPPED, modules=()) as caps:
         assert isinstance(caps, ThreadCaps)
         assert caps.complete
 
@@ -680,8 +684,11 @@ def test_the_span_sweeps_on_entry() -> None:
 
 def test_the_span_does_not_mask_the_body_failure() -> None:
     # A run's own error is the informative one; a secondary complaint about
-    # threads raised in its place would hide why the run failed.
-    with pytest.raises(ZeroDivisionError), single_threaded(env=_CAPPED):
+    # threads raised in its place would hide why the run failed. ``modules=()``
+    # keeps the entry sweep clean of whatever numerics an earlier test in this
+    # process already loaded, so the body's exception is what this test is
+    # about rather than the ambient pool.
+    with pytest.raises(ZeroDivisionError), single_threaded(env=_CAPPED, modules=()):
         raise ZeroDivisionError("the run's own problem")
 
 
