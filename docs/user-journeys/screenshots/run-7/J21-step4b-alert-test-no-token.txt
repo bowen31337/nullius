@@ -1,1 +1,0 @@
-bingx_alert: TELEGRAM_BOT_TOKEN is not set, so no alert was sent

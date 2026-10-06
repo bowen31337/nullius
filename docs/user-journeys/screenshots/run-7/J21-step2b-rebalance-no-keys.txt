@@ -1,1 +1,0 @@
-bingx_rebalance: vst_credentials_missing: BINGX_VST_API_KEY is missing or empty; the client signs every request with the VST key and secret, so neither can be absent (feature 1) — set BINGX_VST_API_KEY and BINGX_VST_SECRET_KEY in the process's environment before constructing the client

@@ -1,2 +1,0 @@
-<frozen runpy>:128: RuntimeWarning: 'canary.run' found in sys.modules after import of package 'canary', but prior to execution of 'canary.run'; this may result in unpredictable behaviour
-canary_reference_exists: an active canary reference pair is already on record ('6be70367-c1b9-4509-b0eb-eaafa1ca530b'); freezing a second active pair would leave the nightly canary unable to say which one to replay, so nothing was changed

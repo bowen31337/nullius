@@ -1,1 +1,0 @@
-policy_isolation_required: --reviser llm is refused; LLM-authored policy code must not execute in the host process until policies have an OS sandbox (CLAUDE.md, SEC-1) -- policy_runtime.guard_policy is defence-in-depth, not the boundary. Use --reviser jitter, the default no-network reviser

@@ -1,9 +1,0 @@
-usage: python -m orchestrator.closeout [-h] --campaign-id ID
-
-Close out a finished campaign: run the KS guard and the verdict, persist its
-calibration figures to the stores the dashboard and API read, and print them
-as one JSON line.
-
-options:
-  -h, --help        show this help message and exit
-  --campaign-id ID  the finished campaign to close out

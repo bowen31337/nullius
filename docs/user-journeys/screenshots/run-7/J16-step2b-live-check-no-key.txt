@@ -1,1 +1,0 @@
-ProviderNotConfiguredError: the live provider for vendor 'anthropic' needs NULLIUS_ANTHROPIC_API_KEY set in the environment, and it is missing or empty. The variable is named and its value is not rendered: a credential that appeared in an exception message would have traveled into every bug report that quoted one. Set NULLIUS_ANTHROPIC_API_KEY and build the provider again.

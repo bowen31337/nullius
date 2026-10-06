@@ -1,2 +1,0 @@
-<frozen runpy>:128: RuntimeWarning: 'canary.run' found in sys.modules after import of package 'canary', but prior to execution of 'canary.run'; this may result in unpredictable behaviour
-canary_reference_absent: no active canary reference pair is on record; freeze one with `python -m canary.run --freeze-reference` before running the nightly canary

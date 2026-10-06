@@ -1,2 +1,0 @@
-<frozen runpy>:128: RuntimeWarning: 'canary.run' found in sys.modules after import of package 'canary', but prior to execution of 'canary.run'; this may result in unpredictable behaviour
-6be70367-c1b9-4509-b0eb-eaafa1ca530b

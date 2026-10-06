@@ -1,1 +1,0 @@
-no such column: ic_mean

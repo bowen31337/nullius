@@ -46,3 +46,6 @@ coverage/
 .uv-cache/
 .env.vst.tpl
 .env.campaign.tpl
+
+# user-journey sweep screenshots (regenerated per run)
+docs/user-journeys/screenshots/

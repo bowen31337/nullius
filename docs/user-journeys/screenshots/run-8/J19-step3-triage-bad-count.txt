@@ -1,2 +1,0 @@
-<frozen runpy>:128: RuntimeWarning: 'tripwires.triage' found in sys.modules after import of package 'tripwires', but prior to execution of 'tripwires.triage'; this may result in unpredictable behaviour
-the triage is run over at least two candidates a side, got count=1; one a side is an AUC of 0, ½ or 1 — a coin flip the record would carry as a curve

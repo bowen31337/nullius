@@ -1,1 +1,0 @@
-pool_too_thin: the pool holds 0 world(s), below the ladder floor of 20; docs/alpha-engine-prd.md §12.1 refuses a dreaming run below 20 worlds — the paired comparison has no power and selecting the max over M revisions overfits the pool. Do not run dreaming: grow the pool, or run fixed exploration and accumulate history until the pool clears the floor
