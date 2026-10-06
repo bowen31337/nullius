@@ -1,0 +1,465 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — operator surfaces for the middle loop, the canary, the M1 triage and the gate metrics (journeys J17–J20)</project_name>
+  <addition_summary>
+    Journey Run 7 (docs/user-journeys/_run-log.md, 2026-10-06) re-read the PRD
+    and the architecture and found capabilities that exist as library code but
+    that no operator can reach:
+    - J17: no command runs a dreaming cycle (PRD §5 Loop 2, the M3 gate), and
+      no command fills the bootstrap pool (PRD M1.5).
+    - J18: nothing runs or schedules the determinism canary (architecture §12),
+      and the dashboard's canary lamp reads "ok" on a fresh install where no
+      canary has ever run, because the lamp is only "dreaming is not halted".
+    - J19: no command runs the M1 perturbation-stability triage.
+    - J20: the gate-evidence metrics (sensitivity/specificity, Type-B depth,
+      discoveries per 1000 charged trials, the train-vs-holdout gap) are
+      persisted but neither served nor shown.
+    - J21 (observation): bingx_heartbeat prints nothing about its verdict.
+    - Found while checking completeness: outside the demo seeder, nothing
+      writes FDR_deploy, the KS guard reading, the sensitivity/specificity
+      pair, Type-B depth or the discovery rate. A real campaign closes
+      without producing the PRD's headline number. A campaign close-out
+      step, run by the scorer process that holds the sidecar key, fills them.
+    This spec adds those operator surfaces. It composes existing member
+    functions; it adds no new statistics and no new dependency outside the
+    workspace.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / SQLite or PostgreSQL via DATABASE_URL / pytest (ruff conventions) / Streamlit dashboard / stdlib http.server API.</stack>
+    <test_baseline>Journey Run 7 on main at fe3f694: J1–J15 pass. The run's acceptance gate measures its own tests/ baseline; member suites under packages/*/tests are run per member.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md. Never recreate src/app/modules/. Typed refusals open
+      with a greppable code word. Tests never reach the network, never read a
+      credential, and pass under pytest-xdist (no module-level mutable state,
+      unique ids and tmp databases per test).
+
+      House CLI pattern, as in orchestrator/campaign.py and
+      router/bingx_heartbeat.py: argparse with prog="python -m pkg.mod" built
+      in _build_parser(); main(argv=None, *, env=None, app=None, emit=print,
+      ...) -> int; `if __name__ == "__main__": raise SystemExit(main())`.
+      Exit 0 = done, 1 = a collaborator refused (print str(exc) to stderr,
+      prefixed once with the module's code word), 2 = bad argument or missing
+      configuration. Output is one JSON line per event via emit(json.dumps(...)).
+      A missing composed component prints one stderr line naming it, never a
+      traceback.
+
+      Existing pieces (read them; edit only the files a feature names):
+      - canary: CanaryReferenceStore(database_url).load(reference_id) and
+        .freeze(pair, *, reference_id=None, stored_at=None);
+        CanaryPolicy.freeze(version=, policy=), CanaryTree.freeze({...}),
+        CanaryReferencePair(policy, tree, recorded_score, id, is_active,
+        created_at); replay_pair(pair, *, tolerance=DEFAULT_TOLERANCE) ->
+        CanaryReplayResult (score, recorded_score, deviation,
+        within_tolerance, tolerance, .broken); halt_dreaming(pair, result, *,
+        database_url=None, env=None, detected_at=None) writes
+        canary_dream_halt and raises CanaryDeterminismBrokenError
+        (determinism_broken); void_scores_after_break(...);
+        require_dreaming_allowed(); CanaryHaltStore.halted(). Nothing records
+        a successful run today. The fixture pair in
+        packages/canary/tests/test_replay.py (_policy, _tree) replays to 0.66.
+      - dreaming: CycleFreeze(url).open(iteration_id) / .release(hold);
+        revise_policy(incumbent_source, count, *, seed, reviser=None) (the
+        default reviser is the no-network AST jitter); include_incumbent;
+        split_replay_pool(*, database_url, rotation, floor=20,
+        train_fraction, env); record_cycle_holdout; revision_cap(world_count)
+        and record_cycle_cap; rejects_thin_pool(world_count) raising
+        PoolTooThinError (pool_too_thin, floor LADDER_FLOOR_WORLDS = 20);
+        sweep_candidates(candidates, *, evaluator, beta, worlds=None,
+        split=None, database_url=None) writing one replay_score row per
+        (candidate, world); commit_selection(candidates, *, strata, beta,
+        iteration_id=None, database_url=None) writing policy_revision. The
+        only evaluator today is a stub in
+        tests/e2e/test_dreaming_cycle_bootstrap_selection.py.
+      - bootstrap: BootstrapPool(url).ensure_schema(),
+        .persist_worlds(count=45, *, pool_seed=20260922) (count in [40, 50]),
+        .world_count(), .worlds(), .world(world_id); world_census(pool) ->
+        WorldCensus(n_financial, n_bootstrap, .total); question_for(world) ->
+        BootstrapQuestion (observed, legal_roots, legal_actions, meta,
+        probe_batch, budget_remaining, commit, committed); the world's ground
+        truth (GroundTruth.score) labels every node exactly.
+      - policy loading: orchestrator._policy screens a policy source with
+        policy_runtime.screen_policy, imports it under POLICY_MODULE_NAME and
+        runs it under policy_runtime.guard_policy. That guard is
+        defence-in-depth, not an isolation boundary.
+      - tripwires.triage: run_triage(*, seed=TRIAGE_SEED, count=TRIAGE_POPULATION)
+        -> TriageFigure with .to_payload(); pure, no stores, about 15 s;
+        refusals TripwirePanelError / TripwireStatisticError.
+      - ops stores (each resolve(env) -> store | None, record(...),
+        a point read, history() ordered by recorded_at): NullCalibrations
+        ("ops-null-calibration"), TypeBDepths ("ops-type-b-depth"),
+        DiscoveryRates ("ops-discovery-rate"), MetaOverfitGaps
+        ("ops-meta-overfit", keyed by iteration_id). The route pattern to copy
+        is ops/regime_coverage.py (ROUTE constant, Endpoint.from_env, no-arg
+        get() returning a frozen dataclass, store errors translated) plus an
+        API_ROUTES row in nullius_api/routes.py and an HTTP_ADAPTERS entry
+        (_no_argument_get) in nullius_api/server.py.
+      - ops/instrument_status.py builds canary = not halted and refuses a
+        non-bool canary; ops/chrome.py already renders None as "no reading".
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Determinism Canary Operation">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/canary/src/canary/run.py,packages/canary/src/canary/__init__.py,packages/canary/tests/test_canary_run.py">
+        System runs the determinism canary from `python -m canary.run`, which records every run so that "the canary ran and passed" is a stored fact rather than the absence of a halt.
+        - A new append-only table canary_run (id, reference_id, ran_at,
+          score, recorded_score, deviation, tolerance, within_tolerance) is
+          created by a CanaryRunStore(database_url) with record(...) and
+          newest() -> CanaryRun | None, exported from canary and registered
+          as the "canary-run-store" component (None without DATABASE_URL).
+        - `python -m canary.run --freeze-reference` freezes the built-in
+          reference pair (the policy and tree of the existing replay fixture,
+          moved into run.py as module constants), with recorded_score equal
+          to its own replay score and is_active true, and prints the
+          reference_id. If an active pair already exists, it refuses with code
+          word canary_reference_exists and exit 1, changing nothing.
+        - `python -m canary.run` (no flag) loads the single active reference
+          pair, replays it with replay_pair, records one canary_run row and
+          prints one JSON line (reference_id, score, recorded_score,
+          deviation, within_tolerance, ran_at), then exits 0.
+        - On a deviation beyond the tolerance it records the row, then calls
+          halt_dreaming (which writes canary_dream_halt) and
+          void_scores_after_break, prints the JSON line with
+          within_tolerance false, and exits 3. Exit 3 is reserved for a broken
+          canary, so a systemd OnFailure hook can tell it apart from a
+          configuration fault.
+        - No DATABASE_URL raises exit 2 with one line. No active pair, or more
+          than one, raises exit 1 with code word canary_reference_absent or
+          canary_reference_ambiguous. Neither prints a traceback.
+        - Tests cover: freeze then run gives exit 0, one row and
+          within_tolerance true; a second freeze is refused; a tampered
+          recorded_score gives exit 3, a halt row and a run row; an empty
+          store gives canary_reference_absent; newest() returns the latest
+          row. Every test passes under pytest-xdist.
+      </feature>
+      <feature index="2" shape="core" depends_on="1"
+               touches_files="packages/ops/src/ops/instrument_status.py,packages/ops/tests/test_instrument_status.py,packages/api/tests/test_metrics_routes.py">
+        System displays the canary lamp in three states, and GET
+        /metrics/instrument-status returns 200 with canary true, false or
+        null, so neither ever claims "replay is deterministic"
+        for a canary that has not run.
+        - The canary field becomes Optional[bool]:
+          - False when CanaryHaltStore.halted() is true. A halt wins over
+            everything, as today.
+          - True only when the newest canary_run row (feature 1's
+            CanaryRunStore.newest()) has within_tolerance true and ran within
+            CANARY_MAX_AGE_HOURS = 36 of the read.
+          - None ("no reading") when no run has been recorded or the newest
+            one is older than that.
+        - The response gains canary_last_run_at (ISO-8601 string or None). The
+          chrome renders None as "no reading" with no change to
+          ops/chrome.py, matching the KS lamp's existing absence rule.
+        - The module docstring's "canary is never absent" rule is replaced
+          by this rule. The tests that pinned it are rewritten to pin the
+          three states. The api test that asserted canary is True on an empty
+          store now asserts it is None.
+        - A store that cannot be read is still refused (translated), never
+          answered None or True.
+      </feature>
+    </category>
+    <category name="Middle Loop Operation">
+      <feature index="3" shape="core" depends_on=""
+               touches_files="packages/bootstrap/src/bootstrap/fill.py,packages/bootstrap/tests/test_fill_cli.py">
+        System saves bootstrap worlds to the pool from `python -m bootstrap.fill
+        --count N --pool-seed S` (defaults 45 and 20260922), and displays the pool's census as one JSON line.
+        - It calls BootstrapPool(url).ensure_schema() then
+          persist_worlds(count, pool_seed=S), and prints one JSON line:
+          n_bootstrap, n_financial, total and pool_seed.
+        - Re-running with the same arguments writes nothing new and prints
+          the same census. If the pool already holds worlds drawn from a
+          different pool_seed, it refuses with code word
+          bootstrap_pool_populated and exit 1, writing nothing.
+        - `--census` prints the census without writing. A count outside
+          [40, 50] is refused with exit 1 using the member's own
+          BootstrapPoolError text. No DATABASE_URL gives exit 2.
+        - Tests cover fill, idempotent re-run, the different-seed refusal,
+          census-only on an empty store (zeros), and the bad count. Every
+          test passes under pytest-xdist.
+      </feature>
+      <feature index="4" shape="core" depends_on="3"
+               touches_files="packages/orchestrator/src/orchestrator/_bootstrap_eval.py,packages/orchestrator/tests/test_bootstrap_eval.py">
+        System scores one (candidate policy, bootstrap world) pair with
+        orchestrator._bootstrap_eval.score_on_world(candidate_source,
+        world, *, round_cap) and returns a carrier with .pick and .score, the
+        shape dreaming.sweep_candidates expects of its evaluator.
+        - It screens the source with policy_runtime.screen_policy, imports it
+          under POLICY_MODULE_NAME and runs it under guard_policy, as
+          orchestrator._policy does. A source that fails screening raises
+          PolicyLoadError naming the admission reason.
+        - It drives the candidate's select over bootstrap.question_for(world)
+          until no batch is returned or the round cap is reached, then reads
+          the committed node. The score is the world's own ground-truth score
+          of that node. A policy that commits nothing returns pick None and
+          score replay.NON_COMMITTING_SCORE.
+        - The same source, world and round cap return the same pick and
+          score twice (determinism).
+        - Tests use one persisted bootstrap world in a tmp SQLite store and
+          three tiny policy sources: one that commits the best observed node,
+          one that never commits, and one that fails screening. They make no
+          network call and pass under pytest-xdist.
+      </feature>
+      <feature index="11" shape="core" depends_on="1,3,4"
+               touches_files="packages/orchestrator/src/orchestrator/dream.py,packages/orchestrator/tests/test_dream_cli.py,packages/orchestrator/pyproject.toml,uv.lock">
+        System runs one dreaming cycle over the stored world pool from
+        `python -m orchestrator.dream --incumbent PATH [--iteration-id ID]
+        [--beta 0.5] [--seed S] [--round-cap 30]`. It prints the selected
+        policy revision and its train-vs-holdout gap, so the M3 gate's inputs
+        can be produced by an operator.
+        - Order of checks, each before any write:
+          1. DATABASE_URL present, else exit 2.
+          2. Dreaming not halted by the canary (require_dreaming_allowed),
+             else exit 1 with determinism_broken.
+          3. Pool size from world_census(pool).total checked with
+             rejects_thin_pool, else exit 1 with pool_too_thin naming the
+             count and the floor of 20.
+          4. The incumbent source screened with policy_runtime.screen_policy,
+             else exit 1 naming the admission reason.
+        - Then: M = revision_cap(total), recorded with record_cycle_cap.
+          CycleFreeze.open(iteration_id); revise_policy(incumbent, M,
+          seed=S) with the default no-network reviser, then
+          include_incumbent; release. split_replay_pool(rotation =
+          iteration_id) gives the 70/30 split, recorded with
+          record_cycle_holdout. sweep_candidates over every world, then
+          commit_selection over the train worlds only.
+        - The sweep's evaluator is feature 4's score_on_world.
+          - Financial worlds are not scored by this CLI. They are counted in
+            n_financial and reported, and the summary says they were skipped.
+        - After selection it records MetaOverfitGaps.record(iteration_id,
+          train_mean, holdout_mean, train_worlds, holdout_worlds) for the
+          selected candidate, and prints one JSON summary line: iteration_id,
+          n_bootstrap, n_financial, M, the selected module_id and code_hash,
+          train_mean, holdout_mean, gap, and the replay_score row count.
+        - `--write-selected PATH` writes the selected candidate's source to PATH
+          (refusing to overwrite an existing file), so the operator can point
+          NULLIUS_EXPLORATION_POLICY at it and the next campaign explores
+          with π_{t+1}. Without the flag nothing is written outside the store.
+        - `--reviser llm` is refused with code word policy_isolation_required
+          and exit 1. LLM-authored policy code must not execute in the host
+          process until policies have an OS sandbox (CLAUDE.md, SEC-1).
+          `--reviser jitter` (the default) derives every candidate from the
+          operator's own incumbent.
+        - pyproject.toml gains the workspace members the module imports
+          (dreaming, bootstrap, canary, ops, replay) and nothing else, and
+          uv.lock is regenerated with `uv lock` to match.
+        - Tests run against a tmp SQLite store filled with
+          BootstrapPool.persist_worlds(40, ...) and a small incumbent policy
+          source:
+          - one cycle exits 0, writes one replay_score row per
+            (candidate, world), writes one selected policy_revision and one
+            meta-overfit row
+          - a rerun with the same iteration_id and seed selects the same
+            code_hash
+          - an empty pool exits 1 with pool_too_thin and writes nothing
+          - a recorded canary halt exits 1 with determinism_broken
+          - --reviser llm exits 1 with policy_isolation_required
+          - an incumbent that fails screening exits 1
+          The tests make no network call and pass under pytest-xdist.
+      </feature>
+      <feature index="5" shape="core" depends_on=""
+               touches_files="packages/tripwires/src/tripwires/triage.py,packages/tripwires/tests/test_triage_cli.py">
+        System runs the M1 triage experiment from `python -m tripwires.triage
+        [--seed S] [--count N]` and displays the perturbation-stability AUC with
+        the reading PRD §12 M1 assigns to it, or an error message with exit 1.
+        - It calls run_triage(seed=S, count=N) and prints one JSON line: the
+          payload of to_payload() plus a reading field derived only from the
+          mean AUC:
+          - "robustness_filter_suffices" when the AUC is 0.80 or more
+          - "learned_signature_warranted" when it is 0.65 or less
+          - "indeterminate" otherwise
+          The thresholds are module constants, and the line names the
+          population as the member's planted panel.
+        - A bad seed or a count below 2 gives exit 1, printing the member's
+          TripwirePanelError text, with no traceback. The run itself reads
+          no store and makes no network call.
+        - Tests use a small --count, so they run in seconds. They assert the
+          JSON keys, the reading for a stubbed figure on each side of each
+          threshold, and the refusal. They pass under pytest-xdist.
+      </feature>
+    </category>
+    <category name="Gate Evidence Surfaces">
+      <feature index="6" shape="core" depends_on=""
+               touches_files="packages/ops/src/ops/gate_evidence.py,packages/ops/src/ops/__init__.py,packages/ops/tests/test_gate_evidence.py">
+        System serves the M3 gate evidence through four read endpoints in a
+        new ops/gate_evidence.py, following the ops/regime_coverage.py pattern.
+        - The routes are /metrics/null-calibration, /metrics/type-b-depth,
+          /metrics/discovery-rate and /metrics/meta-overfit, registered as
+          the components "ops-null-calibration-route", "ops-type-b-depth-route",
+          "ops-discovery-rate-route" and "ops-meta-overfit-route". Each is
+          None without DATABASE_URL.
+        - Each get() returns a frozen dataclass holding the store's history()
+          (oldest first) and its newest row. An empty store answers an empty
+          history and newest None, never a zero. Store errors are translated
+          to the module's own error class.
+        - The route constants are exported from ops. No is_null label or
+          per-node null status appears in any response: these stores hold
+          only aggregates.
+        - Tests cover empty and populated stores for all four, and an
+          unreadable store giving the translated error.
+      </feature>
+      <feature index="7" shape="core" depends_on="2,6"
+               touches_files="packages/api/src/nullius_api/routes.py,packages/api/src/nullius_api/server.py,packages/api/tests/test_routes.py,packages/api/tests/test_discoverability.py,packages/api/tests/test_metrics_routes.py">
+        System exposes feature 6's four endpoints over HTTP under the
+        metrics:read scope. GET /metrics/null-calibration,
+        /metrics/type-b-depth, /metrics/discovery-rate and
+        /metrics/meta-overfit each answer 200 with the JSON body, 401 without
+        a token, 403 with a token of another scope, and 503
+        component_unconfigured when the component is None.
+        - Four API_ROUTES rows and four HTTP_ADAPTERS entries
+          (_no_argument_get). The index reads "14 routes declared". The
+          pinned route lists and counts in test_routes.py and
+          test_discoverability.py are updated to 14.
+        - test_metrics_routes.py gains a test that drives each new route
+          through the real server on port 0 over a populated tmp store, and
+          checks every body is encoded by json_encoding with no traceback.
+      </feature>
+      <feature index="8" shape="core" depends_on="6"
+               touches_files="packages/ops/src/ops/dashboard.py,packages/ops/tests/test_dashboard.py">
+        System shows a "Gate evidence" section on the operator dashboard
+        below the FDR_deploy panel and its trend chart. It never sits above
+        or beside the headline, so FDR_deploy stays the one top-line figure
+        (architecture §16).
+        - The section is one subheader and four captions:
+          - "sensitivity / specificity" for the newest campaign
+          - "Type-B depth past flip"
+          - "discoveries per 1000 charged trials"
+          - "train-vs-holdout gap" for the newest dreaming iteration
+          Each caption names the campaign or iteration it belongs to. A store
+          with no row renders "no reading", never 0.
+        - DashboardPage gains an optional evidence seat, read in page() after
+          the existing reads. A dashboard composed without the four
+          components renders the section as "no reading" lines rather than
+          failing. The existing primary panel, lamps and epoch chrome are
+          unchanged.
+        - No profit, P&amp;L or equity figure appears in the section.
+        - test_dashboard.py's RENDER_SEQUENCE transcript is extended with the
+          section. Tests cover populated, empty and unconfigured evidence.
+      </feature>
+    </category>
+    <category name="Campaign Close-out">
+      <feature index="13" shape="core" depends_on=""
+               touches_files="packages/orchestrator/src/orchestrator/closeout.py,packages/orchestrator/tests/test_closeout_cli.py">
+        System closes out a finished campaign from `python -m
+        orchestrator.closeout --campaign-id ID`. It saves the campaign's
+        calibration figures to the stores the dashboard and API read, and
+        displays them as one JSON line, so FDR_deploy is measured for real
+        campaigns and not only for the demo seeder.
+        - The command is the scorer process: it builds
+          scoring.NullPickScorer.resolve(env) from NULL_SIDECAR_PATH and
+          NULL_SIDECAR_KEY_REF. Without a sidecar, or without DATABASE_URL, it
+          exits 2 naming the missing variable.
+        - It reads the campaign's evaluated node rows. A discovery is an
+          evaluated node (fail_class ok) whose ic_tstat is at least
+          DISCOVERY_TSTAT = 2.0, a documented module constant (the in-sample
+          bar at roughly p &lt; 0.05).
+        - In order:
+          1. nulloracle.KsGuard.guard over the in-sample ic_mean of the
+             campaign's null nodes vs its real nodes. The split happens
+             inside the scorer process; only the two score lists reach the
+             guard.
+          2. The campaign verdict (nulloracle's build_verdict component,
+             feature 124), which marks the campaign VOID when p &lt; 0.05.
+          3. NullPickScorer.calibration_figures(population = the campaign's
+             planted nodes, picks = its discoveries).
+          4. scoring.FdrDeployStore.persist(campaign_id, figures).
+          5. ops NullCalibrations.record.
+          6. For a Type-D campaign only, scoring.account_errors gives the
+             Type-B depth past the flip, saved with ops TypeBDepths.record.
+          7. ops DiscoveryRates.record, with the ledger's budget-charging and
+             total trial counts for the campaign.
+        - The JSON line carries campaign_id, ks_pvalue, calibration_status,
+          sensitivity, specificity, fdr_deploy, type_b (or null for Type-R),
+          discoveries, budget_charging_trials and ledger_trials. It never
+          carries a node id together with a null label (PRD §4.2).
+        - Exit 0 when the campaign is calibrated. Exit 3 when the verdict is
+          VOID: the figures are still saved, and the exit code lets an alert
+          hook fire. Exit 1 when a collaborator refuses (an unknown campaign,
+          or a one-sided plant), with its error message and no traceback.
+        - Running it twice on one campaign saves no duplicate rows and prints
+          the same line.
+        - Tests use a tmp store and a tmp sidecar built the way
+          nullius_api.demo builds one, over a small Type-R campaign and a
+          small Type-D campaign. They assert the saved rows in all five
+          stores, the VOID path (exit 3), idempotence, and that no stdout
+          line pairs a node id with null status. They make no network call
+          and pass under pytest-xdist.
+      </feature>
+      <feature index="14" shape="core" depends_on="13"
+               touches_files="packages/orchestrator/src/orchestrator/campaign.py,packages/orchestrator/tests/test_campaign_cli.py">
+        System closes out every campaign the campaign CLI finishes. After the
+        summary line, `python -m orchestrator.campaign` runs feature 13's
+        close-out on the finished campaign_id and displays its JSON line.
+        - A close-out refusal is printed as one stderr line and makes the
+          command exit 1. The campaign itself stays recorded, and the
+          operator can rerun `python -m orchestrator.closeout` once the
+          cause is fixed.
+        - A VOID verdict makes the campaign CLI exit 3.
+        - `--no-closeout` skips the step for a deployment without a sidecar,
+          and says so on stderr.
+        - test_campaign_cli.py gains tests for the close-out line, the
+          refusal path and --no-closeout, with collaborators stubbed as the
+          existing tests stub them.
+      </feature>
+    </category>
+    <category name="Operator Wiring and Hygiene">
+      <feature index="9" shape="core" depends_on=""
+               touches_files="packages/router/src/router/bingx_heartbeat.py,packages/router/tests/test_bingx_heartbeat.py">
+        System prints the heartbeat's verdict. `python -m
+        router.bingx_heartbeat` writes one JSON line to stdout, with verdict
+        "fresh", "stale" or "absent", newest_slot (or null), age_hours (or
+        null) and max_age_hours. It does this whether or not the alert could
+        be delivered, so an operator running it by hand learns the bot's
+        state even without Telegram configured.
+        - Exit codes, alert deduplication and the logged delivery faults are
+          unchanged.
+        - The tests that pinned an empty stdout now pin the one verdict line
+          for fresh, stale and absent.
+      </feature>
+      <feature index="10" shape="core" depends_on=""
+               touches_files="run.sh,deploy/systemd/nullius-canary.service,deploy/systemd/nullius-canary.timer">
+        System wires the new commands into run.sh and systemd, so `./run.sh help` displays the five new verbs.
+        - run.sh gains `closeout` (python -m orchestrator.closeout "$@"),
+          run under `op run --env-file=.env.campaign.tpl` exactly like the
+          campaign verb, because it needs the sidecar key reference. It also
+          gains four verbs that never use op run, because none needs a
+          secret:
+          - `canary` (python -m canary.run "$@")
+          - `bootstrap-fill` (python -m bootstrap.fill "$@")
+          - `dream` (python -m orchestrator.dream "$@")
+          - `triage` (python -m tripwires.triage "$@")
+          Each defaults DATABASE_URL to
+          sqlite:///$HOME/.local/share/nullius/research.db, as the campaign
+          verb does, and is listed by `./run.sh help`.
+        - deploy/systemd gains nullius-canary.service (oneshot,
+          `run.sh canary`, OnFailure=nullius-vst-alert@%n.service) and
+          nullius-canary.timer (daily at 03:15 UTC, Persistent=true). They
+          mirror the existing VST units' form, and nothing installs or
+          enables them.
+        </feature>
+      <feature index="12" shape="core" depends_on=""
+               touches_files="README.md,CLAUDE.md,docs/user-journeys/J19-m1-triage-auc.md">
+        System documents the new commands where operators look for them, so the README displays a canary that actually runs.
+        - README.md's "Running" section and CLAUDE.md's orchestrator section
+          gain the five verbs (canary, bootstrap-fill, dream, triage, closeout)
+          and the canary timer, each with its exit codes, and say that a
+          campaign now closes itself out, so FDR_deploy is measured for real
+          campaigns.
+        - J19's step 2 expectation is corrected to say what the triage
+          measures: the member's planted panel, with no sidecar read.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Features 1–3, 5, 6 and 9 are independent. Feature 2 reads feature 1's
+    CanaryRunStore. Feature 4 (the evaluator) depends on feature 3; feature 11 (the dreaming
+    CLI) depends on features 1, 3 and 4. Features 7 and 8 read feature 6's endpoints.
+    Feature 14 depends on feature 13. Feature 10 alone edits run.sh and deploy/, and feature 12 alone edits the
+    docs, so no two features contend for those files.
+  </integration_points>
+  <out_of_scope>
+    Running LLM-authored exploration policies in the dreaming cycle (blocked
+    on a policy OS sandbox). Scoring financial worlds inside the dreaming CLI.
+    The live metrics (live-vs-backtest IC ratio, fill cost, reject rate),
+    deferred to M4/M5 by the owner's recorded J20 decision. The full operator
+    console of docs/design.md.
+  </out_of_scope>
+</project_specification>
