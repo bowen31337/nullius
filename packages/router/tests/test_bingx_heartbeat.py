@@ -55,6 +55,9 @@ from router.bingx_heartbeat import (
     EXIT_STALE,
     NO_COMPLETION_KEY,
     ROUTER_HEARTBEAT_ALERT_TABLE,
+    VERDICT_ABSENT,
+    VERDICT_FRESH,
+    VERDICT_STALE,
     RouterBingXHeartbeatError,
     RouterHeartbeatAlertStore,
     main,
@@ -121,6 +124,13 @@ def _body_of(recorder: _Recorder) -> dict:
     return json.loads(recorder.calls[-1][3].decode("utf-8"))
 
 
+def _verdict_of(out: str) -> dict:
+    """Parse stdout as the one JSON verdict line the check prints."""
+    lines = out.splitlines()
+    assert len(lines) == 1, out
+    return json.loads(lines[0])
+
+
 def _seed(
     url: str,
     *,
@@ -166,14 +176,19 @@ def _assert_no_token(*streams: object) -> None:
 def test_a_fresh_completion_sends_nothing_and_exits_zero(
     test_database_url, capsys, caplog
 ) -> None:
-    """The healthy case is *silence*: no message, exit 0, no stdout."""
+    """The healthy case sends no Telegram message, but still prints the verdict."""
     _seed(test_database_url, finished_at=MOMENT - timedelta(hours=4))
     with caplog.at_level(logging.WARNING, logger="router.bingx_heartbeat"):
         code, recorder = _run(test_database_url)
     assert code == EXIT_OK
     assert recorder.calls == []
     assert caplog.records == []
-    assert capsys.readouterr().out == ""
+    assert _verdict_of(capsys.readouterr().out) == {
+        "verdict": VERDICT_FRESH,
+        "newest_slot": SLOT_NOON.isoformat(),
+        "age_hours": 4.0,
+        "max_age_hours": 5.0,
+    }
 
 
 def test_a_completion_exactly_at_the_limit_is_still_fresh(
@@ -189,7 +204,12 @@ def test_a_completion_exactly_at_the_limit_is_still_fresh(
     code, recorder = _run(test_database_url)
     assert code == EXIT_OK
     assert recorder.calls == []
-    assert capsys.readouterr().out == ""
+    assert _verdict_of(capsys.readouterr().out) == {
+        "verdict": VERDICT_FRESH,
+        "newest_slot": SLOT_NOON.isoformat(),
+        "age_hours": 5.0,
+        "max_age_hours": 5.0,
+    }
 
 
 def test_a_stale_completion_sends_one_urgent_alert_naming_slot_and_age(
@@ -199,7 +219,8 @@ def test_a_stale_completion_sends_one_urgent_alert_naming_slot_and_age(
 
     The body names the slot's own start, the book, the exit it finished on,
     the instant it finished and the age measured from that instant, so an
-    operator reading the phone knows the bot is six hours behind.
+    operator reading the phone knows the bot is six hours behind.  The same
+    facts — the verdict, the slot and the age — land on stdout too.
     """
     _seed(
         test_database_url,
@@ -217,8 +238,14 @@ def test_a_stale_completion_sends_one_urgent_alert_naming_slot_and_age(
     assert SLOT_NOON.isoformat() in body["text"]
     assert "synthetic-vst-0" in body["text"]
     assert "6.0 hours" in body["text"]
-    assert capsys.readouterr().out == ""
-    _assert_no_token(capsys.readouterr())
+    captured = capsys.readouterr()
+    assert _verdict_of(captured.out) == {
+        "verdict": VERDICT_STALE,
+        "newest_slot": SLOT_NOON.isoformat(),
+        "age_hours": 6.0,
+        "max_age_hours": 5.0,
+    }
+    _assert_no_token(captured)
 
 
 def test_no_completion_at_all_alerts_once_and_exits_one(
@@ -229,6 +256,7 @@ def test_no_completion_at_all_alerts_once_and_exits_one(
     There is no last slot to name, so the body says nothing has ever
     finished rather than inventing one — but the alarm and the exit are the
     same as a stale one: the bot has produced nothing the operator can see.
+    Stdout carries the same "absent" verdict, with no slot and no age.
     """
     code, recorder = _run(test_database_url)
     assert code == EXIT_STALE
@@ -236,7 +264,12 @@ def test_no_completion_at_all_alerts_once_and_exits_one(
     body = _body_of(recorder)
     assert body["text"].startswith(f"{URGENT}: {BOT_NAME}")
     assert "never recorded a finished slot" in body["text"]
-    assert capsys.readouterr().out == ""
+    assert _verdict_of(capsys.readouterr().out) == {
+        "verdict": VERDICT_ABSENT,
+        "newest_slot": None,
+        "age_hours": None,
+        "max_age_hours": 5.0,
+    }
 
 
 def test_the_newest_completion_is_the_one_judged(test_database_url) -> None:
@@ -287,19 +320,27 @@ def test_a_second_check_of_the_same_stale_slot_sends_nothing_but_still_exits_one
     The first hourly check pages; the next three stay silent — the operator
     was already told about this very slot — yet every one still exits 1,
     because the bot is still stale and that is what the unit state should
-    say.
+    say.  Every one of the four still prints the verdict line, deduped or
+    not: the dedupe governs the Telegram message, never stdout.
     """
     _seed(test_database_url, finished_at=MOMENT - timedelta(hours=7))
+    expected_verdict = {
+        "verdict": VERDICT_STALE,
+        "newest_slot": SLOT_NOON.isoformat(),
+        "age_hours": 7.0,
+        "max_age_hours": 5.0,
+    }
 
     first, first_recorder = _run(test_database_url)
     assert first == EXIT_STALE
     assert len(first_recorder.calls) == 1
+    assert _verdict_of(capsys.readouterr().out) == expected_verdict
 
     for _ in range(3):
         again, recorder = _run(test_database_url)
         assert again == EXIT_STALE
         assert recorder.calls == []
-    assert capsys.readouterr().out == ""
+        assert _verdict_of(capsys.readouterr().out) == expected_verdict
 
 
 def test_a_new_stale_slot_alerts_again(test_database_url) -> None:
@@ -369,7 +410,9 @@ def test_a_missing_credential_leaves_the_exit_stale_and_no_marker(
 
     With no Bot API credential the message cannot leave, so nothing is
     marked and the check repeats next hour — but the exit still reports the
-    staleness, because the bot's health does not depend on the phone.
+    staleness, because the bot's health does not depend on the phone.  Nor
+    does the printed verdict: an operator with no Telegram configured still
+    learns the bot is stale from stdout alone.
     """
     _seed(test_database_url, finished_at=MOMENT - timedelta(hours=7))
     recorder = _Recorder()
@@ -384,7 +427,14 @@ def test_a_missing_credential_leaves_the_exit_stale_and_no_marker(
     assert recorder.calls == []
     store = RouterHeartbeatAlertStore(test_database_url)
     assert not store.already_alerted(f"synthetic-vst-0:{SLOT_NOON.isoformat()}")
-    _assert_no_token(capsys.readouterr())
+    captured = capsys.readouterr()
+    assert _verdict_of(captured.out) == {
+        "verdict": VERDICT_STALE,
+        "newest_slot": SLOT_NOON.isoformat(),
+        "age_hours": 7.0,
+        "max_age_hours": 5.0,
+    }
+    _assert_no_token(captured)
 
 
 # -- Faults are one log line and never change the verdict -----------------------
@@ -771,6 +821,11 @@ def test_a_real_send_through_feature_one_scrubs_the_token(
         )
     assert code == EXIT_STALE
     captured = capsys.readouterr()
-    assert captured.out == ""
+    assert _verdict_of(captured.out) == {
+        "verdict": VERDICT_STALE,
+        "newest_slot": SLOT_NOON.isoformat(),
+        "age_hours": 7.0,
+        "max_age_hours": 5.0,
+    }
     _assert_no_token(captured)
     assert FAKE_TOKEN not in caplog.text

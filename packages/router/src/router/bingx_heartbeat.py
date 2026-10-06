@@ -51,6 +51,18 @@ into a green check, nor a stale one into a fault of the checker.  Only the
 positive number — is a typed :class:`RouterBingXHeartbeatError`, printed to
 stderr and answered with exit 1.
 
+**The verdict itself is printed, not just acted on.**  As soon as the check
+reaches a judgement — :data:`VERDICT_FRESH`, :data:`VERDICT_STALE` or
+:data:`VERDICT_ABSENT` — it writes one JSON line to stdout naming the
+verdict, the newest completion's slot (or ``null`` when absent), the age in
+hours (or ``null`` when absent) and the ``--max-age-hours`` limit in force.
+It does this before the alert is even attempted, so the line appears whether
+or not Telegram is configured, whether the alert is deduped, delivered,
+refused or raises: an operator running the command by hand always learns the
+bot's state, not just whatever the exit code and an unconfigured phone leave
+them to guess.  A refusal of the *ask* itself prints no such line — there is
+no verdict to report when the check could not run at all.
+
 ``deploy/systemd/`` holds the oneshot service that runs one check, carrying
 the rebalance service's own environment (``PATH``, and the token read from
 ``%h/.config/op/service-token``), and the timer that fires it hourly at
@@ -62,6 +74,7 @@ starts anything.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sqlite3
@@ -85,6 +98,9 @@ __all__ = [
     "EXIT_STALE",
     "NO_COMPLETION_KEY",
     "ROUTER_HEARTBEAT_ALERT_TABLE",
+    "VERDICT_ABSENT",
+    "VERDICT_FRESH",
+    "VERDICT_STALE",
     "RouterBingXHeartbeatError",
     "RouterHeartbeatAlertStore",
     "main",
@@ -114,6 +130,13 @@ EXIT_STALE = 1
 #: once and then stays quiet until it either finishes a slot or a new
 #: condition appears.
 NO_COMPLETION_KEY = "no-completion"
+
+#: The three verdicts the one stdout line can carry — the judgement the
+#: heartbeat reached about the bot, independent of whether an alert for it
+#: could be delivered.
+VERDICT_FRESH = "fresh"
+VERDICT_STALE = "stale"
+VERDICT_ABSENT = "absent"
 
 #: The table this module's own alert dedupe lands in — a marker per stale slot
 #: already reported, in the same ``DATABASE_URL`` store as the completions,
@@ -353,6 +376,35 @@ def _stale_alert_text(
     )
 
 
+def _print_verdict(
+    verdict: str,
+    *,
+    newest_slot: datetime | None,
+    age_hours: float | None,
+    max_age_hours: float,
+) -> None:
+    """The one line of stdout every reachable verdict prints.
+
+    Whether or not the alert below it could be delivered, an operator
+    running the command by hand learns the bot's state from this line alone
+    — no Telegram configuration required to read it.  One JSON object, one
+    line, so it is both human-legible and machine-parseable without a flag.
+    """
+
+    print(
+        json.dumps(
+            {
+                "verdict": verdict,
+                "newest_slot": (
+                    newest_slot.isoformat() if newest_slot is not None else None
+                ),
+                "age_hours": age_hours,
+                "max_age_hours": float(max_age_hours),
+            }
+        )
+    )
+
+
 def _missing_alert_text(max_age_hours: float) -> str:
     """The urgent body when the store holds no completion at all.
 
@@ -400,6 +452,13 @@ def main(
     recording doubles with no socket and no real credential; a caller that
     injects nothing gets feature 2's real completion store, this module's
     real marker store, and feature 1's real sender built from the environment.
+
+    As soon as the verdict is reached, one JSON line goes to stdout naming it
+    — ``"fresh"``, ``"stale"`` or ``"absent"`` — alongside ``newest_slot``
+    (or ``null``), ``age_hours`` (or ``null``) and ``max_age_hours``. This
+    happens whether or not the alert below it is configured, deduped,
+    delivered or faults, so an operator running the command by hand learns
+    the bot's state from stdout alone.
     """
 
     parser = argparse.ArgumentParser(
@@ -456,12 +515,31 @@ def main(
         if newest is None:
             stale_key = NO_COMPLETION_KEY
             text = _missing_alert_text(max_age_hours)
+            _print_verdict(
+                VERDICT_ABSENT,
+                newest_slot=None,
+                age_hours=None,
+                max_age_hours=max_age_hours,
+            )
         else:
             age = moment - newest.finished_at
+            age_hours = age.total_seconds() / 3600.0
             if age <= timedelta(hours=max_age_hours):
+                _print_verdict(
+                    VERDICT_FRESH,
+                    newest_slot=newest.slot,
+                    age_hours=age_hours,
+                    max_age_hours=max_age_hours,
+                )
                 return EXIT_OK
             stale_key = _stale_key(newest)
             text = _stale_alert_text(newest, age, max_age_hours)
+            _print_verdict(
+                VERDICT_STALE,
+                newest_slot=newest.slot,
+                age_hours=age_hours,
+                max_age_hours=max_age_hours,
+            )
 
         # The alert is deduped; the exit code is not.  A store that cannot
         # answer the dedupe question is a fault of the bookkeeping, not of the
