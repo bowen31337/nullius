@@ -11,6 +11,17 @@ feature names), never a real subprocess, and never a real
 no test reads an environment variable the host happens to carry or opens a
 network connection.
 
+Also "Campaign Close-out" category, feature 14: *System closes out every
+campaign the campaign CLI finishes.*  Every test below this module's own
+happy-path tests stubs :func:`orchestrator.closeout.main` the same way the
+earlier tests in this file stub ``run_campaign`` — ``monkeypatch.setattr``
+on the name :mod:`orchestrator.campaign` imported it under — rather than
+standing up a real sidecar and scorer: this suite's job is the CLI's own
+wiring (which campaign id close-out is called with, which exit code its own
+answer becomes, and the skip this command takes for ``--no-closeout``), not
+close-out's own calibration math, which :mod:`test_closeout_cli` already
+covers.
+
 One test per claim the feature sentence makes:
 
 * **the three components are resolved from ``app`` and the policy is
@@ -33,6 +44,14 @@ One test per claim the feature sentence makes:
   itself emits** — exit 0 regardless of which ``stop_reason`` fired.
 * **no credential is ever printed** — a stray secret riding in ``env``
   never reaches a line this command prints.
+* **close-out runs after the summary line, on the finished campaign id,
+  and its JSON line reaches the caller** — feature 14's own sentence.
+* **a close-out refusal prints one stderr line and exits 1, with the
+  campaign still recorded** — feature 14's named cause: the operator
+  reruns ``python -m orchestrator.closeout`` once it is fixed.
+* **a VOID verdict exits 3**.
+* **``--no-closeout`` skips the step and says so on stderr**, without
+  ever calling close-out.
 
 No test opens a network connection, reads a real credential, or writes
 outside a pytest temporary directory.
@@ -44,6 +63,7 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
+import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -58,9 +78,13 @@ from orchestrator.campaign import (
     EXIT_CONFIG,
     EXIT_OK,
     EXIT_REFUSED,
+    EXIT_VOID,
     LIVE_EVALUATOR_COMPONENT_NAME,
     main,
 )
+from orchestrator.closeout import EXIT_OK as CLOSEOUT_EXIT_OK
+from orchestrator.closeout import EXIT_REFUSED as CLOSEOUT_EXIT_REFUSED
+from orchestrator.closeout import EXIT_VOID as CLOSEOUT_EXIT_VOID
 from policy_runtime import UNBOUNDED_BUDGET
 
 from app.module_loader import Application
@@ -276,7 +300,7 @@ def test_the_cli_resolves_the_three_components_and_runs_the_campaign(
     lines: list[str] = []
 
     code = main(
-        ["--type", "Type-D", "--workspaces", "1", "--rounds", "2", "--width", "1"],
+        ["--type", "Type-D", "--workspaces", "1", "--rounds", "2", "--width", "1", "--no-closeout"],
         env={},
         app=app,
         emit=lines.append,
@@ -303,7 +327,7 @@ def test_every_emitted_line_is_json_and_the_summary_is_last(context: _Context) -
     lines: list[str] = []
 
     code = main(
-        ["--type", "Type-D", "--workspaces", "1", "--rounds", "1", "--width", "1"],
+        ["--type", "Type-D", "--workspaces", "1", "--rounds", "1", "--width", "1", "--no-closeout"],
         env={},
         app=app,
         emit=lines.append,
@@ -488,7 +512,7 @@ def test_default_width_and_allowance_are_the_named_constants(
     app = _app(author=author, evaluator=evaluator, sidecar_selection=sidecar)
 
     code = main(
-        ["--type", "Type-D", "--workspaces", "3", "--rounds", "4"],
+        ["--type", "Type-D", "--workspaces", "3", "--rounds", "4", "--no-closeout"],
         env={},
         app=app,
         emit=lambda line: None,
@@ -533,6 +557,7 @@ def test_explicit_width_and_allowance_override_the_defaults(
             "--rounds", "1",
             "--width", "5",
             "--allowance", "12.5",
+            "--no-closeout",
         ],
         env={},
         app=app,
@@ -559,7 +584,7 @@ def test_no_credential_in_env_ever_reaches_a_printed_line(
     lines: list[str] = []
 
     code = main(
-        ["--type", "Type-D", "--workspaces", "1", "--rounds", "1", "--width", "1"],
+        ["--type", "Type-D", "--workspaces", "1", "--rounds", "1", "--width", "1", "--no-closeout"],
         env={"NULLIUS_EXPLORATION_POLICY": "", "NULLIUS_FAKE_API_KEY": secret},
         app=app,
         emit=lines.append,
@@ -567,3 +592,151 @@ def test_no_credential_in_env_ever_reaches_a_printed_line(
 
     assert code == EXIT_OK
     assert all(secret not in line for line in lines)
+
+
+# -- Feature 14: every finished campaign is closed out ---------------------------
+#
+# Each test below stubs ``orchestrator.closeout.main`` the way the tests above
+# stub ``run_campaign`` — ``monkeypatch.setattr`` on the name this module
+# imported it under — so no test here stands up a real sidecar, scorer or
+# second database read. close-out's own calibration math is
+# :mod:`test_closeout_cli`'s job; this suite only proves the campaign CLI's
+# wiring onto it.
+
+
+def test_close_out_runs_after_the_summary_line_and_its_json_line_is_displayed(
+    context: _Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import orchestrator.campaign as campaign_module
+
+    author = SequenceAuthor()
+    evaluator = _LiveEvaluatorDouble(context)
+    sidecar = FakeSidecarSelection()
+    app = _app(author=author, evaluator=evaluator, sidecar_selection=sidecar)
+
+    recorded: dict[str, Any] = {}
+
+    def fake_run_closeout(argv: list[str], *, env: Any, emit: Any) -> int:
+        recorded["argv"] = list(argv)
+        recorded["env"] = env
+        emit(json.dumps({"campaign_id": argv[1], "calibration_status": "ok"}))
+        return CLOSEOUT_EXIT_OK
+
+    monkeypatch.setattr(campaign_module, "run_closeout", fake_run_closeout)
+
+    env: dict[str, str] = {}
+    lines: list[str] = []
+
+    code = main(
+        ["--type", "Type-D", "--workspaces", "1", "--rounds", "2", "--width", "1"],
+        env=env,
+        app=app,
+        emit=lines.append,
+    )
+
+    assert code == EXIT_OK
+    events = [json.loads(line) for line in lines]
+    # The summary line is second-to-last now: close-out's own JSON line
+    # follows it, the one this command displays after the campaign finished.
+    assert events[-2]["event"] == "summary"
+    campaign_id = events[-2]["campaign_id"]
+    assert recorded["argv"] == ["--campaign-id", campaign_id]
+    assert recorded["env"] is env
+    assert events[-1] == {"campaign_id": campaign_id, "calibration_status": "ok"}
+
+
+def test_a_close_out_refusal_exits_1_and_the_campaign_stays_recorded(
+    context: _Context, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import orchestrator.campaign as campaign_module
+
+    author = SequenceAuthor()
+    evaluator = _LiveEvaluatorDouble(context)
+    sidecar = FakeSidecarSelection()
+    app = _app(author=author, evaluator=evaluator, sidecar_selection=sidecar)
+
+    def fake_run_closeout(argv: list[str], *, env: Any, emit: Any) -> int:
+        print(
+            "closeout: the sidecar holds no entry for evaluated node",
+            file=sys.stderr,
+        )
+        return CLOSEOUT_EXIT_REFUSED
+
+    monkeypatch.setattr(campaign_module, "run_closeout", fake_run_closeout)
+
+    lines: list[str] = []
+    code = main(
+        ["--type", "Type-D", "--workspaces", "1", "--rounds", "2", "--width", "1"],
+        env={},
+        app=app,
+        emit=lines.append,
+    )
+
+    assert code == EXIT_REFUSED
+    captured = capsys.readouterr()
+    assert captured.err.strip().count("\n") == 0, "one stderr line, close-out's own"
+    assert "closeout" in captured.err
+    # The campaign itself is recorded: it ran and sealed its Type-R draw
+    # before close-out was ever attempted.
+    assert sidecar.calls, "the Type-R seal must have run before close-out was attempted"
+    events = [json.loads(line) for line in lines]
+    assert events[-1]["event"] == "summary"
+
+
+def test_a_void_verdict_exits_3(
+    context: _Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import orchestrator.campaign as campaign_module
+
+    author = SequenceAuthor()
+    evaluator = _LiveEvaluatorDouble(context)
+    sidecar = FakeSidecarSelection()
+    app = _app(author=author, evaluator=evaluator, sidecar_selection=sidecar)
+
+    def fake_run_closeout(argv: list[str], *, env: Any, emit: Any) -> int:
+        emit(json.dumps({"campaign_id": argv[1], "calibration_status": "void"}))
+        return CLOSEOUT_EXIT_VOID
+
+    monkeypatch.setattr(campaign_module, "run_closeout", fake_run_closeout)
+
+    code = main(
+        ["--type", "Type-D", "--workspaces", "1", "--rounds", "2", "--width", "1"],
+        env={},
+        app=app,
+        emit=lambda line: None,
+    )
+
+    assert code == EXIT_VOID
+
+
+def test_no_closeout_skips_the_step_and_says_so_on_stderr(
+    context: _Context, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import orchestrator.campaign as campaign_module
+
+    author = SequenceAuthor()
+    evaluator = _LiveEvaluatorDouble(context)
+    sidecar = FakeSidecarSelection()
+    app = _app(author=author, evaluator=evaluator, sidecar_selection=sidecar)
+
+    def fail_if_called(argv: list[str], *, env: Any, emit: Any) -> int:
+        raise AssertionError("--no-closeout must never call close-out")
+
+    monkeypatch.setattr(campaign_module, "run_closeout", fail_if_called)
+
+    lines: list[str] = []
+    code = main(
+        ["--type", "Type-D", "--workspaces", "1", "--rounds", "2", "--width", "1", "--no-closeout"],
+        env={},
+        app=app,
+        emit=lines.append,
+    )
+
+    assert code == EXIT_OK
+    captured = capsys.readouterr()
+    assert captured.err.strip()
+    assert "no-closeout" in captured.err
+    assert captured.err.startswith(CAMPAIGN_CLI_CODE)
+    # No close-out line was ever displayed: the summary stays the last line.
+    events = [json.loads(line) for line in lines]
+    assert events[-1]["event"] == "summary"

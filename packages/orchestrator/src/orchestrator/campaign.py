@@ -68,6 +68,29 @@ inspected.  What reaches stderr or stdout is an argument, a component's own
 name, or a collaborator's own exception message — and every one of those
 members' own refusal messages is already written to carry no credential, the
 same discipline :mod:`router.bingx_alert` states for its own scrubbed lines.
+
+**Every campaign the loop finishes is closed out, feature 13's own sentence,
+called in process.**  Once ``run_campaign`` has answered — the summary event
+is the one line :func:`~orchestrator._campaign.run_campaign` emits last, and
+its ``campaign_id`` is the one this command closes out — this module calls
+:func:`orchestrator.closeout.main` with that id, passing through the same
+``env`` and ``emit`` this command itself was given.  That is the entire
+integration: :mod:`orchestrator.closeout` already resolves ``DATABASE_URL``
+and the sidecar from ``env``, already prints its one JSON line through
+``emit``, and already distinguishes a refusal from a ``VOID`` verdict — this
+module only reads which of those its exit code was, and answers
+:data:`EXIT_VOID` for a ``VOID`` verdict or :data:`EXIT_REFUSED` for anything
+else that is not :data:`EXIT_OK` (an unreadable campaign, a missing
+``DATABASE_URL``, an unconfigured sidecar — every one of close-out's own
+causes collapses to the same fact here: *the campaign stayed recorded, and
+the operator reruns* ``python -m orchestrator.closeout`` *once the cause is
+fixed*).  ``--no-closeout`` skips the call entirely, for a deployment that
+carries no sidecar at all, and says so on stderr — the one case this module
+names before attempting anything, rather than letting close-out's own
+missing-sidecar refusal fire.  A campaign that never finishes — ``run_campaign``
+itself raising — never reaches this step at all: that exception is this
+command's own :data:`EXIT_REFUSED`, caught and printed below, unrelated to
+close-out.
 """
 
 from __future__ import annotations
@@ -86,12 +109,16 @@ from app.module_loader import create_app
 
 from ._campaign import run_campaign
 from ._policy import DEFAULT_BASELINE_WIDTH, PolicyLoadError, load_exploration_policy
+from .closeout import EXIT_OK as CLOSEOUT_EXIT_OK
+from .closeout import EXIT_VOID as CLOSEOUT_EXIT_VOID
+from .closeout import main as run_closeout
 
 __all__ = [
     "CAMPAIGN_CLI_CODE",
     "EXIT_CONFIG",
     "EXIT_OK",
     "EXIT_REFUSED",
+    "EXIT_VOID",
     "LIVE_EVALUATOR_COMPONENT_NAME",
     "main",
 ]
@@ -102,12 +129,18 @@ __all__ = [
 #: its own code word, and prefixing a second one would bury it).
 CAMPAIGN_CLI_CODE = "campaign_cli"
 
-#: The three exit codes the spec's own sentence names: 0 once
-#: ``run_campaign`` has answered (any ``stop_reason``), 1 when it let a
-#: refusal escape, 2 for a bad argument or a missing/broken configuration.
+#: The spec's own exit codes: 0 once ``run_campaign`` has answered (any
+#: ``stop_reason``) and close-out, when it ran, was not refused or VOID; 1
+#: when ``run_campaign`` let a refusal escape, or close-out itself refused
+#: (any cause: an unknown campaign, an unconfigured sidecar, a missing
+#: ``DATABASE_URL`` — the campaign stays recorded either way, and the
+#: operator reruns ``python -m orchestrator.closeout`` once it is fixed); 2
+#: for a bad argument or a missing/broken configuration of this command's
+#: own three components or policy; 3 when close-out's verdict is VOID.
 EXIT_OK = 0
 EXIT_REFUSED = 1
 EXIT_CONFIG = 2
+EXIT_VOID = 3
 
 #: The component name :class:`orchestrator.LiveEvaluator` registers under
 #: (``orchestrator/__init__.py``'s own ``_COMPONENT_NAME``, feature 8).
@@ -182,6 +215,15 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="UNITS",
         help="the statistical budget allowance (default: unbounded)",
     )
+    parser.add_argument(
+        "--no-closeout",
+        dest="no_closeout",
+        action="store_true",
+        help=(
+            "skip feature 13's close-out step after the campaign finishes "
+            "— for a deployment with no sidecar configured"
+        ),
+    )
     return parser
 
 
@@ -192,10 +234,10 @@ def main(
     app: Any = None,
     emit: Callable[[str], object] = print,
 ) -> int:
-    """``python -m orchestrator.campaign``: resolve, compose, run, print.
+    """``python -m orchestrator.campaign``: resolve, compose, run, close out, print.
 
-    Parses the spec's five flags (argparse itself exits 2 for a bad one,
-    before this function's own body runs), resolves the ``"signal-author"``,
+    Parses the spec's flags (argparse itself exits 2 for a bad one, before
+    this function's own body runs), resolves the ``"signal-author"``,
     ``"live-evaluator"`` and ``"nulloracle-type-r-selection"`` components
     from ``app`` (a real :func:`~app.module_loader.create_app` when ``app``
     is not injected) and loads the exploration policy from ``env``. Refuses
@@ -206,19 +248,36 @@ def main(
     collaborators, routing every event it emits through ``emit`` as one
     JSON line (:func:`print` by default): one line per planted root, per
     evaluated node and per round, and the summary line last — exactly the
-    sequence ``run_campaign`` itself emits, unmodified. Returns
-    :data:`EXIT_OK` once it has answered, whichever of the four
-    ``stop_reason`` words fired. An exception ``run_campaign`` lets escape
-    (a root's own authoring refusal, or any of its real collaborators'
-    refusals) is printed to stderr and answered with :data:`EXIT_REFUSED`.
+    sequence ``run_campaign`` itself emits, unmodified. An exception
+    ``run_campaign`` lets escape (a root's own authoring refusal, or any of
+    its real collaborators' refusals) is printed to stderr and answered with
+    :data:`EXIT_REFUSED` — the campaign never finished, and close-out is
+    never attempted.
+
+    Once ``run_campaign`` has answered, this command runs feature 13's
+    close-out on the campaign id the summary line itself named
+    (:func:`orchestrator.closeout.main`, called with this command's own
+    ``env`` and ``emit``) — unless ``--no-closeout`` was given, in which case
+    it prints one stderr line naming the skipped campaign and returns
+    :data:`EXIT_OK`. Close-out's own exit code becomes this command's:
+    :data:`EXIT_OK` unchanged, :data:`EXIT_VOID` for a ``VOID`` verdict, and
+    :data:`EXIT_REFUSED` for anything else close-out answered (an unknown
+    campaign, a missing ``DATABASE_URL``, an unconfigured sidecar) — every
+    one of those already printed its own one stderr line, and the campaign
+    itself stays recorded either way, rerunnable with
+    ``python -m orchestrator.closeout --campaign-id ID`` once the cause is
+    fixed.
 
     ``env``, ``app`` and ``emit`` are this command's seams: ``env`` is what
     :func:`~orchestrator._policy.load_exploration_policy` reads
-    ``NULLIUS_EXPLORATION_POLICY`` from (the process environment when
-    ``None``), ``app`` is the composed application the three components are
-    read from (a real :func:`~app.module_loader.create_app` when ``None``),
-    and ``emit`` is what each JSON line is printed with. A caller that
-    injects nothing gets a real deployment's composition.
+    ``NULLIUS_EXPLORATION_POLICY`` from and what close-out reads
+    ``DATABASE_URL`` and the sidecar's two variables from (the process
+    environment when ``None``), ``app`` is the composed application the
+    three components are read from (a real
+    :func:`~app.module_loader.create_app` when ``None``), and ``emit`` is
+    what each JSON line — this command's own and close-out's one line — is
+    printed with. A caller that injects nothing gets a real deployment's
+    composition.
     """
     parser = _build_parser()
     arguments = parser.parse_args(argv)
@@ -244,7 +303,11 @@ def main(
         print(str(exc), file=sys.stderr)
         return EXIT_CONFIG
 
+    finished: dict[str, Any] = {}
+
     def _emit_line(event: dict[str, Any]) -> None:
+        if event.get("event") == "summary":
+            finished["campaign_id"] = event.get("campaign_id")
         emit(json.dumps(event))
 
     try:
@@ -271,6 +334,23 @@ def main(
         print(str(exc), file=sys.stderr)
         return EXIT_REFUSED
 
+    campaign_id = finished["campaign_id"]
+
+    if arguments.no_closeout:
+        print(
+            f"{CAMPAIGN_CLI_CODE}: --no-closeout: skipping feature 13's "
+            f"close-out for campaign {campaign_id!r} — this deployment "
+            "carries no sidecar; run python -m orchestrator.closeout "
+            "--campaign-id ID once it does",
+            file=sys.stderr,
+        )
+        return EXIT_OK
+
+    closeout_code = run_closeout(["--campaign-id", campaign_id], env=env, emit=emit)
+    if closeout_code == CLOSEOUT_EXIT_VOID:
+        return EXIT_VOID
+    if closeout_code != CLOSEOUT_EXIT_OK:
+        return EXIT_REFUSED
     return EXIT_OK
 
 
