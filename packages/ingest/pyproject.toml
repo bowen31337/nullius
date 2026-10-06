@@ -7,10 +7,11 @@
 # scanning the declared members, so nothing outside this directory ever
 # needs to know this package's name.
 #
-# Deliberately stdlib-only: the isolation framework (feature 16) needs
-# threads, futures and dataclasses and nothing else.  Stream
-# implementations in later features (websockets, REST clients, Parquet
-# writers) declare their own dependencies here, in this file, when they
+# The isolation framework (feature 16) needs only threads, futures and
+# dataclasses. pyarrow is declared here for the bars writer (feature 1),
+# which needs it to materialise Parquet; the fetch itself stays on the
+# standard library's urllib.  Stream implementations in later features
+# declare their own further dependencies here, in this file, when they
 # land — the member owns its dependencies, per the workspace contract.
 
 [project]
@@ -18,7 +19,7 @@ name = "nullius-ingest"
 version = "0.1.0"
 description = "Market-data ingest workers: one isolated worker per stream class, returning per-stream failures"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["pyarrow>=14.0"]
 
 [build-system]
 requires = ["hatchling"]

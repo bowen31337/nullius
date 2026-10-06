@@ -387,6 +387,12 @@ requires-dist = [
 name = "nullius-ingest"
 version = "0.1.0"
 source = { editable = "packages/ingest" }
+dependencies = [
+    { name = "pyarrow" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pyarrow", specifier = ">=14.0" }]
 
 [[package]]
 name = "nulloracle"
