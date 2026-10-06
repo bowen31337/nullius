@@ -309,3 +309,10 @@ The owner chose to keep `GET /` behind a bearer token. A plain browser visit ans
 **Observation, not a failure:** J15 step 5's refusal begins `bingx_dry_run: bingx_dry_run: the book document …`, with the program name printed twice. It is cosmetic, and the step's expectation still holds.
 
 *Follow-up, 2026-10-02:* the doubled `bingx_dry_run: bingx_dry_run:` prefix is fixed. The command now names itself once, whichever module refused, and `test_bingx_dry_run.py` pins this for both cases. J15 step 5 now reads `bingx_dry_run: the book document at '/nonexistent/book.json' cannot be read: …`.
+
+## Run 6 (full sweep): 2026-10-06, after the orchestrator/campaign-driver work (`main` at `3e8a82f`)
+
+- **How it was run:** [`run_sweep.sh`](run_sweep.sh)` run-6 <scratch>` — the same shipped setup (demo seeder + printed sidecar exports, a generated token file, the paper engine, and the dashboard launched from the repository root), driven through browser-harness over headless Chromium. All six servers came up on `127.0.0.1` and the API composed 10 routes over 100 components (the new `providers` live backends and the `orchestrator` member registered their components without disturbing the existing routes).
+- **Scope:** J1–J14 (the browser sweep). J15 (the BingX CLI dry run) is a separate shell journey, not part of this run; it last passed in Run 5 and its command is unchanged.
+
+**Result: 14 of 14 pass, none blocked, no response carried a traceback.** Every verdict and status code matches Run 5's J1–J14: the dashboards render the populated FDR_deploy view (x labels `2026-01-01`, `2026-02-01`, `2026-03-01`), the empty-store state, and the misconfigured refusal; the API journeys return their designed `200/401/403/404/409/422/400/503/201`; the index reads "10 routes declared, 10 configured". So the live-providers, authoring, evaluation, gVisor-executor and campaign-driver work introduced no user-visible regression to the dashboard or HTTP surfaces. Screenshots are in [`screenshots/run-6/`](screenshots/run-6/).
