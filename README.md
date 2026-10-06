@@ -84,9 +84,12 @@ Agents write to Z1 only, and Z1 holds no credential for Z0.
 │   ├── risk/             #   Risk supervisor and kill switches
 │   ├── ops/              #   Metrics API and Streamlit dashboard
 │   ├── artifacts/        #   Per-node artifact store
-│   └── providers/        #   Single normalized interface for model calls
+│   ├── providers/        #   One model-call interface + live Anthropic/OpenAI-compatible backends
+│   └── orchestrator/     #   The campaign driver: live node evaluation, gVisor/bwrap sandbox, the loop
 ├── migrations/           # Relational schema migrations
 ├── deploy/systemd/       # Timers and services for the scheduled BingX VST bot
+├── deploy/gvisor/        # Provisions the read-only runtime root the signal sandbox runs in
+├── deploy/campaign/      # Example research-loop configs (authoring + evaluation)
 ├── infra/security/       # Credential isolation, secrets management and policies
 ├── tests/                # Workspace-level contract, invariant and end-to-end suites
 └── docs/                 # PRD, technical architecture, design notes and user journeys
@@ -105,6 +108,24 @@ The `router` member takes the fixed book to a real venue in stages. All of them 
 | Alerting | `./run.sh vst-alert` / `vst-heartbeat` | Sends Telegram alerts for slot outcomes, failed units and a bot that has gone quiet |
 
 The `vst*` commands inject only the VST sub-account key and the Telegram credentials, through 1Password (`op run --env-file=.env.vst.tpl`). They keep their store at `~/.local/share/nullius/vst.db` unless `DATABASE_URL` says otherwise. `deploy/systemd/` schedules a rebalance at 00/04/08/12/16/20:05 UTC and a heartbeat check every hour, and a failed slot triggers an alert unit.
+
+## Running a research campaign
+
+The `orchestrator` member is the inner exploration loop: it plants root signals, lets the exploration policy pick a node, has the signal agent author a child, evaluates it against the frozen evaluator (which debits the trial ledger and applies the planted nulls), persists the attempt, and stops on budget or saturation. Agent-authored signal code runs under a real OS sandbox — gVisor (`runsc`), or a bubblewrap fallback — never in the host process. The Python import guard is defence-in-depth, not the boundary.
+
+```bash
+./run.sh campaign --type discovery --workspaces 16 --rounds 30
+```
+
+The `campaign` verb injects only the `NULLIUS_*` research keys through 1Password (`op run --env-file=.env.campaign.tpl`), keeps its store at `~/.local/share/nullius/research.db` unless `DATABASE_URL` says otherwise, and reads two JSON configs named by the template: the authoring config (the per-role model pins and token budgets) and the evaluation config (the snapshot, dates, seed and sandbox runtime). Copy the checked-in starting points to begin:
+
+```bash
+cp .env.campaign.tpl.example .env.campaign.tpl                 # then set your 1Password op:// paths
+cp deploy/campaign/authoring-config.example.json   deploy/campaign/authoring-config.json
+cp deploy/campaign/evaluation-config.example.json  deploy/campaign/evaluation-config.json
+```
+
+For gVisor isolation, `deploy/gvisor/provision_runtime.sh` builds the read-only runtime root the sandbox runs in (pinned Python, polars and pyarrow, the baked signal-child bootstrap), and the orchestrator verifies that root against its manifest digest before running any agent code. A campaign interrupted part-way is resumable with `orchestrator.resume_campaign`.
 
 ## Stack
 

@@ -13,9 +13,11 @@ The trading side is a **paper-trading bot on BingX's VST venue** (simulated
 funds) in the `router` member. See "BingX VST bot" below.
 
 ## Stack
-- Language: Python 3.12, as a uv workspace with 29 members under `packages/`
+- Language: Python 3.12, as a uv workspace with 30 members under `packages/`
 - Data: Polars, DuckDB over Parquet, SQLite or PostgreSQL (`DATABASE_URL`)
-- Surfaces: a stdlib `http.server` API (`api` member) and a Streamlit dashboard (`ops`)
+- Surfaces: a stdlib `http.server` API (`api` member), a Streamlit dashboard (`ops`), and `python -m orchestrator.campaign` (the research loop)
+- Model calls: the `providers` member's one interface, with live Anthropic/OpenAI-compatible backends
+- Sandboxing: agent-authored signal code runs under gVisor (`runsc`) or a bubblewrap fallback — never in the host process
 - Composition: `app.module_loader.create_app()` discovers members' `@register` builders
 
 ## Build & Test
@@ -119,6 +121,43 @@ Each stage of the bot has its own spec at the repository root:
   `clientOrderId` spellings, DELETE query params) are pinned in
   `packages/router/tests/fixtures/bingx_vst/live/`. Extend those fixtures
   rather than guessing the venue's shapes.
+
+## Orchestrator and running a campaign (orchestrator member)
+
+The `orchestrator` member is the inner exploration loop (spec files at the
+repo root: `additions_spec_live_evaluation.xml`, `additions_spec_campaign_driver.xml`,
+`additions_spec_gvisor_executor.xml`, `additions_spec_campaign_gaps.xml`, and
+the `bug_spec_*.xml` beside them). It plants roots, lets the policy pick a
+node, has the signal agent author a child, evaluates it (debiting the ledger,
+applying planted nulls), persists, and stops on budget or saturation.
+
+- **Run one:** `./run.sh campaign --type discovery --workspaces 16 --rounds 30`.
+  It injects only the `NULLIUS_*` research keys via `op run --env-file=.env.campaign.tpl`
+  (never `.env.tpl`), defaults `DATABASE_URL` to
+  `~/.local/share/nullius/research.db`, and reads two JSON configs the
+  template names: authoring (per-role model pins + budgets) and evaluation
+  (snapshot, dates, seed, sandbox runtime). Starting points:
+  `.env.campaign.tpl.example` and `deploy/campaign/*-config.example.json`.
+- **Resume:** `orchestrator.resume_campaign(campaign_id, …)` continues an
+  interrupted campaign from its node rows — it never re-creates or re-seals.
+- **Sandbox, the security boundary:** agent-authored signal code runs under
+  gVisor (`runsc`, the primary) or a bubblewrap subprocess (`unisolated`,
+  which needs `acknowledge_unisolated: true`). **The Python import guard in
+  `orchestrator._sandbox_child` is defence-in-depth, not a boundary** —
+  allowlisted modules re-export `os`/`sys`, so the OS sandbox is what
+  contains a bypass. Never run a live campaign without one.
+- **gVisor runtime root:** `deploy/gvisor/provision_runtime.sh` builds the
+  read-only root the sandbox runs in and writes a manifest; the orchestrator
+  verifies the root against that manifest's tree digest (world-readable
+  files only, so root and non-root agree) before running agent code. On this
+  host it is `/opt/nullius/gvisor-runtime`; `runsc` and `bwrap` are installed
+  (rootless `runsc` needs the `/etc/apparmor.d/runsc` userns profile).
+- **Testing:** the gVisor integration tests
+  (`packages/orchestrator/tests/test_gvisor_runsc.py`) skip unless `runsc`
+  and `NULLIUS_GVISOR_RUNTIME_ROOT` are set, so the acceptance gate (which
+  has neither) never exercises real isolation — run them by hand. The
+  heavy evaluator tests spawn resource-limited subprocesses; run that member
+  suite serially or at low `-n` on a small box (they OOM under `-n 4`).
 
 ## User journeys
 
