@@ -71,6 +71,7 @@ member is wiring, and wiring carries no weight of its own.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from app.module_loader import register
 
@@ -83,6 +84,7 @@ from ._context import (
 )
 from ._evaluate import NodeEvaluation, evaluate_node
 from ._oracle import OracleTargetError, SubtreeOracle
+from ._targets import snapshot_forward_returns
 from ._tree_writer import NodeMetricsWriter
 
 __all__ = [
@@ -105,6 +107,8 @@ __all__ = [
     "evaluate_node",
     # Feature 8 — the live-evaluator component
     "LiveEvaluator",
+    # additions_spec_real_campaign_path.xml feature 4 — the forward-return supply
+    "snapshot_forward_returns",
 ]
 
 #: The name a composed :class:`~app.module_loader.Application` carries this
@@ -139,26 +143,45 @@ class LiveEvaluator:
         Resolves this call's two siblings fresh, from the composed
         application a bare :func:`~app.module_loader.create_app` answers:
         ``"nulloracle-target-route"`` (nulloracle's own
-        ``TARGET_COMPONENT_NAME``), wrapped in a
+        ``TARGET_COMPONENT_NAME``) and ``"ledger"`` (ledger's own
+        ``COMPONENT_NAME``).  Resolving at call time rather than at build
+        time is what lets a deployment wire or rewire either sibling
+        without rebuilding this component, and is the only way to resolve
+        them at all: resolving them in the builder would mean calling
+        :func:`~app.module_loader.create_app` from inside the very scan
+        that builds ``"live-evaluator"``.
+
+        **additions_spec_real_campaign_path.xml feature 4.**
+        ``nulloracle.build_target_route`` composes its route with no
+        ``targets`` seam — "neither is this member's to resolve from an
+        environment variable" — so the composed route, whenever one is
+        present at all, carries no supply and refuses every node on both
+        branches (feature 112's symmetric-refusal rule).  When
+        :func:`_route_carries_no_targets` finds that true of the composed
+        route, this method builds its own endpoint instead, over the
+        composed ``"nulloracle"`` sidecar and
+        :func:`~orchestrator._targets.snapshot_forward_returns` bound to
+        this instance's own ``context`` — the forward returns read from the
+        very sealed snapshot this deployment already mounted, keeping
+        nulloracle's own stored-seed block permutation
+        (:func:`nulloracle.block_indices`) for a null node.  A composed
+        route that *does* carry a target supply (a deployment's own, or a
+        test's) is used unchanged.  Either way the endpoint is wrapped in a
         :class:`~orchestrator._oracle.SubtreeOracle` bound to this
         instance's own ``context.database_url`` so the oracle walks the
-        same tree the node's row lands in, and ``"ledger"`` (ledger's own
-        ``COMPONENT_NAME``), handed through untouched.  Resolving at call
-        time rather than at build time is what lets a deployment wire or
-        rewire either sibling without rebuilding this component, and is
-        the only way to resolve them at all: resolving them in the
-        builder would mean calling :func:`~app.module_loader.create_app`
-        from inside the very scan that builds ``"live-evaluator"``.
+        same tree the node's row lands in — and either way the response
+        shape :class:`nulloracle.TargetEndpoint` answers is identical for a
+        null node and a real one, so no bit crosses into this method or
+        into :func:`evaluate_node` beneath it (PRD §4.2).
 
-        Neither sibling's absence is this method's to soften: an
-        unconfigured route answers ``None`` here, and
-        :class:`~orchestrator._oracle.SubtreeOracle` itself refuses a
-        ``None`` endpoint with
-        :class:`~orchestrator._oracle.SubtreeOracleError`; an
-        unconfigured ledger is handed to :func:`evaluate_node` as
-        ``None`` and refused by :func:`evaluator.debit_trial`'s own
-        validation.  Both are Z0's refusals, named and not duplicated
-        here.
+        Neither sibling's absence is this method's to soften: an endpoint
+        this method cannot build a supply for either (no composed route and
+        no composed sidecar) reaches :class:`~orchestrator._oracle.SubtreeOracle`
+        as ``None`` and is refused there with
+        :class:`~orchestrator._oracle.SubtreeOracleError`; an unconfigured
+        ledger is handed to :func:`evaluate_node` as ``None`` and refused by
+        :func:`evaluator.debit_trial`'s own validation.  Both are Z0's
+        refusals, named and not duplicated here.
 
         Hands ``node_id``, ``campaign_id``, ``depth`` and ``code`` through
         to :func:`evaluate_node` exactly as received, alongside this
@@ -170,6 +193,10 @@ class LiveEvaluator:
 
         composed = create_app()
         endpoint = composed.get("nulloracle-target-route")
+        if _route_carries_no_targets(endpoint):
+            sidecar = composed.get("nulloracle")
+            if sidecar is not None:
+                endpoint = _sidecar_backed_endpoint(sidecar, self.context)
         ledger = composed.get("ledger")
         oracle = SubtreeOracle(endpoint, database_url=self.context.database_url)
         return evaluate_node(
@@ -181,6 +208,73 @@ class LiveEvaluator:
             oracle=oracle,
             ledger=ledger,
         )
+
+
+def _route_carries_no_targets(endpoint: Any) -> bool:
+    """Whether ``endpoint`` needs :func:`_sidecar_backed_endpoint` in its place.
+
+    True for an unconfigured route (``None`` — nothing composed) and for
+    nulloracle's own ``TargetEndpoint`` built with no ``targets`` seam,
+    which is what :func:`nulloracle.build_target_route` always builds: that
+    builder leaves the seam unwired by design, so every real deployment's
+    composed route answers this ``True`` until this method replaces it.
+
+    Checked structurally rather than by ``isinstance``, the same pin by
+    class name and module this member's own tests use for a cross-copy
+    identity check (``test_live_evaluator_component.py``'s
+    ``_assert_is_a_live_evaluator``): :func:`~app.module_loader.create_app`
+    re-imports every package, ``nulloracle`` included, under a synthetic
+    module name on every call, so a real ``TargetEndpoint`` built by that
+    scan is never the same class object a direct ``from nulloracle import
+    TargetEndpoint`` would yield.  A composed object of any *other* shape —
+    a deployment's own stand-in, or a test double — is assumed already
+    complete and is left alone; only nulloracle's own, recognizably
+    no-supply route is replaced.
+    """
+    if endpoint is None:
+        return True
+    if type(endpoint).__name__ != "TargetEndpoint":
+        return False
+    if not type(endpoint).__module__.endswith("nulloracle.target"):
+        return False
+    return getattr(endpoint, "_targets", None) is None
+
+
+def _sidecar_backed_endpoint(sidecar: Any, context: EvaluationContext) -> Any:
+    """Nulloracle's own route, over this deployment's sealed snapshot.
+
+    Builds a fresh :class:`nulloracle.TargetEndpoint` over ``sidecar`` (the
+    composed ``"nulloracle"`` component — the same sidecar
+    ``"nulloracle-target-route"`` was built from, so both name one world),
+    with :func:`~orchestrator._targets.snapshot_forward_returns` bound to
+    ``context`` as its ``targets`` seam and nulloracle's own
+    :func:`~nulloracle.block_indices` at the panel's grain as its ``permute``
+    seam — the same reconciliation ``nulloracle.build_target_route``'s own
+    closure makes (feature 115's stored-seed block permutation, read from
+    the sidecar's own sealed ``perm_seed``/``block_days`` for a null node),
+    reproduced here rather than imported because the mechanism this member
+    reaches for is the public ``block_indices``, never a private name of
+    nulloracle's own.  ``nulloracle`` is imported lazily — this member
+    speaks it only at call time, never at module scope — the same
+    discipline :mod:`orchestrator._oracle` already states for the same
+    reason.
+    """
+    from nulloracle import TargetEndpoint, block_indices
+
+    def _permute(
+        series: Any, *, seed: Any, block_days: Any
+    ) -> dict[Any, dict[str, float]]:
+        days = list(series)
+        rows = [series[day] for day in days]
+        order = block_indices(range(len(days)), seed=seed, block_days=block_days)
+        return {
+            days[position]: dict(rows[order[position]])
+            for position in range(len(days))
+        }
+
+    return TargetEndpoint(
+        sidecar, targets=snapshot_forward_returns(context), permute=_permute
+    )
 
 
 @register(_COMPONENT_NAME)

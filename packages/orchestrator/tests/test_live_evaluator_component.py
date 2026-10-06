@@ -48,6 +48,27 @@ One test per claim the feature sentence makes:
   ledger — read back from a patched ``evaluate_node`` rather than run for
   real, since the real chain is feature 7's own suite to exercise.
 
+additions_spec_real_campaign_path.xml, "Campaign Evaluation Path", feature
+4, extends the last claim above: *LiveEvaluator.evaluate builds the oracle
+from the composed sidecar and that supply ... whenever the composed route
+has no targets.  A composed route that does carry targets is used
+unchanged.*  Two more tests, run for real (a migrated tree, a genuine
+sidecar, a real sandbox spawn — the same shape
+``tests/e2e/test_live_evaluation_end_to_end.py`` already proves for a
+hand-wired route), exercise that extension:
+
+* **a real node and a null node both evaluate to scored rows** when the
+  composed ``"nulloracle-target-route"`` is nulloracle's own no-supply
+  shape (``TargetEndpoint(sidecar, permute=...)``, no ``targets``) —
+  :meth:`~orchestrator.LiveEvaluator.evaluate` answers a
+  :class:`~orchestrator.NodeEvaluation` with real metrics for both, never
+  the refusal that bare route would otherwise give on both branches alike.
+
+* **the barrier holds** — asked identically (same symbols, horizon and
+  date range) for the real root and the null root, the sidecar-backed
+  oracle's two responses carry identical ``target_series`` keys; nothing
+  about the response's shape names which branch answered it.
+
 No test in this file opens a network connection, reads a real credential,
 or writes outside a pytest temporary directory.
 """
@@ -55,21 +76,36 @@ or writes outside a pytest temporary directory.
 from __future__ import annotations
 
 import datetime as dt
+import importlib.util
 import json
+import sqlite3
 from collections.abc import Mapping
+from contextlib import closing
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import orchestrator
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from cost_model import FeeSchedule, load_cost_model
+from ledger import TrialLedger
+from nulloracle import (
+    NullAssignment,
+    NullSidecar,
+    SidecarKey,
+    TargetEndpoint,
+    TargetRequest,
+    block_indices,
+)
 from orchestrator import (
     EvaluationConfigError,
     EvaluationContext,
     LiveEvaluator,
     SubtreeOracle,
     load_evaluation_context,
+    snapshot_forward_returns,
 )
 from snapshot import SnapshotService
 
@@ -412,12 +448,352 @@ def test_evaluate_refuses_an_unconfigured_route(
         live_evaluator.evaluate("node-1", "campaign-1", 0, "CODE")
 
 
+# -- additions_spec_real_campaign_path.xml feature 4 ------------------------
+# "LiveEvaluator.evaluate builds the oracle from the composed sidecar and
+# that supply ... whenever the composed route has no targets."
+
+
+#: Repository root, two levels above this member's own (``packages/<name>``
+#: is one level above ``tests/``, the workspace root one more) — the same
+#: derivation ``tests/e2e/test_live_evaluation_end_to_end.py`` makes for
+#: reaching ``migrations/versions`` by path.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_VERSIONS_DIR = _REPO_ROOT / "migrations" / "versions"
+
+#: The node table's structural columns (0118), the metrics columns feature
+#: 7's writer lands on it (0114), and the campaign row (0111) — the same
+#: three migrations the e2e journey applies for the same reason.
+_TREE_MIGRATIONS = ("0118_node_table", "0114_node_metrics", "0111_campaign_table")
+
+#: Three symbols, a handful of bar days — enough for a real cross-sectional
+#: score and a real horizon-1 forward return, small enough that the two
+#: sandbox spawns below stay fast.
+_RC_SYMBOLS = ("AAA", "BBB", "CCC")
+_RC_FIRST_DAY = dt.date(2026, 9, 10)
+_RC_LOOKBACK = 4
+_RC_SPAN = 3
+_RC_HORIZON = 1
+_RC_BAR_DAYS = tuple(
+    _RC_FIRST_DAY + dt.timedelta(days=offset)
+    for offset in range(_RC_LOOKBACK + _RC_SPAN + _RC_HORIZON)
+)
+_RC_EVALUATION_DATES = _RC_BAR_DAYS[_RC_LOOKBACK : _RC_LOOKBACK + _RC_SPAN]
+_RC_WORLD_SEED = 20261006
+_RC_EPOCH_ID = "epoch-2026-10-06-fallback-oracle"
+_RC_EVALUATOR_HASH = "d4" * 32
+_RC_SNAPSHOT_HASH_FALLBACK = "e5" * 32
+_RC_COST_MODEL_HASH = "f6" * 32
+_RC_CAMPAIGN_ID = "d00d0000-0000-4000-8000-000000000001"
+_RC_REAL_ROOT = "d00d0000-0000-4000-8000-0000000000a0"
+_RC_NULL_ROOT = "d00d0000-0000-4000-8000-0000000000b0"
+_RC_REAL_CHILD = "d00d0000-0000-4000-8000-0000000000a1"
+_RC_NULL_CHILD = "d00d0000-0000-4000-8000-0000000000b1"
+_RC_KEY_HEX = "22" * 32
+
+#: A deterministic momentum signal — the same shape
+#: ``test_live_evaluation_end_to_end.py``'s own ``MOMENTUM_SIGNAL_CODE`` is,
+#: scaled to this fixture's own lookback.
+_RC_SIGNAL_CODE = f"""
+import polars as pl
+
+def signal(ctx, seed):
+    bars = ctx.bars("1d")
+    if len(bars) <= 0:
+        raise ValueError("the window carries no bars to score against")
+    frame = bars.with_columns(pl.col("close").cast(pl.Float64).alias("c"))
+    momentum = {{}}
+    for symbol in ctx.universe:
+        series = frame.filter(pl.col("symbol") == symbol).sort("open_time")
+        if len(series) < {_RC_LOOKBACK}:
+            momentum[symbol] = 0.0
+        else:
+            first = float(series[0]["c"][0])
+            last = float(series[-1]["c"][0])
+            momentum[symbol] = (last - first) / first
+    return pl.Series([momentum[symbol] for symbol in ctx.universe])
+"""
+
+
+def _rc_closes() -> dict[str, dict[dt.date, float]]:
+    """A random-walk world, the same AR(1) shape
+    ``test_live_evaluation_end_to_end.py`` seals its own in — never a pure
+    linear trend, whose day-to-day information coefficient would be
+    identical on every date and leave ``ic_tstat`` dividing zero by zero.
+    """
+    import random
+
+    generator = random.Random(_RC_WORLD_SEED)
+    closes: dict[str, dict[dt.date, float]] = {}
+    for symbol_index, symbol in enumerate(_RC_SYMBOLS):
+        price = 100.0 + 10.0 * symbol_index
+        path: dict[dt.date, float] = {}
+        for day in _RC_BAR_DAYS:
+            price = max(1.0, price * (1.0 + generator.gauss(0.0, 0.03)))
+            path[day] = round(price, 2)
+        closes[symbol] = path
+    return closes
+
+
+def _rc_load_migration(revision: str) -> ModuleType:
+    path = _VERSIONS_DIR / f"{revision}.py"
+    assert path.is_file(), path
+    spec = importlib.util.spec_from_file_location(
+        f"_live_evaluator_component_{revision}", path
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _rc_path_of(database_url: str) -> Path:
+    from urllib.parse import unquote, urlparse
+
+    parsed = urlparse(database_url)
+    return Path(unquote(parsed.path).removeprefix("/"))
+
+
+def _rc_migrate(database_url: str) -> None:
+    for revision in _TREE_MIGRATIONS:
+        _rc_load_migration(revision).apply(database_url)
+
+
+def _rc_plant_campaign(database_url: str) -> None:
+    with closing(sqlite3.connect(_rc_path_of(database_url))) as connection, connection:
+        connection.execute(
+            "INSERT INTO campaign (id, campaign_type, workspace_count, null_fraction) "
+            "VALUES (?, ?, ?, ?)",
+            (_RC_CAMPAIGN_ID, "Type-R", 2, 0.5),
+        )
+
+
+def _rc_plant_node(
+    database_url: str, *, node_id: str, parent_id: str | None, depth: int
+) -> None:
+    with closing(sqlite3.connect(_rc_path_of(database_url))) as connection, connection:
+        connection.execute(
+            "INSERT INTO node (id, parent_id, campaign_id, theme_root, depth) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (node_id, parent_id, _RC_CAMPAIGN_ID, "macro", depth),
+        )
+
+
+def _rc_seal_the_world(workdir: Path) -> tuple[Any, dict[str, dict[dt.date, float]]]:
+    lake_root = workdir / "lake"
+    (lake_root / "snapshots").mkdir(parents=True)
+    staging = lake_root / "staging"
+    staging.mkdir()
+
+    closes = _rc_closes()
+
+    for symbol in _RC_SYMBOLS:
+        for day in _RC_BAR_DAYS:
+            partition = (
+                staging / "bars" / f"symbol={symbol}" / f"date={day.isoformat()}"
+            )
+            partition.mkdir(parents=True)
+            pq.write_table(
+                pa.table(
+                    {
+                        "symbol": [symbol],
+                        "open_time": [
+                            dt.datetime.combine(day, dt.time(0), tzinfo=dt.UTC)
+                        ],
+                        "close": [f"{closes[symbol][day]:.2f}"],
+                        "volume": ["12.5"],
+                    }
+                ),
+                partition / "part-0.parquet",
+            )
+
+    service = SnapshotService(lake_root)
+    sealed = service.seal(sealed_at=dt.datetime(2026, 11, 2, tzinfo=dt.UTC))
+    mount = service.mount(sealed.name)
+    return mount, closes
+
+
+def _rc_permute(series: Any, *, seed: Any, block_days: Any) -> dict[Any, dict[str, float]]:
+    """Feature 115's mechanism at the panel's grain, over the public primitive —
+    the same reconciliation :func:`orchestrator._sidecar_backed_endpoint`
+    makes internally, rebuilt here so this test depends on no private name.
+    """
+    days = list(series)
+    rows = [series[day] for day in days]
+    order = block_indices(range(len(days)), seed=seed, block_days=block_days)
+    return {days[position]: dict(rows[order[position]]) for position in range(len(days))}
+
+
+class _FallbackWorld:
+    def __init__(
+        self,
+        *,
+        context: EvaluationContext,
+        sidecar: NullSidecar,
+        ledger: TrialLedger,
+        real_root: str,
+        null_root: str,
+        real_child: str,
+        null_child: str,
+    ) -> None:
+        self.context = context
+        self.sidecar = sidecar
+        self.ledger = ledger
+        self.real_root = real_root
+        self.null_root = null_root
+        self.real_child = real_child
+        self.null_child = null_child
+
+
+@pytest.fixture(scope="module")
+def fallback_world(tmp_path_factory: pytest.TempPathFactory) -> _FallbackWorld:
+    """A real tree, a real sidecar and a real sealed snapshot — no stand-ins.
+
+    One campaign, two roots planted directly (never drawn by
+    :class:`nulloracle.TypeRSelection`, so this fixture controls which root
+    is null without depending on a seeded draw), one child each.  The
+    sidecar is written once, directly, with both assignments — the same
+    ``NullSidecar``/``NullAssignment`` seam
+    ``tests/nulloracle/test_sidecar_persistence.py`` exercises.
+    """
+    workdir = tmp_path_factory.mktemp("fallback-oracle-world")
+    mount, closes = _rc_seal_the_world(workdir)
+
+    config = load_cost_model()
+    schedule = FeeSchedule(venue=config.venue, taker_bps=10.0, maker_bps=10.0)
+    database_url = f"sqlite:///{workdir / 'fallback-oracle.db'}"
+    _rc_migrate(database_url)
+
+    context = EvaluationContext(
+        snapshot=mount,
+        closes=closes,
+        cost_model=config,
+        cost_schedule=schedule,
+        evaluator_hash=_RC_EVALUATOR_HASH,
+        snapshot_hash=_RC_SNAPSHOT_HASH_FALLBACK,
+        cost_model_hash=_RC_COST_MODEL_HASH,
+        epoch_id=_RC_EPOCH_ID,
+        database_url=database_url,
+        artifact_dir=workdir / "artifacts",
+        seed=_RC_WORLD_SEED,
+        horizon=_RC_HORIZON,
+        evaluation_dates=_RC_EVALUATION_DATES,
+        sandbox_runtime="unisolated",
+    )
+    ledger = TrialLedger(database_url)
+    sidecar = NullSidecar(workdir / "null" / "sidecar.enc", SidecarKey.from_hex(_RC_KEY_HEX))
+    sidecar.write(
+        {
+            _RC_REAL_ROOT: NullAssignment(
+                node_id=_RC_REAL_ROOT, is_null=False, perm_seed=11, block_days=20
+            ),
+            _RC_NULL_ROOT: NullAssignment(
+                node_id=_RC_NULL_ROOT, is_null=True, perm_seed=22, block_days=20
+            ),
+        }
+    )
+
+    _rc_plant_campaign(database_url)
+    _rc_plant_node(database_url, node_id=_RC_REAL_ROOT, parent_id=None, depth=0)
+    _rc_plant_node(database_url, node_id=_RC_NULL_ROOT, parent_id=None, depth=0)
+    _rc_plant_node(
+        database_url, node_id=_RC_REAL_CHILD, parent_id=_RC_REAL_ROOT, depth=1
+    )
+    _rc_plant_node(
+        database_url, node_id=_RC_NULL_CHILD, parent_id=_RC_NULL_ROOT, depth=1
+    )
+
+    return _FallbackWorld(
+        context=context,
+        sidecar=sidecar,
+        ledger=ledger,
+        real_root=_RC_REAL_ROOT,
+        null_root=_RC_NULL_ROOT,
+        real_child=_RC_REAL_CHILD,
+        null_child=_RC_NULL_CHILD,
+    )
+
+
+def test_evaluate_scores_both_a_real_and_a_null_node_when_the_route_has_no_targets(
+    fallback_world: _FallbackWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Nulloracle's own no-supply shape: TargetEndpoint(sidecar, permute=...),
+    # no targets= — exactly what nulloracle.build_target_route always
+    # builds, and the one the composed application always carries since
+    # that member resolves no step-4 series of its own.
+    bare_route = TargetEndpoint(fallback_world.sidecar, permute=_rc_permute)
+    fake_app = Application(
+        components={
+            "nulloracle-target-route": bare_route,
+            "nulloracle": fallback_world.sidecar,
+            "ledger": fallback_world.ledger,
+        }
+    )
+    monkeypatch.setattr("app.module_loader.create_app", lambda: fake_app)
+
+    live_evaluator = LiveEvaluator(fallback_world.context)
+
+    real_answer = live_evaluator.evaluate(
+        fallback_world.real_child, _RC_CAMPAIGN_ID, 1, _RC_SIGNAL_CODE
+    )
+    null_answer = live_evaluator.evaluate(
+        fallback_world.null_child, _RC_CAMPAIGN_ID, 1, _RC_SIGNAL_CODE
+    )
+
+    # A scored node, not a refusal — for both.
+    assert real_answer.fail_class is None
+    assert real_answer.metrics is not None
+    assert null_answer.fail_class is None
+    assert null_answer.metrics is not None
+
+
+def test_the_sidecar_backed_oracles_responses_have_identical_keys(
+    fallback_world: _FallbackWorld,
+) -> None:
+    # The barrier (PRD §4.2): asked identically for a real root and a null
+    # root, the oracle's two responses carry the same shape — nothing in
+    # the response could tell a caller which branch answered it.
+    endpoint = TargetEndpoint(
+        fallback_world.sidecar,
+        targets=snapshot_forward_returns(fallback_world.context),
+        permute=_rc_permute,
+    )
+    span = (_RC_EVALUATION_DATES[0], _RC_BAR_DAYS[-1])
+
+    real_response = endpoint.post(
+        TargetRequest(
+            node_id=fallback_world.real_root,
+            campaign_id=_RC_CAMPAIGN_ID,
+            depth=0,
+            horizon=_RC_HORIZON,
+            symbols=_RC_SYMBOLS,
+            date_range=span,
+        )
+    )
+    null_response = endpoint.post(
+        TargetRequest(
+            node_id=fallback_world.null_root,
+            campaign_id=_RC_CAMPAIGN_ID,
+            depth=0,
+            horizon=_RC_HORIZON,
+            symbols=_RC_SYMBOLS,
+            date_range=span,
+        )
+    )
+
+    assert real_response.status == null_response.status
+    assert real_response.target_series.keys() == null_response.target_series.keys()
+    assert real_response.charges_budget is True
+    assert null_response.charges_budget is False
+
+
 # -- The module's surface -----------------------------------------------------
 
 
 def test_the_module_s_surface() -> None:
     # The feature sentence's own list, exactly: the twelve names feature
-    # 8 gathers from features 2 through 7, plus LiveEvaluator itself.
+    # 8 gathers from features 2 through 7, plus LiveEvaluator itself, plus
+    # additions_spec_real_campaign_path.xml feature 4's forward-return
+    # supply.
     expected = {
         "evaluate_node",
         "NodeEvaluation",
@@ -431,6 +807,7 @@ def test_the_module_s_surface() -> None:
         "EvaluationConfigError",
         "charge_node",
         "charge_failed_node",
+        "snapshot_forward_returns",
     }
     assert set(orchestrator.__all__) == expected
     assert len(orchestrator.__all__) == len(set(orchestrator.__all__))
