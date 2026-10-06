@@ -18,6 +18,10 @@
 #   ./run.sh vst-flatten   [args]  cancel all orders and close all positions
 #   ./run.sh vst-alert     [args]  send a Telegram alert (OnFailure hook, --test)
 #   ./run.sh vst-heartbeat [args]  alert if no rebalance slot finished recently
+#   ./run.sh campaign [args]    python -m orchestrator.campaign (the research
+#                               loop) with ONLY the NULLIUS_ research keys
+#                               (.env.campaign.tpl), never .env.tpl; e.g.
+#                               ./run.sh campaign --type discovery --workspaces 16 --rounds 30
 #
 # No-secret commands (run with a CLEAN env — package managers and linters
 # must never see runtime credentials; this is the main supply-chain
@@ -48,6 +52,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.pw-browsers}"
 ENV_TPL="${SCRIPT_DIR}/.env.tpl"
 ENV_VST_TPL="${SCRIPT_DIR}/.env.vst.tpl"
+ENV_CAMPAIGN_TPL="${SCRIPT_DIR}/.env.campaign.tpl"
 
 cmd="${1:-help}"
 shift || true
@@ -177,6 +182,26 @@ case "${cmd}" in
     esac
     exec op run --env-file="${ENV_VST_TPL}" -- \
       uv run --all-packages python -m "${module}" "$@"
+    ;;
+
+  campaign)
+    # The research loop (signal + policy LLM roles, evaluation, the campaign
+    # driver) gets ONLY the NULLIUS_ research keys, from its own env file, not
+    # .env.tpl — so no claw-forge agent ever sees a research provider key. Its
+    # store defaults to a research DB outside the repo, separate from vst.db.
+    if [[ ! -f "${ENV_CAMPAIGN_TPL}" ]]; then
+      echo "error: ${ENV_CAMPAIGN_TPL} not found. Copy .env.campaign.tpl.example to" >&2
+      echo "       .env.campaign.tpl, set your 1Password references, and fill in" >&2
+      echo "       deploy/campaign/{authoring,evaluation}-config.json." >&2
+      exit 1
+    fi
+    mkdir -p "$HOME/.local/share/nullius"
+    export DATABASE_URL="${DATABASE_URL:-sqlite:///$HOME/.local/share/nullius/research.db}"
+    # gVisor's rootless runsc needs XDG_RUNTIME_DIR for its own control files.
+    export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    cd "${SCRIPT_DIR}"
+    exec op run --env-file="${ENV_CAMPAIGN_TPL}" -- \
+      uv run --all-packages python -m orchestrator.campaign "$@"
     ;;
 
   # ── No-secret commands ──────────────────────────────────────────────────────

@@ -45,3 +45,4 @@ coverage/
 *.orig
 .uv-cache/
 .env.vst.tpl
+.env.campaign.tpl

@@ -1,0 +1,13 @@
+{
+  "_comment": "EvaluationContext inputs. Copy to evaluation-config.json and set real paths. sandbox_runtime is 'gvisor' (needs runsc on PATH + a provisioned gvisor_runtime_root) or 'unisolated' (needs bwrap; set acknowledge_unisolated true to accept the weaker boundary).",
+  "snapshot_mount": "/opt/nullius/snapshots/2026-11-01T00:00:00Z",
+  "evaluation_dates": ["2026-09-01", "2026-09-02", "2026-09-03"],
+  "horizon": 1,
+  "seed": 20260401,
+  "epoch_id": "epoch-2026-11-a",
+  "artifact_dir": "/opt/nullius/artifacts",
+  "sandbox_runtime": "gvisor",
+  "gvisor_runtime_root": "/opt/nullius/gvisor-runtime",
+  "gvisor_state_root": "/opt/nullius/gvisor-state",
+  "lake_roots": ["/opt/nullius/lake"]
+}
