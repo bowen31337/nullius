@@ -43,6 +43,15 @@ uv run --all-packages pytest -n 4 --dist loadfile
 ```
 
 - **PYTHONPATH:** add every member that the code under test imports.
+
+**`make test-fast` wraps the fast loop** — no PYTHONPATH assembly:
+`make test-fast P=<member> [F=test_<file>.py] [PP=packages/<other>/src]` for a
+member, bare `make test-fast` for root `tests/` minus e2e+replay, `make test`
+for the workspace suite the acceptance gate runs. Prefer `test-fast` while
+iterating; run the full suite **at most once**, immediately before declaring
+the task done — each full pass costs minutes and contends with the other
+agent on this box.
+
   - router: `src:packages/router/src:packages/book/src:packages/ingest/src:packages/risk/src`
 - **Two suites, run separately:** the gate runs only `tests/` (`pytest.ini`
   testpaths). Member suites under `packages/*/tests` are separate runs, and the
