@@ -122,6 +122,37 @@ over the two and no interval around either, so there is no derived-column
 reconciliation to refuse here as there is at the sibling that computes its
 own gap.
 
+Feature 6 adds the four gate-evidence routes' shared own:
+:class:`GateEvidenceMetricError`, the one class all four of
+:mod:`ops.gate_evidence`'s endpoints translate into, because — unlike the
+member's earlier routes, which each translate a *different* sibling
+member's error — these four read this member's own stores and already
+arrive in this member's own vocabulary
+(:class:`NullCalibrationError`, :class:`TypeBDepthError`,
+:class:`DiscoveryRateError`, :class:`MetaOverfitGapError`).  So:
+
+* a hand-built history the response cannot hold — an entry that is not
+  the owning store's own record type, a row whose ``recorded_at`` runs
+  backwards from the one before it — is refused here at construction,
+  because a frozen value that validated nothing would hand a hand-built
+  trend the store's own guarantees it never stood behind; and
+* a read that fails is *translated* here from whichever of the four
+  store errors the read raised (chained, never swallowed), because the
+  rows are each store's own and the route is this member's, and a
+  caller that wrote ``except GateEvidenceMetricError`` across all four
+  routes must not be taken down by an error from a module it never
+  imported.
+
+**Never raised for an absent trend.**  A deployment that has closed no
+campaign or cycle out answers an empty history and a ``newest`` of
+``None`` from every one of the four routes — a discoverable state, not a
+refusal, exactly as it is at each of the four stores this class reads.
+**Never raised for a zero measurement, either**: each store's own zero
+(a flat discovery rate, a clean Type-B count, a calibration endpoint of
+``0.0`` or ``1.0``, a gap of ``0.0``) is a measurement that store
+persists happily, and this class never re-litigates that stance — what
+it refuses is a trend that could not be the one a store answered.
+
 Feature 343 adds the regime-coverage route's own:
 :class:`RegimeCoverageMetricError`, the refusal of a distribution that
 cannot be the pool's shape — a stratum named twice, a name that states
@@ -144,6 +175,7 @@ __all__ = [
     "DiscoveryRateError",
     "EvaluationLogError",
     "FdrDeployMetricError",
+    "GateEvidenceMetricError",
     "InstrumentStatusError",
     "LiveMetricError",
     "MetaOverfitGapError",
@@ -560,6 +592,30 @@ class NullCalibrationError(OpsError):
     a pair that could not have been measured, and the failure mode this
     feature exists to rule out — a calibration nobody took, quietly
     defaulted into the trend — is refused rather than served.
+    """
+
+
+class GateEvidenceMetricError(OpsError):
+    """Feature 6's refusals: the shared error of the four gate-evidence
+    routes (:mod:`ops.gate_evidence`).
+
+    Raised in exactly the places that module states its contract — a
+    hand-built history the response cannot hold, and a read translated
+    from whichever of this member's own four store errors
+    (:class:`NullCalibrationError`, :class:`TypeBDepthError`,
+    :class:`DiscoveryRateError`, :class:`MetaOverfitGapError`) the read
+    raised, chained and never swallowed.  One class for all four routes,
+    because unlike this member's cross-member routes each of the four
+    reads this member's *own* stores and already arrives in this
+    member's vocabulary — there is no sibling's error to keep separate.
+
+    **Never raised for an absent trend or a zero measurement.**  Each of
+    the four routes answers an empty history and a ``newest`` of
+    ``None`` for a deployment that has closed no campaign or cycle out —
+    a discoverable state — and serves a zero figure happily when a store
+    measured one, the same stance each of the four stores already takes.
+    What is refused is a trend that could not be the one a store
+    answered.
     """
 
 

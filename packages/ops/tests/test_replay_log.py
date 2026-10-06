@@ -520,8 +520,12 @@ def test_the_sentence_demands_no_state_so_nothing_composes() -> None:
     # instrument-status rail)
     # and no ``replay-log`` of its own.
     from ops import (
+        OPS_DISCOVERY_RATE_ROUTE_COMPONENT_NAME,
         OPS_INSTRUMENT_STATUS_COMPONENT_NAME,
+        OPS_META_OVERFIT_ROUTE_COMPONENT_NAME,
+        OPS_NULL_CALIBRATION_ROUTE_COMPONENT_NAME,
         OPS_REGIME_COVERAGE_COMPONENT_NAME,
+        OPS_TYPE_B_DEPTH_ROUTE_COMPONENT_NAME,
     )
 
     registry = Registration()
@@ -537,6 +541,10 @@ def test_the_sentence_demands_no_state_so_nothing_composes() -> None:
             OPS_DISCOVERY_RATE_COMPONENT_NAME,
             OPS_TYPE_B_DEPTH_COMPONENT_NAME,
             OPS_NULL_CALIBRATION_COMPONENT_NAME,
+            OPS_NULL_CALIBRATION_ROUTE_COMPONENT_NAME,
+            OPS_TYPE_B_DEPTH_ROUTE_COMPONENT_NAME,
+            OPS_DISCOVERY_RATE_ROUTE_COMPONENT_NAME,
+            OPS_META_OVERFIT_ROUTE_COMPONENT_NAME,
         }
     )
     assert "ops-replay-log" not in registry.names()

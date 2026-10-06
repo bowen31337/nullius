@@ -235,6 +235,31 @@ member already says:
   figures feature 266 measured and the instant it was written — what the
   sentence asks this store to persist, and nothing this store would have
   had to invent.
+* :class:`~ops.gate_evidence.NullCalibrationEndpoint`,
+  :class:`~ops.gate_evidence.TypeBDepthEndpoint`,
+  :class:`~ops.gate_evidence.DiscoveryRateEndpoint` and
+  :class:`~ops.gate_evidence.MetaOverfitEndpoint`, with their own
+  :class:`~ops.gate_evidence.NullCalibrationHistoryResponse`,
+  :class:`~ops.gate_evidence.TypeBDepthHistoryResponse`,
+  :class:`~ops.gate_evidence.DiscoveryRateHistoryResponse` and
+  :class:`~ops.gate_evidence.MetaOverfitHistoryResponse` — feature 6's
+  four read routes: GET /metrics/null-calibration,
+  /metrics/type-b-depth, /metrics/discovery-rate and
+  /metrics/meta-overfit, each answering the named store's own
+  :meth:`history` (oldest first) and that trend's newest row, following
+  the :mod:`ops.regime_coverage` pattern narrowed to a same-member read
+  — no deferred carrier, since the four stores are this member's own.
+  An empty store answers an empty history and a ``newest`` of ``None``,
+  never a zero, and a store's own failure is translated into
+  :class:`~ops.errors.GateEvidenceMetricError`.  None of the four tables
+  holds an ``is_null`` label or a per-node null status — each is an
+  aggregate — so none ever reaches a response.
+* :data:`~ops.gate_evidence.NULL_CALIBRATION_ROUTE`,
+  :data:`~ops.gate_evidence.TYPE_B_DEPTH_ROUTE`,
+  :data:`~ops.gate_evidence.DISCOVERY_RATE_ROUTE` and
+  :data:`~ops.gate_evidence.META_OVERFIT_ROUTE` — those four routes' one
+  spelling each, shared by the endpoints' ``route`` attributes and the
+  spec's API summary rows.
 * :class:`~ops.errors.OpsError` with
   :class:`~ops.errors.FdrDeployMetricError`,
   :class:`~ops.errors.LiveMetricError`,
@@ -243,7 +268,8 @@ member already says:
   :class:`~ops.errors.ReplayLogError`,
   :class:`~ops.errors.EvaluationLogError`,
   :class:`~ops.errors.TypeBDepthError`,
-  :class:`~ops.errors.NullCalibrationError` and
+  :class:`~ops.errors.NullCalibrationError`,
+  :class:`~ops.errors.GateEvidenceMetricError` and
   :class:`~ops.errors.DashboardRenderError` — the member's refusal
   vocabulary: one base so a caller catches the member as a whole, one
   subclass per surface so a refusal names where it happened.
@@ -280,6 +306,7 @@ from .errors import (
     DiscoveryRateError,
     EvaluationLogError,
     FdrDeployMetricError,
+    GateEvidenceMetricError,
     InstrumentStatusError,
     LiveMetricError,
     MetaOverfitGapError,
@@ -300,6 +327,24 @@ from .fdr_route import (
     FdrDeployEndpoint,
     FdrDeployResponse,
     require_scoring,
+)
+from .gate_evidence import (
+    DISCOVERY_RATE_ROUTE,
+    META_OVERFIT_ROUTE,
+    NULL_CALIBRATION_ROUTE,
+    OPS_DISCOVERY_RATE_ROUTE_COMPONENT_NAME,
+    OPS_META_OVERFIT_ROUTE_COMPONENT_NAME,
+    OPS_NULL_CALIBRATION_ROUTE_COMPONENT_NAME,
+    OPS_TYPE_B_DEPTH_ROUTE_COMPONENT_NAME,
+    TYPE_B_DEPTH_ROUTE,
+    DiscoveryRateEndpoint,
+    DiscoveryRateHistoryResponse,
+    MetaOverfitEndpoint,
+    MetaOverfitHistoryResponse,
+    NullCalibrationEndpoint,
+    NullCalibrationHistoryResponse,
+    TypeBDepthEndpoint,
+    TypeBDepthHistoryResponse,
 )
 from .instrument_status import (
     FEED_STALENESS_METRIC,
@@ -356,6 +401,7 @@ __all__ = [
     "DASHBOARD_PAGE_TITLE",
     "DASHBOARD_TITLE",
     "DATABASE_URL_ENV",
+    "DISCOVERY_RATE_ROUTE",
     "DISCOVERY_RATE_TABLE",
     "EPOCH_COUNT_LABEL",
     "EVALUATION_LOG_LEVEL",
@@ -368,25 +414,34 @@ __all__ = [
     "LAMP_NAMES",
     "LIVE_METRICS",
     "LIVE_METRIC_TABLE",
+    "META_OVERFIT_ROUTE",
     "META_OVERFIT_TABLE",
+    "NULL_CALIBRATION_ROUTE",
     "NULL_CALIBRATION_TABLE",
     "OPS_COMPONENT_NAME",
     "OPS_DASHBOARD_COMPONENT_NAME",
     "OPS_DISCOVERY_RATE_COMPONENT_NAME",
+    "OPS_DISCOVERY_RATE_ROUTE_COMPONENT_NAME",
     "OPS_INSTRUMENT_STATUS_COMPONENT_NAME",
     "OPS_LIVE_METRIC_COMPONENT_NAME",
     "OPS_META_OVERFIT_COMPONENT_NAME",
+    "OPS_META_OVERFIT_ROUTE_COMPONENT_NAME",
     "OPS_NULL_CALIBRATION_COMPONENT_NAME",
+    "OPS_NULL_CALIBRATION_ROUTE_COMPONENT_NAME",
     "OPS_REGIME_COVERAGE_COMPONENT_NAME",
     "OPS_TYPE_B_DEPTH_COMPONENT_NAME",
+    "OPS_TYPE_B_DEPTH_ROUTE_COMPONENT_NAME",
     "REGIME_COVERAGE_ROUTE",
     "REPLAY_LOG_LEVEL",
     "REPLAY_LOG_LOGGER_NAME",
+    "TYPE_B_DEPTH_ROUTE",
     "TYPE_B_DEPTH_TABLE",
     "DashboardPage",
     "DashboardRenderError",
     "DiscoveryRate",
+    "DiscoveryRateEndpoint",
     "DiscoveryRateError",
+    "DiscoveryRateHistoryResponse",
     "DiscoveryRates",
     "EpochCountChrome",
     "EpochCountGauge",
@@ -396,17 +451,22 @@ __all__ = [
     "FdrDeployMetricError",
     "FdrDeployPanel",
     "FdrDeployResponse",
+    "GateEvidenceMetricError",
     "InstrumentStatusEndpoint",
     "InstrumentStatusError",
     "InstrumentStatusResponse",
     "LiveMetric",
     "LiveMetricError",
     "LiveMetricsStore",
+    "MetaOverfitEndpoint",
     "MetaOverfitGap",
     "MetaOverfitGapError",
     "MetaOverfitGaps",
+    "MetaOverfitHistoryResponse",
     "NullCalibration",
+    "NullCalibrationEndpoint",
     "NullCalibrationError",
+    "NullCalibrationHistoryResponse",
     "NullCalibrations",
     "OperatorDashboard",
     "OpsError",
@@ -416,7 +476,9 @@ __all__ = [
     "ReplayLogError",
     "ReplayLogRecord",
     "TypeBDepth",
+    "TypeBDepthEndpoint",
     "TypeBDepthError",
+    "TypeBDepthHistoryResponse",
     "TypeBDepths",
     "emit_evaluation_log",
     "emit_replay_log",
@@ -805,3 +867,63 @@ def build_instrument_status_route() -> InstrumentStatusEndpoint | None:
     store is both constructed and asked.
     """
     return InstrumentStatusEndpoint.from_env()
+
+
+#: The component name the member registers feature 6's planted-null
+#: calibration route under.  Suffixed ``-route`` because
+#: :data:`OPS_NULL_CALIBRATION_COMPONENT_NAME` already names the *store*
+#: this route reads, and the two must not collide in a composed
+#: application's name-keyed lookup.  *Defined* in :mod:`ops.gate_evidence`
+#: and imported above, and read by name through the composed application.
+@register(OPS_NULL_CALIBRATION_ROUTE_COMPONENT_NAME)
+def build_null_calibration_route() -> NullCalibrationEndpoint | None:
+    """Component builder: the GET /metrics/null-calibration route, bound
+    to this member's own calibration store.
+
+    Takes no arguments — the factory's registration protocol.  Unlike the
+    member's cross-member routes, this one needs no deferred carrier: the
+    store it reads (:class:`~ops.null_calibration.NullCalibrations`) is
+    this same package's own, already imported at module scope, so
+    resolving it at build time carries none of the scan-order hazard a
+    sibling member's store would.  Delegates entirely to
+    :meth:`~ops.gate_evidence.NullCalibrationEndpoint.from_env`, which in
+    turn resolves ``DATABASE_URL`` through the store's own
+    :meth:`~ops.null_calibration.NullCalibrations.resolve` — the one
+    spelling of that decision, shared with the store's own builder above.
+
+    Returns ``None`` when no ``DATABASE_URL`` is configured — the stance
+    every builder in this member takes.  Building performs no I/O: no
+    database is opened and no schema created — the first ``get()`` is
+    where the store is asked.
+    """
+    return NullCalibrationEndpoint.from_env()
+
+
+@register(OPS_TYPE_B_DEPTH_ROUTE_COMPONENT_NAME)
+def build_type_b_depth_route() -> TypeBDepthEndpoint | None:
+    """Component builder: the GET /metrics/type-b-depth route, bound to
+    this member's own Type-B depth store.  See
+    :func:`build_null_calibration_route` for the law — the same shape,
+    over :class:`~ops.type_b_depth.TypeBDepths`.
+    """
+    return TypeBDepthEndpoint.from_env()
+
+
+@register(OPS_DISCOVERY_RATE_ROUTE_COMPONENT_NAME)
+def build_discovery_rate_route() -> DiscoveryRateEndpoint | None:
+    """Component builder: the GET /metrics/discovery-rate route, bound to
+    this member's own discovery-rate store.  See
+    :func:`build_null_calibration_route` for the law — the same shape,
+    over :class:`~ops.discovery_rate.DiscoveryRates`.
+    """
+    return DiscoveryRateEndpoint.from_env()
+
+
+@register(OPS_META_OVERFIT_ROUTE_COMPONENT_NAME)
+def build_meta_overfit_route() -> MetaOverfitEndpoint | None:
+    """Component builder: the GET /metrics/meta-overfit route, bound to
+    this member's own meta-overfit gap store.  See
+    :func:`build_null_calibration_route` for the law — the same shape,
+    over :class:`~ops.meta_overfit.MetaOverfitGaps`.
+    """
+    return MetaOverfitEndpoint.from_env()
