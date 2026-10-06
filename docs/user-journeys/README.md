@@ -57,7 +57,9 @@ The journeys below are run against `127.0.0.1`, which needs no certificate.
 
 ## Validation runs
 
-Each run is appended to [`_run-log.md`](_run-log.md). To repeat the full sweep in one command, run [`run_sweep.sh`](run_sweep.sh) `<run-name> <scratch-dir>`.
+Each run is appended to [`_run-log.md`](_run-log.md). [`run_sweep.sh`](run_sweep.sh) `<run-name> <scratch-dir>` drives J1–J14 (the browser sweep) in one command; J15 is a shell journey run separately, its transcripts saved beside the screenshots.
+
+**Latest — Run 6 (2026-10-06, `main` at `dc65504`): 15 of 15 pass, none blocked, no traceback.** The first sweep after the `orchestrator`/campaign-driver, live-providers and gVisor work; the API composed 10 routes over 100 components with no change to the dashboard or HTTP surfaces, and J15's dry run is unchanged. Screenshots and J15 transcripts in [`screenshots/run-6/`](screenshots/run-6/).
 
 ## Reproducing a run
 
