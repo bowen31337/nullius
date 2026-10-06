@@ -53,6 +53,8 @@ import ledger
 import nulloracle
 import pytest
 from orchestrator.closeout import (
+    CLOSEOUT_CODE,
+    CLOSEOUT_UNEVALUATED_CODE,
     EXIT_CONFIG,
     EXIT_OK,
     EXIT_REFUSED,
@@ -442,6 +444,67 @@ def test_unknown_campaign_refuses_with_exit_1_and_no_traceback(
     assert exit_code == EXIT_REFUSED
     message = stderr.getvalue()
     assert "closeout:" in message
+    assert "Traceback" not in message
+
+
+def test_metric_less_node_table_refuses_as_closeout_unevaluated(
+    tmp_path: Path,
+) -> None:
+    # A node table built by a migration chain that stops before 0114 (the
+    # same state python -m nullius_api.demo leaves its store in) carries the
+    # five structural columns and none of the seven metrics. Closeout must
+    # name this rather than let sqlite3's own "no such column: ic_mean"
+    # reach the CLI, as it did for this bug's own repro.
+    url = f"sqlite:///{tmp_path / 'closeout-unevaluated.db'}"
+    _load_migration(CAMPAIGN_MIGRATION).apply(url)
+    _load_migration("0118_node_table").apply(url)
+
+    campaign_id = str(uuid.uuid4())
+    discovery.create_campaign(
+        discovery.TYPE_R_CAMPAIGN_TYPE, 2, campaign_id=campaign_id, database_url=url,
+    )
+    env = {"DATABASE_URL": url, **_seal_sidecar(tmp_path / "sidecar", [])}
+
+    stderr = io.StringIO()
+    with redirect_stderr(stderr):
+        exit_code = main(["--campaign-id", campaign_id], env=env, emit=lambda _line: None)
+
+    assert exit_code == EXIT_REFUSED
+    message = stderr.getvalue()
+    assert message.startswith(CLOSEOUT_UNEVALUATED_CODE)
+    assert campaign_id in message
+    assert "no evaluation has written metrics" in message
+    assert "nothing to calibrate" in message
+    assert "Traceback" not in message
+    assert "no such column" not in message
+
+
+def test_other_sqlite_error_while_reading_is_translated(tmp_path: Path) -> None:
+    # A node table malformed in some other way -- missing campaign_id
+    # entirely -- raises a different sqlite3.Error than the metric-less
+    # case above; it must be translated into a named refusal the same way,
+    # not let through raw either.
+    url = f"sqlite:///{tmp_path / 'closeout-sqlite-error.db'}"
+    _load_migration(CAMPAIGN_MIGRATION).apply(url)
+    campaign_id = str(uuid.uuid4())
+    discovery.create_campaign(
+        discovery.TYPE_R_CAMPAIGN_TYPE, 2, campaign_id=campaign_id, database_url=url,
+    )
+    # Built after the campaign record, so discovery's own planning-ordering
+    # check (an absent node table is not a refusal) never sees it.
+    with closing(sqlite3.connect(_path_of(url))) as connection, connection:
+        connection.execute("CREATE TABLE node (id TEXT PRIMARY KEY)")
+    env = {"DATABASE_URL": url, **_seal_sidecar(tmp_path / "sidecar", [])}
+
+    stderr = io.StringIO()
+    with redirect_stderr(stderr):
+        exit_code = main(["--campaign-id", campaign_id], env=env, emit=lambda _line: None)
+
+    assert exit_code == EXIT_REFUSED
+    message = stderr.getvalue()
+    assert message.startswith(f"{CLOSEOUT_CODE}:")
+    assert campaign_id in message
+    assert url in message
     assert "Traceback" not in message
 
 

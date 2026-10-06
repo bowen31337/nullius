@@ -51,8 +51,9 @@ duplicate row and prints the same line.
 an ``OnFailure`` alert hook fire; 2 for a missing ``DATABASE_URL`` or an
 unconfigured sidecar, naming the variable; 1 when a collaborator refuses (an
 unknown campaign, a one-sided plant with no real or no null node, an
-evaluated node the sidecar holds no entry for), printing its message with no
-traceback.
+evaluated node the sidecar holds no entry for, a campaign whose ``node``
+table carries no evaluation metrics, or any other unreadable ``node`` table),
+printing its message with no traceback.
 """
 
 from __future__ import annotations
@@ -77,6 +78,7 @@ import scoring
 
 __all__ = [
     "CLOSEOUT_CODE",
+    "CLOSEOUT_UNEVALUATED_CODE",
     "DATABASE_URL_ENV",
     "DISCOVERY_TSTAT",
     "EXIT_CONFIG",
@@ -93,6 +95,12 @@ __all__ = [
 #: with -- never a collaborator's own message, which already opens with its
 #: own code word.
 CLOSEOUT_CODE = "closeout"
+
+#: The code word a campaign whose ``node`` rows carry no metric columns is
+#: refused with -- distinct from :data:`CLOSEOUT_CODE` so a reader can tell
+#: "no evaluation has ever run against this store" from "something else went
+#: wrong reading it" without parsing the sentence that follows.
+CLOSEOUT_UNEVALUATED_CODE = "closeout_unevaluated"
 
 #: The environment variable naming the research database -- the one
 #: spelling every store in this workspace already uses.
@@ -226,9 +234,15 @@ def _read_campaign_node_ids(database_url: str, campaign_id: str) -> tuple[str, .
     """
     path = _sqlite_path(database_url)
     with closing(sqlite3.connect(path)) as connection:
-        rows = connection.execute(
-            f"SELECT id FROM {NODE_TABLE} WHERE campaign_id = ?", (campaign_id,)
-        ).fetchall()
+        try:
+            rows = connection.execute(
+                f"SELECT id FROM {NODE_TABLE} WHERE campaign_id = ?", (campaign_id,)
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise CloseoutError(
+                f"{CLOSEOUT_CODE}: could not read campaign {campaign_id!r}'s "
+                f"node population from {database_url!r}: {exc}"
+            ) from exc
     return tuple(row[0] for row in rows)
 
 
@@ -245,9 +259,29 @@ def _read_evaluated_nodes(
     ``ic_tstat`` ``NULL``) is not evaluated and is excluded, the same
     absence-is-not-a-measurement reading every store in this workspace
     takes of an unset column.
+
+    ``ic_mean`` and ``ic_tstat`` themselves are added by a sibling migration
+    (0114) rather than the one that creates the table (0118), so a store
+    this process is pointed at before any evaluator has ever run against it
+    -- :mod:`nullius_api.demo`'s own seed is one -- carries no such columns
+    at all.  That is not "zero evaluated nodes" (an empty, readable result)
+    but "nothing has been evaluated here, ever", and it is refused by name
+    with :data:`CLOSEOUT_UNEVALUATED_CODE` before the column is ever named
+    in a query, rather than let as a raw ``sqlite3.OperationalError`` reach
+    the CLI's generic refusal printer.
     """
     path = _sqlite_path(database_url)
     with closing(sqlite3.connect(path)) as connection:
+        if not (
+            _has_column(connection, NODE_TABLE, "ic_mean")
+            and _has_column(connection, NODE_TABLE, "ic_tstat")
+        ):
+            raise CloseoutError(
+                f"{CLOSEOUT_UNEVALUATED_CODE}: campaign {campaign_id!r} has "
+                f"not been evaluated -- its {NODE_TABLE} table carries no "
+                "ic_mean/ic_tstat columns, so no evaluation has written "
+                "metrics for it, and there is nothing to calibrate"
+            )
         if _has_column(connection, NODE_TABLE, "fail_class"):
             query = (
                 f"SELECT id, fail_class, ic_mean, ic_tstat FROM {NODE_TABLE} "
@@ -258,7 +292,13 @@ def _read_evaluated_nodes(
                 f"SELECT id, 'ok', ic_mean, ic_tstat FROM {NODE_TABLE} "
                 "WHERE campaign_id = ?"
             )
-        rows = connection.execute(query, (campaign_id,)).fetchall()
+        try:
+            rows = connection.execute(query, (campaign_id,)).fetchall()
+        except sqlite3.Error as exc:
+            raise CloseoutError(
+                f"{CLOSEOUT_CODE}: could not read campaign {campaign_id!r}'s "
+                f"evaluated nodes from {database_url!r}: {exc}"
+            ) from exc
     evaluated: list[_EvaluatedNode] = []
     for node_id, fail_class, ic_mean, ic_tstat in rows:
         if fail_class != "ok" or ic_mean is None or ic_tstat is None:
