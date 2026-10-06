@@ -1,0 +1,37 @@
+<bug_spec>
+  <!-- DIGEST-1. Found 2026-10-06 verifying spec D feature 3 against the real
+       provisioned runtime root. _gvisor._tree_sha256 hashes every file under
+       the root, but a debootstrap root holds 12 root-only files (/etc/shadow,
+       /etc/gshadow, /etc/.pwd.lock, /var/log/btmp, ...). The provision script
+       computes the digest as root (can read them); GVisorSandbox recomputes
+       as the non-root launcher and hits PermissionError, so construction
+       refuses and the gVisor executor, which worked 5/5 before spec D, now
+       cannot run at all. Core shape, explicit touches_files. -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/orchestrator/src/orchestrator/_gvisor.py,packages/orchestrator/tests/test_gvisor.py,deploy/gvisor/provision_runtime.sh">
+    <title>The runtime-root digest hashes root-only files, so the non-root launcher cannot recompute it and GVisorSandbox refuses every real runtime root</title>
+    <symptoms>
+      orchestrator._gvisor._tree_sha256 walks the runtime root and reads every regular file. A real runtime root built by deploy/gvisor/provision_runtime.sh is a debootstrap filesystem containing root-only files (/etc/shadow, /etc/gshadow, /etc/.pwd.lock, /var/log/btmp, /var/cache/ldconfig, /var/lib/dpkg/lock-frontend, /etc/security/opasswd, /var/cache/debconf/passwords.dat and a few more, 12 in all), mode 0600 and owned by root. The provision script computes tree_sha256 as root and can read them; GVisorSandbox runs as the ordinary launching user and _tree_sha256 raises PermissionError on the first such file. Construction therefore fails for the real root, and the five real-runsc tests fail at construction. The gVisor executor ran 5/5 before spec D added this check.
+    </symptoms>
+    <reproduction_steps>
+      Point NULLIUS_GVISOR_RUNTIME_ROOT at a provisioned debootstrap root and construct GVisorSandbox as a non-root user: _tree_sha256 raises PermissionError on /etc/.pwd.lock (or the first root-only file), so GVisorSandbox cannot be built.
+    </reproduction_steps>
+    <expected>
+      - The tree digest covers only world-readable regular files: a file is included exactly when its mode has the other-read bit set (st_mode AND 0o004), and excluded otherwise. This rule is a property of the file's own mode, so root (the provisioner) and the non-root launcher (the verifier) select the identical set and compute the identical digest, regardless of who runs. The 12 root-only system-state files, none of which the sandbox executes, are excluded by the same rule on both sides; the executable runtime (the interpreter, the python standard library, the dist-packages holding polars, pyarrow, contract and app, the shared libraries, and the baked-in sandbox_child.py) is world-readable and remains covered.
+      - orchestrator._gvisor._tree_sha256 skips a file whose other-read bit is clear (by its stat mode, without attempting to open it) and never raises PermissionError on a provisioned root. It still reads and hashes every world-readable file, in the same sorted, sha256sum-line form as before.
+      - deploy/gvisor/provision_runtime.sh computes tree_sha256 over the same world-readable set: its find gains -perm -o=r (world-readable regular files only), keeping the LC_ALL=C sort and the sha256sum-of-sha256sums pipeline otherwise unchanged. A freshly provisioned root's manifest digest equals what _gvisor recomputes as a non-root user.
+      - GVisorSandbox constructs against a provisioned root whose manifest matches, and its real-runsc tests pass again. A mutated world-readable file (a package .py, the baked child) changes the digest and is refused; a changed or unreadable root-only file does not affect the digest. A missing manifest, malformed JSON or a wrong tree_sha256 still refuses with GVisorUnavailableError (code word isolation_required).
+      - Tests build a fake root containing both world-readable files and a 0600 root-only file, assert the digest ignores the 0600 file (removing or changing it leaves the digest unchanged), assert a changed world-readable file changes it, and assert construction no longer raises PermissionError. Tests do not require runsc and pass under pytest-xdist.
+    </expected>
+    <actual>Root cause: packages/orchestrator/src/orchestrator/_gvisor.py _tree_sha256 reads every file under the root, including root-only ones the non-root verifier cannot open, so it cannot reproduce the root-computed digest. Spec D feature 3 defined the digest over the whole tree rather than over the files both the provisioner and the verifier can read.</actual>
+    <constraints>
+      The provision script and _gvisor._tree_sha256 stay in exact agreement on a freshly provisioned root
+      The digest still covers the executable runtime (interpreter, python libs, dist-packages, baked child); only non-world-readable files are excluded
+      The check reads files only and never executes anything from the root; no env var bypasses it
+      No file outside the three listed is edited
+      No test requires runsc or a real credential; tests pass under xdist
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
