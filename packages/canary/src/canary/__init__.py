@@ -311,6 +311,20 @@ guards, for the same reason the replay and the bit-reproducibility check
 are carried there: a refusal reachable only by import is a refusal the
 factory's scan cannot discover.
 
+*Feature 1 (additions_spec_operator_surfaces.xml) is the operator door onto
+features 141-144, and the fifth store.* Every one of this category's
+persistence steps — the frozen pair, the halt, the void marker — is a thing
+that happens only when something is wrong, so a deployment that never
+breaks never writes to any of them, and "the canary ran last night and
+held" would otherwise be an inference from silence rather than a fact on
+record.  :mod:`canary.run` is ``python -m canary.run``, the command a
+systemd timer fires nightly and an operator fires once with
+``--freeze-reference``, and :class:`CanaryRunStore` (``canary_run``,
+registered as :data:`RUN_STORE_COMPONENT_NAME`) is its append-only record —
+the fifth store, beside the pin sweep, the reference store, the halt store
+and the void-marker store, answering a fifth question none of the other
+four answers: *did the canary run, and what did it find?*
+
 *What this package deliberately does not do.* It does not resolve
 tags or consult a registry: feature 135 is an assertion, not a
 resolution, so the pin sweep is a pure parser over strings a deployment
@@ -481,6 +495,13 @@ from ._reproducibility import (
     compare_bytes,
     compare_runs,
     require_identical,
+)
+from .run import (
+    RUN_STORE_COMPONENT_NAME,
+    RUN_TABLE,
+    CanaryRun,
+    CanaryRunStore,
+    build_run_store,
 )
 from ._service import CanaryService, build_canary_service
 from ._threads import (
@@ -663,6 +684,13 @@ __all__ = [
     "require_score_usable",
     "unvoided_scores",
     "void_scores_after_break",
+    # Feature 1 (additions_spec_operator_surfaces.xml) — the nightly run's
+    # own append-only record, `python -m canary.run`
+    "RUN_STORE_COMPONENT_NAME",
+    "RUN_TABLE",
+    "CanaryRun",
+    "CanaryRunStore",
+    "build_run_store",
     # The composed component
     "CanaryService",
     "build_canary_service",
@@ -754,3 +782,23 @@ def _registered_void_marker_store() -> Optional[CanaryVoidMarkerStore]:
     :class:`CanaryVoidMarkerStore`.
     """
     return build_void_marker_store()
+
+
+@register(RUN_STORE_COMPONENT_NAME)
+def _registered_run_store() -> Optional[CanaryRunStore]:
+    """Component builder: the nightly run's own history, from the environment.
+
+    Feature 1's (additions_spec_operator_surfaces.xml) store, composed under
+    a fifth name beside the pin sweep, the reference store, the halt store
+    and the void-marker store: each answers a different question on a
+    different lifecycle, and this one answers *did the canary run, and what
+    did it find?* — the stored fact "the canary ran and passed" is, rather
+    than the absence of a halt.  Resolves rather than strict, exactly as the
+    other three stores do: the factory builds every component on every
+    ``create_app()``, so a deployment with no ``DATABASE_URL`` composes
+    ``None`` — a discoverable state, not an exception — and
+    ``python -m canary.run`` is the caller that refuses by name when it
+    finds none.  A caller that wants the store pointed at a URL uses
+    :class:`CanaryRunStore`.
+    """
+    return build_run_store()
