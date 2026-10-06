@@ -20,7 +20,9 @@ One test per claim the feature sentence makes:
 
 * a conforming signal scores, deterministically, across two runs;
 * an import outside the committed ceiling never executes, and the refusal
-  names ``disallowed_import``;
+  names ``disallowed_import`` — including ``numpy``, named deterministically
+  at the guard rather than failing at runtime with whatever the evaluation
+  environment's own missing-module error happens to be;
 * the same refusal holds when the disallowed import is issued from inside a
   callback a signal hands to a trusted library, nested one callback deeper,
   while an allowlisted import inside a callback and a callback that performs
@@ -31,8 +33,14 @@ One test per claim the feature sentence makes:
 * a forged ``print`` to stdout cannot reach or corrupt the result channel;
 * a malformed request, or a request whose window segment is not a window,
   answers ``fail_class="payload"``;
-* the committed agent allowlist this module carries agrees, term for term,
-  with ``packages/sandbox/src/sandbox/imports_allowlist.json``.
+* the committed agent allowlist this module carries draws only from
+  ``packages/sandbox/src/sandbox/imports_allowlist.json``'s terms, minus
+  ``numpy`` (which that document also serves to a static admission screen
+  with no installed runtime to answer to; this module's ceiling gates code
+  about to run under one);
+* every term the committed agent allowlist carries is actually importable in
+  the child's own interpreter, so the ceiling cannot drift from what the
+  evaluation runtime provides.
 
 No test opens a network connection, reads a real credential, or writes
 outside a pytest temporary directory; no third-party dependency is added.
@@ -143,9 +151,38 @@ def test_decode_request_refuses_bad_magic() -> None:
 
 
 def test_agent_allowlist_matches_committed_sandbox_document() -> None:
+    # A subset, not an exact match: the committed document also serves a
+    # static admission screen (orchestrator._evaluate's pre-flight check)
+    # that has no installed runtime to answer to, so it still names `numpy`.
+    # This module's ceiling gates code about to *run* under the evaluation
+    # runtime, which does not install numpy — see
+    # `test_every_allowlisted_module_is_importable_in_the_child` below.
     document = json.loads(_SANDBOX_ALLOWLIST_PATH.read_text(encoding="utf-8"))
     assert document["policy"] == "sandbox-imports"
-    assert set(document["allow"]) == set(child.AGENT_IMPORTS_ALLOWLIST)
+    assert set(child.AGENT_IMPORTS_ALLOWLIST) <= set(document["allow"])
+    assert "numpy" in document["allow"]
+    assert "numpy" not in child.AGENT_IMPORTS_ALLOWLIST
+
+
+def test_every_allowlisted_module_is_importable_in_the_child() -> None:
+    # The allowlist cannot drift from what the runtime actually provides: an
+    # admitted term that fails to import would let a signal pass the guard
+    # only to crash at execution instead, wasting a trial (the gap this
+    # feature closes for `numpy`). Each name is checked in its own `-I`
+    # subprocess — the same flags the child itself runs under — rather than
+    # in this test's own interpreter, which may carry packages (via its own
+    # site-packages) the sandboxed runtime does not.
+    failures: dict[str, str] = {}
+    for name in sorted(child.AGENT_IMPORTS_ALLOWLIST):
+        proc = subprocess.run(
+            [sys.executable, "-I", "-c", f"import {name}"],
+            capture_output=True,
+            timeout=20,
+            check=False,
+        )
+        if proc.returncode != 0:
+            failures[name] = proc.stderr.decode("utf-8", errors="replace")
+    assert not failures, f"not importable in the child's own interpreter: {failures}"
 
 
 # -- end-to-end: a real subprocess, framed requests --------------------------
@@ -186,6 +223,23 @@ def test_disallowed_import_is_refused_and_named() -> None:
     assert result["fail_class"] == "crash"
     assert "disallowed_import" in result["detail"]
     assert "'os'" in result["detail"]
+    assert result["scores"] is None
+
+
+def test_numpy_import_is_refused_at_the_guard_not_at_runtime() -> None:
+    # The headline gap this feature closes: numpy is off the allowlist
+    # because the evaluation runtime does not install it, so a signal naming
+    # it is refused deterministically at the guard (disallowed_import) rather
+    # than reaching the real import machinery and failing with whatever
+    # ModuleNotFoundError/ImportError the runtime happens to raise.
+    source = "import numpy\ndef signal(ctx, seed):\n    return None\n"
+    result, rc, err = run_signal(source)
+    assert rc == 0
+    assert err == b""
+    assert result["fail_class"] == "crash"
+    assert "disallowed_import" in result["detail"]
+    assert "'numpy'" in result["detail"]
+    assert "ModuleNotFoundError" not in result["detail"]
     assert result["scores"] is None
 
 

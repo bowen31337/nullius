@@ -60,9 +60,9 @@ transitive submodule load several frames below the statement that triggered it
 also reaches the finder before the wrapper sees it again.  Both hooks answer
 the identical question (:func:`_admit`), so they cannot disagree about a term.
 
-**Why a trusted root, not a cache check.**  ``polars``, ``numpy`` and
-``pyarrow`` are declared allowlist terms already, but what *they* import
-internally to load themselves is not: ``polars/__init__.py`` and
+**Why a trusted root, not a cache check.**  ``polars`` and ``pyarrow`` are
+declared allowlist terms already, but what *they* import internally to load
+themselves is not: ``polars/__init__.py`` and
 ``contract``'s own modules reach for stdlib terms this list does not carry
 (``os``, ``re``, ``warnings``, ``struct``, ...), and refusing those would
 refuse the dependency rather than the agent.  Exempting "whatever is already
@@ -152,6 +152,17 @@ __all__ = [
 #: the actual JSON file and asserts the two agree) rather than shared by
 #: import — the same discipline :mod:`sandbox.transfer` and
 #: :mod:`sandbox.seed` each state for a value they restate from elsewhere.
+#:
+#: ``numpy`` is deliberately absent, unlike the committed document it
+#: restates: that document also governs the static admission screen for
+#: submitted policy modules, a check with no installed runtime to answer to,
+#: while this ceiling gates code this bootstrap is about to *execute* under
+#: the evaluation runtime (the gVisor runtime root, and the evaluator's own
+#: environment) — and neither installs numpy.  Admitting a term the runtime
+#: cannot import would let a signal pass the guard only to fail with a
+#: ``ModuleNotFoundError`` at execution, wasting a trial; refusing it here
+#: instead answers with the same deterministic ``disallowed_import`` as any
+#: other refused term (campaign-driver gaps, "import-allowlist consistency").
 AGENT_IMPORTS_ALLOWLIST: Final[frozenset[str]] = frozenset(
     {
         "math",
@@ -167,7 +178,6 @@ AGENT_IMPORTS_ALLOWLIST: Final[frozenset[str]] = frozenset(
         "dataclasses",
         "__future__",
         "polars",
-        "numpy",
         "pyarrow",
     }
 )
@@ -176,10 +186,11 @@ AGENT_IMPORTS_ALLOWLIST: Final[frozenset[str]] = frozenset(
 #: passes through one of these is judged to be part of *loading that
 #: dependency*, not an agent import, and is admitted regardless of whether the
 #: specific term it names is in :data:`AGENT_IMPORTS_ALLOWLIST` — see the
-#: module docstring's "why a trusted root, not a cache check".
-_TRUSTED_IMPORT_ROOTS: Final[frozenset[str]] = frozenset(
-    {"polars", "numpy", "pyarrow", "contract"}
-)
+#: module docstring's "why a trusted root, not a cache check".  ``numpy`` is
+#: not one of these roots: the bootstrap never imports it eagerly (see the
+#: import block above this table), and it is not in
+#: :data:`AGENT_IMPORTS_ALLOWLIST` either, so there is no load of it to trust.
+_TRUSTED_IMPORT_ROOTS: Final[frozenset[str]] = frozenset({"polars", "pyarrow", "contract"})
 
 #: Builtins withheld from the signal's execution namespace outright — no
 #: legitimate signal needs a filesystem handle, a second compiler, or a way to
