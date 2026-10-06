@@ -4,8 +4,8 @@ title: See the three instrument lamps in permanent chrome
 persona: Operator
 source: app_spec.xml feature 342; ui_layout; M5 ux
 status: pass
-last_checked: run 8
-evidence: screenshots/run-8/J2-J4-J5-J6-dashboard-populated.png, screenshots/run-8/J4-lamps-with-threshold.png
+last_checked: run 9
+evidence: screenshots/run-9/J2-J4-J5-J6-dashboard-populated.png, screenshots/run-9/J4-lamps-with-threshold.png
 ---
 
 # J04 — See the three instrument lamps in permanent chrome

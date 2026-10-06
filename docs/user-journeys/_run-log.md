@@ -367,3 +367,23 @@ The owner chose to keep `GET /` behind a bearer token. A plain browser visit ans
 3. `orchestrator.closeout` answers a store whose `node` rows carry no metric columns with a raw `no such column: ic_mean`, not a named refusal.
 4. `python -m canary.run` and `python -m tripwires.triage` print `RuntimeWarning: '…' found in sys.modules …` on every invocation.
 5. `packages/canary/tests/test_threads.py`: two tests fail under `-n 4` and pass alone. This was already failing before the run, and it breaks the repo's order-independence rule.
+
+## Run 9 (re-verification after the Run 8 bug fixes): 2026-10-06, `main` at `3442f72`
+
+- **Code under test:** [`bug_spec_run8_operator_findings.xml`](../../bug_spec_run8_operator_findings.xml), all six merged (`f98802e`…`dd94ec0`) with 100% footprint conformance. Member suites: canary **790 passed** (the two order-dependent thread tests are fixed), tripwires 421, orchestrator 412 (+5 runsc skips).
+- **How it was run:** as in Run 8. J17 starts from an **empty** store and uses only shipped commands and files, with no workaround.
+
+| # | Journey | Verdict | Observed |
+|---|---|---|---|
+| J1–J14 | Dashboard + HTTP API | ✅ pass ×14 | 35 calls, status codes identical to Run 8, no traceback. 14 routes. Gate evidence below FDR_deploy. Canary `no reading` on the demo. |
+| J15 | BingX dry run | ✅ pass | Byte-identical to Run 8 with sockets refused. A missing `--book` exits 1. |
+| J16 | Run a campaign | ⛔ blocked (by choice) | No-cost steps pass. A metric-less store now gives `closeout_unevaluated: campaign '…003' has not been evaluated …`, not a raw SQLite error. |
+| J17 | Dreaming cycle | ✅ **pass** | `./run.sh migrate` on an empty store reaches head `0119_canary_reference_pair`, and a rerun is idempotent. `pool_too_thin` with 0 worlds. The fill writes 45 worlds, a rerun is idempotent, and another seed is refused. A cycle with the **shipped `deploy/dreaming/incumbent.example.py`** exits 0 (`revision_cap` 10, 355 `replay_score` rows). The same seed on a new iteration selects the same `code_hash`. `--reviser llm` and an overwrite are both refused. |
+| J18 | Nightly canary | ✅ pass | On a migrated fresh store: `canary_reference_absent`, then freeze, then `canary_reference_exists`, then run (deviation 0.0), and the lamp reads `true`. **No `RuntimeWarning` on stderr.** |
+| J19 | M1 triage | ✅ pass | AUC 0.4548, `learned_signature_warranted`. Bad count gives exit 1. No `RuntimeWarning`. |
+| J20 | Gate evidence | ✅ pass | On J17's operator store after `canary`: `canary: ok` and `train-vs-holdout gap: -0.048 (iteration run9-b)`. |
+| J21 | VST bot | ⛔ blocked (by choice) | Steps 1–4 pass. The heartbeat prints `{"verdict": "absent", …}`. Live VST was not run. |
+
+**Result: 19 of 21 pass, 0 fail. The 2 blocked journeys are blocked only by the owner's no-spend choice, and every no-cost step in them passes. No traceback or `RuntimeWarning` anywhere. All five Run 8 findings are resolved.**
+
+**To close J16 and J21:** run `./run.sh campaign … --allowance <small>` (real LLM spend; the campaign now closes itself out, so the Gate evidence rows fill) and `./run.sh vst --status` / `vst-rebalance` (VST, simulated funds) when the owner authorises them.

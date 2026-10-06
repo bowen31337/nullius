@@ -65,7 +65,7 @@ The journeys below are run against `127.0.0.1`, which needs no certificate.
 
 Each run is appended to [`_run-log.md`](_run-log.md). [`run_sweep.sh`](run_sweep.sh) `<run-name> <scratch-dir>` drives J1–J14 (the browser sweep) in one command; J15 is a shell journey run separately, its transcripts saved beside the screenshots.
 
-**Latest — Run 8 (2026-10-06): 18 of 21 pass, 1 fail (J17: `./run.sh migrate` cannot prepare a fresh store), 2 blocked by the owner's no-spend choice (J16, J21).** The operator-surfaces run made the dreaming cycle, the nightly canary, the M1 triage and the gate evidence reachable. The canary lamp is now honest. Details in [`_run-log.md`](_run-log.md).
+**Latest — Run 9 (2026-10-06): 19 of 21 pass, 0 fail.** J16 (live campaign) and J21 (live VST) are blocked only by the owner's no-spend choice, and their no-cost steps pass. The dreaming cycle now runs from an empty store with `./run.sh migrate` and the shipped example incumbent. Details in [`_run-log.md`](_run-log.md).
 
 ## Reproducing a run
 

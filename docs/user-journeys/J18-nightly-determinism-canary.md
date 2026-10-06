@@ -4,8 +4,8 @@ title: The nightly determinism canary runs, and its lamp tells the truth
 persona: Operator
 source: architecture §1 P3, §12 "Canary", §15 "Replay non-determinism"; app_spec.xml key_interaction 5 "Determinism canary", ux "instrument status as three binary lamps"
 status: pass
-last_checked: run 8
-evidence: screenshots/run-8/J18-step1-canary-help.txt, screenshots/run-8/J18-step1b-units.txt, screenshots/run-8/J1-dashboard-empty-db.png, screenshots/run-8/J18-step3a-run-before-freeze.txt, screenshots/run-8/J18-step3b-freeze.txt, screenshots/run-8/J18-step3c-freeze-again.txt, screenshots/run-8/J18-step3d-run.txt, screenshots/run-8/J18-step3e-lamp-after-run.txt, screenshots/run-8/J18-step4b-run-broken.txt, screenshots/run-8/J18-step4c-lamp-after-break.txt
+last_checked: run 9
+evidence: screenshots/run-8/J18-step1-canary-help.txt, screenshots/run-8/J18-step1b-units.txt, screenshots/run-9/J1-dashboard-empty-db.png, screenshots/run-9/J18-step3a-run-before-freeze.txt, screenshots/run-9/J18-step3b-freeze.txt, screenshots/run-9/J18-step3c-freeze-again.txt, screenshots/run-9/J18-step3d-run.txt, screenshots/run-9/J18-step3e-lamp-after-run.txt, screenshots/run-8/J18-step4b-run-broken.txt, screenshots/run-8/J18-step4c-lamp-after-break.txt
 ---
 
 # J18 — The nightly determinism canary

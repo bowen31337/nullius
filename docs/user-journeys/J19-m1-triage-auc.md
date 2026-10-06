@@ -4,8 +4,8 @@ title: Run the M1 one-day triage and read the perturbation-stability AUC
 persona: Researcher
 source: PRD §12 M1 ("gates the entire M2–M3 investment"), §15.1 unknown 1; architecture §11.2, §20
 status: pass
-last_checked: run 8
-evidence: screenshots/run-8/J19-step1-triage-help.txt, screenshots/run-8/J19-step2-triage.txt, screenshots/run-8/J19-step3-triage-bad-count.txt
+last_checked: run 9
+evidence: screenshots/run-8/J19-step1-triage-help.txt, screenshots/run-9/J19-step2-triage.txt, screenshots/run-9/J19-step3-triage-bad-count.txt
 ---
 
 # J19 — The M1 triage experiment

@@ -3,9 +3,9 @@ id: J17-run-dreaming-cycle
 title: Run one dreaming cycle and read which policy it selected (Loop 2)
 persona: Operator
 source: PRD §5 Loop 2, §12 M1.5 + M3 (the gate), §12.1; architecture §10.3.1, §10.6, §20; app_spec.xml key_interaction 3 "Dreaming cycle", success_criteria "a dreaming cycle completes and selects a policy revision"
-status: fail
-last_checked: run 8
-evidence: screenshots/run-8/J17-step0a-run-sh-migrate.txt, screenshots/run-8/J17-step0b-apply-tree-workaround.txt, screenshots/run-8/J17-step3-dream-thin-pool.txt, screenshots/run-8/J17-step2b-fill.txt, screenshots/run-8/J17-step2d-fill-other-seed.txt, screenshots/run-8/J17-step4a-dream.txt, screenshots/run-8/J17-step4b-dream-rerun.txt, screenshots/run-8/J17-step4c-reviser-llm.txt, screenshots/run-8/J17-step4d-write-selected-refuses-overwrite.txt
+status: pass
+last_checked: run 9
+evidence: screenshots/run-9/J17-step1-dream-help.txt, screenshots/run-9/J17-step1b-migrate.txt, screenshots/run-9/J17-step1c-migrate-rerun.txt, screenshots/run-9/J17-step3-dream-thin-pool.txt, screenshots/run-9/J17-step2a-fill.txt, screenshots/run-9/J17-step2b-fill-rerun.txt, screenshots/run-9/J17-step2c-fill-other-seed.txt, screenshots/run-9/J17-step4a-dream.txt, screenshots/run-9/J17-step4b-dream-same-seed.txt, screenshots/run-9/J17-step4c-reviser-llm.txt, screenshots/run-9/J17-step4d-write-selected-refuses.txt, screenshots/run-9/J17-step4a-selected-policy.py.txt
 ---
 
 # J17 — Run one dreaming cycle

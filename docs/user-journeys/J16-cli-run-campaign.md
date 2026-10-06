@@ -4,8 +4,8 @@ title: Run one discovery campaign (Loop 1, the inner loop)
 persona: Operator
 source: PRD §5 Loop 1, §12 M2; architecture §14.1 (agent pinning), §17; app_spec.xml key_interaction 1 "Campaign run"
 status: blocked
-last_checked: run 8
-evidence: screenshots/run-8/J16-step1-campaign-help.txt, screenshots/run-8/J16-step3-campaign-unconfigured.txt, screenshots/run-8/J16-step6a-closeout-help.txt, screenshots/run-8/J16-step6b-closeout-no-sidecar.txt, screenshots/run-8/J16-step6c-closeout-demo-campaign.txt
+last_checked: run 9
+evidence: screenshots/run-9/J16-step1-campaign-help.txt, screenshots/run-9/J16-step3-campaign-unconfigured.txt, screenshots/run-8/J16-step6a-closeout-help.txt, screenshots/run-9/J16-step6b-closeout-no-sidecar.txt, screenshots/run-8/J16-step6c-closeout-demo-campaign.txt
 ---
 
 # J16 — Run one discovery campaign
