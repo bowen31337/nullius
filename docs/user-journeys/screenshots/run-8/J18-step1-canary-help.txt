@@ -1,0 +1,12 @@
+<frozen runpy>:128: RuntimeWarning: 'canary.run' found in sys.modules after import of package 'canary', but prior to execution of 'canary.run'; this may result in unpredictable behaviour
+usage: python -m canary.run [-h] [--freeze-reference]
+
+Run the nightly determinism canary: replay the active frozen reference pair,
+record the run, and halt dreaming on a deviation beyond tolerance. --freeze-
+reference instead freezes the built-in reference pair as the deployment's
+active one.
+
+options:
+  -h, --help          show this help message and exit
+  --freeze-reference  freeze the built-in reference pair as the active
+                      reference, instead of replaying it

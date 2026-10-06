@@ -1,0 +1,73 @@
+deploy/systemd/nullius-canary.service
+deploy/systemd/nullius-canary.timer
+# The timer that fires the nightly determinism canary once a day. Written
+# by the feature; enabling it is an operator step
+# (`systemctl --user enable --now nullius-canary.timer`). Nothing in this
+# repository installs or enables it.
+#
+# One firing a day, scheduled in UTC with the offset spelled on the line —
+# the same convention the VST timers use, so the schedule is UTC whatever
+# the host's clock is set to.
+
+[Unit]
+Description=nullius nightly determinism canary timer (daily)
+Documentation=file:/%h/projects/nullius/deploy/systemd/nullius-canary.service
+
+[Timer]
+# Once a day, at 03:15 UTC — well outside the VST rebalance timer's own
+# :05 firings, so the canary never competes with a scheduled slot for CPU.
+OnCalendar=*-*-* 03:15:00 UTC
+# A firing missed because the machine was off (a laptop, a reboot) is run on
+# the next boot: the canary replay is idempotent, so catching up is safe.
+Persistent=true
+# The service is a oneshot, so systemd will not start a second run while one
+# is still running.
+AccuracySec=1min
+# No jitter: one firing a day is nowhere near the thundering-herd scale that
+# RandomizedDelaySec exists to spread.
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target
+# The nightly determinism canary: replays the pinned reference pair and
+# fails the build's trust story the moment a dependency, a sandbox image or a
+# platform drifts from the result the reference run committed. This file is
+# written by the feature; installing and enabling it (linking it into
+# ~/.config/systemd/user/ and starting the timer) is an operator step.
+# Nothing in this repository installs or enables it.
+#
+# The canary needs no secret — it replays recorded containers and compares
+# outputs offline — so it runs through `./run.sh canary` with a CLEAN env,
+# never `op run`, unlike the VST units this one otherwise mirrors.
+#
+# The unit still carries its **own environment**, for the same reason the
+# VST units do: a systemd user service runs neither `~/.zshrc` nor the login
+# PATH that puts `~/.local/bin` — where `uv` lives — ahead of the system's.
+#
+# The unit is a **oneshot**: one replay, then done. `OnFailure=` names the
+# same Telegram alert template the VST rebalance unit uses, passing this
+# unit's own full name (`%n`) as the instance — so a canary that cannot run
+# at all (a crash, `uv` failing) still reaches an operator, the same way an
+# unreachable VST slot does.
+
+[Unit]
+Description=nullius nightly determinism canary (reference replay)
+Documentation=file:/%h/projects/nullius/deploy/systemd/nullius-canary.timer
+# A canary run that fails outright — this unit enters the "failed" state —
+# produces no comparison output, so nothing inside the run can raise the
+# alarm. systemd then starts one instance of the alert template, passing
+# this unit's own full name (`%n`, i.e. nullius-canary.service) as the
+# instance the template runs with.
+OnFailure=nullius-vst-alert@%n.service
+
+[Service]
+Type=oneshot
+# The repository root. `%h` is the operator's home; edit this line (and the
+# matching one in the timer's unit) if the checkout lives elsewhere.
+WorkingDirectory=%h/projects/nullius
+# `uv` lives in the operator's ~/.local/bin, which a service does not inherit.
+# It goes first so the pinned interpreter wins over any system copy; the
+# system directories follow for the ordinary tools.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/projects/nullius/run.sh canary
+Restart=no

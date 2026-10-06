@@ -4,8 +4,8 @@ title: See the provenance triple beside the top-line figure
 persona: Operator
 source: ui_layout; M5 ux; features 99, 348
 status: pass
-last_checked: run 7
-evidence: screenshots/run-7/J2-J4-J5-J6-dashboard-populated.png
+last_checked: run 8
+evidence: screenshots/run-8/J2-J4-J5-J6-dashboard-populated.png
 ---
 
 # J06 — See the provenance triple beside the top-line figure

@@ -4,8 +4,8 @@ title: Read the top-line FDR_deploy and its trend
 persona: Operator
 source: app_spec.xml features 341, 351; prd §4.1.3, §11
 status: pass
-last_checked: run 7
-evidence: screenshots/run-7/J2-J4-J5-J6-dashboard-populated.png
+last_checked: run 8
+evidence: screenshots/run-8/J2-J4-J5-J6-dashboard-populated.png
 ---
 
 # J02 — Read the top-line FDR_deploy and its trend

@@ -1,0 +1,1 @@
+closeout: NULL_SIDECAR_PATH must name the sealed null sidecar closeout reads as the scorer process (prd §4.2)

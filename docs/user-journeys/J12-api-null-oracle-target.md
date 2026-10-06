@@ -4,8 +4,8 @@ title: Ask the null oracle for a target series
 persona: Evaluator
 source: api_endpoints_summary Null Oracle; features 111-121; P2
 status: pass
-last_checked: run 7
-evidence: screenshots/run-7/J12-api-null-oracle-target.png
+last_checked: run 8
+evidence: screenshots/run-8/J12-api-null-oracle-target.png
 ---
 
 # J12 — Ask the null oracle for a target series

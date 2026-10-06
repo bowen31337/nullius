@@ -1,0 +1,1 @@
+bingx_dry_run: the book document at '/nonexistent/book.json' cannot be read: [Errno 2] No such file or directory: '/nonexistent/book.json'; the dry run reads the three documents it is handed and opens nothing else

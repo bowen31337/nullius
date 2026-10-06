@@ -4,8 +4,8 @@ title: Pre-register promotion criteria before the deciding evaluation
 persona: Researcher
 source: api_endpoints_summary Promotion; features 290-293
 status: pass
-last_checked: run 7
-evidence: screenshots/run-7/J09-api-pre-register.png
+last_checked: run 8
+evidence: screenshots/run-8/J09-api-pre-register.png
 ---
 
 # J09 — Pre-register promotion criteria before the deciding evaluation

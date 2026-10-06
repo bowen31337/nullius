@@ -55,9 +55,9 @@ The journeys below are run against `127.0.0.1`, which needs no certificate.
 | [J14](J14-api-discoverability.md) | Discover what the API serves, and get clean errors | Any | HTTP API |
 | [J15](J15-cli-bingx-dry-run.md) | Dry-run the book onto BingX VST (Stage 0, no network) | Operator | CLI |
 | [J16](J16-cli-run-campaign.md) | Run one discovery campaign (Loop 1) | Operator | CLI |
-| [J17](J17-run-dreaming-cycle.md) | Run one dreaming cycle and read the selected policy (Loop 2, M3) | Operator | — (no surface yet) |
+| [J17](J17-run-dreaming-cycle.md) | Run one dreaming cycle and read the selected policy (Loop 2, M3) | Operator | CLI |
 | [J18](J18-nightly-determinism-canary.md) | The nightly canary runs, and its lamp tells the truth | Operator | Scheduler + Dashboard |
-| [J19](J19-m1-triage-auc.md) | Run the M1 triage and read the perturbation-stability AUC | Researcher | — (no surface yet) |
+| [J19](J19-m1-triage-auc.md) | Run the M1 triage and read the perturbation-stability AUC | Researcher | CLI |
 | [J20](J20-read-research-and-live-metrics.md) | Read the research and live metrics behind the headline | Operator | Dashboard / HTTP API |
 | [J21](J21-cli-bingx-vst-operate.md) | Operate the BingX VST paper bot (Stage 1–2) | Operator | CLI |
 
@@ -65,7 +65,7 @@ The journeys below are run against `127.0.0.1`, which needs no certificate.
 
 Each run is appended to [`_run-log.md`](_run-log.md). [`run_sweep.sh`](run_sweep.sh) `<run-name> <scratch-dir>` drives J1–J14 (the browser sweep) in one command; J15 is a shell journey run separately, its transcripts saved beside the screenshots.
 
-**Latest — Run 7 (2026-10-06): 15 of 21 pass, 4 fail (J17–J20), 2 blocked by the owner's no-spend choice (J16, J21).** J16–J21 are new: they come from re-reading the PRD and the architecture, and they find that the dreaming cycle, the nightly canary and the M1 triage have no operator surface, and that the canary lamp reads `ok` on a fresh install where no canary has run. J1–J15 match Run 6. Details in [`_run-log.md`](_run-log.md).
+**Latest — Run 8 (2026-10-06): 18 of 21 pass, 1 fail (J17: `./run.sh migrate` cannot prepare a fresh store), 2 blocked by the owner's no-spend choice (J16, J21).** The operator-surfaces run made the dreaming cycle, the nightly canary, the M1 triage and the gate evidence reachable. The canary lamp is now honest. Details in [`_run-log.md`](_run-log.md).
 
 ## Reproducing a run
 

@@ -339,3 +339,31 @@ The owner chose to keep `GET /` behind a bearer token. A plain browser visit ans
 **Result: 15 of 21 pass. 4 fail (J17, J18, J19, J20). 2 blocked by the owner's no-spend choice (J16, J21), with all of their no-cost steps passing. No traceback anywhere.**
 
 **Observation, not a failure (J21 step 4):** with Telegram unconfigured, `bingx_heartbeat` against a store with no slot completions exits 1, but its only line is `bingx_alert: TELEGRAM_BOT_TOKEN is not set, so no alert was sent`. The stale/absent verdict itself is not printed. This matches the alerts spec (the alert *is* the report, and the exit code is the verdict), but someone running it by hand learns nothing about the bot.
+
+## Run 8 (full re-verification after the operator-surfaces run): 2026-10-06, `main` at `98824e6`
+
+- **Code under test:** the 14 features of [`additions_spec_operator_surfaces.xml`](../../additions_spec_operator_surfaces.xml), merged `74f899d`…`98824e6`. All 14 passed the acceptance gate. Member suites: bootstrap 517, tripwires 420, router 1380, ops 819, api 526 and orchestrator 407 (+5 runsc skips) all pass. Canary has 787 passing and **2 failing** (`test_threads.py`, order-dependent under `-n 4`). Those 2 were already failing at `e4bd380`, before the run.
+- **How it was run:**
+  - J1–J14: [`run_sweep.sh`](run_sweep.sh)` run-8`, headless Chromium.
+  - J15–J21: the shipped `./run.sh` verbs and `python -m` commands, against fresh scratch stores, with sockets patched to raise and every venue, bot and sidecar secret unset.
+  - J20 was also checked on the store J17's operator built (after `dream` and `canary`), read through the dashboard (browser text plus screenshot) and through the five `metrics:read` routes on a local API server.
+
+| # | Journey | Verdict | Observed |
+|---|---|---|---|
+| J1–J14 | Dashboard + HTTP API | ✅ pass ×14 | Every status code matches Run 7. The index now reads **"14 routes declared, 14 configured"**. The dashboard shows a **Gate evidence** section *below* the FDR_deploy panel and chart. **The canary lamp reads `no reading` on a fresh install and on the demo store** (J04's precondition is updated: the demo seeds no canary run). |
+| J15 | BingX dry run | ✅ pass | Byte-identical to Run 7, also with sockets refused. A missing `--book` exits 1. |
+| J16 | Run a campaign | ⛔ blocked (by choice) | Every no-cost step passes. The campaign help lists `--no-closeout`. `closeout --help` exits 0. Close-out without a sidecar exits 2: `closeout: NULL_SIDECAR_PATH must name the sealed null sidecar …`. The close-out success path needs a real campaign, which is not run without spend. |
+| J17 | Dreaming cycle | ❌ **fail at step 1b** | `./run.sh migrate` exits 2: `error: Failed to spawn: alembic` (there is no `alembic.ini`). Applying each migration file's own `apply()` in order then crashes at `0113_node_indexes`: `no such table: main.node`, because `node` is created by `0118`, later in the chain. With no migrated store, `dream` refuses with "holds no replay_score table" instead of reaching `pool_too_thin`. **With the tables present (workaround, a diagnostic), every later step passes:** `pool_too_thin: the pool holds 0 world(s)…`; the fill writes 45 worlds and a rerun is idempotent; another seed is refused with `bootstrap_pool_populated`; the cycle exits 0 with `revision_cap` 10, a 31/14 train/holdout split, 355 `replay_score` rows and a gap printed; the same seed on a new iteration selects the same `code_hash`; `--write-selected` writes the policy and refuses to overwrite it; `--reviser llm` gives `policy_isolation_required`. |
+| J18 | Nightly canary | ✅ pass | `nullius-canary.timer` and `.service` exist. `no reading` on a fresh install. Run before freeze: `canary_reference_absent`. Freeze exits 0. A second freeze: `canary_reference_exists`. Run: exit 0, deviation 0.0, lamp `true` with `canary_last_run_at`. With a tampered constant (diagnostic): exit 3, lamp `false`. |
+| J19 | M1 triage | ✅ pass | AUC 0.4548 over the member's planted panel, `"reading": "learned_signature_warranted"`. `--count 1` exits 1 with one line. |
+| J20 | Gate evidence | ✅ pass | Operator store: `canary: ok` and `train-vs-holdout gap: -0.144 (iteration run8-b)`. The other three lines read `no reading` (they fill at campaign close-out). All five routes answer 200. Live metrics stay deferred (owner's decision). |
+| J21 | VST bot | ⛔ blocked (by choice) | Steps 1–4 pass. **The heartbeat now prints `{"verdict": "absent", …}`**, which resolves the Run 7 observation. Step 5 (live VST) was not run. |
+
+**Result: 18 of 21 pass, 1 fail (J17), 2 blocked by the no-spend choice. No traceback anywhere.**
+
+**Findings for the next fix round:**
+1. `./run.sh migrate` is broken (Alembic absent), and the migration tree cannot build a fresh database in its declared order (`0113`/`0114` touch `node` before `0118` creates it; base `0106` is absent from the tree). This blocks J17 for a real operator.
+2. No example incumbent policy is shipped for `dream --incumbent`. The only admissible one lives in a test file.
+3. `orchestrator.closeout` answers a store whose `node` rows carry no metric columns with a raw `no such column: ic_mean`, not a named refusal.
+4. `python -m canary.run` and `python -m tripwires.triage` print `RuntimeWarning: '…' found in sys.modules …` on every invocation.
+5. `packages/canary/tests/test_threads.py`: two tests fail under `-n 4` and pass alone. This was already failing before the run, and it breaks the repo's order-independence rule.

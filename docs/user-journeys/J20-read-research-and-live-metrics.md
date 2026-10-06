@@ -3,9 +3,9 @@ id: J20-read-research-and-live-metrics
 title: Read the research and live metrics behind the headline
 persona: Operator
 source: PRD §11 (primary + secondary metrics); architecture §16 research and live metrics; app_spec.xml features persisting sensitivity/specificity, Type-B depth, discoveries per 1000, train-vs-holdout gap, replay latency
-status: fail
-last_checked: run 7
-evidence: screenshots/run-7/J2-J4-J5-J6-dashboard-populated.png, screenshots/run-7/J14-index-rendered.png, screenshots/run-7/J17-J20-entry-point-search.txt
+status: pass
+last_checked: run 8
+evidence: screenshots/run-8/J20-dashboard-operator-store.png, screenshots/run-8/J20-dashboard-operator-store-text.txt, screenshots/run-8/J2-J4-J5-J6-dashboard-populated.png, screenshots/run-8/J14-index-rendered.png, screenshots/run-8/J20-api-meta-overfit.json, screenshots/run-8/J20-api-null-calibration.json
 ---
 
 # J20 — The metrics behind FDR_deploy

@@ -4,8 +4,8 @@ title: Start the dashboard with no metrics store configured
 persona: Operator
 source: app_spec.xml feature 351 (DashboardRenderError)
 status: pass
-last_checked: run 7
-evidence: screenshots/run-7/J3-dashboard-no-database-url.png
+last_checked: run 8
+evidence: screenshots/run-8/J3-dashboard-no-database-url.png
 ---
 
 # J03 — Start the dashboard with no metrics store configured

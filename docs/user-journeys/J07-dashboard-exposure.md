@@ -4,8 +4,8 @@ title: Run the dashboard safely: local only, no third-party links
 persona: Operator
 source: architecture §2; security hygiene
 status: pass
-last_checked: run 7
-evidence: screenshots/run-7/J2-J4-J5-J6-dashboard-populated.png, screenshots/run-7/J3-dashboard-no-database-url.png
+last_checked: run 8
+evidence: screenshots/run-8/J2-J4-J5-J6-dashboard-populated.png, screenshots/run-8/J3-dashboard-no-database-url.png
 ---
 
 # J07 — Run the dashboard safely: local only, no third-party links

@@ -1,0 +1,1 @@
+{"iteration_id": "run8-a", "n_bootstrap": 45, "n_financial": 0, "revision_cap": 10, "module_id": "cand-7ccf6888df32b268af5b86c6114bc4df", "code_hash": "7ccf6888df32b268af5b86c6114bc4dffbf409396a98fe60af24b2c992054a9b", "train_mean": 0.0004130766986429783, "holdout_mean": 0.10312985526003872, "gap": -0.10271677856139574, "replay_score_rows": 355}

@@ -4,15 +4,15 @@ title: See the three instrument lamps in permanent chrome
 persona: Operator
 source: app_spec.xml feature 342; ui_layout; M5 ux
 status: pass
-last_checked: run 7
-evidence: screenshots/run-7/J2-J4-J5-J6-dashboard-populated.png, screenshots/run-7/J4-lamps-with-threshold.png
+last_checked: run 8
+evidence: screenshots/run-8/J2-J4-J5-J6-dashboard-populated.png, screenshots/run-8/J4-lamps-with-threshold.png
 ---
 
 # J04 — See the three instrument lamps in permanent chrome
 
 ## Preconditions
 
-- A store populated by `python -m nullius_api.demo` (canary healthy, a KS-guard reading, a feed-staleness reading).
+- A store populated by `python -m nullius_api.demo` (a KS-guard reading and a feed-staleness reading; no canary run, so the canary lamp honestly reads `no reading` until `./run.sh canary` has run — see J18).
 
 ## Steps
 

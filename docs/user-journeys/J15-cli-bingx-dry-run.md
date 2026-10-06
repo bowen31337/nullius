@@ -4,8 +4,8 @@ title: Dry-run the book onto BingX VST
 persona: Operator
 source: additions_spec_bingx_dry_run.xml features 1-4 (Stage 0)
 status: pass
-last_checked: run 7
-evidence: screenshots/run-7/J15-step1-dry-run.txt, screenshots/run-7/J15-step2-client-order-ids.txt, screenshots/run-7/J15-step3-rerun.txt, screenshots/run-7/J15-step4-sockets-blocked.txt, screenshots/run-7/J15-step5-missing-book.txt
+last_checked: run 8
+evidence: screenshots/run-8/J15-step1-dry-run.txt, screenshots/run-7/J15-step2-client-order-ids.txt, screenshots/run-7/J15-step3-rerun.txt, screenshots/run-8/J15-step4-sockets-blocked.txt, screenshots/run-8/J15-step5-missing-book.txt
 ---
 
 # J15 — Dry-run the book onto BingX VST

@@ -1,0 +1,27 @@
+THRESHOLD = 0.4063264665127095
+
+def select(question):
+    roots = question.legal_roots()
+    observed = question.observed()
+    if not observed:
+        fallback = None
+        for root in roots:
+            fallback = root
+            break
+        question.commit(fallback)
+        return list(roots)
+    best = None
+    best_distance = None
+    for node_id, obs in observed.items():
+        diff = obs.r2_train - THRESHOLD
+        distance = diff * diff
+        if best_distance is None or distance < best_distance:
+            best = node_id
+            best_distance = distance
+    question.commit(best)
+    frontier = []
+    for node_id in observed:
+        for action in question.legal_actions(node_id):
+            if action not in observed and action not in frontier:
+                frontier.append(action)
+    return frontier

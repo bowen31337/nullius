@@ -4,8 +4,8 @@ title: Run one dreaming cycle and read which policy it selected (Loop 2)
 persona: Operator
 source: PRD §5 Loop 2, §12 M1.5 + M3 (the gate), §12.1; architecture §10.3.1, §10.6, §20; app_spec.xml key_interaction 3 "Dreaming cycle", success_criteria "a dreaming cycle completes and selects a policy revision"
 status: fail
-last_checked: run 7
-evidence: screenshots/run-7/J17-J20-entry-point-search.txt
+last_checked: run 8
+evidence: screenshots/run-8/J17-step0a-run-sh-migrate.txt, screenshots/run-8/J17-step0b-apply-tree-workaround.txt, screenshots/run-8/J17-step3-dream-thin-pool.txt, screenshots/run-8/J17-step2b-fill.txt, screenshots/run-8/J17-step2d-fill-other-seed.txt, screenshots/run-8/J17-step4a-dream.txt, screenshots/run-8/J17-step4b-dream-rerun.txt, screenshots/run-8/J17-step4c-reviser-llm.txt, screenshots/run-8/J17-step4d-write-selected-refuses-overwrite.txt
 ---
 
 # J17 — Run one dreaming cycle
@@ -31,6 +31,10 @@ up the pool's numbers before enough financial campaigns exist.
    `deploy/systemd/`.
    Expect: one documented command, such as `./run.sh dream` or
    `python -m dreaming.cycle`, with `--help`.
+1b. Prepare a fresh research store with `./run.sh migrate`.
+   Expect: exit `0`; the store holds every table the dreaming cycle and the
+   pool read (`replay_score`, `policy_revision`, `node`, …), and a rerun
+   changes nothing.
 2. Fill the pool with bootstrap worlds (PRD M1.5: 40–50 worlds, each
    carrying `source_commit` and `dataset_manifest_hash`).
    Expect: an operator command that fills the pool and reports `n_worlds`

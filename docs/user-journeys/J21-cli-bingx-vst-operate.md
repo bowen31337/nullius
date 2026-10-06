@@ -4,8 +4,8 @@ title: Operate the BingX VST paper bot (mirror, rebalance, flatten, heartbeat, a
 persona: Operator
 source: additions_spec_bingx_vst_mirror.xml, additions_spec_bingx_vst_stage2.xml, additions_spec_bingx_vst_alerts.xml; PRD §8 C9–C10; architecture §13.2–13.3, §17; CLAUDE.md "BingX VST bot"
 status: blocked
-last_checked: run 7
-evidence: screenshots/run-7/J21-step1-mirror-help.txt, screenshots/run-7/J21-step1-rebalance-help.txt, screenshots/run-7/J21-step1-flatten-help.txt, screenshots/run-7/J21-step1-heartbeat-help.txt, screenshots/run-7/J21-step1-alert-help.txt, screenshots/run-7/J21-step2a-mirror-no-keys.txt, screenshots/run-7/J21-step2b-rebalance-no-keys.txt, screenshots/run-7/J21-step3-flatten-no-keys.txt, screenshots/run-7/J21-step4a-heartbeat-empty-store.txt, screenshots/run-7/J21-step4b-alert-test-no-token.txt
+last_checked: run 8
+evidence: screenshots/run-7/J21-step1-mirror-help.txt, screenshots/run-7/J21-step1-rebalance-help.txt, screenshots/run-7/J21-step1-flatten-help.txt, screenshots/run-7/J21-step1-heartbeat-help.txt, screenshots/run-7/J21-step1-alert-help.txt, screenshots/run-7/J21-step2a-mirror-no-keys.txt, screenshots/run-7/J21-step2b-rebalance-no-keys.txt, screenshots/run-7/J21-step3-flatten-no-keys.txt, screenshots/run-7/J21-step4a-heartbeat-empty-store.txt, screenshots/run-7/J21-step4b-alert-test-no-token.txt, screenshots/run-8/J21-step4a-heartbeat-empty-store.txt
 ---
 
 # J21 — Operate the BingX VST paper bot
@@ -38,7 +38,8 @@ the owner has not authorised them for a run, they are recorded as
 4. Run `bingx_heartbeat --max-age-hours 5` against an empty scratch store,
    and `bingx_alert --test`, with no Telegram token.
    Expect: exit `1` (the bot is stale or absent; the test was not delivered),
-   one line each, no traceback.
+   no traceback. The heartbeat also prints its verdict as one JSON line
+   (`"verdict": "absent"`).
 5. *(live, VST)* Run `./run.sh vst --book <book> --status`, then
    `./run.sh vst-rebalance --book <book>` twice in the same slot.
    Expect: the first rebalance exits `0`, `1` or `3` as documented. The

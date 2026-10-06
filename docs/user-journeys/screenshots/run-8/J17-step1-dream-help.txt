@@ -1,0 +1,25 @@
+usage: python -m orchestrator.dream [-h] --incumbent PATH [--iteration-id ID]
+                                    [--beta BETA] [--seed S] [--round-cap N]
+                                    [--reviser {jitter,llm}]
+                                    [--write-selected PATH]
+
+Run one dreaming cycle over the stored world pool: hold the pool fixed, revise
+the incumbent policy M times, sweep every candidate over the train worlds,
+select the argmax, sweep the winner over the holdout worlds, and print the
+selected revision's train-versus-holdout gap as one JSON line.
+
+options:
+  -h, --help            show this help message and exit
+  --incumbent PATH      path to the incumbent exploration policy's source
+  --iteration-id ID     names this cycle (default: a fresh id)
+  --beta BETA           the explore/exploit scalar scores are measured at
+                        (default 0.5)
+  --seed S              the revision sweep's seed (default: the iteration id)
+  --round-cap N         selection rounds score_on_world allows per world
+                        (default 30)
+  --reviser {jitter,llm}
+                        the policy-development strategy (default jitter; llm
+                        is refused)
+  --write-selected PATH
+                        write the selected candidate's source to PATH (refuses
+                        to overwrite)
