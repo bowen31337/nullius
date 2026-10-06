@@ -127,6 +127,22 @@ cp deploy/campaign/evaluation-config.example.json  deploy/campaign/evaluation-co
 
 For gVisor isolation, `deploy/gvisor/provision_runtime.sh` builds the read-only runtime root the sandbox runs in (pinned Python, polars and pyarrow, the baked signal-child bootstrap), and the orchestrator verifies that root against its manifest digest before running any agent code. A campaign interrupted part-way is resumable with `orchestrator.resume_campaign`.
 
+### Canary, the middle loop, the M1 triage and close-out
+
+| Command | `run.sh` verb | Exit codes |
+|---|---|---|
+| `python -m canary.run [--freeze-reference]` | `canary` | 0 replayed and recorded; 1 refused (no active reference, more than one, or one already frozen); 2 no `DATABASE_URL`; 3 the replay broke tolerance, which halts dreaming |
+| `python -m bootstrap.fill [--count N] [--pool-seed S] [--census]` | `bootstrap-fill` | 0 filled, or census printed with `--census`; 1 refused (the pool already holds a different seed, or count is outside [40, 50]); 2 no `DATABASE_URL` |
+| `python -m orchestrator.dream --incumbent PATH [...]` | `dream` | 0 cycle committed, prints the selected revision and its train-vs-holdout gap; 1 refused (canary halt, pool too thin, incumbent fails screening, or `--reviser llm`); 2 no `DATABASE_URL` |
+| `python -m tripwires.triage [--seed S] [--count N]` | `triage` | 0 prints the perturbation-stability AUC and its PRD §12 reading, measured over the member's own planted panel; 1 refused (bad seed or count) |
+| `python -m orchestrator.closeout --campaign-id ID` | `closeout` | 0 campaign calibrated; 1 refused (unknown campaign or a one-sided plant); 2 missing the null sidecar or `DATABASE_URL`; 3 the verdict is VOID |
+
+`canary`, `bootstrap-fill`, `dream` and `triage` need no secret and default `DATABASE_URL` the way `campaign` does. `closeout` also needs the null sidecar (`NULL_SIDECAR_PATH`, `NULL_SIDECAR_KEY_REF`), so it runs under `op run --env-file=.env.campaign.tpl` like `campaign` does.
+
+`./run.sh campaign` now closes itself out: after its summary line it runs `closeout` on the `campaign_id` it just finished and prints that JSON line, so `FDR_deploy`, the KS guard, sensitivity/specificity, Type-B depth and the discovery rate are measured for every real campaign, not only the demo seeder (`nullius_api.demo`). A close-out refusal exits the campaign command 1 without losing the campaign — rerun `./run.sh closeout --campaign-id ID` once the cause is fixed. A VOID verdict exits 3. `--no-closeout` skips the step when no sidecar is configured.
+
+A nightly determinism canary runs on its own schedule: `deploy/systemd/nullius-canary.timer` fires `nullius-canary.service` (`run.sh canary`) daily at 03:15 UTC (`Persistent=true`), alerting through the existing VST alert unit on failure. Neither unit is installed or enabled by the repository.
+
 ## Stack
 
 Python 3.12 · [uv](https://docs.astral.sh/uv/) workspace · Polars · DuckDB over Parquet · Pydantic Settings · SQLite / PostgreSQL · asyncio + websockets · gVisor · Streamlit

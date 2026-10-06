@@ -18,20 +18,24 @@ must be able to run the triage and read the number.
 
 ## Preconditions
 
-- A store holding a campaign with planted nulls and perturbation-stability
-  scores (from J16), or the demo seeder's campaign.
+- None. The triage (`python -m tripwires.triage`) builds its own synthetic
+  planted panel from `--seed`/`--count`; it reads no store and makes no
+  network call.
 
 ## Steps
 
 1. Look for the operator surface that runs the triage, in `run.sh`,
    `python -m` entry points, the API routes (J14's index) and the dashboard.
    Expect: one documented command or route.
-2. Run it against a campaign.
-   Expect: one AUC with its interval and the count of nulls and reals. The
-   number comes from the scorer process that holds the sidecar key, and no
-   per-node `is_null` label is printed (PRD §4.2).
-3. Run it against a campaign with no planted nulls, or no stability scores.
-   Expect: a refusal naming what is missing, never `AUC = 0.5`.
+2. Run it.
+   Expect: one AUC with its interval and the count of nulls and reals,
+   measured over the member's own planted panel (a synthetic population
+   sized by `--count`, not a stored campaign) — the triage reads no store
+   and makes no network call, so there is no sidecar read and no per-node
+   `is_null` label printed (PRD §4.2).
+3. Run it with a bad seed, or a count below 2.
+   Expect: a refusal naming what's wrong (`TripwirePanelError`), never
+   `AUC = 0.5`.
 
 ## Result
 

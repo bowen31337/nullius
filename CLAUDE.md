@@ -140,6 +140,32 @@ applying planted nulls), persists, and stops on budget or saturation.
   `.env.campaign.tpl.example` and `deploy/campaign/*-config.example.json`.
 - **Resume:** `orchestrator.resume_campaign(campaign_id, …)` continues an
   interrupted campaign from its node rows — it never re-creates or re-seals.
+- **Close-out:** after a campaign finishes, `./run.sh campaign` runs
+  `orchestrator.closeout --campaign-id ID` on it automatically and prints its
+  JSON line, so `FDR_deploy`, the KS guard, sensitivity/specificity, Type-B
+  depth and the discovery rate get persisted for every real campaign, not
+  only the demo seeder (`nullius_api.demo`). Exit 0 means calibrated, 1 means
+  close-out refused (the campaign stays recorded; rerun
+  `./run.sh closeout --campaign-id ID` once the cause is fixed), 3 means the
+  verdict is VOID. `--no-closeout` skips the step for a deployment with no
+  sidecar configured.
+- **The five operator verbs** (`additions_spec_operator_surfaces.xml`):
+
+  | `run.sh` verb | Runs | Exit codes |
+  |---|---|---|
+  | `canary` | `python -m canary.run [--freeze-reference]` | 0 replayed and recorded; 1 refused (no/ambiguous/already-frozen reference); 2 no `DATABASE_URL`; 3 broken determinism (halts dreaming) |
+  | `bootstrap-fill` | `python -m bootstrap.fill [--count N] [--pool-seed S] [--census]` | 0 filled or census-only; 1 refused (seed mismatch, bad count); 2 no `DATABASE_URL` |
+  | `dream` | `python -m orchestrator.dream --incumbent PATH [...]` | 0 cycle committed; 1 refused (canary halt, pool too thin, screening failure, `--reviser llm`); 2 no `DATABASE_URL` |
+  | `triage` | `python -m tripwires.triage [--seed S] [--count N]` | 0 prints the AUC over the member's own planted panel (no store read); 1 refused (bad seed/count) |
+  | `closeout` | `python -m orchestrator.closeout --campaign-id ID` | 0 calibrated; 1 refused; 2 missing sidecar/`DATABASE_URL`; 3 VOID |
+
+  `canary`, `bootstrap-fill`, `dream` and `triage` need no secret and default
+  `DATABASE_URL` the way `campaign` does; `closeout` needs the null sidecar,
+  so it runs under `.env.campaign.tpl` like `campaign`.
+- **Canary timer:** `deploy/systemd/nullius-canary.timer` fires
+  `nullius-canary.service` (`run.sh canary`) daily at 03:15 UTC
+  (`Persistent=true`), with `OnFailure=nullius-vst-alert@%n.service`. Neither
+  unit is installed or enabled by the repo.
 - **Sandbox, the security boundary:** agent-authored signal code runs under
   gVisor (`runsc`, the primary) or a bubblewrap subprocess (`unisolated`,
   which needs `acknowledge_unisolated: true`). **The Python import guard in
