@@ -64,7 +64,7 @@ from orchestrator._context import (
     signal_sandbox,
 )
 from orchestrator._evaluate import SandboxExecutionError, evaluate_node
-from orchestrator._gvisor import GVisorSandbox
+from orchestrator._gvisor import GVisorSandbox, _tree_sha256
 from orchestrator._hardened_sandbox import HardenedSubprocessSandbox
 from orchestrator._oci_bundle import CHILD_BOOTSTRAP_PATH
 from snapshot import SnapshotService
@@ -239,6 +239,12 @@ def test_signal_sandbox_answers_gvisor_sandbox_for_gvisor(
     child_path = runtime_root / CHILD_BOOTSTRAP_PATH.lstrip("/")
     child_path.parent.mkdir(parents=True, exist_ok=True)
     child_path.write_text("", encoding="utf-8")
+
+    # campaign-driver gVisor manifest check: construction also verifies
+    # runtime_root against <runtime_root>.manifest.json's tree_sha256, so
+    # this stub root needs a manifest matching its own (stub) contents.
+    manifest_path = Path(f"{runtime_root}.manifest.json")
+    manifest_path.write_text(json.dumps({"tree_sha256": _tree_sha256(runtime_root)}), encoding="utf-8")
 
     context = _bare_context(
         sandbox_runtime="gvisor",

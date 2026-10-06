@@ -19,6 +19,16 @@
 # path orchestrator._oci_bundle.CHILD_BOOTSTRAP_PATH names — instead of
 # being bind-mounted in at run time. Re-running this script refreshes it.
 #
+# additions_spec_gvisor_executor.xml / runtime-root manifest check:
+# orchestrator._gvisor.GVisorSandbox reads ROOT.manifest.json at
+# construction and recomputes tree_sha256 itself (orchestrator._gvisor
+# ._tree_sha256), refusing to run agent code in a root whose contents don't
+# hash to the manifest's value. Keep this script's digest pipeline and that
+# function in agreement: same files (sha256sum's own "-type f", symlinks
+# excluded), same per-file line shape ("<hex>  ./<relative path>\n", two
+# spaces), same order (LC_ALL=C — plain codepoint order, so no locale can
+# make this script and Python disagree on how "./a" and "./B" sort).
+#
 # Needs: sudo, debootstrap, uv, network access to the Ubuntu mirror and PyPI.
 set -euo pipefail
 
@@ -71,7 +81,11 @@ echo "→ verify imports with the bootstrap's flags (python3 -I) in a chroot"
 sudo chroot "$ROOT.new" /usr/bin/python3 -I -c \
   "import polars, pyarrow, contract.payload, contract.signal, sys; print('ok', sys.version.split()[0], polars.__version__, pyarrow.__version__)"
 
-DIGEST="$(cd "$ROOT.new" && sudo find . -type f -print0 | sort -z | sudo xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+# orchestrator._gvisor.GVisorSandbox recomputes this same digest at
+# construction (orchestrator._gvisor._tree_sha256) and refuses to run a root
+# whose contents don't hash to this value — LC_ALL=C pins the sort to plain
+# codepoint order so it agrees with Python's own str sort, locale-independent.
+DIGEST="$(cd "$ROOT.new" && sudo find . -type f -print0 | LC_ALL=C sort -z | sudo xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
 PY="$(sudo chroot "$ROOT.new" /usr/bin/python3 -c 'import sys; print(sys.version.split()[0])')"
 COMMIT="$(git -c safe.directory="$REPO" -C "$REPO" rev-parse HEAD)"
 sudo tee "$ROOT.new.manifest.json" >/dev/null <<EOF

@@ -25,12 +25,28 @@ builds (:func:`_provision_runtime_root`) carries a real, baked-in copy of
 ``orchestrator._sandbox_child`` at :data:`CHILD_BOOTSTRAP_PATH` — the same
 thing ``deploy/gvisor/provision_runtime.sh`` does for a real runtime — rather
 than relying on a bind mount this module no longer produces.
+
+Campaign-driver gaps, "System verifies the gVisor runtime root against its
+manifest": construction now also reads ``<runtime_root>.manifest.json`` and
+refuses unless its ``tree_sha256`` matches
+:func:`orchestrator._gvisor._tree_sha256`'s own recomputation over
+``runtime_root`` — so :func:`_provision_runtime_root` writes a correct
+manifest too (via :func:`_write_manifest`), the same way
+``deploy/gvisor/provision_runtime.sh`` does for a real root, and every
+existing construction in this suite keeps passing that check unmodified.
+The dedicated tests below build a small fake root (never the real 455 MB
+one) and prove a matching digest constructs while a mutated file, a missing
+manifest, malformed JSON, a missing ``tree_sha256`` and a wrong digest each
+raise :class:`~orchestrator._gvisor.GVisorUnavailableError` — exercised
+through a stubbed ``fake_runsc``, never a real one.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
+import subprocess
 import sys
 import time
 import uuid
@@ -47,22 +63,47 @@ from orchestrator._oci_bundle import CHILD_BOOTSTRAP_PATH, BundleError
 
 _UNIVERSE = ("AAA", "BBB")
 
+#: Sentinel default for :func:`_write_manifest`'s ``tree_sha256`` keyword,
+#: telling "compute the real digest" apart from an explicit ``None`` ("omit
+#: the key").
+_ABSENT = object()
+
 # -- a provisioned runtime root, the way deploy/gvisor/provision_runtime.sh
 # -- bakes one in for real -----------------------------------------------------
 
 
 def _provision_runtime_root(root: Path) -> Path:
-    """Create ``root`` and bake a real copy of the child bootstrap into it.
+    """Create ``root``, bake in the child bootstrap, and write a matching manifest.
 
     Mirrors what ``deploy/gvisor/provision_runtime.sh`` does to a real
     runtime root: the child bootstrap lands at :data:`CHILD_BOOTSTRAP_PATH`
-    (relative to ``root``), never bind-mounted in at run time.
+    (relative to ``root``), never bind-mounted in at run time, and a
+    manifest naming the root's own ``tree_sha256`` is written beside it —
+    the digest :class:`~orchestrator._gvisor.GVisorSandbox` now verifies at
+    construction. Written last, so it describes the root's final contents.
     """
     root.mkdir(parents=True, exist_ok=True)
     dest = root / CHILD_BOOTSTRAP_PATH.lstrip("/")
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(Path(_real_child.__file__).read_bytes())
+    _write_manifest(root)
     return root
+
+
+def _write_manifest(root: Path, *, tree_sha256: object = _ABSENT) -> Path:
+    """Write ``<root>.manifest.json``, defaulting ``tree_sha256`` to the real digest.
+
+    ``tree_sha256=None`` omits the key entirely (the "manifest carries no
+    tree_sha256" case); any other explicit value is written verbatim (a
+    deliberately wrong digest, for the mismatch case).
+    """
+    digest = gv._tree_sha256(root) if tree_sha256 is _ABSENT else tree_sha256
+    manifest: dict[str, object] = {"root": str(root)}
+    if digest is not None:
+        manifest["tree_sha256"] = digest
+    manifest_path = Path(f"{root}.manifest.json")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest_path
 
 
 # -- the fake runsc executables ------------------------------------------------
@@ -300,6 +341,101 @@ def test_an_unprovisioned_runtime_root_is_refused_the_same_way(tmp_path: Path, f
             runtime_root=tmp_path / "does" / "not" / "exist",
             state_root=tmp_path / "state",
         )
+
+
+# -- construction: the runtime root must match its own manifest's digest -----
+#
+# None of these need a real runsc — fake_runsc (feature 5's stand-in,
+# resolved via shutil.which exactly like the real binary) is enough, because
+# the manifest check runs before anything is ever spawned. The direct
+# _tree_sha256 tests below need no runsc at all, run or stubbed.
+
+
+def test_tree_sha256_pure_function_matches_hand_computed_digest(tmp_path: Path) -> None:
+    root = tmp_path / "tiny-root"
+    (root / "a").mkdir(parents=True)
+    (root / "a" / "one.txt").write_bytes(b"one")
+    (root / "two.txt").write_bytes(b"two")
+    (root / "a" / "a-link.txt").symlink_to(root / "a" / "one.txt")  # excluded, like `find -type f`
+
+    lines = [
+        f"{hashlib.sha256(b'one').hexdigest()}  ./a/one.txt\n",
+        f"{hashlib.sha256(b'two').hexdigest()}  ./two.txt\n",
+    ]
+    expected = hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()
+    assert gv._tree_sha256(root) == expected
+
+
+def test_tree_sha256_matches_the_shell_pipeline_provision_runtime_sh_uses(tmp_path: Path) -> None:
+    root = tmp_path / "tiny-root"
+    (root / "nested").mkdir(parents=True)
+    (root / "nested" / "B.txt").write_bytes(b"content-b")
+    (root / "a.txt").write_bytes(b"content-a")
+
+    shell_digest = subprocess.run(
+        "find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1",
+        shell=True,
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert gv._tree_sha256(root) == shell_digest
+
+
+def test_a_fresh_manifest_with_a_matching_digest_constructs(tmp_path: Path, fake_runsc: Path) -> None:
+    sandbox_instance = _sandbox(tmp_path, fake_runsc)
+    assert isinstance(sandbox_instance, gv.GVisorSandbox)
+
+
+def test_a_mutated_file_after_the_manifest_was_written_is_refused(tmp_path: Path, fake_runsc: Path) -> None:
+    runtime_root = tmp_path / "runtime-root"
+    _provision_runtime_root(runtime_root)
+    (runtime_root / CHILD_BOOTSTRAP_PATH.lstrip("/")).write_bytes(b"tampered-after-provisioning")
+    with pytest.raises(gv.GVisorUnavailableError, match=gv.GVISOR_UNAVAILABLE_CODE) as excinfo:
+        gv.GVisorSandbox(runsc=str(fake_runsc), runtime_root=runtime_root, state_root=tmp_path / "state")
+    assert str(runtime_root) in str(excinfo.value)
+
+
+def test_a_missing_manifest_file_is_refused(tmp_path: Path, fake_runsc: Path) -> None:
+    runtime_root = tmp_path / "runtime-root"
+    runtime_root.mkdir()
+    dest = runtime_root / CHILD_BOOTSTRAP_PATH.lstrip("/")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(Path(_real_child.__file__).read_bytes())
+    # deliberately no manifest written at all
+    with pytest.raises(gv.GVisorUnavailableError, match=gv.GVISOR_UNAVAILABLE_CODE) as excinfo:
+        gv.GVisorSandbox(runsc=str(fake_runsc), runtime_root=runtime_root, state_root=tmp_path / "state")
+    assert "manifest" in str(excinfo.value)
+
+
+def test_malformed_manifest_json_is_refused(tmp_path: Path, fake_runsc: Path) -> None:
+    runtime_root = tmp_path / "runtime-root"
+    _provision_runtime_root(runtime_root)
+    Path(f"{runtime_root}.manifest.json").write_text("{not valid json", encoding="utf-8")
+    with pytest.raises(gv.GVisorUnavailableError, match=gv.GVISOR_UNAVAILABLE_CODE) as excinfo:
+        gv.GVisorSandbox(runsc=str(fake_runsc), runtime_root=runtime_root, state_root=tmp_path / "state")
+    assert str(runtime_root) in str(excinfo.value)
+
+
+def test_manifest_missing_tree_sha256_key_is_refused(tmp_path: Path, fake_runsc: Path) -> None:
+    runtime_root = tmp_path / "runtime-root"
+    _provision_runtime_root(runtime_root)
+    _write_manifest(runtime_root, tree_sha256=None)
+    with pytest.raises(gv.GVisorUnavailableError, match=gv.GVISOR_UNAVAILABLE_CODE) as excinfo:
+        gv.GVisorSandbox(runsc=str(fake_runsc), runtime_root=runtime_root, state_root=tmp_path / "state")
+    assert "tree_sha256" in str(excinfo.value)
+
+
+def test_a_wrong_tree_sha256_in_the_manifest_is_refused(tmp_path: Path, fake_runsc: Path) -> None:
+    runtime_root = tmp_path / "runtime-root"
+    _provision_runtime_root(runtime_root)
+    _write_manifest(runtime_root, tree_sha256="0" * 64)
+    with pytest.raises(gv.GVisorUnavailableError, match=gv.GVISOR_UNAVAILABLE_CODE) as excinfo:
+        gv.GVisorSandbox(runsc=str(fake_runsc), runtime_root=runtime_root, state_root=tmp_path / "state")
+    message = str(excinfo.value)
+    assert "0" * 64 in message
+    assert str(runtime_root) in message
 
 
 def test_runsc_as_a_path_object_not_just_a_string(tmp_path: Path, fake_runsc: Path) -> None:

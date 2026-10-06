@@ -69,7 +69,9 @@ tool that is, in turn, about to run agent-authored code.
 
 from __future__ import annotations
 
+import hashlib
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -188,6 +190,97 @@ def _require_child_bootstrap(runtime_root: PathLike) -> None:
         )
 
 
+#: The suffix ``<runtime_root>.manifest.json`` is read from — a sibling of
+#: the root, never a file under it, so the manifest is never itself part of
+#: the tree digest it describes. The same spelling
+#: ``deploy/gvisor/provision_runtime.sh`` writes to (``$ROOT.manifest.json``).
+_MANIFEST_SUFFIX: Final[str] = ".manifest.json"
+
+
+def _manifest_path(runtime_root: PathLike) -> Path:
+    return Path(f"{os.fspath(runtime_root)}{_MANIFEST_SUFFIX}")
+
+
+def _tree_sha256(runtime_root: PathLike) -> str:
+    """The provisioning script's own tree digest, recomputed in Python.
+
+    Mirrors ``deploy/gvisor/provision_runtime.sh``'s
+    ``find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum |
+    sha256sum`` pipeline exactly, so the two agree on a freshly provisioned
+    root: every regular file under ``runtime_root`` (symlinks excluded, the
+    same as ``find -type f``) gets its own sha256; those are written one per
+    line as ``sha256sum`` itself would (``"<hex>  ./<relative path>\\n"``,
+    two spaces), in ``LC_ALL=C`` path order (plain codepoint order — what
+    :func:`sorted` already gives for these paths); the concatenation of
+    those lines is hashed again, and that is the tree digest.
+    """
+    root = Path(runtime_root)
+    relpaths: list[str] = []
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in filenames:
+            candidate = Path(dirpath) / name
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+            relpaths.append(candidate.relative_to(root).as_posix())
+    relpaths.sort()
+
+    lines = []
+    for rel in relpaths:
+        digest = hashlib.sha256((root / rel).read_bytes()).hexdigest()
+        lines.append(f"{digest}  ./{rel}\n")
+    return hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()
+
+
+def _require_matching_manifest(runtime_root: PathLike) -> None:
+    """Raise unless ``<runtime_root>.manifest.json``'s ``tree_sha256`` matches.
+
+    A :class:`GVisorSandbox` is about to run agent-authored code confined
+    only by whatever is actually on disk under ``runtime_root`` — so a
+    partial debootstrap, a root some other process is still writing, or a
+    root someone tampered with after provisioning must be refused here,
+    before any container is built, rather than discovered mid-run as a
+    missing interpreter or an import that behaves differently than the
+    pinned version the manifest names. The manifest is
+    ``deploy/gvisor/provision_runtime.sh``'s own output; this is the other
+    half of that script's contract, read back at construction.
+    """
+    manifest_path = _manifest_path(runtime_root)
+    try:
+        raw = manifest_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise GVisorUnavailableError(
+            f"{GVISOR_UNAVAILABLE_CODE}: the runtime root ({runtime_root!r}) carries "
+            f"no manifest at {manifest_path} — deploy/gvisor/provision_runtime.sh "
+            "writes one beside every root it provisions, and a GVisorSandbox refuses "
+            "to run agent code in a root it cannot verify against one."
+        ) from exc
+
+    try:
+        manifest = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise GVisorUnavailableError(
+            f"{GVISOR_UNAVAILABLE_CODE}: the manifest at {manifest_path} for runtime "
+            f"root ({runtime_root!r}) is not valid JSON: {exc}"
+        ) from exc
+
+    expected = manifest.get("tree_sha256") if isinstance(manifest, dict) else None
+    if not isinstance(expected, str) or not expected:
+        raise GVisorUnavailableError(
+            f"{GVISOR_UNAVAILABLE_CODE}: the manifest at {manifest_path} for runtime "
+            f"root ({runtime_root!r}) carries no tree_sha256 — a GVisorSandbox has "
+            "nothing to verify the root's own contents against."
+        )
+
+    actual = _tree_sha256(runtime_root)
+    if actual != expected:
+        raise GVisorUnavailableError(
+            f"{GVISOR_UNAVAILABLE_CODE}: the runtime root ({runtime_root!r}) does not "
+            f"match its manifest ({manifest_path}) — manifest tree_sha256={expected!r} "
+            f"but the root's own contents hash to {actual!r}. Refused rather than run "
+            "agent code in a partial or tampered root."
+        )
+
+
 def _reports_sandbox_violation(stderr: bytes) -> bool:
     """Whether ``runsc``'s own stderr names a sandbox violation.
 
@@ -207,9 +300,14 @@ class GVisorSandbox:
     :class:`~orchestrator._hardened_sandbox.HardenedSubprocessSandbox.run`:
     ``run(code, window, *, seed)`` answers a
     :class:`~evaluator.SandboxResult`. Construction resolves ``runsc`` once
-    (raising :class:`GVisorUnavailableError` if it is unusable) and reads the
-    sandbox member's default limits once if none are given, so a per-node
-    evaluation that calls :meth:`run` repeatedly pays neither cost twice.
+    (raising :class:`GVisorUnavailableError` if it is unusable), verifies
+    ``runtime_root`` against its own ``<runtime_root>.manifest.json`` (see
+    :func:`_require_matching_manifest` — a missing manifest, malformed JSON,
+    a missing ``tree_sha256``, or a digest mismatch all refuse construction
+    rather than run agent code in a root that cannot be trusted), and reads
+    the sandbox member's default limits once if none are given, so a
+    per-node evaluation that calls :meth:`run` repeatedly pays none of those
+    costs twice.
     """
 
     def __init__(
@@ -223,6 +321,7 @@ class GVisorSandbox:
     ) -> None:
         self.runsc: Path = _require_runsc(runsc)
         _require_child_bootstrap(runtime_root)
+        _require_matching_manifest(runtime_root)
         self.runtime_root = runtime_root
         self.state_root: Path = Path(state_root).resolve()
         self.state_root.mkdir(parents=True, exist_ok=True)
