@@ -205,6 +205,29 @@ arrives as feature 342's own
 vocabulary — and propagates untranslated, the same stance the route's
 own refusal enjoys one seat over.
 
+**The Gate evidence section hangs below the primary panel and its
+trend chart — never above or beside the headline (architecture
+§16), so FDR_deploy stays the one top-line figure.**  The section
+reads feature 6's four read-only endpoints (:mod:`ops.gate_evidence`:
+the planted-null calibration pair, the Type-B depth past the flip,
+the discoveries-per-1000-charged-trials rate and the
+train-versus-holdout gap) and renders one subheader
+(:data:`GATE_EVIDENCE_HEADER`) with four captions, each naming the
+campaign or dreaming iteration its figure belongs to.  The seat is
+optional on both the page model and the dashboard's construction: a
+:class:`DashboardPage` built with no ``evidence`` argument answers
+the default, empty :class:`GateEvidenceSection`, and an
+:class:`OperatorDashboard` composed or wired without the four
+endpoints (no ``DATABASE_URL``, or a scan that never reached
+:mod:`ops.gate_evidence`) still renders — the section's captions read
+:data:`NO_READING` rather than the page refusing to draw, the same
+"a store with no row is an absence, never a zero" law the primary
+panel's own figures already state, carried one section further.  No
+profit, P&L or equity figure has anywhere to land here either: every
+field the section reads is one of the four stores' own aggregates (a
+sensitivity/specificity pair, an error count, a rate, a mean
+difference), never a returns series.
+
 **Streamlit is the deployment's ambient dependency, not a workspace
 one.**  §16's stack line names Streamlit the way it names Postgres —
 an environment the operator runs, not a library the research loop
@@ -323,6 +346,20 @@ from .fdr_route import (
     FdrDeployResponse,
     require_scoring,
 )
+from .gate_evidence import (
+    OPS_DISCOVERY_RATE_ROUTE_COMPONENT_NAME,
+    OPS_META_OVERFIT_ROUTE_COMPONENT_NAME,
+    OPS_NULL_CALIBRATION_ROUTE_COMPONENT_NAME,
+    OPS_TYPE_B_DEPTH_ROUTE_COMPONENT_NAME,
+    DiscoveryRateEndpoint,
+    DiscoveryRateHistoryResponse,
+    MetaOverfitEndpoint,
+    MetaOverfitHistoryResponse,
+    NullCalibrationEndpoint,
+    NullCalibrationHistoryResponse,
+    TypeBDepthEndpoint,
+    TypeBDepthHistoryResponse,
+)
 from .instrument_status import INSTRUMENT_STATUS_ROUTE, InstrumentStatusEndpoint
 
 __all__ = [
@@ -331,11 +368,14 @@ __all__ = [
     "DASHBOARD_REFUSAL_CODE",
     "DASHBOARD_TITLE",
     "FDR_DEPLOY_LABEL",
+    "GATE_EVIDENCE_HEADER",
+    "NO_READING",
     "PROVENANCE_COLUMNS",
     "PROVENANCE_UNRECORDED",
     "CampaignProvenance",
     "DashboardPage",
     "FdrDeployPanel",
+    "GateEvidenceSection",
     "NodeProvenanceReader",
     "OperatorDashboard",
     "main",
@@ -400,6 +440,21 @@ PROVENANCE_UNRECORDED = "provenance unrecorded"
 #: (:func:`render_refusal`), the tests and the journey's acceptance
 #: cannot drift apart on it.
 DASHBOARD_REFUSAL_CODE = "dashboard_refusal"
+
+#: The Gate evidence section's subheader — architecture §16's section,
+#: rendered below the primary panel and its trend chart on every page,
+#: never above or beside the headline.  Spelled once so the render,
+#: the tests and the section's own name cannot drift apart on it.
+GATE_EVIDENCE_HEADER = "Gate evidence"
+
+#: The words a Gate evidence caption renders when its store holds no
+#: row — a store's own absence, read the same way
+#: :data:`PROVENANCE_UNRECORDED` is: never a zero, which is a
+#: measurement a campaign or dreaming iteration actually produced.
+#: The same words render when the underlying endpoint was never wired
+#: in at all (an unconfigured deployment), because the two states look
+#: identical from the caption's side — nothing was ever read.
+NO_READING = "no reading"
 
 #: The primary panel's display contract — the reads the render makes of
 #: whatever occupies the page's primary seat.  A carrier that does not
@@ -482,6 +537,7 @@ _RENDER_CARRIER_CONTRACT = (
     "set_page_config",
     "title",
     "header",
+    "subheader",
     "metric",
     "caption",
     "line_chart",
@@ -1110,6 +1166,105 @@ class FdrDeployPanel:
 
 
 @dataclass(frozen=True, slots=True)
+class GateEvidenceSection:
+    """Architecture §16's Gate evidence section: four read-only
+    captions for the newest row of each of feature 6's four stores
+    (:mod:`ops.gate_evidence`), rendered below the primary panel and
+    its trend chart — never above or beside the headline, so
+    FDR_deploy stays the one top-line figure.
+
+    Each field holds the owning endpoint's whole
+    :meth:`~ops.gate_evidence.NullCalibrationEndpoint.get` answer (or
+    the sibling response types) or ``None`` when the
+    :class:`OperatorDashboard` was built with no reader for that
+    store — an unconfigured deployment, or a composed application that
+    never reached :mod:`ops.gate_evidence`.  The caption properties
+    read the response's own :attr:`~ops.gate_evidence.
+    NullCalibrationHistoryResponse.newest` row and fold *both* kinds of
+    absence — no reader wired, and a reader wired over a store that
+    has closed no row yet — into the same :data:`NO_READING` words,
+    because from the caption's side nothing was ever measured either
+    way; a genuine zero (a campaign that found no discoveries, a cycle
+    whose two halves read identically) is a row the store wrote and
+    renders like any other.
+
+    There is deliberately no field a profit, P&L or equity figure
+    could occupy: every value here is one of the four stores' own
+    aggregates — a sensitivity/specificity pair, an error count, a
+    per-1000 rate, a mean difference — never a returns series, the
+    same structural absence :class:`FdrDeployPanel` states for the
+    primary seat.
+    """
+
+    #: Feature 344's planted-null calibration trend, or ``None`` when
+    #: no reader was wired for it.
+    null_calibration: Optional[NullCalibrationHistoryResponse] = None
+    #: Feature 345's Type-B depth-past-the-flip trend, or ``None``.
+    type_b_depth: Optional[TypeBDepthHistoryResponse] = None
+    #: Feature 346's discoveries-per-1000-charged-trials trend, or
+    #: ``None``.
+    discovery_rate: Optional[DiscoveryRateHistoryResponse] = None
+    #: Feature 347's train-versus-holdout gap trend, or ``None``.
+    meta_overfit: Optional[MetaOverfitHistoryResponse] = None
+
+    @property
+    def sensitivity_specificity_line(self) -> str:
+        """*"sensitivity / specificity" for the newest campaign.*"""
+        newest = self.null_calibration.newest if self.null_calibration else None
+        if newest is None:
+            return f"sensitivity / specificity: {NO_READING}"
+        return (
+            f"sensitivity / specificity: {newest.sensitivity:.1%} / "
+            f"{newest.specificity:.1%} (campaign {newest.campaign_id})"
+        )
+
+    @property
+    def type_b_depth_line(self) -> str:
+        """*"Type-B depth past flip" for the newest campaign.*"""
+        newest = self.type_b_depth.newest if self.type_b_depth else None
+        if newest is None:
+            return f"Type-B depth past flip: {NO_READING}"
+        return (
+            f"Type-B depth past flip: {newest.depth_past_flip_errors} "
+            f"(campaign {newest.campaign_id})"
+        )
+
+    @property
+    def discovery_rate_line(self) -> str:
+        """*"discoveries per 1000 charged trials" for the newest
+        campaign.*"""
+        newest = self.discovery_rate.newest if self.discovery_rate else None
+        if newest is None:
+            return f"discoveries per 1000 charged trials: {NO_READING}"
+        return (
+            f"discoveries per 1000 charged trials: {newest.rate:.2f} "
+            f"(campaign {newest.campaign_id})"
+        )
+
+    @property
+    def train_holdout_gap_line(self) -> str:
+        """*"train-vs-holdout gap" for the newest dreaming
+        iteration.*"""
+        newest = self.meta_overfit.newest if self.meta_overfit else None
+        if newest is None:
+            return f"train-vs-holdout gap: {NO_READING}"
+        return (
+            f"train-vs-holdout gap: {newest.gap:.3f} "
+            f"(iteration {newest.iteration_id})"
+        )
+
+    @property
+    def lines(self) -> tuple[str, str, str, str]:
+        """The section's four captions, in the feature's own order."""
+        return (
+            self.sensitivity_specificity_line,
+            self.type_b_depth_line,
+            self.discovery_rate_line,
+            self.train_holdout_gap_line,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardPage:
     """The dashboard's whole page: one primary panel, first, and its
     permanent chrome.
@@ -1173,11 +1328,24 @@ class DashboardPage:
     moving the top line, and the lamps landed beside the chrome the
     same way, which was the point of modelling the seats explicitly:
     chrome grows, the top line does not.
+
+    The fourth seat, :attr:`evidence`, is the Gate evidence section —
+    and it is modelled the other way around from the first three: it
+    is *optional*, with a default rather than a required field and no
+    contract check in :meth:`__post_init__`, because architecture §16
+    places the whole section *below* the primary panel and its trend
+    chart, never above or beside the headline, so a page built with no
+    evidence at all (the default, empty :class:`GateEvidenceSection`)
+    is not a page where anything could have quietly climbed above the
+    fold — it is a page where the section renders its four captions as
+    the honest absence (:data:`NO_READING`) rather than refusing to
+    draw.
     """
 
     primary: FdrDeployPanel
     chrome: EpochCountChrome
     lamps: InstrumentLampsChrome
+    evidence: GateEvidenceSection = GateEvidenceSection()
 
     def __post_init__(self) -> None:
         missing = [
@@ -1293,16 +1461,30 @@ class OperatorDashboard:
     handed in that cannot answer ``reading()`` is refused by name,
     the same duck-check every other seat takes.
 
-    Every render is a fresh read of all four — the dashboard holds no
-    cache of a previous page, for the reason the endpoint holds none:
-    a campaign closed between two renders must move the second numeral,
-    an epoch spent between two renders must move the second chrome
-    strip, a lamp that goes out between two renders must darken the
-    second rail, and a triple stamped between two renders must appear
-    beside the second figure, because a cached figure of any of the
-    four kinds would make the page a fact about when it was first
-    opened rather than about what the system measured, what it has
-    left, whether any of it may be believed, and who produced it.
+    Four more carriers, all genuinely optional, read feature 6's Gate
+    evidence surfaces (:mod:`ops.gate_evidence`): ``null_calibration``,
+    ``type_b_depth``, ``discovery_rate`` and ``meta_overfit``, each
+    either ``None`` (no reader for that store — the default) or
+    something answering its ``get()``.  Unlike the gauge, the rail and
+    the route, a missing one is never refused: architecture §16 places
+    the whole Gate evidence section below the primary panel, so a
+    dashboard built without any of the four still renders a whole page
+    — the section's captions read :data:`NO_READING` for whichever
+    store has no reader, the same honest absence an unconfigured
+    deployment's primary panel already renders one seat over.
+
+    Every render is a fresh read of all of them — the dashboard holds
+    no cache of a previous page, for the reason the endpoint holds
+    none: a campaign closed between two renders must move the second
+    numeral, an epoch spent between two renders must move the second
+    chrome strip, a lamp that goes out between two renders must darken
+    the second rail, a triple stamped between two renders must appear
+    beside the second figure, and a new gate-evidence row must appear
+    beside the second rendering of the section, because a cached
+    figure of any of these kinds would make the page a fact about when
+    it was first opened rather than about what the system measured,
+    what it has left, whether any of it may be believed, who produced
+    it, and what the gate's own evidence currently reads.
 
     Two construction doors, one law each:
 
@@ -1328,6 +1510,10 @@ class OperatorDashboard:
         gauge: Any,
         rail: Any,
         provenance: Any = None,
+        null_calibration: Any = None,
+        type_b_depth: Any = None,
+        discovery_rate: Any = None,
+        meta_overfit: Any = None,
     ) -> None:
         if not callable(getattr(route, "get", None)):
             raise TypeError(
@@ -1388,10 +1574,32 @@ class OperatorDashboard:
                 "page it would render is the unattributed top line "
                 "J06's validation found (J06, docs §9.1)"
             )
+        for name, endpoint in (
+            ("null_calibration", null_calibration),
+            ("type_b_depth", type_b_depth),
+            ("discovery_rate", discovery_rate),
+            ("meta_overfit", meta_overfit),
+        ):
+            if endpoint is not None and not callable(
+                getattr(endpoint, "get", None)
+            ):
+                raise TypeError(
+                    f"OperatorDashboard renders the Gate evidence section's "
+                    f"{name} caption through an endpoint of feature 6's own "
+                    f"(:mod:`ops.gate_evidence`) — something with a get() "
+                    f"answering its history response; got "
+                    f"{type(endpoint).__name__}. Leave the argument unset "
+                    "and the caption renders 'no reading', or hand it the "
+                    "member's own endpoint (architecture §16, feature 6)"
+                )
         self._route = route
         self._gauge = gauge
         self._rail = rail
         self._provenance = provenance
+        self._null_calibration = null_calibration
+        self._type_b_depth = type_b_depth
+        self._discovery_rate = discovery_rate
+        self._meta_overfit = meta_overfit
 
     @property
     def route(self) -> Any:
@@ -1428,6 +1636,34 @@ class OperatorDashboard:
             self._provenance = NodeProvenanceReader(url)
         return self._provenance
 
+    @property
+    def null_calibration(self) -> Any:
+        """The endpoint the Gate evidence section's sensitivity /
+        specificity caption reads, or ``None`` when this dashboard was
+        built with no reader for it."""
+        return self._null_calibration
+
+    @property
+    def type_b_depth(self) -> Any:
+        """The endpoint the Gate evidence section's Type-B depth
+        caption reads, or ``None`` when this dashboard was built with
+        no reader for it."""
+        return self._type_b_depth
+
+    @property
+    def discovery_rate(self) -> Any:
+        """The endpoint the Gate evidence section's discovery-rate
+        caption reads, or ``None`` when this dashboard was built with
+        no reader for it."""
+        return self._discovery_rate
+
+    @property
+    def meta_overfit(self) -> Any:
+        """The endpoint the Gate evidence section's train-vs-holdout
+        gap caption reads, or ``None`` when this dashboard was built
+        with no reader for it."""
+        return self._meta_overfit
+
     # -- Construction -------------------------------------------------------
 
     @classmethod
@@ -1462,6 +1698,16 @@ class OperatorDashboard:
         provenance reader is wired over the same carried URL, beside
         the gauge: the figure, the count, the lamps and the triple
         all point at the one database the deployment named.
+
+        The four Gate evidence endpoints are wired the same unset-aware
+        way, through their own ``from_env`` doors — but, unlike the
+        rail, a door among these four answering ``None`` is not
+        refused: the section they feed is optional (see
+        :class:`GateEvidenceSection`), so a store that has not been
+        brought up yet over this same ``DATABASE_URL`` composes a
+        dashboard whose Gate evidence section reads
+        :data:`NO_READING` for that caption rather than a dashboard
+        that fails to build at all.
         """
         route = FdrDeployEndpoint.from_env(env)
         if route is None:
@@ -1486,6 +1732,10 @@ class OperatorDashboard:
             EpochCountGauge(route.store.database_url),
             rail,
             NodeProvenanceReader(route.store.database_url),
+            null_calibration=NullCalibrationEndpoint.from_env(env),
+            type_b_depth=TypeBDepthEndpoint.from_env(env),
+            discovery_rate=DiscoveryRateEndpoint.from_env(env),
+            meta_overfit=MetaOverfitEndpoint.from_env(env),
         )
 
     @classmethod
@@ -1519,6 +1769,16 @@ class OperatorDashboard:
         stand-in) is refused by the gauge's — and the reader's — own
         wiring refusal rather than crashing the composition on an
         attribute it never promised.
+
+        The four Gate evidence endpoints are read from the same
+        composed application by their own component names
+        (:data:`~ops.gate_evidence.OPS_NULL_CALIBRATION_ROUTE_COMPONENT_NAME`
+        and its three siblings) — but, unlike the route and the rail, a
+        missing one is not refused: the section is optional (see
+        :class:`GateEvidenceSection`), so a composition that never
+        reached :mod:`ops.gate_evidence` still renders, with
+        :data:`NO_READING` standing in for whichever caption's
+        component is absent.
         """
         application = app if app is not None else create_app()
         route = application.get("ops-fdr-deploy")
@@ -1551,7 +1811,20 @@ class OperatorDashboard:
             )
         store = getattr(route, "store", None)
         url = getattr(store, "database_url", None)
-        return cls(route, EpochCountGauge(url), rail, NodeProvenanceReader(url))
+        return cls(
+            route,
+            EpochCountGauge(url),
+            rail,
+            NodeProvenanceReader(url),
+            null_calibration=application.get(
+                OPS_NULL_CALIBRATION_ROUTE_COMPONENT_NAME
+            ),
+            type_b_depth=application.get(OPS_TYPE_B_DEPTH_ROUTE_COMPONENT_NAME),
+            discovery_rate=application.get(
+                OPS_DISCOVERY_RATE_ROUTE_COMPONENT_NAME
+            ),
+            meta_overfit=application.get(OPS_META_OVERFIT_ROUTE_COMPONENT_NAME),
+        )
 
     # -- The page and its render ---------------------------------------------
 
@@ -1590,6 +1863,18 @@ class OperatorDashboard:
         :class:`~ops.errors.DashboardRenderError`, translated at
         their seams).  None is ever caught into an answer, and none
         is cached: the next page re-asks all four.
+
+        The Gate evidence section is read last, after all four —
+        architecture §16 places it below the primary panel and its
+        trend chart, so it is asked last too, and a refusal anywhere
+        above it aborts the page before a gate-evidence endpoint is
+        ever asked.  Each of the four endpoints is read only when this
+        dashboard holds one (``None`` answers ``None``, folded into
+        :data:`NO_READING` by :class:`GateEvidenceSection` itself), and
+        a configured endpoint's own refusal
+        (:class:`~ops.errors.GateEvidenceMetricError`) propagates
+        untranslated, the same stance the route's and the rail's own
+        vocabularies take.
         """
         response = self._route.get()
         provenance = (
@@ -1626,10 +1911,33 @@ class OperatorDashboard:
                 "is the ledger's (the original refusal is chained), "
                 "never a fallback figure (feature 352, prd §13 item 4)"
             ) from exc
+        evidence = GateEvidenceSection(
+            null_calibration=(
+                self._null_calibration.get()
+                if self._null_calibration is not None
+                else None
+            ),
+            type_b_depth=(
+                self._type_b_depth.get()
+                if self._type_b_depth is not None
+                else None
+            ),
+            discovery_rate=(
+                self._discovery_rate.get()
+                if self._discovery_rate is not None
+                else None
+            ),
+            meta_overfit=(
+                self._meta_overfit.get()
+                if self._meta_overfit is not None
+                else None
+            ),
+        )
         return DashboardPage(
             primary=FdrDeployPanel(response=response, provenance=provenance),
             chrome=EpochCountChrome(count=count),
             lamps=InstrumentLampsChrome(response=rail),
+            evidence=evidence,
         )
 
     def render(self, st: Any = None) -> DashboardPage:
@@ -1670,8 +1978,15 @@ class OperatorDashboard:
         page only, beneath the plate it completes: the page with no
         campaign closed has no campaign whose triple could be read,
         and its words are the ones that say why there is no numeral.
-        The page answered is the page that rendered, so a caller (or
-        a test) can read exactly what the operator saw.
+
+        Last of all, on every page — populated or the honest
+        absence — the Gate evidence section renders: one subheader
+        (:data:`GATE_EVIDENCE_HEADER`) and the section's four captions
+        (:attr:`GateEvidenceSection.lines`), below the primary panel
+        and its trend chart, never above or beside the headline
+        (architecture §16).  The page answered is the page that
+        rendered, so a caller (or a test) can read exactly what the
+        operator saw.
         """
         carrier = require_streamlit() if st is None else st
         missing = [
@@ -1715,6 +2030,9 @@ class OperatorDashboard:
             carrier.caption(
                 "no campaign has closed, so no figure was measured"
             )
+        carrier.subheader(GATE_EVIDENCE_HEADER)
+        for line in page.evidence.lines:
+            carrier.caption(line)
         return page
 
 

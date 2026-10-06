@@ -66,6 +66,8 @@ from ops import (
     OPS_DASHBOARD_COMPONENT_NAME,
     DashboardPage,
     DashboardRenderError,
+    DiscoveryRateEndpoint,
+    DiscoveryRates,
     EpochCountChrome,
     EpochCountGauge,
     FdrDeployEndpoint,
@@ -74,8 +76,14 @@ from ops import (
     FdrDeployResponse,
     InstrumentStatusEndpoint,
     InstrumentStatusError,
+    MetaOverfitEndpoint,
+    MetaOverfitGaps,
+    NullCalibrationEndpoint,
+    NullCalibrations,
     OperatorDashboard,
     OpsError,
+    TypeBDepthEndpoint,
+    TypeBDepths,
     main,
     require_streamlit,
 )
@@ -83,8 +91,11 @@ from ops.chrome import InstrumentLampsChrome
 from ops.dashboard import (
     COMPUTED_AT_LABEL,
     DASHBOARD_REFUSAL_CODE,
+    GATE_EVIDENCE_HEADER,
+    NO_READING,
     PROVENANCE_UNRECORDED,
     CampaignProvenance,
+    GateEvidenceSection,
     NodeProvenanceReader,
     _trend_tick,
     render_refusal,
@@ -99,9 +110,12 @@ MEMBER_SRC = Path(__import__("ops").__file__).resolve().parent.parent
 #: transcript: page configuration, the title, the permanent chrome
 #: (three lamp captions — docs §5.4's rail at the top of the left
 #: rail — then feature 352's count strip), then the primary panel —
-#: headline, numeral, plate, the campaign's provenance line — and only
-#: then the one chart the dashboard draws.  Nothing renders above the
-#: numeral but the chrome.
+#: headline, numeral, plate, the campaign's provenance line — then the
+#: one chart the dashboard draws, and last the Gate evidence section
+#: (architecture §16): one subheader and its four captions, below the
+#: primary panel and its trend chart.  Nothing renders above the
+#: numeral but the chrome, and nothing renders above the Gate evidence
+#: section but the primary panel whole.
 RENDER_SEQUENCE = (
     "set_page_config",
     "title",
@@ -114,6 +128,11 @@ RENDER_SEQUENCE = (
     "caption",
     "caption",
     "line_chart",
+    "subheader",
+    "caption",
+    "caption",
+    "caption",
+    "caption",
 )
 
 STREAMLIT_INSTALLED = importlib.util.find_spec("streamlit") is not None
@@ -1087,20 +1106,24 @@ def test_an_empty_trend_renders_no_numeral_ever_a_flawless_one(
     value = st.one("metric")[1]["value"]
     assert value == "—"
     assert value != "0.0%"
-    # Five captions, in order: the three lamp lines still render (the
+    # Nine captions, in order: the three lamp lines still render (the
     # "on every render" clause — the rail does not wait for content,
     # and this is the page where every lamp but the canary carries its
     # absence as words), then the count strip (the "at all times"
     # clause — the count does not wait for content either), then the
-    # words that say why there is no numeral.
+    # words that say why there is no numeral, then the Gate evidence
+    # section's own four — it renders on the honest-absence page too,
+    # never waiting for a campaign to have closed.
     captions = st.of("caption")
-    assert len(captions) == 5
+    assert len(captions) == 9
     assert [call[0][0] for call in captions[:3]] == list(page.lamps.lines)
     assert captions[3][0][0] == page.chrome.line
     assert captions[4][0][0].startswith("no campaign has closed")
+    assert [call[0][0] for call in captions[5:9]] == list(page.evidence.lines)
     # No chart of an empty series: the trend chart is the panel's own,
     # and an absent trend has none to draw.
     assert "line_chart" not in st.names
+    assert st.one("subheader")[0][0] == GATE_EVIDENCE_HEADER
 
 
 # -- the render order is the law --------------------------------------------------
@@ -1130,16 +1153,18 @@ def test_the_render_emits_the_primary_panel_first(test_database_url: str) -> Non
     # The header is the panel's headline — the qualifier beside the
     # figure's name, §16's own line.
     assert st.one("header")[0][0] == page.primary.headline
-    # Six captions, in order: the three lamp lines (permanent, above
+    # Ten captions, in order: the three lamp lines (permanent, above
     # the count), the count strip (permanent, above the panel), then
     # the provenance plate beneath the numeral and the campaign's
-    # provenance line completing it.
+    # provenance line completing it, then the Gate evidence section's
+    # own four — below the chart, read only after it (asserted below).
     captions = st.of("caption")
-    assert len(captions) == 6
+    assert len(captions) == 10
     assert [call[0][0] for call in captions[:3]] == list(page.lamps.lines)
     assert captions[3][0][0] == page.chrome.line
     assert captions[4][0][0] == page.primary.plate
     assert captions[5][0][0] == page.primary.provenance.line
+    assert [call[0][0] for call in captions[6:10]] == list(page.evidence.lines)
     # The one chart is the trend, and nothing else is charted — each
     # point labelled by its campaign's computed_at instant (the x
     # column), never a bare index (J02).
@@ -1154,6 +1179,11 @@ def test_the_render_emits_the_primary_panel_first(test_database_url: str) -> Non
     assert chart_args[0][FDR_DEPLOY_LABEL] == list(page.primary.series)
     assert st.one("set_page_config")[1]["page_title"] == DASHBOARD_PAGE_TITLE
     assert st.one("title")[0][0] == DASHBOARD_TITLE
+    # The Gate evidence section: one subheader, after the trend chart —
+    # never above or beside the headline (architecture §16).
+    assert st.one("subheader")[0][0] == GATE_EVIDENCE_HEADER
+    assert st.names.index("line_chart") < st.names.index("subheader")
+    assert st.names.index("header") < st.names.index("subheader")
 
 
 def test_the_numeral_carries_no_delta(test_database_url: str) -> None:
@@ -1175,6 +1205,236 @@ def test_the_render_answers_the_page_it_rendered(test_database_url: str) -> None
     assert dashboard.render(st) == dashboard.page()
 
 
+# -- the Gate evidence section ----------------------------------------------------
+
+#: The campaign and the dreaming iteration the populated Gate evidence
+#: tests write their rows under — distinct ids so a caption that named
+#: the wrong one would be caught.
+GATE_EVIDENCE_CAMPAIGN = "33333333-3333-3333-3333-333333333333"
+GATE_EVIDENCE_ITERATION = "dreaming-cycle-7"
+
+#: The four "no reading" lines, in the section's own order — read by
+#: every test below that needs the honest-absence section, so the four
+#: labels are spelled once rather than four times per test.
+NO_READING_LINES = (
+    f"sensitivity / specificity: {NO_READING}",
+    f"Type-B depth past flip: {NO_READING}",
+    f"discoveries per 1000 charged trials: {NO_READING}",
+    f"train-vs-holdout gap: {NO_READING}",
+)
+
+
+def _populated_gate_evidence_endpoints(test_database_url: str) -> tuple[
+    NullCalibrationEndpoint, TypeBDepthEndpoint, DiscoveryRateEndpoint, MetaOverfitEndpoint
+]:
+    """The four endpoints, each over a store holding one newest row —
+    the populated state the section's captions read.  Plain ``record``
+    calls against each store directly, the same shape
+    ``test_gate_evidence.py`` writes through."""
+    null_calibration = NullCalibrations(test_database_url)
+    null_calibration.record(
+        GATE_EVIDENCE_CAMPAIGN,
+        sensitivity=0.8,
+        specificity=0.9,
+        recorded_at="2026-03-01T00:00:00",
+    )
+    type_b_depth = TypeBDepths(test_database_url)
+    type_b_depth.record(
+        GATE_EVIDENCE_CAMPAIGN,
+        depth_past_flip_errors=3,
+        recorded_at="2026-03-01T00:00:00",
+    )
+    discovery_rate = DiscoveryRates(test_database_url)
+    discovery_rate.record(
+        GATE_EVIDENCE_CAMPAIGN,
+        discoveries=2,
+        budget_charging_trials=100,
+        ledger_trials=120,
+        recorded_at="2026-03-01T00:00:00",
+    )
+    meta_overfit = MetaOverfitGaps(test_database_url)
+    meta_overfit.record(
+        GATE_EVIDENCE_ITERATION,
+        train_mean=0.5,
+        holdout_mean=0.2,
+        train_worlds=10,
+        holdout_worlds=5,
+        recorded_at="2026-03-01T00:00:00",
+    )
+    return (
+        NullCalibrationEndpoint(null_calibration),
+        TypeBDepthEndpoint(type_b_depth),
+        DiscoveryRateEndpoint(discovery_rate),
+        MetaOverfitEndpoint(meta_overfit),
+    )
+
+
+def test_the_section_renders_no_reading_when_the_dashboard_is_unconfigured(
+    test_database_url: str,
+) -> None:
+    # "A dashboard composed without the four components renders the
+    # section as 'no reading' lines rather than failing" — _dashboard()
+    # never wires the four endpoints at all, the unconfigured state.
+    dashboard = _dashboard(test_database_url)
+    assert dashboard.null_calibration is None
+    assert dashboard.type_b_depth is None
+    assert dashboard.discovery_rate is None
+    assert dashboard.meta_overfit is None
+    page = dashboard.page()
+    assert page.evidence.lines == NO_READING_LINES
+
+    st = _RecordingStreamlit()
+    dashboard.render(st)
+    assert st.one("subheader")[0][0] == GATE_EVIDENCE_HEADER
+    assert [call[0][0] for call in st.of("caption")[-4:]] == list(NO_READING_LINES)
+
+
+def test_the_section_renders_no_reading_when_the_stores_are_empty(
+    test_database_url: str,
+) -> None:
+    # The endpoints are wired — DATABASE_URL names a real store for
+    # each — but no campaign or cycle has closed a row into any of
+    # them: the empty-store state, distinct from "no reader at all"
+    # but rendering the identical words (a store with no row renders
+    # "no reading", never 0).
+    dashboard = OperatorDashboard(
+        FdrDeployEndpoint(_persisted_store(test_database_url)),
+        EpochCountGauge(test_database_url),
+        _rail(test_database_url),
+        null_calibration=NullCalibrationEndpoint(
+            NullCalibrations(test_database_url)
+        ),
+        type_b_depth=TypeBDepthEndpoint(TypeBDepths(test_database_url)),
+        discovery_rate=DiscoveryRateEndpoint(DiscoveryRates(test_database_url)),
+        meta_overfit=MetaOverfitEndpoint(MetaOverfitGaps(test_database_url)),
+    )
+    page = dashboard.page()
+    # A response was genuinely read (the reader is wired) — it simply
+    # answers an empty trend, not the absence of a reader at all.
+    assert page.evidence.null_calibration is not None
+    assert page.evidence.null_calibration.newest is None
+    assert page.evidence.lines == NO_READING_LINES
+
+
+def test_the_section_renders_the_newest_row_of_each_store(
+    test_database_url: str,
+) -> None:
+    null_calibration, type_b_depth, discovery_rate, meta_overfit = (
+        _populated_gate_evidence_endpoints(test_database_url)
+    )
+    dashboard = OperatorDashboard(
+        FdrDeployEndpoint(_persisted_store(test_database_url)),
+        EpochCountGauge(test_database_url),
+        _rail(test_database_url),
+        null_calibration=null_calibration,
+        type_b_depth=type_b_depth,
+        discovery_rate=discovery_rate,
+        meta_overfit=meta_overfit,
+    )
+    lines = dashboard.page().evidence.lines
+    assert lines == (
+        (
+            f"sensitivity / specificity: 80.0% / 90.0% "
+            f"(campaign {GATE_EVIDENCE_CAMPAIGN})"
+        ),
+        f"Type-B depth past flip: 3 (campaign {GATE_EVIDENCE_CAMPAIGN})",
+        (
+            f"discoveries per 1000 charged trials: 20.00 "
+            f"(campaign {GATE_EVIDENCE_CAMPAIGN})"
+        ),
+        f"train-vs-holdout gap: 0.300 (iteration {GATE_EVIDENCE_ITERATION})",
+    )
+    # Each caption names the campaign or iteration it belongs to.
+    assert all(GATE_EVIDENCE_CAMPAIGN in line for line in lines[:3])
+    assert GATE_EVIDENCE_ITERATION in lines[3]
+    # No profit, P&L or equity figure anywhere in the section.
+    joined = " ".join(lines).lower()
+    for forbidden in ("profit", "p&l", "equity", "pnl", "sharpe"):
+        assert forbidden not in joined
+
+    st = _RecordingStreamlit()
+    dashboard.render(st)
+    assert [call[0][0] for call in st.of("caption")[-4:]] == list(lines)
+
+
+def test_a_genuine_zero_is_a_measurement_not_a_no_reading(
+    test_database_url: str,
+) -> None:
+    # The absence/measurement split this member states everywhere
+    # else: a zero a store actually wrote renders like any other row,
+    # never folded into NO_READING.
+    store = TypeBDepths(test_database_url)
+    store.record(
+        GATE_EVIDENCE_CAMPAIGN,
+        depth_past_flip_errors=0,
+        recorded_at="2026-03-01T00:00:00",
+    )
+    section = GateEvidenceSection(type_b_depth=TypeBDepthEndpoint(store).get())
+    assert section.type_b_depth_line == (
+        f"Type-B depth past flip: 0 (campaign {GATE_EVIDENCE_CAMPAIGN})"
+    )
+    assert NO_READING not in section.type_b_depth_line
+
+
+def test_the_evidence_seat_is_optional_on_the_page_model() -> None:
+    # DashboardPage gains an optional evidence seat: a page built with
+    # no evidence argument at all answers the default, empty section —
+    # four NO_READING lines — rather than failing to construct.
+    page = DashboardPage(
+        primary=FdrDeployPanel(
+            response=FdrDeployResponse(), provenance=CampaignProvenance()
+        ),
+        chrome=EpochCountChrome(count=0),
+        lamps=_lamps(),
+    )
+    assert page.evidence == GateEvidenceSection()
+    assert page.evidence.lines == NO_READING_LINES
+
+
+def test_the_gate_evidence_endpoint_carriers_are_duck_checked(
+    test_database_url: str,
+) -> None:
+    for kwarg in (
+        "null_calibration",
+        "type_b_depth",
+        "discovery_rate",
+        "meta_overfit",
+    ):
+        with pytest.raises(TypeError, match=kwarg):
+            OperatorDashboard(
+                FdrDeployEndpoint(_persisted_store(test_database_url)),
+                EpochCountGauge(test_database_url),
+                _rail(test_database_url),
+                **{kwarg: object()},
+            )
+
+
+def test_composed_renders_no_reading_when_the_gate_evidence_routes_are_absent(
+    test_database_url: str,
+) -> None:
+    # Unlike the route and the rail, the four Gate evidence endpoints
+    # are never refused when missing: a composed application that
+    # carries the route and the rail but none of the four Gate
+    # evidence components still renders a whole page.
+    route = FdrDeployEndpoint(_persisted_store(test_database_url))
+    rail = _rail(test_database_url)
+
+    class _AppWithoutGateEvidence:
+        def get(self, name: str):
+            if name == "ops-fdr-deploy":
+                return route
+            if name == "ops-instrument-status":
+                return rail
+            return None
+
+    dashboard = OperatorDashboard.composed(_AppWithoutGateEvidence())
+    assert dashboard.null_calibration is None
+    assert dashboard.type_b_depth is None
+    assert dashboard.discovery_rate is None
+    assert dashboard.meta_overfit is None
+    assert dashboard.page().evidence.lines == NO_READING_LINES
+
+
 # -- the review: rather than an equity curve --------------------------------------
 
 
@@ -1194,6 +1454,7 @@ def test_the_model_has_nowhere_for_an_equity_curve_to_land() -> None:
         "primary",
         "chrome",
         "lamps",
+        "evidence",
     ]
     assert [f.name for f in dataclasses.fields(FdrDeployPanel)] == [
         "response",
@@ -1666,6 +1927,13 @@ def test_from_env_composes_exactly_when_the_route_does(env) -> None:
         assert dashboard.gauge.database_url == route.store.database_url
         assert dashboard.rail.readings.database_url == route.store.database_url
         assert dashboard.provenance.database_url == route.store.database_url
+        # The Gate evidence section's four endpoints compose on the
+        # same unset-aware decision too — optional, never refused, but
+        # wired over the one database when the route is.
+        assert dashboard.null_calibration.store.database_url == route.store.database_url
+        assert dashboard.type_b_depth.store.database_url == route.store.database_url
+        assert dashboard.discovery_rate.store.database_url == route.store.database_url
+        assert dashboard.meta_overfit.store.database_url == route.store.database_url
 
 
 def test_from_env_refuses_when_the_rail_will_not_compose(
@@ -1717,6 +1985,10 @@ def test_the_dashboard_and_route_compose_over_one_database(
     assert dashboard.gauge.database_url == test_database_url
     assert dashboard.rail.readings.database_url == test_database_url
     assert dashboard.provenance.database_url == test_database_url
+    assert dashboard.null_calibration.store.database_url == test_database_url
+    assert dashboard.type_b_depth.store.database_url == test_database_url
+    assert dashboard.discovery_rate.store.database_url == test_database_url
+    assert dashboard.meta_overfit.store.database_url == test_database_url
     assert "ops-dashboard" in app.order and "ops-fdr-deploy" in app.order
     assert "ops-instrument-status" in app.order
 
