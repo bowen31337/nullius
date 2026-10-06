@@ -1,7 +1,7 @@
 # User journeys
 
 Every way a person, or a trusted service acting for one, reaches NULLIUS from
-outside the Python process. The sources are `app_spec.xml`
+outside the Python process. The sources are `docs/alpha-engine-prd.md` (J16–J21), `app_spec.xml`
 (`<api_endpoints_summary>`, `<ui_layout>` and the M5 `<ux>` line) and
 `docs/nullius-tech-architecture.md` §16.
 
@@ -54,12 +54,18 @@ The journeys below are run against `127.0.0.1`, which needs no certificate.
 | [J13](J13-api-risk-halt.md) | Trigger the emergency halt | Risk supervisor | HTTP API |
 | [J14](J14-api-discoverability.md) | Discover what the API serves, and get clean errors | Any | HTTP API |
 | [J15](J15-cli-bingx-dry-run.md) | Dry-run the book onto BingX VST (Stage 0, no network) | Operator | CLI |
+| [J16](J16-cli-run-campaign.md) | Run one discovery campaign (Loop 1) | Operator | CLI |
+| [J17](J17-run-dreaming-cycle.md) | Run one dreaming cycle and read the selected policy (Loop 2, M3) | Operator | — (no surface yet) |
+| [J18](J18-nightly-determinism-canary.md) | The nightly canary runs, and its lamp tells the truth | Operator | Scheduler + Dashboard |
+| [J19](J19-m1-triage-auc.md) | Run the M1 triage and read the perturbation-stability AUC | Researcher | — (no surface yet) |
+| [J20](J20-read-research-and-live-metrics.md) | Read the research and live metrics behind the headline | Operator | Dashboard / HTTP API |
+| [J21](J21-cli-bingx-vst-operate.md) | Operate the BingX VST paper bot (Stage 1–2) | Operator | CLI |
 
 ## Validation runs
 
 Each run is appended to [`_run-log.md`](_run-log.md). [`run_sweep.sh`](run_sweep.sh) `<run-name> <scratch-dir>` drives J1–J14 (the browser sweep) in one command; J15 is a shell journey run separately, its transcripts saved beside the screenshots.
 
-**Latest — Run 6 (2026-10-06, `main` at `dc65504`): 15 of 15 pass, none blocked, no traceback.** The first sweep after the `orchestrator`/campaign-driver, live-providers and gVisor work; the API composed 10 routes over 100 components with no change to the dashboard or HTTP surfaces, and J15's dry run is unchanged. Screenshots and J15 transcripts in [`screenshots/run-6/`](screenshots/run-6/).
+**Latest — Run 7 (2026-10-06): 15 of 21 pass, 4 fail (J17–J20), 2 blocked by the owner's no-spend choice (J16, J21).** J16–J21 are new: they come from re-reading the PRD and the architecture, and they find that the dreaming cycle, the nightly canary and the M1 triage have no operator surface, and that the canary lamp reads `ok` on a fresh install where no canary has run. J1–J15 match Run 6. Details in [`_run-log.md`](_run-log.md).
 
 ## Reproducing a run
 

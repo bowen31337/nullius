@@ -1,0 +1,10 @@
+usage: python -m router.bingx_flatten [-h] [--confirm]
+
+Flatten the BingX VST sub-account: cancel every open order on it, then close
+every position with one reduce-only MARKET order per symbol. Without
+--confirm, print what would be done and change nothing.
+
+options:
+  -h, --help  show this help message and exit
+  --confirm   cancel every open order and close every position; without it the
+              command prints what it would do and changes nothing

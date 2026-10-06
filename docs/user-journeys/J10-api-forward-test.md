@@ -4,8 +4,8 @@ title: Promote a signal to forward test and read its decay curve
 persona: Researcher
 source: api_endpoints_summary Forward Test; features 332-334
 status: pass
-last_checked: run 5
-evidence: screenshots/run-5/J10-api-forward-test.png
+last_checked: run 7
+evidence: screenshots/run-7/J10-api-forward-test.png
 ---
 
 # J10 — Promote a signal to forward test and read its decay curve

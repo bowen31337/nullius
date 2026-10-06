@@ -1,0 +1,14 @@
+usage: python -m router.bingx_alert [-h] (--test | --unit UNIT)
+                                    [--event {failure}]
+
+Send one Telegram alert through the Bot API. Use --test for an info delivery
+check, or --unit NAME --event failure for the urgent alert a systemd OnFailure
+hook sends when a scheduled slot could not run.
+
+options:
+  -h, --help         show this help message and exit
+  --test             send an info test message; exit 0 on delivery, 1
+                     otherwise
+  --unit UNIT        the systemd unit that could not run (with --event
+                     failure)
+  --event {failure}  the event the alert reports; currently only 'failure'

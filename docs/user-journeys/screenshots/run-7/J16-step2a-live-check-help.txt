@@ -1,0 +1,18 @@
+usage: python -m providers.live_check [-h] --pin PROVIDER/MODEL/VERSION
+                                      [--prompt PROMPT]
+                                      [--max-tokens MAX_TOKENS] [--record DIR]
+
+Make one real model call through the live-provider registry, check it was
+served by the pinned model, and print one JSON line describing what came back.
+
+options:
+  -h, --help            show this help message and exit
+  --pin PROVIDER/MODEL/VERSION
+                        the pinned model to call
+  --prompt PROMPT       the user message to send (default: 'Reply with the
+                        single word: ok')
+  --max-tokens MAX_TOKENS
+                        the output ceiling to request (default: the
+                        interface's own)
+  --record DIR          file the exchange as a fixture in this directory
+                        (feature 194)

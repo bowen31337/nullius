@@ -4,8 +4,8 @@ title: Debit the trial ledger and read K-effective
 persona: Evaluator
 source: api_endpoints_summary Trial Ledger; features 84-95
 status: pass
-last_checked: run 5
-evidence: screenshots/run-5/J11-api-trial-ledger-fresh-node.png
+last_checked: run 7
+evidence: screenshots/run-7/J11-api-trial-ledger-fresh-node.png
 ---
 
 # J11 — Debit the trial ledger and read K-effective

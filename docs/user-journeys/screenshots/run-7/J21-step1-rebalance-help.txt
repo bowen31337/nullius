@@ -1,0 +1,13 @@
+usage: python -m router.bingx_rebalance [-h] --book BOOK
+
+Run one scheduled rebalance slot for a book: guard the day's loss, cancel the
+book's resting orders from the last 24 hours, reconcile the previous slot,
+then build and place this slot's plan. rebalance_ts is the current UTC time
+floored to a 4-hour boundary, so a second run in the same slot places nothing
+new.
+
+options:
+  -h, --help   show this help message and exit
+  --book BOOK  the book document (JSON): book_id, rebalance_ts, account,
+               margin_mode, equity_usdt, expected_fill_seconds, weights,
+               decay_horizon_seconds, positions

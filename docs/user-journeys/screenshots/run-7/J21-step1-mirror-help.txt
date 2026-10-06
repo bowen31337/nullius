@@ -1,0 +1,16 @@
+usage: python -m router.bingx_mirror [-h] --book BOOK [--place] [--status]
+                                     [--cancel]
+
+Mirror a Stage 0 book onto the BingX VST venue: read the account's live
+positions, build the plan over the venue's own contracts and premiumIndex, and
+(with --place) place each order once, idempotently.
+
+options:
+  -h, --help   show this help message and exit
+  --book BOOK  the book document (JSON): book_id, rebalance_ts, account,
+               margin_mode, equity_usdt, expected_fill_seconds, weights,
+               decay_horizon_seconds, positions
+  --place      place the plan's orders (requires DATABASE_URL); without it the
+               command prints the plan and places nothing
+  --status     print each of the book's VST orders as the venue reports it
+  --cancel     cancel this rebalance's open orders and print the identifiers

@@ -1,0 +1,1 @@
+campaign_cli: create_app() answers no 'signal-author' component; a campaign cannot plant a root, evaluate one or seal its Type-R draw without it — configure the deployment and run again

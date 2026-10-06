@@ -1,0 +1,1 @@
+socket connect/getaddrinfo patched to raise: exit 0, output byte-identical to step 1, no traceback
