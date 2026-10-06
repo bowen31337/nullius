@@ -161,22 +161,34 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from ._anthropic import EFFORT_LEVELS, NO_SAMPLING_MODE, _sampling_mode
 from ._completion import Usage
 from ._pin_errors import ModelPinError
 from ._pinning import ModelPin, require_agent_model_id
 from ._root import FrontierProvider, FrontierTier, _tier_from_parts
 from ._root_errors import RootProviderError
-from ._sampling import AgentSampling, require_agent_sampling
+from ._sampling import SAMPLING_KEYS, AgentSampling, require_agent_sampling
 
 __all__ = [
     "AUTHORING_CONFIG_CODE",
     "AUTHORING_CONFIG_ENV",
     "AUTHORING_ROLES",
+    "UNSUPPORTED_SAMPLING_CODE",
     "AuthoringConfig",
     "AuthoringConfigError",
     "AuthoringRecord",
+    "UnsupportedSamplingError",
     "load_authoring_config",
 ]
+
+#: The vendor name :mod:`providers._anthropic`'s per-model sampling table
+#: applies to — the one vendor this feature's restriction concerns.  Restated
+#: rather than imported from :mod:`providers._live` (``_ANTHROPIC``): that
+#: module is the live registry's own private name, and this one is this
+#: module's refusal's, on the same restatement discipline
+#: :mod:`providers._sampling` takes for :data:`providers._pinning.SEPARATOR`-
+#: adjacent facts it could import instead.
+_ANTHROPIC_PROVIDER: Final[str] = "anthropic"
 
 #: The environment variable naming the authoring configuration's file — the
 #: one spelling of "which models does this deployment author with".  Carries
@@ -218,11 +230,14 @@ DEFAULT_MAX_TOKENS: Final[int] = 8192
 ROOT_TIER_MIN_PINS: Final[int] = 1
 ROOT_TIER_MAX_PINS: Final[int] = 3
 
-#: The seven keys the document holds, in the order the spec's own sentence
-#: lists them.  Declared as data because two readers iterate it — the unknown
-#: -key refusal (the credential guard) and the missing-key refusal — and a
-#: key spelled in two places is a key that can be refused in one and not the
-#: other.
+#: The eight keys the document holds, in the order the spec's own sentence
+#: lists them, plus feature 5's ``effort`` (additions_spec_real_campaign_path.xml)
+#: appended last, after the original seven: a document that predates feature
+#: 5 names only the first seven, and nothing about their order should move
+#: for an eighth key nobody wrote.  Declared as data because two readers
+#: iterate it — the unknown-key refusal (the credential guard) and the
+#: missing-key refusal — and a key spelled in two places is a key that can be
+#: refused in one and not the other.
 CONFIG_KEYS: Final[tuple[str, ...]] = (
     "root_tier",
     "depth",
@@ -231,13 +246,16 @@ CONFIG_KEYS: Final[tuple[str, ...]] = (
     "max_tokens",
     "max_input_tokens",
     "max_output_tokens",
+    "effort",
 )
 
-#: The keys a document must hold.  The complement of the two that carry
-#: defaults in the spec's own sentence — ``temperature`` and ``max_tokens`` —
-#: because a key with a default cannot be missing, and a key without one is
-#: a fact the deployment must state: a budget the config author never wrote
-#: down is not a budget the deployment ever had.
+#: The keys a document must hold.  The complement of the three that are
+#: optional — ``temperature`` and ``max_tokens``, which carry defaults in the
+#: spec's own sentence, and feature 5's ``effort``, which defaults to
+#: ``None`` (no deployment is required to name one) — because a key with a
+#: default cannot be missing, and a key without one is a fact the deployment
+#: must state: a budget the config author never wrote down is not a budget
+#: the deployment ever had.
 REQUIRED_KEYS: Final[tuple[str, ...]] = (
     "root_tier",
     "depth",
@@ -298,6 +316,64 @@ class AuthoringConfigError(Exception):
     def code(self) -> str:
         """The refusal's greppable code — :data:`AUTHORING_CONFIG_CODE`."""
         return AUTHORING_CONFIG_CODE
+
+
+#: The greppable code word :class:`UnsupportedSamplingError` opens with —
+#: additions_spec_real_campaign_path.xml feature 5's own word, distinct from
+#: :data:`AUTHORING_CONFIG_CODE` because this is one specific, actionable
+#: finding ("this pin does not take the knob you set") rather than "the file
+#: is wrong" in general, on the precedent
+#: :data:`providers._anthropic.UNSUPPORTED_TEMPERATURE_CODE` sets for the same
+#: underlying fact seen from the live call's side rather than the config's.
+UNSUPPORTED_SAMPLING_CODE: Final[str] = "unsupported_sampling"
+
+
+class UnsupportedSamplingError(AuthoringConfigError):
+    """A config states a temperature for a pin whose model does not accept one.
+
+    :mod:`providers._anthropic`'s per-model sampling table (feature 5) marks
+    ``claude-opus-5-5``, ``claude-sonnet-5-5`` and their siblings as unable to
+    carry ``temperature`` at all — the vendor answers HTTP 400.  A config
+    whose ``depth`` or ``policy`` pin names one of those models *and* states a
+    temperature (the default included: ``temperature`` carries one unless the
+    document says ``null``) has stated a call that cannot be sent as asked,
+    and feature 5's own sentence is explicit about the alternative to
+    catching this at the first live call: *"refused at load ... and never
+    silently dropped"* — a config that loaded clean but then quietly stopped
+    applying the temperature it named would be the campaign discovering its
+    own misconfiguration one call at a time, which is strictly worse than one
+    refusal at the deployment's own launch.
+
+    Scoped to ``depth`` and ``policy`` only, never ``root_tier``: those two
+    roles are each **one** fixed pin, so "this pin accepts a knob the config
+    does not turn" is a single, unambiguous fact about the deployment's own
+    statement.  ``root_tier`` is a *rotation* across 2–3 providers (§14.1),
+    and a single global ``temperature`` being incompatible with *one* member
+    of a heterogeneous tier is not a config-level contradiction the same
+    way — :mod:`providers._anthropic` already does not send the field to
+    whichever member of the tier cannot take it, silently and correctly, the
+    moment that member's root is actually authored.
+
+    A subclass of :class:`AuthoringConfigError`, not a sibling: it is still
+    "this authoring config could not be read as one", so a caller catching
+    the base catches this refusal too, on the error-vocabulary-at-member-seams
+    rule every class in this module follows — the code word is this class's
+    own, not :data:`AUTHORING_CONFIG_CODE`'s, because *that* word means "the
+    document is wrong in general" and an operator grepping for *this* finding
+    specifically should not have to also match every missing-key and
+    out-of-range refusal this module raises.
+    """
+
+    def __init__(self, message: str) -> None:
+        # Bypasses AuthoringConfigError.__init__ deliberately: that prefixes
+        # AUTHORING_CONFIG_CODE, and this refusal's code word is its own —
+        # see the class docstring for why the two must not share one.
+        Exception.__init__(self, f"{UNSUPPORTED_SAMPLING_CODE}: {message}")
+
+    @property
+    def code(self) -> str:
+        """The refusal's greppable code — :data:`UNSUPPORTED_SAMPLING_CODE`."""
+        return UNSUPPORTED_SAMPLING_CODE
 
 
 # ── The value guards, one per key ─────────────────────────────────────────────
@@ -388,8 +464,8 @@ def _require_root_tier(value: object, origin: str) -> tuple[ModelPin, ...]:
     return pins
 
 
-def _require_temperature(value: object, origin: str) -> float:
-    """Return ``value`` as the authoring temperature, in ``[0, 1]``.
+def _require_temperature(value: object, origin: str) -> float | None:
+    """Return ``value`` as the authoring temperature, in ``[0, 1]``, or ``None``.
 
     The ceiling is this module's own and tighter than the ``[0, 2]`` the
     interface and the sampling record both admit, because those describe what
@@ -400,7 +476,19 @@ def _require_temperature(value: object, origin: str) -> float:
     and a config layer handing one over by accident must not be read as
     temperature 1), and a non-finite float is refused because ``json.loads``
     will happily parse ``NaN`` — a knob that is not a number the models read.
+
+    ``None`` is feature 5's own addition (additions_spec_real_campaign_path.xml)
+    and is returned unchanged, ahead of every other check: it is the
+    deployment's explicit statement that this config turns no temperature
+    knob at all — the only way to pin ``depth`` or ``policy`` to a model the
+    sampling table withholds temperature from without meeting
+    :class:`UnsupportedSamplingError`.  Omitting the key from a document is a
+    *different* statement (the default :data:`DEFAULT_TEMPERATURE`, read by
+    :meth:`AuthoringConfig.from_document`) — ``None`` is what a document
+    states by writing ``"temperature": null`` outright.
     """
+    if value is None:
+        return None
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise AuthoringConfigError(
             f"{origin} key 'temperature' must be a number in [0, 1], got "
@@ -485,6 +573,68 @@ def _require_ceiling(value: object, key: str, origin: str) -> int:
     return value
 
 
+def _require_effort(value: object, origin: str) -> str | None:
+    """Return ``value`` as an output-effort level, or ``None``.
+
+    Feature 5's own key (additions_spec_real_campaign_path.xml): the control
+    :mod:`providers._anthropic`'s no-sampling models expose in place of
+    temperature.  ``None`` means the config names none — a real and common
+    state, since effort is meaningless for any pin the sampling table still
+    sends temperature to — and is returned unchanged.  A stated value must be
+    one of :data:`providers._anthropic.EFFORT_LEVELS`, imported rather than
+    restated so the authoring config and the live backend cannot accept two
+    different spellings of "the same five levels".
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or value not in EFFORT_LEVELS:
+        raise AuthoringConfigError(
+            f"{origin} key 'effort' must be one of {sorted(EFFORT_LEVELS)!r} "
+            f"or absent, got {value!r} ({type(value).__name__}). effort is "
+            f"the output-effort control the sampling table's no-sampling "
+            f"models expose in place of temperature, and a value outside "
+            f"the vendor's closed set is not a level any model honours."
+        )
+    return value
+
+
+def _require_sampling_pin_compatible(
+    *, role: str, pin: ModelPin, temperature: float | None
+) -> None:
+    """Refuse a ``depth`` or ``policy`` pin that cannot honour a stated temperature.
+
+    The config-level half of feature 5: a pin whose vendor is
+    :data:`_ANTHROPIC_PROVIDER` and whose model
+    :func:`providers._anthropic._sampling_mode` marks
+    :data:`providers._anthropic.NO_SAMPLING_MODE` cannot carry ``temperature``
+    at all, so a config that states one (``temperature`` carries one unless
+    the document says ``null`` — see :func:`_require_temperature`) has stated
+    a call that cannot be sent as asked, and is refused here, at load, rather
+    than discovered the first time this pin is actually authored with.
+
+    Only ``depth`` and ``policy`` call this — never a ``root_tier`` member —
+    see :class:`UnsupportedSamplingError`'s docstring for why a rotation's
+    members are not checked the same way.  A non-anthropic pin, or one this
+    module's table admits temperature for, is never consulted past the
+    vendor check: the restriction is this one vendor's, stated nowhere else.
+    """
+    if (
+        temperature is not None
+        and pin.provider == _ANTHROPIC_PROVIDER
+        and _sampling_mode(pin.model) == NO_SAMPLING_MODE
+    ):
+        raise UnsupportedSamplingError(
+            f"the authoring config's {role!r} pin {pin!s} does not accept "
+            f"temperature — the sampling table in providers._anthropic marks "
+            f"{pin.model!r} as a model whose vendor rejects the field "
+            f"outright (HTTP 400 for the models this table names) — and the "
+            f"config states {temperature!r}. Set 'temperature' to null in "
+            f"the document (optionally naming an 'effort' level instead) to "
+            f"author with {pin!s} for the {role!r} role, or pin a different "
+            f"model there."
+        )
+
+
 # ── The configuration ─────────────────────────────────────────────────────────
 
 
@@ -492,16 +642,20 @@ def _require_ceiling(value: object, key: str, origin: str) -> int:
 class AuthoringConfig:
     """The deployment's authoring models and knobs, as one value.
 
-    Seven fields, one per key the file holds: the root tier's pins (in the
+    Eight fields, one per key the file holds: the root tier's pins (in the
     file's order, because feature 3's rotation indexes them), the depth and
-    policy pins, the temperature every authoring request carries, the output
-    ceiling, and the two per-pin budget ceilings.  Every field is validated
-    on construction — the pins re-made through
-    :func:`providers.require_agent_model_id`, the providers checked distinct,
-    the ranges checked — so a config that exists is one the session (feature
-    3) can bind providers from and the recorder (feature 4) can take records
-    about, and there is no second validation path for the file's values to
-    drift from.
+    policy pins, the temperature every authoring request carries (or
+    ``None``, feature 5's addition, when the deployment states none), the
+    output ceiling, the two per-pin budget ceilings, and feature 5's
+    ``effort`` — the control a no-sampling model exposes in temperature's
+    place.  Every field is validated on construction — the pins re-made
+    through :func:`providers.require_agent_model_id`, the providers checked
+    distinct, the ranges checked, and (feature 5) the ``depth`` and ``policy``
+    pins checked against :mod:`providers._anthropic`'s per-model sampling
+    table when a temperature is stated — so a config that exists is one the
+    session (feature 3) can bind providers from and the recorder (feature 4)
+    can take records about, and there is no second validation path for the
+    file's values to drift from.
 
     Frozen and value-equal for the reason every record in this package is: a
     deployment's configuration is a fact about the run, not a field a caller
@@ -518,10 +672,11 @@ class AuthoringConfig:
     root_tier: tuple[ModelPin, ...]
     depth: ModelPin
     policy: ModelPin
-    temperature: float = DEFAULT_TEMPERATURE
+    temperature: float | None = DEFAULT_TEMPERATURE
     max_tokens: int = DEFAULT_MAX_TOKENS
     max_input_tokens: int = 0
     max_output_tokens: int = 0
+    effort: str | None = None
 
     def __post_init__(self) -> None:
         # Field by field in the order the file's own sentence lists them, so a
@@ -558,6 +713,17 @@ class AuthoringConfig:
                 self.max_output_tokens, "max_output_tokens", _CONSTRUCTED
             ),
         )
+        object.__setattr__(
+            self, "effort", _require_effort(self.effort, _CONSTRUCTED)
+        )
+        # The cross-check is last, and runs over the already-validated pins
+        # and temperature: it is a fact about *this config's own two fields
+        # agreeing with each other*, not a shape check on either alone, so it
+        # has nothing to say until both sides are already known-good values.
+        for role, pin in (("depth", self.depth), ("policy", self.policy)):
+            _require_sampling_pin_compatible(
+                role=role, pin=pin, temperature=self.temperature
+            )
 
     # -- The file and the document ------------------------------------------
 
@@ -569,8 +735,8 @@ class AuthoringConfig:
 
         The document-level refusals live here rather than in the constructor
         because only a document can meet them: a key no authoring config
-        holds (the credential guard — the file holds seven keys and no
-        others, so an unknown one is refused *naming it* and never quoting
+        holds (the credential guard — the file holds :data:`CONFIG_KEYS` and
+        no others, so an unknown one is refused *naming it* and never quoting
         its value), and a missing key from :data:`REQUIRED_KEYS` (a key with
         no default is a fact the deployment must state).  The values
         themselves are the constructor's business, so a document and a caller
@@ -610,10 +776,15 @@ class AuthoringConfig:
             root_tier=document["root_tier"],
             depth=document["depth"],
             policy=document["policy"],
+            # .get, not ["temperature"]: an absent key is the sentence's own
+            # default (DEFAULT_TEMPERATURE), while a key present and null is
+            # feature 5's explicit "no temperature" — .get tells the two
+            # apart exactly because it only substitutes on absence.
             temperature=document.get("temperature", DEFAULT_TEMPERATURE),
             max_tokens=document.get("max_tokens", DEFAULT_MAX_TOKENS),
             max_input_tokens=document["max_input_tokens"],
             max_output_tokens=document["max_output_tokens"],
+            effort=document.get("effort"),
         )
 
     @classmethod
@@ -710,6 +881,32 @@ class AuthoringRecord:
     records a root's serving provider against it.  A depth or policy record
     carries ``None`` — the absence of a fact that record's role never had.
 
+    ``sampling`` is an :class:`AgentSampling` **or** a plain JSON-safe
+    mapping — feature 5's widening (additions_spec_real_campaign_path.xml): a
+    call served by a no-sampling model rolled no temperature at all, and
+    recording one would be recording a setting the vendor never applied.  A
+    value that is an :class:`AgentSampling`, or a mapping carrying exactly
+    its four keys, is judged and normalized by feature 204's own full rules
+    (:func:`providers.require_agent_sampling`), unchanged from before this
+    feature — a temperature-accepting model's call still rolls all four
+    settings.  Anything else must still be a mapping, and is accepted as
+    what the call *actually sent* — :func:`providers._anthropic.sent_sampling`
+    is the one place that answer is computed — refused only if it cannot
+    survive a JSON round-trip, which is the one property this record's own
+    persistence (``discovery.persist.AttemptProvenance.agent_sampling``)
+    demands of it.  See :func:`_require_record_sampling`.
+
+    **A caveat for a no-sampling record today:** this record accepts and
+    carries the mapping honestly, but :meth:`providers.AgentModelPins.persist_weights`
+    — the store :func:`providers.record_authoring` files every record
+    through — still demands feature 204's exact four keys, because that
+    column's own widening is a later feature's, not this one's.  A caller
+    that files a no-sampling record through :func:`providers.record_authoring`
+    today meets that store's refusal; carrying the honest mapping here is
+    what makes that refusal possible to raise instead of a quiet lie, and is
+    the ground a later feature's widening of :mod:`providers._pin_store`
+    stands on.
+
     Frozen, so a record that has been handed to the persistence layer cannot
     be edited into different provenance by a caller who kept a reference; and
     value-equal across the module loader's two copies of this member, because
@@ -726,7 +923,7 @@ class AuthoringRecord:
     depth: int
     role: str
     pin: ModelPin
-    sampling: AgentSampling
+    sampling: AgentSampling | Mapping[str, object]
     usage: Usage
     served_model: str
     tier: FrontierTier | None = None
@@ -762,16 +959,9 @@ class AuthoringRecord:
         object.__setattr__(
             self, "pin", _require_pin(self.pin, "pin", _RECORD_ORIGIN)
         )
-        try:
-            sampling = require_agent_sampling(self.sampling)
-        except ModelPinError as exc:
-            raise AuthoringConfigError(
-                f"an AuthoringRecord's sampling must be an AgentSampling: "
-                f"{exc} The record carries the dice the authoring rolled, "
-                f"and a value that is not the four settings is not a draw "
-                f"any replay could reproduce."
-            ) from exc
-        object.__setattr__(self, "sampling", sampling)
+        object.__setattr__(
+            self, "sampling", _require_record_sampling(self.sampling, _RECORD_ORIGIN)
+        )
         object.__setattr__(self, "usage", _usage_from_parts(self.usage))
         if not isinstance(self.served_model, str) or not self.served_model:
             raise AuthoringConfigError(
@@ -807,12 +997,93 @@ class AuthoringRecord:
         """
         return {
             "agent_model_id": self.pin.agent_model_id,
-            "agent_sampling": self.sampling.to_dict(),
+            "agent_sampling": _record_sampling_payload(self.sampling),
             "agent_ckpt_hash": None,
         }
 
 
 # ── The record's own guards ───────────────────────────────────────────────────
+
+
+def _record_sampling_payload(value: AgentSampling | Mapping[str, object]) -> dict[str, object]:
+    """Render ``value`` — an already-validated sampling — as a plain dict.
+
+    ``value`` was validated by :func:`_require_record_sampling` at
+    construction, so this is rendering, not a second check: an
+    :class:`AgentSampling` renders through its own
+    :meth:`~providers.AgentSampling.to_dict`, and a plain mapping (feature
+    5's no-sampling payload) renders as a fresh ``dict`` over it — a copy, so
+    a caller that mutates the answer mutates nothing this record holds.
+    """
+    if isinstance(value, AgentSampling):
+        return value.to_dict()
+    return dict(value)
+
+
+def _require_record_sampling(
+    value: object, origin: str
+) -> AgentSampling | Mapping[str, object]:
+    """Return ``value`` as the record's sampling — an AgentSampling, or what was sent.
+
+    Two shapes, judged by two different rules, because they answer two
+    different questions.  A value that **is** feature 204's four-key record —
+    an :class:`AgentSampling`, a duck-typed object exposing its four named
+    attributes (the double-import remedy's recognition, read on
+    ``object.__getattribute__`` so an arbitrary object's ``__getattr__``
+    cannot fabricate the shape), or a plain mapping carrying **exactly**
+    :data:`providers.SAMPLING_KEYS` — is judged and normalized by
+    :func:`providers.require_agent_sampling`'s full rules, completely
+    unchanged by this feature: a temperature-accepting model's call still
+    rolls all four settings, and nothing about that call's record becomes
+    laxer because a sibling call, served by a different model, now rolls
+    something else.
+
+    Anything else must still be a mapping — feature 5's addition
+    (additions_spec_real_campaign_path.xml): what a no-sampling model's call
+    *actually sent*, which has no slot in the four-key record (an ``effort``
+    is not a ``temperature``, and :class:`AgentSampling` has no key for it at
+    all).  Refused only if it is not a mapping, or cannot survive a JSON
+    round-trip — the one property ``discovery.persist.AttemptProvenance``
+    demands of whatever lands in ``agent_sampling`` downstream, checked here
+    rather than discovered the first time the record is persisted.
+    """
+    is_agent_sampling_shaped = False
+    try:
+        for part in SAMPLING_KEYS:
+            object.__getattribute__(value, part)
+        is_agent_sampling_shaped = True
+    except AttributeError:
+        if isinstance(value, Mapping) and set(value) == set(SAMPLING_KEYS):
+            is_agent_sampling_shaped = True
+    if is_agent_sampling_shaped:
+        try:
+            return require_agent_sampling(value)
+        except ModelPinError as exc:
+            raise AuthoringConfigError(
+                f"{origin} sampling must be an AgentSampling: {exc} The "
+                f"record carries the dice the authoring rolled, and a value "
+                f"shaped like the four-setting record but failing its rules "
+                f"is not a draw any replay could reproduce."
+            ) from exc
+    if not isinstance(value, Mapping):
+        raise AuthoringConfigError(
+            f"{origin} sampling must be an AgentSampling or a mapping of "
+            f"what the call actually sent, got {value!r} "
+            f"({type(value).__name__}). The record carries either feature "
+            f"204's four-setting draw or, for a no-sampling model (feature "
+            f"5), the settings the call actually rolled — and a value that "
+            f"is neither names no draw a replay could read back."
+        )
+    try:
+        json.dumps(dict(value), allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise AuthoringConfigError(
+            f"{origin} sampling must be renderable as JSON — {exc} The "
+            f"column this feeds (discovery.persist.AttemptProvenance's own "
+            f"agent_sampling) stores it as JSON text, and a value no JSON "
+            f"renderer may emit is not a draw that record could hold."
+        ) from exc
+    return dict(value)
 
 
 def _require_identifier(value: object, field: str) -> str:

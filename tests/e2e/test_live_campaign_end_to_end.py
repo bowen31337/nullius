@@ -267,7 +267,15 @@ _ANSWERS: dict[tuple[int, str, bool], tuple[str, dict[str, int]]] = {
 }
 
 ROOT_PIN = providers.ModelPin("deepseek", "deepseek-v4-flash", "20260910")
-DEPTH_PIN = providers.ModelPin("anthropic", "claude-opus-5", "20260401")
+# claude-haiku-4-5, not claude-opus-5: this campaign states a CONFIG
+# temperature below, and providers._anthropic's per-model sampling table
+# (additions_spec_real_campaign_path.xml feature 5) now refuses an
+# AuthoringConfig that states one for a depth/policy pin whose model
+# rejects it outright — claude-opus-5 is one of those, claude-haiku-4-5
+# is not. The scripted provider below never inspects the model string's
+# real-world sampling behaviour, so the swap changes nothing this test
+# exercises.
+DEPTH_PIN = providers.ModelPin("anthropic", "claude-haiku-4-5", "20260401")
 POLICY_PIN = providers.ModelPin("self-hosted", "llama-3", "local")
 
 CONFIG = providers.AuthoringConfig(

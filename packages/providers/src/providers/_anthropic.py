@@ -85,10 +85,51 @@ Construction validates its configuration with :class:`ValueError` — a
 blank or non-string key, model or base URL, or a non-callable transport,
 never got well-formed enough to be a provider-contract question, the same
 split :mod:`providers._budget` takes for its own ceilings.
+
+**The per-model sampling table (added 2026-10-06, additions_spec_real_campaign_path.xml feature 5).**
+The paragraph above was true the day this backend was written and stopped
+being true the day an operator pointed it at a real deployment: the
+Messages API answered ``claude-opus-5-5`` and ``claude-sonnet-5-5`` with
+HTTP 400, ``"`temperature` is deprecated for this model"``, to a body
+that unconditionally carried ``temperature`` — the ceiling refusal above
+protects the *range*, but these two models reject the *field*, at any
+value, default included.  :func:`_sampling_mode` is the table that
+decides, by exact model name, whether a body may carry
+``temperature``/``top_p``/``top_k`` at all:
+
+* ``claude-opus-5-5``, ``claude-opus-5``, ``claude-sonnet-5-5``,
+  ``claude-sonnet-5`` and the Fable family (any model starting
+  ``claude-fable-``, matched by prefix rather than enumerated, so a later
+  Fable snapshot this table is never updated for still gets the
+  generation's treatment instead of silently falling through) carry none
+  of the three — this is :data:`NO_SAMPLING_MODE`.  In its place they take
+  ``output_config.effort`` when the caller names one (:data:`EFFORT_LEVELS`:
+  ``low``, ``medium``, ``high``, ``xhigh``, ``max``) — effort is the
+  control these models actually expose, and the body omits
+  ``output_config`` entirely when no effort was named, rather than send an
+  empty object the vendor would have to interpret.
+* ``claude-haiku-4-5`` (and, by the same generation, any older model this
+  table does not yet need to name) is :data:`TEMPERATURE_MODE`: it keeps
+  the behaviour above verbatim — ``temperature`` travels, the 1.0 ceiling
+  is enforced, effort is never sent to a model with no slot for it.
+* A model this table has no entry for is treated as :data:`NO_SAMPLING_MODE`
+  — the safe default, since sending a field a model rejects is an HTTP 400
+  discovered mid-campaign, while withholding one a model would have
+  accepted is at worst a knob the call did not turn — and the decision is
+  logged once through this module's own logger, so an operator reading a
+  campaign's log sees exactly which model fell through to the default and
+  can add it to the table once its behaviour is verified.
+
+The table is consulted exactly once per request, inside :func:`_request_body`
+— never twice, so an unknown model's fallback is not logged twice for one
+call — and the temperature-ceiling refusal above only fires for a model
+this table says accepts temperature at all: a no-sampling model's request
+never reaches that check, because the field it would guard never ships.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any, Final
 
@@ -103,11 +144,20 @@ __all__ = [
     "ANTHROPIC_API_HOST",
     "ANTHROPIC_VERSION",
     "DEFAULT_BASE_URL",
+    "EFFORT_LEVELS",
     "MESSAGES_PATH",
+    "NO_SAMPLING_MODE",
+    "TEMPERATURE_MODE",
     "UNSUPPORTED_TEMPERATURE_CODE",
     "AnthropicProvider",
     "ProviderRequestError",
+    "sent_sampling",
 ]
+
+#: This module's own logger — the one line :func:`_sampling_mode` emits for
+#: a model the table does not name, so an operator reading a campaign's log
+#: sees exactly which model fell through to the safe default.
+_logger = logging.getLogger(__name__)
 
 #: The one host an Anthropic credential may travel to.  Spelled as a name
 #: because it appears twice — as the default base URL's host and as the sole
@@ -164,6 +214,114 @@ _STOP_REASONS: Final[Mapping[str, str]] = {
     "stop_sequence": "stop",
     "max_tokens": "length",
 }
+
+#: A request to a model in this mode carries ``temperature`` (and would carry
+#: ``top_p``/``top_k`` if a caller ever turned those knobs), exactly as the
+#: rest of this module describes.
+TEMPERATURE_MODE: Final[str] = "temperature"
+
+#: A request to a model in this mode carries none of ``temperature``,
+#: ``top_p`` or ``top_k`` — the vendor rejects the field outright — and
+#: carries ``output_config.effort`` instead, when a caller named one.  Also
+#: the safe default for a model :func:`_sampling_mode` does not recognise.
+NO_SAMPLING_MODE: Final[str] = "no_sampling"
+
+#: The per-model sampling table, verified 2026-10-06 against the live
+#: Messages API (additions_spec_real_campaign_path.xml feature 5): these four
+#: exact model names answered HTTP 400, ``"`temperature` is deprecated for
+#: this model"``, to a request carrying it.  See the module docstring's
+#: "per-model sampling table" section for the reasoning; this set and
+#: :data:`_FABLE_PREFIX` together are :data:`NO_SAMPLING_MODE`'s table.
+_NO_SAMPLING_MODELS: Final[frozenset[str]] = frozenset(
+    {
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5-5",
+        "claude-sonnet-5",
+    }
+)
+
+#: The Fable family's name prefix.  Matched rather than enumerated: the
+#: family shares the 5.x generation's sampling restriction, and a prefix
+#: survives a later Fable snapshot this table was never updated for, where
+#: an enumerated set would silently fall through to the default instead
+#: (which happens to agree here, but a reader should not have to know that).
+_FABLE_PREFIX: Final[str] = "claude-fable-"
+
+#: The one model verified, as of the same date, to still accept
+#: ``temperature`` — "claude-haiku-4-5 and older keep temperature" in the
+#: feature's own words.  A deployment pinning a genuinely older model this
+#: table has not yet verified gets :data:`NO_SAMPLING_MODE`'s safe default,
+#: logged once, rather than an assumption that it behaves like this one.
+_TEMPERATURE_MODELS: Final[frozenset[str]] = frozenset({"claude-haiku-4-5"})
+
+#: ``output_config.effort``'s closed set — the control a no-sampling model
+#: exposes in place of temperature.  Shared with :mod:`providers._authoring`,
+#: which validates an authoring config's own ``effort`` key against this same
+#: set, so the two cannot drift into accepting different spellings of "the
+#: same five levels".
+EFFORT_LEVELS: Final[frozenset[str]] = frozenset(
+    {"low", "medium", "high", "xhigh", "max"}
+)
+
+
+def _sampling_mode(model: str) -> str:
+    """Whether ``model`` accepts ``temperature``, or needs ``effort`` instead.
+
+    The one place this backend decides, by exact model name (and the Fable
+    family's prefix), which of the two wire shapes a request takes — see the
+    module docstring's "per-model sampling table" section for why the table
+    exists and what each entry means.  An unrecognised model answers
+    :data:`NO_SAMPLING_MODE`, the safe default, and this function is the one
+    call site that logs the fallback — called exactly once per request, so
+    one call never logs the decision twice.
+    """
+    if model in _NO_SAMPLING_MODELS or model.startswith(_FABLE_PREFIX):
+        return NO_SAMPLING_MODE
+    if model in _TEMPERATURE_MODELS:
+        return TEMPERATURE_MODE
+    _logger.warning(
+        "providers._anthropic: model %r has no entry in the per-model "
+        "sampling table; treating it as %s (no temperature, top_p or "
+        "top_k sent) rather than risk the vendor's HTTP 400. Add it to "
+        "_NO_SAMPLING_MODELS or _TEMPERATURE_MODELS once its behaviour is "
+        "verified.",
+        model,
+        NO_SAMPLING_MODE,
+    )
+    return NO_SAMPLING_MODE
+
+
+def sent_sampling(
+    model: str, *, temperature: float | None = None, effort: str | None = None
+) -> dict[str, object]:
+    """The sampling settings a request to ``model`` would actually carry.
+
+    The one place a caller — today, a test; once a later feature widens
+    :mod:`providers._sampling` and :mod:`providers._pin_store` to hold it, an
+    authoring record too — can ask *what would this backend actually put on
+    the wire* without building a full :class:`~providers.Request` and a
+    transport to inspect.  Mirrors :func:`_request_body`'s own decision
+    exactly, because both read :func:`_sampling_mode`:
+
+    * :data:`TEMPERATURE_MODE` answers ``{"temperature": temperature}`` when
+      ``temperature`` is not ``None``, and ``{}`` when it is — the same
+      "nothing to send" state :func:`_request_body` reaches for a request
+      whose knob nobody turned.
+    * :data:`NO_SAMPLING_MODE` answers ``{"effort": effort}`` when ``effort``
+      is not ``None``, and ``{}`` otherwise — never ``temperature``, whatever
+      value a caller handed in, because this mode's whole point is that the
+      vendor never receives that field.
+
+    This is the honest half of feature 5's "never a temperature the vendor
+    did not apply": a caller recording what one call rolled reads this
+    function's answer, not the config's raw ``temperature``/``effort``
+    fields, so a no-sampling model's record can never claim a temperature
+    that never reached the wire.
+    """
+    if _sampling_mode(model) == TEMPERATURE_MODE:
+        return {} if temperature is None else {"temperature": temperature}
+    return {} if effort is None else {"effort": effort}
 
 
 class ProviderRequestError(ProviderError):
@@ -238,7 +396,7 @@ def _text_block(text: str, *, cacheable: bool = False) -> dict[str, Any]:
     return block
 
 
-def _request_body(request: Request) -> dict[str, Any]:
+def _request_body(request: Request, *, effort: str | None = None) -> dict[str, Any]:
     """Translate one admitted request into one Messages-API body.
 
     System turns join into the top-level ``system`` field (absent when
@@ -248,6 +406,15 @@ def _request_body(request: Request) -> dict[str, Any]:
     — the system text and the message before the final one — are decided
     here and nowhere else, which is what keeps every body this backend
     sends at two breakpoints or fewer.
+
+    The sampling fields are decided last, by :func:`_sampling_mode` on
+    ``request.model``: a :data:`TEMPERATURE_MODE` model gets ``temperature``
+    — refused above :data:`_MAX_TEMPERATURE`, as before — and a
+    :data:`NO_SAMPLING_MODE` model gets neither temperature nor the ceiling
+    refusal (there is nothing to refuse a field that never ships), carrying
+    ``output_config.effort`` instead when ``effort`` is not ``None``, and no
+    ``output_config`` at all when it is — an empty object is a statement the
+    vendor would have to interpret, and this backend has nothing to say then.
     """
     system_texts = [
         message.content for message in request.messages if message.role == _SYSTEM_ROLE
@@ -270,7 +437,21 @@ def _request_body(request: Request) -> dict[str, Any]:
         }
         for index, message in enumerate(conversation)
     ]
-    body["temperature"] = request.temperature
+    if _sampling_mode(request.model) == TEMPERATURE_MODE:
+        if request.temperature > _MAX_TEMPERATURE:
+            raise ProviderRequestError(
+                f"temperature {request.temperature} is above the Messages "
+                f"API's ceiling of {_MAX_TEMPERATURE}, and this provider "
+                f"refuses the request rather than clamping it. A clamped "
+                f"temperature would answer a sampling regime the caller did "
+                f"not ask for — an answer that looks fine while being "
+                f"sampled at a temperature nobody requested. Send a "
+                f"temperature of at most {_MAX_TEMPERATURE} or bind a "
+                f"provider whose model exposes the range you need."
+            )
+        body["temperature"] = request.temperature
+    elif effort is not None:
+        body["output_config"] = {"effort": effort}
     return body
 
 
@@ -439,11 +620,22 @@ class AnthropicProvider(Provider):
         *,
         model: str,
         base_url: str = DEFAULT_BASE_URL,
+        effort: str | None = None,
         transport: Transport | None = None,
     ) -> None:
         self._api_key = _require_text(api_key, "api_key")
         self._model = _require_text(model, "model")
         self._base_url = _require_text(base_url, "base_url")
+        if effort is not None and effort not in EFFORT_LEVELS:
+            raise ValueError(
+                f"AnthropicProvider.effort must be one of "
+                f"{sorted(EFFORT_LEVELS)!r} or None, got {effort!r} "
+                f"({type(effort).__name__}). effort is the control a "
+                f"no-sampling model exposes in place of temperature, and a "
+                f"value outside the vendor's closed set is not a level any "
+                f"model honours."
+            )
+        self._effort = effort
         if transport is not None and not callable(transport):
             raise ValueError(
                 f"AnthropicProvider.transport must be a callable of the "
@@ -487,25 +679,15 @@ class AnthropicProvider(Provider):
         return model
 
     def _complete(self, request: Request) -> Completion:
-        # The temperature ceiling is checked before the door is reached, so
-        # a refused temperature sends nothing at all — no socket, no body
+        # The temperature ceiling (for a model that accepts temperature at
+        # all) is checked inside _request_body, before the door is reached,
+        # so a refused temperature sends nothing — no socket, no body
         # serialization, no key on any wire.  Never clamped: see the module
         # docstring for the quiet wrong a clamped temperature would answer.
-        if request.temperature > _MAX_TEMPERATURE:
-            raise ProviderRequestError(
-                f"temperature {request.temperature} is above the Messages "
-                f"API's ceiling of {_MAX_TEMPERATURE}, and this provider "
-                f"refuses the request rather than clamping it. A clamped "
-                f"temperature would answer a sampling regime the caller did "
-                f"not ask for — an answer that looks fine while being "
-                f"sampled at a temperature nobody requested. Send a "
-                f"temperature of at most {_MAX_TEMPERATURE} or bind a "
-                f"provider whose model exposes the range you need."
-            )
         answer = post_json(
             f"{self._base_url.rstrip('/')}{MESSAGES_PATH}",
             self._headers(),
-            _request_body(request),
+            _request_body(request, effort=self._effort),
             allowed_hosts=ANTHROPIC_ALLOWED_HOSTS,
             transport=self._transport,
         )

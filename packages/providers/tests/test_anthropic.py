@@ -66,6 +66,13 @@ FAKE_KEY = "fake-ant-key-not-a-credential"
 #: The one model the provider under test is built for — the pin's model.
 MODEL = "claude-opus-5"
 
+#: A model the per-model sampling table (see providers._anthropic's module
+#: docstring) verifies still accepts ``temperature`` — used only by the
+#: handful of tests below that exercise the temperature wire behaviour
+#: itself, since :data:`MODEL` is now one of the models the table withholds
+#: temperature from.
+TEMPERATURE_MODEL = "claude-haiku-4-5"
+
 #: The Messages-API endpoint of the default base URL.
 URL = "https://api.anthropic.com/v1/messages"
 
@@ -255,13 +262,15 @@ def test_the_whole_request_translates_into_one_messages_body(make_request):
     # The sentence as one picture: system turns join into the top-level
     # system field, the rest are forwarded in order with their roles, the
     # two cache breakpoints land on the system text and the message before
-    # the final one, and the knobs travel as the vendor spells them.
+    # the final one, and the knobs travel as the vendor spells them.  A
+    # temperature-accepting model, since the picture includes "temperature"
+    # travelling at all.
     transport = _transport(_ok())
-    provider = _provider(transport)
+    provider = _provider(transport, model=TEMPERATURE_MODEL)
 
     provider.complete(
         make_request(
-            model=MODEL,
+            model=TEMPERATURE_MODEL,
             temperature=0.4,
             max_tokens=128,
             bodies=(
@@ -275,7 +284,7 @@ def test_the_whole_request_translates_into_one_messages_body(make_request):
     )
 
     assert _sent_body(transport) == {
-        "model": MODEL,
+        "model": TEMPERATURE_MODEL,
         "max_tokens": 128,
         "system": [
             {
@@ -393,14 +402,22 @@ def test_no_shape_ever_spends_more_than_two_breakpoints(make_request):
 
 def test_the_temperature_travels_verbatim(make_request):
     # What the caller asked is what the vendor gets — 0.5 is sent as 0.5.
-    # The ceiling is a refusal, below it nothing is touched.
+    # The ceiling is a refusal, below it nothing is touched.  A
+    # temperature-accepting model: see TEMPERATURE_MODEL's own comment.
     transport = _transport(_ok())
-    _provider(transport).complete(make_request(model=MODEL, temperature=0.5))
+    _provider(transport, model=TEMPERATURE_MODEL).complete(
+        make_request(model=TEMPERATURE_MODEL, temperature=0.5)
+    )
 
     assert _sent_body(transport)["temperature"] == 0.5
 
 
 # ── The temperature ceiling: refused, never clamped ───────────────────────────
+#
+# Every test below uses TEMPERATURE_MODEL rather than MODEL: the ceiling this
+# section pins only applies to a model the per-model sampling table admits
+# temperature for at all (providers._anthropic._sampling_mode), and MODEL is
+# now one of the models the table withholds it from entirely.
 
 
 @pytest.mark.parametrize("temperature", [1.5, 2.0])
@@ -411,10 +428,10 @@ def test_a_temperature_above_one_is_refused_before_any_call(make_request, temper
     # have to interpret, and the caller meets the ceiling where it can be
     # fixed: at the ask.
     transport = _transport(_ok())
-    provider = _provider(transport)
+    provider = _provider(transport, model=TEMPERATURE_MODEL)
 
     with pytest.raises(ProviderRequestError) as refusal:
-        provider.complete(make_request(model=MODEL, temperature=temperature))
+        provider.complete(make_request(model=TEMPERATURE_MODEL, temperature=temperature))
 
     message = str(refusal.value)
     assert message.startswith(f"{UNSUPPORTED_TEMPERATURE_CODE}: ")
@@ -429,14 +446,16 @@ def test_a_refused_temperature_is_not_clamped_into_a_legal_call(make_request):
     # nobody requested — and the next legal ask travels at exactly the
     # temperature it named, not one the provider chose for it.
     transport = _transport(_ok())
-    provider = _provider(transport)
+    provider = _provider(transport, model=TEMPERATURE_MODEL)
 
     with pytest.raises(ProviderRequestError):
-        provider.complete(make_request(model=MODEL, temperature=1.5))
+        provider.complete(make_request(model=TEMPERATURE_MODEL, temperature=1.5))
 
     assert transport.calls == []
     provider.complete(
-        make_request(model=MODEL, temperature=0.5, bodies=(("user", "again"),))
+        make_request(
+            model=TEMPERATURE_MODEL, temperature=0.5, bodies=(("user", "again"),)
+        )
     )
     assert _sent_body(transport)["temperature"] == 0.5
 
@@ -445,7 +464,9 @@ def test_a_temperature_of_exactly_one_is_allowed(make_request):
     # The ceiling is a boundary, not a margin: 1.0 is the Messages API's
     # own top of the range and travels to the vendor untouched.
     transport = _transport(_ok())
-    _provider(transport).complete(make_request(model=MODEL, temperature=1.0))
+    _provider(transport, model=TEMPERATURE_MODEL).complete(
+        make_request(model=TEMPERATURE_MODEL, temperature=1.0)
+    )
 
     assert _sent_body(transport)["temperature"] == 1.0
 
@@ -726,7 +747,9 @@ def test_no_captured_output_ever_contains_the_key(make_request):
     # door's vendor refusal with the key echoed back in the error body —
     # renders without the credential, and so does the provider's own repr.
     # The door scrubs the echo; the backend's own messages are built from
-    # the ask and the answer, never the key.
+    # the ask and the answer, never the key.  Built for TEMPERATURE_MODEL so
+    # the temperature-ceiling refusal still fires; the model-mismatch check
+    # below asks for MODEL instead, the model this provider was not built for.
     echoed = json.dumps(
         {
             "type": "error",
@@ -734,16 +757,16 @@ def test_no_captured_output_ever_contains_the_key(make_request):
         }
     ).encode("utf-8")
     transport = _transport(_ok(stop_reason="refusal"), (401, {}, echoed))
-    provider = _provider(transport)
+    provider = _provider(transport, model=TEMPERATURE_MODEL)
 
     with pytest.raises(ProviderRequestError) as temperature_refusal:
-        provider.complete(make_request(model=MODEL, temperature=1.5))
+        provider.complete(make_request(model=TEMPERATURE_MODEL, temperature=1.5))
     with pytest.raises(UnknownModelError) as model_refusal:
-        provider.complete(make_request(model="claude-haiku-4-5"))
+        provider.complete(make_request(model=MODEL))
     with pytest.raises(CompletionMalformedError) as answer_refusal:
-        provider.complete(make_request(model=MODEL))
+        provider.complete(make_request(model=TEMPERATURE_MODEL))
     with pytest.raises(ProviderHTTPError) as http_refusal:
-        provider.complete(make_request(model=MODEL))
+        provider.complete(make_request(model=TEMPERATURE_MODEL))
 
     for rendered in (
         repr(provider),
