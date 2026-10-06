@@ -205,14 +205,26 @@ def _tree_sha256(runtime_root: PathLike) -> str:
     """The provisioning script's own tree digest, recomputed in Python.
 
     Mirrors ``deploy/gvisor/provision_runtime.sh``'s
-    ``find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum |
-    sha256sum`` pipeline exactly, so the two agree on a freshly provisioned
-    root: every regular file under ``runtime_root`` (symlinks excluded, the
-    same as ``find -type f``) gets its own sha256; those are written one per
-    line as ``sha256sum`` itself would (``"<hex>  ./<relative path>\\n"``,
-    two spaces), in ``LC_ALL=C`` path order (plain codepoint order — what
-    :func:`sorted` already gives for these paths); the concatenation of
-    those lines is hashed again, and that is the tree digest.
+    ``find . -type f -perm -004 -print0 | LC_ALL=C sort -z | xargs -0
+    sha256sum | sha256sum`` pipeline exactly, so the two agree on a freshly
+    provisioned root: every *world-readable* regular file under
+    ``runtime_root`` (symlinks excluded, the same as ``find -type f``; a
+    file whose mode lacks the other-read bit is skipped by its ``stat()``
+    alone, never opened — the same selection ``find -perm -004`` makes) gets
+    its own sha256; those are written one per line as ``sha256sum`` itself
+    would (``"<hex>  ./<relative path>\\n"``, two spaces), in ``LC_ALL=C``
+    path order (plain codepoint order — what :func:`sorted` already gives
+    for these paths); the concatenation of those lines is hashed again, and
+    that is the tree digest.
+
+    Restricting to world-readable files is what lets the non-root launcher
+    recompute the identical digest a root-run provisioning script
+    committed to the manifest: a debootstrap root carries a handful of
+    root-only files (``/etc/shadow``, ``/etc/.pwd.lock`` and the like,
+    mode ``0600``) that only root can read, and none of them is part of the
+    executable runtime a sandboxed signal actually runs under. The rule is
+    a property of each file's own mode, so root (the provisioner) and an
+    ordinary user (the verifier) always select the same set.
     """
     root = Path(runtime_root)
     relpaths: list[str] = []
@@ -221,6 +233,8 @@ def _tree_sha256(runtime_root: PathLike) -> str:
             candidate = Path(dirpath) / name
             if candidate.is_symlink() or not candidate.is_file():
                 continue
+            if not candidate.stat().st_mode & 0o004:
+                continue  # not world-readable — skipped by stat alone, never opened
             relpaths.append(candidate.relative_to(root).as_posix())
     relpaths.sort()
 

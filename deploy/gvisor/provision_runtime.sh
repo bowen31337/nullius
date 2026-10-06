@@ -25,9 +25,13 @@
 # ._tree_sha256), refusing to run agent code in a root whose contents don't
 # hash to the manifest's value. Keep this script's digest pipeline and that
 # function in agreement: same files (sha256sum's own "-type f", symlinks
-# excluded), same per-file line shape ("<hex>  ./<relative path>\n", two
-# spaces), same order (LC_ALL=C — plain codepoint order, so no locale can
-# make this script and Python disagree on how "./a" and "./B" sort).
+# excluded, AND world-readable only — "-perm -004" — so the digest this
+# script computes as root is one a non-root launcher can also recompute;
+# a debootstrap root's dozen root-only files, mode 0600, are excluded on
+# both sides by the same rule, never by a special case), same per-file
+# line shape ("<hex>  ./<relative path>\n", two spaces), same order
+# (LC_ALL=C — plain codepoint order, so no locale can make this script and
+# Python disagree on how "./a" and "./B" sort).
 #
 # Needs: sudo, debootstrap, uv, network access to the Ubuntu mirror and PyPI.
 set -euo pipefail
@@ -85,7 +89,12 @@ sudo chroot "$ROOT.new" /usr/bin/python3 -I -c \
 # construction (orchestrator._gvisor._tree_sha256) and refuses to run a root
 # whose contents don't hash to this value — LC_ALL=C pins the sort to plain
 # codepoint order so it agrees with Python's own str sort, locale-independent.
-DIGEST="$(cd "$ROOT.new" && sudo find . -type f -print0 | LC_ALL=C sort -z | sudo xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+# "-perm -004" (world-readable only) is what lets the non-root launcher
+# recompute this digest at all: this script runs as root and could read the
+# dozen root-only files a debootstrap root carries (/etc/shadow and the
+# like), but a non-root verifier cannot, so both sides hash only the files
+# every reader can open.
+DIGEST="$(cd "$ROOT.new" && sudo find . -type f -perm -004 -print0 | LC_ALL=C sort -z | sudo xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
 PY="$(sudo chroot "$ROOT.new" /usr/bin/python3 -c 'import sys; print(sys.version.split()[0])')"
 COMMIT="$(git -c safe.directory="$REPO" -C "$REPO" rev-parse HEAD)"
 sudo tee "$ROOT.new.manifest.json" >/dev/null <<EOF

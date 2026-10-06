@@ -373,7 +373,7 @@ def test_tree_sha256_matches_the_shell_pipeline_provision_runtime_sh_uses(tmp_pa
     (root / "a.txt").write_bytes(b"content-a")
 
     shell_digest = subprocess.run(
-        "find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1",
+        "find . -type f -perm -004 -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1",
         shell=True,
         cwd=root,
         capture_output=True,
@@ -383,8 +383,81 @@ def test_tree_sha256_matches_the_shell_pipeline_provision_runtime_sh_uses(tmp_pa
     assert gv._tree_sha256(root) == shell_digest
 
 
+def test_tree_sha256_ignores_a_root_only_file(tmp_path: Path) -> None:
+    # The bug this guards: a provisioned runtime root carries files like
+    # /etc/shadow at mode 0600, readable only by root. _tree_sha256 must
+    # select on the other-read bit alone (never on whether open() would
+    # actually succeed), so root (provisioning) and a non-root launcher
+    # (verifying) land on the identical digest.
+    root = tmp_path / "tiny-root"
+    root.mkdir()
+    (root / "world-readable.txt").write_bytes(b"readable")
+    root_only = root / "root-only.txt"
+    root_only.write_bytes(b"secret")
+    root_only.chmod(0o600)
+
+    lines = [f"{hashlib.sha256(b'readable').hexdigest()}  ./world-readable.txt\n"]
+    expected = hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()
+    assert gv._tree_sha256(root) == expected
+
+    # changing the root-only file's content does not move the digest
+    root_only.write_bytes(b"a-different-secret")
+    assert gv._tree_sha256(root) == expected
+
+    # nor does removing it outright
+    root_only.unlink()
+    assert gv._tree_sha256(root) == expected
+
+
+def test_tree_sha256_still_reacts_to_a_changed_world_readable_file(tmp_path: Path) -> None:
+    root = tmp_path / "tiny-root"
+    root.mkdir()
+    readable = root / "world-readable.txt"
+    readable.write_bytes(b"one")
+    before = gv._tree_sha256(root)
+
+    readable.write_bytes(b"two")
+    after = gv._tree_sha256(root)
+
+    assert before != after
+
+
+def test_tree_sha256_does_not_raise_permission_error_on_an_unreadable_file(tmp_path: Path) -> None:
+    root = tmp_path / "tiny-root"
+    root.mkdir()
+    (root / "world-readable.txt").write_bytes(b"readable")
+    unreadable = root / "unreadable.txt"
+    unreadable.write_bytes(b"secret")
+    unreadable.chmod(0o000)  # not even the owner can read it, like a root-only file to a non-root verifier
+
+    gv._tree_sha256(root)  # must not raise PermissionError
+
+
 def test_a_fresh_manifest_with_a_matching_digest_constructs(tmp_path: Path, fake_runsc: Path) -> None:
     sandbox_instance = _sandbox(tmp_path, fake_runsc)
+    assert isinstance(sandbox_instance, gv.GVisorSandbox)
+
+
+def test_construction_against_a_root_only_file_does_not_raise_permission_error(
+    tmp_path: Path, fake_runsc: Path
+) -> None:
+    # bug_spec_gvisor_root_only_digest.xml: a real provisioned root carries a
+    # handful of root-only files (mode 0600, owned by root) that the
+    # non-root launcher cannot open. Mode 0o000 reproduces the same "this
+    # process cannot read it" fact without needing an actual root-owned
+    # file — even the owner has no read bit, so a naive read would raise
+    # PermissionError exactly as it does against a real debootstrap root.
+    runtime_root = tmp_path / "runtime-root"
+    _provision_runtime_root(runtime_root)
+    root_only = runtime_root / "etc" / "shadow"
+    root_only.parent.mkdir(parents=True, exist_ok=True)
+    root_only.write_bytes(b"root:!:19000:0:99999:7:::\n")
+    root_only.chmod(0o000)
+    _write_manifest(runtime_root)  # recomputed with the root-only file present, but excluded from the digest
+
+    sandbox_instance = gv.GVisorSandbox(
+        runsc=str(fake_runsc), runtime_root=runtime_root, state_root=tmp_path / "state"
+    )
     assert isinstance(sandbox_instance, gv.GVisorSandbox)
 
 
