@@ -207,10 +207,13 @@ def test_accepts_an_already_parsed_batch() -> None:
 
 def test_accepts_a_positional_array_candle() -> None:
     # The venue's per-symbol klines REST returns each candle as a fixed-length
-    # array — [open_time, open, high, low, close, volume, close_time, ...,
-    # trade_count] — with no symbol field of its own: the symbol is the request
-    # parameter, so it is passed as the fallback.
-    array = [T0_MS, "61234.50", "61300.00", "61200.00", "61250.00", "12.5", T1_MS, 42]
+    # array — [open_time, open, high, low, close, volume, close_time,
+    # quote_volume, trade_count] — with no symbol field of its own: the symbol
+    # is the request parameter, so it is passed as the fallback.
+    array = [
+        T0_MS, "61234.50", "61300.00", "61200.00", "61250.00", "12.5", T1_MS,
+        "858.11", 42,
+    ]
     parsed = parse_klines([array], "1m", symbol="BTCUSDT")
     only = parsed.candles[0]
     assert only.symbol == "BTCUSDT"
@@ -709,7 +712,36 @@ def _range_fetch(symbol, interval, first, last):
 
 
 def _array_candle(symbol, open_ms, close_ms):
-    return [open_ms, "61234.50", "61300.00", "61200.00", "61250.00", "12.5", close_ms, 42]
+    return [
+        open_ms, "61234.50", "61300.00", "61200.00", "61250.00", "12.5",
+        close_ms, "858.11", 42,
+    ]
+
+
+def test_the_trade_count_is_read_from_binance_index_8_not_7() -> None:
+    # A row straight from Binance's own public klines API documentation
+    # example: index 7 is the quote asset volume (a decimal string), index 8
+    # is the trade count (an integer) — the two are easy to swap by one, and
+    # this pins the correct one against a real recorded row.
+    recorded_binance_row = [
+        1499040000000,
+        "0.01634790",
+        "0.80000000",
+        "0.01575800",
+        "0.01577100",
+        "148976.11427815",
+        1499644799999,
+        "2434.19055334",
+        308,
+        "1756.87402397",
+        "28.46694368",
+        "17928899.62484339",
+    ]
+    parsed = parse_klines([recorded_binance_row], "1d", symbol="ETHBTC")
+    only = parsed.candles[0]
+    assert only.trade_count == 308
+    assert only.volume == "148976.11427815"
+    assert only.close == "0.01577100"
 
 
 # -- Registration and composition -------------------------------------------

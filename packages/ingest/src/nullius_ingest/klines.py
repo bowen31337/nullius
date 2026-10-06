@@ -488,13 +488,16 @@ def _parse_candle(
         raw_trades = entry.get("trades", entry.get("trade_count", entry.get("n")))
     else:
         # Positional kline: [open_time, open, high, low, close, volume,
-        # close_time, ..., trade_count, ...].  The venue's array is longer than
-        # this, but these are the fields the ingest layer persists.
-        if len(entry) < 8:
+        # close_time, quote_volume, trade_count, ...].  Binance's own array is
+        # longer than this (taker-buy volumes and an ignored trailing field
+        # follow), but these are the fields the ingest layer persists.  Index 7
+        # is the *quote asset volume* (a decimal string), not the trade count —
+        # index 8 is the trade count, and the two are easy to swap by one.
+        if len(entry) < 9:
             raise KlineParseError(
                 f"{where} carries {len(entry)} fields; a positional kline needs "
-                f"at least open_time, open, high, low, close, volume, close_time "
-                f"and trade_count"
+                f"at least open_time, open, high, low, close, volume, close_time, "
+                f"quote_volume and trade_count"
             )
         raw_open_time = entry[0]
         raw_open = entry[1]
@@ -503,7 +506,7 @@ def _parse_candle(
         raw_close = entry[4]
         raw_volume = entry[5]
         raw_close_time = entry[6]
-        raw_trades = entry[7]
+        raw_trades = entry[8]
         symbol = fallback_symbol
 
     if not isinstance(symbol, str) or not symbol:
