@@ -119,10 +119,25 @@ does not run the probe (feature 125's), re-derive any axis' figure
 (127/129/130's runners are called, not reimplemented), or measure the
 window-offset axis (feature 128 is not in this member;
 :data:`TRIAGE_AXES` names the axes that exist, and the figure moves when
-the fourth lands).  And it does not state a verdict: an AUC is a
-measurement, not a rejection — the member has no verdict word for it and
-needs none, for the reason :mod:`tripwires.errors` gives for having no
-verdict error at all.
+the fourth lands).  And :func:`run_triage` and :class:`TriageFigure`
+state no verdict: an AUC is a measurement, not a rejection — the member
+has no verdict word for it and needs none, for the reason
+:mod:`tripwires.errors` gives for having no verdict error at all.
+
+**The CLI, and why it is the one place a reading is stated.**
+``python -m tripwires.triage`` (:func:`main`) is an operator door onto
+:func:`run_triage`, nothing more: it plants the same two populations from
+``--seed``/``--count``, prints the figure's own
+:meth:`~TriageFigure.to_payload`, and labels the mean AUC with PRD §12's
+own three-way rule (:func:`triage_reading`,
+:data:`TRIAGE_ROBUST_FILTER_AUC`, :data:`TRIAGE_LEARNED_SIGNATURE_AUC`) —
+a reading of the *family figure* printed at the command's own boundary,
+not a verdict the pure functions above ever compute or carry.  Nothing
+upstream of the print statement knows the reading exists.  Like every
+other module function, the command reads no store and makes no network
+call; a bad seed or a count under two is :func:`run_triage`'s own
+:class:`~tripwires.errors.TripwirePanelError`, caught and printed without
+a traceback.
 
 **Determinism.**  The same (``seed``, ``count``) produce the same figure
 bit-for-bit.  Each candidate draws from
@@ -143,10 +158,13 @@ process, which is the shape a one-day triage question deserves.
 
 from __future__ import annotations
 
+import argparse
 import datetime as dt
+import json
 import math
 import random
-from collections.abc import Mapping, Sequence
+import sys
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
@@ -163,20 +181,30 @@ from .subsample import SUBSAMPLE_AXIS, run_subsample_rerun
 from .time_shuffle import HORIZONS
 
 __all__ = [
+    "EXIT_OK",
+    "EXIT_REFUSED",
     "TRIAGE_AXES",
     "TRIAGE_KINDS",
+    "TRIAGE_LEARNED_SIGNATURE_AUC",
     "TRIAGE_PERSISTENCE",
     "TRIAGE_POPULATION",
+    "TRIAGE_POPULATION_LABEL",
+    "TRIAGE_READING_INDETERMINATE",
+    "TRIAGE_READING_LEARNED_SIGNATURE",
+    "TRIAGE_READING_ROBUST_FILTER",
+    "TRIAGE_ROBUST_FILTER_AUC",
     "TRIAGE_SEED",
     "TRIAGE_SIGNAL_HORIZON",
     "TRIAGE_TRUE_IC",
     "TriageCandidate",
     "TriageFigure",
     "instability_of",
+    "main",
     "planted_nulls",
     "real_signals",
     "run_triage",
     "triage_auc",
+    "triage_reading",
 ]
 
 #: The axes the triage measures — every axis of the perturbation family
@@ -971,3 +999,157 @@ def run_triage(
         grid=CORPUS_GRID,
         symbols=CORPUS_SYMBOLS,
     )
+
+
+# -- The CLI: `python -m tripwires.triage` ----------------------------------------
+
+#: PRD §12 M1's upper bound, named rather than left as a literal at the read
+#: site: at or above this family AUC, perturbation stability alone separates
+#: the two classes well enough that a single robustness statistic does the
+#: job — hard-code the filter, delete the dreaming apparatus (PRD §4.5's
+#: first branch, "the project's interesting claim is false in the cheap
+#: direction").
+TRIAGE_ROBUST_FILTER_AUC: float = 0.80
+
+#: PRD §12 M1's lower bound: at or below this family AUC the stability
+#: family does not separate the classes, the learned signature is where the
+#: value lives, and M3 is worth building toward — the only branch on which a
+#: §4.5 classifier is admissible at all (and even then, with architecture
+#: §11.2's conditions attached).
+TRIAGE_LEARNED_SIGNATURE_AUC: float = 0.65
+
+#: The three readings the rule assigns the mean AUC, closed and spelled
+#: exactly as the spec sentence states them — a fourth spelling anywhere
+#: downstream would be a reading the rule never gave.
+TRIAGE_READING_ROBUST_FILTER = "robustness_filter_suffices"
+TRIAGE_READING_LEARNED_SIGNATURE = "learned_signature_warranted"
+TRIAGE_READING_INDETERMINATE = "indeterminate"
+
+#: What the printed line calls its population — this command's own
+#: synthetic panel, planted from ``--seed``/``--count``, never a stored
+#: campaign's nodes: the run reads no store and makes no network call, so
+#: there is nothing else the population could be.
+TRIAGE_POPULATION_LABEL = "the member's planted panel"
+
+#: The command's two exit codes: 0 once a figure was printed, 1 when
+#: :func:`run_triage` refused the ``(seed, count)`` pair.
+EXIT_OK = 0
+EXIT_REFUSED = 1
+
+
+def triage_reading(auc: float) -> str:
+    """PRD §12 M1's decision rule over the family AUC, as a pure function.
+
+    Three bands, read in the rule's own direction: at or above
+    :data:`TRIAGE_ROBUST_FILTER_AUC` the family separates well enough that a
+    hard-coded filter suffices; at or below :data:`TRIAGE_LEARNED_SIGNATURE_AUC`
+    it does not, and the learned signature is what is worth building; the
+    open interval between the two bounds is the rule's own silence, named
+    :data:`TRIAGE_READING_INDETERMINATE` rather than rounded into either
+    branch. The two bounds are module constants rather than literals here,
+    so a deployment that re-reads the rule finds one pair of numbers, not
+    two.
+    """
+    if auc >= TRIAGE_ROBUST_FILTER_AUC:
+        return TRIAGE_READING_ROBUST_FILTER
+    if auc <= TRIAGE_LEARNED_SIGNATURE_AUC:
+        return TRIAGE_READING_LEARNED_SIGNATURE
+    return TRIAGE_READING_INDETERMINATE
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m tripwires.triage",
+        description=(
+            "Run the M1 perturbation-stability triage experiment: plant "
+            "the two labelled populations, measure the family AUC, and "
+            "print it with PRD §12's reading. Pure — no store is read and "
+            "no network call is made."
+        ),
+    )
+    parser.add_argument(
+        "--seed",
+        default=TRIAGE_SEED,
+        metavar="S",
+        # Deliberately untyped (no ``type=int``): a non-integer --seed must
+        # reach run_triage's own validation and exit 1 with its
+        # TripwirePanelError text, not argparse's usage error and exit 2.
+        # :func:`_parsed_seed` does the conversion this would otherwise do.
+        help=f"the planting seed (default: {TRIAGE_SEED})",
+    )
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=TRIAGE_POPULATION,
+        metavar="N",
+        help=f"candidates a side, at least two (default: {TRIAGE_POPULATION})",
+    )
+    return parser
+
+
+def _parsed_seed(raw: object) -> object:
+    """A CLI ``--seed`` value, converted to ``int`` when it is one.
+
+    argparse hands this the default (:data:`TRIAGE_SEED`, already an
+    ``int``) untouched, or the raw command-line string when ``--seed`` was
+    given. A string that parses as an integer becomes one; a string that
+    does not (``"abc"``, ``"4.5"``) is returned unchanged, so it reaches
+    :func:`run_triage` exactly as typed and is refused there, by name, as
+    the bad seed it is — rather than by argparse's own usage error, which
+    carries neither :data:`EXIT_REFUSED` nor the member's own error text.
+    """
+    if isinstance(raw, str):
+        try:
+            return int(raw)
+        except ValueError:
+            return raw
+    return raw
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    emit: Callable[[str], object] = print,
+    runner: Callable[..., Any] | None = None,
+) -> int:
+    """``python -m tripwires.triage [--seed S] [--count N]``: plant, measure, print.
+
+    Parses the two flags (argparse itself exits 2 for a bad ``--count``,
+    before this function's own body runs — a malformed ``--seed`` is
+    deliberately let through, see :func:`_parsed_seed`) and calls
+    ``run_triage(seed=S, count=N)`` — :func:`run_triage` by default, or
+    ``runner`` when a caller injects one. That seam is this command's test
+    door: the suite drives the reading rule against a stubbed figure on
+    each side of both thresholds without paying for the real experiment's
+    full re-runs.
+
+    Prints exactly one JSON line: the resolved figure's
+    :meth:`TriageFigure.to_payload`, plus ``reading`` (:func:`triage_reading`
+    of its ``auc``, derived from the mean AUC alone) and ``population``
+    (:data:`TRIAGE_POPULATION_LABEL`, naming the run's own planted panel
+    rather than any stored campaign). Returns :data:`EXIT_OK`.
+
+    A :class:`~tripwires.errors.TripwirePanelError` — a non-integer seed or
+    a count below two, :func:`run_triage`'s own two refusals — is caught,
+    printed to stderr with no traceback, and answered with
+    :data:`EXIT_REFUSED`. The experiment itself reads no store and makes no
+    network call either way.
+    """
+    arguments = _build_parser().parse_args(argv)
+    run = runner if runner is not None else run_triage
+
+    try:
+        figure = run(seed=_parsed_seed(arguments.seed), count=arguments.count)
+    except TripwirePanelError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_REFUSED
+
+    payload = figure.to_payload()
+    payload["reading"] = triage_reading(figure.auc)
+    payload["population"] = TRIAGE_POPULATION_LABEL
+    emit(json.dumps(payload))
+    return EXIT_OK
+
+
+if __name__ == "__main__":  # pragma: no cover - the module's own door
+    raise SystemExit(main())
