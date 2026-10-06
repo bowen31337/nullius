@@ -1,1 +1,29 @@
-# Placeholder for feature 10 of additions_spec_operator_surfaces.xml; the feature's task replaces it.
+# The timer that fires the nightly determinism canary once a day. Written
+# by the feature; enabling it is an operator step
+# (`systemctl --user enable --now nullius-canary.timer`). Nothing in this
+# repository installs or enables it.
+#
+# One firing a day, scheduled in UTC with the offset spelled on the line —
+# the same convention the VST timers use, so the schedule is UTC whatever
+# the host's clock is set to.
+
+[Unit]
+Description=nullius nightly determinism canary timer (daily)
+Documentation=file:/%h/projects/nullius/deploy/systemd/nullius-canary.service
+
+[Timer]
+# Once a day, at 03:15 UTC — well outside the VST rebalance timer's own
+# :05 firings, so the canary never competes with a scheduled slot for CPU.
+OnCalendar=*-*-* 03:15:00 UTC
+# A firing missed because the machine was off (a laptop, a reboot) is run on
+# the next boot: the canary replay is idempotent, so catching up is safe.
+Persistent=true
+# The service is a oneshot, so systemd will not start a second run while one
+# is still running.
+AccuracySec=1min
+# No jitter: one firing a day is nowhere near the thundering-herd scale that
+# RandomizedDelaySec exists to spread.
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target

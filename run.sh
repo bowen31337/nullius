@@ -22,10 +22,17 @@
 #                               loop) with ONLY the NULLIUS_ research keys
 #                               (.env.campaign.tpl), never .env.tpl; e.g.
 #                               ./run.sh campaign --type discovery --workspaces 16 --rounds 30
+#   ./run.sh closeout [args]    python -m orchestrator.closeout, with ONLY the
+#                               NULLIUS_ research keys (.env.campaign.tpl),
+#                               because it needs the sidecar key reference
 #
 # No-secret commands (run with a CLEAN env — package managers and linters
 # must never see runtime credentials; this is the main supply-chain
 # countermeasure for postinstall-style attacks):
+#   ./run.sh canary        [args]  python -m canary.run
+#   ./run.sh bootstrap-fill [args] python -m bootstrap.fill
+#   ./run.sh dream          [args] python -m orchestrator.dream
+#   ./run.sh triage         [args] python -m tripwires.triage
 #   ./run.sh stack              boot docker dev stack + emit per-service readiness
 #   ./run.sh stack-down         stop the docker dev stack
 #   ./run.sh install            uv sync (Python deps)
@@ -204,6 +211,23 @@ case "${cmd}" in
       uv run --all-packages python -m orchestrator.campaign "$@"
     ;;
 
+  closeout)
+    # The campaign close-out reads the sidecar key reference, so it gets the
+    # same NULLIUS_ research keys as `campaign`, from the same env file, never
+    # .env.tpl.
+    if [[ ! -f "${ENV_CAMPAIGN_TPL}" ]]; then
+      echo "error: ${ENV_CAMPAIGN_TPL} not found. Copy .env.campaign.tpl.example to" >&2
+      echo "       .env.campaign.tpl, set your 1Password references, and fill in" >&2
+      echo "       deploy/campaign/{authoring,evaluation}-config.json." >&2
+      exit 1
+    fi
+    mkdir -p "$HOME/.local/share/nullius"
+    export DATABASE_URL="${DATABASE_URL:-sqlite:///$HOME/.local/share/nullius/research.db}"
+    cd "${SCRIPT_DIR}"
+    exec op run --env-file="${ENV_CAMPAIGN_TPL}" -- \
+      uv run --all-packages python -m orchestrator.closeout "$@"
+    ;;
+
   # ── No-secret commands ──────────────────────────────────────────────────────
   # NEVER wrap these in `op run`. A compromised npm/pypi dep running during
   # install or lint must not see Stripe/Anthropic/OpenAI/AWS credentials.
@@ -215,6 +239,22 @@ case "${cmd}" in
   stack-down)
     echo "→ Stopping dev stack..."
     exec docker compose -f "${SCRIPT_DIR}/docker-compose.yml" down
+    ;;
+
+  canary|bootstrap-fill|dream|triage)
+    # None of these needs a secret, so they run with a CLEAN env, like the
+    # other no-secret commands above — never wrapped in `op run`. Each shares
+    # the research store with `campaign`, defaulting to the same path.
+    mkdir -p "$HOME/.local/share/nullius"
+    export DATABASE_URL="${DATABASE_URL:-sqlite:///$HOME/.local/share/nullius/research.db}"
+    cd "${SCRIPT_DIR}"
+    case "${cmd}" in
+      canary)         module="canary.run" ;;
+      bootstrap-fill) module="bootstrap.fill" ;;
+      dream)          module="orchestrator.dream" ;;
+      triage)         module="tripwires.triage" ;;
+    esac
+    exec uv run --all-packages python -m "${module}" "$@"
     ;;
 
   install)
