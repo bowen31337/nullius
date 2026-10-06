@@ -38,7 +38,10 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 import uuid
 from contextlib import closing, redirect_stderr
 from datetime import datetime, timezone
@@ -332,3 +335,27 @@ def test_the_store_is_registered_as_canary_run_store_and_none_without_a_url(
     app3 = create_app()
     store2 = app3.get("canary-run-store")
     assert store2.database_url == store.database_url
+
+
+# -- No runpy RuntimeWarning: a subprocess, not an in-process call ------------
+
+
+def test_module_run_prints_nothing_to_stderr(tmp_path: Path) -> None:
+    # Regression: ``canary/__init__.py`` used to import ``canary.run`` eagerly,
+    # which left "canary.run" in ``sys.modules`` by the time runpy imported it
+    # to execute as ``__main__`` -- the exact condition runpy's own
+    # RuntimeWarning fires under. Only a real subprocess invocation (as the
+    # systemd timer and an operator actually run this command) reproduces it;
+    # an in-process call to ``canary.run.main`` never goes through runpy.
+    env = dict(os.environ)
+    env["DATABASE_URL"] = _url(tmp_path)
+    result = subprocess.run(
+        [sys.executable, "-m", "canary.run", "--help"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""

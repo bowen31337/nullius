@@ -265,22 +265,6 @@ from .time_shuffle import (
     time_shuffle_pairing,
     time_shuffle_threshold,
 )
-from .triage import (
-    TRIAGE_AXES,
-    TRIAGE_KINDS,
-    TRIAGE_PERSISTENCE,
-    TRIAGE_POPULATION,
-    TRIAGE_SEED,
-    TRIAGE_SIGNAL_HORIZON,
-    TRIAGE_TRUE_IC,
-    TriageCandidate,
-    TriageFigure,
-    instability_of,
-    planted_nulls,
-    real_signals,
-    run_triage,
-    triage_auc,
-)
 from .window_offset import (
     DEFAULT_WINDOW_OFFSET,
     DEFAULT_WINDOW_STABILITY_THRESHOLD,
@@ -423,6 +407,42 @@ __version__ = "0.1.0"
 #: suite — by way of the member, not by hard-coded string — shares one
 #: spelling with the builder below.
 COMPONENT_NAME: str = "tripwires"
+
+#: Names :mod:`tripwires.triage` owns, resolved on first access through
+#: :func:`__getattr__` below rather than imported at package-import time:
+#: ``python -m tripwires.triage`` imports this package first, and an eager
+#: ``from .triage import ...`` here would already have ``tripwires.triage``
+#: in ``sys.modules`` by the time runpy executes it as ``__main__`` — the
+#: exact condition that prints runpy's "found in sys.modules ... prior to
+#: execution" RuntimeWarning.
+_TRIAGE_MODULE_ATTRS = frozenset(
+    {
+        "TRIAGE_AXES",
+        "TRIAGE_KINDS",
+        "TRIAGE_PERSISTENCE",
+        "TRIAGE_POPULATION",
+        "TRIAGE_SEED",
+        "TRIAGE_SIGNAL_HORIZON",
+        "TRIAGE_TRUE_IC",
+        "TriageCandidate",
+        "TriageFigure",
+        "instability_of",
+        "planted_nulls",
+        "real_signals",
+        "run_triage",
+        "triage_auc",
+    }
+)
+
+
+def __getattr__(name: str) -> object:
+    if name in _TRIAGE_MODULE_ATTRS:
+        from . import triage as _triage
+
+        value = getattr(_triage, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class TimeShuffleTripwire:

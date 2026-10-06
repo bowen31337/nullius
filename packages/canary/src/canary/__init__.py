@@ -355,9 +355,16 @@ that closes §12's table.  A canary that could not say which bytes it
 ran in could not honestly say any of those things either.
 """
 
-from typing import Optional
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Optional
 
 from app.module_loader import register
+
+if TYPE_CHECKING:
+    # Only for static analysis: a real import here would reintroduce the
+    # eager ``canary.run`` import ``__getattr__`` below exists to avoid.
+    from .run import RUN_TABLE, CanaryRun, CanaryRunStore, build_run_store
 
 from ._allowlist import (
     ALLOWED,
@@ -495,13 +502,6 @@ from ._reproducibility import (
     compare_bytes,
     compare_runs,
     require_identical,
-)
-from .run import (
-    RUN_STORE_COMPONENT_NAME,
-    RUN_TABLE,
-    CanaryRun,
-    CanaryRunStore,
-    build_run_store,
 )
 from ._service import CanaryService, build_canary_service
 from ._threads import (
@@ -709,6 +709,31 @@ __all__ = [
 
 __version__ = "0.1.0"
 
+#: Restated from :mod:`canary.run` rather than imported from it: ``python -m
+#: canary.run`` imports this package first, and an eager ``from .run import
+#: ...`` here would already have ``canary.run`` in ``sys.modules`` by the
+#: time runpy executes it as ``__main__`` — the exact condition that prints
+#: runpy's "found in sys.modules ... prior to execution" RuntimeWarning.
+RUN_STORE_COMPONENT_NAME = "canary-run-store"
+
+#: Names :mod:`canary.run` owns, resolved on first access through
+#: :func:`__getattr__` below rather than imported at package-import time,
+#: for the same reason :data:`RUN_STORE_COMPONENT_NAME` is restated rather
+#: than imported.
+_RUN_MODULE_ATTRS = frozenset(
+    {"RUN_TABLE", "CanaryRun", "CanaryRunStore", "build_run_store"}
+)
+
+
+def __getattr__(name: str) -> object:
+    if name in _RUN_MODULE_ATTRS:
+        from . import run as _run
+
+        value = getattr(_run, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 @register("canary")
 def _registered_canary_service() -> CanaryService:
@@ -801,4 +826,6 @@ def _registered_run_store() -> Optional[CanaryRunStore]:
     finds none.  A caller that wants the store pointed at a URL uses
     :class:`CanaryRunStore`.
     """
+    from .run import build_run_store
+
     return build_run_store()

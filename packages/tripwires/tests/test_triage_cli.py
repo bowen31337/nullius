@@ -29,6 +29,9 @@ under a second rather than the pinned default's ~15 seconds.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from dataclasses import dataclass
 from typing import Any
 
@@ -283,3 +286,26 @@ def test_the_run_reads_no_store_and_makes_no_network_call(
         TRIAGE_READING_INDETERMINATE,
     }
     assert payload["population"] == TRIAGE_POPULATION_LABEL
+
+
+# -- No runpy RuntimeWarning: a subprocess, not an in-process call ------------
+
+
+def test_module_triage_prints_nothing_to_stderr() -> None:
+    # Regression: ``tripwires/__init__.py`` used to import ``tripwires.triage``
+    # eagerly, which left "tripwires.triage" in ``sys.modules`` by the time
+    # runpy imported it to execute as ``__main__`` -- the exact condition
+    # runpy's own RuntimeWarning fires under. Only a real subprocess
+    # invocation (as an operator actually runs this command) reproduces it;
+    # an in-process call to ``tripwires.triage.main`` never goes through
+    # runpy.
+    result = subprocess.run(
+        [sys.executable, "-m", "tripwires.triage", "--help"],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ),
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
