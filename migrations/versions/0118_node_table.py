@@ -105,36 +105,38 @@ The ordering fact, stated plainly
 ---------------------------------
 
 **This file lands *last* in the dispatched chain, after the column and index
-migrations, on purpose and by the dispatcher's own ordering — and that is the
-one fact about this migration a reader must not miss.** The run's ``node`` tasks
-were queued with descending priorities — feature 102 (the indexes) down to
-feature 97 (this table) — and the run dispatches a queue in descending priority
-order, so feature 97, carrying the lowest priority, is dispatched last. The
-assembled chain therefore reads ``0113_node_indexes`` → ``0114`` → ``0115`` →
-``0116`` → ``0117`` → ``0118_node_table`` (this file), and a straightforward run
-of that chain on a *fresh* database stops at ``0113`` with ``no such table:
-node`` — the ordering fact every one of 0113, 0114, 0115, 0116 and 0117 names
-from inside and this file now names from the table's side.
+migrations, by the dispatcher's own ordering.** The run's ``node`` tasks were
+queued with descending priorities — feature 102 (the indexes) down to feature
+97 (this table) — and the run dispatches a queue in descending priority order,
+so feature 97, carrying the lowest priority, is dispatched last. The assembled
+chain therefore reads ``0113_node_indexes`` → ``0114`` → ``0115`` → ``0116`` →
+``0117`` → ``0118_node_table`` (this file), and a straightforward run of that
+chain on a *fresh* database used to stop at ``0113`` with ``no such table:
+node`` — a real bug, not a fact to defend, and not one any revision in this
+tree may be renumbered to fix (the ids are chain positions).
 
-That is the correct failure and not a defect to paper over, and it is the same
-failure 0113's docstring records for whoever assembles the chain. The repair the
-tree performs at assembly time is to renumber ``node``'s creation so it precedes
-the indexes and columns that reference it — alongside 0107's stale
-``down_revision`` and 0108's forward reference to a table 0110 creates, the
-third ordering fact in this run, all stated here rather than left to be
-rediscovered from a failed run. Because every statement below is ``IF NOT
-EXISTS``, the repair is a re-run and not a rebuild: once ``node`` is created
-first, running this revision creates the table and touches nothing else, and the
-column migrations 0114–0117 then add their columns to it via ``ALTER TABLE``
-(each guarded by its own column probe, so a table this migration created with
-only the five structural columns is brought forward correctly).
+**The fix is carried by 0113, not by reordering**: 0113's own :func:`upgrade`
+now creates this table's skeleton the moment it is absent — the same
+``CREATE TABLE IF NOT EXISTS`` below, read from this file by path rather than
+duplicated, so the two definitions cannot drift apart (see 0113's module
+docstring, "The repair"). By the time the chain reaches *this* file, ``node``
+already exists on every path: 0113 created it on a fresh chain, or it was
+already there (a store, or an older chain). Either way, the statement below is
+a silent ``IF NOT EXISTS`` no-op here. What this file still does that is not a
+no-op is call 0113's :func:`upgrade` a second time (:func:`_node_indexes_module`,
+below) — 0113 could not create two of its three indexes at its own turn,
+because ``code_hash`` and ``agent_model_id`` are added later in the chain
+(0117 and 0115); by *this* file's turn every node column exists, so that
+second call finishes them.
 
 That is also why :data:`REQUIRES_TABLES` is **empty** and :data:`TABLES` is
 ``("node",)``. This migration creates the table; it references only itself (the
 self-referencing ``parent_id``), so it imposes no ordering constraint on the
 chain beyond its own creation — exactly as 0111's ``campaign`` references
-nothing and is free to land in either order. The ``node`` that 0113–0117 name in
-*their* :data:`REQUIRES_TABLES` is *this* table, created here.
+nothing and is free to land in either order. :data:`INDEXES` stays empty too:
+the three indexes remain 0113's own declared creations (:data:`INDEXES` there
+is unchanged), and this file only finishes applying them, the way its
+:func:`upgrade` would if 0113 were simply called twice by any other caller.
 
 The self-referencing foreign key
 --------------------------------
@@ -208,6 +210,12 @@ the shipped chain references ``node`` by a database foreign key (the
 ``parent_id`` self-reference is the only FK, and dropping the table removes it),
 so the drop is never refused by a dependent.
 
+The second call :func:`upgrade` makes, into 0113's own :func:`upgrade`, is
+idempotent for the same reason 0113's module docstring gives: every statement
+it runs is ``IF NOT EXISTS``, and the two index statements it could not run on
+a fresh chain's first pass are not special-cased on this, later call — they
+are the same statements, now finding their column present.
+
 Revision chaining
 -----------------
 
@@ -228,12 +236,15 @@ ever renumbered (as the ordering fact above says it must be) is this constant.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import sqlite3
 import sys
 from collections.abc import Iterable
 from contextlib import closing
+from functools import lru_cache
 from pathlib import Path
+from types import ModuleType
 from typing import Optional
 from urllib.parse import unquote, urlparse
 
@@ -404,8 +415,26 @@ def _drop_statements() -> tuple[str, ...]:
 # ── Running it ───────────────────────────────────────────────────────────────
 
 
+@lru_cache(maxsize=1)
+def _node_indexes_module() -> ModuleType:
+    """Load ``0113_node_indexes.py`` from its file, not by package import.
+
+    Loaded by path for the same reason :func:`_sqlite_path`'s docstring
+    gives for this file: a migration must not depend on a workspace package
+    being importable to run, and ``0113_node_indexes`` is not a name a plain
+    ``import`` statement could spell anyway (it starts with a digit).
+    """
+    path = Path(__file__).with_name("0113_node_indexes.py")
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def upgrade(connection: object, dialect: Optional[str] = None) -> tuple[str, ...]:
-    """Create the table on ``connection``; returns the statements executed.
+    """Create the table on ``connection`` and finish 0113's indexes; returns
+    every statement executed.
 
     Takes any DBAPI connection. The caller owns the transaction — this function
     neither commits nor rolls back, so a caller that is already inside a
@@ -416,6 +445,15 @@ def upgrade(connection: object, dialect: Optional[str] = None) -> tuple[str, ...
     ``dialect`` overrides detection. Detection exists so the common case needs
     no argument; see :func:`_dialect_of` for what it recognises and why an
     unrecognised connection gets the spec's Postgres spelling.
+
+    After the table statement, this also calls 0113's own :func:`upgrade`
+    again (loaded by path, :func:`_node_indexes_module`). By this point in the
+    chain every node column 0113's three indexes could need (97-101) has
+    landed, so whichever of them 0113 could not yet create on a fresh chain —
+    because its column had not been added at 0113's turn — succeeds now; any
+    already created are a ``CREATE INDEX IF NOT EXISTS`` no-op. See
+    0113_node_indexes's module docstring, "The repair", for the other half of
+    this.
     """
     resolved = dialect if dialect is not None else _dialect_of(connection)
     ddl = statements(resolved)
@@ -425,7 +463,7 @@ def upgrade(connection: object, dialect: Optional[str] = None) -> tuple[str, ...
             cursor.execute(statement)
     finally:
         cursor.close()
-    return ddl
+    return ddl + _node_indexes_module().upgrade(connection, resolved)
 
 
 def downgrade(connection: object) -> tuple[str, ...]:

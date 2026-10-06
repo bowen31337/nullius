@@ -16,44 +16,61 @@ trio (``code_hash``, ``stated_mechanism``, ``artifact_uri``), 99 the provenance
 trio, 100 the authoring-model trio, 101 the seven metric columns. Those five run
 in one queue by spec order and this feature in another, with no dependency edge
 between them either way, so this file must not decide anything the table's owner
-decides: it names the ``columns`` a database engine needs indexed and leaves the
-columns' types, keys and constraints to the migration that creates them.
+decides beyond the one exception below: it names the ``columns`` a database
+engine needs indexed and leaves the columns' types, keys and constraints to the
+migration that creates them.
 
-**This file lands ahead of the table it indexes, on purpose and by the
-dispatcher's own ordering.** The six migration tasks in this run were queued
-with descending priorities — 107 down to 102 — and the run dispatches a queue in
-descending priority order (the completed five started in exactly that order:
-107, 106, 105, 104, 103, and this feature's 102). This feature is priority 101
-and is dispatched before the five column/table features, which carry 100 down to
-96; **feature 97, the file that creates ``node``, is priority 96 and is
-dispatched last of the six.** So the assembled chain will read
-``0113_node_indexes`` (this file) → the four column features → the table feature,
-and a straightforward run of that chain on a *fresh* database stops here with
-``no such table: node`` (verified).
+**This file lands ahead of the table it indexes, by the dispatcher's own
+ordering, and that makes it the first file in the assembled chain to touch
+``node``.** The six migration tasks in this run were queued with descending
+priorities — 107 down to 102 — and the run dispatches a queue in descending
+priority order (the completed five started in exactly that order: 107, 106,
+105, 104, 103, and this feature's 102). This feature is priority 101 and is
+dispatched before the five column/table features, which carry 100 down to 96;
+feature 97, the file that creates ``node``, is priority 96 and is dispatched
+last of the six. So the assembled chain reads ``0113_node_indexes`` (this
+file) → the four column features → ``0118_node_table``, and a straightforward
+run of that chain against a *fresh* database used to stop here with
+``no such table: node`` — a real bug (no revision may be renumbered to repair
+it; see "The repair" below), not the dispatcher's fault to carry forever.
 
-That is the correct failure and not a defect to paper over: the alternative —
-skipping the index statements when the table is absent — would leave a database
-with no indexes and no complaint, which is the "returns empty rather than
-failing" mode 0108's docstring names as the thing this tree is written against.
-The repair is the one the tree already performs at assembly time: node's
-creation must be renumbered to precede these indexes, alongside 0107's stale
-``DOWN_REVISION`` and 0108's forward reference to a table 0110 creates — three
-ordering facts for whoever assembles the chain, all of them stated here rather
-than left to be rediscovered from a failed run. Because every statement below is
-``IF NOT EXISTS``, the repair is a re-run and not a rebuild: once the table
-exists, running this revision creates the three indexes and touches nothing
-else (verified against a database already carrying the whole chain through
-0112).
+**The repair kept inside this file and 0118, rather than a renumbering**:
+because this revision is the first one in the fixed chain order to reference
+``node``, :func:`upgrade` creates the same five-column skeleton
+:mod:`0118_node_table` creates — loaded from that very file by path (see
+:func:`_node_table_statement`), so the two can never drift apart — before it
+attempts the three indexes. On a fresh database this migration is now the one
+that creates ``node``; on a database where the table already exists (0118
+landed first in some other chain, or a store created it with its own
+``CREATE TABLE IF NOT EXISTS``), the ``IF NOT EXISTS`` makes table creation a
+silent no-op and only the indexes are new. 0118, reached later in the same
+chain, then finds the table already there and is itself a no-op for the table
+— see its docstring for that side of the repair.
 
-That is also why :data:`TABLES` is **empty**. This migration creates no table,
-so a statement list that starts with ``CREATE INDEX`` is complete and correct on
-its own; the table it indexes either already exists (feature 97 landed first, or
-a store created it with its own ``CREATE TABLE IF NOT EXISTS``) or the index
-statement fails loudly rather than silently indexing nothing. Index statements
-are the one DDL in this tree whose idempotency is free: ``CREATE INDEX IF NOT
-EXISTS`` is supported by both dialects, so no ``DO`` block, no existence probe
-and no ``information_schema`` query is needed to make :func:`upgrade`
-re-runnable.
+The skeleton only carries ``campaign_id``, ``parent_id``, ``theme_root`` and
+``depth``, so one of the three indexes — ``node_campaign_id_parent_id`` — can
+always be created the moment the skeleton exists. The other two name columns
+features 98 and 100 add later in this same chain (``code_hash`` at 0117,
+``agent_model_id`` at 0115), so on a *fresh* chain this revision's own
+:func:`upgrade` cannot yet create them: it catches exactly the
+``OperationalError`` SQLite raises for a missing column, skips that one
+statement, and lets 0118 finish the job once every node column has landed.
+:func:`upgrade` is otherwise fully idempotent, so 0118 finishing the job is
+nothing more than calling this same function again against a connection
+where the remaining columns now exist — see 0118's docstring for the call. A
+database where ``node`` already carried every column before 0113 ran (a store
+that creates the fully-featured table directly, as production does) needs no
+deferral: all three indexes succeed on this revision's own first call, and
+0118's later retry finds nothing left to do.
+
+That is also why :data:`TABLES` now names ``node`` alongside :data:`INDEXES`
+being this file's own three: this migration creates the table when it is
+absent, so its DDL, taken together with 0118's retry, is complete and correct
+on a fresh run with no missing-table or missing-column failure surviving to
+the caller. ``CREATE INDEX IF NOT EXISTS`` was always idempotent on both
+dialects; the table statement borrows the same idempotent form from 0118, and
+the column-missing skip is what makes the *order in which columns arrive*
+survivable too.
 
 Why these three, and what each one is for
 -----------------------------------------
@@ -128,19 +145,25 @@ them, and no fourth index is added on this file's authority.
 Dialect
 -------
 
-None. This is the second dialect-invariant migration in the tree after 0110: no
-``id`` is minted and no timestamp is defaulted, so there is no
-``gen_random_uuid()`` and no ``NOW()`` to translate, and ``CREATE INDEX IF NOT
-EXISTS ... ON node (...)`` — the one statement form here, three times — is valid
-on SQLite and Postgres alike. ``statements()`` therefore keeps the tree's
-uniform ``dialect`` parameter and selects nothing with it, as 0110's does.
+The three index statements are dialect-invariant, as before: no ``id`` is
+minted and no timestamp is defaulted by *them*, so there is no
+``gen_random_uuid()`` and no ``NOW()`` to translate for ``CREATE INDEX IF NOT
+EXISTS ... ON node (...)``. The node-table statement this file now also runs is
+not — it carries the same ``id UUID ... DEFAULT`` 0118 needs, so it needs the
+same per-dialect translation 0118 performs. Rather than a second copy of that
+translation, :func:`_node_table_statement` reads it from 0118's own
+:func:`statements`, so ``dialect`` here selects exactly what it selects there.
+:func:`upgrade` resolves the dialect from the connection the same way 0118's
+``_dialect_of`` does, loaded from 0118 alongside its statement.
 
-The one platform fact worth stating: on SQLite a ``CREATE INDEX`` against a
+The one platform fact worth restating: on SQLite a ``CREATE INDEX`` against a
 missing table or a missing *column* is an error, not a silent no-op (verified —
-``no such table`` / ``no such column``, both ``OperationalError``). That is the
-correct failure for this migration, because it runs after the table exists; it
-is only worth writing down so a reader does not expect the ``IF NOT EXISTS`` to
-swallow it.
+``no such table`` / ``no such column``, both ``OperationalError``). The
+node-table statement running first means the table is never missing when the
+index statements run; a missing *column* still is, for two of the three
+indexes, on a fresh chain — :func:`upgrade` catches exactly that error and
+skips the one statement rather than letting it fail the whole revision; see
+"The repair" above and 0118's docstring for who finishes the skipped index.
 
 Revision chaining
 -----------------
@@ -153,38 +176,48 @@ landed as 0111 while feature 105's epoch_ledger landed as 0110. The chain this
 file was written against is ``0107`` → ``0108`` → ``0109`` → ``0110`` →
 ``0111`` → ``0112_trial_ledger``, which is committed and is this branch's head;
 ``0113`` is the seventh position. :data:`DOWN_REVISION` names that head as a
-fact read from ``git log`` rather than a convention guess.
+fact read from ``git log`` rather than a convention guess. No revision id,
+``DOWN_REVISION`` or filename in the tree changes for this fix — the ids are
+chain positions, not a thing a bug fix gets to renumber — so the repair is
+entirely inside this file's :func:`upgrade`.
 
-:data:`REQUIRES_TABLES` names ``node`` — the one table this migration's
-statements are valid against, and the dependency the tree's own constant exists
-to record for a dialect that validates at DDL time (0108 uses it for the same
-reason, for the tables it references by foreign key). It is the honest statement
-of the ordering fact above: the table must exist before this revision runs, and
-the constant says so to whoever assembles the chain rather than leaving it to be
-inferred from the statement list.
+:data:`REQUIRES_TABLES` is now empty rather than naming ``node``: this
+migration no longer merely requires the table to pre-exist, it ensures it.
+:data:`TABLES` names ``node`` for the same reason — this is, on a fresh
+database, the file that creates it — alongside the three indexes it always
+created.
 
 Idempotency and re-runnability
 ------------------------------
 
-Every statement is ``CREATE INDEX IF NOT EXISTS``, so :func:`upgrade` is a no-op
-against a database that already holds the indexes — including a dev or test
-database a shipped store created them in first. :func:`downgrade` is ``DROP INDEX
-IF EXISTS`` in reverse creation order, drops only the three objects this
-migration creates, and never touches the ``node`` table or a single row of it;
-an upgrade→downgrade→upgrade cycle round-trips. The drops are reversed so a
-reader comparing the two lists sees one order in :func:`statements` and its
-mirror in :func:`_drop_statements`, the way every other member of this tree is
-written.
+Every statement is ``IF NOT EXISTS`` — the node-table ``CREATE TABLE`` borrowed
+from 0118 and the three ``CREATE INDEX`` statements alike — so :func:`upgrade`
+is a no-op against a database that already holds all four objects, including
+one a shipped store or an earlier revision created first. Calling
+:func:`upgrade` again when two of the three indexes were previously skipped
+for a missing column (the fresh-chain case) is exactly how those two get
+created once the columns exist: nothing about a second call is special-cased,
+it is the same statement list meeting a database that has moved on.
+:func:`downgrade` is unchanged: it drops only the three indexes this migration
+has always owned, in reverse creation order, and never touches the ``node``
+table or a row of it — the table this revision may have created is 0118's to
+drop on its own downgrade, the same table either file leaves behind. An
+upgrade→downgrade→upgrade cycle round-trips for the indexes; ``node`` persists
+throughout, as it does across a downgrade of 0118 followed by a re-upgrade of
+this file alone.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import sqlite3
 import sys
 from collections.abc import Iterable
 from contextlib import closing
+from functools import lru_cache
 from pathlib import Path
+from types import ModuleType
 from typing import Optional
 from urllib.parse import unquote, urlparse
 
@@ -222,19 +255,18 @@ down_revision = DOWN_REVISION
 branch_labels = None
 depends_on = None
 
-#: Tables that must already exist for this migration to be valid on a dialect
-#: that resolves an index against its table at execution time (both dialects
-#: here — SQLite refuses ``CREATE INDEX`` on a missing table outright, and
-#: Postgres refuses it inside the transaction). ``node`` is the only one, and
-#: it is created by a sibling feature (97) this file does not own; the constant
-#: is what makes that dependency legible to whoever assembles the chain.
-REQUIRES_TABLES: tuple[str, ...] = ("node",)
+#: Tables that must already exist for this migration to be valid — none.
+#: This migration used to require ``node`` to pre-exist; it now ensures the
+#: table itself (see :func:`_node_table_statement`), so nothing else in the
+#: chain needs to land first.
+REQUIRES_TABLES: tuple[str, ...] = ()
 
-#: The tables this migration creates — none. It indexes a table a sibling
-#: feature creates, and the constant is kept (rather than the attribute being
-#: omitted) so ``TABLES + INDEXES`` stays the uniform shape a reader can
-#: iterate over every migration in this tree.
-TABLES: tuple[str, ...] = ()
+#: The tables this migration creates, in creation order — ``node`` when this
+#: is the first revision in the chain to touch it (the fresh-database case),
+#: alongside the three indexes it has always created. The ``CREATE TABLE IF
+#: NOT EXISTS`` is a no-op when the table already exists (0118 landed first,
+#: or a store created it); see the module docstring's repair section.
+TABLES: tuple[str, ...] = ("node",)
 
 #: The indexes this migration creates, in creation order — exactly the three
 #: feature 102 names, in the order it names them: the campaign tree walk, the
@@ -267,6 +299,39 @@ DATABASE_URL_ENV = "DATABASE_URL"
 # ── The statements ───────────────────────────────────────────────────────────
 
 
+@lru_cache(maxsize=1)
+def _node_table_module() -> ModuleType:
+    """Load ``0118_node_table.py`` from its file, not by package import.
+
+    Loaded by path for the same reason every migration's own ``_sqlite_path``
+    docstring gives: a migration must not depend on a workspace package being
+    importable to run, and ``0118_node_table`` is not a valid dotted module
+    name a plain ``import`` statement could spell anyway (it starts with a
+    digit). ``lru_cache`` means the file is read and executed once per
+    process rather than once per call to :func:`_node_table_statement` or
+    :func:`upgrade`.
+    """
+    path = Path(__file__).with_name("0118_node_table.py")
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _node_table_statement(dialect: str) -> str:
+    """The ``CREATE TABLE IF NOT EXISTS node (...)`` statement, from 0118.
+
+    Read from 0118's own :func:`statements` rather than duplicated here, so
+    the two migrations can never drift: whichever of them runs first against
+    a given database creates exactly the same five-column skeleton, and the
+    DDL identity the bug fix requires is structural rather than a copy a
+    future edit to one file could silently break.
+    """
+    (statement,) = _node_table_module().statements(dialect)
+    return statement
+
+
 def _index_statement(name: str, columns: tuple[str, ...]) -> str:
     """The ``CREATE INDEX`` statement for ``name`` over ``columns``.
 
@@ -292,20 +357,24 @@ def statements(dialect: str = "other") -> tuple[str, ...]:
     (or a test) can see what a migration will do without a database, which is
     the property that makes a migration reviewable at all.
 
-    ``dialect`` is part of the tree's uniform interface and selects nothing:
-    this migration mints no id and defaults no timestamp, so there is no
-    ``gen_random_uuid()`` or ``NOW()`` to translate, and ``CREATE INDEX IF NOT
-    EXISTS`` is valid on SQLite and Postgres alike. See the module docstring's
-    Dialect section.
+    The first statement creates ``node`` if it is absent, identical to
+    0118's own (:func:`_node_table_statement`) — this is the fix for the
+    fresh-database bug this file's docstring describes: without it, the three
+    ``CREATE INDEX`` statements below would run against a table that does not
+    exist yet on a fresh chain. ``dialect`` selects the node-table statement's
+    ``id`` default the same way it does in 0118; the three index statements
+    remain dialect-invariant, as before. See the module docstring's Dialect
+    section.
 
-    Every statement is idempotent and every one names a column a sibling
-    feature (97-101) puts on ``node``; on SQLite a missing table or column is an
-    ``OperationalError`` rather than a no-op, so a run that reaches this
-    revision before the table exists says so instead of quietly indexing
-    nothing.
+    Every statement is idempotent, but not every one is safe to run on a fresh
+    chain the moment the table exists: ``node_code_hash`` and
+    ``node_agent_model_id`` name columns features 98 and 100 add later in this
+    same chain (0117 and 0115), so :func:`upgrade` tolerates the
+    ``OperationalError`` SQLite raises for those two until a later call finds
+    the columns present — see the module docstring's "Why these three" and
+    "The repair" sections.
     """
-    _ = dialect  # accepted for the uniform interface; selects nothing today
-    return tuple(
+    return (_node_table_statement(dialect),) + tuple(
         _index_statement(name, INDEX_COLUMNS[name]) for name in INDEXES
     )
 
@@ -326,7 +395,8 @@ def _drop_statements() -> tuple[str, ...]:
 
 
 def upgrade(connection: object, dialect: Optional[str] = None) -> tuple[str, ...]:
-    """Create the three indexes on ``connection``; returns the statements run.
+    """Create ``node`` (if absent) and whichever indexes it can; returns the
+    statements actually run.
 
     Takes any DBAPI connection. The caller owns the transaction — this function
     neither commits nor rolls back, so a caller already inside a transaction (a
@@ -334,18 +404,41 @@ def upgrade(connection: object, dialect: Optional[str] = None) -> tuple[str, ...
     implicit commit. Use a context manager, or call :func:`apply`, which opens
     and commits its own SQLite connection.
 
-    The statements are dialect-invariant (see :func:`statements`), so unlike
-    0107-0109 there is no detection to do and ``dialect`` selects nothing; it is
-    accepted for the tree's uniform signature, as in 0110.
+    The three index statements are dialect-invariant, as before; the
+    node-table statement is not (it carries 0118's ``id`` default), so unlike
+    the previous, indexes-only version of this function, ``dialect`` is
+    resolved from the connection — via 0118's own detection, loaded alongside
+    its statement — when the caller does not supply one. A caller running
+    something other than SQLite still gets the spec's Postgres spelling, the
+    same conservative default 0118's own detection falls back to.
+
+    Two of the three index statements name a column (``code_hash``,
+    ``agent_model_id``) a later revision adds in a fresh chain; this function
+    catches the ``OperationalError`` SQLite raises for exactly that case
+    (``"no such column"`` — any other ``OperationalError`` propagates) and
+    skips that one statement rather than failing the whole call. It is not
+    special-cased for a second call: 0118 calling this same function again
+    once every node column exists is how the skipped statements get created —
+    see the module docstring's "The repair".
     """
-    ddl = statements(dialect if dialect is not None else "other")
+    resolved = (
+        dialect if dialect is not None else _node_table_module()._dialect_of(connection)
+    )
+    ddl = statements(resolved)
     cursor = connection.cursor()  # type: ignore[attr-defined]
+    executed = []
     try:
         for statement in ddl:
-            cursor.execute(statement)
+            try:
+                cursor.execute(statement)
+            except sqlite3.OperationalError as exc:
+                if "no such column" not in str(exc):
+                    raise
+                continue
+            executed.append(statement)
     finally:
         cursor.close()
-    return ddl
+    return tuple(executed)
 
 
 def downgrade(connection: object) -> tuple[str, ...]:
