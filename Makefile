@@ -16,7 +16,11 @@
 # xdist worker spin-up ("bringing up nodes") costs more than a member suite
 # saves, and two agents each running -n 4 contend for this box's RAM.
 
-PYTEST_FAST = uv run --no-sync pytest -q -x -p no:cacheprovider
+# uv lives in ~/.local/bin, which plain non-login shells miss; agents get
+# it via claw-forge's toolchain PATH, operators via this fallback.
+UV ?= $(shell command -v uv || echo $$HOME/.local/bin/uv)
+
+PYTEST_FAST = $(UV) run --no-sync pytest -q -x -p no:cacheprovider
 
 .PHONY: test test-fast
 
@@ -24,8 +28,8 @@ test-fast:
 ifdef P
 	PYTHONPATH=src:packages/$(P)/src$(if $(PP),:$(PP)) $(PYTEST_FAST) $(if $(K),-k "$(K)") $(if $(F),packages/$(P)/tests/$(F),packages/$(P)/tests)
 else
-	uv run --all-packages pytest -q -x $(if $(K),-k "$(K)") tests --ignore=tests/e2e --ignore=tests/replay
+	$(UV) run --all-packages pytest -q -x $(if $(K),-k "$(K)") tests --ignore=tests/e2e --ignore=tests/replay
 endif
 
 test:
-	uv run --all-packages pytest -n 4 --dist loadfile
+	$(UV) run --all-packages pytest -n 4 --dist loadfile
