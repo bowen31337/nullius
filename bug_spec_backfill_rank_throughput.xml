@@ -1,0 +1,62 @@
+<bug_spec>
+  <!-- ARCH-2. Found 2026-10-08. The resumable archive backfill
+       (bug_spec_archive_backfill.xml) was run with the lake-backfill verb
+       over the archive source, 2019-01-01 to 2026-09-30, top 100, into
+       ~/.local/share/nullius/lake-archive. It was killed by an 8-hour timeout (exit 124) still in the rank phase
+       at {"symbols_done": 407, "symbols_total": 752}, about 52 symbols an
+       hour. It had written no partitions and no rank cache, so all 8 hours
+       were lost. Core shape, explicit touches_files. -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/ingest/src/nullius_ingest/bars_backfill.py,packages/ingest/tests/test_backfill_rank_throughput.py">
+    <title>The archive backfill's rank phase is sequential, uncheckpointed and downloads every file twice, so a 2019–2026 top-100 run cannot finish in a working day and loses all progress when interrupted</title>
+    <symptoms>
+      In _backfill_archive (bars_backfill.py ~line 1140), ranking walks all 752 candidates one at a time. For each one, _fetch_symbol_archive_rows downloads every monthly zip plus its .CHECKSUM, with DEFAULT_DELAY_SECONDS (0.2 s) after each request. That is roughly 37,000 files fetched sequentially.
+
+      Three things make this unworkable:
+      - The rank cache (_save_rank_cache) is written only after the last candidate. An interruption at symbol 407 keeps nothing.
+      - The candle rows fetched during ranking are discarded (`_rows`). The write phase then fetches the top-N symbols' files again.
+      - The S3 listing (_list_archive_months) is redone on every run.
+    </symptoms>
+    <reproduction_steps>
+      With an injected fetch that counts calls and sleeps 10 ms per call, rank 30 synthetic symbols × 12 months:
+      - Calls equal 2 × files during ranking, plus 2 × files again for the top-N writes.
+      - Killing after 20 symbols and rerunning starts ranking at symbol 1.
+    </reproduction_steps>
+    <expected>
+      - Verified file cache.
+        - Every archive month that passes its checksum is written atomically (tmp then rename) to &lt;LAKE&gt;/staging-meta/archive-cache/&lt;symbol&gt;/&lt;symbol&gt;-1d-&lt;YYYY-MM&gt;.zip, together with its .CHECKSUM.
+        - Any later need for that month, in ranking, in the write phase or in a rerun, reads the cached file and re-verifies its checksum, without a network call.
+        - A cached file whose checksum fails is deleted and refetched.
+        - The S3 listing is cached in &lt;LAKE&gt;/staging-meta/archive-listing.json and reused unless --restart is given.
+        - The cache sits outside staging/, so it is never sealed.
+      - Rank checkpoint.
+        - Each ranked candidate's result (symbol, median volume, last archive month, or "unrankable") is appended as one JSON line to &lt;LAKE&gt;/staging-meta/rank-&lt;window&gt;.partial.jsonl as soon as it is known.
+        - A rerun skips candidates already in the partial file.
+        - Once all are done, the final rank cache is written and the partial file removed.
+        - --restart ignores and clears all three: listing, partial rank and file cache.
+      - Concurrency.
+        - New --workers N, default 8, bounded to 1..32. It sets the number of candidates fetched in parallel with a thread pool.
+        - Each worker keeps the per-request politeness delay.
+        - An HTTP 429 or 418 response honours retry-after for that worker, as today.
+        - The ranking, partitions, universe.json and every emitted summary are identical whatever the worker count. Ordering is by the existing sort key, never completion order.
+        - Progress lines stay one per finished candidate, in completion order, with symbols_done increasing monotonically.
+      - Expected scale: with --workers 8 and a warm cache, a rerun of the same window makes zero network calls until it reaches a month not yet cached.
+      - test_backfill_rank_throughput.py, with an injected fetch over synthetic archive months that counts calls and needs no network, covers:
+        - each month is fetched once across ranking and writing
+        - an interrupted rank (the fetch raises after N symbols) resumes without refetching ranked symbols or cached months
+        - --restart clears and refetches
+        - a corrupted cached zip is detected, deleted and refetched
+        - --workers 1 and --workers 8 produce byte-identical universe.json and partitions
+        - 30 symbols × 12 months at 10 ms per call finish at least 4× faster with 8 workers than with 1
+        It passes under pytest-xdist.
+    </expected>
+    <actual>Root cause: ranking is a single sequential loop with no incremental persistence, and fetched files are never kept, so the write phase and every rerun pay the full download again.</actual>
+    <constraints>
+      The ranking rule (median daily quote volume over the window), the output layout and universe.json fields are unchanged
+      The live REST source (--source rest) is unchanged
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
