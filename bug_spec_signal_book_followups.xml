@@ -1,0 +1,51 @@
+<bug_spec>
+  <!-- BOOK-2. Found 2026-10-08 verifying 720f8f4 (bug_spec_first_scored_campaign.xml
+       bug 1, the signal-weighted book). That fix changed NodeMetrics.turnover and
+       ir_standalone to the node's own dollar-neutral book but could edit only its
+       three claimed files, so the artifact's per-date turnover_series
+       (evaluator/_artifact.py) still renders the equal-weight book, and three
+       test_metrics.py tests still pin the equal-weight convention. The evaluator
+       member suite is red: 4 failed, 562 passed. Core shape, explicit
+       touches_files. -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/evaluator/src/evaluator/_metrics.py,packages/evaluator/src/evaluator/_artifact.py,packages/evaluator/tests/test_metrics.py,packages/evaluator/tests/test_turnover_series_signal_book.py">
+    <title>The artifact's turnover_series still renders the equal-weight book, so it disagrees with the signal-weighted turnover scalar it is meant to be the per-date record of</title>
+    <symptoms>
+      - After 720f8f4, compute_node_metrics computes turnover over the node's own book, with weights w_i = z_i / sum(|z_j|).
+      - evaluator._artifact.render_turnover_series (~line 275) still rebuilds an equal-weight book (1/n over each date's priced symbols) from the PostCostReturns panel. It receives no scores, so it cannot know the weights.
+      - test_persist.py::test_turnover_series_matches_the_metrics_turnover now fails: the mean of the rendered series is 0.5, and the scalar is 0.1667.
+      - NodeMetrics carries book_returns (compare=False) but no per-date weights or per-date turnover.
+      - Three tests in test_metrics.py still pin the replaced convention:
+        - test_ir_standalone_is_the_equal_weight_books_information_ratio
+        - test_ir_standalone_is_refused_when_the_book_return_is_constant: its fixture's equal-weight book is constant, but its signal book is not.
+        - test_turnover_is_the_mean_fractional_turnover
+    </symptoms>
+    <reproduction_steps>
+      PYTHONPATH=src:packages/evaluator/src uv run --no-sync pytest -q -p no:cacheprovider packages/evaluator/tests -n 1: 4 failed.
+    </reproduction_steps>
+    <expected>
+      - NodeMetrics carries the per-date turnover of its own book: turnover_series, a mapping from date to float, compare=False, empty on a record rebuilt from the store. This mirrors book_returns. compute_node_metrics fills it from the same per_date_weights its turnover scalar reduces.
+      - render_turnover_series renders metrics.turnover_series when it is present, so the mean of the rendered series equals metrics.turnover by construction.
+      - If a record rebuilt from the store has an empty turnover_series, rendering it is refused with EvaluatorArtifactError naming the reason. It never falls back to the equal-weight book.
+      - The existing node-id and type checks stay.
+      - The three test_metrics.py tests are rewritten to the signal-weighted convention, and their intent is preserved:
+        - the IR test computes the expected IR from w = z / sum(|z|) by hand
+        - the constant-book refusal uses a fixture whose signal book is genuinely constant (a refusal is still raised)
+        - the turnover test's expected value is recomputed by hand for the signal weights, with the arithmetic in a comment
+      - test_turnover_series_signal_book.py covers:
+        - the rendered series' mean equals metrics.turnover for a panel where the scored symbols differ from the priced symbols
+        - two signals with different weights over one panel render different series
+        - a record without turnover_series is refused, not equal-weighted
+        It passes under pytest-xdist.
+      - The whole evaluator member suite passes.
+    </expected>
+    <actual>Root cause: 720f8f4 moved the book to signal weights in _metrics.py only. _artifact.py re-derives turnover independently from the returns panel, with no access to the weights.</actual>
+    <constraints>
+      ir_standalone, turnover, ic_mean and ic_tstat values from compute_node_metrics are unchanged
+      The metrics store's persisted columns are unchanged
+      No file outside the four listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
