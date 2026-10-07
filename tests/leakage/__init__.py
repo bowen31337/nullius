@@ -1,1 +1,1 @@
-"""Placeholder for additions_spec_tripwires_live.xml; its task replaces it."""
+"""M1's tripwire exit, proved on a sealed snapshot — additions_spec_tripwires_live.xml, feature 3."""
