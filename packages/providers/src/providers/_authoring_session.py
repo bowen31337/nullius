@@ -107,6 +107,7 @@ from ._pinning import ModelPin
 from ._provider import Provider
 from ._root import ROOT_TIER_MAX_DEPTH
 from ._rotation import rotation_index
+from ._usage_store import UsageRecordingProvider, UsageStore
 
 __all__ = ["AuthoringSession", "role_for_depth"]
 
@@ -213,6 +214,7 @@ class AuthoringSession:
         self,
         config: AuthoringConfig,
         resolve: Callable[[ModelPin], Provider],
+        usage_store: UsageStore | None = None,
     ) -> None:
         # The config is held, not copied: it is frozen and value-equal, so a
         # caller keeping a reference cannot change what this session routes.
@@ -239,6 +241,13 @@ class AuthoringSession:
             )
         self._config = config
         self._resolve = resolve
+        # Optional, and held as given: when absent, provider_for's return is
+        # byte-identical to a session with no usage tracking at all (see
+        # provider_for below). When given, it is never touched by this class
+        # except to bind it to the UsageRecordingProvider provider_for hands
+        # back — the store's own behaviour (pricing, schema, swallowing its
+        # own write failures) is entirely UsageRecordingProvider's concern.
+        self._usage_store = usage_store
         # The pins by their (provider, model) member key, so a family the
         # rotation picks out of the canonical tier resolves back to the pin the
         # config declared.  Built once from the config's own ``root_tier``,
@@ -328,13 +337,39 @@ class AuthoringSession:
         at every call site and a signature that sometimes omitted them would
         be two call shapes for one question.  They are used only by the root
         rotation; that is stated here rather than left for the caller to infer.
+
+        When this session was built with a ``usage_store``, the cached
+        :class:`~providers.BudgetedProvider` is wrapped, fresh on *this* call,
+        in a :class:`~providers._usage_store.UsageRecordingProvider` bound to
+        this call's ``campaign_id``, ``node_id``, ``role`` and ``pin`` — so the
+        cached object underneath (and the budget it keeps) is unaffected, and
+        two calls for the same pin under two different nodes each get a
+        recorder bound to their own attribution rather than sharing one. The
+        recorder sits *outside* the budget wrapper: a call the budget refuses
+        still reaches the recorder's ``except`` clause and is recorded as
+        ``refused_budget``, with the budget's own totals and ceilings
+        untouched by the recording. With no store configured, this answers
+        the cached provider unwrapped — byte-identical to a session built
+        before this feature existed.
         """
         pin = self._pin_for(role, campaign_id, node_id)
         provider = self._providers.get(pin)
         if provider is None:
             provider = self._bind(pin)
             self._providers[pin] = provider
-        return provider, pin
+        if self._usage_store is None:
+            return provider, pin
+        return (
+            UsageRecordingProvider(
+                provider,
+                store=self._usage_store,
+                campaign_id=campaign_id,
+                node_id=node_id,
+                role=role,
+                pin=pin,
+            ),
+            pin,
+        )
 
     def _bind(self, pin: ModelPin) -> BudgetedProvider:
         """Resolve ``pin`` once and wrap it in this session's budget.
