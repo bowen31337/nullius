@@ -175,6 +175,44 @@ checkpointed.  Three changes fix that, all archive-only:
   itself does not already turn into a one-line refusal (not
   :class:`BarsBackfillError`) is still caught once, in :func:`main`, as one
   stderr line — never a raw traceback.
+
+**Rank throughput (bug fix, archive mode).** The ranking pass above still
+fetched every candidate's zip and ``.CHECKSUM`` sequentially, kept nothing
+until the very last candidate, and then let the write phase fetch the same
+top-``N`` symbols' files all over again — a 2019–2026, top-100 run was still
+a multi-hour, all-or-nothing crawl.  Three more changes, again archive-only:
+
+* *A verified file cache.*  Every archive month whose zip passes its
+  checksum is written, atomically (a temp file, then renamed), to
+  ``<lake>/staging-meta/archive-cache/<symbol>/<symbol>-1d-<month>.zip``
+  alongside its ``.CHECKSUM`` (:func:`_fetch_month`).  Any later need for
+  that month — ranking a different ``--top``, the write phase right after
+  ranking, or a rerun — reads the cached pair and re-verifies the checksum
+  against it rather than fetching again; a cached pair that fails that
+  re-verification is deleted and refetched, exactly as a fresh mismatch
+  would be.  The archive's own S3 listing is cached the same way, at
+  ``<lake>/staging-meta/archive-listing.json``, reused until ``--restart``.
+  Both sit beside ``staging/``, not inside it, so a seal never touches them.
+* *A rank checkpoint.*  As soon as a candidate is resolved — ranked, or
+  found unrankable — its result is appended as one JSON line to
+  ``<lake>/staging-meta/rank-<first>_<last>.partial.jsonl``
+  (:func:`_append_rank_partial`).  A rerun reads that file first
+  (:func:`_load_rank_partial`) and skips every candidate already in it, so
+  an interrupted rank pass loses only the candidate it was on, not the ones
+  before it.  Once every candidate is resolved the final rank cache is
+  written exactly as before and the partial file is removed.
+* *Concurrency.*  ``--workers N`` (default :data:`DEFAULT_WORKERS`, bounded
+  :data:`MIN_WORKERS` to :data:`MAX_WORKERS`) runs that many candidates'
+  fetches at once over a thread pool — each worker keeps the same
+  per-request politeness delay and the same 418/429 retry-after backoff,
+  just on its own thread rather than blocking every other candidate.  The
+  ranking, the written partitions and ``universe.json`` do not depend on
+  the worker count: the candidate pool is always sorted by the existing
+  rank key before it is used, never left in completion order, and progress
+  lines (``symbols_done``) still increase monotonically, one per finished
+  candidate.  ``--restart`` now also clears the S3 listing cache, the rank
+  checkpoint and every cached archive month, on top of what it already
+  cleared.
 """
 
 from __future__ import annotations
@@ -186,8 +224,10 @@ import io
 import json
 import math
 import re
+import shutil
 import statistics
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -195,6 +235,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -206,15 +247,20 @@ from .klines import KlineParseError, KlineRow, parse_klines
 
 __all__ = [
     "ARCHIVE_BASE_URL",
+    "ARCHIVE_CACHE_DIRNAME",
     "ARCHIVE_KLINES_PREFIX",
+    "ARCHIVE_LISTING_FILENAME",
     "ARCHIVE_LISTING_URL",
     "BARS_STREAM",
     "DEFAULT_BASE_URL",
     "DEFAULT_DELAY_SECONDS",
+    "DEFAULT_WORKERS",
     "EXIT_OK",
     "EXIT_REFUSED",
     "LEVERAGED_SUFFIXES",
     "MAX_RETRIES",
+    "MAX_WORKERS",
+    "MIN_WORKERS",
     "PAGE_SIZE",
     "RANK_CACHE_DIRNAME",
     "STABLECOIN_BASES",
@@ -269,6 +315,22 @@ UNIVERSE_FILENAME = "universe.json"
 #: sibling of ``staging/`` and ``universe.json`` so :mod:`snapshot.seal`
 #: never sees it — a checkpoint, not published data.
 RANK_CACHE_DIRNAME = "staging-meta"
+
+#: Under :data:`RANK_CACHE_DIRNAME`: every archive month's verified zip and
+#: ``.CHECKSUM``, keyed by symbol, so ranking, the write phase and a rerun
+#: all read the same bytes off disk instead of fetching them again.
+ARCHIVE_CACHE_DIRNAME = "archive-cache"
+
+#: Under :data:`RANK_CACHE_DIRNAME`: the archive's S3 listing
+#: (:func:`_list_archive_months`'s result), reused across runs and
+#: ``--top`` values until ``--restart`` clears it.
+ARCHIVE_LISTING_FILENAME = "archive-listing.json"
+
+#: ``--workers``' default: how many ``--top N`` candidates a rank pass fetches
+#: in parallel.
+DEFAULT_WORKERS = 8
+MIN_WORKERS = 1
+MAX_WORKERS = 32
 
 #: Binance's public data archive — static monthly zips, no API key, no
 #: rate-limit contract (it is a CDN-fronted bucket, not the REST API).
@@ -545,6 +607,34 @@ _ARCHIVE_KEY_RE = re.compile(
 )
 
 
+def _request_archive(
+    fetch: ArchiveFetch, url: str, *, sleep: Callable[[float], None], what: str
+) -> HttpResponse:
+    """Call the archive ``fetch``, retrying a 418/429 up to :data:`MAX_RETRIES`.
+
+    Mirrors :func:`_request_json`'s retry semantics (the same per-request
+    delay, the same honoured ``Retry-After``) for the archive's single-URL
+    seam, so a worker thread backs off on its own rather than wedging the
+    whole rank pass on one rate-limited candidate. Any other status,
+    including a 404, is returned as-is — the archive's 404 means "no file",
+    not a failure, and is the caller's call to make.
+    """
+    attempt = 0
+    while True:
+        response = fetch(url)
+        sleep(DEFAULT_DELAY_SECONDS)
+        if response.status in (418, 429):
+            attempt += 1
+            if attempt > MAX_RETRIES:
+                raise BarsBackfillError(
+                    f"{what} refused: HTTP {response.status} persisted past "
+                    f"{MAX_RETRIES} retries"
+                )
+            sleep(_retry_after_seconds(response.headers))
+            continue
+        return response
+
+
 def _s3_tag(name: str) -> str:
     return f"{_S3_NS}{name}"
 
@@ -575,8 +665,9 @@ def _list_archive_keys(
         if marker:
             params["marker"] = marker
         url = f"{ARCHIVE_LISTING_URL}?{urllib.parse.urlencode(sorted(params.items()))}"
-        response = fetch(url)
-        sleep(DEFAULT_DELAY_SECONDS)
+        response = _request_archive(
+            fetch, url, sleep=sleep, what=f"archive listing for prefix {prefix!r}"
+        )
         if response.status != 200:
             raise BarsBackfillError(
                 f"archive listing for prefix {prefix!r} failed: HTTP {response.status}"
@@ -613,6 +704,59 @@ def _list_archive_months(
     return {
         symbol: tuple(sorted(months)) for symbol, months in sorted(months_by_symbol.items())
     }
+
+
+def _archive_listing_cache_path(lake_path: Path) -> Path:
+    return lake_path / RANK_CACHE_DIRNAME / ARCHIVE_LISTING_FILENAME
+
+
+def _load_archive_listing_cache(path: Path) -> dict[str, tuple[str, ...]] | None:
+    """The cached S3 listing, or ``None`` on a miss or a malformed file."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    try:
+        return {
+            str(symbol): tuple(str(month) for month in months)
+            for symbol, months in payload.items()
+        }
+    except (TypeError, ValueError):
+        return None
+
+
+def _save_archive_listing_cache(
+    path: Path, months_by_symbol: Mapping[str, tuple[str, ...]]
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {symbol: list(months) for symbol, months in months_by_symbol.items()}
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _list_archive_months_cached(
+    lake_path: Path,
+    fetch: ArchiveFetch,
+    *,
+    sleep: Callable[[float], None],
+    restart: bool,
+) -> dict[str, tuple[str, ...]]:
+    """:func:`_list_archive_months`, cached at ``archive-listing.json``.
+
+    The whole-bucket crawl is the one call every ``--top N`` candidate shares,
+    so it is worth skipping on every run but the first — unless ``restart``,
+    which always re-crawls (and, by the time this is called, the stale cache
+    file has already been cleared by :func:`_clear_archive_caches`).
+    """
+    cache_path = _archive_listing_cache_path(lake_path)
+    if not restart:
+        cached = _load_archive_listing_cache(cache_path)
+        if cached is not None:
+            return cached
+    months_by_symbol = _list_archive_months(fetch, sleep=sleep)
+    _save_archive_listing_cache(cache_path, months_by_symbol)
+    return months_by_symbol
 
 
 def _months_between(first: date, last: date) -> tuple[str, ...]:
@@ -654,8 +798,61 @@ def _month_zip_url(symbol: str, month: str) -> tuple[str, str]:
     return f"{ARCHIVE_BASE_URL}/{ARCHIVE_KLINES_PREFIX}{symbol}/1d/{filename}", filename
 
 
+def _archive_cache_dir(lake_path: Path) -> Path:
+    return lake_path / RANK_CACHE_DIRNAME / ARCHIVE_CACHE_DIRNAME
+
+
+def _cached_month_paths(lake_path: Path, symbol: str, month: str) -> tuple[Path, Path]:
+    filename = f"{symbol}-1d-{month}.zip"
+    symbol_dir = _archive_cache_dir(lake_path) / symbol
+    return symbol_dir / filename, symbol_dir / f"{filename}.CHECKSUM"
+
+
+def _write_atomic(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` as a temp file then rename over it.
+
+    The rename is the atomicity: a reader (this process's own next run, or a
+    concurrent one) either sees the old file or the new one, never a
+    partially-written one.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_bytes(data)
+    tmp_path.replace(path)
+
+
+def _read_cached_month(
+    lake_path: Path, symbol: str, month: str
+) -> tuple[bytes, bytes] | None:
+    """``(zip_bytes, checksum_bytes)`` from the file cache, or ``None`` on a miss."""
+    zip_path, checksum_path = _cached_month_paths(lake_path, symbol, month)
+    try:
+        return zip_path.read_bytes(), checksum_path.read_bytes()
+    except OSError:
+        return None
+
+
+def _write_cached_month(
+    lake_path: Path, symbol: str, month: str, zip_bytes: bytes, checksum_bytes: bytes
+) -> None:
+    zip_path, checksum_path = _cached_month_paths(lake_path, symbol, month)
+    _write_atomic(zip_path, zip_bytes)
+    _write_atomic(checksum_path, checksum_bytes)
+
+
+def _delete_cached_month(lake_path: Path, symbol: str, month: str) -> None:
+    zip_path, checksum_path = _cached_month_paths(lake_path, symbol, month)
+    zip_path.unlink(missing_ok=True)
+    checksum_path.unlink(missing_ok=True)
+
+
 def _fetch_month(
-    fetch: ArchiveFetch, symbol: str, month: str, *, sleep: Callable[[float], None]
+    fetch: ArchiveFetch,
+    lake_path: Path,
+    symbol: str,
+    month: str,
+    *,
+    sleep: Callable[[float], None],
 ) -> tuple[tuple[KlineRow, ...], dict[date, float]] | None:
     """One month's candles and per-day quote volume for ``symbol``.
 
@@ -663,25 +860,45 @@ def _fetch_month(
     404: before the symbol listed, or after it was delisted) — not a failure,
     just nothing to add.  Raises :class:`BarsBackfillError`, naming the zip
     file, for any other HTTP failure or a checksum mismatch.
-    """
-    zip_url, filename = _month_zip_url(symbol, month)
-    zip_response = fetch(zip_url)
-    sleep(DEFAULT_DELAY_SECONDS)
-    if zip_response.status == 404:
-        return None
-    if zip_response.status != 200:
-        raise BarsBackfillError(f"{filename}: fetch failed: HTTP {zip_response.status}")
 
-    checksum_response = fetch(f"{zip_url}.CHECKSUM")
-    sleep(DEFAULT_DELAY_SECONDS)
-    if checksum_response.status != 200:
-        raise BarsBackfillError(
-            f"{filename}.CHECKSUM: fetch failed: HTTP {checksum_response.status}"
+    A verified month is read from the file cache with no network call; the
+    checksum is re-verified against the cached bytes regardless, so a cached
+    file that was corrupted on disk is caught, deleted, and refetched exactly
+    as a fresh checksum mismatch would be.  A month fetched fresh (cache miss
+    or a corrupt cache entry) is written back to the cache once it passes its
+    own checksum.
+    """
+    filename = f"{symbol}-1d-{month}.zip"
+    cached = _read_cached_month(lake_path, symbol, month)
+    if cached is not None:
+        zip_bytes, checksum_bytes = cached
+        try:
+            _verify_checksum(zip_bytes, checksum_bytes, filename)
+        except BarsBackfillError:
+            _delete_cached_month(lake_path, symbol, month)
+            cached = None
+
+    if cached is None:
+        zip_url, _filename = _month_zip_url(symbol, month)
+        zip_response = _request_archive(fetch, zip_url, sleep=sleep, what=filename)
+        if zip_response.status == 404:
+            return None
+        if zip_response.status != 200:
+            raise BarsBackfillError(f"{filename}: fetch failed: HTTP {zip_response.status}")
+
+        checksum_response = _request_archive(
+            fetch, f"{zip_url}.CHECKSUM", sleep=sleep, what=f"{filename}.CHECKSUM"
         )
-    _verify_checksum(zip_response.body, checksum_response.body, filename)
+        if checksum_response.status != 200:
+            raise BarsBackfillError(
+                f"{filename}.CHECKSUM: fetch failed: HTTP {checksum_response.status}"
+            )
+        _verify_checksum(zip_response.body, checksum_response.body, filename)
+        _write_cached_month(lake_path, symbol, month, zip_response.body, checksum_response.body)
+        zip_bytes, checksum_bytes = zip_response.body, checksum_response.body
 
     try:
-        with zipfile.ZipFile(io.BytesIO(zip_response.body)) as bundle:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as bundle:
             names = bundle.namelist()
             if not names:
                 raise BarsBackfillError(f"{filename}: the zip carries no files")
@@ -719,6 +936,7 @@ def _fetch_month(
 
 def _fetch_symbol_archive_rows(
     fetch: ArchiveFetch,
+    lake_path: Path,
     symbol: str,
     months: Sequence[str],
     *,
@@ -733,7 +951,7 @@ def _fetch_symbol_archive_rows(
     all_volumes: dict[date, float] = {}
     last_month_with_data: str | None = None
     for month in months:
-        result = _fetch_month(fetch, symbol, month, sleep=sleep)
+        result = _fetch_month(fetch, lake_path, symbol, month, sleep=sleep)
         if result is None:
             continue
         candles, volumes = result
@@ -822,6 +1040,84 @@ def _save_rank_cache(
         ],
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _rank_partial_path(lake_path: Path, first: date, last: date) -> Path:
+    return (
+        lake_path
+        / RANK_CACHE_DIRNAME
+        / f"rank-{first.isoformat()}_{last.isoformat()}.partial.jsonl"
+    )
+
+
+def _load_rank_partial(path: Path) -> dict[str, tuple[float, str] | None]:
+    """Every candidate a prior, interrupted rank pass already finished.
+
+    Keyed by symbol: a ranked candidate maps to ``(median_volume,
+    last_archived_month)``, a candidate the pass could not rank (its fetch
+    failed, or it carried no in-window day) maps to ``None``. A missing file,
+    or a line this process cannot parse, is simply not counted as done —
+    a rerun recomputes it rather than refusing over a checkpoint's own
+    corruption, the same tolerance :func:`_load_rank_cache` gives the final
+    cache.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    done: dict[str, tuple[float, str] | None] = {}
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, Mapping):
+            continue
+        symbol = entry.get("symbol")
+        if not isinstance(symbol, str) or not symbol:
+            continue
+        if entry.get("unrankable"):
+            done[symbol] = None
+            continue
+        try:
+            done[symbol] = (
+                float(entry["median_volume"]),
+                str(entry["last_archived_month"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return done
+
+
+def _append_rank_partial(path: Path, line: Mapping[str, object]) -> None:
+    """Append one candidate's checkpointed result as its own JSON line.
+
+    A plain append, not atomic like :func:`_write_atomic` — the caller holds
+    a lock around this call (and around deciding what ``line`` is), so two
+    workers' lines never interleave, and a half-written line left by a kill
+    mid-write is, at worst, one trailing line :func:`_load_rank_partial`
+    silently cannot parse and so treats as not yet done.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(line, sort_keys=True) + "\n")
+
+
+def _clear_archive_caches(lake_path: Path, first: date, last: date) -> None:
+    """``--restart``: clear the S3 listing, this window's rank checkpoint and
+    every cached month's zip and checksum — exactly as if the lake held none
+    of them. The final rank cache itself is left to the existing
+    ``None if restart else _load_rank_cache(...)`` check, which already
+    ignores it on restart and overwrites it once the fresh ranking completes.
+    """
+    _archive_listing_cache_path(lake_path).unlink(missing_ok=True)
+    _rank_partial_path(lake_path, first, last).unlink(missing_ok=True)
+    cache_dir = _archive_cache_dir(lake_path)
+    if cache_dir.is_dir():
+        shutil.rmtree(cache_dir)
 
 
 # -- Fetching and writing one symbol's candles --------------------------------
@@ -1101,7 +1397,7 @@ def _backfill_archive_symbol(
             last_month_with_data = month
             continue
         try:
-            result = _fetch_month(fetch, symbol, month, sleep=sleep)
+            result = _fetch_month(fetch, lake_path, symbol, month, sleep=sleep)
         except BarsBackfillError as exc:
             emit(
                 json.dumps(
@@ -1148,9 +1444,13 @@ def _backfill_archive(
     sleep: Callable[[float], None],
     emit: Callable[[str], object],
     restart: bool,
+    workers: int = DEFAULT_WORKERS,
 ) -> tuple[list[SymbolResult], tuple[str, ...], str, dict[str, str]]:
     results: list[SymbolResult] = []
     last_archived_month: dict[str, str] = {}
+
+    if restart:
+        _clear_archive_caches(lake_path, first_date, last_date)
 
     if symbols is not None:
         resolved_symbols = _dedupe_symbols(symbols)
@@ -1181,7 +1481,9 @@ def _backfill_archive(
     cache_path = _rank_cache_path(lake_path, first_date, last_date)
     ranking = None if restart else _load_rank_cache(cache_path, first_date, last_date)
     if ranking is None:
-        months_by_symbol = _list_archive_months(fetch, sleep=sleep)
+        months_by_symbol = _list_archive_months_cached(
+            lake_path, fetch, sleep=sleep, restart=restart
+        )
         window_months = set(_months_between(first_date, last_date))
         candidates = [
             (symbol, in_window, archive_months[-1])
@@ -1189,29 +1491,76 @@ def _backfill_archive(
             if (in_window := tuple(m for m in archive_months if m in window_months))
         ]
         total = len(candidates)
-        ranking = []
-        for done, (symbol, in_window, archive_last_month) in enumerate(candidates, start=1):
+
+        # The rank checkpoint: every candidate already resolved by an earlier,
+        # interrupted pass over this same window is skipped rather than
+        # refetched. A fresh run (or one after --restart, which already
+        # cleared the partial file) simply finds nothing done yet.
+        partial_path = _rank_partial_path(lake_path, first_date, last_date)
+        already_done = _load_rank_partial(partial_path)
+        candidate_symbols = {symbol for symbol, _in_window, _last in candidates}
+        ranking = [
+            (symbol, result[0], result[1])
+            for symbol, result in already_done.items()
+            if symbol in candidate_symbols and result is not None
+        ]
+        pending = [c for c in candidates if c[0] not in already_done]
+        done_count = total - len(pending)
+
+        lock = threading.Lock()
+
+        def _rank_one(candidate: tuple[str, tuple[str, ...], str]) -> None:
+            symbol, in_window, archive_last_month = candidate
             try:
                 _rows, volumes, _observed = _fetch_symbol_archive_rows(
-                    fetch, symbol, in_window, sleep=sleep
+                    fetch, lake_path, symbol, in_window, sleep=sleep
                 )
             except BarsBackfillError:
                 volumes = None
-            emit(json.dumps({"phase": "rank", "symbols_done": done, "symbols_total": total}))
-            if volumes is None:
-                continue
-            day_volumes = [
-                volume for day, volume in volumes.items() if first_date <= day <= last_date
-            ]
-            if not day_volumes:
-                continue
-            median_volume = statistics.median(day_volumes)
-            ranking.append((symbol, median_volume, archive_last_month))
+            result: tuple[float, str] | None = None
+            if volumes is not None:
+                day_volumes = [
+                    volume
+                    for day, volume in volumes.items()
+                    if first_date <= day <= last_date
+                ]
+                if day_volumes:
+                    result = (statistics.median(day_volumes), archive_last_month)
+            with lock:
+                nonlocal done_count
+                done_count += 1
+                line: dict[str, object] = {"symbol": symbol}
+                if result is None:
+                    line["unrankable"] = True
+                else:
+                    line["median_volume"], line["last_archived_month"] = result
+                _append_rank_partial(partial_path, line)
+                emit(
+                    json.dumps(
+                        {"phase": "rank", "symbols_done": done_count, "symbols_total": total}
+                    )
+                )
+                if result is not None:
+                    ranking.append((symbol, result[0], result[1]))
+
+        if pending:
+            # A bounded thread pool: every candidate's fetch is network- and
+            # checksum-bound, not CPU-bound, so threads (not processes) get
+            # the parallelism without the IPC cost of shipping rows across a
+            # process boundary. The final sort below is what makes the
+            # ranking (and everything downstream of it) independent of
+            # completion order, so the worker count never changes the result.
+            with ThreadPoolExecutor(max_workers=min(workers, len(pending))) as pool:
+                futures = [pool.submit(_rank_one, candidate) for candidate in pending]
+                for future in as_completed(futures):
+                    future.result()
 
         # Causal: computed once from the whole window and nothing past it,
         # fixed at the window's end rather than recomputed day by day.
+        # Ordered by the sort key alone, never by which worker finished first.
         ranking.sort(key=lambda item: (-item[1], item[0]))
         _save_rank_cache(cache_path, first_date, last_date, ranking)
+        partial_path.unlink(missing_ok=True)
 
     selected = ranking[:top]
     resolved_symbols = tuple(item[0] for item in selected)
@@ -1248,6 +1597,7 @@ def backfill_bars(
     clock: Callable[[], datetime] | None = None,
     emit: Callable[[str], object] | None = None,
     restart: bool = False,
+    workers: int = DEFAULT_WORKERS,
 ) -> tuple[SymbolResult, ...]:
     """Backfill daily bars for every resolved symbol; return each one's result.
 
@@ -1279,11 +1629,27 @@ def backfill_bars(
     ``--top N`` discovery, and an ``"error"`` line naming the symbol and
     month whenever one month fails — ahead of the per-symbol lines a caller
     prints from this function's return value. ``restart``, archive mode
-    only, ignores the rank cache and every already-written month, exactly as
-    if the lake were empty; the default resumes an interrupted run instead.
+    only, ignores and clears the rank cache, the rank checkpoint, the S3
+    listing cache, every cached archive month and every already-written
+    month, exactly as if the lake were empty; the default resumes an
+    interrupted run instead.
+
+    ``workers``, archive ``--top N`` only, bounds how many candidates a rank
+    pass fetches in parallel (:data:`DEFAULT_WORKERS`, 1 to
+    :data:`MAX_WORKERS`) — the ranking, the written partitions and
+    ``universe.json`` are identical whatever the worker count, since the
+    candidate pool is always sorted by its rank key before it is used, never
+    left in completion order.
     """
     if source not in ("rest", "archive"):
         raise BarsBackfillError(f"--source must be 'rest' or 'archive', got {source!r}")
+    if not isinstance(workers, int) or isinstance(workers, bool) or not (
+        MIN_WORKERS <= workers <= MAX_WORKERS
+    ):
+        raise BarsBackfillError(
+            f"--workers must be an integer from {MIN_WORKERS} to {MAX_WORKERS}, "
+            f"got {workers!r}"
+        )
     lake_path = Path(lake).expanduser()
     lake_path.mkdir(parents=True, exist_ok=True)
     first_date = _coerce_date(first)
@@ -1328,6 +1694,7 @@ def backfill_bars(
             sleep=resolved_sleep,
             emit=resolved_emit,
             restart=restart,
+            workers=workers,
         )
 
     _write_universe(
@@ -1385,8 +1752,21 @@ def _build_parser() -> argparse.ArgumentParser:
         "--restart",
         action="store_true",
         help=(
-            "archive mode only: ignore the rank cache and every "
-            "already-written month, exactly as if the lake were empty"
+            "archive mode only: ignore and clear the rank cache, the rank "
+            "checkpoint, the S3 listing cache, every cached archive month "
+            "and every already-written month, exactly as if the lake were "
+            "empty"
+        ),
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_WORKERS,
+        metavar="N",
+        help=(
+            f"archive --top N only: how many candidates a rank pass fetches "
+            f"in parallel (default {DEFAULT_WORKERS}, {MIN_WORKERS} to "
+            f"{MAX_WORKERS})"
         ),
     )
     return parser
@@ -1439,6 +1819,7 @@ def main(
             clock=clock,
             emit=emit,
             restart=arguments.restart,
+            workers=arguments.workers,
         )
     except BarsBackfillError as exc:
         print(str(exc), file=sys.stderr)
