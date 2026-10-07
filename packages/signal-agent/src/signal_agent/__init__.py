@@ -1412,7 +1412,12 @@ def build_signal_author() -> LLMSignalAuthor | None:
     # resolve and calls it lazily, inside provider_for.
     resolver = providers.LiveProviderResolver()
     return LLMSignalAuthor(
-        providers.AuthoringSession(config, resolver.resolve),
+        # Record every authoring call's usage when DATABASE_URL names a store
+        # (additions_spec_llm_usage_tracking.xml feature 4); None leaves the
+        # session byte-identical to an unrecorded one.
+        providers.AuthoringSession(
+            config, resolver.resolve, usage_store=providers.UsageStore.resolve()
+        ),
         history_store=build_proposal_history_store(),
         contract=build_signal_contract(),
         anti_convergence=build_anti_convergence(),

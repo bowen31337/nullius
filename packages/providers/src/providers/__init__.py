@@ -755,6 +755,7 @@ from ._served import (
     published_figure,
     require_served_context,
 )
+from ._usage_store import UsageRecordingProvider, UsageStore
 
 __all__ = [
     "AGENT_CKPT_HASH_COLUMN",
@@ -908,6 +909,8 @@ __all__ = [
     "UnpricedModelError",
     "UnrotatedCampaignError",
     "Usage",
+    "UsageRecordingProvider",
+    "UsageStore",
     "VerifiedServedContext",
     "assign_root_provider",
     "build_agent_model_pins",

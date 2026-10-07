@@ -827,5 +827,7 @@ def build_policy_reviser() -> LLMReviser | None:
     # under "live-providers" — read the pin through the bound method the
     # session wants, a callable `pin -> Provider`.
     resolver = providers.build_live_providers()
-    session = providers.AuthoringSession(config, resolver.resolve)
+    session = providers.AuthoringSession(
+        config, resolver.resolve, usage_store=providers.UsageStore.resolve()
+    )
     return LLMReviser(session, config=config)
