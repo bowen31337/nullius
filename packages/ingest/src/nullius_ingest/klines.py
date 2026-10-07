@@ -137,6 +137,7 @@ __all__ = [
     "KlineRecord",
     "KlineRow",
     "KlineStore",
+    "KlineTimestampUnitError",
     "KlineWorker",
     "build_kline_worker",
     "parse_klines",
@@ -191,6 +192,20 @@ _DOCUMENT_KEY = "candles"
 _MILLIS_PER_SECOND = 1000
 _MICROS_PER_MILLI = 1000
 
+#: The epoch-magnitude bands :func:`_epoch_value_to_micros` reads a venue
+#: instant's unit from.  Binance's own archive carried millisecond epochs
+#: (13 digits, e.g. ``1733011200000`` for 2024-12-01T00:00Z) through its
+#: 2024-12 file and switched to microsecond epochs (16 digits, e.g.
+#: ``1735689600000000`` for the same instant a month later) from its 2025-01
+#: file on, with no flag distinguishing the two — the live REST and websocket
+#: paths stay millisecond-only throughout.  The unit is read from the value's
+#: own magnitude rather than guessed from a date or a feed, so a value of
+#: neither shape is refused rather than silently misinterpreted into a candle
+#: decades off or, worse, overflowing :class:`~datetime.datetime` outright.
+_EPOCH_MILLIS_CEILING: Final[int] = 10**14  # below this: milliseconds
+_EPOCH_MICROS_FLOOR: Final[int] = 10**15  # from this (inclusive): microseconds...
+_EPOCH_MICROS_CEILING: Final[int] = 10**17  # ...up to (not including) this
+
 _UTC = timezone.utc
 
 #: The epoch, in UTC: the instant every venue event time is measured from.  A
@@ -219,6 +234,21 @@ class KlineParseError(KlineError):
     wrong with which candle, because the caller is a worker or a backfiller
     whose next move depends on whether the venue's shape changed or the feed
     simply hiccuped.
+    """
+
+
+class KlineTimestampUnitError(KlineParseError):
+    """A venue epoch instant's magnitude is neither milliseconds nor microseconds.
+
+    Binance's own archive carries millisecond epochs through its 2024-12 file
+    and microsecond epochs from its 2025-01 file on, with no flag
+    distinguishing the two — see :func:`_epoch_value_to_micros`, which reads
+    the unit from the value's magnitude rather than from the file's date or
+    the feed's identity.  Raised when a value falls in neither recognized
+    band, so an instant of an unrecognized shape is refused here rather than
+    guessed or left to overflow :class:`~datetime.datetime` downstream.  A
+    subclass of :class:`KlineParseError`, so existing callers that catch the
+    base class still catch this.
     """
 
 
@@ -314,39 +344,63 @@ def _int_field(value: object, where: str) -> int:
     )
 
 
-def _as_epoch_millis(value: object, where: str) -> int:
-    # Turn a *venue-supplied* instant into an exact integer count of epoch
-    # milliseconds.  Venues are inconsistent about JSON types for the same
-    # field — an open time arrives as a bare number on one feed and a string on
-    # another — so a float or a numeric string is coerced here, at the boundary
-    # where that sloppiness is a fact about the venue.  Refusals are the
-    # module's own error, not whatever ``int()`` happened to raise, because the
-    # caller is a worker or a backfiller deciding whether the venue's shape
-    # changed.
+def _as_epoch_value(value: object, where: str) -> int:
+    # Turn a *venue-supplied* instant into an exact integer epoch value — its
+    # unit (milliseconds or microseconds) is not yet decided here.  Venues are
+    # inconsistent about JSON types for the same field — an open time arrives
+    # as a bare number on one feed and a string on another — so a float or a
+    # numeric string is coerced here, at the boundary where that sloppiness is
+    # a fact about the venue.  Refusals are the module's own error, not
+    # whatever ``int()`` happened to raise, because the caller is a worker or
+    # a backfiller deciding whether the venue's shape changed.  The unit is
+    # read from the resulting value's magnitude by
+    # :func:`_epoch_value_to_micros`, not here.
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise KlineParseError(
             f"{where} is {type(value).__name__}; expected an epoch-millisecond "
             f"instant"
         )
     try:
-        millis = int(value)
+        parsed = int(value)
     except (TypeError, ValueError) as exc:
         raise KlineParseError(
             f"{where} is {value!r}; expected an epoch-millisecond instant: {exc}"
         ) from exc
-    if millis < 0:
+    if parsed < 0:
         raise KlineParseError(
-            f"{where} is {millis}; an epoch-millisecond instant is non-negative"
+            f"{where} is {parsed}; an epoch instant is non-negative"
         )
-    return millis
+    return parsed
 
 
-def _millis_to_utc(millis: int) -> datetime:
-    # Exact: an integer count of milliseconds becomes an integer count of
-    # microseconds from the epoch, and the datetime is built from that.  No
-    # float and no ``timestamp()`` round trip, either of which would put a
-    # rounding between the venue's instant and the series.
-    return _EPOCH + timedelta(microseconds=millis * _MICROS_PER_MILLI)
+def _epoch_value_to_micros(value: int, where: str) -> int:
+    # Read ``value``'s unit from its magnitude and return epoch microseconds,
+    # exact.  Below _EPOCH_MILLIS_CEILING (a 13-digit value, e.g. the
+    # archive's 2024-12 file) the value is milliseconds and is scaled up;
+    # from _EPOCH_MICROS_FLOOR up to (not including) _EPOCH_MICROS_CEILING (a
+    # 16-digit value, e.g. the archive's 2025-01 file on) the value is
+    # already microseconds and is returned unchanged — converted exactly to
+    # the same instant, never through a millisecond intermediate, which would
+    # be a lossy round trip the other way.  Anything in the gap between the
+    # two bands, or at or above the top of the microsecond band, is a
+    # magnitude this module does not recognize: refused rather than guessed.
+    if value < _EPOCH_MILLIS_CEILING:
+        return value * _MICROS_PER_MILLI
+    if _EPOCH_MICROS_FLOOR <= value < _EPOCH_MICROS_CEILING:
+        return value
+    raise KlineTimestampUnitError(
+        f"{where} is {value}; its magnitude is neither a millisecond epoch "
+        f"(below {_EPOCH_MILLIS_CEILING}) nor a microsecond epoch "
+        f"({_EPOCH_MICROS_FLOOR} to {_EPOCH_MICROS_CEILING}); refusing rather "
+        f"than guessing the unit"
+    )
+
+
+def _micros_to_utc(micros: int) -> datetime:
+    # Exact: the epoch plus an integer count of microseconds.  No float and
+    # no ``timestamp()`` round trip, either of which would put a rounding
+    # between the venue's instant and the series.
+    return _EPOCH + timedelta(microseconds=micros)
 
 
 def _interval_field(value: object, where: str) -> KlineInterval:
@@ -457,9 +511,12 @@ class KlineRow:
 
 
 def _millis_from_utc(moment: datetime) -> int:
-    # The inverse of :func:`_millis_to_utc`: an aware instant becomes an exact
-    # integer count of epoch milliseconds, so a candle's open time round-trips
-    # between the datetime and the integer the backfill ranges over.
+    # The inverse of :func:`_micros_to_utc`, pinned to milliseconds: an aware
+    # instant becomes an exact integer count of epoch milliseconds, so a
+    # candle's open time round-trips between the datetime and the integer the
+    # live REST path and the envelope both carry — milliseconds throughout,
+    # unaffected by the archive's microsecond epochs, which this module
+    # converts to an exact instant on read rather than ever re-deriving from.
     delta = moment.astimezone(_UTC) - _EPOCH
     return int(delta.total_seconds()) * _MILLIS_PER_SECOND + delta.microseconds // _MICROS_PER_MILLI
 
@@ -542,8 +599,18 @@ def _parse_candle(
         low_price=_scalar_field(raw_low, f"{where}.low"),
         close=_scalar_field(raw_close, f"{where}.close"),
         volume=_scalar_field(raw_volume, f"{where}.volume"),
-        open_time=_millis_to_utc(_as_epoch_millis(raw_open_time, f"{where}.open_time")),
-        close_time=_millis_to_utc(_as_epoch_millis(raw_close_time, f"{where}.close_time")),
+        open_time=_micros_to_utc(
+            _epoch_value_to_micros(
+                _as_epoch_value(raw_open_time, f"{where}.open_time"),
+                f"{where}.open_time",
+            )
+        ),
+        close_time=_micros_to_utc(
+            _epoch_value_to_micros(
+                _as_epoch_value(raw_close_time, f"{where}.close_time"),
+                f"{where}.close_time",
+            )
+        ),
         trade_count=_int_field(raw_trades, f"{where}.trades"),
     )
 
