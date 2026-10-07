@@ -298,7 +298,7 @@ def test_a_depth_pin_that_rejects_temperature_is_refused_at_load():
     pin = "anthropic/claude-opus-5-5/20260901"
 
     with pytest.raises(UnsupportedSamplingError) as raised:
-        AuthoringConfig.from_document(_document(depth=pin))
+        AuthoringConfig.from_document(_document(depth=pin, temperature=0.7))
 
     message = str(raised.value)
     assert message.startswith(f"{UNSUPPORTED_SAMPLING_CODE}: ")
@@ -310,7 +310,7 @@ def test_a_policy_pin_that_rejects_temperature_is_refused_at_load():
     pin = "anthropic/claude-sonnet-5-5/20260901"
 
     with pytest.raises(UnsupportedSamplingError) as raised:
-        AuthoringConfig.from_document(_document(policy=pin))
+        AuthoringConfig.from_document(_document(policy=pin, temperature=0.7))
 
     message = str(raised.value)
     assert message.startswith(f"{UNSUPPORTED_SAMPLING_CODE}: ")
@@ -323,7 +323,7 @@ def test_the_refusal_is_also_an_authoring_config_error():
     # code word is this class's own, but the taxonomy is one.
     with pytest.raises(AuthoringConfigError):
         AuthoringConfig.from_document(
-            _document(depth="anthropic/claude-opus-5-5/20260901")
+            _document(depth="anthropic/claude-opus-5-5/20260901", temperature=0.7)
         )
 
 
