@@ -147,6 +147,7 @@ from evaluator import (
     render_exec_trace,
     resolve_window,
 )
+from evaluator._execute import pit_universe
 from signal_agent import ScoreRecord
 
 from ._artifact_writer import ArtifactStoreWriter
@@ -262,12 +263,20 @@ def _materialize_from_context(context: EvaluationContext) -> Any:
     ``(resolution, decision_time)`` into a materialized window — the same
     reader ``tests/e2e/test_momentum_signal_positive_ic.py`` injects for the
     same reason: the evaluator's own default builds empty frames, and a live
-    run needs the sealed bytes.  Reads only the partitions the resolution
-    already named as surviving at or before the decision date, through the
-    mount's own ``select``, so the same read-only handle and the same
-    sealedness back every score this evaluation computes.  A small
-    per-partition cache keeps one evaluation from re-reading the same
-    compressed bytes once per rebalance date.
+    run needs the sealed bytes.  The window's ``universe`` is
+    :func:`evaluator._execute.pit_universe`'s per-date answer — feature 72's
+    admission rule applied at *this* rebalance date, not the resolution's own
+    decision date — so a symbol listed or delisted partway through the
+    evaluation grid is admitted only on the dates its sealed bars actually
+    carry a partition, the same rule :func:`evaluator._execute._materialize_default`
+    applies from the one shared helper, so the two materializers cannot
+    drift apart.  Only the partitions that per-date universe names, at or
+    before the decision date, are read through the mount's own ``select``,
+    so the same read-only handle and the same sealedness back every score
+    this evaluation computes, and a symbol not yet listed (or already
+    delisted) on a given date is never read for it.  A small per-partition
+    cache keeps one evaluation from re-reading the same compressed bytes
+    twice across rebalance dates.
     """
     mount = context.snapshot
     cache: dict[tuple[str, str], Any] = {}
@@ -279,8 +288,9 @@ def _materialize_from_context(context: EvaluationContext) -> Any:
         from contract.bars import bars_frame_name
         from contract.window import MarketWindow
 
+        universe = pit_universe(resolution, decision_time.date())
         tables: list[Any] = []
-        for symbol in resolution.universe:
+        for symbol in universe:
             for iso in resolution.dates(BARS_STREAM, symbol):
                 if dt.date.fromisoformat(iso) > decision_time.date():
                     continue
@@ -301,7 +311,7 @@ def _materialize_from_context(context: EvaluationContext) -> Any:
             )
         return MarketWindow(
             decision_time,
-            universe=resolution.universe,
+            universe=universe,
             frames={bars_frame_name("1d"): frame},
         )
 
@@ -667,15 +677,22 @@ def evaluate_node(
                     f"{vector.problems or _executor_failure(executor)}"
                 )
 
-        scores = {
-            day: dict(
-                zip(
-                    execution.vector(day).universe,
-                    normalize_scores(execution.vector(day).scores).to_list(),
-                )
+        # A date whose point-in-time universe (the per-date fix above) has
+        # fewer than two symbols — a listing's first day with nothing else
+        # yet admitted, say — is exactly what normalize_scores refuses: one
+        # symbol is not a cross-section.  That is not a pipeline failure, it
+        # is the honest absence of a measurable date, so it is skipped here
+        # rather than let the refusal fail the whole node — the same
+        # treatment align_targets already gives a date it cannot align.
+        scores: dict[dt.date, dict[str, float]] = {}
+        for day in execution.dates():
+            vector = execution.vector(day)
+            if len(vector.universe) < 2:
+                scores[day] = {}
+                continue
+            scores[day] = dict(
+                zip(vector.universe, normalize_scores(vector.scores).to_list())
             )
-            for day in execution.dates()
-        }
         alignment = align_targets(execution, context.closes)
         gated = gate_targets(
             alignment, oracle, node_id=node_id, campaign_id=campaign_id, depth=depth

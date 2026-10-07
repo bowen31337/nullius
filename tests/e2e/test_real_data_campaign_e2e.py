@@ -71,6 +71,17 @@ enough apart that the momentum ranking survives most days' noise, and
 per-date coefficients honestly different from one another — calibrated
 offline against this module's own momentum code before being pinned here,
 not tuned against the live evaluator's output.
+
+**Why the sealed snapshot also carries a late listing.**
+``bug_spec_pit_universe.xml``, bug 1: every rebalance date used to be scored
+over the universe of the evaluation grid's *last* date, so a symbol listed
+partway through broke alignment for the whole node, however many symbols
+scored cleanly. :data:`LATE_SYMBOL` reproduces exactly that shape — one bar,
+on the grid's own last rebalance date — so this suite is the regression
+guard that would have caught the bug before a live campaign ever reached it:
+every root's evaluation must still land a real ``ic_mean``, not just most of
+them, because every root measures the same sealed snapshot and the same
+signal.
 """
 
 from __future__ import annotations
@@ -121,6 +132,23 @@ _DRIFTS = {symbol: -0.03 + _DRIFT_STEP * index for index, symbol in enumerate(SY
 #: not identical (which the evaluator refuses outright), small enough that
 #: the ranking the momentum signal reads still mostly agrees with it.
 _DRIFT_NOISE_STD = 0.01
+
+#: A symbol listed partway through the evaluation window — the regression
+#: guard bug_spec_pit_universe.xml asks for.  Its one sealed bar lands on
+#: the grid's own *last* rebalance date, so the pre-fix code (which tagged
+#: every rebalance date's window with the universe of the grid's *last*
+#: decision time) would have put it in ``ctx.universe`` on every earlier
+#: date too, where it has no bar at all — exactly the reported failure,
+#: ``evaluator.align_targets`` refusing with "the closes carry no bar for
+#: 'AVAXUSDT' on {EVALUATION_DATES[0]}, its rebalance date".  It never gets
+#: a second bar, so no horizon ever has a forward return to price for it —
+#: it is absent from every ``TargetSeries``, the same "absent, not zero"
+#: treatment every other uncovered date/symbol pair already gets, and step
+#: 7's cost panel (an unrelated, pre-existing module this bug does not
+#: touch) never has to net a charge for a cross-section it never sees.
+LATE_SYMBOL = "AVAXUSDT"
+LATE_SYMBOL_FIRST_DAY = EVALUATION_DATES[-1]
+LATE_SYMBOL_CLOSE = "50.00"
 
 EPOCH_ID = "epoch-2026-10-07-real-data-campaign-e2e"
 EVALUATOR_IMAGE = "localhost/nullius-evaluator@sha256:" + "ab" * 32
@@ -204,12 +232,17 @@ def _backfill_lake(lake: Path, events: list[str]) -> None:
         symbol: [_binance_row(day, closes[symbol][day]) for day in BAR_DAYS]
         for symbol in SYMBOLS
     }
+    # The late listing: one bar, on the grid's last rebalance date — see
+    # LATE_SYMBOL's own comment for why that date and no others.
+    klines_by_symbol[LATE_SYMBOL] = [
+        _binance_row(LATE_SYMBOL_FIRST_DAY, LATE_SYMBOL_CLOSE)
+    ]
     exit_code = bars_backfill_main(
         [
             "--lake", str(lake),
             "--first", BAR_DAYS[0].isoformat(),
             "--last", BAR_DAYS[-1].isoformat(),
-            "--symbols", ",".join(SYMBOLS),
+            "--symbols", ",".join((*SYMBOLS, LATE_SYMBOL)),
         ],
         emit=events.append,
         fetch=_recorded_fetch(klines_by_symbol),
@@ -490,9 +523,15 @@ def test_real_data_campaign_scores_real_forward_returns(
 
     ic_means = _root_ic_means(test_database_url, FIXED_CAMPAIGN_ID)
     assert len(ic_means) == WORKSPACES, ic_means
-    assert any(value is not None for value in ic_means), (
-        "no root carries a non-null ic_mean computed from the snapshot's "
-        f"forward returns: {ic_means}"
+    # bug_spec_pit_universe.xml, bug 1's own regression guard: every root
+    # scores the same sealed snapshot and the same signal, so the pre-fix
+    # bug (every rebalance date scored over LATE_SYMBOL's listing-date
+    # universe) failed every root's alignment identically — not just one.
+    # Every root measuring a real ic_mean, not merely one, is the honest
+    # proof the late listing broke nothing.
+    assert all(value is not None for value in ic_means), (
+        "at least one root carries no ic_mean — LATE_SYMBOL's late listing "
+        f"broke its evaluation: {ic_means}"
     )
 
     # bug_spec_effort_wiring.xml, bug 1's own regression guard: every root

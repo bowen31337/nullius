@@ -76,7 +76,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from ._errors import EvaluatorSignalError
 from ._sandbox import SandboxResult, SignalSandbox
-from ._window import WindowResolution
+from ._window import ROSTER_STREAM, WindowResolution
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; polars/contract are runtime deps
     from contract.signal import SignalReturnProblem
@@ -90,6 +90,7 @@ __all__ = [
     "RawScoreVector",
     "SignalExecution",
     "execute_signal",
+    "pit_universe",
 ]
 
 #: The default decision instant for a rebalance date: midnight UTC on that
@@ -236,6 +237,37 @@ def _default_rebalance_dates(resolution: WindowResolution) -> tuple[dt.date, ...
     return tuple(sorted(kept))
 
 
+def pit_universe(resolution: WindowResolution, decision_date: dt.date) -> tuple[str, ...]:
+    """The point-in-time universe for one rebalance date — feature 72's rule,
+    applied per date rather than once at the resolution's own decision time.
+
+    A resolution is sliced to a single instant, but a multi-date execution
+    scores every rebalance date in its grid, and a symbol tradable on the
+    resolution's own decision date is not necessarily tradable on an earlier
+    one (it may not have been listed yet) or, for a date between two others,
+    on a later one (it may since have been delisted). Feature 72's admission
+    rule is day-granular and stated once in :mod:`evaluator._window`: a
+    symbol is tradable on a day exactly when its sealed bars carry a
+    partition dated that day. Applying it again here, per date, is what
+    ``execute_signal`` needs so that each :class:`RawScoreVector` carries the
+    universe that was actually alive on *its* date, not the resolution's.
+
+    Answered entirely from ``resolution.slices[ROSTER_STREAM]`` — the
+    surviving bars partitions at or before the resolution's own decision
+    date, which is already a superset of what any earlier rebalance date
+    needs (every date this is called for is at or before that same decision
+    date). No further snapshot read is needed: the resolution named every
+    surviving partition once, and this is a pure lookup over that record.
+
+    Sorted, the same stable ordering feature 46 pins for the resolution's
+    own ``universe`` — a vector's labels are ordered the same way whichever
+    date it was scored at.
+    """
+    iso = decision_date.isoformat()
+    roster = resolution.slices.get(ROSTER_STREAM, {})
+    return tuple(sorted(symbol for symbol, days in roster.items() if iso in days))
+
+
 def _materialize_default(
     resolution: WindowResolution,
     decision_time: dt.datetime,
@@ -261,14 +293,16 @@ def _materialize_default(
     bytes.  One empty table per stream the resolution named — the surface the
     sandbox reconstructs the universe from — so the payload is never empty (an
     unmaterialized window cannot be serialized: the sandbox has no mounts to
-    read one from).  The universe is the resolution's, sorted (feature 46's
-    stable ordering), and the decision time is the one the loop sliced at.
+    read one from).  The universe is :func:`pit_universe`'s per-date answer,
+    not the resolution's own (that is the universe of the resolution's own
+    decision date alone, a different date than every earlier rebalance date
+    in the grid) — and the decision time is the one the loop sliced at.
     """
     import pyarrow as pa
 
     from contract.window import MarketWindow
 
-    universe = tuple(sorted(resolution.universe))
+    universe = pit_universe(resolution, decision_time.date())
     frames = {
         stream: pa.table({symbol: [] for symbol in per_symbol})
         for stream, per_symbol in resolution.slices.items()
