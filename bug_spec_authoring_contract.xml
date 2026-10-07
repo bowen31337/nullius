@@ -1,0 +1,70 @@
+<bug_spec>
+  <!-- CONTRACT-1. Found 2026-10-07 by the first smoke campaign that ran end
+       to end (campaign 55b317ef, Type-R, 4 workspaces, claude-opus-5-5 roots).
+       All four roots were authored and evaluated, and none scored: three
+       failed EvaluatorNormalizeError and one SandboxExecutionError. The
+       campaign stopped no_batch with zero depth rounds. Spend: 4 Opus calls.
+       Two root causes, both upstream of the model. Core shape, explicit
+       touches_files. -->
+
+  <bug index="1" shape="core" severity="critical"
+       touches_files="packages/signal-agent/src/signal_agent/_authoring.py,packages/signal-agent/tests/test_contract_declaration_detail.py">
+    <title>The authoring prompt tells the model the MarketWindow accessor names but not their signatures, frame schemas or which streams exist, so authored signals guess the API and return all-zero scores</title>
+    <symptoms>
+      signal_agent._authoring.SignalContract.declaration() (feature 210's prompt "contract" section) sends only: entrypoint, signature "signal(ctx, seed)", the returns sentence, and accessor names ["bars","bookfeat","borrow","feature","frames","t","to_arrow","trades","universe"]. It omits:
+      - that bars is a method bars(freq: "1m"|"1h"|"1d", lookback: int) -> polars.DataFrame (contract/bars.py), and the same for trades, bookfeat, borrow and feature
+      - the returned frame's columns and dtypes (for the sealed snapshot: symbol str, open_time timestamp UTC, close str, volume str; close must be cast to float)
+      - which streams the evaluation snapshot actually holds (only bars at 1d in the operator's snapshot)
+      - that universe is an ordered sequence of symbol strings
+      - the allowed imports
+      Observed: the momentum root's code (artifacts/55b317ef…/20411100…/code.py) calls getattr(ctx, "bars") and tries it as a no-argument callable or a property, guesses column names from candidate lists, finds nothing and returns pl.Series([0.0] * n). The evaluator then refuses it: "cannot normalize: every raw score is identical". Two more roots failed the same way.
+    </symptoms>
+    <reproduction_steps>
+      print(signal_agent._authoring.signal_contract().declaration()): no signatures, no schemas, no available streams. Run a campaign on claude-opus-5-5: roots return constant vectors and fail EvaluatorNormalizeError.
+    </reproduction_steps>
+    <expected>
+      - declaration() keeps every current key and adds:
+        - accessors_detail: for each data accessor, its exact call signature, its parameter meanings and units (freq values; lookback in bars of that freq), and the returned frame's column names and dtypes. Read from the contract member (contract.inspect_accessors and the bars/trades/bookfeat/borrow/feature modules), not restated by hand.
+        - available_streams: the streams and frequencies present in the evaluation context's sealed snapshot (for the operator's snapshot, bars at 1d only), derived from the snapshot manifest when a context is configured, and absent otherwise.
+        - universe: that ctx.universe is an ordered tuple of symbol strings, and that the returned Series is positionally aligned to it.
+        - allowed_imports: the sandbox child's AGENT_IMPORTS_ALLOWLIST, so the model is told exactly what it may import.
+        - one short, correct example signal over bars("1d", lookback) that casts close to Float64 and returns a positionally aligned Float64 Series. It is checked in the test by running it against a tiny MarketWindow.
+      - The prompt's contract section renders these fields. The total added text stays under 4,000 characters, so the history-heavy depth prompts are not crowded out.
+      - test_contract_declaration_detail.py asserts:
+        - the bars signature string and its frame columns appear
+        - available_streams reflects a tmp sealed snapshot holding only 1d bars
+        - allowed_imports equals the child allowlist
+        - the example signal, executed against a materialized MarketWindow over that snapshot, returns a non-constant finite Float64 Series aligned to the universe, which normalize_scores accepts
+        No network, and it passes under pytest-xdist.
+    </expected>
+    <actual>Root cause: SignalContract.declaration() was built to name the contract's surface, not to make it usable. The offline e2e authors from recorded signals that already know the API, so no test ever had a model write against the declaration alone.</actual>
+    <constraints>
+      Existing declaration keys and their values are unchanged (additive only)
+      No change to the contract member's ABI
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="high"
+       touches_files="packages/sandbox/src/sandbox/imports_allowlist.json,packages/sandbox/tests/test_import_allowlists_agree.py">
+    <title>The host-side import screen admits numpy while the sandbox child refuses it, so a numpy signal is charged a trial and dies in the sandbox instead of being refused up front</title>
+    <symptoms>
+      The cross-asset root (artifacts/55b317ef…/d6ce760f…/code.py) begins with `import numpy as np`. sandbox.sandbox_imports().screen("import numpy as np").admitted is True: packages/sandbox/src/sandbox/imports_allowlist.json still lists numpy. orchestrator._sandbox_child.AGENT_IMPORTS_ALLOWLIST does not (removed by spec D feature 2, because the evaluation runtime has no numpy). The node therefore passed the host screen, was charged, ran, and failed with SandboxExecutionError rather than the deterministic disallowed_import refusal.
+    </symptoms>
+    <reproduction_steps>
+      `python -c "import sandbox; from orchestrator._sandbox_child import AGENT_IMPORTS_ALLOWLIST as c; print(sandbox.sandbox_imports().screen('import numpy as np').admitted, 'numpy' in c)"` prints `True False`.
+    </reproduction_steps>
+    <expected>
+      - imports_allowlist.json admits exactly what the evaluation runtime can import. numpy is removed, and every other entry is kept only if the runtime imports it.
+      - A numpy signal is now refused by the host screen with code word disallowed_import before any sandbox run.
+      - test_import_allowlists_agree.py asserts the host allowlist's top-level modules equal the child's AGENT_IMPORTS_ALLOWLIST, read from both at test time, so the two cannot drift again. It also asserts the numpy screen is refused. It passes under pytest-xdist.
+    </expected>
+    <actual>Root cause: spec D feature 2 corrected the child allowlist but not the host screen's committed document, so the two allowlists disagree.</actual>
+    <constraints>
+      sandbox/imports.py (the law) is unchanged; only the committed document and a new test
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
