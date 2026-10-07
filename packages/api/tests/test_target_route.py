@@ -566,7 +566,16 @@ def test_a_known_node_with_a_supply_wired_answers_200(
 ) -> None:
     """With pipeline step 4's alignment attached the way a deployment
     attaches it, the route serves §7.2's payload: the series and the
-    opaque directive."""
+    opaque directive.
+
+    The real branch's series is the supply's own values, untouched. The
+    null branch's is that same series put through
+    :func:`nulloracle.blockpermute.block_permute_cross_section` — a
+    cross-sectional derangement of each date's own two-symbol row, which
+    for exactly two symbols has one possible shape: the swap. ``_series``
+    hands every date the identical row, so the swap is the same on both
+    of this fixture's dates.
+    """
     real, null = sealed_nodes
     endpoint = session_application.get("nulloracle-target-route")
     endpoint._targets = _series
@@ -576,10 +585,17 @@ def test_a_known_node_with_a_supply_wired_answers_200(
         assert status == 200
         assert headers["content-type"] == "application/json"
         body = json.loads(raw)
-        assert body["target_series"] == {
-            "2026-01-05": {"BTCUSDT": 0.01, "ETHUSDT": 0.02},
-            "2026-01-06": {"BTCUSDT": 0.01, "ETHUSDT": 0.02},
-        }
+        if branch == "real":
+            expected = {
+                "2026-01-05": {"BTCUSDT": 0.01, "ETHUSDT": 0.02},
+                "2026-01-06": {"BTCUSDT": 0.01, "ETHUSDT": 0.02},
+            }
+        else:
+            expected = {
+                "2026-01-05": {"BTCUSDT": 0.02, "ETHUSDT": 0.01},
+                "2026-01-06": {"BTCUSDT": 0.02, "ETHUSDT": 0.01},
+            }
+        assert body["target_series"] == expected
         assert isinstance(body["charges_budget"], bool)
     finally:
         endpoint._targets = None

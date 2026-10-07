@@ -89,14 +89,34 @@ against the indices directly — and because the two are separately arguable
 share the one seeded shuffle, so the two can never disagree about what the
 permutation did.
 
-**Stdlib only, and import-cheap.**  ``math`` and ``random`` (the latter
-deferred to first use, the way :mod:`nulloracle.flipdepth` defers it), no
-third-party import at module scope, so the factory's scan — which imports this
-package to fire its ``@register`` — pays nothing for this module, the same
-discipline every store in this member states.  The module imports
-:data:`~nulloracle.assignment.DEFAULT_BLOCK_DAYS` rather than re-spelling the
-number, so the block length the permutation defaults to and the block length
-the sidecar seals are one value.
+**A panel is not one series, and a time shuffle inside one leaks.**
+:func:`block_permute_cross_section` applies feature 115 to a null node's
+*targets* rather than to a bare series — ``{date: {symbol: forward
+return}}`` — and the grain matters, because a signal's lookback and a
+null's target live on the same date axis.  Shuffling *within* one symbol's
+own series across time (what this function did before this fix) can hand
+date d a value the symbol carried on some earlier date inside the signal's
+own lookback window — a 20-day momentum score at d already read every price
+in ``[d-20, d]``, so a block landing one slot early serves, as d's "forward
+return", a number the signal had already seen.  The null then correlates
+with the signal not by chance but by literally repeating a value the
+signal's own computation used, which is look-ahead read backwards.  The fix
+shuffles *within* one date instead: every value served for date d is drawn
+from date d's own cross-section, so no value from any other date — inside
+the lookback or outside it — can ever reach d.  See
+:func:`block_permute_cross_section` for the mechanism (a derangement of
+each date's row, held constant across a block's unchanged membership so the
+donor's autocorrelation and volatility clustering still carry across, the
+way §7.3 asks).
+
+**Stdlib only, and import-cheap.**  ``math``, ``random`` and ``hashlib``
+(the latter two deferred to first use, the way :mod:`nulloracle.flipdepth`
+defers ``random``), no third-party import at module scope, so the factory's
+scan — which imports this package to fire its ``@register`` — pays nothing
+for this module, the same discipline every store in this member states.  The
+module imports :data:`~nulloracle.assignment.DEFAULT_BLOCK_DAYS` rather than
+re-spelling the number, so the block length the permutation defaults to and
+the block length the sidecar seals are one value.
 """
 
 from __future__ import annotations
@@ -230,53 +250,72 @@ def block_permute_cross_section(
 
     §7.2 writes the permutation over ``forward_returns`` — one series — but
     a Type-R or Type-D node's targets are a *cross-section per rebalance
-    date*: ``{date: {symbol: forward return}}``, and the universe a snapshot
-    carries is not fixed over the window — a symbol lists partway through
-    (feature 72's point-in-time admission rule) or delists before the end.
-    Treating the panel as one series and swapping whole date-rows between
-    blocks — the reading every caller of :func:`block_indices` over a panel
-    had reached for — moves a row's symbols onto a date where some of them
-    never had a bar: a symbol listed in the last block, shuffled onto a date
-    in the first, is a target for a bar that does not exist, and
-    :func:`evaluator.gate_targets`'s support rule refuses it by name (every
-    date's answer must name *exactly* that date's own cross-section, no
-    wider and no narrower). This function is the mechanism that does not
-    make that move.
+    date*: ``{date: {symbol: forward return}}``. This function is the
+    mechanism that turns one such panel into the permuted one a null node
+    reports, and it moves values *within* a date, never *across* dates.
 
-    **Per symbol, not per row.** Rather than permuting rows of dates, this
-    function permutes each symbol's *own* run of observations: a symbol's
-    series is the values it carries on the dates it is actually present —
-    the same contiguous-block shuffle :func:`block_permute` applies to a
-    bare series, here applied to the compacted sequence of dates *that
-    symbol* has a value on. A date d's permuted row therefore carries a
-    symbol if and only if the unpermuted panel carries that symbol on d —
-    membership never moves, only the value does — which is exactly what
-    keeps every date's permuted cross-section equal to that date's real one:
-    a symbol listed in the last block draws its shuffled value from one of
-    its own later dates and never lands before its listing, and a symbol
-    delisted mid-window never lands after it, because the positions it is
-    ever gathered from or written to are its own.
+    **Why a value may never cross a date.** A null target is served beside
+    a request whose ``depth`` names a signal computed from that same
+    symbol's own past — a 20-day momentum score at date d, say, is a
+    function of prices on ``[d-20, d]``. Earlier revisions of this function
+    (and the whole-row swap before it) moved a date's *target* from
+    somewhere else in time: a block landing one slot early served, as date
+    d's "forward return", a value the signal's own lookback had already
+    read on some day inside ``[d-20, d]``. That is look-ahead in reverse —
+    the null target correlates with the signal not because either carries
+    real information, but because they are, some of the time, literally the
+    same number read twice. A 20-day momentum signal scored against such a
+    null showed ``|t|>1.96`` on 34% of seeds (bug_spec, this fix). Shuffling
+    *within* one date closes that channel completely: the permuted value
+    served for date d is always one of date d's own real values, so nothing
+    the signal read before d can ever be the number arriving as d's target.
 
-    **Unchanged for a symbol present throughout.** A symbol with a value on
-    every date in ``panel`` is, in this function's terms, a symbol whose own
-    "dates it is present on" is the panel's whole date axis — so its local
-    permutation is :func:`block_indices` called over ``range(len(panel))``
-    with this call's own ``seed`` and ``block_days``, the identical call a
-    whole-row swap would have made. For a panel where every symbol is
-    present throughout, this function's answer is therefore bit-identical
-    to the whole-row algorithm it replaces; the two differ only where the
-    universe actually varies, which is the one place the whole-row algorithm
-    was wrong.
+    **The mechanism: a derangement of each date's own row.** For a date
+    whose cross-section carries two or more symbols, this function draws a
+    *derangement* — a bijection from symbol to symbol with no fixed point —
+    and reports, for each symbol, the value the derangement's partner symbol
+    carried on that same date. No symbol ever keeps its own value (a
+    derangement has none), and every served value is a value that date's own
+    row actually carried (the derangement draws only from that row) — so
+    the permuted cross-section is neither invented nor zero-filled, and its
+    membership is exactly the real row's, which is what lets
+    :func:`evaluator.gate_targets`'s support rule accept it. A date with
+    fewer than two symbols cannot be deranged (there is no bijection with no
+    fixed point on 0 or 1 elements) and passes through unchanged.
 
-    **Still one shuffle, still reproducible.** Every symbol's local
-    permutation is read from the same ``seed`` and ``block_days`` — the
-    entry's own stored ``perm_seed``/``block_days`` (§7.1), never a
-    per-symbol derivative — so two calls with the same panel, seed and block
-    length return the same result (§12's determinism contract), and a
-    symbol's own run is still cut into contiguous runs of ``block_days``
-    observations and shuffled as units, preserving the autocorrelation and
-    volatility clustering within a run while destroying the pairing between
-    a date and the value it used to carry (§7.3).
+    **The block, read as the mapping's own lifetime.** §7.3's claim —
+    *"preserving return autocorrelation and volatility clustering"* —
+    survives a per-date derangement only if the *same* derangement serves
+    every date in one ``block_days``-long run: drawing a fresh, independent
+    mapping for every date would hand each symbol a new, unrelated donor
+    every day, destroying the donor's own serial structure rather than
+    carrying it across. So the derangement is drawn once per contiguous
+    block of ``block_days`` dates (the same partition :func:`block_permute`
+    cuts a bare series into) and reused for every date in that block whose
+    cross-section has the *identical* membership — which means a symbol's
+    assigned series, across one block, is literally another symbol's own
+    contiguous run of real values, carrying that donor's autocorrelation and
+    volatility clustering intact, just under a different label.
+
+    **Where membership changes inside a block.** A listing or delisting
+    changes a date's row shape mid-block (feature 72's point-in-time
+    admission rule), and the block's mapping, drawn for the block's other
+    membership, may not even be a valid bijection on the changed row. So a
+    date whose membership differs from what the block's cached mapping was
+    drawn for gets its own derangement, drawn for its own membership — still
+    deterministically, still from the same ``seed`` and block index, and
+    still shared with any other date in the block carrying that same
+    (different) membership.
+
+    **Deterministic without being order-dependent.** Each derangement is
+    drawn from a generator seeded by hashing ``seed``, the block index and
+    the sorted tuple of the membership it is for — never by hashing a
+    Python object (whose hash is randomised per process) and never by the
+    order dates happen to be walked in. Two dates anywhere in one block that
+    share a membership therefore always draw the identical mapping, two
+    calls with the same panel, seed and block length always return the
+    identical result (§12's determinism contract), and nothing about the
+    panel's own dict ordering can perturb either property.
 
     Refuses, in this order, and each refusal names what it is about:
 
@@ -297,24 +336,69 @@ def block_permute_cross_section(
     drawn_seed = _validated_seed(seed)
     rows = _validated_panel(panel)
     days = list(rows)
-    # Every position a symbol is actually present at, in the panel's own
-    # date order — the compacted "series" this function permutes for that
-    # symbol, so a gap in its history (a delisting, a late listing) is
-    # simply absent from its own positions and never a position the
-    # permutation reads from or writes to.
-    positions_by_symbol: dict[str, list[int]] = {}
+    mappings: dict[tuple[int, tuple[str, ...]], tuple[int, ...]] = {}
+    permuted: dict[Any, dict[str, float]] = {}
     for position, day in enumerate(days):
-        for symbol in rows[day]:
-            positions_by_symbol.setdefault(symbol, []).append(position)
-    permuted: dict[Any, dict[str, float]] = {day: {} for day in days}
-    for symbol, positions in positions_by_symbol.items():
-        values = [rows[days[position]][symbol] for position in positions]
-        order = block_indices(
-            range(len(positions)), seed=drawn_seed, block_days=block
-        )
-        for slot, source_index in enumerate(order):
-            permuted[days[positions[slot]]][symbol] = values[source_index]
+        row = rows[day]
+        symbols = tuple(sorted(row))
+        count = len(symbols)
+        if count < 2:
+            # Nothing to derange: a bijection with no fixed point does not
+            # exist on 0 or 1 elements, so the date's own row is the only
+            # answer that is neither invented nor a self-match.
+            permuted[day] = dict(row)
+            continue
+        block_index = position // block
+        key = (block_index, symbols)
+        mapping = mappings.get(key)
+        if mapping is None:
+            mapping = _derangement(count, _cross_section_rng(drawn_seed, block_index, symbols))
+            mappings[key] = mapping
+        permuted[day] = {
+            symbols[slot]: row[symbols[source]] for slot, source in enumerate(mapping)
+        }
     return permuted
+
+
+def _cross_section_rng(seed: int, block_index: int, symbols: tuple[str, ...]):
+    """A :class:`random.Random` seeded from ``(seed, block_index, symbols)``.
+
+    One cross-sectional derangement is drawn per block per distinct
+    membership (:func:`block_permute_cross_section`), and this is the
+    generator that draw comes from. The sub-seed is derived with
+    :func:`hashlib.sha256` over the three values rather than through
+    Python's built-in :func:`hash`, deliberately: ``hash`` of a ``str`` is
+    salted per *process* (`PYTHONHASHSEED`), so two campaign replays — or
+    two pytest-xdist workers evaluating the same seed — would draw two
+    different mappings for what §12 promises is one reproducible
+    permutation. A digest of the UTF-8 bytes has no such salt, so the same
+    three inputs always hash to the same sub-seed everywhere this runs.
+    """
+    import hashlib
+    import random
+
+    digest = hashlib.sha256(
+        f"{seed}:{block_index}:{len(symbols)}:{'|'.join(symbols)}".encode()
+    ).digest()
+    return random.Random(int.from_bytes(digest, "big"))
+
+
+def _derangement(count: int, rng: Any) -> tuple[int, ...]:
+    """A uniformly random derangement of ``range(count)`` — no index maps to itself.
+
+    Drawn by the standard reject-and-retry construction: shuffle, and keep
+    the result only if no position mapped to itself. The probability of
+    landing a derangement on one shuffle approaches ``1/e`` as ``count``
+    grows, so the expected number of attempts stays near ``e`` (about 2.7)
+    for every ``count`` this module is ever called with — ``count`` is a
+    panel's cross-section size, not an adversarial input. Called only for
+    ``count >= 2``, where a derangement always exists.
+    """
+    positions = list(range(count))
+    while True:
+        rng.shuffle(positions)
+        if all(positions[i] != i for i in range(count)):
+            return tuple(positions)
 
 
 def _validated_panel(value: Any) -> dict[Any, dict[str, float]]:

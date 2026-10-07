@@ -18,23 +18,30 @@ date's *aligned* one, no wider and no narrower — so every null node over a
 snapshot whose universe changes inside the window fails the gate, and the KS
 guard never sees a null score.
 
-:func:`nulloracle.blockpermute.block_permute_cross_section` is the fix: it
-permutes each symbol's own run of observations — the dates *that symbol* is
-present on — rather than swapping whole rows between dates. A date's permuted
-row therefore carries a symbol if and only if the unpermuted panel carries
-that symbol on that date; membership never moves, so the result equals every
-date's own cross-section exactly, which is what makes it pass
+:func:`nulloracle.blockpermute.block_permute_cross_section` is the fix: a
+date's permuted row carries a symbol if and only if the unpermuted panel
+carries that symbol on that date; membership never moves, so the result
+equals every date's own cross-section exactly, which is what makes it pass
 ``gate_targets``'s strict support rule (not merely a subset of it — a
 *subset* would still be refused as "missing", and a superset as "extra";
-member­ship-preserving is the one shape that is neither).
+member­ship-preserving is the one shape that is neither). The membership
+claims this file makes hold regardless of which permutation mechanism sits
+*inside* that membership — the original fix shuffled each symbol's own run
+of observations across time; a later fix
+(bug_spec_the-null-permutation-leaks-time.xml) replaced that mechanism with
+a per-date cross-sectional derangement, because the per-symbol time shuffle
+could serve a date a value from inside the signal's own lookback. Every
+membership, determinism and refusal claim below is unaffected by which
+mechanism produces the values; only the "dense panel" class below pins the
+mechanism itself, and it pins the current one.
 
 Five claims, one test class each:
 
 * a symbol listed in the last block is never placed on an earlier date;
 * a symbol delisted mid-window is never placed after its delisting;
-* a symbol present on every date is permuted exactly as the whole-row
-  algorithm the fix replaces would have permuted it, under the same seed —
-  no silent behaviour change for the dense, no-listings case;
+* a symbol present on every date draws every permuted value from that same
+  date's own cross-section — the documented cross-sectional mapping, never
+  a value carried in from another date;
 * the same seed and block length reproduce the same panel;
 * a null node's response, built from this permutation, passes
   :func:`evaluator.gate_targets` against the alignment it was asked on, for
@@ -182,17 +189,20 @@ class TestALateListingNeverMovesBeforeItsListing:
         for position, day in enumerate(days):
             assert ("HYPEUSDT" in permuted[day]) == (position >= LISTING_POSITION)
 
-    def test_hype_values_are_real_hype_values_not_invented(self) -> None:
-        # Every value served for HYPEUSDT came from some date HYPEUSDT was
-        # actually on — never zero-filled, never another symbol's value.
+    def test_hype_values_come_from_that_dates_own_cross_section(self) -> None:
+        # Every value served for HYPEUSDT is a real value from that same
+        # date's own row — never zero-filled, never invented, and never a
+        # value carried in from a different date (the time leak this fix
+        # closes). It may legitimately be AAVEUSDT's value for that date:
+        # the fix's mechanism deranges across symbols on one date, it never
+        # moves a value across dates the way the old per-symbol shuffle did.
         days = _days()
         panel = _panel_with_listing_and_delisting()
         permuted = block_permute_cross_section(panel, seed=42, block_days=20)
-        real_hype_values = {panel[day]["HYPEUSDT"] for day in days if "HYPEUSDT" in panel[day]}
-        served_hype_values = {
-            permuted[day]["HYPEUSDT"] for day in days if "HYPEUSDT" in permuted[day]
-        }
-        assert served_hype_values <= real_hype_values
+        for day in days:
+            if "HYPEUSDT" not in permuted[day]:
+                continue
+            assert permuted[day]["HYPEUSDT"] in set(panel[day].values())
 
 
 # -- A symbol delisted mid-window is never placed after its delisting ------------
@@ -234,33 +244,41 @@ class TestEveryDatesPermutedCrossSectionMatchesItsOwn:
         assert set(permuted) == set(panel)
 
 
-# -- Always-present symbols: no silent behaviour change ---------------------------
+# -- Always-present symbols: equal the documented cross-sectional mapping --------
 
 
-class TestAlwaysPresentSymbolsMatchTheOldAlgorithm:
-    def test_a_fully_dense_panel_matches_the_whole_row_algorithm(self) -> None:
+class TestAlwaysPresentSymbolsMatchTheDocumentedCrossSectionalMapping:
+    """The class the whole-row comparison used to be, before bug_spec_the-
+    null-permutation-leaks-time.xml replaced the mechanism it pinned.
+
+    The old per-symbol time shuffle was bit-identical to a whole-row swap
+    for a panel with no listings — which is exactly the property that let
+    the time leak hide: a symbol only ever traded values with its own past
+    and future, so a signal's own lookback could read the very value later
+    served as its target. The property that survives the rewrite, restated
+    here for the dense (no-listings) case this class is named for, is the
+    one the fix is *for*: a date's own value is still what reaches that
+    date — it just belongs to a different symbol on that same date now,
+    never to a different date.
+    """
+
+    def test_a_fully_dense_panel_draws_every_value_from_its_own_date(self) -> None:
         panel = _dense_panel()
-        new = block_permute_cross_section(panel, seed=1234, block_days=20)
-        old = _old_whole_row_algorithm(panel, seed=1234, block_days=20)
-        assert new == old
+        permuted = block_permute_cross_section(panel, seed=1234, block_days=20)
+        for day, row in panel.items():
+            assert set(permuted[day].values()) == set(row.values())
 
-    def test_dense_symbols_match_even_beside_a_sparse_one(self) -> None:
-        # The sparse symbol (HYPEUSDT, listed late) is permuted differently
-        # from the whole-row algorithm by design — that is the fix. The
-        # dense symbols sharing the same panel must still agree with it
-        # exactly: this function's per-symbol treatment must not perturb a
-        # symbol that was never the problem.
+    def test_dense_symbols_draw_from_their_own_date_beside_a_sparse_one(self) -> None:
         panel = _panel_with_listing_and_delisting()
-        new = block_permute_cross_section(panel, seed=1234, block_days=20)
-        old = _old_whole_row_algorithm(panel, seed=1234, block_days=20)
-        for day in panel:
-            assert new[day]["AAVEUSDT"] == old[day]["AAVEUSDT"]
+        permuted = block_permute_cross_section(panel, seed=1234, block_days=20)
+        for day, row in panel.items():
+            assert permuted[day]["AAVEUSDT"] in set(row.values())
 
-    def test_a_different_block_length_still_matches_when_dense(self) -> None:
+    def test_a_different_block_length_still_draws_from_the_same_date(self) -> None:
         panel = _dense_panel(seed_offset=100.0)
-        new = block_permute_cross_section(panel, seed=55, block_days=7)
-        old = _old_whole_row_algorithm(panel, seed=55, block_days=7)
-        assert new == old
+        permuted = block_permute_cross_section(panel, seed=55, block_days=7)
+        for day, row in panel.items():
+            assert set(permuted[day].values()) == set(row.values())
 
     def test_the_default_block_length_is_used_when_omitted(self) -> None:
         panel = _dense_panel()
