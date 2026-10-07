@@ -26,11 +26,11 @@ opaque: the payload shape belongs to the caller, not to the seam):
   which a tiering or rotation layer may change from what the caller asked
   for — so it is reported, not assumed.
 
-* ``usage`` — the token accounting (input, output, and a cache-read count),
-  carried as a small immutable record so cost and fill accounting downstream
-  can read it without re-parsing a provider payload.  ``cache_read`` defaults
-  to zero because not every provider reports it and a missing figure is not
-  the same as a negative one.
+* ``usage`` — the token accounting (input, output, a cache-read count and a
+  cache-write count), carried as a small immutable record so cost and fill
+  accounting downstream can read it without re-parsing a provider payload.
+  The two cache counts default to zero because not every provider reports
+  them and a missing figure is not the same as a negative one.
 
 * ``finish_reason`` — why the model stopped: ``stop`` for a natural end, or
   ``length`` when the output ceiling was hit.  A closed set, for the same
@@ -73,25 +73,29 @@ _FINISH_REASONS: frozenset[str] = frozenset({_STOP, _LENGTH})
 class Usage:
     """The token accounting a completion carries.
 
-    The three figures the deployment's cost and fill accounting read, and no
+    The four figures the deployment's cost and fill accounting read, and no
     more.  ``input_tokens`` and ``output_tokens`` are the billed quantities;
     ``cache_read_tokens`` is what a provider reports when a prompt hit its
-    cached-context prefix, and defaults to zero because a provider that does
-    not report it has not earned the caller a negative number — the absence
-    of a figure is not a figure.  All three are non-negative: a token count
-    below zero is a malformed provider, and the object refuses it at
-    construction rather than letting the lie travel into a cost total.
+    cached-context prefix, and ``cache_write_tokens`` is what it reports when
+    a prompt *wrote* a new prefix into the cache.  Both cache figures default
+    to zero because a provider that does not report one has not earned the
+    caller a negative number — the absence of a figure is not a figure. All
+    four are non-negative: a token count below zero is a malformed provider,
+    and the object refuses it at construction rather than letting the lie
+    travel into a cost total.
     """
 
     input_tokens: int
     output_tokens: int
     cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
 
     def __post_init__(self) -> None:
         for name, value in (
             ("input_tokens", self.input_tokens),
             ("output_tokens", self.output_tokens),
             ("cache_read_tokens", self.cache_read_tokens),
+            ("cache_write_tokens", self.cache_write_tokens),
         ):
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 raise ValueError(

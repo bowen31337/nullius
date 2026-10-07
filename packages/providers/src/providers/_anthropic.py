@@ -71,8 +71,9 @@ call read: ``input_tokens`` is the response's ``input_tokens`` *plus*
 prompt, the prefix newly written into the cache and the prefix read back
 from it are all input the call consumed, and a total that dropped any of
 the three would under-report what the call spent — while
-``cache_read_tokens`` carries the cache figure separately (it bills at a
-different rate downstream) and ``output_tokens`` passes through.
+``cache_write_tokens`` and ``cache_read_tokens`` each carry their cache
+figure separately too (a write and a read bill at different rates
+downstream) and ``output_tokens`` passes through.
 
 **The key never renders.**  ``repr(provider)`` shows the credential as
 ``***`` and never its value — the same rendering discipline the door
@@ -550,10 +551,11 @@ def _usage(usage: object) -> Usage:
     the plain input, the prefix newly written into the prompt cache and
     the prefix read back from it — because all three are input tokens the
     call consumed, and a total that dropped any of them would under-report
-    the call's spend to every cost total downstream.  The cache-read figure
-    also travels on its own field: it bills at a different rate, and
-    :attr:`Usage.cache_read_tokens` is where the deployment reads that
-    rate from.
+    the call's spend to every cost total downstream.  The cache counters
+    also each travel on their own field: a cache write and a cache read
+    bill at different rates, and :attr:`Usage.cache_write_tokens` and
+    :attr:`Usage.cache_read_tokens` are where the deployment reads those
+    rates from.
     """
     if not isinstance(usage, dict):
         raise CompletionMalformedError(
@@ -570,6 +572,7 @@ def _usage(usage: object) -> Usage:
         input_tokens=input_tokens + cache_creation + cache_read,
         output_tokens=_counter(usage, "output_tokens"),
         cache_read_tokens=cache_read,
+        cache_write_tokens=cache_creation,
     )
 
 

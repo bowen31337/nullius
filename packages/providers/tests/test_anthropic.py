@@ -539,7 +539,12 @@ def test_the_whole_answer_translates_into_one_completion(make_request):
     assert completion == Completion(
         content="the answer",
         model="claude-opus-5-20260401",
-        usage=Usage(input_tokens=146, output_tokens=7, cache_read_tokens=34),
+        usage=Usage(
+            input_tokens=146,
+            output_tokens=7,
+            cache_read_tokens=34,
+            cache_write_tokens=12,
+        ),
         finish_reason="stop",
     )
 
