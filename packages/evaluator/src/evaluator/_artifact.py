@@ -42,7 +42,6 @@ speak?*
 from __future__ import annotations
 
 import datetime as dt
-import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Protocol
 
@@ -277,25 +276,23 @@ def render_turnover_series(
 ) -> dict[str, float]:
     """The per-date turnover as §9.2's ``turnover_series.parquet`` carries it.
 
-    The equal-weight book's fractional turnover, one entry per rebalance that
-    has a predecessor — ``½ · Σ |w_d − w_{d−1}|`` over the symbols each pair of
-    consecutive dates holds — the same arithmetic :func:`compute_node_metrics`
-    reduces to the single ``turnover`` scalar, restated here per date because the
-    PRD's artifact keeps ``turnover_series`` in full (feature 169). The series is
-    keyed by ISO date and ordered, so a reader walking it meets the dates in the
-    order the book turned them over.
+    The node's own dollar-neutral book's fractional turnover, one entry per
+    rebalance that has a predecessor — exactly :attr:`NodeMetrics.turnover_series`,
+    the per-date series :func:`compute_node_metrics` reduces to the single
+    ``turnover`` scalar from the same ``w_i = z_i / Σ|z_j|`` weights, restated
+    here because the PRD's artifact keeps ``turnover_series`` in full (feature
+    169). Rendering the metrics' own series rather than re-deriving a book from
+    the raw panel is what makes the rendered mean equal ``metrics.turnover`` by
+    construction — an independent equal-weight reconstruction would disagree
+    with the signal-weighted scalar it is meant to be the per-date record of.
+    The series is keyed by ISO date and ordered, so a reader walking it meets
+    the dates in the order the book turned them over.
 
-    The cross-section each rebalance held is read from the priced panel —
-    :attr:`PostCostReturns.series` at :attr:`NodeMetrics.horizon`, the horizon
-    the four scalars were measured over — because that panel is the one place the
-    per-date symbol set is recorded in full. A symbol that enters or exits the
-    panel between two dates moves its full weight, and the remaining symbols
-    re-weight; both are captured by the ``|w_d − w_{d−1}|`` term with an absent
-    symbol weighted at zero. Only dates the panel actually priced are carried — a
-    horizon with an unpriced date has no book to turn over — the same support
-    ``compute_node_metrics`` reduces over. ``returns`` and ``metrics`` must name
-    the same node, so the series is the turnover of one book, not two panels
-    spliced.
+    ``returns`` and ``metrics`` must name the same node, so the series is the
+    turnover of one book, not two panels spliced; ``metrics`` must carry a
+    non-empty ``turnover_series`` — a record rebuilt from the metrics store
+    persists only the four scalars and ``ic_series``, and that record's turnover
+    is refused rather than rendered from a different, equal-weight book.
     """
     if not isinstance(returns, PostCostReturns):
         raise EvaluatorArtifactError(
@@ -318,32 +315,20 @@ def render_turnover_series(
             "turnover series over two different nodes' panels is a series no "
             "book turned over"
         )
-    series = returns.series[metrics.horizon]
-    # Only the dates the panel priced — the support compute_node_metrics reduces
-    # over — in order, so each entry has the predecessor its turnover needs.
-    ordered_days = [day for day in sorted(series.dates()) if series.at(day)]
-    rendered: dict[str, float] = {}
-    for prev_day, day in zip(ordered_days, ordered_days[1:]):
-        prev_symbols = set(series.at(prev_day))
-        day_symbols = set(series.at(day))
-        prev_count = len(prev_symbols)
-        day_count = len(day_symbols)
-        prev_weight = 1.0 / prev_count if prev_count else 0.0
-        day_weight = 1.0 / day_count if day_count else 0.0
-        # Equal-weight within each date's own panel — 1/N on the N symbols that
-        # date holds — so a symbol that enters or exits the panel moves its full
-        # weight and the remaining symbols re-weight, which the |w_d − w_{d−1}|
-        # term captures (an absent symbol's weight is 0). Summed over the union
-        # of the two panels, halved — exactly compute_node_metrics' turnover.
-        turnover = 0.5 * math.fsum(
-            abs(
-                (day_weight if symbol in day_symbols else 0.0)
-                - (prev_weight if symbol in prev_symbols else 0.0)
-            )
-            for symbol in prev_symbols | day_symbols
+    if not metrics.turnover_series:
+        raise EvaluatorArtifactError(
+            f"node {metrics.node_id!r}'s metrics carry no turnover_series; a "
+            "record rebuilt from the metrics store persists only the four "
+            "scalars and ic_series, and rendering turnover_series.parquet from "
+            "an equal-weight book reconstructed from the raw panel would "
+            "disagree with the signal-weighted turnover scalar it is meant to "
+            "be the per-date record of — pass the NodeMetrics "
+            "compute_node_metrics produced, not one read back from the store"
         )
-        rendered[day.isoformat()] = turnover
-    return rendered
+    return {
+        day.isoformat(): value
+        for day, value in sorted(metrics.turnover_series.items())
+    }
 
 
 def render_exec_trace(

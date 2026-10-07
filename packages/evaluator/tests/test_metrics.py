@@ -453,29 +453,46 @@ def test_a_constant_per_date_coefficient_is_refused():
 # -- ir_standalone --------------------------------------------------------------
 
 
-def test_ir_standalone_is_the_equal_weight_books_information_ratio():
-    """ir_standalone is the mean unit-book return over its population standard deviation."""
+def test_ir_standalone_is_the_signal_weighted_books_information_ratio():
+    """ir_standalone is the mean signal-weighted book return over its population std.
+
+    The book on each date is the dollar-neutral portfolio the day's own
+    normalized scores define — ``w_i = z_i / Σ|z_j|`` over the symbols that
+    date's scores and returns share — not the equal-weight market every node
+    scored on the same snapshot would otherwise share. The expected book is
+    hand-computed from that weight here, independently of the module under
+    test's own weighting arithmetic.
+    """
     priced = _hand_priced({1: _VARIED_RETURNS})
     metrics = compute_node_metrics(priced, _scores(_VARIED_SCORES))
-    unit_book = {
-        day: (sum(_VARIED_RETURNS[day].values()) / len(_VARIED_RETURNS[day]))
-        for day in _VARIED_RETURNS
-    }
-    mean = sum(unit_book.values()) / len(unit_book)
-    variance = sum((value - mean) ** 2 for value in unit_book.values()) / len(unit_book)
+    book = {}
+    for day, returns_row in _VARIED_RETURNS.items():
+        score_row = _VARIED_SCORES[day]
+        symbols = sorted(set(score_row) & set(returns_row))
+        gross = sum(abs(score_row[symbol]) for symbol in symbols)
+        weights = {symbol: score_row[symbol] / gross for symbol in symbols}
+        book[day] = sum(weights[symbol] * returns_row[symbol] for symbol in symbols)
+    mean = sum(book.values()) / len(book)
+    variance = sum((value - mean) ** 2 for value in book.values()) / len(book)
     std = math.sqrt(variance)
     assert metrics.ir_standalone == pytest.approx(mean / std)
 
 
 def test_ir_standalone_is_refused_when_the_book_return_is_constant():
     """A book that never varies has no reward-to-variance ratio — refused, not zero."""
-    # Each date's cross-section varies (so the per-date IC is defined), but the
-    # equal-weight book return is 0.01 on every date — a constant book earns no
-    # reward-to-variance ratio, so ir_standalone is refused rather than zero.
+    # The scores are constant across dates (AAA=1.0, BBB=-1.0, CCC=0.0), so the
+    # signal-weighted book is always w = {AAA: 0.5, BBB: -0.5, CCC: 0.0} — CCC
+    # never enters the book return. AAA and BBB are pinned to 0.02 and 0.0 on
+    # every date (book return 0.5*0.02 - 0.5*0.0 = 0.01, bit-identical each
+    # time), while CCC alone varies to keep the per-date rank correlation (and
+    # so ic_tstat) defined: CCC at 0.01 ranks between BBB and AAA (matching the
+    # score ranking, IC = 1), at -0.01 ranks below both (IC = 0.5), and at 0.03
+    # ranks above both (IC = 0.5) — not all equal, so ic_se is nonzero and this
+    # test reaches the book-return refusal rather than the IC one.
     returns_by_date = {
         _START: {"AAA": 0.02, "BBB": 0.0, "CCC": 0.01},
-        _START + dt.timedelta(days=1): {"AAA": 0.03, "BBB": -0.01, "CCC": 0.01},
-        _START + dt.timedelta(days=2): {"AAA": 0.0, "BBB": 0.02, "CCC": 0.01},
+        _START + dt.timedelta(days=1): {"AAA": 0.02, "BBB": 0.0, "CCC": -0.01},
+        _START + dt.timedelta(days=2): {"AAA": 0.02, "BBB": 0.0, "CCC": 0.03},
     }
     priced = _hand_priced({1: returns_by_date})
     scores = _scores(
@@ -493,17 +510,20 @@ def test_ir_standalone_is_refused_when_the_book_return_is_constant():
 
 
 def test_turnover_is_the_mean_fractional_turnover():
-    """turnover is ½·Σ|w_d − w_{d−1}| averaged over the rebalances with a predecessor."""
+    """turnover is ½·Σ|w_d − w_{d−1}| averaged over the rebalances with a predecessor.
+
+    The weights are the signal weights ``w_i = z_i / Σ|z_j|``, not equal
+    weight, so the book only moves when the *scores* change — here the scores
+    are identical on the first two dates (so the book is identical, no matter
+    that CCC's own return differs) and flip on the third, when CCC also drops
+    out of the scored universe.
+    """
     returns_by_date = {
         _START: {"AAA": 0.03, "BBB": -0.01, "CCC": 0.0},
         _START + dt.timedelta(days=1): {"AAA": -0.02, "BBB": 0.04, "CCC": 0.01},
         _START + dt.timedelta(days=2): {"AAA": 0.01, "BBB": 0.02},
     }
     priced = _hand_priced({1: returns_by_date})
-    # CCC is scored and priced on the first two dates and dropped on the third,
-    # so the equal-weight book turns over only on the second interval.  The
-    # union over that interval is {AAA, BBB, CCC} at weight 1/3, and the move is
-    # ½·(|1/2−1/3| + |1/2−1/3| + |0−1/3|) = 1/3; the first interval is 0.
     scores = _scores(
         {
             _START: {"AAA": 1.0, "BBB": -1.0, "CCC": 0.0},
@@ -512,9 +532,18 @@ def test_turnover_is_the_mean_fractional_turnover():
         }
     )
     metrics = compute_node_metrics(priced, scores)
-    # First interval: same panel → turnover 0.  Second interval: CCC exits and
-    # AAA/BBB re-weight → turnover 1/3.  Mean over two intervals = 1/6.
-    assert metrics.turnover == pytest.approx(1.0 / 6.0)
+    # Day 0 and day 1 share the same scores over the same joined cross-section
+    # {AAA, BBB, CCC}: gross = |1|+|-1|+|0| = 2, so w = {AAA: 0.5, BBB: -0.5,
+    # CCC: 0.0} on both — identical books, so the first interval's turnover is
+    # ½·(0 + 0 + 0) = 0.
+    #
+    # Day 2 scores {AAA: -1.0, BBB: 1.0} (CCC unscored): gross = |-1|+|1| = 2,
+    # so w = {AAA: -0.5, BBB: 0.5} (CCC absent, weight 0). Against day 1's
+    # {AAA: 0.5, BBB: -0.5, CCC: 0.0}, the second interval's turnover is
+    # ½·(|-0.5-0.5| + |0.5-(-0.5)| + |0-0|) = ½·(1.0 + 1.0 + 0.0) = 1.0.
+    #
+    # Mean over the two intervals: (0 + 1.0) / 2 = 0.5.
+    assert metrics.turnover == pytest.approx(0.5)
     assert metrics.turnover_dates == 2
 
 

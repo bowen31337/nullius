@@ -308,6 +308,21 @@ class NodeMetrics:
     book_returns: Mapping[dt.date, float] = field(
         default_factory=lambda: MappingProxyType({}), compare=False
     )
+    #: The per-date fractional turnover of the node's own dollar-neutral
+    #: book — the series whose mean is :attr:`turnover`, carried beside it the
+    #: way :attr:`book_returns` is carried beside :attr:`ir_standalone`. Keyed
+    #: by the later date of each consecutive pair of rebalance dates (turnover
+    #: needs a predecessor), so it carries :attr:`turnover_dates` entries, one
+    #: fewer than :attr:`ic_series`. Empty on a record rebuilt from the
+    #: metrics store, which persists only the four scalars and
+    #: :attr:`ic_series`; a fresh measurement from :func:`compute_node_metrics`
+    #: always carries it, and that is what
+    #: :func:`evaluator._artifact.render_turnover_series` renders, rather than
+    #: re-deriving a different book from the raw panel. Excluded from equality
+    #: (``compare=False``) for the same reason :attr:`book_returns` is.
+    turnover_series: Mapping[dt.date, float] = field(
+        default_factory=lambda: MappingProxyType({}), compare=False
+    )
 
     def __post_init__(self) -> None:
         # object.__setattr__ where the constructor normalizes; this record
@@ -427,6 +442,28 @@ class NodeMetrics:
                 )
             captured_book[day] = float(value)
         object.__setattr__(self, "book_returns", MappingProxyType(captured_book))
+        captured_turnover: dict[dt.date, float] = {}
+        for day, value in self.turnover_series.items():
+            if not isinstance(day, dt.date) or isinstance(day, dt.datetime):
+                raise EvaluatorMetricsError(
+                    "a node metrics' turnover_series must be keyed by "
+                    f"calendar dates, got {day!r}"
+                )
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise EvaluatorMetricsError(
+                    f"the turnover on {day.isoformat()} must be a number, "
+                    f"got {value!r}"
+                )
+            if not math.isfinite(float(value)):
+                raise EvaluatorMetricsError(
+                    f"the turnover on {day.isoformat()} is not finite "
+                    f"({value!r}); a NaN or ±inf would reach the node record "
+                    "dressed as a measurement"
+                )
+            captured_turnover[day] = float(value)
+        object.__setattr__(
+            self, "turnover_series", MappingProxyType(captured_turnover)
+        )
 
     def __hash__(self) -> int:
         # The mapping is not hashable until it collapses to tuples; the fold
@@ -665,6 +702,7 @@ def compute_node_metrics(
     ordered_days = sorted(per_date_return)
     turnover_sum = 0.0
     turnover_count = 0
+    per_date_turnover: dict[dt.date, float] = {}
     for prev_day, day in itertools.pairwise(ordered_days):
         prev_weights = per_date_weights[prev_day]
         day_weights = per_date_weights[day]
@@ -673,10 +711,12 @@ def compute_node_metrics(
         # holds weight 0 there, the same absence convention the book return
         # itself uses.
         symbols = set(prev_weights) | set(day_weights)
-        turnover_sum += 0.5 * math.fsum(
+        day_turnover = 0.5 * math.fsum(
             abs(day_weights.get(symbol, 0.0) - prev_weights.get(symbol, 0.0))
             for symbol in symbols
         )
+        per_date_turnover[day] = day_turnover
+        turnover_sum += day_turnover
         turnover_count += 1
     turnover = turnover_sum / turnover_count if turnover_count else 0.0
 
@@ -694,4 +734,5 @@ def compute_node_metrics(
         turnover_dates=turnover_count,
         ic_series=per_date_ic,
         book_returns=per_date_return,
+        turnover_series=per_date_turnover,
     )
