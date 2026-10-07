@@ -552,7 +552,21 @@ def _stream_frequencies(
             freq = _parquet_interval(path)
             if freq is not None:
                 frequencies.add(freq)
+    if not frequencies and stream == _EVALUATOR_BARS_STREAM:
+        # Date-partitioned bars with no ``interval`` column -- the layout
+        # nullius_ingest.bars_backfill seals and the only one the evaluator
+        # reads -- are materialized by orchestrator._evaluate as the single
+        # ``bars:1d`` frame, so 1d is the one frequency a signal is served.
+        # Reporting () here told the model "bars exist" without saying which
+        # frequency, and it asked for 1h (smoke campaign 360f6f00).
+        return (_EVALUATOR_BARS_FREQUENCY,)
     return tuple(sorted(frequencies))
+
+
+#: The stream orchestrator._evaluate materializes from date-partitioned bars,
+#: and the one frequency it serves it at (its ``bars:1d`` frame).
+_EVALUATOR_BARS_STREAM = "bars"
+_EVALUATOR_BARS_FREQUENCY = "1d"
 
 
 def _available_streams(snapshot: Any) -> dict[str, tuple[str, ...]] | None:

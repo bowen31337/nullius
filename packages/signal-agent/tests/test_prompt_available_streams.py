@@ -68,7 +68,7 @@ SYMBOLS = ("AAAUSDT", "BBBUSDT")
 DATES = ("2026-01-01", "2026-01-02")
 
 
-def _seal_tiny_1d_bars_snapshot(lake_root: Path) -> Path:
+def _seal_tiny_1d_bars_snapshot(lake_root: Path, *, with_interval: bool = True) -> Path:
     """Seal a real snapshot — one 1d-bars partition per symbol per day.
 
     The same venue-string convention (and the row-level ``interval`` column)
@@ -94,7 +94,7 @@ def _seal_tiny_1d_bars_snapshot(lake_root: Path) -> Path:
                     ),
                     "close": ["100.00"],
                     "volume": ["1.0"],
-                    "interval": ["1d"],
+                    **({"interval": ["1d"]} if with_interval else {}),
                 }
             )
             pq.write_table(table, partition / "part-0.parquet")
@@ -306,3 +306,23 @@ def test_composing_the_author_reads_no_parquet_file(
     author = _build_author(provider=provider, env=env)
     assert author._snapshot is not None
     assert calls == []
+
+
+def test_the_shipped_bars_layout_without_an_interval_column_reports_1d(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # nullius_ingest.bars_backfill seals symbol/open_time/close/volume with no
+    # ``interval`` column -- the layout the evaluator actually reads and
+    # materializes as its single ``bars:1d`` frame. Reporting () for it told
+    # the model "bars exist" with no frequency, and it asked for 1h bars
+    # (smoke campaign 360f6f00); the answer must be ("1d",).
+    import snapshot as snapshot_module
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    sealed = _seal_tiny_1d_bars_snapshot(tmp_path / "lake", with_interval=False)
+    mount = snapshot_module.SnapshotMount.for_directory(sealed)
+    ws = SimpleNamespace(campaign_id=CAMPAIGN, theme_root="momentum", depth=0)
+    parts = build_authoring_prompt(ws, (), clause="clause text", snapshot=mount)
+    declared = parts.task["contract"]
+    assert declared["available_streams"] == {"bars": ("1d",)}
+    assert "1d" in declared["available_streams_note"]
