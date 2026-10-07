@@ -456,3 +456,18 @@ def test_an_unexpected_error_gives_one_stderr_line_and_no_traceback(
     assert "the archive host reset the connection" in stderr_lines[0]
     # Nothing was written: the very first fetch failed.
     assert not (tmp_path / "staging").exists()
+
+
+def test_the_cli_flushes_each_progress_line(monkeypatch) -> None:
+    """A redirected stdout is block-buffered: the 2026-10-07 archive backfill
+    wrote 0 bytes to backfill.jsonl in 2.5 h of ranking. main's default emit
+    flushes every line."""
+    import builtins
+    import inspect
+
+    from nullius_ingest import bars_backfill
+
+    seen: list[dict] = []
+    monkeypatch.setattr(builtins, "print", lambda *args, **kwargs: seen.append(kwargs))
+    inspect.signature(bars_backfill.main).parameters["emit"].default('{"phase": "rank"}')
+    assert seen == [{"flush": True}]

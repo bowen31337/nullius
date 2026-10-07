@@ -1392,10 +1392,17 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _print_line(line: str) -> None:
+    """Print one JSON line and flush it. When stdout is redirected to a file,
+    Python block-buffers it, so a multi-hour backfill's progress lines would
+    otherwise sit unseen in the buffer until exit."""
+    print(line, flush=True)
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
-    emit: Callable[[str], object] = print,
+    emit: Callable[[str], object] = _print_line,
     fetch: BinanceFetch | ArchiveFetch | None = None,
     sleep: Callable[[float], None] | None = None,
     clock: Callable[[], datetime] | None = None,
