@@ -22,16 +22,18 @@ Five contracts, one per claim a member's first feature makes:
   the root pyproject.toml (the file claim asserts the same thing
   statically — this test holds it live).
 
-* **the declaration** — the pyproject names exactly the fourteen members
+* **the declaration** — the pyproject names exactly the fifteen members
   this member now calls: the eight the spec sentence names, the two
-  feature 13 (close-out) added later (``scoring``, ``ops``), and the four
+  feature 13 (close-out) added later (``scoring``, ``ops``), the four
   feature 11 (the dreaming-cycle CLI, additions_spec_operator_surfaces.xml)
-  added after that (``dreaming``, ``bootstrap``, ``canary``, ``replay``) —
-  each with a ``workspace = true`` source and nothing else in
-  ``[tool.uv.sources]``. That "nothing else" is the whole of *it adds no
-  third-party package*: a registry dependency would be a dependency with
-  no workspace source, and the fourteen names are all members, so the
-  dependencies list and the sources table cover one another exactly.
+  added after that (``dreaming``, ``bootstrap``, ``canary``, ``replay``),
+  and ``tripwires`` (the leakage tripwire probe live evaluation and
+  close-out call directly) added last — each with a ``workspace = true``
+  source and nothing else in ``[tool.uv.sources]``. That "nothing else" is
+  the whole of *it adds no third-party package*: a registry dependency
+  would be a dependency with no workspace source, and the fifteen names
+  are all members, so the dependencies list and the sources table cover
+  one another exactly.
 
 * **the module surface** — ``orchestrator`` imports, carries a module
   docstring, and answers an empty ``__all__``: the member's public
@@ -82,9 +84,11 @@ PYPROJECT = MEMBER_SRC.parent / "pyproject.toml"
 #: sweep, the split, the sweep and the selection), ``bootstrap`` (the
 #: pool's world census and the worlds ``score_on_world`` reads), ``canary``
 #: (``require_dreaming_allowed``) and ``replay`` (the composed component
-#: ``dreaming.sweep_candidates`` persists through).  Spelled here rather
-#: than read back off the pyproject, so a dependency dropped or reordered
-#: is a failing test about *the feature text*.
+#: ``dreaming.sweep_candidates`` persists through) — plus ``tripwires``,
+#: the leakage tripwire probe that live evaluation and close-out call
+#: directly.  Spelled here rather than read back off the pyproject, so a
+#: dependency dropped or reordered is a failing test about *the feature
+#: text*.
 DEPENDENCIES = (
     "evaluator",
     "nulloracle",
@@ -100,6 +104,7 @@ DEPENDENCIES = (
     "bootstrap",
     "canary",
     "replay",
+    "tripwires",
 )
 
 #: One component name per dependency member — each member's own first
@@ -121,6 +126,7 @@ COMPONENTS_BY_MEMBER = {
     "bootstrap": "bootstrap-pool",
     "canary": "canary",
     "replay": "replay",
+    "tripwires": "tripwires",
 }
 
 
@@ -135,12 +141,12 @@ def test_the_member_is_a_declared_workspace_member() -> None:
     assert MEMBER_SRC.is_dir()
 
 
-def test_the_pyproject_declares_the_fourteen_workspace_dependencies() -> None:
+def test_the_pyproject_declares_the_fifteen_workspace_dependencies() -> None:
     # The spec sentence's own list, exactly: the eight members it names,
-    # the two feature 13 added, and the four feature 11 added, every one
-    # with a workspace = true source, and no other dependency and no other
-    # source.  A third-party package would be a dependency without a
-    # workspace source — so the two sets covering each other exactly *is*
+    # the two feature 13 added, the four feature 11 added, and tripwires,
+    # every one with a workspace = true source, and no other dependency and
+    # no other source.  A third-party package would be a dependency without
+    # a workspace source — so the two sets covering each other exactly *is*
     # "it adds no third-party package".
     with PYPROJECT.open("rb") as handle:
         project = tomllib.load(handle)

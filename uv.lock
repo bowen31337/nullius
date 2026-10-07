@@ -449,6 +449,7 @@ dependencies = [
     { name = "replay" },
     { name = "scoring" },
     { name = "signal-agent" },
+    { name = "tripwires" },
 ]
 
 [package.metadata]
@@ -467,6 +468,7 @@ requires-dist = [
     { name = "replay", editable = "packages/replay" },
     { name = "scoring", editable = "packages/scoring" },
     { name = "signal-agent", editable = "packages/signal-agent" },
+    { name = "tripwires", editable = "packages/tripwires" },
 ]
 
 [[package]]

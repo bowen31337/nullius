@@ -36,6 +36,10 @@
 # is real: a deployment without it cannot run a cycle). ops is already a
 # dependency (feature 348's evaluation log); feature 11 is a second,
 # unrelated reason for it to stay one (feature 347's MetaOverfitGaps).
+#
+# tripwires (the leakage tripwire probe, feature 125) joins the same way:
+# live evaluation and close-out call it directly, so the import has to
+# resolve without the module loader's scan standing in for it.
 
 [project]
 name = "orchestrator"
@@ -57,6 +61,7 @@ dependencies = [
     "bootstrap",
     "canary",
     "replay",
+    "tripwires",
 ]
 
 [build-system]
@@ -78,6 +83,7 @@ dreaming = { workspace = true }
 bootstrap = { workspace = true }
 canary = { workspace = true }
 replay = { workspace = true }
+tripwires = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/orchestrator"]
