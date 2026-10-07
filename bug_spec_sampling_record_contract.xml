@@ -1,0 +1,75 @@
+<bug_spec>
+  <!-- REC-1. Found 2026-10-07 on the third smoke-campaign attempt (after
+       bug_spec_effort_wiring.xml). One root was authored by
+       claude-opus-5-5 and its node row written with
+       agent_sampling={"effort":"high"}. The next persistence step refused the
+       record ("an agent_sampling record is missing ['temperature', 'top_p',
+       'thinking', 'seed']") and the campaign exited 1 thirty seconds in.
+       Spend: one Opus call. The feature-204 record contract cannot express a
+       model that takes no sampling parameters; the producer from
+       bug_spec_effort_wiring bug 1 then wrote a record outside it. All three
+       wiring bugs that day slipped past tests/e2e/test_real_data_campaign_e2e.py
+       because its recorded authoring config still states a temperature. -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/providers/src/providers/_sampling.py,packages/providers/tests/test_sampling.py">
+    <title>The agent_sampling record contract cannot describe a model that takes no sampling parameters, so honest provenance for claude-opus-5-5 / claude-sonnet-5-5 is unrepresentable</title>
+    <symptoms>
+      providers._sampling (feature 204) requires exactly the keys temperature, top_p, thinking and seed, with temperature and top_p numbers, thinking a bool and seed a non-null int, and refuses unknown keys. For claude-opus-5-5 and claude-sonnet-5-5 the backend sends no temperature or top_p (the vendor rejects them), thinking is adaptive, and the configured effort is sent as output_config.effort. Satisfying the current contract would mean recording a temperature and top_p the vendor never received, and the only alternative, recording the effort, is refused as an unknown key.
+    </symptoms>
+    <reproduction_steps>
+      providers.AgentSampling.from_json('{"effort":"high"}') and AgentSampling(temperature=None, top_p=None, thinking="adaptive", seed=0) both refuse.
+    </reproduction_steps>
+    <expected>
+      - The record keeps its four required keys and gains one optional key:
+        - temperature: a number in [0, MAX_TEMPERATURE], or null meaning "not sent; the model's own default applied".
+        - top_p: a number in (0, 1], or null with the same meaning.
+        - thinking: a bool, or the string "adaptive".
+        - seed: unchanged (non-null int in [0, SEED_MAX]).
+        - effort (optional): one of low, medium, high, xhigh, max. Present only when an effort was sent.
+        Any other key is still refused.
+      - Every record valid before this change parses unchanged and renders to the identical canonical JSON. DEFAULT_SAMPLING is unchanged.
+      - The refusal messages name the extended rule, never claim a key is mandatory when it is optional, and keep the feature-204 wording that a missing required key is refused.
+      - test_sampling.py gains tests for:
+        - a null temperature and null top_p
+        - thinking "adaptive"
+        - each effort level, and an unknown effort refused
+        - an extra unknown key still refused
+        - a pre-change record that round-trips byte-identically
+    </expected>
+    <actual>Root cause: feature 204 fixed the record to four numeric/bool settings before any model rejected sampling parameters; feature 5 of additions_spec_real_campaign_path.xml added effort and no-sampling models without extending the record.</actual>
+    <constraints>
+      Backward compatible: every existing stored agent_sampling value stays valid and byte-identical in canonical form
+      No migration (the column is JSON text and already NOT NULL)
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="high" depends_on="1"
+       touches_files="packages/signal-agent/src/signal_agent/_llm_author.py,packages/signal-agent/tests/test_llm_author_sampling.py,tests/e2e/test_real_data_campaign_e2e.py">
+    <title>The signal author records agent_sampling={"effort": ...} alone, which node persistence refuses, so a real campaign on claude-opus-5-5 stops after its first root</title>
+    <symptoms>
+      `./run.sh campaign --type Type-R --workspaces 4 --rounds 2 --width 2` with pins on claude-opus-5-5 / claude-sonnet-5-5, "temperature": null and "effort": "high" authored one root (node b5b34d5e…, theme borrow-rate-conditioning, agent_sampling '{"effort":"high"}'), then exited 1 with "an agent_sampling record is missing ['temperature', 'top_p', 'thinking', 'seed']…". signal_agent/_llm_author.py (~line 648) builds the record as {"effort": self._config.effort}.
+    </symptoms>
+    <reproduction_steps>
+      Run the campaign CLI over tests/e2e/test_real_data_campaign_e2e.py's offline setup with an authoring config of temperature null, effort high and a 5.x pin: the first root's record is refused on persistence.
+    </reproduction_steps>
+    <expected>
+      - The signal author records the full extended record for what was actually sent:
+        - temperature: null when none was sent, else the number
+        - top_p: null when none was sent
+        - thinking: "adaptive" for models that think adaptively (the 5.x family), else the bool actually configured
+        - seed: as today
+        - effort: when one was sent
+        The record validates against bug 1's contract on every path (root, child, retry).
+      - tests/e2e/test_real_data_campaign_e2e.py runs its offline campaign with the current real configuration: pins on claude-opus-5-5 (roots) and claude-sonnet-5-5 (depth), temperature null, effort high. The campaign completes. Each persisted node's agent_sampling equals {"effort":"high","seed":…,"temperature":null,"thinking":"adaptive","top_p":null}, and the recorded fixture's request bodies carry output_config.effort and no temperature. This is the regression guard for all three wiring bugs found that day.
+      - test_llm_author_sampling.py asserts the full record on all three call sites.
+    </expected>
+    <actual>Root cause: bug_spec_effort_wiring.xml bug 1 replaced the record with {"effort": …} instead of extending it, and the e2e test that should have caught it authors with a temperature-bearing config.</actual>
+    <constraints>
+      No file outside the three listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
