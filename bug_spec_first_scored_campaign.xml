@@ -1,0 +1,79 @@
+<bug_spec>
+  <!-- SCORED-1. Found 2026-10-08 by smoke campaign 9a955be6, run from a
+       worktree pinned at 2d8783c. It was the first campaign to run end to
+       end with scored nodes: 4 roots, 2 rounds of depth expansion, 4 nodes
+       scored. Spend: $0.826 (8 Opus calls, recorded by providers.usage). It
+       exposed four defects; the first would silently corrupt every selection
+       decision downstream (dreaming, promotion, the M3 gate). Core shape,
+       explicit touches_files. -->
+
+  <bug index="1" shape="core" severity="critical"
+       touches_files="packages/evaluator/src/evaluator/_metrics.py,packages/evaluator/src/evaluator/_persist_store.py,packages/evaluator/tests/test_signal_weighted_book.py">
+    <title>ir_standalone, cost_adjusted_ir and turnover measure the equal-weight market, not the signal, so every node of a campaign gets the same IR</title>
+    <symptoms>
+      In campaign 9a955be6, four scored nodes with ic_mean +0.0058, +0.0212, -0.0155 and -0.0116 all report ir_standalone 0.2325827383944757 and cost_adjusted_ir 0.006377427770851054. evaluator/_metrics.py builds per_date_return[day] = mean of the forward returns of every symbol on that date (~line 580). The node's scores never weight it, so the "book" is the equal-weight market and is identical for every signal over the same snapshot. turnover and cost_adjusted_ir (_persist_store._cost_adjusted_ir) inherit the same book.
+    </symptoms>
+    <reproduction_steps>
+      Score two opposite signals (scores s and -s) over one priced panel: their ic_mean have opposite signs and their ir_standalone are equal.
+    </reproduction_steps>
+    <expected>
+      - The node's book on each date is the dollar-neutral long-short portfolio its normalized scores define: weights w_i = z_i / sum(|z_j|) over that date's cross-section, so gross exposure is 1 and net is 0. The per-date return is sum(w_i * r_i).
+      - ir_standalone is mean/std of that series, annualized consistently with the module's existing convention, which is documented.
+      - turnover is the mean of sum(|w_i,t - w_i,t-1|) / 2.
+      - cost_adjusted_ir applies the cost model to those weight changes.
+      - The "constant book" refusal is unchanged in meaning: a book whose returns never vary is still refused.
+      - test_signal_weighted_book.py covers: two opposite signals give IRs of opposite sign and equal magnitude; a signal uncorrelated with returns has IR near 0 over a long seeded panel; a perfect-foresight signal has a large positive IR; turnover is 0 for an unchanging ranking and maximal for a full reversal; and the market's average return does not affect a dollar-neutral book. It passes under pytest-xdist.
+    </expected>
+    <actual>Root cause: _metrics.py averages the date's forward returns with equal weight instead of weighting them by the node's normalized scores.</actual>
+    <constraints>
+      ic_mean and ic_tstat are unchanged
+      No file outside the three listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="high"
+       touches_files="packages/orchestrator/src/orchestrator/_campaign.py,packages/orchestrator/tests/test_campaign_cache_rate_usage.py">
+    <title>A finished campaign exits 1 because its cache-hit-rate record receives no usages, although every authoring call was made and recorded</title>
+    <symptoms>
+      Campaign 9a955be6 ran 2 rounds and 8 authoring calls (8 rows in provider_call_usage), then exited 1 with stderr "a measurement of no calls is not a measurement: the usages to measure were empty, and there is no cache hit rate to persist for a campaign whose calls were not accounted". orchestrator/_campaign.py:539 calls providers.record_campaign_cache_rate(campaign_id, records, ...) with an empty records collection. The authoring records are evidently no longer collected on the path the campaign takes since usage recording wraps the providers.
+    </symptoms>
+    <reproduction_steps>
+      Run the offline campaign e2e with a usage store configured (DATABASE_URL set). The final cache-rate record raises on empty usages and the CLI exits 1.
+    </reproduction_steps>
+    <expected>
+      - The cache-rate record receives every authoring call's usage for the campaign: the campaign's own authored records, or the provider_call_usage rows for the campaign if those are the honest source. The 8-call campaign records a cache rate.
+      - A campaign that made zero authoring calls skips the record with one logged line and does not fail.
+      - A cache-rate store failure is logged and never changes the campaign's exit code or stop_reason. The campaign's result stands, the same stance the alert and fidelity paths take.
+      - test_campaign_cache_rate_usage.py covers: a campaign with recorded calls persists a rate equal to the calls' cache reads over input; a zero-call campaign is skipped and exits 0; a failing cache store still exits 0, with the failure logged. It passes under pytest-xdist.
+    </expected>
+    <actual>Root cause: _campaign.py hands record_campaign_cache_rate a records collection that is empty on the live path, and lets its refusal fail the campaign.</actual>
+    <constraints>
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="3" shape="core" severity="high"
+       touches_files="packages/orchestrator/src/orchestrator/_sandbox_child.py,packages/orchestrator/tests/test_child_lazy_stdlib_imports.py">
+    <title>The sandbox child refuses stdlib modules that polars imports lazily from native code ('_io'), so ordinary polars signals crash mid-evaluation</title>
+    <symptoms>
+      Child node eef8589d imports only math and polars, and failed on 2026-07-01: "crash: signal raised: disallowed_import: '_io' is outside the sandbox's configured import allowlist". _TRUSTED_IMPORT_ROOTS = {polars, pyarrow, contract} admits an import only when _trusted_root_in_stack finds one of those packages' Python frames on the stack. Polars' Rust core triggers some stdlib imports through PyO3 with no polars Python frame between it and the import, so the trusted-root check fails and the import is refused.
+    </symptoms>
+    <reproduction_steps>
+      In the child, run a polars operation that lazily imports a stdlib C module from native code (for example a DataFrame repr/format or an IO-backed method); the guard refuses '_io'.
+    </reproduction_steps>
+    <expected>
+      - Imports the trusted packages trigger from native code are admitted. Either the guard recognises an import with no submitted-module frame above it as originating from a trusted extension, or a committed, minimal list of side-effect-free stdlib modules the payload stack loads lazily (at least _io and io, plus any others the test discovers) is admitted for trusted-root and native-originated imports.
+      - A direct `import io`, `import os`, `import sys` or `import socket` written in the submitted signal is still refused with disallowed_import.
+      - The guard stays defence-in-depth: the OS sandbox remains the boundary (CLAUDE.md, SEC-1).
+      - test_child_lazy_stdlib_imports.py runs, in the real child bootstrap under its -I flags, a polars signal that exercises the native lazy-import paths (repr/format, string casting, an Arrow round trip) and passes. A signal that writes `import os` or `import io` itself is refused. It passes under pytest-xdist.
+    </expected>
+    <actual>Root cause: _trusted_root_in_stack recognises trusted origins only by Python frames, and native-originated lazy imports have none.</actual>
+    <constraints>
+      AGENT_IMPORTS_ALLOWLIST (what a submitted module may import itself) is unchanged
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
