@@ -120,6 +120,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import math
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -392,31 +393,27 @@ def _cost_schedule_from_context(context: EvaluationContext) -> Any:
 
 
 def _cost_adjusted_ir(returns: PostCostReturns, metrics: NodeMetrics) -> float:
-    """The mean post-cost edge of the equal-weight book, at the metrics horizon.
+    """The mean post-cost edge of the node's own dollar-neutral book.
 
     The same figure :mod:`evaluator._persist_store` assembles onto a node
-    row — the panel's per-date equal-weight mean, averaged over the dates
-    ``compute_node_metrics`` measured — restated here because that module's
-    helper is private and this spec writes the row directly rather than
-    through ``evaluator.persist_node``.  The horizon and its dates are
-    exactly the ones ``metrics.ic_mean`` already reduced over, so this can
-    never find no dates to average: a metrics record that exists is a
-    metrics record whose horizon had at least one priced, non-empty date.
+    row: the mean of :attr:`NodeMetrics.book_returns`, the per-date
+    signal-weighted (``w_i = z_i / Σ|z_j|``) book returns ``ir_standalone``
+    reduces from. It is restated here because that module's helper is private
+    and this spec writes the row directly rather than through
+    ``evaluator.persist_node``. It is never the panel's equal-weight mean,
+    which is the market every node on one snapshot shares. ``returns`` is
+    kept for the call shape. ``metrics`` is the record ``compute_node_metrics``
+    just measured, so its book is never empty.
     """
-    series = returns.series[metrics.horizon]
-    per_date_means = [
-        sum(series.at(day).values()) / len(series.at(day))
-        for day in sorted(series.dates())
-        if series.at(day)
-    ]
-    if not per_date_means:
+    book = metrics.book_returns
+    if not book:
         raise RuntimeError(
-            "compute_node_metrics measured a metrics record over this very "
-            "horizon, so the priced panel must carry at least one non-empty "
-            "date at it; finding none here is an invariant this module "
-            "relies on having broken"
+            "compute_node_metrics measured a metrics record with no per-date "
+            "book returns; a fresh measurement always carries them, so "
+            "finding none here is an invariant this module relies on having "
+            "broken"
         )
-    return sum(per_date_means) / len(per_date_means)
+    return math.fsum(book.values()) / len(book)
 
 
 # -- The write: the tree row and the artifact set this spec measures -----------

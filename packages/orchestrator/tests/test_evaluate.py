@@ -613,3 +613,24 @@ def test_evaluating_the_same_node_twice_is_idempotent(
     # the answer alone.
     landed = [row for row in ledger.rows() if row.node_id == node_id]
     assert len(landed) == 1
+
+
+def test_cost_adjusted_ir_is_the_mean_of_the_signal_book_not_the_market():
+    """Smoke campaign 4bf280b8: cost_adjusted_ir was 0.006377 on every node,
+    the equal-weight market's mean, because this module restated the old
+    reduction. It is the mean of the node's own book returns."""
+    import datetime as _dt
+    from types import SimpleNamespace
+
+    from orchestrator._evaluate import _cost_adjusted_ir
+
+    book = {
+        _dt.date(2026, 1, 1): 0.02,
+        _dt.date(2026, 1, 2): -0.01,
+        _dt.date(2026, 1, 3): 0.005,
+    }
+    metrics = SimpleNamespace(book_returns=book)
+    assert _cost_adjusted_ir(None, metrics) == pytest.approx(0.015 / 3)
+
+    opposite = SimpleNamespace(book_returns={day: -value for day, value in book.items()})
+    assert _cost_adjusted_ir(None, opposite) == pytest.approx(-0.015 / 3)
