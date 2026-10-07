@@ -271,6 +271,21 @@ class AuthoredSignal:
         )
 
 
+def _request_temperature(temperature: float | None) -> float:
+    """The float every built :class:`providers.Request` carries for temperature.
+
+    ``providers.Request.temperature`` has no optional form — it is always a
+    number in ``[0, 2]`` — so a config that turns no temperature knob at all
+    (``AuthoringConfig.temperature is None``, feature 5 of
+    additions_spec_real_campaign_path.xml) is represented the same way
+    :class:`~providers.Request` represents "a caller that turned no knob":
+    its own default, ``0.0``.  Never ``float(None)``, which is the defect
+    this guard exists to avoid.  A stated value is passed through unchanged,
+    as a float.
+    """
+    return 0.0 if temperature is None else float(temperature)
+
+
 def _require_max_retries(value: object) -> int:
     """Return ``value`` as a non-negative int, refusing anything else.
 
@@ -376,7 +391,7 @@ class LLMSignalAuthor:
         request = to_request(
             parts,
             model=pin.model,
-            temperature=float(self._config.temperature),
+            temperature=_request_temperature(self._config.temperature),
             max_tokens=int(self._config.max_tokens),
         )
         # Feature 210's prompt half, on the rendered system message: the
@@ -452,7 +467,7 @@ class LLMSignalAuthor:
         request = to_request(
             parts,
             model=pin.model,
-            temperature=float(self._config.temperature),
+            temperature=_request_temperature(self._config.temperature),
             max_tokens=int(self._config.max_tokens),
         )
         # Feature 210's prompt half, on the rendered system message: the
@@ -621,8 +636,19 @@ class LLMSignalAuthor:
             depth=child_depth,
             role=role,
             pin=pin,
-            sampling=providers.AgentSampling(
-                temperature=float(self._config.temperature)
+            # A stated temperature still rolls all four of AgentSampling's
+            # settings, unchanged.  A None temperature means no sampling knob
+            # was turned at all — AgentSampling cannot represent that (every
+            # field is a number) — so the record carries exactly what was
+            # actually sent instead: the configured effort, or nothing.
+            sampling=(
+                providers.AgentSampling(temperature=float(self._config.temperature))
+                if self._config.temperature is not None
+                else (
+                    {"effort": self._config.effort}
+                    if self._config.effort is not None
+                    else {}
+                )
             ),
             usage=providers.Usage(
                 input_tokens=campaign_input,
