@@ -90,7 +90,7 @@ import os
 import sqlite3
 from collections.abc import Mapping
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Optional, Protocol, Tuple
 from urllib.parse import unquote, urlparse
@@ -611,6 +611,15 @@ class NodeArtifactStore:
             store_returns.cost_model,
         )
 
+        # The per-date turnover is not part of the metrics store's schema (only
+        # the four scalars and ic_series are), so it does not come back on
+        # store_metrics; like book_returns below, it comes from the metrics the
+        # pipeline just measured and handed to this call, already checked above
+        # to name this node and this cost model.
+        render_metrics = replace(
+            store_metrics, turnover_series=metrics.turnover_series
+        )
+
         # Render each §9.2 file and write it through the seam, staged until flush.
         # ``code.py`` is the caller's signal source, written only when supplied —
         # it is not part of the fixed §9.2 set, so it is appended to the write
@@ -625,7 +634,7 @@ class NodeArtifactStore:
                 snapshot_name=snapshot_name,
                 evaluator_hash=evaluator_hash,
                 returns=store_returns,
-                metrics=store_metrics,
+                metrics=render_metrics,
                 profile=store_profile,
                 attribution=store_attribution,
                 charges_budget=store_returns.charges_budget,
