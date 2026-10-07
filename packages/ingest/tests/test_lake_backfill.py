@@ -27,13 +27,17 @@ callable.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import io
 import json
-from collections.abc import Mapping
+import zipfile
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pyarrow.parquet as pq
 import pytest
 from nullius_ingest.bars_backfill import (
+    ARCHIVE_LISTING_URL,
     MAX_RETRIES,
     UNIVERSE_FILENAME,
     BarsBackfillError,
@@ -507,3 +511,370 @@ def test_backfill_bars_refuses_first_after_last(tmp_path: Path) -> None:
         backfill_bars(
             tmp_path, "2026-01-02", "2026-01-01", symbols=["BTCUSDT"]
         )
+
+
+def test_backfill_bars_refuses_a_non_positive_top_before_any_fetch(tmp_path: Path) -> None:
+    def never_called(*_args, **_kwargs):
+        raise AssertionError("--top=0 must be refused before any fetch is made")
+
+    for source in ("rest", "archive"):
+        for bad_top in (0, -1):
+            with pytest.raises(BarsBackfillError, match="positive integer"):
+                backfill_bars(
+                    tmp_path, "2026-01-01", "2026-01-01",
+                    source=source, top=bad_top, fetch=never_called, sleep=_no_sleep,
+                )
+
+
+# == feature 2: --source archive, the survivorship-free counterpart ===========
+#
+# The archive keeps a delisted symbol's history, so these tests cover exactly
+# the three characters the feature names: one live symbol, one delisted
+# symbol, and one symbol whose monthly zip fails its checksum.  No test here
+# makes a network call either — every fetch is a recorded, in-memory callable
+# over small built-in-memory zips.
+
+
+def _archive_csv_row(day: dt.date, close: str, *, quote_volume: str = "40000.00") -> list[str]:
+    """One archive CSV row, Binance's own column order, every field a string
+    (the archive's monthly zips carry plain CSV text, unlike the REST
+    endpoint's JSON)."""
+    open_ms = int(dt.datetime.combine(day, dt.time(0), tzinfo=UTC).timestamp() * 1000)
+    close_ms = open_ms + 86_400_000 - 1
+    return [
+        str(open_ms), "100.00000000", "110.00000000", "90.00000000", close,
+        "1000.50000000", str(close_ms), quote_volume, "10",
+        "400.00000000", "40000.00", "0",
+    ]
+
+
+def _days_in_month(year: int, month: int) -> list[dt.date]:
+    start = dt.date(year, month, 1)
+    end = (
+        dt.date(year + 1, 1, 1) if month == 12 else dt.date(year, month + 1, 1)
+    ) - dt.timedelta(days=1)
+    days = []
+    day = start
+    while day <= end:
+        days.append(day)
+        day += dt.timedelta(days=1)
+    return days
+
+
+def _month_rows(month: str, close: str, *, quote_volume: str = "40000.00") -> list[list[str]]:
+    year, month_num = (int(part) for part in month.split("-"))
+    return [_archive_csv_row(day, close, quote_volume=quote_volume) for day in _days_in_month(year, month_num)]
+
+
+def _zip_bytes(symbol: str, month: str, rows: list[list[str]]) -> bytes:
+    buffer = io.BytesIO()
+    text = "\n".join(",".join(row) for row in rows) + "\n"
+    info = zipfile.ZipInfo(f"{symbol}-1d-{month}.csv", date_time=(2026, 1, 1, 0, 0, 0))
+    with zipfile.ZipFile(buffer, "w") as bundle:
+        bundle.writestr(info, text)
+    return buffer.getvalue()
+
+
+def _checksum_bytes(zip_bytes: bytes, filename: str) -> bytes:
+    digest = hashlib.sha256(zip_bytes).hexdigest()
+    return f"{digest}  {filename}\n".encode()
+
+
+def _listing_xml(keys: Sequence[str]) -> bytes:
+    entries = "".join(f"<Contents><Key>{key}</Key></Contents>" for key in keys)
+    return (
+        "<?xml version='1.0' encoding='UTF-8'?>"
+        "<ListBucketResult xmlns='http://s3.amazonaws.com/doc/2006-03-01/'>"
+        f"{entries}"
+        "<IsTruncated>false</IsTruncated>"
+        "</ListBucketResult>"
+    ).encode()
+
+
+def _archive_fetch(
+    rows_by_symbol_month: Mapping[tuple[str, str], list[list[str]]],
+    *,
+    bad_checksum: frozenset[tuple[str, str]] = frozenset(),
+    listing_keys: Sequence[str] = (),
+):
+    """A recorded archive fetch: one URL in, one response out, no socket.
+
+    ``rows_by_symbol_month`` names every ``(symbol, month)`` the archive
+    "holds" a zip for; any other ``(symbol, month)`` 404s, exactly as a month
+    outside a symbol's lifetime would.  Precomputing every zip's bytes once
+    (rather than rebuilding on each call) is what makes the zip response and
+    the checksum response always agree on a *good* pair — the only
+    disagreement this fixture ever injects is ``bad_checksum``'s, and that is
+    deliberate.
+    """
+    zip_cache = {
+        key: _zip_bytes(key[0], key[1], rows) for key, rows in rows_by_symbol_month.items()
+    }
+    calls: list[str] = []
+
+    def fetch(url: str) -> HttpResponse:
+        calls.append(url)
+        if url.startswith(ARCHIVE_LISTING_URL):
+            return HttpResponse(200, {}, _listing_xml(listing_keys))
+        is_checksum = url.endswith(".CHECKSUM")
+        zip_url = url[: -len(".CHECKSUM")] if is_checksum else url
+        filename = zip_url.rsplit("/", 1)[-1]
+        stem = filename[: -len(".zip")]
+        symbol, _, month = stem.rpartition("-1d-")
+        zip_bytes = zip_cache.get((symbol, month))
+        if zip_bytes is None:
+            return HttpResponse(404, {}, b"not found")
+        if is_checksum:
+            if (symbol, month) in bad_checksum:
+                return HttpResponse(200, {}, f"{'0' * 64}  {filename}\n".encode())
+            return HttpResponse(200, {}, _checksum_bytes(zip_bytes, filename))
+        return HttpResponse(200, {}, zip_bytes)
+
+    fetch.calls = calls  # type: ignore[attr-defined]
+    return fetch
+
+
+# -- The trio the feature names: live, delisted, bad checksum -----------------
+
+
+def test_archive_live_delisted_and_bad_checksum_symbols(tmp_path: Path) -> None:
+    fetch = _archive_fetch(
+        {
+            ("BTCUSDT", "2026-01"): _month_rows("2026-01", "61234.50"),
+            ("BTCUSDT", "2026-02"): _month_rows("2026-02", "62000.00"),
+            ("ETHUSDT", "2026-01"): _month_rows("2026-01", "1800.00"),
+            # ETHUSDT has no 2026-02 zip: delisted at the end of January.
+            ("ADAUSDT", "2026-01"): _month_rows("2026-01", "0.45"),
+        },
+        bad_checksum=frozenset({("ADAUSDT", "2026-01")}),
+    )
+
+    results = backfill_bars(
+        tmp_path,
+        "2026-01-01",
+        "2026-02-28",
+        source="archive",
+        symbols=["BTCUSDT", "ETHUSDT", "ADAUSDT"],
+        fetch=fetch,
+        sleep=_no_sleep,
+    )
+    by_symbol = {r.symbol: r for r in results}
+
+    # The live symbol: both months present, both days' worth of rows written.
+    assert by_symbol["BTCUSDT"].status == "ok"
+    assert by_symbol["BTCUSDT"].rows_written == 31 + 28
+
+    # The delisted symbol: only January exists; February 404s, which is a
+    # hole in the archive, not a failure — the symbol still backfills.
+    assert by_symbol["ETHUSDT"].status == "ok"
+    assert by_symbol["ETHUSDT"].rows_written == 31
+
+    # The bad checksum: refused, naming the zip file, by symbol.
+    assert by_symbol["ADAUSDT"].status == "error"
+    assert "ADAUSDT-1d-2026-01.zip" in by_symbol["ADAUSDT"].error
+    assert "checksum" in by_symbol["ADAUSDT"].error.lower()
+
+    # The run still writes universe.json even though one symbol was refused.
+    assert (tmp_path / UNIVERSE_FILENAME).is_file()
+    # No data was written under the refused symbol's own partition.
+    assert not (tmp_path / "staging" / "bars" / "symbol=ADAUSDT").exists()
+
+
+def test_archive_universe_json_is_survivorship_free_and_names_last_month(
+    tmp_path: Path,
+) -> None:
+    fetch = _archive_fetch(
+        {
+            ("BTCUSDT", "2026-01"): _month_rows("2026-01", "61234.50"),
+            ("BTCUSDT", "2026-02"): _month_rows("2026-02", "62000.00"),
+            ("ETHUSDT", "2026-01"): _month_rows("2026-01", "1800.00"),
+        }
+    )
+
+    backfill_bars(
+        tmp_path,
+        "2026-01-01",
+        "2026-02-28",
+        source="archive",
+        symbols=["BTCUSDT", "ETHUSDT"],
+        fetch=fetch,
+        sleep=_no_sleep,
+    )
+
+    payload = json.loads((tmp_path / UNIVERSE_FILENAME).read_text(encoding="utf-8"))
+    assert payload["source"] == "binance-archive"
+    assert payload["survivorship_free"] is True
+    assert payload["symbols"] == ["BTCUSDT", "ETHUSDT"]
+    # BTCUSDT's archive data runs through the window's last month (live);
+    # ETHUSDT's stops a month short (delisted within the window).
+    assert payload["last_archived_month"] == {"BTCUSDT": "2026-02", "ETHUSDT": "2026-01"}
+
+
+def test_archive_output_layout_matches_feature_1(tmp_path: Path) -> None:
+    fetch = _archive_fetch({("BTCUSDT", "2026-01"): _month_rows("2026-01", "61234.50")})
+
+    results = backfill_bars(
+        tmp_path,
+        "2026-01-01",
+        "2026-01-31",
+        source="archive",
+        symbols=["BTCUSDT"],
+        fetch=fetch,
+        sleep=_no_sleep,
+    )
+    assert results[0].rows_written == 31
+
+    part = (
+        tmp_path
+        / "staging"
+        / "bars"
+        / "symbol=BTCUSDT"
+        / "date=2026-01-01"
+        / "part-0.parquet"
+    )
+    assert part.is_file()
+    table = pq.read_table(part)
+    assert set(table.column_names) >= {"symbol", "open_time", "close"}
+    row = table.to_pylist()[0]
+    assert row["symbol"] == "BTCUSDT"
+    assert row["close"] == "61234.50"
+
+
+# -- --top N ranks by median daily quote volume over the window ---------------
+
+
+def test_archive_top_n_ranks_by_median_quote_volume(tmp_path: Path) -> None:
+    days = [dt.date(2026, 1, 1), dt.date(2026, 1, 2), dt.date(2026, 1, 3)]
+
+    def rows(close: str, volumes: list[str]) -> list[list[str]]:
+        return [
+            _archive_csv_row(day, close, quote_volume=volume)
+            for day, volume in zip(days, volumes)
+        ]
+
+    listing_keys = [
+        "data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2026-01.zip",
+        "data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2026-01.zip.CHECKSUM",
+        "data/spot/monthly/klines/ETHUSDT/1d/ETHUSDT-1d-2026-01.zip",
+        "data/spot/monthly/klines/ETHUSDT/1d/ETHUSDT-1d-2026-01.zip.CHECKSUM",
+        "data/spot/monthly/klines/BNBUSDT/1d/BNBUSDT-1d-2026-01.zip",
+        "data/spot/monthly/klines/BNBUSDT/1d/BNBUSDT-1d-2026-01.zip.CHECKSUM",
+        # Not USDT-quoted: must never become a candidate.
+        "data/spot/monthly/klines/ETHBTC/1d/ETHBTC-1d-2026-01.zip",
+        # USDT-quoted, but its only month is outside the window: must never
+        # become a candidate either (never fetched).
+        "data/spot/monthly/klines/XRPUSDT/1d/XRPUSDT-1d-2025-06.zip",
+    ]
+    fetch = _archive_fetch(
+        {
+            ("BTCUSDT", "2026-01"): rows("100.00", ["100", "200", "300"]),  # median 200
+            ("ETHUSDT", "2026-01"): rows("1800.00", ["500", "500", "500"]),  # median 500
+            ("BNBUSDT", "2026-01"): rows("300.00", ["10", "10", "10"]),  # median 10
+        },
+        listing_keys=listing_keys,
+    )
+
+    results = backfill_bars(
+        tmp_path,
+        "2026-01-01",
+        "2026-01-03",
+        source="archive",
+        top=2,
+        fetch=fetch,
+        sleep=_no_sleep,
+    )
+
+    assert [r.symbol for r in results] == ["ETHUSDT", "BTCUSDT"]
+    assert all(r.status == "ok" and r.rows_written == 3 for r in results)
+    # Neither the non-USDT symbol nor the out-of-window symbol was ever
+    # fetched for its own zip or checksum — discovery's one listing call is
+    # the only call that ever mentions the prefix they live under.
+    assert not any("ETHBTC" in call or "XRPUSDT" in call for call in fetch.calls)
+
+    payload = json.loads((tmp_path / UNIVERSE_FILENAME).read_text(encoding="utf-8"))
+    assert payload["symbols"] == ["ETHUSDT", "BTCUSDT"]
+    assert "median" in payload["selection_rule"]
+    assert payload["last_archived_month"] == {"ETHUSDT": "2026-01", "BTCUSDT": "2026-01"}
+
+
+def test_archive_top_n_can_select_a_candidate_delisted_mid_window(tmp_path: Path) -> None:
+    """A --top N candidate need not survive to the window's end: discovery's
+    own archive-wide last month (not the window-clipped one) is what
+    ``last_archived_month`` records, even for a symbol the ranking actually
+    picked."""
+    listing_keys = [
+        "data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2026-01.zip",
+        "data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2026-02.zip",
+        # LUNAUSDT has no 2026-02 zip at all: delisted at the end of January,
+        # a month short of the window's end.
+        "data/spot/monthly/klines/LUNAUSDT/1d/LUNAUSDT-1d-2026-01.zip",
+    ]
+    fetch = _archive_fetch(
+        {
+            ("BTCUSDT", "2026-01"): _month_rows("2026-01", "61234.50", quote_volume="100.00"),
+            ("BTCUSDT", "2026-02"): _month_rows("2026-02", "62000.00", quote_volume="100.00"),
+            ("LUNAUSDT", "2026-01"): _month_rows("2026-01", "0.0001", quote_volume="9000.00"),
+        },
+        listing_keys=listing_keys,
+    )
+
+    results = backfill_bars(
+        tmp_path,
+        "2026-01-01",
+        "2026-02-28",
+        source="archive",
+        top=1,
+        fetch=fetch,
+        sleep=_no_sleep,
+    )
+
+    # LUNAUSDT's single month of (much higher) volume wins top=1 even though
+    # it has fewer in-window days than BTCUSDT.
+    assert [r.symbol for r in results] == ["LUNAUSDT"]
+    assert results[0].rows_written == 31
+
+    payload = json.loads((tmp_path / UNIVERSE_FILENAME).read_text(encoding="utf-8"))
+    assert payload["symbols"] == ["LUNAUSDT"]
+    # The true, archive-wide last month — not clipped to the window — even
+    # though LUNAUSDT was the symbol the ranking actually selected.
+    assert payload["last_archived_month"] == {"LUNAUSDT": "2026-01"}
+
+
+# -- The command line: --source archive displays the same JSON lines ---------
+
+
+def test_main_source_archive_prints_the_same_json_line_shape_as_rest(
+    tmp_path: Path,
+) -> None:
+    fetch = _archive_fetch({("BTCUSDT", "2026-01"): _month_rows("2026-01", "61234.50")})
+    lines: list[str] = []
+
+    exit_code = main(
+        [
+            "--lake", str(tmp_path),
+            "--first", "2026-01-01",
+            "--last", "2026-01-31",
+            "--source", "archive",
+            "--symbols", "BTCUSDT",
+        ],
+        emit=lines.append,
+        fetch=fetch,
+        sleep=_no_sleep,
+    )
+
+    assert exit_code == 0
+    assert len(lines) == 2
+    symbol_line = json.loads(lines[0])
+    assert symbol_line == {
+        "symbol": "BTCUSDT",
+        "status": "ok",
+        "rows_written": 31,
+        "skipped_non_positive_close": 0,
+    }
+    summary = json.loads(lines[1])
+    assert summary == {
+        "symbols": 1,
+        "failed": 0,
+        "rows_written": 31,
+        "skipped_non_positive_close": 0,
+    }

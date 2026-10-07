@@ -1,4 +1,4 @@
-"""Backfill daily bars from Binance's public REST API -- ``python -m nullius_ingest.bars_backfill``.
+"""Backfill daily bars from Binance -- ``python -m nullius_ingest.bars_backfill``.
 
 ``additions_spec_real_campaign_path.xml``, "Market Data to Sealed Snapshot"
 category, feature 1: *System backfills daily bars from Binance's public REST
@@ -7,7 +7,9 @@ nullius_ingest.bars_backfill --lake LAKE --first YYYY-MM-DD --last YYYY-MM-DD
 (--symbols S,S,... | --top N)`` *and displays one JSON line per symbol and a
 summary line, with no API key.*  This is the first producer into the §4.2
 layout :mod:`snapshot.seal` later seals: nothing before this module wrote a
-``bars/`` partition any sealed snapshot could serve.
+``bars/`` partition any sealed snapshot could serve.  Feature 2 adds a second
+source, ``--source archive`` (see below), to the same command and the same
+layout.
 
 **The write shape is the evaluator's, not this module's own.**  Every bar
 lands at ``<lake>/staging/bars/symbol=<S>/date=<D>/part-0.parquet``, one row
@@ -77,18 +79,85 @@ callable; :func:`urllib_fetch` is the default, speaking to
 ``https://data-api.binance.vision/api/v3`` with the standard library's
 ``urllib`` and no API key (every endpoint this module calls is public market
 data).  A test hands in a recorded fixture and never touches a socket.
+
+**Feature 2, ``--source archive``: the survivorship-free counterpart.**  The
+REST source above only ever lists *today's* ``exchangeInfo``, so a symbol
+Binance delisted before the run can never appear — exactly why its
+``universe.json`` says ``survivorship_free: false``.  ``--source archive``
+instead reads Binance's public data archive
+(``https://data.binance.vision``, spot monthly ``1d`` klines), which keeps
+every symbol's history for as long as it ever traded, dead names included.
+PRD §C1's bias-free universe comes from this mode, and its ``universe.json``
+records ``survivorship_free: true``.
+
+* *Discovery (``--top N`` only).*  The archive's S3-compatible bucket lists
+  its own keys; this module pages through
+  ``data/spot/monthly/klines/`` with no delimiter and reads every
+  ``<Contents><Key>`` entry, which names a symbol, a month and
+  nothing else (:func:`_list_archive_months`).  A key whose symbol does not
+  end in ``USDT`` is dropped.  What is left is, per USDT symbol, every month
+  the archive has ever held for it — live or dead, because the archive never
+  forgets a month it once published.  ``--symbols`` skips this discovery
+  entirely: a caller naming symbols already knows what it wants, so each
+  named symbol's months are probed directly (see below), and a month that
+  turns out not to exist is simply not there, not an error.
+* *One month, one file pair.*  A month's candles live at
+  ``<symbol>/1d/<symbol>-1d-<year>-<month>.zip``, and every such zip has a
+  sibling ``.CHECKSUM`` naming its sha256 in the standard ``sha256sum``
+  output line.  Before a zip's rows are used, this module fetches both, hashes
+  the zip's bytes, and compares — a mismatch refuses with
+  :class:`BarsBackfillError`, naming the zip file, and (for ``--symbols``)
+  that symbol's own result carries the refusal exactly as a REST-mode HTTP
+  failure would; every other symbol still backfills.  A month's zip that
+  simply is not there (HTTP 404 — before the symbol listed, or after it was
+  delisted) is not a failure: it is skipped, silently, because an interval
+  with no data is not an interval that failed.
+* *The last month the archive holds.*  Each included symbol's last available
+  month is recorded (``universe.json``'s ``last_archived_month``): the true
+  archive-wide last month for a ``--top N`` candidate, since discovery
+  already walked its whole history; the last month this run actually
+  observed data for, in-window, for an explicit ``--symbols`` entry, since
+  this mode never looks past the requested window.  A reader compares that
+  month against the window's last month to tell a delisted symbol from a
+  live one — this module records the fact and leaves the comparison to the
+  reader.
+* *``--top N`` ranks by the window's own median daily quote volume* — not a
+  ticker snapshot, because the archive has no ticker, only the rows
+  themselves.  Every USDT symbol discovery finds with at least one month
+  overlapping ``[first, last]`` is a *candidate*; each candidate's rows over
+  just those overlapping months are fetched once, and the median of its
+  per-day quote volume (the archive CSV's own column, kept only for this
+  ranking — :class:`~nullius_ingest.klines.KlineRow` does not carry it) over
+  the days actually inside ``[first, last]`` is its rank key, descending,
+  symbol ascending to break a tie.  This is a *causal* rank: it is computed
+  once, from the whole window and nothing past it, and is fixed at the
+  window's end rather than recomputed day by day — a backtest that asks for
+  the same window twice gets the same top N both times.  A candidate whose
+  fetch fails (a bad checksum, an unexpected HTTP status) cannot be ranked
+  and is dropped from the candidate pool rather than reported: it was never
+  selected, so it is not a selected symbol's failure.
+* The write layout, the per-symbol JSON line and the summary line are
+  byte-for-byte feature 1's — :func:`main` does not know which source wrote
+  them.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
+import hashlib
+import io
 import json
 import math
+import re
+import statistics
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
+import zipfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -100,6 +169,9 @@ import pyarrow.parquet as pq
 from .klines import KlineParseError, KlineRow, parse_klines
 
 __all__ = [
+    "ARCHIVE_BASE_URL",
+    "ARCHIVE_KLINES_PREFIX",
+    "ARCHIVE_LISTING_URL",
     "BARS_STREAM",
     "DEFAULT_BASE_URL",
     "DEFAULT_DELAY_SECONDS",
@@ -110,6 +182,7 @@ __all__ = [
     "PAGE_SIZE",
     "STABLECOIN_BASES",
     "UNIVERSE_FILENAME",
+    "ArchiveFetch",
     "BarsBackfillError",
     "BinanceFetch",
     "HttpResponse",
@@ -117,6 +190,7 @@ __all__ = [
     "backfill_bars",
     "main",
     "select_top_symbols",
+    "urllib_archive_fetch",
     "urllib_fetch",
 ]
 
@@ -153,6 +227,20 @@ LEVERAGED_SUFFIXES: tuple[str, ...] = ("UP", "DOWN", "BULL", "BEAR")
 
 #: The file this module writes beside ``staging/``, never inside it.
 UNIVERSE_FILENAME = "universe.json"
+
+#: Binance's public data archive — static monthly zips, no API key, no
+#: rate-limit contract (it is a CDN-fronted bucket, not the REST API).
+ARCHIVE_BASE_URL = "https://data.binance.vision"
+
+#: The archive bucket's own S3-compatible listing endpoint, used only for
+#: ``--top N`` discovery — the one call this module makes that is not a plain
+#: file fetch.
+ARCHIVE_LISTING_URL = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
+
+#: Every spot monthly ``1d`` kline lives under this key prefix, as
+#: ``<prefix><symbol>/1d/<symbol>-1d-<year>-<month>.zip`` (and that path's own
+#: ``.CHECKSUM`` sibling).
+ARCHIVE_KLINES_PREFIX = "data/spot/monthly/klines/"
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
@@ -213,6 +301,38 @@ def urllib_fetch(
     url = f"{base_url}{path}"
     if query:
         url = f"{url}?{query}"
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "nullius-ingest/bars_backfill"}
+    )
+    try:
+        with urllib.request.urlopen(request) as response:
+            return HttpResponse(
+                status=response.status,
+                headers=dict(response.headers),
+                body=response.read(),
+            )
+    except urllib.error.HTTPError as exc:
+        return HttpResponse(
+            status=exc.code, headers=dict(exc.headers or {}), body=exc.read()
+        )
+
+
+#: The archive seam: one URL (a listing query, a zip, or a ``.CHECKSUM``) in,
+#: one response out.  Unlike :data:`BinanceFetch` the archive is plain static
+#: files at distinct paths (and a separate listing host), so a single URL is
+#: the whole request — there is no separate ``params`` to carry.
+#: :func:`urllib_archive_fetch` is the default; a test hands in recorded zip
+#: and checksum bytes and touches no socket.
+ArchiveFetch = Callable[[str], HttpResponse]
+
+
+def urllib_archive_fetch(url: str) -> HttpResponse:
+    """The default archive fetch: ``urllib`` against a plain URL, no API key.
+
+    Every URL this module builds — a listing query, a monthly zip, or a
+    ``.CHECKSUM`` sibling — is public; this is the same no-socket-in-tests
+    seam :func:`urllib_fetch` is for the REST source.
+    """
     request = urllib.request.Request(
         url, headers={"User-Agent": "nullius-ingest/bars_backfill"}
     )
@@ -366,6 +486,232 @@ def select_top_symbols(
     return tuple(symbol for symbol, _ in ranked[:top])
 
 
+# -- Archive mode (feature 2): discovery, checksums, monthly zips ------------
+
+
+#: The S3 listing response's namespace; every element this module reads
+#: (``Contents``, ``Key``, ``IsTruncated``, ``NextMarker``) is namespaced.
+_S3_NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
+
+#: A monthly kline key, e.g. ``data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2026-01.zip``.
+#: The backreference requires the folder's symbol and the filename's symbol to
+#: agree — Binance's own convention — and the ``.zip`` anchor excludes every
+#: ``.zip.CHECKSUM`` sibling the same listing carries.
+_ARCHIVE_KEY_RE = re.compile(
+    r"^data/spot/monthly/klines/(?P<symbol>[A-Z0-9]+)/1d/"
+    r"(?P=symbol)-1d-(?P<month>\d{4}-\d{2})\.zip$"
+)
+
+
+def _s3_tag(name: str) -> str:
+    return f"{_S3_NS}{name}"
+
+
+def _parse_listing_page(body: bytes) -> tuple[tuple[str, ...], bool, str | None]:
+    root = ET.fromstring(body)
+    keys = tuple(
+        key for key in (c.findtext(_s3_tag("Key")) for c in root.iter(_s3_tag("Contents"))) if key
+    )
+    is_truncated = (root.findtext(_s3_tag("IsTruncated")) or "false").strip().lower() == "true"
+    next_marker = root.findtext(_s3_tag("NextMarker"))
+    return keys, is_truncated, next_marker
+
+
+def _list_archive_keys(
+    fetch: ArchiveFetch, prefix: str, *, sleep: Callable[[float], None]
+) -> tuple[str, ...]:
+    """Every key under ``prefix``, paging the archive bucket's own listing.
+
+    A flat listing (no delimiter): one page's ``<Contents><Key>`` entries name
+    both a symbol and a month at once, so one paginated crawl is discovery's
+    only cost, however many symbols or months the archive holds.
+    """
+    keys: list[str] = []
+    marker = ""
+    while True:
+        params = {"prefix": prefix}
+        if marker:
+            params["marker"] = marker
+        url = f"{ARCHIVE_LISTING_URL}?{urllib.parse.urlencode(sorted(params.items()))}"
+        response = fetch(url)
+        sleep(DEFAULT_DELAY_SECONDS)
+        if response.status != 200:
+            raise BarsBackfillError(
+                f"archive listing for prefix {prefix!r} failed: HTTP {response.status}"
+            )
+        page_keys, is_truncated, next_marker = _parse_listing_page(response.body)
+        keys.extend(page_keys)
+        if not is_truncated or not page_keys:
+            break
+        marker = next_marker or page_keys[-1]
+    return tuple(keys)
+
+
+def _list_archive_months(
+    fetch: ArchiveFetch, *, sleep: Callable[[float], None]
+) -> dict[str, tuple[str, ...]]:
+    """Every USDT symbol the archive has ever held monthly ``1d`` klines for.
+
+    One paginated crawl of :data:`ARCHIVE_KLINES_PREFIX` names every symbol
+    and month at once (:data:`_ARCHIVE_KEY_RE`); a symbol not ending in
+    ``USDT`` is dropped.  Months come back sorted, so the last element of a
+    symbol's tuple is the true, archive-wide last month it has ever held —
+    the fact a dead symbol is identified by.
+    """
+    keys = _list_archive_keys(fetch, ARCHIVE_KLINES_PREFIX, sleep=sleep)
+    months_by_symbol: dict[str, set[str]] = {}
+    for key in keys:
+        match = _ARCHIVE_KEY_RE.match(key)
+        if match is None:
+            continue
+        symbol = match["symbol"]
+        if not symbol.endswith("USDT"):
+            continue
+        months_by_symbol.setdefault(symbol, set()).add(match["month"])
+    return {
+        symbol: tuple(sorted(months)) for symbol, months in sorted(months_by_symbol.items())
+    }
+
+
+def _months_between(first: date, last: date) -> tuple[str, ...]:
+    """Every ``YYYY-MM`` month overlapping ``[first, last]``, in order."""
+    months: list[str] = []
+    year, month = first.year, first.month
+    while (year, month) <= (last.year, last.month):
+        months.append(f"{year:04d}-{month:02d}")
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+    return tuple(months)
+
+
+def _verify_checksum(zip_bytes: bytes, checksum_body: bytes, filename: str) -> None:
+    """Refuse, naming ``filename``, unless ``checksum_body`` names its sha256.
+
+    ``checksum_body`` is the archive's own ``.CHECKSUM`` file: a standard
+    ``sha256sum`` output line, ``<hex digest>  <filename>``.  Only the first
+    whitespace-separated token is read — the digest — so this does not care
+    whether the venue spells the rest of the line as a space or an asterisk.
+    """
+    try:
+        text = checksum_body.decode("utf-8").strip()
+    except UnicodeDecodeError as exc:
+        raise BarsBackfillError(f"{filename}.CHECKSUM is not valid text: {exc}") from exc
+    expected = text.split()[0] if text else ""
+    digest = hashlib.sha256(zip_bytes).hexdigest()
+    if not expected or digest.lower() != expected.lower():
+        raise BarsBackfillError(
+            f"{filename}: checksum mismatch (archive names "
+            f"{expected or '<empty>'}, computed {digest})"
+        )
+
+
+def _month_zip_url(symbol: str, month: str) -> tuple[str, str]:
+    filename = f"{symbol}-1d-{month}.zip"
+    return f"{ARCHIVE_BASE_URL}/{ARCHIVE_KLINES_PREFIX}{symbol}/1d/{filename}", filename
+
+
+def _fetch_month(
+    fetch: ArchiveFetch, symbol: str, month: str, *, sleep: Callable[[float], None]
+) -> tuple[tuple[KlineRow, ...], dict[date, float]] | None:
+    """One month's candles and per-day quote volume for ``symbol``.
+
+    Returns ``None`` when the archive has no zip for this month at all (HTTP
+    404: before the symbol listed, or after it was delisted) — not a failure,
+    just nothing to add.  Raises :class:`BarsBackfillError`, naming the zip
+    file, for any other HTTP failure or a checksum mismatch.
+    """
+    zip_url, filename = _month_zip_url(symbol, month)
+    zip_response = fetch(zip_url)
+    sleep(DEFAULT_DELAY_SECONDS)
+    if zip_response.status == 404:
+        return None
+    if zip_response.status != 200:
+        raise BarsBackfillError(f"{filename}: fetch failed: HTTP {zip_response.status}")
+
+    checksum_response = fetch(f"{zip_url}.CHECKSUM")
+    sleep(DEFAULT_DELAY_SECONDS)
+    if checksum_response.status != 200:
+        raise BarsBackfillError(
+            f"{filename}.CHECKSUM: fetch failed: HTTP {checksum_response.status}"
+        )
+    _verify_checksum(zip_response.body, checksum_response.body, filename)
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_response.body)) as bundle:
+            names = bundle.namelist()
+            if not names:
+                raise BarsBackfillError(f"{filename}: the zip carries no files")
+            csv_bytes = bundle.read(names[0])
+    except zipfile.BadZipFile as exc:
+        raise BarsBackfillError(f"{filename}: not a valid zip: {exc}") from exc
+
+    raw_rows: list[list[str]] = []
+    for raw_row in csv.reader(io.StringIO(csv_bytes.decode("utf-8"))):
+        if not raw_row:
+            continue
+        if raw_row[0].strip().lower() in ("open_time", "opentime"):
+            continue  # some archive vintages carry a header row
+        raw_rows.append(raw_row)
+    if not raw_rows:
+        return None
+
+    try:
+        batch = parse_klines(raw_rows, _INTERVAL, symbol=symbol)
+    except KlineParseError as exc:
+        raise BarsBackfillError(f"{filename}: could not parse rows: {exc}") from exc
+
+    # parse_klines is strict (it raises rather than drops), so batch.candles
+    # is raw_rows's own order and length — the zip is the quote-volume
+    # source of truth for ranking; KlineRow itself does not carry it.
+    quote_by_day: dict[date, float] = {}
+    for raw_row, candle in zip(raw_rows, batch.candles):
+        day = candle.open_time.astimezone(_UTC).date()
+        try:
+            quote_by_day[day] = float(raw_row[7])
+        except (IndexError, ValueError):
+            quote_by_day[day] = 0.0
+    return tuple(batch.candles), quote_by_day
+
+
+def _fetch_symbol_archive_rows(
+    fetch: ArchiveFetch,
+    symbol: str,
+    months: Sequence[str],
+    *,
+    sleep: Callable[[float], None],
+) -> tuple[tuple[KlineRow, ...], dict[date, float], str | None]:
+    """Every candle and per-day quote volume for ``symbol`` across ``months``.
+
+    The third element is the last of ``months`` for which the archive
+    actually held a zip — ``None`` when none of them did.
+    """
+    all_candles: list[KlineRow] = []
+    all_volumes: dict[date, float] = {}
+    last_month_with_data: str | None = None
+    for month in months:
+        result = _fetch_month(fetch, symbol, month, sleep=sleep)
+        if result is None:
+            continue
+        candles, volumes = result
+        all_candles.extend(candles)
+        all_volumes.update(volumes)
+        last_month_with_data = month
+    return tuple(all_candles), all_volumes, last_month_with_data
+
+
+def _clip_rows_to_window(
+    rows: Sequence[KlineRow], first: date, last: date
+) -> tuple[KlineRow, ...]:
+    """Drop candles outside ``[first, last]`` — a month's zip may carry days
+    either side of the window when the window does not fall on month
+    boundaries."""
+    return tuple(
+        row for row in rows if first <= row.open_time.astimezone(_UTC).date() <= last
+    )
+
+
 # -- Fetching and writing one symbol's candles --------------------------------
 
 
@@ -500,6 +846,7 @@ def _write_universe(
     last: date,
     symbols: Sequence[str],
     survivorship_free: bool,
+    last_archived_month: Mapping[str, str] | None = None,
 ) -> None:
     payload = {
         "source": source,
@@ -510,6 +857,13 @@ def _write_universe(
         "symbols": list(symbols),
         "survivorship_free": survivorship_free,
     }
+    # Archive mode only: the last month the archive holds for each included
+    # symbol, the fact a reader tells a delisted symbol from a live one by.
+    # Present (even empty) for archive, absent for REST — ``is not None``
+    # rather than truthiness, so an archive run that observed no data at all
+    # still carries the field.
+    if last_archived_month is not None:
+        payload["last_archived_month"] = dict(last_archived_month)
     text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     (lake / UNIVERSE_FILENAME).write_text(text, encoding="utf-8")
 
@@ -552,14 +906,141 @@ def _dedupe_symbols(symbols: Sequence[str]) -> tuple[str, ...]:
     return tuple(seen)
 
 
+def _backfill_rest(
+    lake_path: Path,
+    first_date: date,
+    last_date: date,
+    *,
+    symbols: Sequence[str] | None,
+    top: int | None,
+    fetch: BinanceFetch,
+    sleep: Callable[[float], None],
+) -> tuple[list[SymbolResult], tuple[str, ...], str]:
+    if symbols is not None:
+        resolved_symbols = _dedupe_symbols(symbols)
+        selection_rule = f"explicit symbols: {', '.join(resolved_symbols)}"
+    else:
+        resolved_symbols = select_top_symbols(fetch, top, sleep=sleep)
+        selection_rule = (
+            f"top {top} TRADING USDT spot pairs by 24h quote volume, "
+            "excluding stablecoin bases and leveraged tokens"
+        )
+
+    results: list[SymbolResult] = []
+    for symbol in resolved_symbols:
+        try:
+            rows = _fetch_symbol_rows(fetch, symbol, first_date, last_date, sleep=sleep)
+            written, skipped = _write_bars(lake_path, symbol, rows)
+            results.append(
+                SymbolResult(
+                    symbol=symbol,
+                    status="ok",
+                    rows_written=written,
+                    skipped_non_positive_close=skipped,
+                )
+            )
+        except BarsBackfillError as exc:
+            results.append(SymbolResult(symbol=symbol, status="error", error=str(exc)))
+    return results, resolved_symbols, selection_rule
+
+
+def _backfill_archive(
+    lake_path: Path,
+    first_date: date,
+    last_date: date,
+    *,
+    symbols: Sequence[str] | None,
+    top: int | None,
+    fetch: ArchiveFetch,
+    sleep: Callable[[float], None],
+) -> tuple[list[SymbolResult], tuple[str, ...], str, dict[str, str]]:
+    results: list[SymbolResult] = []
+    last_archived_month: dict[str, str] = {}
+
+    if symbols is not None:
+        resolved_symbols = _dedupe_symbols(symbols)
+        selection_rule = f"explicit symbols: {', '.join(resolved_symbols)}"
+        months = _months_between(first_date, last_date)
+        for symbol in resolved_symbols:
+            try:
+                rows, _volumes, observed_last_month = _fetch_symbol_archive_rows(
+                    fetch, symbol, months, sleep=sleep
+                )
+                clipped = _clip_rows_to_window(rows, first_date, last_date)
+                written, skipped = _write_bars(lake_path, symbol, clipped)
+                results.append(
+                    SymbolResult(
+                        symbol=symbol,
+                        status="ok",
+                        rows_written=written,
+                        skipped_non_positive_close=skipped,
+                    )
+                )
+                if observed_last_month is not None:
+                    last_archived_month[symbol] = observed_last_month
+            except BarsBackfillError as exc:
+                results.append(SymbolResult(symbol=symbol, status="error", error=str(exc)))
+        return results, resolved_symbols, selection_rule, last_archived_month
+
+    # --top N: every USDT symbol discovery finds with data overlapping the
+    # window is a candidate; each is fetched once and ranked by median daily
+    # quote volume.  A candidate whose fetch fails cannot be ranked and is
+    # dropped — it was never selected, so it is not a selected symbol's
+    # failure.
+    months_by_symbol = _list_archive_months(fetch, sleep=sleep)
+    window_months = set(_months_between(first_date, last_date))
+    ranking: list[tuple[str, float, tuple[KlineRow, ...], str]] = []
+    for symbol, archive_months in months_by_symbol.items():
+        in_window = tuple(month for month in archive_months if month in window_months)
+        if not in_window:
+            continue
+        try:
+            rows, volumes, _observed = _fetch_symbol_archive_rows(
+                fetch, symbol, in_window, sleep=sleep
+            )
+        except BarsBackfillError:
+            continue
+        clipped = _clip_rows_to_window(rows, first_date, last_date)
+        day_volumes = [
+            volume for day, volume in volumes.items() if first_date <= day <= last_date
+        ]
+        if not day_volumes:
+            continue
+        median_volume = statistics.median(day_volumes)
+        ranking.append((symbol, median_volume, clipped, archive_months[-1]))
+
+    # Causal: computed once from the whole window and nothing past it, fixed
+    # at the window's end rather than recomputed day by day.
+    ranking.sort(key=lambda item: (-item[1], item[0]))
+    selected = ranking[:top]
+    resolved_symbols = tuple(item[0] for item in selected)
+    selection_rule = (
+        f"top {top} USDT spot pairs in Binance's public archive by median "
+        f"daily quote volume over {first_date.isoformat()}..{last_date.isoformat()}"
+    )
+    for symbol, _median_volume, clipped, archive_last_month in selected:
+        written, skipped = _write_bars(lake_path, symbol, clipped)
+        results.append(
+            SymbolResult(
+                symbol=symbol,
+                status="ok",
+                rows_written=written,
+                skipped_non_positive_close=skipped,
+            )
+        )
+        last_archived_month[symbol] = archive_last_month
+    return results, resolved_symbols, selection_rule, last_archived_month
+
+
 def backfill_bars(
     lake: str | Path,
     first: str | date,
     last: str | date,
     *,
+    source: str = "rest",
     symbols: Sequence[str] | None = None,
     top: int | None = None,
-    fetch: BinanceFetch | None = None,
+    fetch: BinanceFetch | ArchiveFetch | None = None,
     sleep: Callable[[float], None] | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> tuple[SymbolResult, ...]:
@@ -572,11 +1053,24 @@ def backfill_bars(
     when one or more symbols failed, because the universe definition names
     what was *asked for*, not only what happened to succeed.
 
+    ``source="rest"`` (the default, feature 1) asks Binance's live REST API,
+    which only ever lists today's symbols — ``survivorship_free: false``.
+    ``source="archive"`` (feature 2) instead reads Binance's public data
+    archive, which keeps every symbol's history for as long as it ever
+    traded — ``survivorship_free: true``, and ``fetch``, when given, must
+    then be an :data:`ArchiveFetch` (a single-URL callable) rather than a
+    :data:`BinanceFetch`.
+
     A symbol whose fetch fails (an unparseable response, a non-retryable HTTP
-    status, or a 418/429 past :data:`MAX_RETRIES`) is reported as that
-    symbol's own error result rather than aborting the run — every other
-    symbol still backfills.
+    status, a 418/429 past :data:`MAX_RETRIES`, or — archive mode only — a
+    checksum mismatch) is reported as that symbol's own error result rather
+    than aborting the run — every other symbol still backfills.  The one
+    exception is an archive ``--top N`` candidate: it must fetch successfully
+    to be ranked at all, so a candidate's failure drops it from the
+    candidate pool rather than appearing as an error result.
     """
+    if source not in ("rest", "archive"):
+        raise BarsBackfillError(f"--source must be 'rest' or 'archive', got {source!r}")
     lake_path = Path(lake).expanduser()
     lake_path.mkdir(parents=True, exist_ok=True)
     first_date = _coerce_date(first)
@@ -590,48 +1084,46 @@ def backfill_bars(
         raise BarsBackfillError(
             "exactly one of --symbols or --top must be given"
         )
+    if top is not None and (not isinstance(top, int) or isinstance(top, bool) or top <= 0):
+        raise BarsBackfillError(f"--top must be a positive integer, got {top!r}")
 
-    resolved_fetch = fetch if fetch is not None else urllib_fetch
     resolved_sleep = sleep if sleep is not None else _default_sleep
     resolved_clock = clock if clock is not None else _utc_now
 
-    if symbols is not None:
-        resolved_symbols = _dedupe_symbols(symbols)
-        selection_rule = f"explicit symbols: {', '.join(resolved_symbols)}"
-    else:
-        resolved_symbols = select_top_symbols(resolved_fetch, top, sleep=resolved_sleep)
-        selection_rule = (
-            f"top {top} TRADING USDT spot pairs by 24h quote volume, "
-            "excluding stablecoin bases and leveraged tokens"
+    if source == "rest":
+        resolved_fetch = fetch if fetch is not None else urllib_fetch
+        results, resolved_symbols, selection_rule = _backfill_rest(
+            lake_path,
+            first_date,
+            last_date,
+            symbols=symbols,
+            top=top,
+            fetch=resolved_fetch,
+            sleep=resolved_sleep,
         )
-
-    results: list[SymbolResult] = []
-    for symbol in resolved_symbols:
-        try:
-            rows = _fetch_symbol_rows(
-                resolved_fetch, symbol, first_date, last_date, sleep=resolved_sleep
-            )
-            written, skipped = _write_bars(lake_path, symbol, rows)
-            results.append(
-                SymbolResult(
-                    symbol=symbol,
-                    status="ok",
-                    rows_written=written,
-                    skipped_non_positive_close=skipped,
-                )
-            )
-        except BarsBackfillError as exc:
-            results.append(SymbolResult(symbol=symbol, status="error", error=str(exc)))
+        last_archived_month: dict[str, str] | None = None
+    else:
+        resolved_fetch = fetch if fetch is not None else urllib_archive_fetch
+        results, resolved_symbols, selection_rule, last_archived_month = _backfill_archive(
+            lake_path,
+            first_date,
+            last_date,
+            symbols=symbols,
+            top=top,
+            fetch=resolved_fetch,
+            sleep=resolved_sleep,
+        )
 
     _write_universe(
         lake_path,
-        source="binance-rest",
+        source="binance-rest" if source == "rest" else "binance-archive",
         selection_rule=selection_rule,
         fetched_at=resolved_clock(),
         first=first_date,
         last=last_date,
         symbols=resolved_symbols,
-        survivorship_free=False,
+        survivorship_free=(source == "archive"),
+        last_archived_month=last_archived_month,
     )
     return tuple(results)
 
@@ -658,6 +1150,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--last", required=True, metavar="YYYY-MM-DD", help="last day, inclusive"
     )
+    parser.add_argument(
+        "--source",
+        choices=("rest", "archive"),
+        default="rest",
+        help=(
+            "'rest' (default) asks Binance's live REST API, today's symbols "
+            "only; 'archive' reads Binance's public data archive, which "
+            "keeps delisted symbols too (survivorship-free)"
+        ),
+    )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--symbols", metavar="S,S,...", help="an explicit symbol list")
     group.add_argument(
@@ -670,17 +1172,18 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     emit: Callable[[str], object] = print,
-    fetch: BinanceFetch | None = None,
+    fetch: BinanceFetch | ArchiveFetch | None = None,
     sleep: Callable[[float], None] | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> int:
-    """``python -m nullius_ingest.bars_backfill --lake LAKE --first D --last D (--symbols S,S,... | --top N)``.
+    """``python -m nullius_ingest.bars_backfill --lake LAKE --first D --last D [--source rest|archive] (--symbols S,S,... | --top N)``.
 
     Prints one JSON line per symbol (its rows written and skipped, or its
-    error) and one summary JSON line, through ``emit``.  Returns
-    :data:`EXIT_OK` when every symbol backfilled; :data:`EXIT_REFUSED` when an
-    argument was invalid (nothing is written) or at least one symbol's own
-    result carries an error (every other symbol's data is still written).
+    error) and one summary JSON line, through ``emit`` — the same lines
+    regardless of ``--source``.  Returns :data:`EXIT_OK` when every symbol
+    backfilled; :data:`EXIT_REFUSED` when an argument was invalid (nothing is
+    written) or at least one symbol's own result carries an error (every
+    other symbol's data is still written).
     """
     arguments = _build_parser().parse_args(argv)
     symbols = _parse_symbols_arg(arguments.symbols) if arguments.symbols else None
@@ -690,6 +1193,7 @@ def main(
             arguments.lake,
             arguments.first,
             arguments.last,
+            source=arguments.source,
             symbols=symbols,
             top=arguments.top,
             fetch=fetch,
