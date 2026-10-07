@@ -12,10 +12,28 @@ resolves :class:`scoring.NullPickScorer` and :class:`nulloracle.NullSidecar`
 from ``NULL_SIDECAR_PATH``/``NULL_SIDECAR_KEY_REF``, reads the campaign's
 evaluated node rows, splits their in-sample scores into the null and real
 samples :class:`nulloracle.KsGuard` compares, and hands the campaign's
-planted population and its discoveries to the scorer's own
-``calibration_figures`` verb -- never reading or printing a node id beside
-its null status (PRD §4.2), and never deriving a label anywhere but inside
-this one process.
+planted roots and its discoveries (each mapped to its root) to the scorer's
+own ``calibration_figures`` verb -- never reading or printing a node id
+beside its null status (PRD §4.2), and never deriving a label anywhere but
+inside this one process.
+
+**The sidecar seals one assignment per root, and every evaluated node is
+asked through it.**  §7.3 makes a campaign homogeneous in null type, and a
+Type-R subtree inherits its root's sealed assignment by construction (the
+same rule :class:`orchestrator._oracle.SubtreeOracle` applies during
+evaluation).  So this module never asks the sidecar about an evaluated
+node's own id: every node -- root or child -- is first walked to its root
+(:func:`_resolve_root`, reusing :meth:`SubtreeOracle._root_of` rather than
+restating the ``parent_id`` walk), and it is the *root's* entry the sidecar
+answers for.  The KS split puts every evaluated node's ``ic_mean`` on the
+side its root's label chose; the population :meth:`scoring.NullPickScorer.
+calibration_figures` measures over is the campaign's planted roots (the
+only nodes the sidecar ever holds an entry for), and a discovery is mapped
+to its root before it is handed over as a pick -- so two discoveries under
+one root are one pick, exactly as that verb's own docstring states for a
+repeated node.  A node whose walk cannot reach a root, or reaches one this
+campaign did not plant, or reaches a root the sidecar holds no entry for,
+is refused by this module rather than read as unlabelled.
 
 **Why this module reads ``node`` with raw SQL rather than a shared
 reader.**  No member in this workspace exposes "every evaluated node of a
@@ -75,6 +93,8 @@ import ledger
 import nulloracle
 import ops
 import scoring
+
+from ._oracle import OracleTargetError, SubtreeOracle
 
 __all__ = [
     "CLOSEOUT_CODE",
@@ -225,25 +245,86 @@ def _has_column(connection: sqlite3.Connection, table: str, column: str) -> bool
     )
 
 
-def _read_campaign_node_ids(database_url: str, campaign_id: str) -> tuple[str, ...]:
-    """Every node id the tree holds under this campaign -- its planted whole.
+def _read_campaign_root_ids(database_url: str, campaign_id: str) -> tuple[str, ...]:
+    """Every root id the tree holds under this campaign -- its planted whole.
 
-    The population :meth:`scoring.NullPickScorer.calibration_figures` is
-    measured over: every node the campaign's planting fixed a null or real
-    status for, whether or not it was ever evaluated.
+    A root is the row whose ``parent_id`` is ``NULL`` (feature 97's own
+    definition, the one :mod:`orchestrator._oracle` walks to) -- the only
+    nodes the sidecar ever seals an assignment for.  This is the population
+    :meth:`scoring.NullPickScorer.calibration_figures` is measured over:
+    every root the campaign's planting fixed a null or real status for,
+    whether or not it -- or any node of its subtree -- was ever evaluated.
+    A child is never in this set; its label is its root's, found at the
+    call site through :func:`_resolve_root`.
     """
     path = _sqlite_path(database_url)
     with closing(sqlite3.connect(path)) as connection:
         try:
             rows = connection.execute(
-                f"SELECT id FROM {NODE_TABLE} WHERE campaign_id = ?", (campaign_id,)
+                f"SELECT id FROM {NODE_TABLE} WHERE campaign_id = ? "
+                "AND parent_id IS NULL",
+                (campaign_id,),
             ).fetchall()
         except sqlite3.Error as exc:
             raise CloseoutError(
                 f"{CLOSEOUT_CODE}: could not read campaign {campaign_id!r}'s "
-                f"node population from {database_url!r}: {exc}"
+                f"planted roots from {database_url!r}: {exc}"
             ) from exc
     return tuple(row[0] for row in rows)
+
+
+class _NoPostEndpoint:
+    """Satisfies :class:`SubtreeOracle`'s endpoint contract without ever
+    being posted to.
+
+    Close-out reuses :meth:`SubtreeOracle._root_of` -- the exact
+    ``parent_id`` walk the live evaluator's oracle takes from a node to its
+    root -- and never calls :class:`SubtreeOracle` itself, which would post
+    a target request to the null oracle's route.  This stand-in exists only
+    so :class:`SubtreeOracle`'s constructor, which requires a callable
+    ``post``, can be satisfied without composing a real endpoint.
+    """
+
+    def post(self, request: Any) -> Any:  # pragma: no cover - never reached
+        raise AssertionError(
+            f"{CLOSEOUT_CODE}: the root-resolution endpoint stand-in was "
+            "posted to; close-out only walks node.parent_id to a root and "
+            "never asks the null oracle's route"
+        )
+
+
+def _resolve_root(
+    oracle: SubtreeOracle, node_id: str, *, campaign: str, roots: frozenset[str]
+) -> str:
+    """One evaluated node's root, found via ``oracle``'s own walk and
+    checked against the campaign's own planted roots.
+
+    Reuses :meth:`SubtreeOracle._root_of` -- the same ``parent_id`` walk
+    evaluation applies -- rather than restating it.  Refuses with
+    :class:`CloseoutError`, naming the node, in two cases this module adds
+    on top of the oracle's own: the walk reaches a root this campaign did
+    not plant (it has, in effect, left the campaign -- a corrupted
+    ``parent_id`` spine being the only way there), or the oracle's own walk
+    itself cannot reach a root at all (an absent row or a parent-chain
+    cycle, its own :class:`~orchestrator._oracle.OracleTargetError`,
+    translated into this module's vocabulary).
+    """
+    try:
+        root_id = oracle._root_of(node_id)
+    except OracleTargetError as exc:
+        raise CloseoutError(
+            f"{CLOSEOUT_CODE}: node {node_id!r} of campaign {campaign!r} "
+            f"could not be walked to a root: {exc}"
+        ) from exc
+    if root_id not in roots:
+        raise CloseoutError(
+            f"{CLOSEOUT_CODE}: node {node_id!r} of campaign {campaign!r} "
+            f"walks to root {root_id!r}, which this campaign does not "
+            "plant; a node's root must be one of the campaign's own, and "
+            "a walk that leaves the campaign names no root the sidecar "
+            "could ever hold an assignment for"
+        )
+    return root_id
 
 
 def _read_evaluated_nodes(
@@ -326,10 +407,11 @@ def close_out(
     the scorer's verb.
 
     Refuses with :class:`CloseoutError` for an unknown campaign or an
-    evaluated node the sidecar holds no entry for; propagates every
-    collaborator's own refusal unwrapped (an unreadable sidecar, a
-    one-sided plant with no real or no null node, a broken store) -- each
-    already opens with its own greppable code word.
+    evaluated node whose root cannot be resolved -- its walk leaves the
+    campaign, cycles, or ends at a root the sidecar holds no entry for;
+    propagates every collaborator's own refusal unwrapped (an unreadable
+    sidecar, a one-sided plant with no real or no null node, a broken
+    store) -- each already opens with its own greppable code word.
     """
     record = discovery.CampaignRecords(database_url).get(campaign_id)
     if record is None:
@@ -340,24 +422,32 @@ def close_out(
         )
     campaign = record.campaign_id
 
-    population = _read_campaign_node_ids(database_url, campaign)
+    root_ids = _read_campaign_root_ids(database_url, campaign)
+    roots = frozenset(root_ids)
     evaluated = _read_evaluated_nodes(database_url, campaign)
+    root_oracle = SubtreeOracle(_NoPostEndpoint(), database_url=database_url)
 
     null_scores: list[float] = []
     real_scores: list[float] = []
     discoveries: list[str] = []
+    discovery_roots: list[str] = []
     for node in evaluated:
-        entry = sidecar.assignment(node.node_id)
+        root_id = _resolve_root(
+            root_oracle, node.node_id, campaign=campaign, roots=roots
+        )
+        entry = sidecar.assignment(root_id)
         if entry is None:
             raise CloseoutError(
-                f"{CLOSEOUT_CODE}: the sidecar holds no entry for evaluated "
-                f"node {node.node_id!r} of campaign {campaign!r}: its null "
-                "status is unknown, and the split the KS guard compares "
-                "cannot count a node on either side without one"
+                f"{CLOSEOUT_CODE}: the sidecar holds no entry for node "
+                f"{node.node_id!r}'s root {root_id!r} of campaign "
+                f"{campaign!r}: its null status is unknown, and the split "
+                "the KS guard compares cannot count a node on either side "
+                "without one"
             )
         (null_scores if entry.is_null else real_scores).append(node.ic_mean)
         if node.ic_tstat >= DISCOVERY_TSTAT:
             discoveries.append(node.node_id)
+            discovery_roots.append(root_id)
 
     # 1. The KS guard, over the in-sample scores split above -- only the
     #    two lists reach it, never a node id.
@@ -367,9 +457,10 @@ def close_out(
     # 2. The verdict, read back off the p-value the guard just persisted.
     verdict = nulloracle.CampaignVerdict(database_url).void_if_detectable(campaign)
 
-    # 3. The calibration figures, over the planted population and the
-    #    campaign's discoveries.
-    figures = scorer.calibration_figures(population=population, picks=discoveries)
+    # 3. The calibration figures, over the planted roots and the
+    #    campaign's discoveries, each mapped to its root -- the scorer's
+    #    own verb collapses a subtree's repeated discoveries into one pick.
+    figures = scorer.calibration_figures(population=root_ids, picks=discovery_roots)
     # 4. FDR_deploy, reweighted and persisted from that pair.
     fdr_value = scoring.FdrDeployStore(database_url).persist(campaign, figures)
     # 5. The pair itself, persisted for the dashboard's trend.
@@ -381,13 +472,25 @@ def close_out(
     if record.campaign_type == discovery.TYPE_D_CAMPAIGN_TYPE:
         # 6. Type-B depth past the flip, Type-D campaigns only -- each
         #    evaluated node's depth and its branch's flip, joined by the
-        #    oracle's own resolution rather than restated here.
+        #    oracle's own resolution rather than restated here.  Resolved
+        #    by the node's own id (never the root): a Type-D node's
+        #    branch -- and the flip it may sit past -- is a fact of depths
+        #    the oracle reads straight off the tree, not of the sidecar,
+        #    so it is not refused for a child the way the sidecar's own
+        #    per-root entries would be.
         oracle = nulloracle.TypeDOracle(database_url)
         explored = [
             oracle.resolve_request(node.node_id, (0.0,), permute=lambda series: series)
             for node in evaluated
         ]
-        accounting = scoring.account_errors(discoveries, explored=explored, scorer=scorer)
+        # commitment_error_rate is discarded below (Type-A is not this
+        # campaign's figure to report here) -- picks are handed as the
+        # same root-mapped discoveries calibration_figures took, so the
+        # rate the scorer computes along the way never asks the sidecar
+        # about a child's own id either.
+        accounting = scoring.account_errors(
+            discovery_roots, explored=explored, scorer=scorer
+        )
         type_b = accounting.depth_past_flip_errors
         ops.TypeBDepths(database_url).record(campaign, depth_past_flip_errors=type_b)
 
