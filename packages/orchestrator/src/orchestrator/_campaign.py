@@ -423,7 +423,14 @@ def _record_cache_rate(
     ``stop_reason``.
     """
     try:
-        if records:
+        # Only depth-role records carry a depth cache rate. A campaign whose
+        # children all sat in the root tier (depth <= ROOT_TIER_MAX_DEPTH)
+        # holds root records only, and handing those over is "a measurement
+        # of no calls", refused, not a rate (smoke campaign 4bf280b8).
+        if any(
+            getattr(record, "role", _DEPTH_AUTHORING_ROLE) == _DEPTH_AUTHORING_ROLE
+            for record in records
+        ):
             providers.record_campaign_cache_rate(
                 campaign_id, records, database_url=database_url
             )

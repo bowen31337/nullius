@@ -508,3 +508,24 @@ def test_a_cache_rate_store_failure_is_logged_and_never_fails_the_campaign(
         and result.campaign_id in record.message
         for record in caplog.records
     )
+
+
+def test_root_tier_only_records_are_skipped_not_refused(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, tmp_path: Path
+) -> None:
+    """Smoke campaign 4bf280b8: every child sat in the root tier, so the
+    round loop's records were all role "root". Handing them to
+    record_campaign_cache_rate raised "a measurement of no calls"; with no
+    depth-role record and no depth-role usage row the record is skipped."""
+    from orchestrator import _campaign
+
+    def _refuse(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("root-only records must not reach the depth record")
+
+    monkeypatch.setattr(_campaign.providers, "record_campaign_cache_rate", _refuse)
+    url = f"sqlite:///{tmp_path / 'cache-rate.db'}"
+    records = [SimpleNamespace(role=providers.role_for_depth(0)) for _ in range(3)]
+    with caplog.at_level(logging.INFO, logger=_campaign._logger.name):
+        _campaign._record_cache_rate("4bf280b8-0412-43c6-accb-3829f1923ad5", records, database_url=url)
+    assert "skipping" in caplog.text
+    assert "could not be measured" not in caplog.text
