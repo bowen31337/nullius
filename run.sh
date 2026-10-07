@@ -32,6 +32,11 @@
 #   ./run.sh bootstrap-fill [args] python -m bootstrap.fill
 #   ./run.sh dream          [args] python -m orchestrator.dream
 #   ./run.sh triage         [args] python -m tripwires.triage
+#   ./run.sh vst-fidelity   [args] python -m router.vst_fidelity: report the
+#                               VST fidelity distributions (gap_bps, costs,
+#                               latency, fill ratio, rounding, funding) —
+#                               reads the VST store only, same default as
+#                               the vst-* verbs above
 #   ./run.sh llm-usage      [args] python -m providers.usage: report spend
 #   ./run.sh migrate             python -m app.migrate: apply every
 #                               migrations/versions/0*.py file in chain order
@@ -259,6 +264,18 @@ case "${cmd}" in
       llm-usage)      module="providers.usage" ;;
     esac
     exec uv run --all-packages python -m "${module}" "$@"
+    ;;
+
+  vst-fidelity)
+    # Feature 6 of additions_spec_vst_fidelity.xml: reports the fidelity
+    # distributions feature 5 already reconciled. Read-only — no op run,
+    # unlike vst/vst-rebalance/vst-flatten/vst-alert/vst-heartbeat above —
+    # and it defaults DATABASE_URL to the VST store, not the research
+    # store the no-secret block above shares.
+    mkdir -p "$HOME/.local/share/nullius"
+    export DATABASE_URL="${DATABASE_URL:-sqlite:///$HOME/.local/share/nullius/vst.db}"
+    cd "${SCRIPT_DIR}"
+    exec uv run --all-packages python -m router.vst_fidelity "$@"
     ;;
 
   lake-backfill|lake-seal)
