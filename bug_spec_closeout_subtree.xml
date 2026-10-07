@@ -1,0 +1,48 @@
+<bug_spec>
+  <!-- CLOSE-1. Found 2026-10-08 by smoke campaign 4bf280b8, a Type-R
+       campaign with 4 roots, 2 rounds and 6 nodes, all scored, run from a
+       worktree pinned at a62c71e. It is the first campaign whose depth-1
+       children scored. Its automatic close-out refused, and the campaign
+       exited 1. Spend: $0.80 (8 Opus calls). Core shape, explicit
+       touches_files. -->
+
+  <bug index="1" shape="core" severity="critical"
+       touches_files="packages/orchestrator/src/orchestrator/closeout.py,packages/orchestrator/tests/test_closeout_subtree.py">
+    <title>Close-out asks the null sidecar about child nodes by their own id, but only roots are sealed, so no campaign that refines past its roots can ever be closed out or calibrated</title>
+    <symptoms>
+      `./run.sh campaign` ran close-out after campaign 4bf280b8 and got: "closeout: the sidecar holds no entry for evaluated node '13fa38b9-…' of campaign '4bf280b8-…': its null status is unknown". Node 13fa38b9 is a depth-1 child.
+
+      The sidecar seals one assignment per root. A subtree inherits its root's Type-R assignment: orchestrator/_oracle.py, the SubtreeOracle docstring, and _root_of, which walks node.parent_id. close_out (closeout.py ~line 345) instead does three things by the node's own id:
+      - It calls sidecar.assignment(node.node_id) for every evaluated node, so the first child is refused.
+      - It passes population=_read_campaign_node_ids(...), every node including children, and the campaign's discoveries to scorer.calibration_figures. The scorer refuses an unlabelled node too (scoring/_scorer.py, "an unlabelled pick is refused").
+      - For Type-D, it calls TypeDOracle.resolve_request(node.node_id, …) for every evaluated node.
+
+      So FDR_deploy, the KS guard, sensitivity/specificity and the discovery rate are never measured for a real campaign with depth greater than 0. M1–M3 need them.
+    </symptoms>
+    <reproduction_steps>
+      Seed a campaign with two roots (one real, one null, both sealed in the sidecar) and one evaluated child of each, then call close_out. It raises CloseoutError on the first child.
+    </reproduction_steps>
+    <expected>
+      - Close-out resolves each node's null label through its root, using the same rule evaluation uses: walk node.parent_id to the row whose parent_id is NULL, inside the campaign. Reuse orchestrator._oracle's walk; do not restate it. A node whose walk leaves the campaign, cycles, or ends at a root the sidecar lacks is still refused, with a CloseoutError that names the node and its root.
+      - KS split: every evaluated node, root or child, contributes its ic_mean to the side its root's label puts it on.
+      - Calibration: the population handed to scorer.calibration_figures is the campaign's planted roots, which the sidecar holds. Each discovery is mapped to its root, so a child discovery of a null root is a null pick. Picks are deduplicated per root, so two discoveries in one subtree count once. This rule is stated in the module docstring.
+      - Type-D: Type-B depth accounting still resolves each evaluated node through TypeDOracle by its own depth (the flip is decided by the node's own depth). It must not be refused for a child; if resolve_request needs the root id, pass the root id with the node's own depth, as SubtreeOracle does.
+      - The discovery-rate and ledger counts are unchanged: they count every evaluated node or trial.
+      - No null label leaves this process: only the score lists and figures are persisted, as before.
+      - test_closeout_subtree.py covers:
+        - a two-root campaign with children closes out, and its KS split counts children on their root's side
+        - a child discovery under a null root counts as a null pick
+        - two discoveries in one subtree count once
+        - a child whose root is missing from the sidecar is refused, naming the root
+        - a Type-D campaign with a child past the flip records Type-B
+        - a roots-only campaign behaves exactly as before
+        It passes under pytest-xdist.
+    </expected>
+    <actual>Root cause: closeout.py looks up null status by each node's own id. The design seals and inherits it per root, as orchestrator._oracle applies during evaluation.</actual>
+    <constraints>
+      The sidecar, the scorer and nulloracle are unchanged; only close-out's mapping from nodes to roots changes
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
