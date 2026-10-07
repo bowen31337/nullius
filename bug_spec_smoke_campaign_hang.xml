@@ -1,0 +1,111 @@
+<bug_spec>
+  <!-- SMOKE-1. Found 2026-10-07 running the first real smoke campaign
+       (run.sh campaign, Type-R, 4 workspaces, 2 rounds, width 2)
+       against the operator's sealed snapshot (40 symbols x 735 days = 26,268
+       bars partitions). The campaign ran 30+ minutes at 100% CPU with no
+       network socket and no output, then a timing probe segfaulted (exit 139).
+       No model call was ever made. faulthandler stacks (below) show a
+       composition recursion that re-reads the whole snapshot at every level.
+       Core shape, explicit touches_files. -->
+
+  <bug index="1" shape="core" severity="critical"
+       touches_files="packages/policy-runtime/src/policy_runtime/__init__.py,packages/policy-runtime/tests/test_composition_no_recursion.py">
+    <title>create_app() recurses into itself through policy-runtime's campaign-tree builder, so composition never finishes once live evaluation is configured</title>
+    <symptoms>
+      The registered builder policy_runtime.build_campaign_tree calls _resolve_tree() at build time. _resolve_tree imports app.module_loader.create_app and calls create_app().get("artifacts"), so every composition starts a nested composition, which runs build_campaign_tree again. The recursion only ends when Python raises RecursionError, which _resolve_tree's broad try swallows into None. Each level runs every other builder too, so with NULLIUS_EVALUATION_CONFIG set, every level runs orchestrator.build_live_evaluator, which reads the full snapshot (33.6 s per load on a 26,268-partition snapshot). Observed stack, repeating: module_loader.create_app:500, then policy_runtime.build_campaign_tree:1365, then _resolve_tree:1392, then create_app, and so on down to orchestrator.build_live_evaluator:307, load_evaluation_context:411, _context._closes:975, _read_part:1031 and pyarrow read_table. The smoke campaign hung for 30+ minutes, and a direct create_app() probe segfaulted (exit 139). The builder's own docstring states "Construction performs no I/O: the store is resolved on first use", which the code contradicts.
+    </symptoms>
+    <reproduction_steps>
+      With NULLIUS_EVALUATION_CONFIG naming a context over a large sealed snapshot, call app.module_loader.create_app(). It does not return within 10 minutes. With faulthandler.dump_traceback_later, the stack shows create_app nested inside build_campaign_tree repeatedly.
+    </reproduction_steps>
+    <expected>
+      - build_campaign_tree performs no composition and no I/O when it builds. It returns a lazy carrier that resolves the artifact store and reads the tree on first use. The carrier answers None-equivalently, per its current contract, when no store is configured or no campaign is committed.
+      - No registered builder anywhere calls create_app() while being built. The test asserts this for policy-runtime by counting create_app invocations during one composition: exactly 1.
+      - Callers of the "campaign-tree" component (replay's resolve_tree and any other reader) get the same tree as before on first use. Their existing tests pass unchanged.
+      - tests (test_composition_no_recursion.py) cover:
+        - one create_app() runs build_campaign_tree once and never re-enters create_app (counted by a wrapper)
+        - composition completes with a stub live-evaluator builder that sleeps, proving no nested composition multiplies its cost
+        - the lazy carrier resolves the tree from a tmp artifact store on first use
+        - no store gives the documented absent answer
+        They pass under pytest-xdist.
+    </expected>
+    <actual>Root cause: packages/policy-runtime/src/policy_runtime/__init__.py build_campaign_tree returns _resolve_tree(), which calls create_app() inside the factory's build loop. It "works" only because RecursionError is swallowed, which hid the cost until a builder with real I/O joined the composition.</actual>
+    <constraints>
+      Component name and the carrier's public surface stay compatible with replay's resolve_tree and the existing policy-runtime tests
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="high"
+       touches_files="packages/orchestrator/src/orchestrator/_context.py,packages/orchestrator/tests/test_context_lazy_closes.py">
+    <title>load_evaluation_context reads every bars partition of the snapshot eagerly (33.6 s per composition), and LiveEvaluator recomposes on every node</title>
+    <symptoms>
+      load_evaluation_context (_context.py:411) calls _closes (:938/:975), which opens every bars/symbol=*/date=* partition with pyarrow at load time: 33.6 s alone on a 40-symbol x 735-day snapshot. build_live_evaluator calls it on every create_app(), and LiveEvaluator.evaluate resolves its target route and ledger through a fresh create_app() on every node evaluation. Even without bug 1, each evaluated node would pay at least 33 s of snapshot reads before its sandbox ran.
+    </symptoms>
+    <reproduction_steps>
+      Time `from orchestrator import load_evaluation_context; load_evaluation_context()` with NULLIUS_EVALUATION_CONFIG naming the operator's snapshot: 33.6 s.
+    </reproduction_steps>
+    <expected>
+      - Loading an evaluation context validates the config and the snapshot manifest without reading the bars Parquet files. Load time no longer grows with the partition count (asserted in the test by counting pyarrow reads: 0 at load).
+      - Closes are read on first use, only for the symbols and dates the request needs (evaluation_dates plus horizon), and memoized per process, keyed by (snapshot_hash, symbol, date). A second evaluation over the same snapshot in the same process reads no partition twice.
+      - Validation that today happens through the eager read (non-positive or non-finite closes, duplicate rows per symbol and day, evaluation_dates outside coverage) still raises the same EvaluationConfigError text. It raises at first use for the partitions concerned; the coverage check uses the manifest's partition listing at load.
+      - tests (test_context_lazy_closes.py) cover:
+        - zero Parquet reads at load
+        - reads limited to the requested symbols and dates
+        - memoized second access
+        - each refusal is still raised
+        They pass under pytest-xdist with tmp snapshots.
+    </expected>
+    <actual>Root cause: _context.load_evaluation_context materializes all closes eagerly, and the composed builder calls it on every composition.</actual>
+    <constraints>
+      The EvaluationContext public fields and the existing orchestrator tests stay unchanged
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="3" shape="core" severity="low"
+       touches_files="deploy/campaign/authoring-config.example.json,deploy/campaign/evaluation-config.example.json,tests/test_campaign_examples_load.py">
+    <title>The shipped campaign config examples do not load: both carry a `_comment` key their loaders refuse</title>
+    <symptoms>
+      deploy/campaign/evaluation-config.example.json and authoring-config.example.json each start with a "_comment" key. orchestrator.load_evaluation_context refuses it ("'_comment' is not a key of the evaluation configuration"), and providers.load_authoring_config refuses it too ("holds ['_comment'], which an authoring config has no key for"). An operator copying the examples, as .env.campaign.tpl.example instructs, gets a refusal on the first run.
+    </symptoms>
+    <reproduction_steps>
+      Copy either example to the path NULLIUS_EVALUATION_CONFIG / NULLIUS_AUTHORING_CONFIG names and load it: refused.
+    </reproduction_steps>
+    <expected>
+      - Both examples are valid input to their loaders as shipped, with paths that are plainly placeholders. The explanatory text moves out of the JSON (into a sibling README line or a JSON-compatible documented field only if the loader defines one; it must not add a loader key).
+      - The authoring example uses the current models and effort, not temperature, for 5.x pins ("temperature": null plus "effort": "high").
+      - tests/test_campaign_examples_load.py loads both examples through the real loaders, with the evaluation example's paths redirected to a tmp sealed snapshot, and asserts they load. It passes under pytest-xdist.
+    </expected>
+    <actual>Root cause: the examples were written before the loaders adopted their closed-key rule.</actual>
+    <constraints>
+      No loader change; only the examples and the new test
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="4" shape="core" severity="low"
+       touches_files="packages/providers/src/providers/_authoring.py,packages/providers/tests/test_authoring_config.py">
+    <title>An authoring config that omits temperature is refused for 5.x pins, because the 0.7 default is applied and then rejected</title>
+    <symptoms>
+      With "temperature" omitted, load_authoring_config applies DEFAULT_TEMPERATURE (0.7) and then raises UnsupportedSamplingError for any pin whose model rejects sampling (claude-opus-5-5, claude-sonnet-5-5): "the config states 0.7". The config never stated it. Only an explicit "temperature": null loads.
+    </symptoms>
+    <reproduction_steps>
+      An authoring config with root_tier and depth pins on claude-opus-5-5 / claude-sonnet-5-5, "effort": "high" and no temperature key: load_authoring_config raises unsupported_sampling.
+    </reproduction_steps>
+    <expected>
+      - An omitted temperature means "the model's own default": the default is applied only when every pin in the config accepts temperature, and is otherwise None. An explicitly stated temperature for a pin that rejects it is still refused (unchanged).
+      - The refusal message never claims the config stated a value it did not state.
+      - test_authoring_config.py gains tests for:
+        - an omitted temperature with 5.x pins loads with temperature None
+        - an omitted temperature with haiku-only pins loads with 0.7
+        - an explicit 0.7 with a 5.x pin is still refused
+    </expected>
+    <actual>Root cause: _authoring.py applies DEFAULT_TEMPERATURE before the sampling check, so the check cannot tell a stated value from a defaulted one.</actual>
+    <constraints>
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
