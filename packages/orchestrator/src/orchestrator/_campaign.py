@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import sqlite3
 import uuid
 from collections.abc import Callable
@@ -106,6 +107,14 @@ STOP_ROUND_CAP = "round_cap"
 #: tolerance for a reclaimed spot instance is this module's own policy, the
 #: same way ``discovery.workers.run_batch`` takes no default ``width``.
 _RETRIES = 2
+
+_logger = logging.getLogger(__name__)
+
+#: The authoring role :func:`providers.record_campaign_cache_rate` measures —
+#: derived from :func:`providers.role_for_depth` rather than restated as the
+#: literal ``"depth"``, because the role vocabulary itself
+#: (``providers.AUTHORING_ROLES``) is not part of providers' public surface.
+_DEPTH_AUTHORING_ROLE = providers.role_for_depth(providers.ROOT_TIER_MAX_DEPTH + 1)
 
 
 @dataclass(frozen=True)
@@ -369,6 +378,78 @@ def _existing_nodes(database_url: str, campaign_id: str) -> tuple[_ExistingNode,
     return tuple(nodes)
 
 
+def _record_cache_rate(
+    campaign_id: str, records: list[Any], *, database_url: str
+) -> None:
+    """Measure and persist the campaign's depth-role cache hit rate, best-effort.
+
+    ``records`` is the round loop's own collected
+    :class:`~orchestrator._worker.ChildOutcome` records (depth and root
+    records both, as :func:`providers.record_campaign_cache_rate` filters to
+    the depth role itself) — when it holds anything, this is that store's
+    call, unchanged, because a record already sums "every call the authoring
+    made" (:attr:`providers.AuthoringRecord.usage`'s own docstring), retries
+    included, so a successful authoring's record is already the campaign's
+    whole depth-role spend.
+
+    **What a successful record cannot carry is an authoring that never
+    produced one.** ``NodeWorker`` answers ``record=None`` for a call
+    signal_agent ultimately refused (every retry's answer failed the
+    author's own gate) — but the call itself still reached the provider and
+    was billed: :class:`~providers.UsageRecordingProvider` writes that row
+    the moment the completion comes back, before signal_agent ever looks at
+    what it said. So a campaign whose depth-role calls were *all* refused
+    answers ``records == []`` here although ``provider_call_usage`` holds
+    real rows for every one of them — the bug this function exists to
+    close. When ``records`` is empty, this falls back to exactly those
+    rows (:class:`providers.UsageStore`, filtered to the depth role) and
+    measures the rate directly through :class:`providers.DepthCacheRates`
+    — the lower seam :func:`providers.record_campaign_cache_rate` itself
+    calls, since that door's own filter expects full
+    :class:`~providers.AuthoringRecord` values this fallback cannot
+    reconstruct (a usage row carries no ``sampling`` or ``pin`` triple).
+
+    A campaign with nothing to measure either way (every round stopped
+    before a depth call was ever placed, or the campaign never left its
+    roots) is skipped with one log line — the same fact
+    :func:`providers.record_campaign_cache_rate` would otherwise refuse
+    over as "a measurement of no calls" — rather than letting that refusal
+    reach the caller. Any other failure, reading the usage rows or
+    persisting the measured rate, is logged and swallowed: the rate is an
+    auxiliary figure for depth-model selection (§14.2), not a fact this
+    campaign's own result depends on, the same stance a store failure
+    already takes on the alert and fidelity-adjacent paths elsewhere in
+    this workspace — it never changes the campaign's exit code or
+    ``stop_reason``.
+    """
+    try:
+        if records:
+            providers.record_campaign_cache_rate(
+                campaign_id, records, database_url=database_url
+            )
+            return
+        usages = [
+            row
+            for row in providers.UsageStore(database_url).rows(campaign_id)
+            if row.role == _DEPTH_AUTHORING_ROLE
+        ]
+        if not usages:
+            _logger.info(
+                "campaign %s made no depth-role authoring calls; skipping "
+                "its cache hit rate record",
+                campaign_id,
+            )
+            return
+        providers.DepthCacheRates(database_url).measure(campaign_id, usages)
+    except Exception:
+        _logger.warning(
+            "campaign %s's cache hit rate could not be measured or "
+            "recorded; the campaign's own result stands unchanged",
+            campaign_id,
+            exc_info=True,
+        )
+
+
 # -- Root evaluation, the round loop and the finish: one helper, shared whole ----
 
 
@@ -417,9 +498,11 @@ def _continue_campaign(
     :func:`discovery.retry_interrupted` — until one of the four stop
     reasons fires (see :func:`run_campaign`'s docstring for which, and why).
     Finishes with :func:`discovery.finish_campaign` regardless of which one
-    fired, measures the depth tier's cache rate only when the loop produced
-    at least one depth-role authoring record, and answers the
-    :class:`CampaignResult` both entry points hand back.
+    fired, measures the depth tier's cache rate off the round loop's own
+    collected depth records or, when it collected none, this campaign's
+    ``provider_call_usage`` rows (:func:`_record_cache_rate` — best-effort,
+    never raised into this call), and answers the :class:`CampaignResult`
+    both entry points hand back.
     """
     for node_id, code, proposal in unevaluated_roots:
         evaluation = evaluator.evaluate(node_id, campaign_id, 0, code)
@@ -535,8 +618,7 @@ def _continue_campaign(
         stop_reason = STOP_ROUND_CAP
 
     manifest = discovery.finish_campaign(campaign_id, database_url=context.database_url)
-    if records:
-        providers.record_campaign_cache_rate(campaign_id, records, database_url=context.database_url)
+    _record_cache_rate(campaign_id, records, database_url=context.database_url)
 
     result = CampaignResult(
         campaign_id=campaign_id,
@@ -598,11 +680,14 @@ def run_campaign(
     (:data:`STOP_TOKEN_BUDGET`), or the round cap
     (:data:`STOP_ROUND_CAP`, the ``for`` loop's own ``else``).  Finishes
     with :func:`discovery.finish_campaign` regardless of which one fired,
-    and measures the depth tier's cache rate
-    (:func:`providers.record_campaign_cache_rate`) only when the round loop
-    produced at least one depth-role authoring record — a campaign that
-    stopped at the roots has none, and that store refuses a measurement of
-    no calls.
+    and measures the depth tier's cache rate off the round loop's own
+    collected depth records, falling back to this campaign's
+    ``provider_call_usage`` rows when the loop collected none
+    (:func:`_record_cache_rate`) — a campaign with nothing to measure
+    either way (one that stopped at the roots, say) is skipped with one log
+    line, and a cache-rate measurement or persistence failure is logged
+    rather than raised: neither changes this call's own result or
+    ``stop_reason``.
 
     Reads no node's null status, the sidecar key or an ``is_null`` value
     anywhere in its body: the only thing this function does with
