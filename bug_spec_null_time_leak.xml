@@ -1,0 +1,71 @@
+<bug_spec>
+  <!-- NULL-2. Found 2026-10-08 by the first full close-out of a real campaign:
+       90d95c6d, Type-R, 12 roots with φ≈0.167 (2 null roots), 6 rounds,
+       $2.46. The verdict was VOID: KS p=0.007, the minimum possible for 3
+       null vs 10 real scores, because every null IC lay above every real IC.
+       Both discoveries were in one null subtree, a null root at t=2.66 and
+       its child at t=2.72, so sensitivity 0, specificity 0.5 and
+       FDR_deploy 1.0.
+
+       A deterministic experiment ran the live block_permute_cross_section
+       over 300 seeds on the real snapshot 2026-10-06T00:00:00Z_155955,
+       using the campaign's own 92 evaluation dates, horizon 1 and
+       block_days 20:
+         signal         real t   null t mean ± sd   P(|t|>1.96) under null
+         20d momentum   -0.23    +1.56 ± 1.32       0.337
+         5d reversal     0.92    +0.02 ± 0.92       0.010
+         20d vol        -0.97    +0.10 ± 0.34       0.000
+       A valid null gives t ≈ N(0,1) and P ≈ 0.05. Script: see
+       reproduction_steps. Core shape, explicit touches_files. -->
+
+  <bug index="1" shape="core" severity="critical"
+       touches_files="packages/nulloracle/src/nulloracle/blockpermute.py,packages/nulloracle/tests/test_null_permutation_cross_section.py,packages/nulloracle/tests/test_null_time_leak.py,packages/orchestrator/tests/test_snapshot_targets.py,packages/api/tests/test_target_route.py">
+    <title>The null permutation shuffles each symbol's returns in time, so a null target can be a return already inside the signal's own lookback, and planted nulls score as discoveries</title>
+    <symptoms>
+      nulloracle.blockpermute.block_permute_cross_section permutes each symbol's own forward-return series in contiguous 20-day blocks, using one seed for all symbols. For symbols present throughout, that is a whole-row block swap.
+
+      With 92 dates there are about 5 blocks. Whenever a block lands one block earlier, the "forward return" served on date d is a return from up to 20 days before d. Any signal whose lookback covers those days, such as 20-day momentum, already contains that return, so it correlates with its own null target. That is look-ahead in reverse.
+
+      Measured on the real snapshot, 20-day momentum scores |t|>1.96 against the null on 34% of seeds, with mean t +1.56. Other signals get an under-dispersed null (20-day vol: t sd 0.34), which makes nulls distinguishable from reals. The KS guard then voids the campaign, and the planted nulls become the campaign's top discoveries. Every calibration figure (FDR_deploy, sensitivity, specificity, KS) is invalid until this is fixed.
+    </symptoms>
+    <reproduction_steps>
+      Build a {date: {symbol: forward 1-day return}} panel over 92 consecutive dates from a trending synthetic market. Then:
+      1. Compute a 20-day momentum score per date from the same prices.
+      2. For seeds 1..200, compute the Spearman IC t-stat of the scores against block_permute_cross_section(panel, seed=s, block_days=20).
+      The mean t is far from 0, and P(|t|>1.96) is far above 0.05.
+      On the real snapshot, see the table in this spec's header comment.
+    </reproduction_steps>
+    <expected>
+      - block_permute_cross_section keeps its name, signature, determinism under (seed, block_days), and refusals. It becomes a cross-sectional block shuffle.
+      - Each date d's permuted row is a derangement of d's own forward returns over d's own cross-section. Every value comes from date d, so no value from any other date can reach d.
+      - The symbol mapping is drawn once per contiguous block of block_days dates from the seed and the block index, so each assigned series keeps its within-block autocorrelation and volatility clustering (PRD §4.1, §7.2). Within a block, dates with an identical cross-section use the identical mapping.
+      - Where membership changes inside a block, a derangement is re-drawn deterministically for that date's cross-section.
+      - The output's membership equals the input's on every date, so gate_targets still accepts it.
+      - A date with fewer than two symbols is passed through unchanged, since it cannot be deranged. The module docstring states this rule and explains why time-block shuffles leak.
+      - block_permute (the bare-series function) is unchanged.
+      - The response shape for null and real nodes stays identical. Nothing outside the scorer learns null status.
+      - test_null_time_leak.py covers:
+        - On a seeded synthetic trending panel (92 dates, 40 symbols, block_days 20) over 200 seeds:
+          - a 20-day momentum signal has a null t mean within ±0.35 and P(|t|>1.96) ≤ 0.09
+          - a 20-day volatility signal has a null t sd within [0.7, 1.3]
+          - a 5-day reversal signal behaves likewise
+        - Every permuted value on date d is one of d's own values; no symbol keeps its own value.
+        - Determinism under the seed.
+        - The mapping is constant within a block whose membership is constant.
+        - Membership changes are handled: a mid-window listing and a delisting.
+        - A one-symbol date passes through unchanged.
+        It passes under pytest-xdist and runs in under 20 s.
+      - The existing tests that pin the time-shuffle's values are updated to the new mechanism, and their intent is kept:
+        - test_null_permutation_cross_section.py: "always-present symbols equal the old algorithm" becomes "equal the documented cross-sectional mapping"
+        - test_snapshot_targets.py and test_target_route.py, if they pin permuted values
+        Membership, determinism and refusal tests stay as they are.
+      - The nulloracle, orchestrator and api member suites pass, and so does the root tests/ suite, including tests/e2e/test_planted_null_ks_guard.py.
+    </expected>
+    <actual>Root cause: the permutation moves values across time within each symbol, so a null target can come from inside the signal's information set. A cross-sectional derangement within each date cannot.</actual>
+    <constraints>
+      The sidecar format, perm_seed/block_days storage and all callers are unchanged; only the panel function's mechanism changes
+      No file outside the five listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
