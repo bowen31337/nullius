@@ -638,16 +638,19 @@ class LLMSignalAuthor:
             pin=pin,
             # A stated temperature still rolls all four of AgentSampling's
             # settings, unchanged.  A None temperature means no sampling knob
-            # was turned at all — AgentSampling cannot represent that (every
-            # field is a number) — so the record carries exactly what was
-            # actually sent instead: the configured effort, or nothing.
+            # was turned at all, which the no-sampling extension gives
+            # AgentSampling a way to say honestly: temperature and top_p null
+            # (not sent), thinking "adaptive" (the 5.x family's reasoning is
+            # not a flag the caller turns on or off), and effort carried when
+            # the config named one.
             sampling=(
                 providers.AgentSampling(temperature=float(self._config.temperature))
                 if self._config.temperature is not None
-                else (
-                    {"effort": self._config.effort}
-                    if self._config.effort is not None
-                    else {}
+                else providers.AgentSampling(
+                    temperature=None,
+                    top_p=None,
+                    thinking="adaptive",
+                    effort=self._config.effort,
                 )
             ),
             usage=providers.Usage(

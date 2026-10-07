@@ -251,15 +251,23 @@ def _answer(theme_root: str) -> str:
     )
 
 
-ROOT_PIN = providers.ModelPin("deepseek", "deepseek-v4-flash", "20260910")
-DEPTH_PIN = providers.ModelPin("anthropic", "claude-haiku-4-5", "20260401")
+#: The current real configuration (bug_spec_effort_wiring.xml): both pins are
+#: the Anthropic 5.x family, whose vendor rejects ``temperature`` outright and
+#: reads ``output_config.effort`` instead — the no-sampling branch
+#: :mod:`signal_agent._llm_author` must record honestly.  A temperature-bearing
+#: config (what this module pinned before) never reaches that branch at all,
+#: which is exactly how the agent_sampling regression this module now guards
+#: against shipped uncaught.
+ROOT_PIN = providers.ModelPin("anthropic", "claude-opus-5-5", "20260901")
+DEPTH_PIN = providers.ModelPin("anthropic", "claude-sonnet-5-5", "20260901")
 POLICY_PIN = providers.ModelPin("self-hosted", "llama-3", "local")
 
 AUTHORING_CONFIG = providers.AuthoringConfig(
     root_tier=(ROOT_PIN,),
     depth=DEPTH_PIN,
     policy=POLICY_PIN,
-    temperature=0.2,
+    temperature=None,
+    effort="high",
     max_tokens=1024,
     max_input_tokens=200_000,
     max_output_tokens=200_000,
@@ -368,6 +376,20 @@ def _root_ic_means(database_url: str, campaign_id: str) -> list[float | None]:
     return [row[0] for row in rows]
 
 
+def _root_agent_samplings(database_url: str, campaign_id: str) -> list[dict[str, Any]]:
+    """Every root's ``agent_sampling`` column, parsed back from its JSON text."""
+    path = database_url.removeprefix("sqlite:///")
+    connection = sqlite3.connect(path)
+    try:
+        rows = connection.execute(
+            "SELECT agent_sampling FROM node WHERE campaign_id = ? AND depth = 0",
+            (campaign_id,),
+        ).fetchall()
+    finally:
+        connection.close()
+    return [json.loads(row[0]) for row in rows]
+
+
 # -- stdout discipline: no node id ever sits beside a null-status key --------
 
 
@@ -472,6 +494,24 @@ def test_real_data_campaign_scores_real_forward_returns(
         "no root carries a non-null ic_mean computed from the snapshot's "
         f"forward returns: {ic_means}"
     )
+
+    # bug_spec_effort_wiring.xml, bug 1's own regression guard: every root
+    # was authored with a config that turns no temperature knob at all
+    # (claude-opus-5-5 reads output_config.effort in its place), so each
+    # persisted agent_sampling must be the full record node persistence's
+    # contract requires — never the two-key {"effort": "high"} a prior
+    # version of signal_agent._llm_author built, which this same campaign
+    # used to refuse after its first root.
+    agent_samplings = _root_agent_samplings(test_database_url, FIXED_CAMPAIGN_ID)
+    assert len(agent_samplings) == WORKSPACES, agent_samplings
+    for sampling in agent_samplings:
+        assert sampling == {
+            "effort": "high",
+            "seed": 0,
+            "temperature": None,
+            "thinking": "adaptive",
+            "top_p": None,
+        }, agent_samplings
 
     closeout_lines = [line for line in lines if "sensitivity" in line and "specificity" in line]
     assert len(closeout_lines) == 1, lines

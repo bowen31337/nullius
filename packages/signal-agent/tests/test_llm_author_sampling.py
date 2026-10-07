@@ -11,7 +11,7 @@ build a request or a record — ``__call__`` (the child path), ``author_root``
 retry reaches it too) — and ``float(None)`` is a ``TypeError``.
 
 This suite drives all three call sites with a recording fake provider and
-pins the fix's three claims:
+pins the fix's claims:
 
 * a ``None`` config temperature never crashes, and the
   :class:`providers.Request` the author builds carries ``temperature == 0.0``
@@ -20,12 +20,20 @@ pins the fix's three claims:
   ``AgentSampling.temperature`` defaults to;
 * a stated temperature is passed through to the request unchanged, exactly as
   before this fix;
-* the :class:`~providers.AuthoringRecord` this author hands back records
-  exactly what a ``None`` temperature means it sent: an empty mapping with no
-  ``effort`` configured, or ``{"effort": <level>}`` with one — never an
-  :class:`~providers.AgentSampling`, which cannot represent "no temperature at
-  all" — and a stated temperature still records the ``AgentSampling`` it
-  always has.
+* the :class:`~providers.AuthoringRecord` this author hands back always
+  records a full :class:`~providers.AgentSampling` — node persistence's
+  contract (:func:`providers.require_agent_sampling`) refuses anything that
+  names fewer than the four required keys, so a two-key mapping like
+  ``{"effort": "high"}`` is not a smaller valid record, it is a record
+  persistence cannot accept at all (the regression this suite now guards: a
+  real campaign on a no-sampling pin stopped after its first root because the
+  record built here carried only ``effort``).  A ``None`` config temperature
+  means the model was sent no ``temperature`` and no ``top_p`` at all — the
+  no-sampling extension's honest reading of that absence is ``None`` for
+  both, ``"adaptive"`` for ``thinking`` (the 5.x family's reasoning is not a
+  flag the caller turns on or off), and ``effort`` carried when the config
+  named one; a stated temperature still records the ``AgentSampling`` it
+  always has, with ``thinking`` at its ordinary ``False`` default.
 
 No network, no credential, no database: the provider is the suite's own
 ``FakeProvider`` fake, borrowed from :mod:`test_llm_author` along with its
@@ -34,7 +42,7 @@ other fixtures, the same convention :mod:`test_llm_author_root` uses.
 
 from __future__ import annotations
 
-from providers import AgentSampling
+from providers import AgentSampling, require_agent_sampling
 
 from test_llm_author import (  # isort: skip
     CONFORMING_ANSWER,
@@ -65,9 +73,18 @@ def test_call_with_temperature_none_does_not_crash_and_states_no_temperature() -
     # represented by the dataclass's own "no knob turned" default, 0.0 — never
     # float(None).
     assert provider.requests[0].temperature == 0.0
-    # Nothing was sent, so nothing is recorded: not an AgentSampling (which
-    # cannot say "no temperature at all"), and no effort was configured.
-    assert result.record.sampling == {}
+    # No temperature or top_p was sent, thinking is adaptive (the 5.x
+    # family), and no effort was configured — the full four-plus-effort
+    # record node persistence's contract requires, never a bare mapping.
+    assert result.record.sampling == AgentSampling(
+        temperature=None, top_p=None, thinking="adaptive"
+    )
+    assert require_agent_sampling(result.record.sampling).to_dict() == {
+        "temperature": None,
+        "top_p": None,
+        "thinking": "adaptive",
+        "seed": 0,
+    }
 
 
 def test_call_with_temperature_none_and_effort_records_effort_not_temperature() -> None:
@@ -77,8 +94,16 @@ def test_call_with_temperature_none_and_effort_records_effort_not_temperature() 
     )
     result = author(workspace())
     assert provider.requests[0].temperature == 0.0
-    assert result.record.sampling == {"effort": "high"}
-    assert "temperature" not in result.record.sampling
+    assert result.record.sampling == AgentSampling(
+        temperature=None, top_p=None, thinking="adaptive", effort="high"
+    )
+    assert require_agent_sampling(result.record.sampling).to_dict() == {
+        "temperature": None,
+        "top_p": None,
+        "thinking": "adaptive",
+        "seed": 0,
+        "effort": "high",
+    }
 
 
 def test_call_with_stated_temperature_is_passed_through_unchanged() -> None:
@@ -98,7 +123,9 @@ def test_author_root_with_temperature_none_does_not_crash() -> None:
     result = author.author_root(CAMPAIGN_ID, THEME_ROOT, root_id=ROOT_ID)
     assert result.code == CONFORMING_CODE
     assert provider.requests[0].temperature == 0.0
-    assert result.record.sampling == {}
+    assert result.record.sampling == AgentSampling(
+        temperature=None, top_p=None, thinking="adaptive"
+    )
 
 
 def test_author_root_with_stated_temperature_is_passed_through_unchanged() -> None:
@@ -131,7 +158,9 @@ def test_retry_with_temperature_none_does_not_crash_on_either_call() -> None:
     # first.
     assert provider.requests[0].temperature == 0.0
     assert provider.requests[1].temperature == 0.0
-    assert result.record.sampling == {"effort": "medium"}
+    assert result.record.sampling == AgentSampling(
+        temperature=None, top_p=None, thinking="adaptive", effort="medium"
+    )
 
 
 def test_retry_with_stated_temperature_records_agent_sampling() -> None:
