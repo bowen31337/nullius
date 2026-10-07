@@ -77,6 +77,7 @@ printing its message with no traceback.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import sqlite3
@@ -98,6 +99,7 @@ from ._oracle import OracleTargetError, SubtreeOracle
 
 __all__ = [
     "CLOSEOUT_CODE",
+    "CLOSEOUT_TRIAGE_TABLE",
     "CLOSEOUT_UNEVALUATED_CODE",
     "DATABASE_URL_ENV",
     "DISCOVERY_TSTAT",
@@ -105,6 +107,7 @@ __all__ = [
     "EXIT_OK",
     "EXIT_REFUSED",
     "EXIT_VOID",
+    "TRIAGE_MIN_SIDE",
     "CloseoutError",
     "CloseoutResult",
     "close_out",
@@ -149,6 +152,19 @@ EXIT_VOID = 3
 #: finished campaign's tree.
 NODE_TABLE = "node"
 
+#: The M1 triage figure's own table -- created here (``CREATE TABLE IF NOT
+#: EXISTS``, the contract every store in this workspace states), unlike
+#: ``node``: this one is close-out's own research row, not a tree table a
+#: live evaluation already owns. One row per campaign, refreshed on rerun.
+CLOSEOUT_TRIAGE_TABLE = "closeout_triage"
+
+#: The fewest nodes either side (planted-null or planted-real) must carry for
+#: the perturbation-stability AUC to mean anything -- a Mann-Whitney U needs
+#: at least two values a side to rank against the other side at all. Below
+#: this, ``triage_auc`` is ``None`` rather than the uninformative ``0.5`` a
+#: naive formula would divide its way to.
+TRIAGE_MIN_SIDE = 2
+
 
 class CloseoutError(Exception):
     """A refusal this module itself pronounces, by name.
@@ -180,6 +196,9 @@ class CloseoutResult:
     discoveries: int
     budget_charging_trials: int
     ledger_trials: int
+    triage_auc: float | None
+    triage_null_count: int
+    triage_real_count: int
 
     @property
     def is_void(self) -> bool:
@@ -191,7 +210,9 @@ class CloseoutResult:
 
         Never a node id beside a null label (PRD §4.2): every field here is
         a campaign-level aggregate -- a p-value, a status, two fractions, a
-        count -- and none of them is a node's own identity.
+        count -- and none of them is a node's own identity. The same holds
+        for the M1 triage figure: ``triage_auc`` and the two side counts are
+        the whole of it, never a node id or its label.
         """
         return {
             "campaign_id": self.campaign_id,
@@ -204,17 +225,28 @@ class CloseoutResult:
             "discoveries": self.discoveries,
             "budget_charging_trials": self.budget_charging_trials,
             "ledger_trials": self.ledger_trials,
+            "triage_auc": self.triage_auc,
+            "triage_null_count": self.triage_null_count,
+            "triage_real_count": self.triage_real_count,
         }
 
 
 @dataclass(frozen=True)
 class _EvaluatedNode:
     """One evaluated node's in-sample reading -- the bit this module reads
-    the sidecar for, and the score the KS guard and the discovery bar read."""
+    the sidecar for, and the score the KS guard and the discovery bar read.
+
+    ``perturb_stability`` is the lookback-jitter tripwire's own figure
+    (:mod:`orchestrator._tripwire_step`), written onto the node row by that
+    step and read here as ``None`` when that one probe never measured --
+    "not measured" is excluded from the triage AUC's sample, never treated
+    as a reading of zero stability.
+    """
 
     node_id: str
     ic_mean: float
     ic_tstat: float
+    perturb_stability: float | None
 
 
 def _sqlite_path(database_url: str) -> Path:
@@ -365,13 +397,13 @@ def _read_evaluated_nodes(
             )
         if _has_column(connection, NODE_TABLE, "fail_class"):
             query = (
-                f"SELECT id, fail_class, ic_mean, ic_tstat FROM {NODE_TABLE} "
-                "WHERE campaign_id = ?"
+                f"SELECT id, fail_class, ic_mean, ic_tstat, perturb_stability "
+                f"FROM {NODE_TABLE} WHERE campaign_id = ?"
             )
         else:
             query = (
-                f"SELECT id, 'ok', ic_mean, ic_tstat FROM {NODE_TABLE} "
-                "WHERE campaign_id = ?"
+                f"SELECT id, 'ok', ic_mean, ic_tstat, perturb_stability "
+                f"FROM {NODE_TABLE} WHERE campaign_id = ?"
             )
         try:
             rows = connection.execute(query, (campaign_id,)).fetchall()
@@ -381,7 +413,7 @@ def _read_evaluated_nodes(
                 f"evaluated nodes from {database_url!r}: {exc}"
             ) from exc
     evaluated: list[_EvaluatedNode] = []
-    for node_id, fail_class, ic_mean, ic_tstat in rows:
+    for node_id, fail_class, ic_mean, ic_tstat, perturb_stability in rows:
         # A NULL fail_class on a row with metrics is an evaluated node: the
         # root evaluation path writes metrics but no fail_class, and a row
         # with no recorded failure is one where nothing has failed. Dropping
@@ -389,9 +421,107 @@ def _read_evaluated_nodes(
         if fail_class not in (None, "ok") or ic_mean is None or ic_tstat is None:
             continue
         evaluated.append(
-            _EvaluatedNode(node_id=node_id, ic_mean=ic_mean, ic_tstat=ic_tstat)
+            _EvaluatedNode(
+                node_id=node_id,
+                ic_mean=ic_mean,
+                ic_tstat=ic_tstat,
+                perturb_stability=perturb_stability,
+            )
         )
     return tuple(evaluated)
+
+
+def _triage_auc(
+    null_stabilities: Sequence[float], real_stabilities: Sequence[float]
+) -> float | None:
+    """The M1 triage figure: the perturbation-stability AUC that separates
+    ``real_stabilities`` from ``null_stabilities``, real as the positive
+    class and a higher stability read as more real.
+
+    A Mann-Whitney U over the two samples, normalized to ``[0, 1]`` by
+    ``n_real * n_null`` -- the rank-sum form, so a tie between a null and a
+    real reading contributes half a win to each side rather than breaking
+    toward either (``ties give 0.5``, both for one tied pair and for a
+    sample that is nothing but ties). ``None`` when either side holds fewer
+    than :data:`TRIAGE_MIN_SIDE` nodes: with one reading on a side there is
+    nothing to rank it against, and the uninformative ``0.5`` a smaller
+    formula would divide its way to is not a measurement.
+    """
+    n_null = len(null_stabilities)
+    n_real = len(real_stabilities)
+    if n_null < TRIAGE_MIN_SIDE or n_real < TRIAGE_MIN_SIDE:
+        return None
+    labelled = sorted(
+        [(value, False) for value in null_stabilities]
+        + [(value, True) for value in real_stabilities]
+    )
+    total = len(labelled)
+    rank_sum_real = 0.0
+    index = 0
+    while index < total:
+        end = index + 1
+        while end < total and labelled[end][0] == labelled[index][0]:
+            end += 1
+        # Ranks are 1-indexed; a tied run of [index, end) shares the average
+        # of those ranks (the standard tie-handling for a rank-sum test).
+        average_rank = (index + 1 + end) / 2
+        for _value, is_real in labelled[index:end]:
+            if is_real:
+                rank_sum_real += average_rank
+        index = end
+    u_real = rank_sum_real - n_real * (n_real + 1) / 2
+    return u_real / (n_real * n_null)
+
+
+def _persist_triage(
+    database_url: str,
+    campaign_id: str,
+    *,
+    auc: float | None,
+    null_count: int,
+    real_count: int,
+) -> None:
+    """Land the M1 triage figure as one row of :data:`CLOSEOUT_TRIAGE_TABLE`,
+    created if absent and refreshed (never duplicated) on a rerun.
+
+    Only the three figures a close-out computed -- never a node id, never a
+    label -- land here, the same stance :meth:`CloseoutResult.to_payload`
+    takes for the printed line.
+    """
+    path = _sqlite_path(database_url)
+    try:
+        with closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute(
+                f"CREATE TABLE IF NOT EXISTS {CLOSEOUT_TRIAGE_TABLE} ("
+                "campaign_id TEXT PRIMARY KEY, "
+                "auc REAL, "
+                "null_count INTEGER NOT NULL, "
+                "real_count INTEGER NOT NULL, "
+                "computed_at TEXT NOT NULL"
+                ")"
+            )
+            connection.execute(
+                f"INSERT INTO {CLOSEOUT_TRIAGE_TABLE} "
+                "(campaign_id, auc, null_count, real_count, computed_at) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(campaign_id) DO UPDATE SET "
+                "auc = excluded.auc, "
+                "null_count = excluded.null_count, "
+                "real_count = excluded.real_count, "
+                "computed_at = excluded.computed_at",
+                (
+                    campaign_id,
+                    auc,
+                    null_count,
+                    real_count,
+                    dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
+                ),
+            )
+    except sqlite3.Error as exc:
+        raise CloseoutError(
+            f"{CLOSEOUT_CODE}: could not persist campaign {campaign_id!r}'s "
+            f"triage figure into {database_url!r}: {exc}"
+        ) from exc
 
 
 def close_out(
@@ -435,6 +565,8 @@ def close_out(
     real_scores: list[float] = []
     discoveries: list[str] = []
     discovery_roots: list[str] = []
+    triage_null: list[float] = []
+    triage_real: list[float] = []
     for node in evaluated:
         root_id = _resolve_root(
             root_oracle, node.node_id, campaign=campaign, roots=roots
@@ -452,6 +584,16 @@ def close_out(
         if node.ic_tstat >= DISCOVERY_TSTAT:
             discoveries.append(node.node_id)
             discovery_roots.append(root_id)
+        # The M1 triage sample -- every evaluated node whose lookback-jitter
+        # tripwire actually measured, labelled by the same root-mapped
+        # sidecar entry the KS split above just resolved (a child inherits
+        # its root's label here too).  A node the tripwire step could not
+        # measure (`perturb_stability` NULL) contributes nothing: "not
+        # measured" is not a stability reading of zero.
+        if node.perturb_stability is not None:
+            (triage_null if entry.is_null else triage_real).append(
+                node.perturb_stability
+            )
 
     # 1. The KS guard, over the in-sample scores split above -- only the
     #    two lists reach it, never a node id.
@@ -513,6 +655,20 @@ def close_out(
         ledger_trials=ledger_trials,
     )
 
+    # 8. The M1 triage figure -- the perturbation-stability AUC over the
+    #    sample collected above, persisted to its own table and refreshed on
+    #    a rerun.  Only the three figures land (never a node id or a label).
+    triage_auc = _triage_auc(triage_null, triage_real)
+    triage_null_count = len(triage_null)
+    triage_real_count = len(triage_real)
+    _persist_triage(
+        database_url,
+        campaign,
+        auc=triage_auc,
+        null_count=triage_null_count,
+        real_count=triage_real_count,
+    )
+
     return CloseoutResult(
         campaign_id=campaign,
         ks_pvalue=ks_record.pvalue,
@@ -524,6 +680,9 @@ def close_out(
         discoveries=len(discoveries),
         budget_charging_trials=budget_charging_trials,
         ledger_trials=ledger_trials,
+        triage_auc=triage_auc,
+        triage_null_count=triage_null_count,
+        triage_real_count=triage_real_count,
     )
 
 
