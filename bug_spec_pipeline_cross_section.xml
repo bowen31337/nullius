@@ -1,0 +1,107 @@
+<bug_spec>
+  <!-- XSEC-1. Found 2026-10-07 by smoke campaign a9656ef3, run from a
+       worktree pinned at c9ab51c (the point-in-time universe fix), which
+       moved every root past alignment for the first time. All four then
+       failed further down. Each exception message was recovered by replaying
+       the roots through LiveEvaluator against a copy of the research store,
+       because the pipeline keeps only the exception class (bug 4). Spend:
+       $0.249 (4 Opus calls, recorded by providers.usage). Core shape,
+       explicit touches_files. -->
+
+  <bug index="1" shape="core" severity="critical"
+       touches_files="packages/orchestrator/src/orchestrator/_evaluate.py,packages/evaluator/src/evaluator/_costs.py,packages/orchestrator/tests/test_cost_pit_cross_section.py">
+    <title>The cost step prices the final date's universe on every rebalance date, so any snapshot with a mid-window listing fails EvaluatorCostError</title>
+    <symptoms>
+      Roots ef1d9d09 and 8b00be22: "EvaluatorCostError: gross_returns carries 2026-07-01 for AAVEUSDT, …, ZROUSDT [39 symbols, no HYPEUSDT], but the request's cross-section is AAVEUSDT, …, HYPEUSDT, … [40]". After bug_spec_pit_universe.xml, scores, windows and aligned targets use each date's point-in-time cross-section. orchestrator._evaluate._cost_schedule_from_context builds one cost request over the final date's universe (the dict.fromkeys(request.symbols, fee) quote, ~line 344), and evaluator._costs checks the gross returns against that request's single cross-section (~line 473).
+    </symptoms>
+    <reproduction_steps>
+      Evaluate any conforming signal over a sealed snapshot where one symbol's bars start after the first evaluation date: EvaluatorCostError naming that symbol.
+    </reproduction_steps>
+    <expected>
+      - The cost request and quote carry a per-date cross-section equal to the gated returns' symbols for that date (feature 72's point-in-time rule, the same one bug_spec_pit_universe.xml applies to windows). Costs are priced only for symbols present that day.
+      - evaluator._costs' consistency check compares per date and still refuses a genuine mismatch: a symbol in the returns that the date's cross-section lacks, or the reverse.
+      - test_cost_pit_cross_section.py: a mid-window listing and a mid-window delisting both price without error, the priced returns per date equal the per-date cross-section, and a deliberately mismatched request is still refused. It passes under pytest-xdist.
+    </expected>
+    <actual>Root cause: the point-in-time universe fix covered windows, scores and alignment, but not the cost schedule, which is still built once over the final date's universe.</actual>
+    <constraints>
+      No file outside the three listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="critical"
+       touches_files="packages/nulloracle/src/nulloracle/blockpermute.py,packages/nulloracle/tests/test_null_permutation_cross_section.py">
+    <title>The null oracle's block permutation moves symbols onto dates where they do not exist, so a planted null can never be scored on a snapshot with listings, and FDR calibration is impossible</title>
+    <symptoms>
+      Root e0acedf1, a planted null: "EvaluatorGateError: the supplied horizon-1 series answers 2026-09-04 for AAVEUSDT, …, HYPEUSDT, … but that date's cross-section is AAVEUSDT, … [no HYPEUSDT]". block_permute shuffles contiguous 20-day blocks of the forward-return series. HYPEUSDT's returns from late September, after its 2026-09-24 listing, land on 2026-09-04, when it had no bar. The gate correctly refuses a target for a symbol outside the date's cross-section. Every null node over a snapshot whose universe changes inside the window therefore fails, so the KS guard has no null scores, close-out cannot compute sensitivity or specificity, and FDR_deploy is never measured.
+    </symptoms>
+    <reproduction_steps>
+      Call the target route for a null node over forward returns where one symbol is present only in the last block. The permuted series names that symbol on dates in earlier blocks.
+    </reproduction_steps>
+    <expected>
+      - The permuted target for date d carries values only for symbols in date d's own cross-section, the symbols the unpermuted series has on d. A symbol present on d whose permuted source date lacks it is absent on d, never zero-filled or invented. The result is a subset of each date's cross-section, which the gate accepts.
+      - The permutation is still deterministic under the stored perm_seed and block length, still shuffles whole contiguous blocks (preserving autocorrelation and volatility clustering, PRD §4.1), and still destroys the signal-to-target relationship. Its distribution properties for symbols present throughout are unchanged.
+      - The response shape stays identical for null and real nodes (PRD §4.2).
+      - test_null_permutation_cross_section.py covers:
+        - a symbol listed in the last block is never placed on an earlier date
+        - a symbol delisted mid-window is never placed after its delisting
+        - for always-present symbols the permuted values equal the old algorithm's under the same seed (no silent behaviour change)
+        - determinism under the seed
+        - a null node over such a snapshot passes gate_targets
+        It passes under pytest-xdist.
+    </expected>
+    <actual>Root cause: blockpermute shuffles date blocks of a symbol-by-date panel without regard to which symbols exist on the destination date.</actual>
+    <constraints>
+      The null and real response shapes stay indistinguishable; nothing outside the scorer learns null status
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="3" shape="core" severity="high" depends_on="1"
+       touches_files="packages/orchestrator/src/orchestrator/_evaluate.py,packages/orchestrator/tests/test_flat_date_absent.py">
+    <title>One rebalance date with identical scores fails the whole node, so any signal with a warm-up period is rejected</title>
+    <symptoms>
+      Root 0c4f82a7 (cross-sectional momentum): "EvaluatorNormalizeError: cannot normalize: every raw score is identical … the signal expressed no preference". orchestrator._evaluate normalizes every rebalance date's vector and lets one date's refusal fail the node. A signal that has no view on some dates (warm-up before its lookback fills, or a flat market day) is therefore rejected outright, and its trial is charged.
+    </symptoms>
+    <reproduction_steps>
+      Evaluate a signal that returns a constant vector on its first rebalance date and varied scores afterwards: the node fails EvaluatorNormalizeError.
+    </reproduction_steps>
+    <expected>
+      - A date whose vector normalize_scores refuses as no-preference (all identical) is treated like a date with fewer than two symbols: no scores for that date (absent, never zero). The node is evaluated over the remaining dates.
+      - The node still fails EvaluatorNormalizeError, with the same refusal text, when no date expresses a preference, or when fewer than MIN_SCORED_DATES dates do. MIN_SCORED_DATES is a documented module constant, default 20, so a signal cannot pass on a handful of days.
+      - The count of absent dates is recorded on the node's score as flat_dates.
+      - Non-finite or non-float vectors are still refused for the whole node, unchanged.
+      - test_flat_date_absent.py covers a warm-up constant on the first 5 dates, which scores over the rest; a constant on every date, which is refused; too few varied dates, which is refused; and a non-finite vector, which is still refused.
+    </expected>
+    <actual>Root cause: per-date normalize refusals propagate to the node instead of marking the date absent.</actual>
+    <constraints>
+      normalize_scores itself is unchanged (feature 74's refusal stands; only the caller's handling of it per date changes)
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="4" shape="core" severity="medium" depends_on="3"
+       touches_files="packages/orchestrator/src/orchestrator/_evaluate.py,packages/orchestrator/src/orchestrator/_campaign.py,packages/orchestrator/tests/test_failure_detail.py">
+    <title>A failed evaluation keeps only the exception class; its message is discarded, so every failure needs a reproduction to diagnose</title>
+    <symptoms>
+      orchestrator._evaluate's catch-all (~line 717) records fail_class=_fail_class(exc, executor), i.e. type(exc).__name__. str(exc) is neither persisted, logged nor emitted. The node_evaluated event (_campaign.py ~line 165) carries fail_class only. Diagnosing smoke campaign a9656ef3's three failure classes required replaying each root against a copy of the store with a monkeypatched hook.
+    </symptoms>
+    <reproduction_steps>
+      Run any campaign whose node fails in the pipeline: the event and the node row name the class and never the reason.
+    </reproduction_steps>
+    <expected>
+      - NodeEvaluation carries fail_detail: str(exc), truncated to 2,000 characters, with no secret or sidecar content (pipeline messages name symbols and dates, never null status). It is persisted on the node's score record and emitted as "fail_detail" in the node_evaluated event.
+      - It is also logged once at WARNING with the node id and class.
+      - fail_class is unchanged.
+      - A null node's fail_detail never names its null status. A test asserts that the detail text of a null and a real node failing the same way differ only in node id.
+      - test_failure_detail.py: a cost failure, a gate failure and a normalize failure each carry their message in the event and the row; truncation; and the null-versus-real indistinguishability.
+    </expected>
+    <actual>Root cause: _fail_class reduces the exception to its class name, and nothing else captures the message.</actual>
+    <constraints>
+      No file outside the three listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
