@@ -465,13 +465,18 @@ _VERSIONS_DIR = _REPO_ROOT / "migrations" / "versions"
 #: three migrations the e2e journey applies for the same reason.
 _TREE_MIGRATIONS = ("0118_node_table", "0114_node_metrics", "0111_campaign_table")
 
-#: Three symbols, a handful of bar days — enough for a real cross-sectional
-#: score and a real horizon-1 forward return, small enough that the two
-#: sandbox spawns below stay fast.
+#: Three symbols, a wide span of bar days — enough for a real cross-sectional
+#: score and a real horizon-1 forward return. The span was widened from 3 to
+#: 60 once step 10's six leakage tripwires started running for real inside
+#: ``evaluate_node`` (additions_spec_tripwires_live.xml): the probes
+#: standardize by √T, and at only 3 measured dates the honest momentum
+#: signal below landed a false ``tripwire_fail`` by chance (label-permute)
+#: — the same width ``test_evaluate.py`` pins its own momentum journey at,
+#: for the same reason stated there.
 _RC_SYMBOLS = ("AAA", "BBB", "CCC")
 _RC_FIRST_DAY = dt.date(2026, 9, 10)
 _RC_LOOKBACK = 4
-_RC_SPAN = 3
+_RC_SPAN = 60
 _RC_HORIZON = 1
 _RC_BAR_DAYS = tuple(
     _RC_FIRST_DAY + dt.timedelta(days=offset)

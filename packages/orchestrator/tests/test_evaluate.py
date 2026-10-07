@@ -85,16 +85,26 @@ NODE_TABLE_MIGRATIONS = ("0118_node_table", "0114_node_metrics")
 
 #: The world's cross-section and bar span — smaller than the momentum
 #: journey's own (eight symbols, forty-eight bars) because this suite's
-#: claim is about the orchestration, not the coefficient; four symbols and
-#: twenty bars still give every per-date rank correlation real variation
-#: (the thing ``compute_node_metrics`` needs to not divide by a zero
-#: standard error) at a fraction of the sandbox spawns.
+#: claim is about the orchestration, not the coefficient; four symbols
+#: still give every per-date rank correlation real variation (the thing
+#: ``compute_node_metrics`` needs to not divide by a zero standard error)
+#: at a fraction of the sandbox spawns.  Sixty evaluation dates — wider
+#: than the twenty bars this suite ran on before step 10's tripwires
+#: existed — because the six leakage probes standardize by ``√T`` (the
+#: same asymptotic the tripwires member's own corpus is calibrated
+#: against at 60-480 dates): at eight dates the probes' nominal ~1%
+#: false-alarm rate is nowhere near its asymptotic value, and an honest
+#: momentum signal was landing ``tripwire_fail`` by chance under more than
+#: one of the six, on more than one in three world seeds.  ``WORLD_SEED``
+#: is pinned at a value verified clean against all six probes at this
+#: width, the way every other seed in this workspace is pinned for a
+#: measured reason rather than trusted blind.
 SYMBOLS = ("AAA", "BBB", "CCC", "DDD")
 FIRST_DAY = dt.date(2026, 9, 1)
-BAR_DAYS = tuple(FIRST_DAY + dt.timedelta(days=offset) for offset in range(20))
-LOOKBACK = 6
-EVALUATION_DATES = BAR_DAYS[LOOKBACK : LOOKBACK + 8]
-WORLD_SEED = 424242
+BAR_DAYS = tuple(FIRST_DAY + dt.timedelta(days=offset) for offset in range(71))
+LOOKBACK = 10
+EVALUATION_DATES = BAR_DAYS[LOOKBACK : LOOKBACK + 60]
+WORLD_SEED = 424243
 AUTOCORRELATION = 0.5
 HORIZON = 1
 EPOCH_ID = "epoch-2026-10-05-a"
@@ -104,11 +114,16 @@ COST_MODEL_HASH = "ef" * 32
 CAMPAIGN_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 
 #: A hand-written momentum signal, in the shape a node's source arrives —
-#: the trailing price change over the window's own lookback bars.  Written
-#: the way the momentum e2e journey's own signal is, so a genuine sandbox
-#: spawn produces a real, varying cross-section every rebalance date.
-#: Imports polars explicitly: unlike the evaluator's own embedded
-#: SignalSandbox (which pre-seeds "pl" in the signal's namespace),
+#: the trailing price change over the window's own lookback bars.  Reads
+#: ``series[-LOOKBACK]`` rather than ``series[0]``: the materialized window
+#: grows from ``BAR_DAYS[0]`` on every rebalance date (feature 7's own
+#: ``_materialize_from_context`` carries no lower bound), so a signal
+#: anchored at ``series[0]`` is not a trailing-``LOOKBACK`` momentum at
+#: all — it is a statistic anchored at one shared calendar date across
+#: every rebalance date, which is exactly the whole-sample, date-independent
+#: shape step 10's tripwires exist to catch (see ``WORLD_SEED``'s own
+#: comment above). Imports polars explicitly: unlike the evaluator's own
+#: embedded SignalSandbox (which pre-seeds "pl" in the signal's namespace),
 #: orchestrator._sandbox_child's bootstrap (feature 7's own executor) gives
 #: the signal nothing it did not import itself — "polars" is on the
 #: committed allowlist precisely so a signal can do this.
@@ -126,7 +141,7 @@ def signal(ctx, seed):
         if len(series) < {LOOKBACK}:
             momentum[symbol] = 0.0
         else:
-            first = float(series[0]["c"][0])
+            first = float(series[-{LOOKBACK}]["c"][0])
             last = float(series[-1]["c"][0])
             momentum[symbol] = (last - first) / first
     return pl.Series([momentum[symbol] for symbol in ctx.universe])

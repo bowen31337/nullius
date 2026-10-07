@@ -151,11 +151,21 @@ from evaluator import (
 )
 from evaluator._execute import pit_universe
 from signal_agent import ScoreRecord
+from tripwires import (
+    LABEL_PERMUTE_NAME,
+    LOOKBACK_AXIS,
+    SUBSAMPLE_AXIS,
+    TIME_SHUFFLE_NAME,
+    WINDOW_AXIS,
+    poison_node,
+    record_stability,
+)
 
 from ._artifact_writer import ArtifactStoreWriter
 from ._charge import charge_failed_node, charge_node
 from ._context import BARS_STREAM, EvaluationContext, signal_sandbox
 from ._tree_writer import NodeMetricsWriter
+from ._tripwire_step import NOT_MEASURED, TripwireOutcome, run_tripwires
 
 __all__ = [
     "MIN_SCORED_DATES",
@@ -187,9 +197,31 @@ _FAIL_DETAIL_LIMIT: Final[int] = 2_000
 #: :mod:`evaluator._persist_store``'s own default share: apply_costs (7),
 #: compute_metrics (8, the IC/IR/turnover half feature 80 owns — the decay
 #: and capacity halves are unmeasured in spec A), marginal_ir (9, or its
-#: empty-book stand-in) and debit_ledger (11).  Step 10 (tripwires) and step
-#: 12 (the full feature-85 persist) are not reached by this spec.
-_STEPS_COMPLETED: tuple[int, ...] = (7, 8, 9, 11)
+#: empty-book stand-in), tripwires (10, :mod:`orchestrator._tripwire_step`'s
+#: six-probe sweep) and debit_ledger (11).  Step 12 (the full feature-85
+#: persist) is not reached by this spec.
+_STEPS_COMPLETED: tuple[int, ...] = (7, 8, 9, 10, 11)
+
+#: The three perturbation axes whose verdicts the tripwires member's own
+#: :func:`tripwires.stability.record_stability` accepts — :data:`WINDOW_AXIS`,
+#: :data:`SUBSAMPLE_AXIS` and :data:`LOOKBACK_AXIS` share the ``stability``/
+#: ``stability_threshold`` field names that store checks structurally.  The
+#: seed axis is deliberately absent: its verdict carries ``degradation``/
+#: ``degradation_threshold`` instead (the tripwires member's own
+#: one-provenance argument — see :mod:`orchestrator._tripwire_step`'s module
+#: docstring), and ``record_stability`` refuses it by name.
+_STABILITY_AXES: tuple[str, ...] = (WINDOW_AXIS, SUBSAMPLE_AXIS, LOOKBACK_AXIS)
+
+#: The two probes whose verdict shape :func:`tripwires.poison.poison_node`
+#: accepts — the ten-field ``surviving_sharpe``/``threshold`` shape
+#: :class:`~tripwires.time_shuffle.TimeShuffleVerdict` and
+#: :class:`~tripwires.label_permute.LabelPermuteVerdict` share.  The four
+#: perturbation axes reject on a different comparison (``degradation`` or
+#: ``stability`` against their own configured bar) and cannot be poisoned
+#: through this seam — see :mod:`orchestrator._tripwire_step`'s module
+#: docstring for why that is the tripwires member's own design rather than a
+#: gap.
+_POISONABLE_PROBES: tuple[str, ...] = (TIME_SHUFFLE_NAME, LABEL_PERMUTE_NAME)
 
 #: The decision instant a live evaluation resolves its window at: the last
 #: rebalance date of the grid, at the end of its day — the same instant the
@@ -239,21 +271,29 @@ class NodePersistence:
 class NodeEvaluation:
     """``evaluate_node``'s whole answer — the spec's own six fields, plus the node.
 
-    ``metrics`` and ``persistence`` are ``None`` on every failure path (the
-    import screen's refusal, or anything the pipeline's own ``try`` caught):
-    a node that was not measured has no metrics to carry and nothing was
-    written for it.  ``score`` is always present — a
+    ``metrics`` and ``persistence`` are ``None`` on every failure path *but
+    one* (the import screen's refusal, or anything the pipeline's own
+    ``try`` caught): a node that was not measured has no metrics to carry
+    and nothing was written for it.  The one exception is step 10's
+    tripwire sweep (:mod:`orchestrator._tripwire_step`): a rejection there
+    happens *after* the metrics were measured, so ``fail_class`` is
+    ``"tripwire_fail"`` while ``metrics`` and ``persistence`` are the real,
+    written values — the evidence the spec's own sentence says must
+    survive a leaking node.  ``score`` is always present — a
     :class:`signal_agent.ScoreRecord` whose six scalars are the measured
     values and whose ``fail_class`` is ``None`` on success, or whose six
     scalars are the absent measurement ``None`` and whose ``fail_class``
-    names the failure.  ``debit`` is always present too: every evaluated
-    node, failed ones included, is charged exactly once.
+    names the failure (tripwire_fail excepted, which carries the six
+    measured scalars beside its own ``fail_class``).  ``debit`` is always
+    present too: every evaluated node, failed ones included, is charged
+    exactly once.
     """
 
     #: The node this answer is for.
     node_id: str
     #: Feature 80's four scalars plus the horizon and the per-date IC
-    #: series, or ``None`` on any failure.
+    #: series, ``None`` on any failure before the metrics were measured —
+    #: present on a ``tripwire_fail`` node, since step 10 runs after step 8.
     metrics: NodeMetrics | None
     #: The score, in the shape a replay history reads (§14.1's ``score.json``).
     score: ScoreRecord
@@ -261,10 +301,12 @@ class NodeEvaluation:
     #: conservative default), exactly what it answered afterward, win or fail.
     charges_budget: bool
     #: The failure's class name, the spec's own code word
-    #: (``disallowed_import``) for a refused import screen, or ``None`` on
-    #: success.
+    #: (``disallowed_import``) for a refused import screen, ``"tripwire_fail"``
+    #: when step 10 rejected the node, or ``None`` on success.
     fail_class: str | None
-    #: What was written for this node, or ``None`` on any failure.
+    #: What was written for this node — ``None`` on any failure before the
+    #: metrics were measured, present (row and artifacts both) on a
+    #: ``tripwire_fail`` node.
     persistence: NodePersistence | None
     #: The ledger's answer to this node's charge — the landed row, its
     #: sequence, and whether this call wrote it.
@@ -450,6 +492,7 @@ def _persist(
     metrics: NodeMetrics,
     ir_marginal: float,
     cost_adjusted_ir: float,
+    perturb_stability: float | None = None,
 ) -> NodePersistence:
     """Write the node row and this spec's artifact set — the two injected seams.
 
@@ -465,6 +508,13 @@ def _persist(
     series, the turnover series, the run's exec trace, and the signal
     source.  Decay and capacity are not in this spec's scope (see the
     module docstring) and are not written here.
+
+    ``perturb_stability`` is the lookback-jitter tripwire's own figure
+    (:mod:`orchestrator._tripwire_step`), or ``None`` when step 10 rejected
+    the node or could not measure that axis; it is handed straight to
+    :class:`_TreeNodeRow`, whose writer already knows a ``None`` there
+    means *not measured by this step* and leaves the column untouched
+    (see :mod:`orchestrator._tree_writer`).
     """
     tree_writer = NodeMetricsWriter(context.database_url)
     node_id_written, tree_written = tree_writer.write_node(
@@ -476,7 +526,7 @@ def _persist(
             ir_marginal=ir_marginal,
             turnover=metrics.turnover,
             cost_adjusted_ir=cost_adjusted_ir,
-            perturb_stability=None,
+            perturb_stability=perturb_stability,
         )
     )
     if node_id_written != node_id:
@@ -693,6 +743,56 @@ def _score_rebalance_dates(
     return scores, thin_dates + no_preference_dates
 
 
+# -- Step 10: the tripwire sweep's own figures, and feature 131's poisoning -----
+
+
+def _tripwire_figure(outcome: TripwireOutcome, name: str) -> float | None:
+    """One probe's own figure, for naming in a tripwire failure's detail.
+
+    The two independent probes (time-shuffle, label-permute) report their
+    surviving Sharpe; the four perturbation axes report
+    :attr:`TripwireOutcome.axis_figures`' own entry.  ``None`` when the named
+    probe could not measure.
+    """
+    if name in (TIME_SHUFFLE_NAME, LABEL_PERMUTE_NAME):
+        verdict = outcome.verdicts[name]
+        return None if verdict is NOT_MEASURED else verdict.surviving_sharpe
+    return outcome.axis_figures[name]
+
+
+def _tripwire_fail_detail(outcome: TripwireOutcome) -> str:
+    """``fail_detail``'s text for a tripwire rejection — the failing probes
+    and their figures, in :attr:`TripwireOutcome.failed`'s own fixed order.
+    """
+    named = ", ".join(
+        f"{name}={_tripwire_figure(outcome, name)!r}" for name in outcome.failed
+    )
+    return f"tripwire_fail: {named}"
+
+
+def _poison_tripwire_failure(outcome: TripwireOutcome, *, database_url: str) -> None:
+    """Poison the node and its subtree for a step-10 rejection — feature 131.
+
+    :func:`tripwires.poison.poison_node` only accepts the time-shuffle or
+    label-permute verdict shape (see :mod:`orchestrator._tripwire_step`'s
+    module docstring for why the four perturbation axes cannot be poisoned
+    through this seam); this poisons on whichever of those two rejected,
+    preferring time-shuffle when both did.  Logs a warning, rather than
+    poisoning nothing silently, for the residual case where only a
+    perturbation axis rejected and neither poisonable probe did.
+    """
+    for name in _POISONABLE_PROBES:
+        if name in outcome.failed:
+            poison_node(outcome.verdicts[name], database_url=database_url)
+            return
+    _logger.warning(
+        "tripwire_fail with no poisonable probe among %s; feature 131's "
+        "poisoning needs a time-shuffle or label-permute rejection and "
+        "neither fired",
+        outcome.failed,
+    )
+
+
 # -- The one call ---------------------------------------------------------------
 
 
@@ -746,12 +846,33 @@ def evaluate_node(
     :class:`~evaluator.RawScoreVector` drops both ``fail_class`` and
     ``detail`` (see :func:`_fail_class`).
 
+    Once the metrics are measured, :func:`orchestrator._tripwire_step.run_tripwires`
+    runs step 10's six leakage probes over the same normalized scores and the
+    post-cost target bundle at the metrics horizon — the exact panel a null
+    node and a real node are scored on alike.  A probe that could not
+    measure (too thin a panel, a statistic with zero dispersion) never fails
+    the node; a probe that measured and rejected does.  When any of the six
+    rejected, the node's row and artifacts are still written (the evidence
+    survives), feature 131's poisoning is applied to the node and its
+    subtree through whichever of the time-shuffle or label-permute verdicts
+    itself rejected, and the node is charged ``outcome="tripwire_fail"``
+    rather than failed — step 10 ran to completion and the caller holds its
+    answer, which :func:`orchestrator._charge.charge_node`'s own docstring
+    states is exactly when the outcome is *stated*, not classified.  When
+    none rejected, the lookback-jitter axis' figure is written onto the
+    node's row as ``perturb_stability`` and the window, universe-subsample
+    and lookback-jitter axes' figures are persisted through
+    :func:`tripwires.stability.record_stability` (the seed axis is not: see
+    :mod:`orchestrator._tripwire_step`'s module docstring for why that is
+    the tripwires member's own design).
+
     On success, the node's row is written and its artifacts staged and
     flushed (see :func:`_persist`), the node is charged with
-    :func:`orchestrator._charge.charge_node` under outcome ``"ok"``, and the
-    answer carries the measured metrics, the score, the oracle's own
-    ``charges_budget`` bit, ``fail_class=None``, the persistence and the
-    debit.
+    :func:`orchestrator._charge.charge_node` under outcome ``"ok"`` (or
+    ``"tripwire_fail"``, per the paragraph above), and the answer carries
+    the measured metrics, the score, the oracle's own ``charges_budget``
+    bit, ``fail_class`` (``None`` or ``"tripwire_fail"``), the persistence
+    and the debit.
 
     This function reads no node's null status, the sidecar key or any
     ``is_null`` value anywhere in its body; ``charges_budget`` on every
@@ -824,6 +945,11 @@ def evaluate_node(
             cost_model=context.cost_model,
         )
         metrics = compute_node_metrics(priced, scores)
+        tripwire_outcome = run_tripwires(
+            scores,
+            {metrics.horizon: priced.series[metrics.horizon].values},
+            node_id=node_id,
+        )
         try:
             marginal = compute_marginal_ir(priced, {})
         except EvaluatorMarginalError:
@@ -862,6 +988,23 @@ def evaluate_node(
         )
 
     cost_adjusted_ir = _cost_adjusted_ir(priced, metrics)
+
+    tripwire_failed = bool(tripwire_outcome.failed)
+    if tripwire_failed:
+        fail_class: str | None = "tripwire_fail"
+        fail_detail: str | None = _tripwire_fail_detail(tripwire_outcome)[
+            :_FAIL_DETAIL_LIMIT
+        ]
+        perturb_stability = None
+    else:
+        fail_class = None
+        fail_detail = None
+        perturb_stability = tripwire_outcome.perturb_stability
+        for axis in _STABILITY_AXES:
+            verdict = tripwire_outcome.verdicts[axis]
+            if verdict is not NOT_MEASURED:
+                record_stability(verdict, database_url=context.database_url)
+
     persistence = _persist(
         node_id=node_id,
         campaign_id=campaign_id,
@@ -871,11 +1014,16 @@ def evaluate_node(
         metrics=metrics,
         ir_marginal=ir_marginal,
         cost_adjusted_ir=cost_adjusted_ir,
+        perturb_stability=perturb_stability,
     )
+
+    if tripwire_failed:
+        _poison_tripwire_failure(tripwire_outcome, database_url=context.database_url)
+
     debited = charge_node(
         node_id,
         campaign_id,
-        outcome="ok",
+        outcome="tripwire_fail" if tripwire_failed else "ok",
         charges_budget=charges_budget,
         epoch_id=context.epoch_id,
         evaluator_hash=context.evaluator_hash,
@@ -890,16 +1038,17 @@ def evaluate_node(
         ir_marginal=ir_marginal,
         turnover=metrics.turnover,
         cost_adjusted_ir=cost_adjusted_ir,
-        perturb_stability=None,
-        fail_class=None,
+        perturb_stability=perturb_stability,
+        fail_class=fail_class,
     )
     return NodeEvaluation(
         node_id=node_id,
         metrics=metrics,
         score=score,
         charges_budget=charges_budget,
-        fail_class=None,
+        fail_class=fail_class,
         persistence=persistence,
         debit=debited,
+        fail_detail=fail_detail,
         flat_dates=flat_dates,
     )
