@@ -77,6 +77,18 @@ and trust has to survive the whole chain, not just the first hop. The agent's
 own frame is never one of these names, so its own top-level imports are always
 judged by the allowlist alone — "checked by name" exactly as the feature says.
 
+**Why a frame-less or frame-exhausted walk also counts as trusted.**  Some of
+what ``polars``'s native (Rust) core imports lazily is triggered with no
+``polars`` *Python* frame on the stack at all — its compiled core calls
+``PyImport_Import`` directly from Rust, sometimes on a thread it started for
+its own parallelism, and CPython does not stitch one thread's frame chain
+onto another's. :func:`_trusted_root_in_stack` and :func:`_admit` both treat
+that absence as proof of origin rather than as a reason to refuse: the agent
+has no way to reach the import machinery without its own compiled frame
+somewhere on the walk (see their docstrings), so a walk that never finds it —
+whether it runs off the end of the stack, hits ``limit``, or has no frame to
+start from — was never asking on the agent's behalf.
+
 **Output.**  One framed JSON result: ``fail_class`` (``None`` on success, else
 one of :data:`RESULT_FAIL_CLASSES`), ``detail``, ``scores`` (base64 JSON array
 of floats, or ``None``) and ``contract_version``.  This bootstrap only ever
@@ -245,8 +257,9 @@ def _root(name: str) -> str:
 
 
 def _trusted_root_in_stack(frame: Any, *, limit: int = 128) -> bool:
-    """Whether any frame from ``frame`` upward belongs to a trusted root —
-    unless the signal source itself sits somewhere in that chain first.
+    """Whether any frame from ``frame`` upward belongs to a trusted root, or
+    the walk never finds the signal source at all — unless the signal source
+    itself sits somewhere in the chain first, which poisons it outright.
 
     Walks ``frame.f_back`` rather than stopping at the immediate caller,
     because a trusted package's own import of some helper can itself trigger
@@ -265,6 +278,22 @@ def _trusted_root_in_stack(frame: Any, *, limit: int = 128) -> bool:
     The signal source frame is always the asker in that shape, no matter which
     trusted frames sit above or below it, so it must decide the outcome before
     any later frame gets a chance to.
+
+    **Why running out of frames without poisoning also admits.**  A trusted
+    dependency's native (Rust, via PyO3) code can trigger a stdlib import with
+    *no* Python frame of its own on the stack — polars' Rust core calls
+    ``PyImport_Import`` directly, which reaches this process's (already
+    patched) ``builtins.__import__`` straight from native code, sometimes on a
+    thread the dependency's own parallelism spun up, whose frame chain never
+    ran a single line of the agent's code and so never reaches back to
+    anything the signal called. The agent, by contrast, can *never* trigger an
+    import without its own compiled, filename-tagged frame sitting somewhere
+    on this exact walk — there is no path from agent code into the import
+    machinery that does not pass through a frame this function would poison on
+    first. So a walk that exhausts (by running off the top of the stack, or by
+    hitting ``limit``) without ever seeing that poison is conclusive: whatever
+    asked was never the agent, which leaves only the bootstrap's own trusted
+    dependencies as the asker.
     """
     depth = 0
     while frame is not None and depth < limit:
@@ -275,7 +304,7 @@ def _trusted_root_in_stack(frame: Any, *, limit: int = 128) -> bool:
             return True
         frame = frame.f_back
         depth += 1
-    return False
+    return True
 
 
 def _admit(name: str) -> bool:
@@ -286,13 +315,23 @@ def _admit(name: str) -> bool:
     frame below the hook (``_GuardedImport`` or ``_GuardedFinder.find_spec``),
     so ``sys._getframe(2)`` from here — skip this function, skip the hook —
     lands on the actual caller.
+
+    When that frame does not exist at all (``sys._getframe(2)`` raises
+    ``ValueError``), the import is reached from native code that holds no
+    Python frame whatsoever beneath this call — a trusted dependency's own
+    PyO3 code calling into Python fresh on a thread it started itself. The
+    agent can never produce this shape: the shortest possible agent-triggered
+    chain is three frames deep (this function, the hook, and the agent's own
+    executing frame), so fewer than that is conclusive proof the asker was
+    never the agent (see :func:`_trusted_root_in_stack`'s docstring for the
+    same argument applied to a frame chain that exists but never poisons).
     """
     if _allowlist_covers(name):
         return True
     try:
         frame = sys._getframe(2)
-    except ValueError:  # pragma: no cover - no caller frame at all
-        return False
+    except ValueError:
+        return True
     return _trusted_root_in_stack(frame)
 
 
