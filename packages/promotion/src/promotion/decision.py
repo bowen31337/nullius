@@ -129,10 +129,23 @@ so the store is constructed from a URL by the caller that has one, exactly as
 its two siblings are.  The composed ``promotion`` component is untouched
 and still answers one question.
 
+**bug_spec_tripwire_false_positives.xml, bug 2: the tripwire gate.**  Before
+this bug, nothing in this module read step 10's leakage findings — a node
+the orchestrator's tripwire sweep flagged, or one it never probed at all,
+could be decided exactly like a clean one, which is the protection the first
+half of that spec moved off discovery and this half is the arrival of.
+:meth:`PromotionDecisions.record_decision` now calls
+:func:`promotion.tripwire_gate.rejects_tripwire_flagged` after every existing
+refusal and before the write; the gate's own module holds the table name, the
+refusal and the operator override, and this module reaches it as a sibling
+import, never as the tripwires or orchestrator member it reads about.
+
 **Stdlib only, and import-cheap.**  ``sqlite3``, ``datetime`` and
-``contextlib`` at module scope and nothing else: no third-party import and no
-import of another workspace member, so the factory's scan imports this package
-for the near-nothing it always did and a decision costs its caller only the
+``contextlib`` at module scope, and this member's own
+:mod:`promotion.tripwire_gate` beside :mod:`promotion.pre_register` and
+:mod:`promotion.schema`: no third-party import and no import of another
+workspace member, so the factory's scan imports this package for the
+near-nothing it always did and a decision costs its caller only the
 connection it already had.
 """
 
@@ -170,6 +183,11 @@ from .pre_register import (
 from .schema import (
     PROMOTION_REGISTRY_TABLE,
     bootstrap_decision_schema,
+)
+from .tripwire_gate import (
+    _read_tripwire_reading,
+    record_tripwire_override,
+    rejects_tripwire_flagged,
 )
 
 __all__ = [
@@ -490,6 +508,7 @@ class PromotionDecisions:
         *,
         decided_at: dt.datetime | None = None,
         clock: Callable[[], dt.datetime] | None = None,
+        acknowledge_tripwires: str | None = None,
     ) -> tuple[PromotionRecord, bool]:
         """Persist one promotion's decision — feature 293's act.
 
@@ -511,7 +530,17 @@ class PromotionDecisions:
            before the criteria were fixed is refused rather than persisted —
            see :func:`_validated_after_pre_registration`, and the boundary it
            shares with feature 360's CI invariant.
-        4. **Close the row and read it back**, inside the same transaction,
+        4. **Consult the tripwire gate** (bug_spec_tripwire_false_positives.xml,
+           bug 2) — added *after* every refusal above, never ahead of them.
+           :func:`promotion.tripwire_gate.rejects_tripwire_flagged` refuses a
+           node step 10's tripwires flagged, or one the sweep never probed at
+           all, raising :class:`~promotion.tripwire_gate.TripwireFlaggedError`.
+           An operator who supplies ``acknowledge_tripwires`` (at least 20
+           characters of reason) bypasses the refusal instead, and the reason
+           — with the probes it is about — is persisted by
+           :func:`promotion.tripwire_gate.record_tripwire_override`, so a
+           promotion past a flag or an unprobed node is never silent.
+        5. **Close the row and read it back**, inside the same transaction,
            so the stamp, the hash and the first instant in the answer are the
            table's own.
 
@@ -523,25 +552,42 @@ class PromotionDecisions:
         closed the row; ``False`` is a re-decision answered by the standing
         row, the readable spelling of a retry.
 
-        **What this act never does.**  It never judges the promotion — the
-        verdict on the evidence is the deciding evaluation's, and the mismatch
-        refusal is feature 292's.  It never touches ``criteria_hash``,
-        ``epoch_id``, ``node_id`` or ``pre_registered_at``: the update's
-        ``SET`` clause names one column, the mirror of the insert that could
-        not name ``decided_at``.  And it never charges the epoch — feature
-        294's act reads the closed rows this one writes.
+        **What this act never does.**  It never judges the promotion's
+        merit — the verdict on the evidence is the deciding evaluation's,
+        and the mismatch refusal is feature 292's.  It never touches
+        ``criteria_hash``, ``epoch_id``, ``node_id`` or
+        ``pre_registered_at``: the update's ``SET`` clause names one
+        column, the mirror of the insert that could not name
+        ``decided_at``.  And it never charges the epoch — feature 294's
+        act reads the closed rows this one writes.  Bug 2 narrows this by
+        exactly one line: the tripwire gate is a check this act now makes,
+        the one place in this member a decision is refused on something
+        other than its own two timestamps — see step 4 above.
 
-        Refuses, in this order, each naming what it is about and all in
-        :class:`~promotion.errors.PromotionDecisionError`: a malformed node,
-        a naive or unparseable stamp, then — from the store — a
-        ``DATABASE_URL`` this member cannot speak, a node holding no
-        pre-registration, a decision that would precede its criteria, and a
-        row that did not close or could not be read back.
+        Refuses, in this order, each naming what it is about: a malformed
+        node, a naive or unparseable stamp, a ``DATABASE_URL`` this member
+        cannot speak, a node holding no pre-registration, a decision that
+        would precede its criteria, and a row that did not close or could
+        not be read back — every one of those in
+        :class:`~promotion.errors.PromotionDecisionError` — then the
+        tripwire gate's own refusal
+        (:class:`~promotion.tripwire_gate.TripwireFlaggedError`, a sibling
+        class and not a face of the decision's own, for the reason every
+        merit refusal in this member is kept apart from a write that did
+        not land), unless ``acknowledge_tripwires`` is supplied.
 
         ``decided_at`` states the instant the promotion was decided, and
         ``clock`` supplies the default when it is absent — tests and replays
         route their own time through it, the same seam
         :meth:`~promotion.pre_register.PreRegistrations.pre_register` offers.
+
+        ``acknowledge_tripwires`` is the operator override: when supplied
+        (at least 20 characters of reason), the tripwire gate's refusal is
+        bypassed and the reason — together with whichever probes the node
+        was flagged for, if any — is persisted in
+        ``promotion_tripwire_override`` before this call proceeds to close
+        the row.  Absent, the gate runs normally and a flagged or unprobed
+        node is refused.
         """
         node = _decision_node_id(node_id)
         stamped = (
@@ -558,6 +604,19 @@ class PromotionDecisions:
             _validated_after_pre_registration(
                 node, stamped, standing.pre_registered_at
             )
+            if acknowledge_tripwires is not None:
+                reading = _read_tripwire_reading(
+                    node, database_url=self._database_url
+                )
+                record_tripwire_override(
+                    node,
+                    reason=acknowledge_tripwires,
+                    probes=tuple(name for name, _figure in reading.rejected),
+                    database_url=self._database_url,
+                    clock=clock or utc_now,
+                )
+            else:
+                rejects_tripwire_flagged(node, database_url=self._database_url)
             try:
                 cursor = connection.execute(
                     _UPDATE_SQL, (stamped.isoformat(), node)
@@ -746,6 +805,7 @@ def record_decision(
     *,
     decided_at: dt.datetime | None = None,
     clock: Callable[[], dt.datetime] | None = None,
+    acknowledge_tripwires: str | None = None,
     database_url: str | None = None,
     env: Mapping[str, str] | None = None,
 ) -> tuple[PromotionRecord, bool]:
@@ -754,18 +814,24 @@ def record_decision(
     The feature's sentence as one call, for the caller that wants the act
     without holding a store — the promotion path's last line, after the
     deciding evaluation has run and after features 292 and 298 have had their
-    refusals.  The store is resolved from ``database_url``, else from
+    refusals, and after bug 2's tripwire gate
+    (:func:`promotion.tripwire_gate.rejects_tripwire_flagged`) has had its own.
+    The store is resolved from ``database_url``, else from
     ``DATABASE_URL``, exactly as :func:`promotion.pre_register.PreRegistrations.
     resolve` and :func:`promotion.blocking.record_block` resolve theirs.
 
-    A :class:`~promotion.errors.PromotionDecisionError` from the store or the
-    resolution propagates unwrapped: the refusal already names the node and
-    the fact, and re-wrapping it here would put a second message in front of
-    the one an operator needs.
+    A :class:`~promotion.errors.PromotionDecisionError` or a
+    :class:`~promotion.tripwire_gate.TripwireFlaggedError` from the store or
+    the resolution propagates unwrapped: the refusal already names the node
+    and the fact, and re-wrapping it here would put a second message in
+    front of the one an operator needs.
     """
     url = _resolved_url(database_url, env)
     return PromotionDecisions(url).record_decision(
-        node_id, decided_at=decided_at, clock=clock
+        node_id,
+        decided_at=decided_at,
+        clock=clock,
+        acknowledge_tripwires=acknowledge_tripwires,
     )
 
 

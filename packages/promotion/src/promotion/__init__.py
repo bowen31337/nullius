@@ -111,7 +111,18 @@ caller registered — with
 :func:`~promotion.forward.window_closes_at` as the arithmetic on its own.  It is
 a **read**: it writes nothing, spells no DDL, and leaves the ``forward`` plugin's
 ``forward_record`` (feature 332's writer) entirely alone — what it answers is the
-interval that record is opened against.  :mod:`promotion.errors` is the member's error
+interval that record is opened against.  :mod:`promotion.tripwire_gate` is
+bug_spec_tripwire_false_positives.xml's bug 2 — the gate that keeps a node
+step 10's leakage probes flagged, or never probed at all, from being decided
+as clean: :func:`~promotion.tripwire_gate.rejects_tripwire_flagged` reads
+``tripwire_verdict`` (the orchestrator's own table, restated by name rather
+than imported) and refuses in
+:class:`~promotion.tripwire_gate.TripwireFlaggedError`;
+:func:`~promotion.tripwire_gate.record_tripwire_override` is the operator's
+escape hatch, persisting a reason and the probes it is about in
+``promotion_tripwire_override`` so a promotion past a flag is never silent.
+:mod:`promotion.decision` calls the gate after its own refusals and before
+its write.  :mod:`promotion.errors` is the member's error
 vocabulary: :class:`~promotion.errors.PromotionError` (the *ask* face: a
 malformed body, a criterion that is not a number, a re-registration with
 different criteria), :class:`~promotion.errors.PromotionStoreError` (the
@@ -377,6 +388,17 @@ from .terminal import (
     block_when_no_clean_epoch_remains,
     blocks_when_no_clean_epoch_remains,
 )
+from .tripwire_gate import (
+    MIN_ACKNOWLEDGEMENT_LENGTH,
+    PROMOTION_TRIPWIRE_OVERRIDE_TABLE,
+    TRIPWIRE_FLAGGED_ERROR_CODE,
+    TRIPWIRE_OVERRIDE_ERROR_CODE,
+    TRIPWIRE_UNMEASURED_ERROR_CODE,
+    TRIPWIRE_VERDICT_TABLE,
+    TripwireFlaggedError,
+    record_tripwire_override,
+    rejects_tripwire_flagged,
+)
 
 __all__ = [
     "BLOCKED_AT_COLUMN",
@@ -402,6 +424,7 @@ __all__ = [
     "EPOCH_SELECTION_ERROR_CODE",
     "FORWARD_WINDOW_TABLE",
     "MIGRATION_ORDER",
+    "MIN_ACKNOWLEDGEMENT_LENGTH",
     "NODE_ID_COLUMN",
     "OPENS_AT_COLUMN",
     "PRE_REGISTERED_AT_COLUMN",
@@ -413,11 +436,16 @@ __all__ = [
     "PROMOTION_DECISION_ERROR_CODE",
     "PROMOTION_REGISTRY_ERROR_CODE",
     "PROMOTION_REGISTRY_TABLE",
+    "PROMOTION_TRIPWIRE_OVERRIDE_TABLE",
     "PROMOTION_WINDOW_ERROR_CODE",
     "REGIME_COLUMN",
     "RETIRED_COLUMN",
     "SEALED_AT_COLUMN",
     "SEQUESTERED_EPOCH_BUDGET",
+    "TRIPWIRE_FLAGGED_ERROR_CODE",
+    "TRIPWIRE_OVERRIDE_ERROR_CODE",
+    "TRIPWIRE_UNMEASURED_ERROR_CODE",
+    "TRIPWIRE_VERDICT_TABLE",
     "VOID_CALIBRATION_ERROR_CODE",
     "WINDOW_DAYS_COLUMN",
     "WORLD_COUNT_COLUMN",
@@ -449,6 +477,7 @@ __all__ = [
     "RemainingCleanEpochs",
     "ServingEpoch",
     "TerminalStates",
+    "TripwireFlaggedError",
     "VoidCalibrationError",
     "block_when_no_clean_epoch_remains",
     "blocked_promotion",
@@ -469,7 +498,9 @@ __all__ = [
     "promotion_window",
     "promotion_windows",
     "record_decision",
+    "record_tripwire_override",
     "rejects_further_selection",
+    "rejects_tripwire_flagged",
     "rejects_void_calibration",
     "rejects_void_promotion",
     "remaining_clean_epochs",
