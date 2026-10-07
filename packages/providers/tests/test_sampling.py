@@ -44,6 +44,7 @@ from providers import (
     ModelPinError,
     require_agent_sampling,
 )
+from providers._sampling import EFFORT_LEVELS
 
 #: The four settings in the feature sentence's order, and the test that pins
 #: this tuple against the sentence is below.  Spelled as a tuple in the test
@@ -183,7 +184,7 @@ def test_a_record_with_a_setting_this_feature_does_not_have_is_refused():
 
 @pytest.mark.parametrize(
     "temperature",
-    [-0.1, MAX_TEMPERATURE + 0.1, 3, float("inf"), float("nan"), "0.7", None],
+    [-0.1, MAX_TEMPERATURE + 0.1, 3, float("inf"), float("nan"), "0.7"],
 )
 def test_a_temperature_outside_zero_to_two_is_refused(temperature):
     # The band every provider in §14.1's tables accepts; a value outside it is
@@ -191,6 +192,11 @@ def test_a_temperature_outside_zero_to_two_is_refused(temperature):
     # run that cannot have happened.  NaN and the strings are refused for the
     # sharper reason: NaN is not a number the column can round-trip
     # (allow_nan=False), and "0.7" is text that *looks* like the setting.
+    # ``None`` is deliberately not in this list — see
+    # test_a_null_temperature_means_not_sent below. It used to be refused here,
+    # which was the defect this module's no-sampling extension fixes: a model
+    # that rejects temperature outright has no number to record, honest or
+    # otherwise, and null was the only spelling left unclaimed for that.
     with pytest.raises(AgentSamplingMalformedError):
         AgentSampling(temperature=temperature)
 
@@ -202,11 +208,27 @@ def test_the_ends_of_the_temperature_band_are_both_accepted():
     assert AgentSampling(temperature=MAX_TEMPERATURE).temperature == MAX_TEMPERATURE
 
 
-@pytest.mark.parametrize("top_p", [0.0, -0.1, 1.5, float("nan"), "0.9", None])
+def test_a_null_temperature_means_not_sent(make_sampling):
+    # The no-sampling extension's reading: a model that rejects temperature
+    # outright (claude-opus-5-5, claude-sonnet-5-5) was sent none, and null is
+    # the honest record of that — not a coercion to 0.0, which would claim the
+    # vendor received a temperature it never did.
+    record = AgentSampling(temperature=None)
+    assert record.temperature is None
+    assert AgentSampling.parse(record.to_json()).temperature is None
+    # And it is still part of the identity: a null temperature is a different
+    # draw from any number, the same way every other setting is.
+    assert make_sampling(temperature=None) != make_sampling(temperature=0.0)
+
+
+@pytest.mark.parametrize("top_p", [0.0, -0.1, 1.5, float("nan"), "0.9"])
 def test_a_top_p_outside_the_unit_interval_is_refused(top_p):
     # Exclusive at zero: top_p=0 is not "take nothing", it is a division the
     # sampler cannot perform, and a record claiming it would describe a draw no
     # implementation makes.
+    # ``None`` is deliberately not in this list — see
+    # test_a_null_top_p_means_not_sent below; it used to be refused here, which
+    # was the same defect the temperature list's comment explains.
     with pytest.raises(AgentSamplingMalformedError):
         AgentSampling(top_p=top_p)
 
@@ -217,6 +239,14 @@ def test_the_top_of_the_top_p_interval_is_accepted():
     assert AgentSampling(top_p=1.0).top_p == 1.0
 
 
+def test_a_null_top_p_means_not_sent():
+    # Same reading as temperature: null is "not sent", not "take nothing" —
+    # the latter is what top_p=0 would mean, and that is still refused above.
+    record = AgentSampling(top_p=None)
+    assert record.top_p is None
+    assert AgentSampling.parse(record.to_json()).top_p is None
+
+
 @pytest.mark.parametrize("thinking", [1, 0, "true", "yes", 1.0, None])
 def test_a_thinking_that_is_not_a_boolean_is_refused(thinking):
     # **The trap this test exists for:** ``bool`` is a subclass of ``int`` in
@@ -224,6 +254,9 @@ def test_a_thinking_that_is_not_a_boolean_is_refused(thinking):
     # record then round-trips as ``true``/``false`` — a *different* draw
     # reported under the same name.  The refusal has to be on the type, not on
     # the truthiness, which is why the check runs before the numeric ones.
+    # ``None`` stays refused here even after the no-sampling extension: unlike
+    # temperature and top_p, thinking's "I wasn't asked to turn this knob"
+    # spelling is the string "adaptive" below, not null.
     with pytest.raises(AgentSamplingMalformedError):
         AgentSampling(thinking=thinking)
 
@@ -235,6 +268,28 @@ def test_both_booleans_are_accepted_and_survive_the_round_trip():
         record = AgentSampling(thinking=value)
         assert record.thinking is value
         assert AgentSampling.parse(record.to_json()).thinking is value
+
+
+def test_thinking_adaptive_is_accepted_and_survives_the_round_trip():
+    # claude-opus-5-5 and claude-sonnet-5-5's reasoning is not a flag the
+    # caller turns on or off — it is adaptive, and "adaptive" is the third,
+    # closed spelling the no-sampling extension adds for exactly that model
+    # family. It is a different draw from both booleans, not a synonym for
+    # either.
+    record = AgentSampling(thinking="adaptive")
+    assert record.thinking == "adaptive"
+    assert AgentSampling.parse(record.to_json()).thinking == "adaptive"
+    assert record != AgentSampling(thinking=True)
+    assert record != AgentSampling(thinking=False)
+
+
+@pytest.mark.parametrize("thinking", ["Adaptive", "ADAPTIVE", " adaptive", "adaptiv"])
+def test_a_near_miss_spelling_of_adaptive_is_refused(thinking):
+    # Exact spelling only, the same no-coercion rule every other setting in
+    # this module follows — a near miss is a caller's typo, not a model whose
+    # thinking this record can describe.
+    with pytest.raises(AgentSamplingMalformedError):
+        AgentSampling(thinking=thinking)
 
 
 @pytest.mark.parametrize(
@@ -256,6 +311,69 @@ def test_the_seed_band_is_the_signed_64_bit_range():
     assert SEED_MAX == 2**63 - 1
     assert AgentSampling(seed=0).seed == 0
     assert AgentSampling(seed=SEED_MAX).seed == SEED_MAX
+
+
+# ── effort: the one optional key ──────────────────────────────────────────────
+
+
+def test_effort_is_absent_by_default_and_omitted_from_the_document():
+    # effort is the record's one optional key: a draw that sent none of it
+    # renders to the same four-key document every deployment already writes —
+    # the property that makes this extension backward compatible.
+    record = AgentSampling()
+    assert record.effort is None
+    assert "effort" not in record.to_dict()
+    assert "effort" not in record.to_json()
+
+
+@pytest.mark.parametrize("effort", sorted(EFFORT_LEVELS))
+def test_each_effort_level_is_accepted_and_survives_the_round_trip(effort):
+    # claude-opus-5-5 and claude-sonnet-5-5 read output_config.effort in place
+    # of temperature and top_p; each of the five levels is a real draw and has
+    # to come back out of the stored document as the same draw.
+    record = AgentSampling(
+        temperature=None, top_p=None, thinking="adaptive", seed=0, effort=effort
+    )
+    assert record.effort == effort
+    assert AgentSampling.parse(record.to_json()).effort == effort
+    assert json.loads(record.to_json())["effort"] == effort
+
+
+@pytest.mark.parametrize("effort", ["LOW", "extreme", "", 1, 1.0, True])
+def test_an_unknown_effort_is_refused(effort):
+    # Not one of the five levels _anthropic.py's own EFFORT_LEVELS sends on
+    # the wire, so it is a spelling no backend reads — refused by the same
+    # no-coercion rule every other setting in this module follows.
+    with pytest.raises(AgentSamplingMalformedError):
+        AgentSampling(effort=effort)
+
+
+def test_an_extra_unknown_key_alongside_a_valid_effort_is_still_refused():
+    # effort being legal now does not open the record up generally: a sixth
+    # key this feature has no name for is refused exactly as it was before the
+    # extension, whether or not the document also carries a valid effort.
+    with pytest.raises(AgentSamplingMalformedError) as refusal:
+        require_agent_sampling(
+            {
+                "temperature": None,
+                "top_p": None,
+                "thinking": "adaptive",
+                "seed": 0,
+                "effort": "high",
+                "top_k": 40,
+            }
+        )
+    assert "top_k" in str(refusal.value)
+
+
+def test_a_record_predating_the_no_sampling_extension_round_trips_byte_identical():
+    # The compatibility promise this extension makes in both directions: a
+    # document written before effort, null temperature/top_p and adaptive
+    # thinking existed parses unchanged and renders back to the identical
+    # bytes — no key appears, moves, or changes shape just because the record
+    # contract grew.
+    stored = '{"seed":42,"temperature":0.7,"thinking":true,"top_p":0.9}'
+    assert AgentSampling.parse(stored).to_json() == stored
 
 
 @pytest.mark.parametrize(

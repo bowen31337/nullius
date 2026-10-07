@@ -14,7 +14,9 @@ The list is the spec's and not this module's: the PRD's provenance block spells
 ``agent_sampling: dict  # temperature, top_p, thinking, seed`` and architecture
 §9.1's column comment spells it back — ``-- {temperature, top_p, thinking,
 seed}`` — so the four keys are the one thing the requirement, the schema's own
-comment and this module must agree on, and there is no fifth.
+comment and this module must agree on, and there is no fifth *required* key —
+see "The no-sampling extension" below for the one optional key a record may
+also carry.
 
 The mandate is the interesting half, and it comes from the column's own
 justification.  ``agent_sampling`` is ``JSONB NOT NULL``, and ``0115``'s
@@ -89,10 +91,45 @@ Ranges, and where each one comes from
 * ``seed`` a non-negative :class:`int` in ``[0, 2**63 - 1]``.  ``bool`` is
   refused here too, for the same reason and by the same check.
 
+The no-sampling extension
+-------------------------
+
+Feature 5 of ``additions_spec_real_campaign_path.xml`` added models this
+module's four keys could not describe honestly: ``claude-opus-5-5`` and
+``claude-sonnet-5-5`` reject ``temperature`` and ``top_p`` outright, their
+``thinking`` is adaptive rather than a flag the caller turns on or off, and the
+knob they do read — ``output_config.effort`` — is none of the original four.
+Recording the four required keys as if the call had sent a temperature and a
+top_p it never received would be the same fabrication this module refuses
+everywhere else, so the fix widens two keys and adds one optional one rather
+than minting a second record shape:
+
+* ``temperature`` and ``top_p`` each additionally accept ``None``, meaning
+  "not sent — the model's own default applied".  ``None`` is not a fifth
+  spelling of a number; it is the honest record of a call this backend could
+  not make, the same distinction ``seed=0`` draws against "no seed at all".
+* ``thinking`` additionally accepts the string ``"adaptive"`` — still a closed
+  set, now of three spellings instead of two, for the one family whose
+  reasoning is not a setting the caller chose.
+* ``effort`` is the record's one **optional** key, present only when a draw
+  sent one.  A document that omits it is not missing a setting — there was no
+  effort to record — so :func:`require_agent_sampling` never lists it in a
+  "missing" refusal the way it does the four required keys.  A document that
+  spells it is checked against :data:`EFFORT_LEVELS`, the same closed set
+  ``providers._anthropic.EFFORT_LEVELS`` reads off the wire.
+
+Every record valid before this extension — the four required keys, no
+``effort``, no ``None`` and no ``"adaptive"`` among them — parses unchanged and
+renders to the identical canonical JSON: the extension widens what the four
+keys accept and adds a key nobody wrote before; it does not change what
+anything already written means.
+
 No coercion anywhere, in either direction.  ``"0.0"`` is not a temperature,
 ``0`` is not a ``bool`` and ``True`` is not a seed: each is a caller who passed
 the wrong type, and a record that silently converted would store a setting the
-caller never chose and could never notice.
+caller never chose and could never notice.  ``None`` and ``"adaptive"`` are
+not coercions either — they are the two extra, exact spellings the no-sampling
+extension recognises, not a looser reading of the originals.
 
 The stored form
 ---------------
@@ -130,6 +167,7 @@ from ._pin_errors import AgentSamplingMalformedError
 __all__ = [
     "AGENT_SAMPLING_COLUMN",
     "DEFAULT_SAMPLING",
+    "EFFORT_LEVELS",
     "MAX_TEMPERATURE",
     "SAMPLING_KEYS",
     "SEED_MAX",
@@ -164,6 +202,14 @@ SEED_MAX = 2**63 - 1
 #: request refuses would describe a call the interface could not have carried.
 MAX_TEMPERATURE = 2.0
 
+#: The closed set ``effort`` accepts — the control a no-sampling model reads
+#: in place of ``temperature`` and ``top_p`` (feature 5 of
+#: ``additions_spec_real_campaign_path.xml``).  Restated from
+#: ``providers._anthropic.EFFORT_LEVELS`` rather than imported, for the reason
+#: :data:`SEED_MAX` and :data:`MAX_TEMPERATURE` are restated above: this
+#: member depends on no other member.
+EFFORT_LEVELS: frozenset[str] = frozenset({"low", "medium", "high", "xhigh", "max"})
+
 #: The record at all four defaults, as the column stores it.  This is what a
 #: deployment that turns none of the knobs records, and it is declared as data
 #: rather than left implicit for two reasons: the refusal that names a missing
@@ -190,7 +236,7 @@ _JSON_KWARGS: dict[str, Any] = {
 
 
 def _require_settings(values: Mapping[str, Any], origin: str) -> dict[str, Any]:
-    """Return ``values`` as the four validated settings, or refuse it.
+    """Return ``values`` as the four required settings plus ``effort``, or refuse it.
 
     The one place the record's rules live, shared by the constructor and the
     parse, so a record built from four arguments and one read back out of the
@@ -203,65 +249,86 @@ def _require_settings(values: Mapping[str, Any], origin: str) -> dict[str, Any]:
     a validator that asked "is this a number?" first would accept
     ``thinking=1`` as a flag and ``temperature=False`` as a temperature.  Both
     are callers passing the wrong type, and both are refused by name.
+
+    ``effort`` is read with :meth:`~collections.abc.Mapping.get` rather than
+    ``values["effort"]``: it is the no-sampling extension's one optional key,
+    so its absence is not a caller's omission the way a missing ``temperature``
+    would be — see :func:`_require_effort`.
     """
-    unknown = sorted(set(values) - set(SAMPLING_KEYS))
+    allowed = set(SAMPLING_KEYS) | {"effort"}
+    unknown = sorted(set(values) - allowed)
     if unknown:
         raise AgentSamplingMalformedError(
             f"an agent_sampling record carries {unknown!r}, which the record "
             f"has no key for, in {origin}. Feature 204 records exactly "
             f"{', '.join(SAMPLING_KEYS)} (PRD §4's provenance block; "
-            f"architecture §9.1's column comment), so a fifth key is a setting "
-            f"no reader of the column knows to look for — and storing it would "
-            f"make the same column mean one thing to a writer and another to "
-            f"the ablation that reads it."
+            f"architecture §9.1's column comment), plus the one optional key "
+            f"the no-sampling extension added — 'effort', one of "
+            f"{sorted(EFFORT_LEVELS)!r} — so a key outside that set is a "
+            f"setting no reader of the column knows to look for, and storing "
+            f"it would make the same column mean one thing to a writer and "
+            f"another to the ablation that reads it."
         )
     return {
         "thinking": _require_thinking(values["thinking"], origin),
         "temperature": _require_temperature(values["temperature"], origin),
         "top_p": _require_top_p(values["top_p"], origin),
         "seed": _require_seed(values["seed"], origin),
+        "effort": _require_effort(values.get("effort"), origin),
     }
 
 
-def _require_thinking(value: Any, origin: str) -> bool:
-    """Return ``value`` as a strict flag, refusing anything that is not one.
+def _require_thinking(value: Any, origin: str) -> bool | str:
+    """Return ``value`` as a strict flag or ``"adaptive"``, refusing anything else.
 
-    Exact rather than truthy: ``isinstance(value, bool)`` and nothing else.
-    ``1``, ``"true"`` and ``"yes"`` are how three config formats spell ``true``,
-    and a record that accepted any of them would store a value this module chose
+    Exact rather than truthy: ``isinstance(value, bool)`` and nothing else, or
+    the one extra string the no-sampling extension recognises.  ``1``,
+    ``"true"`` and ``"yes"`` are how three config formats spell ``true``, and a
+    record that accepted any of them would store a value this module chose
     rather than one the caller wrote — while a *truthiness* test would also
     accept ``[]`` and ``0``, which nobody passes meaning "do not think".
     """
+    if isinstance(value, str) and value == "adaptive":
+        return value
     if not isinstance(value, bool):
         raise AgentSamplingMalformedError(
-            f"an agent_sampling record's thinking must be a bool, got "
-            f"{value!r} ({type(value).__name__}), in {origin}. Thinking is one "
-            f"of feature 204's four settings and it is a closed set of two — "
-            f"the model either was asked to reason before answering or was not "
-            f"— so a truthy value is a spelling this record refuses rather than "
-            f"one it interprets, because interpreting it would store a setting "
-            f"the caller never wrote."
+            f"an agent_sampling record's thinking must be a bool or the "
+            f"string 'adaptive', got {value!r} ({type(value).__name__}), in "
+            f"{origin}. Thinking is one of feature 204's four settings; the "
+            f"no-sampling extension widens its closed set from two spellings "
+            f"to three, for the one family whose reasoning is adaptive rather "
+            f"than a flag the caller turns on or off — so a value that is "
+            f"none of the three is refused rather than interpreted, because "
+            f"interpreting it would store a setting the caller never wrote."
         )
     return value
 
 
-def _require_temperature(value: Any, origin: str) -> float:
-    """Return ``value`` as a temperature in the range the interface exposes.
+def _require_temperature(value: Any, origin: str) -> float | None:
+    """Return ``value`` as a temperature in range, ``None``, or refuse it.
 
-    The ceiling is :class:`providers.Request`'s, restated: this member would
-    otherwise hold a record of a call the interface refuses, and a store that
-    accepted one would be persisting a value its own member forbids.  The floor
-    is zero — a negative temperature is not a sampling regime any model exposes,
-    and it is refused rather than clamped, because a clamped value is a record
-    that disagrees with the call it describes.
+    ``None`` means "not sent — the model's own default applied", the
+    no-sampling extension's reading for a model that rejects the field
+    outright.  It is not a fifth spelling of a number: a record that
+    defaulted it to ``0.0`` would claim the vendor received a temperature it
+    never did.  Otherwise the ceiling is :class:`providers.Request`'s,
+    restated: this member would otherwise hold a record of a call the
+    interface refuses, and a store that accepted one would be persisting a
+    value its own member forbids.  The floor is zero — a negative temperature
+    is not a sampling regime any model exposes, and it is refused rather than
+    clamped, because a clamped value is a record that disagrees with the call
+    it describes.
     """
+    if value is None:
+        return None
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise AgentSamplingMalformedError(
-            f"an agent_sampling record's temperature must be a number, got "
-            f"{value!r} ({type(value).__name__}), in {origin}. Temperature is a "
-            f"sampling knob a pinned model reads; a non-number — including a "
-            f"bool, which Python would otherwise accept as 0 or 1 — is not a "
-            f"setting it can honour."
+            f"an agent_sampling record's temperature must be a number or "
+            f"null, got {value!r} ({type(value).__name__}), in {origin}. "
+            f"Temperature is a sampling knob a pinned model reads, or null for "
+            f"a no-sampling model that was sent none at all; a non-number — "
+            f"including a bool, which Python would otherwise accept as 0 or 1 "
+            f"— is not a setting it can honour."
         )
     if not math.isfinite(value):
         raise AgentSamplingMalformedError(
@@ -274,30 +341,36 @@ def _require_temperature(value: Any, origin: str) -> float:
     if not (0 <= value <= MAX_TEMPERATURE):
         raise AgentSamplingMalformedError(
             f"an agent_sampling record's temperature must be in "
-            f"[0, {MAX_TEMPERATURE}], got {value}, in {origin}. A temperature "
-            f"outside that range is a sampling regime neither the provider "
-            f"interface nor the models the deployment pins exposes, so it is "
-            f"refused here rather than stored as a draw that could not have "
-            f"happened."
+            f"[0, {MAX_TEMPERATURE}] or null, got {value}, in {origin}. A "
+            f"temperature outside that range is a sampling regime neither the "
+            f"provider interface nor the models the deployment pins exposes, "
+            f"so it is refused here rather than stored as a draw that could "
+            f"not have happened."
         )
     return float(value)
 
 
-def _require_top_p(value: Any, origin: str) -> float:
-    """Return ``value`` as a nucleus-sampling probability in ``(0, 1]``.
+def _require_top_p(value: Any, origin: str) -> float | None:
+    """Return ``value`` as a nucleus-sampling probability in ``(0, 1]``, ``None``, or refuse it.
 
-    Zero is excluded and the exclusion is the interesting half: ``top_p=0``
+    ``None`` means "not sent — the model's own default applied", the same
+    no-sampling reading :func:`_require_temperature` gives it.  Otherwise
+    zero is excluded and the exclusion is the interesting half: ``top_p=0``
     keeps no tokens, so it is not a setting a model can be asked to honour, and
     a record carrying one would be a stored draw no model could have produced.
     ``1.0`` is the other end and is legal — "keep the whole distribution", the
     default every prompt sends — so the bound is half-open and the refusal says
     which end was wrong.
     """
+    if value is None:
+        return None
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise AgentSamplingMalformedError(
-            f"an agent_sampling record's top_p must be a number, got {value!r} "
-            f"({type(value).__name__}), in {origin}. top_p is the nucleus "
-            f"probability the draw sampled from; a non-number is not one."
+            f"an agent_sampling record's top_p must be a number or null, got "
+            f"{value!r} ({type(value).__name__}), in {origin}. top_p is the "
+            f"nucleus probability the draw sampled from, or null for a "
+            f"no-sampling model that was sent none at all; a non-number is "
+            f"not one."
         )
     if not math.isfinite(value):
         raise AgentSamplingMalformedError(
@@ -308,14 +381,38 @@ def _require_top_p(value: Any, origin: str) -> float:
         )
     if not (0 < value <= 1):
         raise AgentSamplingMalformedError(
-            f"an agent_sampling record's top_p must be in (0, 1], got {value}, "
-            f"in {origin}. Nucleus sampling keeps the smallest set of tokens "
-            f"whose probability mass reaches top_p, so 0 keeps no tokens at all "
-            f"— it is not a setting any model can honour, and a stored draw "
-            f"carrying it could not have happened. 1.0 is legal and is the "
-            f"whole distribution."
+            f"an agent_sampling record's top_p must be in (0, 1] or null, got "
+            f"{value}, in {origin}. Nucleus sampling keeps the smallest set of "
+            f"tokens whose probability mass reaches top_p, so 0 keeps no "
+            f"tokens at all — it is not a setting any model can honour, and a "
+            f"stored draw carrying it could not have happened. 1.0 is legal "
+            f"and is the whole distribution."
         )
     return float(value)
+
+
+def _require_effort(value: Any, origin: str) -> str | None:
+    """Return ``value`` as one of :data:`EFFORT_LEVELS`, or ``None`` if absent.
+
+    ``effort`` is the record's one **optional** key: present only when a draw
+    sent one to a no-sampling model in place of ``temperature`` and ``top_p``.
+    ``None`` means no effort was sent, and that is not a refusal the way a
+    missing required setting is — there is nothing to record. A value that is
+    present but outside the closed set is refused, by the same no-coercion
+    rule the four required settings follow.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or value not in EFFORT_LEVELS:
+        raise AgentSamplingMalformedError(
+            f"an agent_sampling record's effort must be one of "
+            f"{sorted(EFFORT_LEVELS)!r} or absent, got {value!r} "
+            f"({type(value).__name__}), in {origin}. effort is the optional "
+            f"control a no-sampling model reads in place of temperature and "
+            f"top_p; a spelling outside that set is not a level any backend "
+            f"honours."
+        )
+    return value
 
 
 def _require_seed(value: Any, origin: str) -> int:
@@ -350,32 +447,37 @@ def _require_seed(value: Any, origin: str) -> int:
 
 @dataclass(frozen=True)
 class AgentSampling:
-    """The four settings that produced one node — feature 204's dice.
+    """The four required settings plus ``effort`` — feature 204's dice, extended.
 
-    ``temperature``, ``top_p``, ``thinking`` and ``seed``, each validated on
-    construction.  Frozen and value-equal for the reason every record in this
-    package is: it is a fact about a generation that already happened, and
-    equality is by value, so a suite can assert
-    ``load_provenance(node).sampling == AgentSampling(...)`` rather than
-    reaching into fields.
+    ``temperature``, ``top_p``, ``thinking`` and ``seed`` are required and
+    validated on construction, the way feature 204 shipped them; ``effort`` is
+    the one optional key the no-sampling extension added.  Frozen and
+    value-equal for the reason every record in this package is: it is a fact
+    about a generation that already happened, and equality is by value, so a
+    suite can assert ``load_provenance(node).sampling == AgentSampling(...)``
+    rather than reaching into fields.
 
-    The four keyword defaults are the *call site's* convenience — a caller
+    The keyword defaults are the *call site's* convenience — a caller
     describing a call it is making says ``AgentSampling(seed=7)`` — and they are
-    not a licence for a *document* to omit a key: :func:`require_agent_sampling`
-    requires all four of anything parsed, which is the difference the module
-    docstring sets out.  :meth:`to_dict` always emits all four, so what lands in
-    the column is total whichever way the record was built.
+    not a licence for a *document* to omit a required key:
+    :func:`require_agent_sampling` requires all four of anything parsed, which
+    is the difference the module docstring sets out. ``effort`` has no such
+    requirement to omit, because it is optional in a document the same way it
+    is here.  :meth:`to_dict` always emits the four required keys, plus
+    ``effort`` when it is not ``None``, so what lands in the column is total
+    whichever way the record was built.
     """
 
-    temperature: float = 0.0
-    top_p: float = 1.0
-    thinking: bool = False
+    temperature: float | None = 0.0
+    top_p: float | None = 1.0
+    thinking: bool | str = False
     seed: int = 0
+    effort: str | None = None
 
     def __post_init__(self) -> None:
         # Validated through the same helper the parse uses, so a record built
-        # from four arguments and one read back out of the column are judged by
-        # one set of rules — there is no second validation path to drift.  The
+        # from arguments and one read back out of the column are judged by one
+        # set of rules — there is no second validation path to drift.  The
         # validated values are assigned back onto the record, so an ``int``
         # temperature is stored as the ``float`` it means and two records built
         # two ways compare equal.
@@ -385,6 +487,7 @@ class AgentSampling:
                 "top_p": self.top_p,
                 "thinking": self.thinking,
                 "seed": self.seed,
+                "effort": self.effort,
             },
             origin="the sampling record being built",
         )
@@ -394,19 +497,25 @@ class AgentSampling:
     # -- The stored form ----------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
-        """The record as the four keys the column stores — always all four.
+        """The record as the column stores it: the four required keys, always, plus ``effort`` when set.
 
         A fresh :class:`dict` rather than something over ``__dict__``, so a
         caller that mutates the result mutates nothing this record holds; that
         is what lets the record stay frozen while its rendering is a plain
-        mapping a JSON encoder can carry.
+        mapping a JSON encoder can carry.  ``effort`` is omitted entirely when
+        it is ``None`` rather than rendered as a null, so a record built before
+        the no-sampling extension renders to the identical four-key document it
+        always has.
         """
-        return {
+        document: dict[str, Any] = {
             "temperature": self.temperature,
             "top_p": self.top_p,
             "thinking": self.thinking,
             "seed": self.seed,
         }
+        if self.effort is not None:
+            document["effort"] = self.effort
+        return document
 
     def to_json(self) -> str:
         """The record as the canonical JSON text the column stores.
@@ -495,7 +604,7 @@ def _stored_document(value: object, origin: str) -> Mapping[str, Any]:
 
 
 def _record_fields_or_none(value: object) -> Mapping[str, Any] | None:
-    """A sampling *record* as its four fields, or ``None`` if it is not one.
+    """A sampling *record* as its fields, or ``None`` if it is not one.
 
     A record is recognised by its **attributes, not its class**, and that is not
     stylistic — it is the workspace's module loader.  The loader imports every
@@ -504,8 +613,8 @@ def _record_fields_or_none(value: object) -> Mapping[str, Any] | None:
     objects over one source file and an ``isinstance`` check answers ``False``
     for a record a caller legitimately built from the other copy.  Feature 203
     shipped exactly that defect and its fix is the precedent this follows: the
-    checked shape is what matters, and a value carrying the four settings *is*
-    the record whichever module object it came from.
+    checked shape is what matters, and a value carrying the four required
+    settings *is* the record whichever module object it came from.
 
     Checked on ``object.__getattribute__`` rather than ``getattr``, so an
     arbitrary object's ``__getattr__`` cannot fabricate four settings — this
@@ -513,6 +622,11 @@ def _record_fields_or_none(value: object) -> Mapping[str, Any] | None:
     recorded a draw.  The values are *not* re-validated here: they are validated
     by :func:`_require_settings` at the one seam that builds a record, and a
     second check here would be a rule to drift from.
+
+    ``effort`` is read the same way but is allowed to be missing — it reads as
+    ``None`` rather than disqualifying the value as a record, because it is
+    the one optional field and a stand-in built before the no-sampling
+    extension would not carry it.
     """
     fields: dict[str, Any] = {}
     try:
@@ -520,6 +634,10 @@ def _record_fields_or_none(value: object) -> Mapping[str, Any] | None:
             fields[key] = object.__getattribute__(value, key)
     except AttributeError:
         return None
+    try:
+        fields["effort"] = object.__getattribute__(value, "effort")
+    except AttributeError:
+        fields["effort"] = None
     return fields
 
 
@@ -528,9 +646,12 @@ def require_agent_sampling(value: object) -> AgentSampling:
 
     The one parse of the stored form, and feature 204's second gate.  Accepts
     the column's text, a mapping a caller built, or a record built from either
-    copy of this module — and **requires all four settings of a document**,
-    which is the rule the module docstring argues for: a document is a record,
-    and a record missing a setting is a record of a different draw.
+    copy of this module — and **requires all four required settings of a
+    document**, which is the rule the module docstring argues for: a document
+    is a record, and a record missing a required setting is a record of a
+    different draw.  ``effort`` stays optional throughout: it is never listed
+    as missing, because a document that sent no effort is not a document that
+    forgot one.
 
     Deliberately unaccommodating in the three directions a caller meets it:
 
@@ -541,7 +662,9 @@ def require_agent_sampling(value: object) -> AgentSampling:
       setting did you forget"* is the only actionable form of that report.
     * **``None`` for a seed is refused**, though ``0`` is accepted: a record
       naming no seed cannot be replayed, and defaulting one in is exactly the
-      lie the mandate exists to prevent.
+      lie the mandate exists to prevent.  ``None`` for ``temperature`` or
+      ``top_p`` is accepted, by contrast — the no-sampling extension's reading
+      of "not sent", not an absence of the kind ``seed`` refuses.
     * **A value of the wrong type is refused rather than coerced.**  ``"0.7"``
       is not a temperature and ``1`` is not a flag; both are a caller who
       passed the wrong thing, and both would otherwise store a setting the
@@ -579,6 +702,8 @@ def require_agent_sampling(value: object) -> AgentSampling:
             f"most often left out is seed — the one that makes a replay "
             f"reproduce the node. Write "
             f"{ {key: DEFAULT_SAMPLING[key] for key in missing} !r} if the draw "
-            f"used the defaults."
+            f"used the defaults. (effort is not among these four: it is "
+            f"optional, and a document naming none of it is not missing "
+            f"anything.)"
         )
     return AgentSampling(**_require_settings(document, origin))
