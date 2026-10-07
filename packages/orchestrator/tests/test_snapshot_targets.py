@@ -235,3 +235,29 @@ def test_narrows_to_the_requests_symbols_and_date_range(
     assert narrowed[BAR_DAYS[1]]["AAA"] == pytest.approx(
         _close(0, 3) / _close(0, 1) - 1.0
     )
+
+
+
+def test_the_sidecar_backed_endpoint_permutes_per_symbol_not_per_row() -> None:
+    # Regression: orchestrator._sidecar_backed_endpoint carried its own copy of
+    # the old whole-row permutation, so the live null oracle placed a symbol
+    # listed late in the window onto earlier dates and the gate refused every
+    # null node (smoke campaign a9656ef3). It must use nulloracle's per-symbol
+    # permutation.
+    import datetime as _dt
+    import inspect
+
+    import orchestrator
+
+    source = inspect.getsource(orchestrator._sidecar_backed_endpoint)
+    assert "block_permute_cross_section" in source
+    assert "block_indices" not in source
+    from nulloracle.blockpermute import block_permute_cross_section
+
+    days = [_dt.date(2026, 7, 1) + _dt.timedelta(days=i) for i in range(60)]
+    panel = {
+        day: {"AAA": 0.01 * i, **({"LATE": 0.5} if i >= 50 else {})}
+        for i, day in enumerate(days)
+    }
+    permuted = block_permute_cross_section(panel, seed=7, block_days=20)
+    assert all(set(row) <= set(panel[day]) for day, row in permuted.items())

@@ -248,29 +248,26 @@ def _sidecar_backed_endpoint(sidecar: Any, context: EvaluationContext) -> Any:
     ``"nulloracle-target-route"`` was built from, so both name one world),
     with :func:`~orchestrator._targets.snapshot_forward_returns` bound to
     ``context`` as its ``targets`` seam and nulloracle's own
-    :func:`~nulloracle.block_indices` at the panel's grain as its ``permute``
+    nulloracle's per-symbol :func:`~nulloracle.blockpermute.block_permute_cross_section` as its ``permute``
     seam — the same reconciliation ``nulloracle.build_target_route``'s own
     closure makes (feature 115's stored-seed block permutation, read from
     the sidecar's own sealed ``perm_seed``/``block_days`` for a null node),
-    reproduced here rather than imported because the mechanism this member
-    reaches for is the public ``block_indices``, never a private name of
-    nulloracle's own.  ``nulloracle`` is imported lazily — this member
+    called through nulloracle's public blockpermute module rather than re-implemented here (a local copy of the old whole-row swap is what let the cross-section bug survive its fix).  ``nulloracle`` is imported lazily — this member
     speaks it only at call time, never at module scope — the same
     discipline :mod:`orchestrator._oracle` already states for the same
     reason.
     """
-    from nulloracle import TargetEndpoint, block_indices
+    from nulloracle import TargetEndpoint
+    from nulloracle.blockpermute import block_permute_cross_section
 
     def _permute(
         series: Any, *, seed: Any, block_days: Any
     ) -> dict[Any, dict[str, float]]:
-        days = list(series)
-        rows = [series[day] for day in days]
-        order = block_indices(range(len(days)), seed=seed, block_days=block_days)
-        return {
-            days[position]: dict(rows[order[position]])
-            for position in range(len(days))
-        }
+        # The member's own per-symbol permutation, never a local copy of the
+        # old whole-row swap: that copy moved a mid-window listing onto
+        # dates it has no bar on, so every null node failed the gate
+        # (smoke campaign a9656ef3, root e0acedf1).
+        return block_permute_cross_section(series, seed=seed, block_days=block_days)
 
     return TargetEndpoint(
         sidecar, targets=snapshot_forward_returns(context), permute=_permute

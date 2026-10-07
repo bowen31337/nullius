@@ -1260,16 +1260,14 @@ def _stored_permutation(series: Any, *, seed: Any, block_days: Any) -> dict:
     # Imported lazily, the way the member defers every other mechanism: the
     # factory's scan imports this package to fire its @register, and the
     # permutation is only ever reached on a null branch's request.
-    from .blockpermute import block_indices
+    from .blockpermute import block_permute_cross_section
 
-    days = list(series)
-    rows = [series[day] for day in days]
-    order = block_indices(range(len(days)), seed=seed, block_days=block_days)
-    # The grid holds; the rows move across it.  ``order[position]`` is the
-    # input slot whose row the permuted slot ``position`` receives, so this
-    # gather is what puts a block of returns under a *different* block of
-    # dates — the displacement §7.3 is about.
-    return {days[position]: dict(rows[order[position]]) for position in range(len(days))}
+    # Per symbol, never per date-row: a whole-row swap moves a symbol onto a
+    # date it has no bar on (a mid-window listing), which the gate refuses,
+    # so no null node over such a snapshot could ever be scored
+    # (bug_spec_pipeline_cross_section.xml bug 2). For symbols present on
+    # every date this is bit-identical to the old row swap.
+    return block_permute_cross_section(series, seed=seed, block_days=block_days)
 
 
 @register(KEY_ALERT_COMPONENT_NAME)

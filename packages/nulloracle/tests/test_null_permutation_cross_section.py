@@ -532,3 +532,22 @@ class TestCallingTheTargetRouteForANullNode:
             assert set(real_response.target_series[day]) == set(
                 null_response.target_series[day]
             )
+
+
+def test_the_live_routes_permutation_never_places_a_late_listing_early() -> None:
+    # Regression: the fix above landed in block_permute_cross_section, but the
+    # route's own closure (nulloracle._stored_permutation) still swapped whole
+    # date-rows, so a planted null over a snapshot with a mid-window listing
+    # still failed the gate (smoke campaign a9656ef3, root e0acedf1).
+    import datetime as _dt
+
+    from nulloracle import _stored_permutation
+
+    days = [_dt.date(2026, 7, 1) + _dt.timedelta(days=i) for i in range(60)]
+    panel = {
+        day: {"AAA": 0.01 * i, "BBB": -0.01 * i, **({"LATE": 0.5} if i >= 50 else {})}
+        for i, day in enumerate(days)
+    }
+    permuted = _stored_permutation(panel, seed=20261008, block_days=20)
+    for day, row in permuted.items():
+        assert set(row) <= set(panel[day]), (day, sorted(set(row) - set(panel[day])))
