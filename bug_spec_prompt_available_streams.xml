@@ -1,0 +1,37 @@
+<bug_spec>
+  <!-- STREAMS-1. Found 2026-10-07 by smoke campaign 360f6f00, run after
+       bug_spec_authoring_contract.xml landed. All three evaluated roots
+       failed EvaluatorNormalizeError because each requested data the sealed
+       snapshot does not hold, received an empty frame and returned a
+       constant vector:
+       - calendar-events: ctx.bars("1h", ...)
+       - cross-asset-divergence: ctx.bars("1h", ...)
+       - borrow-rate-conditioning: ctx.borrow(...)
+       The snapshot holds 1d bars only. The fourth root used bars("1d") but
+       was not evaluated, because an operator edit to the workspace crashed
+       the running process. Spend: 4 Opus calls. Core shape, explicit
+       touches_files. -->
+
+  <bug index="1" shape="core" severity="critical"
+       touches_files="packages/signal-agent/src/signal_agent/_authoring_prompt.py,packages/signal-agent/src/signal_agent/_llm_author.py,packages/signal-agent/tests/test_prompt_available_streams.py">
+    <title>The live authoring prompt never carries available_streams, so the model requests streams the snapshot does not hold and every such signal returns a constant vector</title>
+    <symptoms>
+      SignalContract.declaration(snapshot=...) can report available_streams (bug_spec_authoring_contract.xml bug 1), but _authoring_prompt.py builds the prompt's contract section with signal_contract().declaration() and passes no snapshot (line ~247). _llm_author.py has no snapshot to hand it. The live prompt therefore never says which streams exist, and the model chose 1h bars and borrow data, which this snapshot lacks.
+    </symptoms>
+    <reproduction_steps>
+      Compose the signal author with NULLIUS_EVALUATION_CONFIG naming a snapshot holding only 1d bars, and build one root prompt: its contract section has no available_streams key.
+    </reproduction_steps>
+    <expected>
+      - The composed signal author resolves the evaluation context's sealed snapshot from NULLIUS_EVALUATION_CONFIG (the same snapshot the evaluator mounts). It reads only the manifest and no Parquet files, so composition stays cheap. Every root, child and retry prompt's contract section then carries available_streams.
+      - When available_streams is present, the contract section also states plainly that every accessor or frequency not listed returns an empty frame for this evaluation, so a signal must be built from the listed streams only, and the theme must be expressed through them. The statement is generated from available_streams, never hard-coded to "1d bars".
+      - Without NULLIUS_EVALUATION_CONFIG, the prompt is unchanged. A configured snapshot that cannot be read refuses composition with the existing EvaluationConfigError text rather than silently omitting the field.
+      - test_prompt_available_streams.py covers the root, child and retry prompts over a tmp sealed snapshot with only 1d bars: each carries available_streams == {"bars": ("1d",)} and the empty-frame statement. No config gives no field. A broken snapshot path refuses. Zero Parquet reads at composition. No network, and it passes under pytest-xdist.
+    </expected>
+    <actual>Root cause: the snapshot argument added to declaration() was never threaded through the prompt builder or the composed author.</actual>
+    <constraints>
+      signal-agent imports no other member except through the paths it already uses (contract, providers, snapshot via its public API); it does not import orchestrator
+      No file outside the three listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
