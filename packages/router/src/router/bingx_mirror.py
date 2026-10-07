@@ -179,10 +179,28 @@ import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+
+from cost_model import (
+    COST_MODEL_PATH_ENV,
+    MAKER,
+    TAKER,
+    AggressiveOrder,
+    BookLevel,
+    CostModelError,
+    FeeSchedule,
+    PassiveFillDecision,
+    QueuePositionPenaltyModel,
+    RecordedBook,
+    Trade,
+    load_cost_model,
+    resolve_fee_schedule,
+    resolve_queue_position_penalty_model,
+    walk_recorded_book,
+)
 
 from .bingx_client import BingXClient, RouterBingXTransportError
 from .bingx_client_order_id import project_bingx_client_order_id
@@ -197,6 +215,7 @@ from .bingx_order import (
     BINGX_BUY,
     BINGX_LIMIT_ORDER,
     BINGX_MARKET_ORDER,
+    BINGX_SELL,
     BingXOrder,
     BingXRefusedLeg,
     assemble_bingx_order,
@@ -1151,9 +1170,31 @@ def reprice_passive_order(
     return answer
 
 
+def _quote_or_none(depth: Any, side: str, symbol: str) -> Decimal | None:
+    """:func:`_book_quote`'s answer, or ``None`` for a book this fact cannot read.
+
+    The VST fidelity harness's ``best_bid``/``best_ask`` facts
+    (additions_spec_vst_fidelity.xml, feature 2) read *both* sides of the
+    depth answer repricing already fetched, while :func:`reprice_passive_order`
+    itself reads only the order's own side.  A malformed opposite side is
+    therefore a fact only this capture ever asks about, and asking about it
+    must never turn a placement that would otherwise succeed into a crash
+    over a row nobody required — so the same shape fault
+    :func:`_book_quote` raises over is swallowed here and answered as the
+    honest absence it would be for an empty side.
+    """
+    try:
+        return _book_quote(depth, side, symbol)
+    except RouterBingXMirrorError:
+        return None
+
+
 def _passive_repricer(
     *, client: Any, book: Mapping[str, Any], orders: Sequence[BingXOrder]
-) -> Callable[[BingXOrder], BingXOrder] | None:
+) -> tuple[
+    Callable[[BingXOrder], BingXOrder] | None,
+    dict[str, tuple[Decimal | None, Decimal | None]],
+]:
     """The per-leg repricing closure for a placement run, or ``None``.
 
     ``None`` — no repricing at all, every leg sent verbatim — when the run
@@ -1171,9 +1212,20 @@ def _passive_repricer(
     book it may never be placed against.  A leg the gates closed answers a
     :class:`_RepriceRefusal` carrying the gate's code word, which escapes
     the backoff and rolls the store's claim back.
+
+    Returns the repricer alongside a ``{symbol: (best_bid, best_ask)}``
+    mapping this same closure fills in as each passive leg reprices — the
+    VST fidelity harness's own fact, *"from the depth read used for
+    repricing"* (additions_spec_vst_fidelity.xml, feature 2): the one read
+    this run makes of a symbol's book, kept rather than read a second time
+    at record time, so the recorded quote is never a later, different
+    read of a book that may have moved on.  A MARKET leg never reaches this
+    closure at all, so its symbol is simply absent from the mapping — the
+    feature's own *"null for MARKET legs"*.
     """
+    quotes: dict[str, tuple[Decimal | None, Decimal | None]] = {}
     if not any(order.type == BINGX_LIMIT_ORDER for order in orders):
-        return None
+        return None, quotes
     depth = getattr(client, "depth", None)
     if not callable(depth):
         raise RouterBingXMirrorError(
@@ -1204,14 +1256,203 @@ def _passive_repricer(
             # translation refused those — but if the venue's document
             # changed under the run, the leg is refused, not placed blind.
             raise _RepriceRefusal(str(refusal.code)) from refusal
+        depth_answer = depth(order.symbol)
+        quotes[order.symbol] = (
+            _quote_or_none(depth_answer, BINGX_BUY, order.symbol),
+            _quote_or_none(depth_answer, BINGX_SELL, order.symbol),
+        )
         answer = reprice_passive_order(
-            order=order, depth=depth(order.symbol), filters=filters, book=book
+            order=order, depth=depth_answer, filters=filters, book=book
         )
         if isinstance(answer, BingXRefusedLeg):
             raise _RepriceRefusal(answer.code)
         return answer
 
-    return reprice
+    return reprice, quotes
+
+
+# -- Decision-time facts (additions_spec_vst_fidelity.xml, feature 2) ----------
+#
+# Every function below answers a *diagnostic* fact about a leg the mirror is
+# about to send or has just sent — never a fact placement depends on.  Each
+# one degrades to ``None`` on any failure of its own (a document that will
+# not load, a book this run never read, a model the cost library refuses),
+# because the feature's law is explicit: *"Null when the cost model refuses,
+# never 0"*, and a diagnostic row must never turn a placement that would
+# otherwise succeed into one that raises.
+
+
+def _resolve_cost_model_artifacts() -> (
+    tuple[str | None, FeeSchedule | None, QueuePositionPenaltyModel | None]
+):
+    """The resolved cost model's version, fee schedule and queue penalty.
+
+    Resolved once per :func:`mirror_place` run rather than once per leg — the
+    same single-parse economy :func:`~cost_model.config.read_cost_model_document`
+    argues for its own callers.  Every one of the three answers ``None`` on
+    any failure (a missing document, a malformed section, PyYAML absent):
+    this function is the one seam between the mirror and the shared cost
+    library, and nothing on the placement path may depend on the library
+    having an opinion today.
+
+    The document path is read the same way
+    :meth:`cost_model.service.CostModelService.from_env` resolves its own —
+    :data:`~cost_model.config.COST_MODEL_PATH_ENV`, else the library's
+    shipped default — so a deployment that points the rest of the workspace
+    at a signed Z0 artifact prices this estimate against that same artifact,
+    not a bundled stand-in.
+    """
+    raw_path = os.environ.get(COST_MODEL_PATH_ENV) or None
+    try:
+        config = load_cost_model(raw_path)
+    except Exception:  # noqa: BLE001 - the decision record is best-effort too
+        return None, None, None
+    try:
+        fee_schedule: FeeSchedule | None = resolve_fee_schedule(config.document)
+    except Exception:  # noqa: BLE001 - the decision record is best-effort too
+        fee_schedule = None
+    try:
+        queue_model: QueuePositionPenaltyModel | None = (
+            resolve_queue_position_penalty_model(config.document)
+        )
+    except Exception:  # noqa: BLE001 - the decision record is best-effort too
+        queue_model = None
+    return config.version, fee_schedule, queue_model
+
+
+def _recorded_book_or_none(depth: Any) -> RecordedBook | None:
+    """``depth`` (the venue's own answer) as a :class:`RecordedBook`, or ``None``.
+
+    ``None`` for anything this reading cannot make sense of — a payload
+    that is not the venue's book shape, a level that is not a
+    ``[price, quantity]`` pair, a ladder out of order or crossed — because
+    :func:`walk_recorded_book` is only ever asked over a book this reading
+    already trusts, and a malformed book is exactly the fact
+    :data:`_book_quote` already treats as unreadable rather than guessed at.
+    """
+    try:
+        bids = depth.get("bids") or ()
+        asks = depth.get("asks") or ()
+        return RecordedBook(
+            bids=[BookLevel(price=float(level[0]), quantity=float(level[1])) for level in bids],
+            asks=[BookLevel(price=float(level[0]), quantity=float(level[1])) for level in asks],
+        )
+    except Exception:  # noqa: BLE001 - the decision record is best-effort too
+        return None
+
+
+def _market_expected_cost_bps(
+    *, side: str, quantity: Decimal, depth: Any, fee_schedule: FeeSchedule | None
+) -> float | None:
+    """A MARKET leg's pre-trade estimate: book_walk's slippage plus the taker fee.
+
+    additions_spec_vst_fidelity.xml, feature 2: *"For MARKET legs this is
+    book_walk over the recorded depth plus the taker fee."*  ``depth`` is
+    the same venue answer :func:`_recorded_book_or_none` turns into the
+    ladder :func:`walk_recorded_book` walks; an order whose size outruns
+    the recorded depth, a book with an empty or crossed side, or a fee
+    schedule this run could not resolve each answer the honest ``None``
+    rather than a figure the tape does not back.
+    """
+    if fee_schedule is None or depth is None:
+        return None
+    book = _recorded_book_or_none(depth)
+    if book is None:
+        return None
+    try:
+        walk = walk_recorded_book(
+            book, AggressiveOrder(side=side.lower(), quantity=float(quantity))
+        )
+        return walk.slippage_bps + fee_schedule.rate(TAKER)
+    except CostModelError:
+        return None
+
+
+def _limit_expected_cost_bps(
+    *,
+    side: str,
+    limit_price: Decimal,
+    quantity: Decimal,
+    fee_schedule: FeeSchedule | None,
+    queue_model: QueuePositionPenaltyModel | None,
+) -> float | None:
+    """A LIMIT leg's pre-trade estimate: passive_fill's expected cost plus the maker fee.
+
+    additions_spec_vst_fidelity.xml, feature 2: *"For LIMIT legs it is
+    passive_fill's expected cost with queue_penalty plus the maker fee."*
+    There is no tape to gate a *pre*-trade fill on — feature 63's trade-
+    through gate decides whether a *recorded* tape picked an order off, and
+    this estimate is made before the venue has answered at all — so the
+    estimate prices the fill §6.2's queue-position penalty already prices
+    *every* passive fill at: a :class:`~cost_model.passive_fill.PassiveFillDecision`
+    built as filled, at the order's own limit, is what
+    :class:`~cost_model.queue_penalty.QueuePositionPenaltyModel` is handed,
+    and its rate is the pre-trade adverse-selection cost a resting order
+    expects to pay if the market comes to it — §10's own reason the queue
+    penalty exists even on a zero-maker venue.  A queue model or a fee
+    schedule this run could not resolve answers the honest ``None``.
+    """
+    if fee_schedule is None or queue_model is None:
+        return None
+    try:
+        decision = PassiveFillDecision(
+            side=side.lower(),
+            limit_price=float(limit_price),
+            fills=True,
+            through_trade=Trade(price=float(limit_price), quantity=float(quantity)),
+        )
+        charge = queue_model.charge(decision)
+        return charge.cost_bps + fee_schedule.rate(MAKER)
+    except CostModelError:
+        return None
+
+
+def _target_quantity_or_none(
+    book: Mapping[str, Any], symbol: str, mark: Decimal | None
+) -> Decimal | None:
+    """The leg's raw size before the step/tick grid, or ``None``.
+
+    additions_spec_vst_fidelity.xml, feature 2: *"target_quantity: the
+    quantity before step/tick rounding."*  :mod:`router.sizing` truncates
+    ``equity × weight ÷ mark`` onto the symbol's step grid before an order
+    is ever assembled, and nothing downstream of that truncation carries
+    the unrounded figure — so this recomputes the one term the sizer
+    rounds, read-only, straight from the book's own ``equity_usdt`` and
+    ``weights``, and never feeds the answer back into anything placement
+    reads.  A term this cannot read (no weight for the symbol, no usable
+    mark, an equity or a weight that is not a plain real) answers ``None``.
+    """
+    if mark is None or mark <= 0:
+        return None
+    weights = book.get("weights")
+    if not isinstance(weights, Mapping) or symbol not in weights:
+        return None
+    try:
+        equity = Decimal(str(book.get("equity_usdt")))
+        weight = Decimal(str(weights[symbol]))
+        if not equity.is_finite() or not weight.is_finite():
+            return None
+        return abs(equity * weight / mark)
+    except (InvalidOperation, TypeError, ArithmeticError):
+        return None
+
+
+def _safe_depth(client: Any, symbol: str) -> Any:
+    """``client.depth(symbol)``, or ``None`` for a client or a read that cannot answer.
+
+    The MARKET-leg half of :func:`_market_expected_cost_bps`'s own read: a
+    client wired for an all-MARKET double that never implements ``depth``
+    at all must still place every order exactly as it always has, so a
+    missing face or a raised fault here is this fact's own absence, never
+    a wiring error the run propagates.
+    """
+    getter = getattr(client, "depth", None)
+    if not callable(getter):
+        return None
+    try:
+        return getter(symbol)
+    except Exception:  # noqa: BLE001 - the decision record is best-effort too
+        return None
 
 
 # -- Placement -----------------------------------------------------------------
@@ -1319,7 +1560,8 @@ def _order_recorder(
     book: Mapping[str, Any],
     client: Any,
     orders: Sequence[BingXOrder],
-) -> Callable[[BingXOrder], None] | None:
+    quotes: Mapping[str, tuple[Decimal | None, Decimal | None]],
+) -> Callable[..., None] | None:
     """The callable that records each placed leg's terms, or ``None``.
 
     Returns ``None`` — recording nothing — unless the store carries the
@@ -1331,20 +1573,48 @@ def _order_recorder(
     existed.  The real store carries both, so a deployment records; a double
     without the terms write is an explicit opt-out.
 
-    For a MARKET leg the recorder reads its symbol's mark **once**, from the
-    same premiumIndex document the plan already fetched through, and hands
-    that mark to every aggressive leg — because the fill-cost reconciliation
-    measures a MARKET fill against the mark read *in the run that placed it*,
-    never against a mark re-read later.  The document is fetched only when
-    the plan actually holds a MARKET leg, so an all-passive rebalance costs
-    no extra read.
+    The returned ``recorder(order, *, sent_at, acked_at)`` carries feature
+    317's original terms (unchanged) beside
+    additions_spec_vst_fidelity.xml feature 2's decision-time facts,
+    computed here, once per run, best-effort:
+
+    * **The venue's premiumIndex is read once, for every order's symbol**
+      (not only a MARKET leg's, as feature 317's own reference price reads
+      it) — unchecked, so a symbol the document does not price is simply
+      absent rather than a refusal.  This is ``decision_mark`` — *"the
+      premiumIndex mark the plan was built from"* — and it is also what
+      :func:`_target_quantity_or_none` sizes against.  A MARKET leg's
+      *reference price* keeps the existing, checked read below: a mark it
+      cannot find there is still a hard refusal, because that term is not
+      new and not optional.
+    * **``best_bid``/``best_ask``** are read off ``quotes`` — the mapping
+      :func:`_passive_repricer`'s own closure filled in from the one depth
+      read repricing already made; absent (``None, None``) for a MARKET
+      leg, which never reaches that closure at all.
+    * **``pre_reprice_limit``** is the *plan's* own leg for this symbol —
+      before :func:`reprice_passive_order` ever touched it — read from
+      ``orders``, the sequence :func:`mirror_place` built the plan from.
+    * **``expected_cost_bps``** is computed from the order as it was
+      actually *sent* (post-repricing for a LIMIT leg, verbatim for a
+      MARKET one): :func:`_limit_expected_cost_bps` for the former,
+      :func:`_market_expected_cost_bps` (over a fresh depth read — the
+      estimate needs the ladder the order would walk, which repricing
+      never reads for a MARKET leg) for the latter.
+    * **``cost_model_version``** is the resolved document's own version,
+      shared by every leg this run records.
+
+    Every one of these is best-effort: a document that will not load, a
+    mark the venue does not price for a *passive* leg, a book this run
+    could not read — each answers ``None`` rather than a refusal, because
+    none of them is a term placement depends on, and the feature's law is
+    explicit: *"Null when the cost model refuses, never 0."*
     """
     record_order = getattr(store, "record_order", None)
     if not callable(record_order):
         return None
     book_id, moment = _identity_terms(book)
+    plan_by_symbol = {order.symbol: order for order in orders}
 
-    marks: dict[str, Decimal] = {}
     market_symbols = sorted(
         {
             order.symbol
@@ -1352,27 +1622,72 @@ def _order_recorder(
             if order.type == BINGX_MARKET_ORDER
         }
     )
-    if market_symbols:
-        try:
-            marks = resolve_bingx_mark_prices(
-                _document(client.premium_index(), "BingX premiumIndex"),
-                market_symbols,
-            )
-        except RouterMarkPriceError as refusal:
+    # Every order's symbol, unchecked: an unpriced symbol is simply absent
+    # from `all_marks`, never a refusal -- this fuels decision_mark and
+    # target_quantity for every leg, LIMIT included, which feature 317's
+    # own (checked) reference-price read below never needed to ask for.
+    # A transport fault fetching the document itself is swallowed only when
+    # nothing below hard-depends on it (no MARKET leg in this plan): a
+    # MARKET leg's reference price is not new and not optional, so a client
+    # or network fault fetching it must still surface as itself rather than
+    # the misleading "no mark price" refusal below.
+    try:
+        all_marks: dict[str, Decimal] = resolve_bingx_mark_prices(
+            _document(client.premium_index(), "BingX premiumIndex")
+        )
+    except Exception:
+        if market_symbols:
+            raise
+        all_marks = {}
+
+    reference_marks: dict[str, Decimal] = {}
+    for symbol in market_symbols:
+        mark = all_marks.get(symbol)
+        if mark is None:
             raise RouterBingXMirrorError(
                 f"{MIRROR_CODE}: the venue's premiumIndex document states no "
-                f"mark price for {refusal.symbol!r}; a MARKET leg's recorded "
+                f"mark price for {symbol!r}; a MARKET leg's recorded "
                 "reference price is its symbol's mark read in the same run, "
                 "and a document that does not price the leg cannot record the "
                 "reference its fill is measured against (feature 3)"
-            ) from refusal
+            )
+        reference_marks[symbol] = mark
 
-    def recorder(order: BingXOrder) -> None:
+    cost_model_version, fee_schedule, queue_model = _resolve_cost_model_artifacts()
+
+    def recorder(order: BingXOrder, *, sent_at: datetime, acked_at: datetime) -> None:
         reference = (
             Decimal(order.price)
             if order.type == BINGX_LIMIT_ORDER
-            else marks[order.symbol]
+            else reference_marks[order.symbol]
         )
+
+        decision_mark = all_marks.get(order.symbol)
+        plan_order = plan_by_symbol.get(order.symbol)
+        pre_reprice_limit = (
+            Decimal(plan_order.price)
+            if plan_order is not None and plan_order.type == BINGX_LIMIT_ORDER
+            else None
+        )
+        target_quantity = _target_quantity_or_none(book, order.symbol, decision_mark)
+        best_bid, best_ask = quotes.get(order.symbol, (None, None))
+
+        if order.type == BINGX_MARKET_ORDER:
+            expected_cost_bps = _market_expected_cost_bps(
+                side=order.side,
+                quantity=Decimal(order.quantity),
+                depth=_safe_depth(client, order.symbol),
+                fee_schedule=fee_schedule,
+            )
+        else:
+            expected_cost_bps = _limit_expected_cost_bps(
+                side=order.side,
+                limit_price=Decimal(order.price),
+                quantity=Decimal(order.quantity),
+                fee_schedule=fee_schedule,
+                queue_model=queue_model,
+            )
+
         record_order(
             client_order_id=_full_identifier(book, order.symbol),
             book_id=book_id,
@@ -1382,6 +1697,15 @@ def _order_recorder(
             order_type=order.type,
             quantity=order.quantity,
             reference_price=reference,
+            decision_mark=decision_mark,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            pre_reprice_limit=pre_reprice_limit,
+            target_quantity=target_quantity,
+            expected_cost_bps=expected_cost_bps,
+            cost_model_version=cost_model_version,
+            sent_at=sent_at,
+            acked_at=acked_at,
         )
 
     return recorder
@@ -1400,7 +1724,7 @@ def _place_one(
     sleep: Callable[[timedelta], Any] = _sleep,
     jitter_rng: Any = None,
     on_retry: Any = None,
-    on_placed: Callable[[BingXOrder], None] | None = None,
+    on_placed: Callable[..., None] | None = None,
 ) -> MirrorLeg:
     """Place one order through the store, the limiter and the backoff.
 
@@ -1442,13 +1766,23 @@ def _place_one(
     message.
     """
     sent: list[BingXOrder] = []
+    sent_at: datetime | None = None
+    acked_at: datetime | None = None
 
     def _send() -> None:
+        nonlocal sent_at, acked_at
         to_send = order
         if repricer is not None:
             to_send = repricer(order)
         sent.append(to_send)
+        # additions_spec_vst_fidelity.xml feature 2: "sent_at, acked_at: UTC
+        # ISO-8601 around the place call in _place_one" -- bracketing
+        # exactly the one call that reaches the venue, so a re-send by the
+        # backoff below re-stamps both rather than keeping a first
+        # attempt's clock reading.
+        sent_at = datetime.now(UTC)
         _post_order(client=client, order=to_send, reposts=reposts)
+        acked_at = datetime.now(UTC)
 
     def _attempt() -> Any:
         # The weight is acquired *before* the store opens its transaction:
@@ -1515,7 +1849,7 @@ def _place_one(
         # placed.  A `prior` leg returned above never reaches this, so the
         # row that records where an order was placed at is the first
         # placement's and no replay can move it.
-        on_placed(placed_order)
+        on_placed(placed_order, sent_at=sent_at, acked_at=acked_at)
     return MirrorLeg(
         symbol=order.symbol,
         outcome=MIRROR_OUTCOME_PLACED,
@@ -1570,8 +1904,10 @@ def mirror_place(
             "would spend the budget unmetered (feature 4)"
         )
     orders = [leg for leg in plan if isinstance(leg, BingXOrder)]
-    repricer = _passive_repricer(client=client, book=book, orders=orders)
-    recorder = _order_recorder(store=store, book=book, client=client, orders=orders)
+    repricer, quotes = _passive_repricer(client=client, book=book, orders=orders)
+    recorder = _order_recorder(
+        store=store, book=book, client=client, orders=orders, quotes=quotes
+    )
     preflight_kwargs: dict[str, Any] = {
         "required_usdt": plan_required_margin(client=client, orders=orders),
         "symbols": [order.symbol for order in orders],

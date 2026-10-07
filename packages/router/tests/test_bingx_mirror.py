@@ -1065,22 +1065,32 @@ def test_a_book_quote_off_the_tick_grid_rounds_onto_it_away_from_crossing(
     assert Decimal(eth.price) == Decimal("2665.89")
 
 
-def test_an_aggressive_market_leg_is_sent_verbatim_without_a_depth_read(
+def test_an_aggressive_market_leg_is_sent_verbatim_and_never_repriced(
     test_database_url,
 ):
-    """A MARKET leg carries no price, so no book is read and no leg changes.
+    """A MARKET leg carries no price, so it is never repriced at the book.
 
     DOGE is the plan's one aggressive leg (its decay horizon of 60s is
     shorter than the book's 120s fill expectation), and the bug report's
-    own constraint fixes it: *aggressive (MARKET) legs are unchanged*.
+    own constraint fixes it: *aggressive (MARKET) legs are unchanged*.  A
+    MARKET leg is never handed to :func:`router.bingx_order.reprice_passive_order`
+    and never re-judged against the book's grids, so its sent parameters are
+    exactly its plan ones, whatever the venue's depth answers — the fidelity
+    harness's own ``depth`` read for its pre-trade cost estimate
+    (additions_spec_vst_fidelity.xml, feature 2) runs beside placement, not
+    inside it, and carries no veto over what is sent.
     """
     client = _MirrorClient()
     limiter = _CountingLimiter()
     store = RouterOrderPlacementStore(test_database_url)
-    _place(client, _plan(client), store, limiter, database_url=test_database_url)
-    assert ("depth", "DOGE-USDT") not in client.calls
+    plan = _plan(client)
+    planned_doge = next(
+        leg for leg in plan if isinstance(leg, BingXOrder) and leg.symbol == "DOGE-USDT"
+    )
+    _place(client, plan, store, limiter, database_url=test_database_url)
     doge = next(order for order in client.placed if order.symbol == "DOGE-USDT")
     assert doge.type == "MARKET"
+    assert doge.parameters() == planned_doge.parameters()
     assert "price" not in doge.parameters()
     # The passive legs around it are the ones the book was read for.
     assert ("depth", "ETH-USDT") in client.calls

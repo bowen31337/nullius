@@ -110,6 +110,7 @@ opens the table.
 
 from __future__ import annotations
 
+import math
 import os
 import sqlite3
 from collections.abc import Callable, Mapping
@@ -211,17 +212,76 @@ CREATE TABLE IF NOT EXISTS {ORDER_PLACEMENT_TABLE} (
 -- limit it was priced at, and a MARKET order carries the mark read in the
 -- same run, so a filled order always has a reference to be measured against.
 CREATE TABLE IF NOT EXISTS {ORDER_RECORD_TABLE} (
-    client_order_id TEXT NOT NULL PRIMARY KEY,  -- feature 316's 64 hex chars
-    book_id         TEXT NOT NULL,              -- the rebalance's book
-    rebalance_ts    TEXT NOT NULL,              -- ISO 8601 UTC: the slot start
-    symbol          TEXT NOT NULL,              -- the leg that was placed
-    side            TEXT NOT NULL,              -- BUY / SELL
-    type            TEXT NOT NULL,              -- LIMIT / MARKET
-    quantity        TEXT NOT NULL,              -- the sent order's size
-    reference_price TEXT NOT NULL,              -- limit price, or run's mark
-    placed_at       TEXT NOT NULL               -- ISO 8601 UTC: when it landed
+    client_order_id    TEXT NOT NULL PRIMARY KEY,  -- feature 316's 64 hex chars
+    book_id            TEXT NOT NULL,              -- the rebalance's book
+    rebalance_ts       TEXT NOT NULL,              -- ISO 8601 UTC: the slot start
+    symbol             TEXT NOT NULL,              -- the leg that was placed
+    side               TEXT NOT NULL,              -- BUY / SELL
+    type               TEXT NOT NULL,              -- LIMIT / MARKET
+    quantity           TEXT NOT NULL,              -- the sent order's size
+    reference_price    TEXT NOT NULL,              -- limit price, or run's mark
+    placed_at          TEXT NOT NULL,              -- ISO 8601 UTC: when it landed
+    -- The VST fidelity harness's decision-time facts (additions_spec_vst_fidelity.xml,
+    -- feature 2).  Every one of these is nullable: each is a fact the mirror
+    -- captures on a best-effort basis alongside a placement it never gates,
+    -- and an upgraded database (see _ensure_order_record_decision_columns
+    -- below) carries rows from before this feature existed, which have none
+    -- of them.
+    decision_mark      TEXT,  -- the premiumIndex mark the plan was built from
+    best_bid           TEXT,  -- the repricing depth read's best bid; null for MARKET
+    best_ask           TEXT,  -- the repricing depth read's best ask; null for MARKET
+    pre_reprice_limit  TEXT,  -- the limit before reprice_passive_order; null for MARKET
+    target_quantity    TEXT,  -- the quantity before step/tick rounding
+    expected_cost_bps  REAL,  -- the cost model's pre-trade estimate; null, never 0
+    cost_model_version TEXT,  -- the resolved cost model's version string
+    sent_at            TEXT,  -- ISO 8601 UTC: just before the place call
+    acked_at           TEXT   -- ISO 8601 UTC: just after the place call returned
 );
 """
+
+#: The decision-time columns :data:`ORDER_RECORD_TABLE` carries beside its
+#: original nine (additions_spec_vst_fidelity.xml, feature 2) — name paired
+#: with its SQLite type, in the order :data:`_RECORD_COLUMNS` appends them.
+#: A table created fresh gets them straight from ``_SCHEMA`` above; this
+#: list is what :func:`_ensure_order_record_decision_columns` probes for and
+#: adds to a table a prior version of this module already created, so an
+#: existing ``vst.db`` upgrades in place rather than needing a rebuild.
+_DECISION_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("decision_mark", "TEXT"),
+    ("best_bid", "TEXT"),
+    ("best_ask", "TEXT"),
+    ("pre_reprice_limit", "TEXT"),
+    ("target_quantity", "TEXT"),
+    ("expected_cost_bps", "REAL"),
+    ("cost_model_version", "TEXT"),
+    ("sent_at", "TEXT"),
+    ("acked_at", "TEXT"),
+)
+
+
+def _ensure_order_record_decision_columns(connection: sqlite3.Connection) -> None:
+    """Add :data:`_DECISION_COLUMNS` to :data:`ORDER_RECORD_TABLE` if absent.
+
+    The shipped convention for a store that grows a column on a table it
+    already owns: probe ``PRAGMA table_info`` and ``ALTER TABLE ... ADD
+    COLUMN`` for whatever is missing, because SQLite's ``ADD COLUMN``
+    carries no ``IF NOT EXISTS`` of its own.  A table ``_SCHEMA`` just
+    created above already carries every column, so this is a no-op on a
+    fresh database; a live ``vst.db`` written by a prior version of this
+    module is missing all nine, and this is what adds them without
+    touching a row it already holds.  Every column is nullable, so the
+    ``ALTER`` never needs a ``DEFAULT`` to satisfy existing rows.
+    """
+    rows = connection.execute(
+        f"PRAGMA table_info({ORDER_RECORD_TABLE})"
+    ).fetchall()
+    existing = {str(row[1]) for row in rows}
+    for name, sqltype in _DECISION_COLUMNS:
+        if name in existing:
+            continue
+        connection.execute(
+            f"ALTER TABLE {ORDER_RECORD_TABLE} ADD COLUMN {name} {sqltype}"
+        )
 
 #: The one write this module makes: claim the key iff it has no row yet.
 #: ``WHERE NOT EXISTS`` rather than a bare ``INSERT`` so the check and the
@@ -249,7 +309,9 @@ WHERE client_order_id = ?
 #: a column order, the failure a positional ``SELECT *`` invites.
 _RECORD_COLUMNS = (
     "client_order_id, book_id, rebalance_ts, symbol, side, type, "
-    "quantity, reference_price, placed_at"
+    "quantity, reference_price, placed_at, decision_mark, best_bid, "
+    "best_ask, pre_reprice_limit, target_quantity, expected_cost_bps, "
+    "cost_model_version, sent_at, acked_at"
 )
 
 #: The terms write: claim the key iff it has no row yet, the same
@@ -263,7 +325,7 @@ _RECORD_INSERT_SQL = f"""
 INSERT INTO {ORDER_RECORD_TABLE} (
     {_RECORD_COLUMNS}
 )
-SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 WHERE NOT EXISTS (
     SELECT 1 FROM {ORDER_RECORD_TABLE} WHERE client_order_id = ?
 )
@@ -514,6 +576,71 @@ def _require_positive(value: object, what: str) -> Decimal:
     return number
 
 
+def _require_optional_positive(value: object, what: str) -> Decimal | None:
+    """``None`` verbatim, or :func:`_require_positive` over ``value``.
+
+    The decision-time facts (additions_spec_vst_fidelity.xml, feature 2)
+    are best-effort captures beside a placement they never gate: a term the
+    mirror could not read (no depth on a book's side, a mark the document
+    did not price) is recorded as the honest ``None`` rather than refused,
+    because the row this absence would block is a placement that already
+    happened.  A value that *is* offered is held to the same positive-decimal
+    law every other price and quantity in this table keeps.
+    """
+    if value is None:
+        return None
+    return _require_positive(value, what)
+
+
+def _require_optional_finite(value: object, what: str) -> float | None:
+    """``None`` verbatim, or ``value`` as a finite float, or refuse it.
+
+    :attr:`OrderRecord.expected_cost_bps` is a signed cost figure (a book
+    walk's slippage can, in principle, land at either side of zero), so
+    unlike the decimal facts above this is not held to *positive* — only to
+    *finite*, the one law a basis-point figure must keep to mean anything
+    at all.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RouterSubmissionResultError(
+            f"{SUBMISSION_RESULT_CODE}: a recorded order's {what} must be a "
+            f"real number when given, got {value!r} "
+            f"({type(value).__name__}); the cost model's pre-trade estimate "
+            "is a basis-point figure, and a value that is not a number "
+            "names no estimate (feature 2)"
+        )
+    number = float(value)
+    if not math.isfinite(number):
+        raise RouterSubmissionResultError(
+            f"{SUBMISSION_RESULT_CODE}: a recorded order's {what} must be "
+            f"finite, got {value!r}; a NaN or an infinity is not an "
+            "estimate the cost model could have produced (feature 2)"
+        )
+    return number
+
+
+def _require_optional_text(value: object, what: str) -> str | None:
+    """``None`` verbatim, or ``value`` as non-empty stripped text, or refuse it."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise RouterSubmissionResultError(
+            f"{SUBMISSION_RESULT_CODE}: a recorded order's {what} must be "
+            f"non-empty text when given, got {value!r} "
+            f"({type(value).__name__}) (feature 2)"
+        )
+    return value.strip()
+
+
+def _require_optional_aware(value: object, what: str) -> datetime | None:
+    """``None`` verbatim, or :func:`_require_aware` over ``value``."""
+    if value is None:
+        return None
+    return _require_aware(value, what)
+
+
 def _decimal_text(value: Decimal) -> str:
     """Render a :class:`~decimal.Decimal` in plain positional notation.
 
@@ -524,6 +651,16 @@ def _decimal_text(value: Decimal) -> str:
     lands is what the router sent.
     """
     return format(value, "f")
+
+
+def _decimal_text_or_none(value: Decimal | None) -> str | None:
+    """:func:`_decimal_text`, or ``None`` verbatim for an absent decision fact."""
+    return None if value is None else _decimal_text(value)
+
+
+def _isoformat_or_none(value: datetime | None) -> str | None:
+    """:func:`_isoformat_utc`, or ``None`` verbatim for an absent decision fact."""
+    return None if value is None else _isoformat_utc(value)
 
 
 def _require_outcome(value: object) -> str:
@@ -770,6 +907,20 @@ class OrderRecord:
     quantity: Decimal
     reference_price: Decimal
     placed_at: datetime
+    #: The VST fidelity harness's decision-time facts
+    #: (additions_spec_vst_fidelity.xml, feature 2) — every one optional,
+    #: because each is a best-effort capture alongside a placement it never
+    #: gates, and a row this module read back from before the feature
+    #: existed carries none of them.
+    decision_mark: Decimal | None = None
+    best_bid: Decimal | None = None
+    best_ask: Decimal | None = None
+    pre_reprice_limit: Decimal | None = None
+    target_quantity: Decimal | None = None
+    expected_cost_bps: float | None = None
+    cost_model_version: str | None = None
+    sent_at: datetime | None = None
+    acked_at: datetime | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -795,6 +946,34 @@ class OrderRecord:
         object.__setattr__(
             self, "placed_at", _require_aware(self.placed_at, "placed_at")
         )
+        for field in (
+            "decision_mark",
+            "best_bid",
+            "best_ask",
+            "pre_reprice_limit",
+            "target_quantity",
+        ):
+            object.__setattr__(
+                self,
+                field,
+                _require_optional_positive(getattr(self, field), field),
+            )
+        object.__setattr__(
+            self,
+            "expected_cost_bps",
+            _require_optional_finite(self.expected_cost_bps, "expected_cost_bps"),
+        )
+        object.__setattr__(
+            self,
+            "cost_model_version",
+            _require_optional_text(self.cost_model_version, "cost_model_version"),
+        )
+        object.__setattr__(
+            self, "sent_at", _require_optional_aware(self.sent_at, "sent_at")
+        )
+        object.__setattr__(
+            self, "acked_at", _require_optional_aware(self.acked_at, "acked_at")
+        )
 
     @property
     def key(self) -> str:
@@ -813,6 +992,15 @@ class OrderRecord:
             "quantity": _decimal_text(self.quantity),
             "reference_price": _decimal_text(self.reference_price),
             "placed_at": _isoformat_utc(self.placed_at),
+            "decision_mark": _decimal_text_or_none(self.decision_mark),
+            "best_bid": _decimal_text_or_none(self.best_bid),
+            "best_ask": _decimal_text_or_none(self.best_ask),
+            "pre_reprice_limit": _decimal_text_or_none(self.pre_reprice_limit),
+            "target_quantity": _decimal_text_or_none(self.target_quantity),
+            "expected_cost_bps": self.expected_cost_bps,
+            "cost_model_version": self.cost_model_version,
+            "sent_at": _isoformat_or_none(self.sent_at),
+            "acked_at": _isoformat_or_none(self.acked_at),
         }
 
 
@@ -865,6 +1053,7 @@ class RouterOrderPlacementStore:
         connection = sqlite3.connect(path)
         with connection:
             connection.executescript(_SCHEMA)
+            _ensure_order_record_decision_columns(connection)
         return connection
 
     # -- Feature 317's verb ---------------------------------------------------
@@ -1126,6 +1315,15 @@ class RouterOrderPlacementStore:
         quantity: Any,
         reference_price: Any,
         now: datetime | None = None,
+        decision_mark: Any = None,
+        best_bid: Any = None,
+        best_ask: Any = None,
+        pre_reprice_limit: Any = None,
+        target_quantity: Any = None,
+        expected_cost_bps: Any = None,
+        cost_model_version: Any = None,
+        sent_at: Any = None,
+        acked_at: Any = None,
     ) -> OrderRecord:
         """Record one placed order's terms, so a later reconciliation can price it.
 
@@ -1156,6 +1354,16 @@ class RouterOrderPlacementStore:
         :class:`~router.errors.RouterStoreError` when the store could not
         take the row: an order placed and not recorded is exactly the gap
         that would make its fill-cost reconciliation wrong again.
+
+        The nine keyword arguments from ``decision_mark`` on are
+        additions_spec_vst_fidelity.xml feature 2's decision-time facts —
+        every one optional and ``None`` by default, so a caller that still
+        calls this exactly as feature 317 always has keeps recording exactly
+        what it always recorded.  Each is validated when given (a decimal
+        fact must be positive, ``expected_cost_bps`` merely finite, the two
+        instants timezone-aware) and left as the honest ``None`` otherwise —
+        this method takes no position on *why* one is absent, because the
+        mirror's own best-effort capture is where that question is answered.
         """
         # The ask is settled whole before a connection is opened, the
         # ordering every act in this workspace states: a malformed record is
@@ -1174,6 +1382,15 @@ class RouterOrderPlacementStore:
                 reference_price, "reference_price"
             ),
             placed_at=moment,
+            decision_mark=decision_mark,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            pre_reprice_limit=pre_reprice_limit,
+            target_quantity=target_quantity,
+            expected_cost_bps=expected_cost_bps,
+            cost_model_version=cost_model_version,
+            sent_at=sent_at,
+            acked_at=acked_at,
         )
         try:
             with closing(self._connect()) as connection, connection:
@@ -1189,6 +1406,15 @@ class RouterOrderPlacementStore:
                         _decimal_text(record.quantity),
                         _decimal_text(record.reference_price),
                         _isoformat_utc(record.placed_at),
+                        _decimal_text_or_none(record.decision_mark),
+                        _decimal_text_or_none(record.best_bid),
+                        _decimal_text_or_none(record.best_ask),
+                        _decimal_text_or_none(record.pre_reprice_limit),
+                        _decimal_text_or_none(record.target_quantity),
+                        record.expected_cost_bps,
+                        record.cost_model_version,
+                        _isoformat_or_none(record.sent_at),
+                        _isoformat_or_none(record.acked_at),
                         record.client_order_id,
                     ),
                 )
@@ -1269,16 +1495,32 @@ class RouterOrderPlacementStore:
             quantity_raw,
             reference_raw,
             placed_at_raw,
+            decision_mark_raw,
+            best_bid_raw,
+            best_ask_raw,
+            pre_reprice_limit_raw,
+            target_quantity_raw,
+            expected_cost_bps,
+            cost_model_version,
+            sent_at_raw,
+            acked_at_raw,
         ) = row
         try:
             instant = datetime.fromisoformat(rebalance_ts_raw)
             placed = datetime.fromisoformat(placed_at_raw)
+            sent_at = (
+                None if sent_at_raw is None else datetime.fromisoformat(sent_at_raw)
+            )
+            acked_at = (
+                None if acked_at_raw is None else datetime.fromisoformat(acked_at_raw)
+            )
         except (TypeError, ValueError) as exc:
             raise RouterSubmissionResultError(
                 f"{SUBMISSION_RESULT_CODE}: the placement terms filed under "
                 f"order {client_order_id!r} carry a moment this store cannot "
-                f"read ({rebalance_ts_raw!r}, {placed_at_raw!r}); the row is "
-                "repairable and its key names it (feature 317)"
+                f"read ({rebalance_ts_raw!r}, {placed_at_raw!r}, "
+                f"{sent_at_raw!r}, {acked_at_raw!r}); the row is repairable "
+                "and its key names it (feature 317)"
             ) from exc
         try:
             return OrderRecord(
@@ -1291,6 +1533,15 @@ class RouterOrderPlacementStore:
                 quantity=quantity_raw,
                 reference_price=reference_raw,
                 placed_at=placed,
+                decision_mark=decision_mark_raw,
+                best_bid=best_bid_raw,
+                best_ask=best_ask_raw,
+                pre_reprice_limit=pre_reprice_limit_raw,
+                target_quantity=target_quantity_raw,
+                expected_cost_bps=expected_cost_bps,
+                cost_model_version=cost_model_version,
+                sent_at=sent_at,
+                acked_at=acked_at,
             )
         except RouterSubmissionResultError as refusal:
             raise RouterSubmissionResultError(
