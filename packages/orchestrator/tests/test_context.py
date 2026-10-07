@@ -835,24 +835,28 @@ def test_a_snapshot_without_bars_is_refused(
     )
 
 
-def test_a_poisoned_close_is_refused_at_load(
+def test_a_poisoned_close_is_refused_at_first_use(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The aligner's own stated reason, refused where the read happens: a
     # zero close divides every forward return measured off it, and a
     # poison that waited for step 4 would look like an evaluation defect
-    # instead of a snapshot one.
+    # instead of a snapshot one. Since bug_spec_smoke_campaign_hang.xml
+    # bug 2 the read happens at first use, not at load (load reads no bars
+    # partition), so the refusal is raised by the first access to the
+    # poisoned close; test_context_lazy_closes.py pins the read counts.
     monkeypatch.delenv("DATABASE_URL", raising=False)
     bars = _standard_bars()
     bars["SYM00"][BAR_DAYS[3]] = [0.0]
     _service, sealed = _stage_and_seal(tmp_path / "lake", bars)
     document = dict(_standard_document(sealed.path, tmp_path))
-    _refuses(
-        _environment_over(str(tmp_path), document),
-        "snapshot_mount",
-        "SYM00",
-        BAR_DAYS[3].isoformat(),
-    )
+    context = load_evaluation_context(_environment_over(str(tmp_path), document))
+    assert context is not None
+    with pytest.raises(EvaluationConfigError) as record:
+        context.closes["SYM00"][BAR_DAYS[3]]
+    message = str(record.value)
+    assert "SYM00" in message
+    assert BAR_DAYS[3].isoformat() in message
 
 
 def test_a_duplicate_bar_is_refused(
