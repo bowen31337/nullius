@@ -1,0 +1,41 @@
+<bug_spec>
+  <!-- NPROC-1. Found 2026-10-07 investigating why tests/e2e fails only under
+       pytest -n 2/4 (any two of test_live_evaluation_end_to_end,
+       test_live_campaign_end_to_end and test_real_data_campaign_e2e together
+       fail; each alone passes), reproducing on commits from before that day's
+       fixes. Confirmed by a controlled experiment: a single e2e file run
+       serially goes from 7/7 passed to 6 failed when an unrelated process of
+       the same user creates bursts of 60 short-lived threads during the run.
+       Core shape, explicit touches_files. -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/orchestrator/src/orchestrator/_hardened_sandbox.py,packages/orchestrator/tests/test_hardened_nproc_race.py">
+    <title>The hardened (unisolated) sandbox's RLIMIT_NPROC budget races with every other task the user owns, so sandboxed signals fail at random on a busy host</title>
+    <symptoms>
+      HardenedSubprocessSandbox sets the child's RLIMIT_NPROC to _ambient_task_count(uid) + pids (pids = 32), counted from /proc when the child is spawned. Linux enforces RLIMIT_NPROC against the real UID's total live tasks across the whole host. Any thread or process the same user creates after the snapshot (another pytest worker's sandbox, an editor, a Claude session, a browser) consumes the child's budget, and polars' thread pool or the signal's own allocations then fail inside the child. The evaluation reports SandboxExecutionError with the misleading detail "no scores (a resource or channel failure)", because _executor_failure reads the last successful run's state.
+      Evidence:
+      - tests/e2e under -n 4 --dist loadfile: 11 failed, 194 passed.
+      - Serially: 205 passed.
+      - test_live_evaluation_end_to_end.py alone: 7 passed. The same file, while a separate process churns 60-thread bursts: 6 failed, 1 passed.
+      - Idle threads that exist before the run do not trigger it; only tasks created during the child's run do.
+      - The gVisor runtime (runsc) is not affected: its own 5 real-runsc tests pass.
+    </symptoms>
+    <reproduction_steps>
+      In one shell, run a Python loop that starts 60 threads that each wait 0.4 s, repeatedly for 100 s. In another, run `uv run --all-packages pytest -q tests/e2e/test_live_evaluation_end_to_end.py`: most tests fail with fail_class SandboxExecutionError.
+    </reproduction_steps>
+    <expected>
+      - The sandbox's task budget applies to the sandboxed process tree only, never to the user's other tasks. Use a cgroup v2 pids limit on a delegated user cgroup (the user's systemd service delegates cpu, memory and pids on this host), or, where no delegated cgroup is writable, the bwrap PID namespace plus the existing RLIMIT_AS and wall-clock watchdog. Never use a UID-wide RLIMIT_NPROC derived from an ambient snapshot. The chosen mechanism and its fallback are stated in the module docstring, and the probe result is logged once per process.
+      - A fork bomb inside the sandbox is still stopped (the existing fork-bomb or pids test still passes), now by the per-tree limit.
+      - When the sandboxed child fails for a resource reason, the evaluation's detail names that run's own failure, not a previous run's state.
+      - test_hardened_nproc_race.py reproduces the race and passes: a helper process churns thread bursts while several hardened-sandbox evaluations run, and every evaluation succeeds. A fork-bomb signal is still refused. The test runs only where bwrap exists and is skipped otherwise (like the runsc tests), and passes under pytest-xdist.
+      - `uv run --all-packages pytest -n 4 --dist loadfile tests/e2e` passes 205/205.
+    </expected>
+    <actual>Root cause: orchestrator/_hardened_sandbox.py _apply_rlimits sets RLIMIT_NPROC from _ambient_task_count(uid) + pids. The module's own docstring notes that RLIMIT_NPROC is per real UID host-wide, and the ambient snapshot is only correct if nothing else the user owns changes during the run.</actual>
+    <constraints>
+      The gVisor executor (_gvisor.py) is not changed
+      The import guard, environment construction, RLIMIT_AS and the wall-clock watchdog keep their current behaviour
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
