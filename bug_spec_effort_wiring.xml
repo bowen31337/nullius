@@ -1,0 +1,59 @@
+<bug_spec>
+  <!-- WIRE-1. Found 2026-10-07 on the second smoke-campaign attempt, after
+       bug_spec_smoke_campaign_hang.xml landed. The campaign exited 1 at once
+       with "float() argument must be a string or a real number, not
+       'NoneType'" and no event; no request was built, nothing was spent.
+       Feature 5 of additions_spec_real_campaign_path.xml (sampling per model)
+       made the authoring temperature optional and added effort, but two
+       callers were never wired. Its offline e2e used a recorded config that
+       still carried a temperature, so neither gap was exercised. -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/signal-agent/src/signal_agent/_llm_author.py,packages/signal-agent/tests/test_llm_author_sampling.py">
+    <title>The signal author crashes on an authoring config with temperature null: it calls float(self._config.temperature)</title>
+    <symptoms>
+      `./run.sh campaign --type Type-R --workspaces 4 --rounds 2 --width 2` with authoring pins on claude-opus-5-5 / claude-sonnet-5-5, "temperature": null and "effort": "high" (the config providers.load_authoring_config accepts) exits 1 with the one stderr line "float() argument must be a string or a real number, not 'NoneType'". No campaign event is printed. signal_agent/_llm_author.py builds providers.Request with temperature=float(self._config.temperature) at three sites (lines ~379, ~455, ~625).
+    </symptoms>
+    <reproduction_steps>
+      Build the composed "signal-author" with an AuthoringConfig whose temperature is None and ask it to author a root: TypeError from float(None).
+    </reproduction_steps>
+    <expected>
+      - When the config's temperature is None, the signal author builds its Request without stating a temperature. The provider backend decides per model (providers._anthropic already omits sampling for models that reject it). It never calls float(None).
+      - When the config states a temperature, it is passed unchanged, as today.
+      - The authored record's agent_sampling (what orchestrator._roots persists via attempt_provenance_terms) records exactly what was sent: no "temperature" key when none was sent, and the effort when one was sent. It never records a value the vendor did not receive.
+      - test_llm_author_sampling.py drives the root, child and retry authoring paths (all three call sites) with a recording provider:
+        - temperature None gives no crash, and the request carries no explicit temperature
+        - a stated temperature is passed through
+        - agent_sampling matches the sent request in both cases
+        No network, no credential, and it passes under pytest-xdist.
+    </expected>
+    <actual>Root cause: _llm_author.py coerces the config's temperature with float() unconditionally. Feature 5 made that field Optional without updating this caller.</actual>
+    <constraints>
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="high" depends_on="1"
+       touches_files="packages/providers/src/providers/_live.py,packages/providers/src/providers/_authoring_session.py,packages/providers/tests/test_live_registry_effort.py">
+    <title>The configured authoring effort never reaches the Anthropic API: the live registry builds AnthropicProvider without it</title>
+    <symptoms>
+      providers._live builds AnthropicProvider(api_key, model=model, transport=transport) (line ~296) with no effort, although AnthropicProvider accepts effort= and providers._anthropic._request_body sends output_config.effort only when it is given. An authoring config with "effort": "high" therefore authors at the model's default effort (medium on claude-opus-5-5), while the node's agent_sampling may say otherwise.
+    </symptoms>
+    <reproduction_steps>
+      Compose the authoring session from an AuthoringConfig with effort "high" and a recording transport, author once on claude-opus-5-5, and inspect the request body: no output_config.effort.
+    </reproduction_steps>
+    <expected>
+      - The authoring config's effort is threaded from the AuthoringConfig, through the authoring session, to the live registry and into AnthropicProvider for every role (root_tier, depth and policy pins). The request body then carries output_config: {effort: &lt;level&gt;} exactly when the config names one and the model accepts effort.
+      - With no effort configured, nothing is sent (unchanged).
+      - The served-model check and the per-pin budget wrapper are unchanged.
+      - agent_sampling for the authored node names the effort that was actually in the request body.
+      - test_live_registry_effort.py uses a recording transport and an AuthoringConfig with effort "high". It asserts the request body carries output_config.effort == "high" and no temperature for claude-opus-5-5, that a config without effort sends no output_config, and that the authored record's agent_sampling carries "effort": "high". No network, no credential.
+    </expected>
+    <actual>Root cause: feature 5 added effort to AuthoringConfig and AnthropicProvider but not to the registry/session path that constructs providers for live authoring.</actual>
+    <constraints>
+      No file outside the three listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
