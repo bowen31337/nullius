@@ -86,6 +86,7 @@ __all__ = [
     "CONTRACTS_PATH",
     "DEFAULT_TIMEOUT_SECONDS",
     "DEPTH_PATH",
+    "INCOME_PATH",
     "LEVERAGE_PATH",
     "LIVE_HOST",
     "LIVE_HOST_REFUSED_CODE",
@@ -170,6 +171,12 @@ OPEN_ORDERS_PATH = "/openApi/swap/v2/trade/openOrders"
 #: v1, not the v2 family above — this is the path the venue itself
 #: answers for ``positionSide/dual``.
 POSITION_MODE_PATH = "/openApi/swap/v1/positionSide/dual"
+
+#: The account's income history — funding fees, commissions, realized PnL —
+#: narrowed by ``incomeType``.  ``additions_spec_vst_fidelity.xml`` feature 4's
+#: read; :mod:`router.bingx_funding` is the caller that asks for
+#: ``FUNDING_FEE`` and stores what comes back.
+INCOME_PATH = "/openApi/swap/v2/user/income"
 
 #: The venue's margin modes, as it spells them on the wire.  Feature 1's
 #: sentence lists exactly these two (``ISOLATED`` and ``CROSSED``); the book's
@@ -669,7 +676,7 @@ class BingXClient:
         status, raw = self._send(method, url, headers, body)
         return self._interpret(status, raw, operation)
 
-    # -- The nine endpoints ---------------------------------------------------
+    # -- The ten endpoints ------------------------------------------------------
 
     def server_time(self) -> int:
         """GET the venue's server time as whole milliseconds since the epoch.
@@ -851,6 +858,37 @@ class BingXClient:
         parameters = {"symbol": symbol} if symbol is not None else None
         return self._request(
             "GET", OPEN_ORDERS_PATH, operation=OPERATION_OPEN_ORDERS, parameters=parameters
+        )
+
+    def income(
+        self,
+        income_type: str,
+        *,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        limit: int | None = None,
+    ) -> Any:
+        """GET the account's income history, narrowed to one ``incomeType``.
+
+        ``additions_spec_vst_fidelity.xml`` feature 4: signed, like every
+        other account read, and answers the envelope's ``data`` list — one
+        row per income event the venue recorded, each carrying its own
+        ``symbol``, ``income``, ``asset``, ``time`` and ``tranId``.
+        :mod:`router.bingx_funding` asks this with ``income_type``
+        ``"FUNDING_FEE"`` and stores what comes back.  ``start_ms`` and
+        ``end_ms`` narrow the window in whole milliseconds since the epoch,
+        and ``limit`` caps the page size; a bound left out takes the venue's
+        own default.
+        """
+        parameters: dict[str, Any] = {"incomeType": income_type}
+        if start_ms is not None:
+            parameters["startTime"] = str(start_ms)
+        if end_ms is not None:
+            parameters["endTime"] = str(end_ms)
+        if limit is not None:
+            parameters["limit"] = str(limit)
+        return self._request(
+            "GET", INCOME_PATH, operation=OPERATION_ACCOUNT, parameters=parameters
         )
 
 
