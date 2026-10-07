@@ -1,0 +1,150 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — local per-call LLM token usage and spend tracking</project_name>
+  <addition_summary>
+    On 2026-10-07 the operator asked how much the running smoke campaign had
+    spent and the system could not say: no provider call's token usage is
+    persisted, so spend is only visible in the vendor console. The per-pin
+    BudgetedProvider counts tokens in memory and loses them at exit, and
+    providers.Usage folds cache writes into input_tokens although Anthropic
+    bills cache writes, cache reads and plain input at three different rates.
+    This spec records every authoring call's usage locally, attributes it to
+    campaign, node, role and pin, prices it from a dated price table, and
+    reports it from a command. It adds no dependency: the store uses the
+    standard library's sqlite3 and the costs use decimal. So "how much has this campaign spent?" has an
+    exact local answer.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / SQLite via DATABASE_URL / pytest.</stack>
+    <test_baseline>main after bug_spec_sampling_record_contract.xml: gate command (uv run --all-packages pytest -n 4 --dist loadfile) 1648 passed; providers 1447, signal-agent 781, orchestrator 433 (+5 runsc skips).</test_baseline>
+    <conventions>
+      Follow CLAUDE.md. House CLI pattern as in orchestrator/dream.py (argparse
+      prog "python -m pkg.mod"; main(argv=None, *, env=None, ...) -> int; exit
+      0/1/2; one JSON line per row; one stderr line per refusal with a code
+      word; no traceback). A CLI module is never imported eagerly by its
+      package __init__. Tests never reach the network or read a credential and
+      pass under pytest-xdist with tmp stores. A store creates its table with
+      CREATE TABLE IF NOT EXISTS on connect, like the ops stores.
+
+      Facts the features rely on:
+      - providers.Usage(input_tokens, output_tokens, cache_read_tokens=0).
+        providers._anthropic sets input_tokens = input_tokens +
+        cache_creation_input_tokens + cache_read_input_tokens, and
+        cache_read_tokens = cache_read_input_tokens. Cache-creation tokens are
+        not exposed separately.
+      - providers.AuthoringSession.provider_for(role, *, campaign_id, node_id)
+        answers (provider, pin), each pin wrapped once in a BudgetedProvider
+        with the config's ceilings. signal_agent._llm_author calls it for
+        every root, child and retry authoring call.
+      - A Completion carries .model (the served model) and .usage.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Usage Capture">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/providers/src/providers/_completion.py,packages/providers/src/providers/_anthropic.py,packages/providers/tests/test_usage_cache_write.py">
+        System reports cache-write tokens separately on every completion, so that an Anthropic answer's usage returns plain input, cache writes, cache reads and output as four distinct counts.
+        - providers.Usage gains cache_write_tokens: int = 0 (non-negative,
+          validated like the others). input_tokens keeps its current meaning
+          (every input token the call consumed), so no existing reader
+          changes.
+        - providers._anthropic sets cache_write_tokens from the response's
+          cache_creation_input_tokens. Other backends leave it 0.
+        - Tests: a recorded Messages response with all three input counters
+          maps to the four fields. An old-shape response without cache
+          counters gives zeros. Existing Usage equality and the budget
+          totals are unchanged.
+      </feature>
+      <feature index="2" shape="core" depends_on=""
+               touches_files="packages/providers/src/providers/_prices.py,packages/providers/tests/test_prices.py">
+        System prices a call from a dated, versioned price table, so that estimate_cost(model, usage) returns a USD figure or None, never a guessed price.
+        - providers._prices holds PRICE_TABLE_VERSION (a date string) and,
+          per model id, USD per million tokens for plain input, cache write,
+          cache read and output, with its source noted. The 2026-09-25
+          Anthropic first-party list rates are:
+          - claude-opus-5-5: 4.00 / 5.00 / 0.20 / 20.00
+          - claude-sonnet-5-5: 2.00 / 2.50 / 0.20 / 10.00
+          - claude-haiku-4-5: 1.00 / 1.25 / 0.10 / 5.00
+          Cache write is 1.25 times input for the 5-minute TTL.
+        - estimate_cost(model, usage) prices plain input = input_tokens minus
+          cache_write_tokens minus cache_read_tokens, plus each other class at
+          its rate. It returns a Decimal rounded to 6 places.
+        - A model id the table does not map exactly returns None. That includes a dated served id such as claude-haiku-4-5-20251001, unless the table lists that exact id.
+          The caller records "unpriced", never zero.
+        - Tests check each priced model against hand-computed values, the
+          plain-input subtraction, an unknown model returning None, and that
+          the version string is present.
+      </feature>
+      <feature index="3" shape="core" depends_on="1,2"
+               touches_files="packages/providers/src/providers/_usage_store.py,packages/providers/tests/test_usage_store.py">
+        System saves every provider call's usage to an append-only provider_call_usage table, so that each call returns one stored row with its tokens, attribution and estimated cost.
+        - The table is created on connect. Its columns are:
+          - id, recorded_at (UTC ISO-8601)
+          - campaign_id, node_id (nullable)
+          - role, pin (provider/model/version), served_model
+          - input_tokens, cache_write_tokens, cache_read_tokens, output_tokens
+          - est_cost_usd (TEXT decimal or NULL), price_table_version
+          - outcome (ok | error | refused_budget), duration_ms
+        - UsageRecordingProvider(inner, *, store, campaign_id, node_id, role,
+          pin) is a Provider wrapper. On a completion it records one ok row
+          and returns the completion unchanged. On an exception from the inner
+          provider it records one row with outcome error (or refused_budget
+          for BudgetExhaustedError) and zero tokens, then re-raises the same
+          exception. check_model and every other Provider method pass through.
+        - A store write failure never breaks or alters the call. It is
+          logged once per process as a warning, and the call's result or
+          exception stands.
+        - UsageStore(database_url).resolve(env) returns None without
+          DATABASE_URL. Its reads are rows(campaign_id=None) and
+          totals(group_by=("campaign_id","pin")), which sums tokens and
+          est_cost_usd and counts unpriced rows separately.
+        - Tests cover an ok row with exact counts and cost, the error and
+          refused_budget rows with the exception re-raised unchanged, a
+          failing store leaving the call intact, totals grouping, and an
+          unpriced model counted as unpriced.
+      </feature>
+      <feature index="4" shape="core" depends_on="3"
+               touches_files="packages/providers/src/providers/_authoring_session.py,packages/providers/tests/test_session_usage.py">
+        System records the usage of every authoring call a campaign makes, so that each provider AuthoringSession.provider_for returns is wrapped in a UsageRecordingProvider bound to that call's campaign_id, node_id, role and pin whenever a usage store is configured.
+        - The session takes an optional usage_store, and the composed
+          authoring path supplies UsageStore.resolve(env), so a deployment
+          with DATABASE_URL records automatically. Without one, behaviour is
+          byte-identical to today.
+        - Recording sits outside the budget wrapper. A call the budget
+          refuses is recorded as refused_budget, and budget totals and
+          ceilings are unchanged.
+        - Tests: a session with a fake resolver and a tmp store authors a
+          root, a child and a retry, and the table holds three rows with the
+          right campaign_id, node_id, role and pin. Without a store, no rows
+          and no behaviour change. A budget refusal records one
+          refused_budget row.
+      </feature>
+    </category>
+    <category name="Usage Reporting">
+      <feature index="5" shape="core" depends_on="3"
+               touches_files="packages/providers/src/providers/usage.py,packages/providers/tests/test_usage_cli.py,run.sh">
+        System reports spend from `python -m providers.usage [--campaign ID] [--by campaign|pin|role|node]` and displays one JSON line per group plus a total line.
+        - Each group line carries calls, input_tokens, cache_write_tokens,
+          cache_read_tokens, output_tokens, est_cost_usd and unpriced_calls.
+          The total line also names price_table_version.
+        - --campaign latest selects the most recent campaign. No rows prints
+          a total of zero calls and exits 0. No DATABASE_URL exits 2.
+        - run.sh gains a `llm-usage` verb (python -m providers.usage "$@",
+          DATABASE_URL defaulting as the campaign verb does, no op run). It
+          is listed by `./run.sh help`.
+        - Tests cover grouping, --campaign latest, the empty store, the
+          missing DATABASE_URL, and an unpriced row surfacing in
+          unpriced_calls.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Features 1 and 2 are independent foundations. Feature 3 needs both.
+    Features 4 and 5 read feature 3's store.
+  </integration_points>
+  <out_of_scope>
+    Dashboard and API surfaces for spend. Enforcing dollar ceilings (token
+    ceilings already exist). Backfilling usage for calls made before this
+    lands.
+  </out_of_scope>
+</project_specification>
