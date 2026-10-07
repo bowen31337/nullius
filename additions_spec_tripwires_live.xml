@@ -1,0 +1,169 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — wire the leakage tripwires into live evaluation (step 10) and run the M1 triage on real campaigns</project_name>
+  <addition_summary>
+    PRD M1's exit has two halves.
+    - The KS guard confirming that planted nulls are indistinguishable now
+      passes on a real campaign: campaign bb0f1919 on 2026-10-08, KS
+      p=0.45, calibration ok, after the null time-leak fix (0497a90).
+    - "A deliberately leaking signal is caught by every tripwire" cannot
+      pass yet. The tripwires member ships the six probes (features
+      125–130: time-shuffle, label-permute, seed re-run, window offset,
+      universe subsample, lookback jitter), but orchestrator._evaluate never
+      calls them: perturb_stability is hard-coded None (_evaluate.py ~:479,
+      ~:893), and every node of every real campaign has a NULL
+      perturb_stability.
+    The M1 one-day triage, the perturbation-stability AUC that separates
+    planted nulls from real nodes, therefore cannot run on real data either.
+
+    This spec seats step 10 (architecture §6.1: after metrics, before
+    debit_ledger), proves that a leaking signal fails every probe, and makes
+    close-out emit the triage AUC per campaign. Every probe is a pure
+    function of (scores, targets) that the evaluator already holds, so step
+    10 adds no sandbox runs.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / SQLite at DATABASE_URL (default ~/.local/share/nullius/research.db) / pytest.</stack>
+    <test_baseline>main at a38fc47: gate command (uv run --all-packages pytest -n 4 --dist loadfile) 1648 passed; orchestrator 477 passed 5 skipped; nulloracle 1378; signal-agent 800; evaluator 569.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md.
+      - Null status never leaves the scorer process. Only close-out (which
+        already holds the sidecar) may join perturbation figures to labels.
+        Step 10 runs identically for null and real nodes, against the same
+        target bundle the node is scored on.
+      - Tests pass under pytest-xdist and never touch the network or a
+        credential.
+
+      Existing pieces (all in packages/tripwires/src/tripwires/):
+      - time_shuffle.run_time_shuffle_tripwire(scores, targets, *, node_id, seed, level)
+      - label_permute.run_label_permute_tripwire(scores, targets, *, node_id, seed, level)
+      - seed_rerun.run_seed_rerun(scores, targets, *, node_id, ...)
+      - window_offset.run_window_rerun(scores, targets, *, node_id, ...)
+      - subsample.run_subsample_rerun(scores, targets, *, node_id, ...)
+      - lookback.run_lookback_rerun(scores, targets, *, node_id, ...)
+      In all six, scores is {date: {symbol: float}} and targets is
+      {horizon: {date: {symbol: float}}}. Each answers a verdict value whose
+      rejection is a field, never an exception.
+      - stability.record_stability: per-axis figures (feature 129).
+      - node_metric.NodeMetricStore / record_node_metric: writes
+        node.perturb_stability from the lookback verdict (feature 130). It
+        requires the node row to exist.
+      - poison.py: feature 131 poisons a failing node and its subtree.
+      - corpus.py: the planted-leak corpus (feature 133).
+      - triage.py: the AUC over the member's own planted panel (feature 134).
+      orchestrator/_evaluate.py: evaluate_node runs execute → align →
+      gate_targets → apply_costs → compute_node_metrics → marginal, then
+      _persist writes the node row with a ScoreRecord carrying
+      perturb_stability. NodeEvaluation carries fail_class and fail_detail.
+      The architecture's fail_class vocabulary includes "tripwire_fail"
+      (§ node schema).
+      orchestrator/closeout.py: close_out splits evaluated nodes by
+      root-mapped sidecar label (976633f, f3dca58) and persists KS, FDR,
+      calibration and the discovery rate.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Tripwires in the Live Pipeline">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/orchestrator/pyproject.toml,uv.lock">
+        System declares the orchestrator member's dependency on the tripwires workspace member, so that `python -c "import orchestrator, tripwires"` returns without ImportError in a fresh `uv sync --all-packages` environment.
+        - tripwires is added to packages/orchestrator/pyproject.toml
+          dependencies and [tool.uv.sources] as a workspace source, and
+          uv.lock is regenerated with `uv lock`. No other dependency changes.
+      </feature>
+      <feature index="2" shape="core" depends_on="1"
+               touches_files="packages/orchestrator/src/orchestrator/_tripwire_step.py,packages/orchestrator/src/orchestrator/_evaluate.py,packages/orchestrator/tests/test_tripwire_step.py">
+        System runs the six leakage tripwires on every evaluated node between metrics and the ledger debit, so that each node row returns its perturb_stability and a leaking node returns fail_class "tripwire_fail".
+        - New module orchestrator._tripwire_step with
+          run_tripwires(scores, targets, *, node_id), returning a frozen
+          TripwireOutcome:
+          - verdicts: the six verdict values, keyed by probe name
+          - failed: the probe names that rejected, in a fixed order
+          - perturb_stability: the lookback-jitter verdict's figure
+          - axis_figures: the seed, window, subsample and lookback figures
+          scores is the node's normalized per-date score panel (the vectors
+          compute_node_metrics used). targets is the gated, post-cost target
+          bundle at the metrics horizon: the same values the node is scored
+          on, so null and real nodes are probed identically. Probe defaults
+          are the tripwires member's own pinned DEFAULT_* constants, and
+          nothing is configurable here.
+        - evaluate_node calls it after compute_node_metrics and before the
+          debit. A probe that raises a tripwires error (panel too thin, a
+          series that never varied) is recorded as "not measured" for that
+          probe and never fails the node: perturb_stability is None when the
+          lookback probe could not measure, and the node proceeds.
+        - When any probe rejects:
+          - the node's fail_class is "tripwire_fail"
+          - fail_detail names the failing probes and their figures
+          - metrics are still persisted, so the evidence survives
+          - the trial is still debited with the node's charges_budget
+          - feature 131's poison is applied to the node and its subtree
+        - When none rejects, the node is unchanged except that
+          perturb_stability is written on its row and the four axis figures
+          are recorded through stability.record_stability.
+        - The node_evaluated event's score carries perturb_stability.
+        - Wall time: run_tripwires over 92 dates × 40 symbols finishes in
+          under 5 s on this host. Measure it in the test and assert under
+          15 s for slack under xdist.
+        - test_tripwire_step.py:
+          - A leak panel (scores equal to the target plus small noise)
+            rejects on all six probes.
+          - A seeded noise panel rejects on none.
+          - A node through evaluate_node with an injected leaking executor
+            ends with fail_class tripwire_fail, debited, row written and
+            poisoned. A clean injected executor ends ok with a non-null
+            perturb_stability.
+          - A too-thin panel gives "not measured", not a failure.
+          - Determinism: the same inputs give the same outcome.
+          - A null node and a real node given identical panels produce
+            identical outcomes.
+      </feature>
+      <feature index="3" shape="core" depends_on="2"
+               touches_files="tests/leakage/__init__.py,tests/leakage/test_leaking_signal_caught.py">
+        System proves M1's tripwire exit on a sealed snapshot, so that the acceptance gate returns a failure if any tripwire stops catching a deliberately leaking signal.
+        - tests/leakage/test_leaking_signal_caught.py builds a tmp sealed
+          snapshot of daily bars (40 symbols, 120 days, seeded random walk)
+          and evaluates through orchestrator.evaluate_node with a stub
+          executor, never the real sandbox. Three cases:
+          (a) a leaking signal whose score is the next day's return: every
+              one of the six probes rejects, and the node is tripwire_fail
+          (b) a lagged leak (the return two days ahead): it is still
+              caught by at least the time-shuffle and label-permute probes
+          (c) an honest 20-day momentum signal: no probe rejects, and
+              perturb_stability is a finite number
+        - The planted-leak corpus (tripwires.corpus) is run through
+          run_tripwires and scores 0 escapes.
+        - Runs in under 60 s and passes under pytest-xdist.
+      </feature>
+    </category>
+    <category name="Triage on Real Campaigns">
+      <feature index="4" shape="core" depends_on="2"
+               touches_files="packages/orchestrator/src/orchestrator/closeout.py,packages/orchestrator/tests/test_closeout_triage.py">
+        System computes the M1 triage figure at close-out, so that `./run.sh closeout --campaign-id ID` returns the perturbation-stability AUC that separates the campaign's planted nulls from its real nodes.
+        - close_out collects (perturb_stability, root-mapped label) for every
+          evaluated node with a non-null perturb_stability, inside the
+          process that already holds the sidecar.
+        - It computes the AUC with real as the positive class and higher
+          stability scoring as more real. This is a Mann–Whitney U / (n_real
+          · n_null) with ties counted half.
+        - CloseoutResult and the JSON line gain:
+          - triage_auc: null when either side holds fewer than 2 nodes,
+            never 0.5 by default
+          - triage_null_count, triage_real_count
+        - These are persisted in a new table closeout_triage (campaign_id
+          PRIMARY KEY, auc, null_count, real_count, computed_at), created if
+          absent and refreshed on rerun.
+        - No node id or label is printed or stored. Only the three figures.
+        - test_closeout_triage.py:
+          - perfectly separated stabilities give AUC 1.0, and a reversed
+            ordering gives 0.0
+          - ties give 0.5
+          - too few on one side gives triage_auc null and the rest of
+            close-out unchanged
+          - children are labelled by their root
+          - a rerun refreshes the row
+          It passes under pytest-xdist.
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>
