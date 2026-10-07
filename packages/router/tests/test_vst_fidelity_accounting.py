@@ -57,13 +57,15 @@ REBALANCE_TS = datetime(2026, 10, 7, 8, 0, tzinfo=UTC)
 # -- A cancelled zero-fill leg is unfilled, not reject -----------------------
 
 
+@pytest.mark.parametrize("cancelled_status", ["CANCELED", "CANCELLED"])
 def test_a_cancelled_zero_fill_leg_is_unfilled_not_rejected(
-    test_database_url: str,
+    test_database_url: str, cancelled_status: str
 ) -> None:
     """The SOL-USDT SELL leg the bug report names: a PostOnly LIMIT order
     the venue accepted, which rested unfilled until the next slot's own
     sweep cancelled it — the ordinary fate of a leg the price never
-    reached, not a venue refusal."""
+    reached, not a venue refusal. The live venue spells it "CANCELLED"
+    (fixtures/bingx_vst/live/cancel_order_ok.json); both spellings count."""
     store = RouterOrderPlacementStore(test_database_url)
     cid = _record(
         store,
@@ -80,7 +82,7 @@ def test_a_cancelled_zero_fill_leg_is_unfilled_not_rejected(
     _fill(
         cid,
         symbol="SOL-USDT",
-        status="CANCELED",
+        status=cancelled_status,
         executed_quantity=Decimal(0),
         average_price=Decimal(0),
         original_quantity=Decimal("8.524"),
@@ -608,3 +610,58 @@ def test_the_bug_reports_own_reproduce_scenario_end_to_end(
     # fill-latency percentiles: both filled legs took 4,000-5,000 ms.
     assert report.place_to_fill_ms_p99 < 10_000
     assert report.unfilled_rest_ms_p50 == pytest.approx(14_390_000.0)
+
+
+def test_a_stored_reject_the_fill_table_shows_cancelled_is_reclassified(
+    test_database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The live store migrated before "CANCELLED" was recognised, so the
+    2026-10-07 08:00 SOL-USDT leg stayed a reject. The next migration pass on
+    a current-schema table reclassifies it; a second pass changes nothing."""
+    from router import fidelity
+
+    store = RouterOrderPlacementStore(test_database_url)
+    cid = _record(
+        store,
+        symbol="SOL-USDT",
+        side="SELL",
+        order_type=BINGX_LIMIT_ORDER,
+        quantity="0.02",
+        reference_price="150",
+        decision_mark=Decimal(150),
+        expected_cost_bps=11.5,
+        book_id=BOOK_ID,
+        rebalance_ts=REBALANCE_TS,
+    )
+    _fill(
+        cid,
+        symbol="SOL-USDT",
+        status="CANCELLED",
+        executed_quantity=Decimal(0),
+        average_price=Decimal(0),
+        original_quantity=Decimal("0.02"),
+        database_url=test_database_url,
+    )
+    # Reconcile as the first migration did: two-L spelling unknown.
+    monkeypatch.setattr(
+        fidelity, "_UNFILLED_TERMINAL_STATUSES", frozenset({"CANCELED", "EXPIRED"})
+    )
+    stored = reconcile_fidelity(
+        FidelitySlot(book_id=BOOK_ID, rebalance_ts=REBALANCE_TS),
+        database_url=test_database_url,
+    )
+    assert stored is not None and stored.orders[0].leg_state == FIDELITY_LEG_REJECTED
+    monkeypatch.undo()
+
+    path = test_database_url.removeprefix("sqlite:///")
+    for _ in range(2):
+        with sqlite3.connect(path) as connection:
+            fidelity._migrate_order_fidelity_table(connection)
+    with sqlite3.connect(path) as connection:
+        row = connection.execute(
+            f"SELECT leg_state, place_to_fill_ms, unfilled_rest_ms "
+            f"FROM {fidelity.ORDER_FIDELITY_TABLE} WHERE client_order_id = ?",
+            (cid,),
+        ).fetchone()
+    assert row[0] == FIDELITY_LEG_UNFILLED
+    assert row[1] is None

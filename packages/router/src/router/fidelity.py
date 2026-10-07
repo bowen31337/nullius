@@ -106,7 +106,11 @@ from urllib.parse import unquote, urlparse
 from .bingx_client_order_id import project_bingx_client_order_id
 from .bingx_funding import RouterFundingIncomeStore
 from .bingx_order import BINGX_BUY, BINGX_LIMIT_ORDER
-from .bingx_orders import VST_ORDER_STATUS_CANCELED, VST_ORDER_STATUS_EXPIRED
+from .bingx_orders import (
+    VST_ORDER_STATUS_CANCELED,
+    VST_ORDER_STATUS_CANCELLED,
+    VST_ORDER_STATUS_EXPIRED,
+)
 from .bingx_reconcile import ORDER_FILL_TABLE, OrderFill, order_fill_record
 from .errors import RouterError, RouterStoreError
 from .submission_result import OrderRecord, RouterOrderPlacementStore
@@ -169,7 +173,7 @@ FIDELITY_LEG_STATES = (
 #: the set :func:`_leg_fidelity` judges a zero-fill leg against to tell
 #: :data:`FIDELITY_LEG_UNFILLED` apart from :data:`FIDELITY_LEG_REJECTED`.
 _UNFILLED_TERMINAL_STATUSES = frozenset(
-    {VST_ORDER_STATUS_CANCELED, VST_ORDER_STATUS_EXPIRED}
+    {VST_ORDER_STATUS_CANCELED, VST_ORDER_STATUS_CANCELLED, VST_ORDER_STATUS_EXPIRED}
 )
 
 #: One row per leg of a reconciled slot — the per-order half of the
@@ -885,6 +889,38 @@ def _was_accepted_then_unfilled(
         return False
 
 
+def _reclassify_unfilled_rejects(connection: sqlite3.Connection) -> None:
+    """Turn every stored ``reject`` row that :func:`_was_accepted_then_unfilled`
+    confirms into :data:`FIDELITY_LEG_UNFILLED`, in one transaction.
+
+    This applies the legacy copy's rule to a table that already has the
+    current schema. Its stored ``place_to_fill_ms`` (the rest time) moves to
+    ``unfilled_rest_ms``, and ``place_to_fill_ms`` is cleared. The pass is
+    idempotent: once reclassified, a row is no longer a reject.
+    """
+    rejects = connection.execute(
+        f"SELECT client_order_id FROM {ORDER_FIDELITY_TABLE} WHERE leg_state = ?",
+        (FIDELITY_LEG_REJECTED,),
+    ).fetchall()
+    confirmed = [
+        client_order_id
+        for (client_order_id,) in rejects
+        if _was_accepted_then_unfilled(connection, client_order_id)
+    ]
+    if not confirmed:
+        return
+    with connection:
+        connection.executemany(
+            f"UPDATE {ORDER_FIDELITY_TABLE} SET leg_state = ?, "
+            "unfilled_rest_ms = place_to_fill_ms, place_to_fill_ms = NULL "
+            "WHERE client_order_id = ? AND leg_state = ?",
+            [
+                (FIDELITY_LEG_UNFILLED, client_order_id, FIDELITY_LEG_REJECTED)
+                for client_order_id in confirmed
+            ],
+        )
+
+
 def _migrate_order_fidelity_table(connection: sqlite3.Connection) -> None:
     """Rebuild a pre-existing :data:`ORDER_FIDELITY_TABLE` onto this
     bugfix's schema, in place, inside one transaction.
@@ -917,7 +953,12 @@ def _migrate_order_fidelity_table(connection: sqlite3.Connection) -> None:
         "unfilled_rest_ms" in existing_sql
         and f"'{FIDELITY_LEG_UNFILLED}'" in existing_sql
     ):
-        return  # already this bugfix's shape
+        # Already this bugfix's shape. Still reclassify any reject row the
+        # fill table now confirms was accepted and then unfilled: the first
+        # migration ran before the live two-L "CANCELLED" was recognised,
+        # and left the 2026-10-07 08:00 SOL-USDT leg as a reject.
+        _reclassify_unfilled_rejects(connection)
+        return
 
     with connection:
         connection.execute(
