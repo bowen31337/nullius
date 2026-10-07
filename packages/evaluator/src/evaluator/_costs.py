@@ -371,9 +371,12 @@ class CostRequest:
     that cannot see the returns cannot charge a model that depends on them
     (a proportional fee, a slippage figure keyed to the move), and one that
     is handed only a summary would have to answer for a world nobody ran.
-    Its support is validated eagerly — every date carries exactly
-    :attr:`symbols`, and the dates span exactly :attr:`date_range` — so the
-    record is internally consistent rather than merely well-formed.
+    Its support is validated eagerly — every date carries a cross-section
+    that is a subset of :attr:`symbols` (a point-in-time universe: a listing
+    or a delisting inside the horizon's own span need not leave every date
+    with the same symbols), the union of every date's cross-section recovers
+    :attr:`symbols` exactly, and the dates span exactly :attr:`date_range` —
+    so the record is internally consistent rather than merely well-formed.
 
     Hashable, like §7.2's request: the returns mapping folds to nested
     tuples (see :meth:`__hash__`).
@@ -387,8 +390,11 @@ class CostRequest:
     version: str
     #: The horizon these returns measure — one of :data:`HORIZONS`.
     horizon: int
-    #: The symbols the answer must cover and the gross series carries,
-    #: sorted and de-duplicated.
+    #: Every symbol the gross series names across all its dates — the union
+    #: of each date's own cross-section, sorted and de-duplicated.  A date's
+    #: own row may be a strict subset (a listing or a delisting partway
+    #: through the horizon's span); every symbol named here must still
+    #: appear on at least one date, and no date may name a symbol outside it.
     symbols: Tuple[str, ...]
     #: The span of the gross returns' dates, as ``(first, last)``.
     date_range: Tuple[dt.date, dt.date]
@@ -458,6 +464,8 @@ class CostRequest:
                 f"{type(self.gross_returns).__name__}"
             )
         captured: dict[dt.date, Mapping[str, float]] = {}
+        symbol_set = set(self.symbols)
+        covered_symbols: set[str] = set()
         for key, row in self.gross_returns.items():
             day = _as_charge_date(key)
             if day in captured:
@@ -466,20 +474,36 @@ class CostRequest:
                     "different spellings; one bar, one series"
                 )
             inner = _validated_row(row, day, label="gross return")
-            if tuple(sorted(inner)) != self.symbols:
+            if not inner:
+                raise EvaluatorCostError(
+                    f"gross_returns carries {day.isoformat()} with no "
+                    "symbols; a covered date has a cross-section to charge"
+                )
+            extra = set(inner) - symbol_set
+            if extra:
                 raise EvaluatorCostError(
                     f"gross_returns carries {day.isoformat()} for "
-                    f"{', '.join(sorted(inner)) or 'no symbols'}, but the "
-                    f"request's cross-section is {', '.join(self.symbols)}; "
-                    "the ask and the returns it asks about must name the "
-                    "same support"
+                    f"{', '.join(sorted(inner))}, including "
+                    f"{', '.join(sorted(extra))}, which the request's "
+                    f"cross-section ({', '.join(self.symbols)}) does not "
+                    "name; the ask and the returns it asks about must name "
+                    "the same support"
                 )
+            covered_symbols.update(inner)
             captured[day] = inner
         if not captured:
             raise EvaluatorCostError(
                 "gross_returns is empty; a covered horizon has returns to "
                 "charge, and a request carrying none asks a fee schedule "
                 "about nothing"
+            )
+        if covered_symbols != symbol_set:
+            missing = sorted(symbol_set - covered_symbols)
+            raise EvaluatorCostError(
+                f"the request names {', '.join(self.symbols)} as its "
+                f"cross-section, but {', '.join(missing)} appear(s) on no "
+                "date in gross_returns; the ask and the returns it asks "
+                "about must name the same support"
             )
         dates = tuple(sorted(captured))
         if self.date_range != (dates[0], dates[-1]):
@@ -1204,7 +1228,7 @@ def apply_costs(
             day: {
                 symbol: request.gross_returns[day][symbol]
                 - quote.costs[day][symbol]
-                for symbol in symbols
+                for symbol in request.gross_returns[day]
             }
             for day in dates
         }

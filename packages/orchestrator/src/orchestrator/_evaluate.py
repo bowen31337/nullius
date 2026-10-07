@@ -121,7 +121,7 @@ import datetime as dt
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 import sandbox
 from artifacts import (
@@ -134,6 +134,7 @@ from evaluator import (
     HORIZONS,
     ArtifactPayload,
     EvaluatorMarginalError,
+    EvaluatorNormalizeError,
     NodeMetrics,
     Oracle,
     PostCostReturns,
@@ -156,6 +157,7 @@ from ._context import BARS_STREAM, EvaluationContext, signal_sandbox
 from ._tree_writer import NodeMetricsWriter
 
 __all__ = [
+    "MIN_SCORED_DATES",
     "NodeEvaluation",
     "NodePersistence",
     "SandboxExecutionError",
@@ -163,6 +165,21 @@ __all__ = [
 ]
 
 _logger = logging.getLogger(__name__)
+
+#: The floor on how many rebalance dates must express a preference (survive
+#: normalization) before a node is allowed to pass at all.  A date is absent
+#: — not scored — when its point-in-time universe holds fewer than two
+#: symbols or when every raw score on it is identical (normalize_scores' own
+#: no-preference refusal, see :func:`_score_rebalance_dates`); without a
+#: floor a signal could pass by expressing a view on a handful of
+#: cherry-picked days while sitting out everything else.
+MIN_SCORED_DATES: Final[int] = 20
+
+#: The length a failure's message is truncated to before it is carried on
+#: :attr:`NodeEvaluation.fail_detail` — long enough for a pipeline error's
+#: own context (symbols, dates), short enough that a pathological message
+#: cannot bloat the node row or the emitted event.
+_FAIL_DETAIL_LIMIT: Final[int] = 2_000
 
 #: The pipeline steps this spec's evaluation reaches, in the numbering
 #: :mod:`evaluator._artifact`'s ``render_exec_trace`` and
@@ -251,6 +268,20 @@ class NodeEvaluation:
     #: The ledger's answer to this node's charge — the landed row, its
     #: sequence, and whether this call wrote it.
     debit: Any
+    #: The failure's own message, ``str(exc)`` truncated to
+    #: :data:`_FAIL_DETAIL_LIMIT` characters, or ``None`` on success.  Pipeline
+    #: messages name symbols and dates, never a node's null status or any
+    #: sidecar content, so two nodes failing the same way differ in this text
+    #: only where their own identifiers (a node id, say) do.  ``fail_class``
+    #: is unchanged — this only carries the reason beside the class.
+    fail_detail: str | None = None
+    #: How many of this node's rebalance dates were absent — no score,
+    #: never a fabricated zero — because their point-in-time universe held
+    #: fewer than two symbols or because every raw score on them was
+    #: identical (normalize_scores' own no-preference refusal).  ``0`` on
+    #: every failure path, since no date was scored past the point of
+    #: failure.
+    flat_dates: int = 0
 
 
 # -- The materialize seam: reading the sealed mount for execute_signal ----------
@@ -330,6 +361,14 @@ def _cost_schedule_from_context(context: EvaluationContext) -> Any:
     ``tests/e2e/test_momentum_signal_positive_ic.py`` builds over the shared
     library and for the same reason feature 69 forbids a second one: the fee
     arithmetic is the library's, never re-implemented here.
+
+    Quoted *per date*, off that date's own ``request.gross_returns[day]`` —
+    never off ``request.symbols`` (the request's whole-horizon union)
+    applied uniformly — because a point-in-time universe lets one
+    rebalance date's cross-section be a strict subset of another's (a
+    listing or a delisting inside the horizon's span), and a quote naming a
+    symbol a date never scored is exactly what
+    :func:`evaluator._costs._check_charge_support` refuses.
     """
     from cost_model import TAKER
     from evaluator import CostQuote
@@ -341,8 +380,8 @@ def _cost_schedule_from_context(context: EvaluationContext) -> Any:
             venue=request.venue,
             version=request.version,
             costs={
-                day: dict.fromkeys(request.symbols, fee)
-                for day in request.gross_returns
+                day: dict.fromkeys(row, fee)
+                for day, row in request.gross_returns.items()
             },
         )
 
@@ -560,6 +599,103 @@ def _fail_class(exc: Exception, executor: object) -> str:
     return type(exc).__name__
 
 
+# -- Per-date scoring: a flat or thin date is absent, never a node failure -----
+
+
+def _all_scores_identical(scores: Any) -> bool:
+    """True exactly when :func:`evaluator.normalize_scores` would refuse
+    ``scores`` as no-preference — ``std_rank == 0`` restated without calling
+    it, so the only route to that specific refusal is a direct, narrow
+    check rather than a catch of its exception class.
+
+    Checked against the same three preconditions ``normalize_scores`` checks
+    first (a Polars ``Series``, floating point, every value finite): any
+    vector failing one of those is not "no preference", it is malformed in a
+    way this function answers ``False`` for and leaves for
+    ``normalize_scores`` itself to refuse, unabsorbed — the genuine
+    malformation :func:`_score_rebalance_dates` must still let fail the
+    whole node.
+    """
+    try:
+        import polars as pl
+    except ModuleNotFoundError:  # pragma: no cover - dependency is declared
+        return False
+    if not isinstance(scores, pl.Series) or not scores.dtype.is_float():
+        return False
+    if not scores.is_finite().all():
+        return False
+    return scores.n_unique() <= 1
+
+
+def _score_rebalance_dates(
+    execution: Any, node_id: str
+) -> tuple[dict[dt.date, dict[str, float]], int]:
+    """Normalize every rebalance date's raw scores; a date with no view is absent.
+
+    Two conditions make a date unmeasurable rather than merely uninteresting,
+    and both are treated the same way — ``scores[day] = {}``, never a
+    fabricated zero — so the node is still evaluated over the dates that
+    remain: a point-in-time universe holding fewer than two symbols (one
+    symbol is not a cross-section), and every raw score on the date being
+    identical (:func:`_all_scores_identical`, restating
+    :func:`evaluator.normalize_scores`' own no-preference refusal — a
+    warm-up day before a lookback fills, or a genuinely flat market day).
+    Checked *before* calling ``normalize_scores`` rather than by catching its
+    :class:`~evaluator.EvaluatorNormalizeError`, so a vector that is not a
+    conforming Series of finite floats at all (which should never reach here
+    — ``execute_signal`` already raised :class:`SandboxExecutionError` for
+    any non-``conforming`` vector — but is not this function's invariant to
+    trust blindly) still refuses the whole node through ``normalize_scores``'s
+    own, unabsorbed exception rather than being silently treated as a flat
+    date.
+
+    Refuses with :class:`~evaluator.EvaluatorNormalizeError` — the same
+    class, so the caller's pipeline ``try`` charges it like any other
+    pipeline failure — when fewer than :data:`MIN_SCORED_DATES` dates end up
+    scored *and at least one date was absent for the no-preference reason
+    this function adds*: a signal that expresses a preference on a handful
+    of cherry-picked days is not a measurable signal. The floor is scoped to
+    that one new reason rather than to every thin date too, because a thin
+    point-in-time universe is bug_spec_pit_universe.xml's own, already-settled
+    territory (``test_pit_universe_per_date.py`` pins a node scored over as
+    few as two non-thin dates succeeding), and widening its floor is not this
+    bug's defect to fix.
+
+    Answers ``(scores, flat_dates)`` — the per-date normalized scores and
+    the total count of dates that ended up absent (thin or no-preference
+    alike), the figure :attr:`NodeEvaluation.flat_dates` carries forward.
+    """
+    scores: dict[dt.date, dict[str, float]] = {}
+    thin_dates = 0
+    no_preference_dates = 0
+    for day in execution.dates():
+        vector = execution.vector(day)
+        if len(vector.universe) < 2:
+            scores[day] = {}
+            thin_dates += 1
+            continue
+        if _all_scores_identical(vector.scores):
+            scores[day] = {}
+            no_preference_dates += 1
+            continue
+        normalized = normalize_scores(vector.scores).to_list()
+        scores[day] = dict(zip(vector.universe, normalized))
+
+    if no_preference_dates:
+        total_dates = len(execution.dates())
+        scored_dates = total_dates - thin_dates - no_preference_dates
+        if scored_dates < MIN_SCORED_DATES:
+            raise EvaluatorNormalizeError(
+                f"cannot normalize node {node_id!r}: only {scored_dates} of "
+                f"{total_dates} rebalance dates expressed a preference, "
+                f"fewer than MIN_SCORED_DATES ({MIN_SCORED_DATES}); every "
+                "raw score was identical, or the cross-section held fewer "
+                "than two symbols, on the rest — the signal expressed no "
+                "preference on enough dates to measure"
+            )
+    return scores, thin_dates + no_preference_dates
+
+
 # -- The one call ---------------------------------------------------------------
 
 
@@ -651,6 +787,7 @@ def evaluate_node(
             fail_class=sandbox.DISALLOWED_IMPORT_CODE,
             persistence=None,
             debit=debited,
+            fail_detail=str(failure)[:_FAIL_DETAIL_LIMIT],
         )
 
     executor = signal_sandbox(context)
@@ -677,22 +814,7 @@ def evaluate_node(
                     f"{vector.problems or _executor_failure(executor)}"
                 )
 
-        # A date whose point-in-time universe (the per-date fix above) has
-        # fewer than two symbols — a listing's first day with nothing else
-        # yet admitted, say — is exactly what normalize_scores refuses: one
-        # symbol is not a cross-section.  That is not a pipeline failure, it
-        # is the honest absence of a measurable date, so it is skipped here
-        # rather than let the refusal fail the whole node — the same
-        # treatment align_targets already gives a date it cannot align.
-        scores: dict[dt.date, dict[str, float]] = {}
-        for day in execution.dates():
-            vector = execution.vector(day)
-            if len(vector.universe) < 2:
-                scores[day] = {}
-                continue
-            scores[day] = dict(
-                zip(vector.universe, normalize_scores(vector.scores).to_list())
-            )
+        scores, flat_dates = _score_rebalance_dates(execution, node_id)
         alignment = align_targets(execution, context.closes)
         gated = gate_targets(
             alignment, oracle, node_id=node_id, campaign_id=campaign_id, depth=depth
@@ -716,6 +838,10 @@ def evaluate_node(
             ir_marginal = marginal.ir_marginal
     except Exception as exc:  # noqa: BLE001 - every pipeline failure is charged, by name
         fail_class = _fail_class(exc, executor)
+        fail_detail = str(exc)[:_FAIL_DETAIL_LIMIT]
+        _logger.warning(
+            "node %s failed (%s): %s", node_id, fail_class, fail_detail
+        )
         debited = charge_failed_node(
             node_id,
             campaign_id,
@@ -735,6 +861,7 @@ def evaluate_node(
             fail_class=fail_class,
             persistence=None,
             debit=debited,
+            fail_detail=fail_detail,
         )
 
     cost_adjusted_ir = _cost_adjusted_ir(priced, metrics)
@@ -777,4 +904,5 @@ def evaluate_node(
         fail_class=None,
         persistence=persistence,
         debit=debited,
+        flat_dates=flat_dates,
     )

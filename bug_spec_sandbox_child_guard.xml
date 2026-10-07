@@ -1,0 +1,11 @@
+<bug_spec>
+  <!-- Found 2026-10-05 reviewing additions_spec_gvisor_executor.xml feature 1
+       (the hardened child bootstrap). Core shape with explicit touches_files:
+       plan-bugs ignores <layout>. -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/orchestrator/src/orchestrator/_sandbox_child.py,packages/orchestrator/tests/test_sandbox_child.py">
+    <title>The child's import guard extends trusted-library import rights to agent code that runs inside a trusted library's callback</title>
+    <symptoms>
+      _admit(name) admits any import when _trusted_root_in_stack finds a frame from a trusted root (polars, numpy, pyarrow) anywhere up the call stack. The walk follows f_back without stopping.
+      When agent code is executed by a trusted library on the agent's behalf, through a callback that library invokes, the library's own frame sits further up the stack. The agent's import is

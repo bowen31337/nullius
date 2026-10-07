@@ -160,6 +160,7 @@ def _evaluated_event(
     fail_class: str | None,
     score: Any,
     charges_budget: bool,
+    fail_detail: str | None = None,
 ) -> dict[str, Any]:
     return {
         "event": "node_evaluated",
@@ -167,6 +168,7 @@ def _evaluated_event(
         "node_id": node_id,
         "depth": depth,
         "fail_class": fail_class,
+        "fail_detail": fail_detail,
         "charges_budget": charges_budget,
         "score": _json_score(score),
     }
@@ -431,6 +433,10 @@ def _continue_campaign(
                 fail_class=evaluation.fail_class,
                 score=evaluation.score,
                 charges_budget=evaluation.charges_budget,
+                # getattr, not .fail_detail: a duck-typed evaluator (this
+                # module's own test doubles included) may answer an object
+                # that predates the field.
+                fail_detail=getattr(evaluation, "fail_detail", None),
             )
         )
 
@@ -504,6 +510,11 @@ def _continue_campaign(
                     fail_class=outcome.fail_class,
                     score=outcome.score,
                     charges_budget=outcome.charges_budget,
+                    # ChildOutcome (orchestrator._worker, outside this bug's
+                    # footprint) carries no fail_detail field yet, so this
+                    # degrades to None for every round-loop child rather than
+                    # raising on a frozen dataclass's missing attribute.
+                    fail_detail=getattr(outcome, "fail_detail", None),
                 )
             )
 
