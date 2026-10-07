@@ -1410,17 +1410,23 @@ def _limit_expected_cost_bps(
 def _target_quantity_or_none(
     book: Mapping[str, Any], symbol: str, mark: Decimal | None
 ) -> Decimal | None:
-    """The leg's raw size before the step/tick grid, or ``None``.
+    """The leg's own order delta before the step/tick grid, or ``None``.
 
-    additions_spec_vst_fidelity.xml, feature 2: *"target_quantity: the
-    quantity before step/tick rounding."*  :mod:`router.sizing` truncates
-    ``equity × weight ÷ mark`` onto the symbol's step grid before an order
-    is ever assembled, and nothing downstream of that truncation carries
-    the unrounded figure — so this recomputes the one term the sizer
-    rounds, read-only, straight from the book's own ``equity_usdt`` and
-    ``weights``, and never feeds the answer back into anything placement
-    reads.  A term this cannot read (no weight for the symbol, no usable
-    mark, an equity or a weight that is not a plain real) answers ``None``.
+    additions_spec_vst_fidelity.xml, feature 2 (bug_spec_vst_fidelity_accounting.xml's
+    fix): *"target_quantity: the quantity before step/tick rounding."*  That
+    is the **delta the router sized** — ``equity × weight ÷ mark`` (the raw,
+    unrounded position target), minus the position already held — never the
+    position target on its own: :mod:`router.sizing` truncates that same raw
+    target onto the symbol's step grid *before* subtracting the held
+    position to get the delta it actually sends, and nothing downstream of
+    that truncation carries the unrounded figure, so this recomputes the one
+    term the sizer rounds, read-only, straight from the book's own
+    ``equity_usdt``, ``weights`` and ``positions``, and never feeds the
+    answer back into anything placement reads.  A symbol the book's
+    ``positions`` does not name is a flat leg (held zero), the same reading
+    :func:`router.sizing._held_position` gives it.  A term this cannot read
+    (no weight for the symbol, no usable mark, an equity, a weight or a held
+    position that is not a plain real) answers ``None``.
     """
     if mark is None or mark <= 0:
         return None
@@ -1432,7 +1438,13 @@ def _target_quantity_or_none(
         weight = Decimal(str(weights[symbol]))
         if not equity.is_finite() or not weight.is_finite():
             return None
-        return abs(equity * weight / mark)
+        positions = book.get("positions")
+        held = Decimal(0)
+        if isinstance(positions, Mapping) and symbol in positions:
+            held = Decimal(str(positions[symbol]))
+            if not held.is_finite():
+                return None
+        return abs(equity * weight / mark - held)
     except (InvalidOperation, TypeError, ArithmeticError):
         return None
 

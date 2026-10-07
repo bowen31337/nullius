@@ -106,7 +106,8 @@ from urllib.parse import unquote, urlparse
 from .bingx_client_order_id import project_bingx_client_order_id
 from .bingx_funding import RouterFundingIncomeStore
 from .bingx_order import BINGX_BUY, BINGX_LIMIT_ORDER
-from .bingx_reconcile import OrderFill, order_fill_record
+from .bingx_orders import VST_ORDER_STATUS_CANCELED, VST_ORDER_STATUS_EXPIRED
+from .bingx_reconcile import ORDER_FILL_TABLE, OrderFill, order_fill_record
 from .errors import RouterError, RouterStoreError
 from .submission_result import OrderRecord, RouterOrderPlacementStore
 
@@ -116,6 +117,7 @@ __all__ = [
     "FIDELITY_LEG_PARTIAL",
     "FIDELITY_LEG_REJECTED",
     "FIDELITY_LEG_STATES",
+    "FIDELITY_LEG_UNFILLED",
     "ORDER_FIDELITY_TABLE",
     "SLOT_FIDELITY_TABLE",
     "FidelitySlot",
@@ -136,16 +138,38 @@ FIDELITY_LEG_FILLED = "fill"
 #: A recorded leg partially filled: some but not all of its original
 #: quantity executed.
 FIDELITY_LEG_PARTIAL = "partial"
-#: A recorded leg that filled nothing by the time this slot was reconciled
-#: — see the module docstring for why this module's "rejected" is wider
-#: than a venue's own submission-time refusal.
+#: A recorded leg that filled nothing and that the venue itself refused, or
+#: never accepted at all — a venue rejection (status ``REJECTED``), the
+#: venue holding no record of the order at all, or a fill row this module
+#: never got at all (the defensive case; see :func:`_leg_fidelity`).  A leg
+#: the venue *did* accept and rested unfilled is :data:`FIDELITY_LEG_UNFILLED`
+#: instead — see that constant for why the two are kept apart.
 FIDELITY_LEG_REJECTED = "reject"
-#: The closed vocabulary the three constants above name, in the order a
+#: A recorded leg the venue accepted — it was never refused at
+#: submission — but that ended with zero executed quantity: the venue's own
+#: terminal word for it is ``CANCELED`` or ``EXPIRED``.  The ordinary fate of
+#: a PostOnly leg that simply never reached its price before the next slot's
+#: own sweep cancelled it, and a different fact from a venue refusal: the
+#: order *landed*, it just never filled, so folding it into
+#: :data:`FIDELITY_LEG_REJECTED` would count an ordinary resting leg as if
+#: the venue had refused it, and would fold its resting time into the fill
+#: latency the way :attr:`OrderFidelity.place_to_fill_ms` measures (see
+#: :attr:`OrderFidelity.unfilled_rest_ms` for its own, separate, latency).
+FIDELITY_LEG_UNFILLED = "unfilled"
+#: The closed vocabulary the four constants above name, in the order a
 #: slot's counts are reported.
 FIDELITY_LEG_STATES = (
     FIDELITY_LEG_FILLED,
     FIDELITY_LEG_PARTIAL,
     FIDELITY_LEG_REJECTED,
+    FIDELITY_LEG_UNFILLED,
+)
+
+#: The venue's own terminal words for an accepted leg that filled nothing —
+#: the set :func:`_leg_fidelity` judges a zero-fill leg against to tell
+#: :data:`FIDELITY_LEG_UNFILLED` apart from :data:`FIDELITY_LEG_REJECTED`.
+_UNFILLED_TERMINAL_STATUSES = frozenset(
+    {VST_ORDER_STATUS_CANCELED, VST_ORDER_STATUS_EXPIRED}
 )
 
 #: One row per leg of a reconciled slot — the per-order half of the
@@ -170,17 +194,37 @@ _BPS_PER_UNIT = Decimal(10_000)
 #: independently of the other's.
 _SLOT_WIDTH = timedelta(hours=4)
 
+#: The columns :data:`ORDER_FIDELITY_TABLE` has carried since this bugfix —
+#: :data:`_LEGACY_ORDER_FIDELITY_COLUMNS` is the same list from before it,
+#: kept side by side so :func:`_migrate_order_fidelity_table` cannot drift
+#: the two apart.
 _ORDER_FIDELITY_COLUMNS = (
+    "client_order_id, book_id, rebalance_ts, symbol, side, type, "
+    "leg_state, decision_mark, expected_cost_bps, realized_cost_bps, "
+    "gap_bps, commission_bps, maker, place_to_fill_ms, unfilled_rest_ms, "
+    "notional, computed_at"
+)
+
+#: :data:`ORDER_FIDELITY_TABLE`'s columns before this bugfix — no
+#: ``unfilled_rest_ms``, and a ``leg_state`` CHECK with no ``'unfilled'``.
+#: What :func:`_migrate_order_fidelity_table` reads a pre-existing table's
+#: rows out of before rebuilding it onto :data:`_ORDER_FIDELITY_COLUMNS`.
+_LEGACY_ORDER_FIDELITY_COLUMNS = (
     "client_order_id, book_id, rebalance_ts, symbol, side, type, "
     "leg_state, decision_mark, expected_cost_bps, realized_cost_bps, "
     "gap_bps, commission_bps, maker, place_to_fill_ms, notional, "
     "computed_at"
 )
 
+#: The table name :func:`_migrate_order_fidelity_table` renames a
+#: pre-existing :data:`ORDER_FIDELITY_TABLE` to while it rebuilds the real
+#: name fresh — never left standing past one migration's own transaction.
+_LEGACY_ORDER_FIDELITY_TABLE = "router_order_fidelity_pre_unfilled"
+
 _SLOT_FIDELITY_COLUMNS = (
     "book_id, rebalance_ts, n_legs, n_fills, n_partials, n_rejects, "
-    "reject_rate, notional_total, realized_cost_bps, expected_cost_bps, "
-    "gap_bps, funding_bps, computed_at"
+    "n_unfilled, reject_rate, unfilled_rate, notional_total, "
+    "realized_cost_bps, expected_cost_bps, gap_bps, funding_bps, computed_at"
 )
 
 _LEG_STATE_CHECK = ", ".join(f"'{state}'" for state in FIDELITY_LEG_STATES)
@@ -205,6 +249,7 @@ CREATE TABLE IF NOT EXISTS {ORDER_FIDELITY_TABLE} (
     commission_bps     REAL,
     maker              INTEGER,
     place_to_fill_ms   INTEGER,
+    unfilled_rest_ms   INTEGER,
     notional           TEXT,
     computed_at        TEXT NOT NULL
 );
@@ -219,7 +264,9 @@ CREATE TABLE IF NOT EXISTS {SLOT_FIDELITY_TABLE} (
     n_fills            INTEGER NOT NULL,
     n_partials         INTEGER NOT NULL,
     n_rejects          INTEGER NOT NULL,
+    n_unfilled         INTEGER NOT NULL DEFAULT 0,
     reject_rate        REAL,
+    unfilled_rate      REAL,
     notional_total     TEXT NOT NULL,
     realized_cost_bps  REAL,
     expected_cost_bps  REAL,
@@ -232,7 +279,7 @@ CREATE TABLE IF NOT EXISTS {SLOT_FIDELITY_TABLE} (
 
 _ORDER_FIDELITY_INSERT_SQL = f"""
 INSERT INTO {ORDER_FIDELITY_TABLE} ({_ORDER_FIDELITY_COLUMNS})
-SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 WHERE NOT EXISTS (
     SELECT 1 FROM {ORDER_FIDELITY_TABLE} WHERE client_order_id = ?
 )
@@ -247,7 +294,7 @@ ORDER BY rowid
 
 _SLOT_FIDELITY_INSERT_SQL = f"""
 INSERT INTO {SLOT_FIDELITY_TABLE} ({_SLOT_FIDELITY_COLUMNS})
-SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 WHERE NOT EXISTS (
     SELECT 1 FROM {SLOT_FIDELITY_TABLE} WHERE book_id = ? AND rebalance_ts = ?
 )
@@ -396,8 +443,13 @@ class OrderFidelity:
     and ``expected_cost_bps`` are feature 2's decision-time facts, carried
     whether or not the leg ever filled; ``realized_cost_bps``, ``gap_bps``,
     ``commission_bps``, ``maker``, ``place_to_fill_ms`` and ``notional`` are
-    ``None`` for a :data:`FIDELITY_LEG_REJECTED` leg, which filled nothing
-    to measure any of them from.
+    ``None`` for a :data:`FIDELITY_LEG_REJECTED` or :data:`FIDELITY_LEG_UNFILLED`
+    leg, neither of which filled anything to measure them from.
+    ``place_to_fill_ms`` is ``None`` for anything but a :data:`FIDELITY_LEG_FILLED`
+    or :data:`FIDELITY_LEG_PARTIAL` leg — it measures time to a fill, never
+    time to a cancel.  ``unfilled_rest_ms`` is the mirror image: the time the
+    venue held a :data:`FIDELITY_LEG_UNFILLED` leg open before its terminal
+    ``CANCELED``/``EXPIRED`` state, ``None`` for every other leg state.
     """
 
     client_order_id: str
@@ -414,6 +466,7 @@ class OrderFidelity:
     commission_bps: float | None
     maker: bool | None
     place_to_fill_ms: int | None
+    unfilled_rest_ms: int | None
     notional: Decimal | None
     computed_at: datetime
 
@@ -422,10 +475,11 @@ class OrderFidelity:
 class SlotFidelity:
     """One row of :data:`SLOT_FIDELITY_TABLE` — the slot's own fidelity.
 
-    ``n_legs`` is always ``n_fills + n_partials + n_rejects``.
-    ``reject_rate`` is ``n_rejects / n_legs`` — ``None`` only when
-    ``n_legs`` is zero, which cannot happen for a row this module writes
-    (see :func:`reconcile_fidelity`'s own early exit), but can for a value a
+    ``n_legs`` is always ``n_fills + n_partials + n_rejects + n_unfilled``.
+    ``reject_rate`` is ``n_rejects / n_legs`` and ``unfilled_rate`` is
+    ``n_unfilled / n_legs`` — each ``None`` only when ``n_legs`` is zero,
+    which cannot happen for a row this module writes (see
+    :func:`reconcile_fidelity`'s own early exit), but can for a value a
     caller constructs by hand.  ``realized_cost_bps``, ``expected_cost_bps``
     and ``gap_bps`` are the notional-weighted means over the slot's priced
     legs — ``None`` when none priced.  ``funding_bps`` is ``None`` only when
@@ -446,7 +500,9 @@ class SlotFidelity:
     n_fills: int
     n_partials: int
     n_rejects: int
+    n_unfilled: int
     reject_rate: float | None
+    unfilled_rate: float | None
     notional_total: Decimal
     realized_cost_bps: float | None
     expected_cost_bps: float | None
@@ -465,9 +521,18 @@ def _leg_fidelity(
     saved a row for this leg — a defensive case this production path should
     not reach, since :func:`~router.bingx_reconcile.
     reconcile_rebalance_fill_costs` saves every recorded leg's fill before
-    this module ever runs — treated identically to a fill that executed
-    nothing: :data:`FIDELITY_LEG_REJECTED`, with every fill-derived figure
-    ``None``.
+    this module ever runs — treated identically to a venue refusal:
+    :data:`FIDELITY_LEG_REJECTED`, with every fill-derived figure ``None``.
+
+    A zero-fill leg the venue's own terminal word reports as ``CANCELED`` or
+    ``EXPIRED`` is :data:`FIDELITY_LEG_UNFILLED` instead of
+    :data:`FIDELITY_LEG_REJECTED`: the venue *accepted* that leg, it simply
+    never reached a fill before it was cancelled (the ordinary fate of a
+    PostOnly leg the price never reached before the next slot's own sweep),
+    which is a different fact from a venue refusal. Its resting time is
+    :attr:`OrderFidelity.unfilled_rest_ms`, never folded into
+    :attr:`OrderFidelity.place_to_fill_ms` — that figure measures time to a
+    fill, and an unfilled leg had none.
     """
 
     projected = project_bingx_client_order_id(record.client_order_id)
@@ -485,9 +550,15 @@ def _leg_fidelity(
     commission_bps: float | None = None
     maker: bool | None = None
     realized_bps: float | None = None
+    place_to_fill_ms: int | None = None
+    unfilled_rest_ms: int | None = None
 
     if not has_fill:
-        leg_state = FIDELITY_LEG_REJECTED
+        if fill is not None and fill.status in _UNFILLED_TERMINAL_STATUSES:
+            leg_state = FIDELITY_LEG_UNFILLED
+            unfilled_rest_ms = fill.place_to_fill_ms
+        else:
+            leg_state = FIDELITY_LEG_REJECTED
     else:
         assert fill is not None and executed is not None and average is not None
         if fill.original_quantity is not None and executed < fill.original_quantity:
@@ -515,6 +586,7 @@ def _leg_fidelity(
                 * _BPS_PER_UNIT
             )
             realized_bps = float(slippage_bps) + commission_bps
+        place_to_fill_ms = fill.place_to_fill_ms
 
     expected_bps = record.expected_cost_bps
     gap_bps = (
@@ -537,7 +609,8 @@ def _leg_fidelity(
         gap_bps=gap_bps,
         commission_bps=commission_bps,
         maker=maker,
-        place_to_fill_ms=fill.place_to_fill_ms if fill is not None else None,
+        place_to_fill_ms=place_to_fill_ms,
+        unfilled_rest_ms=unfilled_rest_ms,
         notional=notional,
         computed_at=computed_at,
     )
@@ -572,7 +645,7 @@ def _slot_funding_income(
 
 
 def _order_fidelity_params(order: OrderFidelity) -> tuple[Any, ...]:
-    """The 16 bound parameters :data:`_ORDER_FIDELITY_INSERT_SQL` takes."""
+    """The 18 bound parameters :data:`_ORDER_FIDELITY_INSERT_SQL` takes."""
     key = order.client_order_id
     return (
         key,
@@ -589,6 +662,7 @@ def _order_fidelity_params(order: OrderFidelity) -> tuple[Any, ...]:
         order.commission_bps,
         None if order.maker is None else int(order.maker),
         order.place_to_fill_ms,
+        order.unfilled_rest_ms,
         _decimal_text_or_none(order.notional),
         _isoformat_utc(order.computed_at),
         key,
@@ -618,6 +692,7 @@ def _order_fidelity_from_row(row: tuple) -> OrderFidelity:
         commission_bps,
         maker_raw,
         place_to_fill_ms,
+        unfilled_rest_ms,
         notional_raw,
         computed_at_raw,
     ) = row
@@ -651,6 +726,7 @@ def _order_fidelity_from_row(row: tuple) -> OrderFidelity:
         commission_bps=commission_bps,
         maker=None if maker_raw is None else bool(maker_raw),
         place_to_fill_ms=place_to_fill_ms,
+        unfilled_rest_ms=unfilled_rest_ms,
         notional=_decimal_or_none(notional_raw, what="notional"),
         computed_at=computed_at,
     )
@@ -659,7 +735,7 @@ def _order_fidelity_from_row(row: tuple) -> OrderFidelity:
 def _slot_fidelity_params(
     slot_fidelity: SlotFidelity, *, book_id: str, rebalance_ts: str
 ) -> tuple[Any, ...]:
-    """The 15 bound parameters :data:`_SLOT_FIDELITY_INSERT_SQL` takes."""
+    """The 17 bound parameters :data:`_SLOT_FIDELITY_INSERT_SQL` takes."""
     return (
         book_id,
         rebalance_ts,
@@ -667,7 +743,9 @@ def _slot_fidelity_params(
         slot_fidelity.n_fills,
         slot_fidelity.n_partials,
         slot_fidelity.n_rejects,
+        slot_fidelity.n_unfilled,
         slot_fidelity.reject_rate,
+        slot_fidelity.unfilled_rate,
         _decimal_text_or_none(slot_fidelity.notional_total),
         slot_fidelity.realized_cost_bps,
         slot_fidelity.expected_cost_bps,
@@ -690,7 +768,9 @@ def _slot_fidelity_from_row(
         n_fills,
         n_partials,
         n_rejects,
+        n_unfilled,
         reject_rate,
+        unfilled_rate,
         notional_total_raw,
         realized_cost_bps,
         expected_cost_bps,
@@ -721,7 +801,9 @@ def _slot_fidelity_from_row(
         n_fills=n_fills,
         n_partials=n_partials,
         n_rejects=n_rejects,
+        n_unfilled=n_unfilled,
         reject_rate=reject_rate,
+        unfilled_rate=unfilled_rate,
         notional_total=notional_total,
         realized_cost_bps=realized_cost_bps,
         expected_cost_bps=expected_cost_bps,
@@ -730,6 +812,195 @@ def _slot_fidelity_from_row(
         computed_at=computed_at,
         orders=orders,
     )
+
+
+#: :data:`SLOT_FIDELITY_TABLE`'s columns added by this bugfix, name paired
+#: with its SQLite type — :func:`_ensure_slot_fidelity_columns`'s own list,
+#: the same additive-migration shape :mod:`router.submission_result` keeps
+#: for its own table's growth (``_ensure_order_record_decision_columns``).
+_SLOT_FIDELITY_NEW_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("n_unfilled", "INTEGER NOT NULL DEFAULT 0"),
+    ("unfilled_rate", "REAL"),
+)
+
+
+def _ensure_slot_fidelity_columns(connection: sqlite3.Connection) -> None:
+    """Add :data:`_SLOT_FIDELITY_NEW_COLUMNS` to a pre-existing table.
+
+    A table :data:`_SCHEMA` just created fresh already carries both
+    columns, so probing finds nothing missing and this is a no-op; a live
+    store written by a prior version of this module is missing both, and
+    this adds them without touching a row it already holds.  Unlike
+    :data:`ORDER_FIDELITY_TABLE`, this table carries no CHECK constraint
+    that widens, so an additive ``ALTER TABLE`` is enough — no rebuild.
+    """
+    rows = connection.execute(f"PRAGMA table_info({SLOT_FIDELITY_TABLE})").fetchall()
+    existing = {str(row[1]) for row in rows}
+    for name, sqltype in _SLOT_FIDELITY_NEW_COLUMNS:
+        if name in existing:
+            continue
+        connection.execute(
+            f"ALTER TABLE {SLOT_FIDELITY_TABLE} ADD COLUMN {name} {sqltype}"
+        )
+
+
+def _was_accepted_then_unfilled(
+    connection: sqlite3.Connection, client_order_id: str
+) -> bool:
+    """Whether :data:`ORDER_FILL_TABLE` shows ``client_order_id`` as a leg
+    the venue accepted and that ended ``CANCELED``/``EXPIRED`` with zero
+    executed quantity — :func:`_migrate_order_fidelity_table`'s own
+    reclassification test.
+
+    Read directly off ``connection`` — the same connection, and so the
+    same transaction, that is rebuilding :data:`ORDER_FIDELITY_TABLE` —
+    never through :func:`~router.bingx_reconcile.order_fill_record`, which
+    opens its *own* connection and would deadlock against this function's
+    own write transaction on the same database file.  A database with no
+    :data:`ORDER_FILL_TABLE` at all, or no fill row for this order, answers
+    ``False``: a row this migration cannot verify keeps its own state
+    rather than being reclassified on a guess.
+    """
+    exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (ORDER_FILL_TABLE,),
+    ).fetchone()
+    if exists is None:
+        return False
+    row = connection.execute(
+        f"SELECT status, executed_quantity FROM {ORDER_FILL_TABLE} "
+        "WHERE client_order_id = ?",
+        (client_order_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    status, executed_quantity_raw = row
+    if status not in _UNFILLED_TERMINAL_STATUSES:
+        return False
+    if executed_quantity_raw is None:
+        return True
+    try:
+        return Decimal(executed_quantity_raw) <= 0
+    except InvalidOperation:
+        return False
+
+
+def _migrate_order_fidelity_table(connection: sqlite3.Connection) -> None:
+    """Rebuild a pre-existing :data:`ORDER_FIDELITY_TABLE` onto this
+    bugfix's schema, in place, inside one transaction.
+
+    A table :data:`_SCHEMA` just created fresh already carries
+    ``unfilled_rest_ms`` and the widened ``leg_state`` CHECK, so probing
+    the table's own recorded DDL (``sqlite_master.sql``) finds both and
+    this returns immediately — the ordinary case, and what makes a second
+    run of this function change nothing (idempotent).  A table a prior
+    version of this module created carries neither: it is renamed aside,
+    the real name is recreated fresh on this bugfix's schema, every row is
+    copied across, and a ``reject`` row :func:`_was_accepted_then_unfilled`
+    confirms was really an accepted leg that ended zero-fill is
+    reclassified :data:`FIDELITY_LEG_UNFILLED` — its own stored
+    ``place_to_fill_ms`` (the time it actually rested, recorded as a fill
+    latency by the very bug this migration fixes) carried over as
+    ``unfilled_rest_ms`` and its ``place_to_fill_ms`` cleared, exactly the
+    two figures :func:`_leg_fidelity` would answer for it today.  Every
+    other row — every ``fill``, ``partial`` and unverifiable ``reject`` —
+    is preserved untouched but for the new, ``NULL``, ``unfilled_rest_ms``.
+    """
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (ORDER_FIDELITY_TABLE,),
+    ).fetchone()
+    if row is None or row[0] is None:
+        return  # no such table yet: _SCHEMA above is about to create it fresh
+    existing_sql = row[0]
+    if (
+        "unfilled_rest_ms" in existing_sql
+        and f"'{FIDELITY_LEG_UNFILLED}'" in existing_sql
+    ):
+        return  # already this bugfix's shape
+
+    with connection:
+        connection.execute(
+            f"ALTER TABLE {ORDER_FIDELITY_TABLE} "
+            f"RENAME TO {_LEGACY_ORDER_FIDELITY_TABLE}"
+        )
+        connection.execute(
+            f"""
+            CREATE TABLE {ORDER_FIDELITY_TABLE} (
+                client_order_id    TEXT NOT NULL PRIMARY KEY,
+                book_id            TEXT NOT NULL,
+                rebalance_ts       TEXT NOT NULL,
+                symbol             TEXT NOT NULL,
+                side               TEXT NOT NULL,
+                type               TEXT NOT NULL,
+                leg_state          TEXT NOT NULL CHECK (leg_state IN ({_LEG_STATE_CHECK})),
+                decision_mark      TEXT,
+                expected_cost_bps  REAL,
+                realized_cost_bps  REAL,
+                gap_bps            REAL,
+                commission_bps     REAL,
+                maker              INTEGER,
+                place_to_fill_ms   INTEGER,
+                unfilled_rest_ms   INTEGER,
+                notional           TEXT,
+                computed_at        TEXT NOT NULL
+            )
+            """
+        )
+        legacy_rows = connection.execute(
+            f"SELECT {_LEGACY_ORDER_FIDELITY_COLUMNS} "
+            f"FROM {_LEGACY_ORDER_FIDELITY_TABLE}"
+        ).fetchall()
+        for legacy in legacy_rows:
+            (
+                client_order_id,
+                book_id,
+                rebalance_ts,
+                symbol,
+                side,
+                type_,
+                leg_state,
+                decision_mark,
+                expected_cost_bps,
+                realized_cost_bps,
+                gap_bps,
+                commission_bps,
+                maker,
+                place_to_fill_ms,
+                notional,
+                computed_at,
+            ) = legacy
+            unfilled_rest_ms = None
+            if leg_state == FIDELITY_LEG_REJECTED and _was_accepted_then_unfilled(
+                connection, client_order_id
+            ):
+                leg_state = FIDELITY_LEG_UNFILLED
+                unfilled_rest_ms = place_to_fill_ms
+                place_to_fill_ms = None
+            connection.execute(
+                _ORDER_FIDELITY_INSERT_SQL,
+                (
+                    client_order_id,
+                    book_id,
+                    rebalance_ts,
+                    symbol,
+                    side,
+                    type_,
+                    leg_state,
+                    decision_mark,
+                    expected_cost_bps,
+                    realized_cost_bps,
+                    gap_bps,
+                    commission_bps,
+                    maker,
+                    place_to_fill_ms,
+                    unfilled_rest_ms,
+                    notional,
+                    computed_at,
+                    client_order_id,
+                ),
+            )
+        connection.execute(f"DROP TABLE {_LEGACY_ORDER_FIDELITY_TABLE}")
 
 
 def _persist_fidelity(slot_fidelity: SlotFidelity, *, database_url: str) -> SlotFidelity:
@@ -754,6 +1025,9 @@ def _persist_fidelity(slot_fidelity: SlotFidelity, *, database_url: str) -> Slot
     try:
         with connection:
             connection.executescript(_SCHEMA)
+        _migrate_order_fidelity_table(connection)
+        with connection:
+            _ensure_slot_fidelity_columns(connection)
         for order in slot_fidelity.orders:
             with connection:
                 connection.execute(
@@ -847,8 +1121,10 @@ def reconcile_fidelity(slot: FidelitySlot, *, database_url: str) -> SlotFidelity
     n_fills = sum(1 for order in orders if order.leg_state == FIDELITY_LEG_FILLED)
     n_partials = sum(1 for order in orders if order.leg_state == FIDELITY_LEG_PARTIAL)
     n_rejects = sum(1 for order in orders if order.leg_state == FIDELITY_LEG_REJECTED)
+    n_unfilled = sum(1 for order in orders if order.leg_state == FIDELITY_LEG_UNFILLED)
     n_legs = len(orders)
     reject_rate = (n_rejects / n_legs) if n_legs else None
+    unfilled_rate = (n_unfilled / n_legs) if n_legs else None
 
     notional_total = sum(
         (order.notional for order in orders if order.notional is not None),
@@ -894,7 +1170,9 @@ def reconcile_fidelity(slot: FidelitySlot, *, database_url: str) -> SlotFidelity
         n_fills=n_fills,
         n_partials=n_partials,
         n_rejects=n_rejects,
+        n_unfilled=n_unfilled,
         reject_rate=reject_rate,
+        unfilled_rate=unfilled_rate,
         notional_total=notional_total,
         realized_cost_bps=realized_mean,
         expected_cost_bps=expected_mean,

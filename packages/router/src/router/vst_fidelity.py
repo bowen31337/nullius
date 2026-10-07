@@ -104,7 +104,12 @@ from urllib.parse import unquote, urlparse
 
 from .bingx_reconcile import ORDER_FILL_TABLE
 from .errors import RouterError, RouterStoreError
-from .fidelity import FIDELITY_LEG_REJECTED, ORDER_FIDELITY_TABLE, SLOT_FIDELITY_TABLE
+from .fidelity import (
+    FIDELITY_LEG_REJECTED,
+    FIDELITY_LEG_UNFILLED,
+    ORDER_FIDELITY_TABLE,
+    SLOT_FIDELITY_TABLE,
+)
 from .submission_result import DATABASE_URL_ENV, ORDER_RECORD_TABLE
 
 __all__ = [
@@ -296,7 +301,8 @@ def _read_order_fidelity(
     where, params = _scope_where(book=book, since=since)
     return connection.execute(
         "SELECT leg_state, expected_cost_bps, realized_cost_bps, gap_bps, "
-        f"maker, place_to_fill_ms, client_order_id FROM {ORDER_FIDELITY_TABLE} "
+        "maker, place_to_fill_ms, client_order_id, unfilled_rest_ms "
+        f"FROM {ORDER_FIDELITY_TABLE} "
         f"AS o{where} ORDER BY o.rebalance_ts, o.client_order_id",
         params,
     ).fetchall()
@@ -426,6 +432,10 @@ class FidelityReport:
     fill_ratio_mean: float | None
     maker_share: float | None
     reject_rate: float | None
+    unfilled_rate: float | None
+    unfilled_rest_ms_p50: float | None
+    unfilled_rest_ms_p95: float | None
+    unfilled_rest_ms_p99: float | None
     rounding_drift_bps: float | None
     funding_bps_per_day: float | None
     within_tolerance: bool | None
@@ -459,10 +469,32 @@ class FidelityReport:
             "fill_ratio_mean": self.fill_ratio_mean,
             "maker_share": self.maker_share,
             "reject_rate": self.reject_rate,
+            "unfilled_rate": self.unfilled_rate,
+            "unfilled_rest_ms": {
+                "p50": self.unfilled_rest_ms_p50,
+                "p95": self.unfilled_rest_ms_p95,
+                "p99": self.unfilled_rest_ms_p99,
+            },
             "rounding_drift_bps": self.rounding_drift_bps,
             "funding_bps_per_day": self.funding_bps_per_day,
             "within_tolerance": self.within_tolerance,
         }
+
+
+#: The widest a post-fix row's own drift can plausibly read: ``target_quantity``
+#: is the order delta before its one step/tick grid truncation, so it differs
+#: from the sent ``quantity`` by at most one grid step — a sliver of the
+#: order's own size for any real deployment.  A row recorded before
+#: bug_spec_vst_fidelity_accounting.xml's fix stored ``target_quantity`` as
+#: the leg's *whole position target* instead (there is no schema flag to tell
+#: the two apart retroactively — ``router_order_record`` is feature 2's own
+#: table, untouched by that fix), which differs from the delta actually sent
+#: by close to the delta's own whole size: the bug's own worked example
+#: measured a drift near -98.8% (-9,877.7 bps).  20% is generous headroom
+#: above any ordinary rounding slop and far short of that, so a row whose
+#: drift would exceed it is left out of the statistic — a record from before
+#: the fix, excluded rather than mixed in with real drift.
+_ROUNDING_DRIFT_PLAUSIBLE_FRACTION = Decimal("0.2")
 
 
 def _rounding_drift_bps(record_rows: Sequence[tuple[Any, ...]]) -> float | None:
@@ -478,6 +510,14 @@ def _rounding_drift_bps(record_rows: Sequence[tuple[Any, ...]]) -> float | None:
         quantity = _decimal(quantity_raw, what="quantity")
         target = _decimal(target_raw, what="target_quantity")
         reference = _decimal(reference_raw, what="reference_price")
+        if target <= 0:
+            continue
+        if abs(quantity - target) > target * _ROUNDING_DRIFT_PLAUSIBLE_FRACTION:
+            # Implausible as an ordinary grid's rounding slop: a record from
+            # before the fix, whose target_quantity holds the position
+            # target rather than the pre-rounding delta (see the constant's
+            # own docstring above).
+            continue
         weighted_drift += (quantity - target) * reference
         weighted_notional += target * reference
     if weighted_notional <= 0:
@@ -550,7 +590,12 @@ def build_report(
     realized_values = [row[2] for row in order_rows if row[2] is not None]
     gap_values = [row[3] for row in order_rows if row[3] is not None]
     maker_values = [row[4] for row in order_rows if row[4] is not None]
+    # Only a FIDELITY_LEG_FILLED or FIDELITY_LEG_PARTIAL leg ever carries a
+    # place_to_fill_ms (router.fidelity nulls it for every other state), so
+    # filtering None already restricts this to legs with executed_quantity
+    # > 0 without needing that column here at all.
     place_to_fill_values = [row[5] for row in order_rows if row[5] is not None]
+    unfilled_rest_values = [row[7] for row in order_rows if row[7] is not None]
 
     gap_bps_mean = _mean(gap_values)
     if gap_values:
@@ -578,6 +623,12 @@ def build_report(
         reject_rate=(
             leg_states.count(FIDELITY_LEG_REJECTED) / n_orders if n_orders else None
         ),
+        unfilled_rate=(
+            leg_states.count(FIDELITY_LEG_UNFILLED) / n_orders if n_orders else None
+        ),
+        unfilled_rest_ms_p50=_percentile(unfilled_rest_values, 50),
+        unfilled_rest_ms_p95=_percentile(unfilled_rest_values, 95),
+        unfilled_rest_ms_p99=_percentile(unfilled_rest_values, 99),
         rounding_drift_bps=_rounding_drift_bps(record_rows),
         funding_bps_per_day=_funding_bps_per_day(slot_rows),
         within_tolerance=(
