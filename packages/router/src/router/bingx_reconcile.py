@@ -23,9 +23,26 @@ sentence for one venue's fills.  So :func:`reconcile_rebalance_fill_costs`
 measures two figures and hands them to
 :func:`forward.reconciliation.reconcile_fill_costs`, which computes the
 difference, lands the row and answers with it.  Nothing here re-derives the
-difference, and nothing here writes a row of its own: the one store is the
-one feature 340 already declares, addressed by ``DATABASE_URL``, the same
-store the rebalance's placements and the daily-loss halt live in.
+difference, and feature 340's own per-rebalance row is still the one
+store this module never writes to directly — it is addressed by
+``DATABASE_URL``, the same store the rebalance's placements and the
+daily-loss halt live in.
+
+**A second, per-order table is this module's own.**  Feature 3 of the VST
+fidelity spec — *"System saves each order's final venue state to a new
+append-only router_order_fill table at reconciliation, so that every order
+of a reconciled slot returns its fill ratio, average price, actual
+commission and fill latency"* — is a different grain of the same read-back:
+feature 340's row is one figure *per rebalance*, computed only when
+something filled, while :data:`ORDER_FILL_TABLE` is one row *per order*,
+saved for every order :func:`~router.bingx_orders.read_back_orders`
+answers, filled or not.  :func:`save_order_fills` is this module's own
+write to its own table (the schema is authored here, the same stance
+:mod:`router.submission_result` takes for its own tables), called from
+inside :func:`reconcile_rebalance_fill_costs` right after the read-back and
+before any of the pricing below, so a slot's per-order facts are saved even
+on the path that still answers the per-rebalance reconciliation with
+``None``.
 
 **What each figure is.**  For every order the venue reports as *filled* —
 ``executedQty`` strictly greater than zero — the module reads the executed
@@ -126,11 +143,16 @@ only write is feature 340's one row.
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
 from collections.abc import Iterable, Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from .bingx_client_order_id import project_bingx_client_order_id
 from .bingx_documents import RouterMarkPriceError, resolve_bingx_mark_prices
@@ -142,15 +164,20 @@ from .bingx_order import (
     BINGX_SIDES,
     BingXRefusedLeg,
 )
-from .bingx_orders import read_back_orders
-from .errors import RouterError
+from .bingx_orders import VSTOrderStatus, read_back_orders
+from .errors import RouterError, RouterStoreError
 
 __all__ = [
     "BINGX_RECONCILE_CODE",
+    "DATABASE_URL_ENV",
     "MAKER_FEE_RATE_FIELD",
+    "ORDER_FILL_TABLE",
     "TAKER_FEE_RATE_FIELD",
+    "OrderFill",
     "RouterBingXReconcileError",
+    "order_fill_record",
     "reconcile_rebalance_fill_costs",
+    "save_order_fills",
 ]
 
 #: The greppable token every refusal this module raises opens with — coined
@@ -170,6 +197,77 @@ TAKER_FEE_RATE_FIELD = "takerFeeRate"
 #: module measures is spoken in, spelled once so the slippage and the fee
 #: cannot drift into two different constants.
 _BPS_PER_UNIT = Decimal(10_000)
+
+#: The workspace-wide environment variable naming the relational store —
+#: restated here rather than imported from :mod:`router.submission_result`,
+#: the discipline every store in this member keeps for its own address
+#: translation (see :func:`_fill_sqlite_path`).
+DATABASE_URL_ENV = "DATABASE_URL"
+
+#: One row per order :func:`read_back_orders` reported, appended once per
+#: ``client_order_id`` — the venue's own 40-character projection, the
+#: identifier the read-back actually looked the order up by.  This is the
+#: table the module docstring's companion sentence (feature 3 of the VST
+#: fidelity spec) names: *"System saves each order's final venue state to a
+#: new append-only router_order_fill table at reconciliation."*
+ORDER_FILL_TABLE = "router_order_fill"
+
+#: The columns of :data:`ORDER_FILL_TABLE`, in the order every statement
+#: below spells them — written once so the INSERT, the SELECT and the value
+#: class cannot drift apart on a column order, the failure a positional
+#: ``SELECT *`` would invite.
+_ORDER_FILL_COLUMNS = (
+    "client_order_id, status, original_quantity, executed_quantity, "
+    "fill_ratio, avg_price, commission, commission_bps, placed_ms, "
+    "last_fill_ms, place_to_fill_ms, read_at"
+)
+
+_ORDER_FILL_SCHEMA = f"""
+-- Feature 3 of the VST fidelity spec: one row per order the read-back
+-- reported at reconciliation, holding the venue's final state for it —
+-- its fill ratio, its average price, the commission it actually paid and
+-- how long it took to fill.  Decimals the venue reports are kept as TEXT in
+-- their exact spelling (the discipline every store in this member keeps);
+-- the ratios and the commission rate this module *computes* are REAL,
+-- exactly as :func:`reconcile_rebalance_fill_costs` already stores its own
+-- computed bps figures as floats rather than as text.  PRIMARY KEY makes
+-- the "once per client_order_id" law a fact of the schema, not only of the
+-- insert below, for the reason this member always states it: SQLite
+-- accepts a raw INSERT from any tool.
+CREATE TABLE IF NOT EXISTS {ORDER_FILL_TABLE} (
+    client_order_id   TEXT NOT NULL PRIMARY KEY,
+    status            TEXT NOT NULL,
+    original_quantity TEXT,
+    executed_quantity TEXT,
+    fill_ratio        REAL NOT NULL,
+    avg_price         TEXT,
+    commission        TEXT,
+    commission_bps    REAL,
+    placed_ms         INTEGER,
+    last_fill_ms      INTEGER,
+    place_to_fill_ms  INTEGER,
+    read_at           TEXT NOT NULL
+);
+"""
+
+#: The one write this module makes to the table: claim the key iff it has
+#: no row yet — the same ``WHERE NOT EXISTS`` shape
+#: :mod:`router.submission_result` uses for its own append-only tables, and
+#: for the same reason: the check and the claim are one statement, so a
+#: re-read of an already-reconciled order changes nothing.
+_ORDER_FILL_INSERT_SQL = f"""
+INSERT INTO {ORDER_FILL_TABLE} ({_ORDER_FILL_COLUMNS})
+SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+WHERE NOT EXISTS (
+    SELECT 1 FROM {ORDER_FILL_TABLE} WHERE client_order_id = ?
+)
+"""
+
+_ORDER_FILL_READ_SQL = f"""
+SELECT {_ORDER_FILL_COLUMNS}
+FROM {ORDER_FILL_TABLE}
+WHERE client_order_id = ?
+"""
 
 
 class RouterBingXReconcileError(RouterError):
@@ -643,6 +741,348 @@ def _forward_reconcile():
     return reconcile_fill_costs
 
 
+@dataclass(frozen=True)
+class OrderFill:
+    """One row of :data:`ORDER_FILL_TABLE` — an order's final venue state.
+
+    What :func:`save_order_fills` wrote for one ``client_order_id`` (the
+    venue's own 40-character projection, the identifier
+    :func:`~router.bingx_orders.read_back_orders` looked the order up by):
+    the venue's status, its two measurements and the two figures this
+    module derives from them (:attr:`fill_ratio`, :attr:`commission_bps`),
+    its commission as the venue reported it, its two venue instants and
+    their difference (:attr:`place_to_fill_ms`), and when this row was
+    saved.  Every field mirrors the same-named attribute of
+    :class:`~router.bingx_orders.VSTOrderStatus` (``avg_price`` beside that
+    class's ``average_price``), so a caller reading this row back reads the
+    same facts the read-back answered, plus the one fact only the store
+    knows: ``read_at``.
+    """
+
+    client_order_id: str
+    status: str
+    original_quantity: Decimal | None
+    executed_quantity: Decimal | None
+    fill_ratio: float
+    avg_price: Decimal | None
+    commission: Decimal | None
+    commission_bps: float | None
+    placed_ms: int | None
+    last_fill_ms: int | None
+    place_to_fill_ms: int | None
+    read_at: datetime
+
+
+def _require_fill_database_url(
+    database_url: str | None, env: Mapping[str, str] | None
+) -> str:
+    """The store's address from ``database_url``, else ``DATABASE_URL``.
+
+    The same resolution :func:`_recorded_orders` takes of its own store —
+    an explicit value wins, else the environment (``env`` when handed one,
+    else ``os.environ``) — refused by name when neither names a store: a
+    reconciled order's final venue state going nowhere is exactly the hole
+    this feature closes, so it is not a silent no-op.
+    """
+
+    if database_url is not None:
+        url = database_url.strip()
+    else:
+        source = os.environ if env is None else env
+        url = source.get(DATABASE_URL_ENV, "").strip()
+    if not url:
+        raise RouterBingXReconcileError(
+            f"{BINGX_RECONCILE_CODE}: an order's final venue state is saved "
+            f"to {ORDER_FILL_TABLE}, and neither database_url nor "
+            f"{DATABASE_URL_ENV} names the store to save it in; set "
+            f"{DATABASE_URL_ENV} to the store the router places orders in "
+            "(feature 3)"
+        )
+    return url
+
+
+def _fill_sqlite_path(database_url: str) -> Path:
+    """Translate a ``sqlite:///`` URL into the filesystem path it names.
+
+    The same translation :func:`router.submission_result._sqlite_path`
+    states, in this module's own words, for the reason every store in this
+    workspace restates it: a store reaches into no sibling's private
+    helper, so a later change to one table's address handling cannot
+    silently move another's.  ``sqlite:///foo.db`` is relative,
+    ``sqlite:////foo.db`` is absolute, and any other scheme is refused by
+    name.
+    """
+
+    parsed = urlparse(database_url)
+    if parsed.scheme != "sqlite":
+        raise RouterBingXReconcileError(
+            f"{BINGX_RECONCILE_CODE}: unsupported {DATABASE_URL_ENV} scheme "
+            f"{parsed.scheme!r}; the order-fill store speaks sqlite:/// "
+            "(feature 3)"
+        )
+    if parsed.netloc not in ("", "localhost"):
+        raise RouterBingXReconcileError(
+            f"{BINGX_RECONCILE_CODE}: sqlite {DATABASE_URL_ENV} must not "
+            f"carry a host, got {parsed.netloc!r} (feature 3)"
+        )
+    path = unquote(parsed.path).removeprefix("/")
+    if not path:
+        raise RouterBingXReconcileError(
+            f"{BINGX_RECONCILE_CODE}: sqlite {DATABASE_URL_ENV} carries no "
+            "database path (feature 3)"
+        )
+    return Path(path)
+
+
+def _decimal_text_or_none(value: Decimal | None) -> str | None:
+    """Render a :class:`~decimal.Decimal` in plain positional notation, or
+    ``None``.
+
+    The same rendering :func:`router.submission_result._decimal_text`
+    gives its own tables, for the same reason: ``str(Decimal("1E+3"))`` is
+    ``'1E+3'``, which an operator at a sqlite prompt would not read as one
+    thousand, while ``format(value, 'f')`` renders the venue's own spelling.
+    """
+
+    return None if value is None else format(value, "f")
+
+
+def _require_read_at(now: Any) -> datetime:
+    """Return ``now`` as a timezone-aware instant, or the wall clock.
+
+    The one moment this module's own write stamps a row with — never an
+    identity, only a label of when it was saved — so a naive value is
+    refused by name rather than silently misdating every row it touches.
+    """
+
+    if now is None:
+        return datetime.now(UTC)
+    if not isinstance(now, datetime):
+        raise RouterBingXReconcileError(
+            f"{BINGX_RECONCILE_CODE}: now must be a datetime, got {now!r} "
+            f"({type(now).__name__}) (feature 3)"
+        )
+    if now.tzinfo is None or now.tzinfo.utcoffset(now) is None:
+        raise RouterBingXReconcileError(
+            f"{BINGX_RECONCILE_CODE}: now={now!r} names no timezone; a "
+            "naive instant folds into the saved row an offset nobody "
+            "agreed on (feature 3)"
+        )
+    return now.astimezone(UTC)
+
+
+def _order_fill_from_status(status: VSTOrderStatus, *, read_at: datetime) -> OrderFill:
+    """One :class:`VSTOrderStatus` as the row this module saves for it."""
+
+    return OrderFill(
+        client_order_id=status.client_order_id,
+        status=status.status,
+        original_quantity=status.original_quantity,
+        executed_quantity=status.executed_quantity,
+        fill_ratio=status.fill_ratio,
+        avg_price=status.average_price,
+        commission=status.commission,
+        commission_bps=status.commission_bps,
+        placed_ms=status.placed_ms,
+        last_fill_ms=status.last_fill_ms,
+        place_to_fill_ms=status.place_to_fill_ms,
+        read_at=read_at,
+    )
+
+
+def _order_fill_from_row(row: tuple) -> OrderFill:
+    """Rebuild one stored row, refusing a value no fill record can be.
+
+    The same stance :mod:`router.submission_result`'s own row readers take:
+    this table is writable by any tool and SQLite columns are dynamically
+    typed, so a raw ``INSERT`` can land a ``read_at`` no parser accepts.
+    The refusal names the row's key so an operator can find it.
+    """
+
+    (
+        client_order_id,
+        status,
+        original_quantity_raw,
+        executed_quantity_raw,
+        fill_ratio,
+        avg_price_raw,
+        commission_raw,
+        commission_bps,
+        placed_ms,
+        last_fill_ms,
+        place_to_fill_ms,
+        read_at_raw,
+    ) = row
+
+    def _decimal_or_none(value: Any, field: str) -> Decimal | None:
+        if value is None:
+            return None
+        try:
+            return Decimal(value)
+        except InvalidOperation as exc:
+            raise RouterBingXReconcileError(
+                f"{BINGX_RECONCILE_CODE}: the fill saved for order "
+                f"{client_order_id!r} carries {field}={value!r}, which is "
+                "not a decimal (feature 3)"
+            ) from exc
+
+    try:
+        read_at = datetime.fromisoformat(read_at_raw)
+    except (TypeError, ValueError) as exc:
+        raise RouterBingXReconcileError(
+            f"{BINGX_RECONCILE_CODE}: the fill saved for order "
+            f"{client_order_id!r} carries read_at={read_at_raw!r}, which is "
+            "not an ISO 8601 moment (feature 3)"
+        ) from exc
+    return OrderFill(
+        client_order_id=client_order_id,
+        status=status,
+        original_quantity=_decimal_or_none(original_quantity_raw, "original_quantity"),
+        executed_quantity=_decimal_or_none(executed_quantity_raw, "executed_quantity"),
+        fill_ratio=fill_ratio,
+        avg_price=_decimal_or_none(avg_price_raw, "avg_price"),
+        commission=_decimal_or_none(commission_raw, "commission"),
+        commission_bps=commission_bps,
+        placed_ms=placed_ms,
+        last_fill_ms=last_fill_ms,
+        place_to_fill_ms=place_to_fill_ms,
+        read_at=read_at,
+    )
+
+
+def save_order_fills(
+    statuses: Sequence[VSTOrderStatus],
+    *,
+    database_url: str | None = None,
+    env: Mapping[str, str] | None = None,
+    now: datetime | None = None,
+) -> tuple[OrderFill, ...]:
+    """Save each of ``statuses`` to :data:`ORDER_FILL_TABLE`, once each.
+
+    The write the module docstring's companion sentence names: *"System
+    saves each order's final venue state to a new append-only
+    router_order_fill table at reconciliation."*  ``statuses`` is what
+    :func:`~router.bingx_orders.read_back_orders` answered — every order of
+    the reconciled slot, filled or not — and each is saved under its own
+    ``client_order_id`` exactly once: a key that already has a row is left
+    untouched, so a slot reconciled twice (or an order whose remaining
+    quantity the next slot's step 2 later cancels) never overwrites the
+    partial fill this call already recorded.  An empty ``statuses`` saves
+    nothing and touches no store at all.
+
+    ``database_url``, else ``DATABASE_URL`` (read from ``env`` when handed
+    one, else ``os.environ``), names the store — refused by name when
+    neither does, because an order's final state going nowhere is the hole
+    this feature exists to close.  ``now`` stamps every row's ``read_at``
+    and defaults to the wall clock; a naive value is refused.
+
+    Returns the row saved for each status, in the order handed in — the row
+    that now stands, which is the fresh write on a first save and the prior
+    row, untouched, on a re-read.
+
+    Refuses :class:`RouterBingXReconcileError` for a malformed address or a
+    naive ``now``, and fails with
+    :class:`~router.errors.RouterStoreError` when the store could not take
+    or read back a row.
+    """
+
+    if not statuses:
+        return ()
+    read_at = _require_read_at(now)
+    url = _require_fill_database_url(database_url, env)
+    path = _fill_sqlite_path(url)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    saved: list[OrderFill] = []
+    try:
+        connection = sqlite3.connect(path)
+    except sqlite3.OperationalError as exc:
+        raise RouterStoreError(
+            f"could not open the {ORDER_FILL_TABLE} store at {path}: {exc}"
+        ) from exc
+    try:
+        with connection:
+            connection.executescript(_ORDER_FILL_SCHEMA)
+        for status in statuses:
+            fill = _order_fill_from_status(status, read_at=read_at)
+            try:
+                with connection:
+                    connection.execute(
+                        _ORDER_FILL_INSERT_SQL,
+                        (
+                            fill.client_order_id,
+                            fill.status,
+                            _decimal_text_or_none(fill.original_quantity),
+                            _decimal_text_or_none(fill.executed_quantity),
+                            fill.fill_ratio,
+                            _decimal_text_or_none(fill.avg_price),
+                            _decimal_text_or_none(fill.commission),
+                            fill.commission_bps,
+                            fill.placed_ms,
+                            fill.last_fill_ms,
+                            fill.place_to_fill_ms,
+                            fill.read_at.isoformat(),
+                            fill.client_order_id,
+                        ),
+                    )
+                row = connection.execute(
+                    _ORDER_FILL_READ_SQL, (fill.client_order_id,)
+                ).fetchone()
+            except sqlite3.Error as exc:
+                raise RouterStoreError(
+                    f"could not save the fill reconciled for order "
+                    f"{fill.client_order_id}: {exc}"
+                ) from exc
+            if row is None:  # pragma: no cover - written on the same connection
+                raise RouterStoreError(
+                    f"the fill for order {fill.client_order_id} was saved "
+                    "and could not be read back in the transaction that "
+                    "wrote it (feature 3)"
+                )
+            saved.append(_order_fill_from_row(row))
+    finally:
+        connection.close()
+    return tuple(saved)
+
+
+def order_fill_record(
+    client_order_id: Any,
+    *,
+    database_url: str | None = None,
+    env: Mapping[str, str] | None = None,
+) -> OrderFill | None:
+    """The :data:`ORDER_FILL_TABLE` row saved for ``client_order_id``, or ``None``.
+
+    The read a caller takes when it holds the identifier
+    :func:`~router.bingx_orders.read_back_orders` looked an order up by and
+    wants the row :func:`save_order_fills` landed for it.  ``None`` is the
+    honest answer for an order this table has never recorded — including
+    when the store itself has never been created.
+    """
+
+    if not isinstance(client_order_id, str) or not client_order_id.strip():
+        raise RouterBingXReconcileError(
+            f"{BINGX_RECONCILE_CODE}: client_order_id must be non-empty "
+            f"text, got {client_order_id!r} (feature 3)"
+        )
+    key = client_order_id.strip()
+    url = _require_fill_database_url(database_url, env)
+    path = _fill_sqlite_path(url)
+    if not path.exists():
+        return None
+    try:
+        with closing(sqlite3.connect(path)) as connection:
+            with connection:
+                connection.executescript(_ORDER_FILL_SCHEMA)
+            row = connection.execute(_ORDER_FILL_READ_SQL, (key,)).fetchone()
+    except (sqlite3.Error, OSError) as exc:
+        raise RouterStoreError(
+            f"could not read the {ORDER_FILL_TABLE} row for order {key}: {exc}"
+        ) from exc
+    if row is None:
+        return None
+    return _order_fill_from_row(row)
+
+
 def reconcile_rebalance_fill_costs(
     *,
     client: Any,
@@ -653,6 +1093,7 @@ def reconcile_rebalance_fill_costs(
     marks: Any = None,
     database_url: str | None = None,
     env: Mapping[str, str] | None = None,
+    now: datetime | None = None,
 ) -> Any:
     """Reconcile one finished rebalance's fill costs, or answer ``None``.
 
@@ -664,6 +1105,16 @@ def reconcile_rebalance_fill_costs(
     :func:`forward.reconciliation.reconcile_fill_costs` — answering the
     recorded reconciliation.  The steps, in the order they must happen:
 
+    0. **Save every order's venue state** — right after step 2 below reads
+       the orders back, each :class:`~router.bingx_orders.VSTOrderStatus` is
+       saved to :data:`ORDER_FILL_TABLE` through :func:`save_order_fills`,
+       once per ``client_order_id``: every order of this slot, filled or
+       not, so a PENDING order's fill ratio is recorded as zero rather than
+       left unrecorded.  This happens before any refusal below can stop the
+       function short, and before this function's own early return for a
+       slot with no filled notional — the per-order save and the per-slot
+       cost reconciliation are two different facts with two different
+       conditions for existing.
     1. **Read the rebalance's terms** — with ``orders`` handed in, the
        plan's legs (symbols, sides, types and limit prices), refused by name
        where a leg cannot be read; with no ``orders``, the terms placement
@@ -695,7 +1146,9 @@ def reconcile_rebalance_fill_costs(
     hand in the documents it already read, and the suite hands in the
     recorded fixtures.  ``database_url``, else ``DATABASE_URL``, names the
     store, exactly as feature 340's own seam resolves it: a deployment that
-    names neither is refused by that store rather than silently answered.
+    names neither is refused by that store rather than silently answered —
+    and the same resolution now also gates step 0's save.  ``now`` stamps
+    every saved fill's ``read_at`` and defaults to the wall clock.
 
     Refuses :class:`RouterBingXReconcileError` for the faults this act adds
     — a leg that names no order, a contracts document that prices no fee
@@ -757,6 +1210,14 @@ def reconcile_rebalance_fill_costs(
         legs = _plan_legs(orders)
         read_back = list(orders)
     statuses = read_back_orders(client=client, orders=read_back)
+    # Feature 3 of the VST fidelity spec: every order of this reconciled
+    # slot — filled or not — is saved to router_order_fill right here,
+    # before any downstream refusal (a contracts document pricing no fee,
+    # say) can stop this function short.  A partially filled order's
+    # executedQty is exactly what the venue reports even after it is later
+    # cancelled, so this capture is correct whether or not the next slot's
+    # step 2 has already cancelled the remainder.
+    save_order_fills(statuses, database_url=database_url, env=env, now=now)
     by_id = {status.client_order_id: status for status in statuses}
 
     # Every read uses the rebalance's *parsed* instant, so a caller that

@@ -121,12 +121,15 @@ __all__ = [
     "BINGX_ORDERS_CODE",
     "CLIENT_ORDER_ID_ECHO_FIELD",
     "CLIENT_ORDER_ID_FIELD",
+    "COMMISSION_FIELD",
     "EXECUTED_QUANTITY_FIELD",
     "IDENTIFIER_FIELDS",
+    "LAST_FILL_TIME_FIELD",
     "OPEN_ORDERS_FIELD",
     "ORDER_FIELD",
     "ORDER_NOT_FOUND_CODES",
     "ORIGINAL_QUANTITY_FIELD",
+    "PLACED_TIME_FIELD",
     "STATUS_FIELD",
     "SYMBOL_FIELD",
     "VST_OPEN_ORDER_STATUSES",
@@ -181,6 +184,19 @@ STATUS_FIELD = "status"
 ORIGINAL_QUANTITY_FIELD = "origQty"
 EXECUTED_QUANTITY_FIELD = "executedQty"
 AVERAGE_PRICE_FIELD = "avgPrice"
+#: The venue's own fee field.  Signed — negative in every answer this
+#: member has recorded, which is the live fixture's own spelling of *this
+#: fill cost the account money* — read as an exact :class:`~decimal.Decimal`
+#: and, like :data:`ORIGINAL_QUANTITY_FIELD`, never required: an answer that
+#: omits it reports no commission rather than inventing zero.
+COMMISSION_FIELD = "commission"
+#: The venue's own placement instant for the order, epoch milliseconds —
+#: the live recording's ``time``.  Read the same optional way as the fee.
+PLACED_TIME_FIELD = "time"
+#: The venue's own instant of the order's last update — its last fill, when
+#: it has one — epoch milliseconds, the live recording's ``updateTime``.
+#: Read the same optional way as the fee.
+LAST_FILL_TIME_FIELD = "updateTime"
 #: The key the single-order read wraps its order document under: the live
 #: endpoint answers ``{"order": {...}}`` as its ``data`` (recorded in
 #: ``live/query_order_pending.json``).  An answer that carries no such key
@@ -306,6 +322,13 @@ class VSTOrderStatus:
       :class:`~decimal.Decimal`, or ``None`` when the order was not found.
       An order with no fills answers zero, which is a measurement, not an
       absence.
+    * ``commission`` — the venue's own ``commission``, signed (negative
+      when a fill cost the account money, the only sign the live recording
+      has shown), or ``None`` when the venue's document carried none — the
+      same optional reading :attr:`original_quantity` takes.
+    * ``placed_ms`` / ``last_fill_ms`` — the venue's own ``time`` and
+      ``updateTime``, epoch milliseconds, or ``None`` when the document
+      carried none.  :attr:`place_to_fill_ms` is their difference.
 
     ``executed_quantity`` and ``average_price`` are required together,
     exactly when the status is not :data:`VST_ORDER_NOT_FOUND`: a found
@@ -322,6 +345,17 @@ class VSTOrderStatus:
     executed_quantity: Decimal | None
     average_price: Decimal | None
     original_quantity: Decimal | None = None
+    #: The venue's own fee for this order, signed (:data:`COMMISSION_FIELD`),
+    #: or ``None`` when the venue's document carried none.
+    commission: Decimal | None = None
+    #: The venue's own placement instant, epoch milliseconds
+    #: (:data:`PLACED_TIME_FIELD`), or ``None`` when the document carried
+    #: none.
+    placed_ms: int | None = None
+    #: The venue's own instant of the order's last update, epoch
+    #: milliseconds (:data:`LAST_FILL_TIME_FIELD`), or ``None`` when the
+    #: document carried none.
+    last_fill_ms: int | None = None
 
     def __post_init__(self) -> None:
         if self.symbol is not None and (
@@ -373,19 +407,51 @@ class VSTOrderStatus:
                 "that is not a number, or runs negative, is not one a "
                 "venue reports"
             )
+        if self.commission is not None and (
+            not isinstance(self.commission, Decimal)
+            or not self.commission.is_finite()
+        ):
+            raise RouterBingXOrdersError(
+                f"{BINGX_ORDERS_CODE}: the commission for "
+                f"{self.client_order_id!r} must be a finite Decimal, got "
+                f"{self.commission!r} ({type(self.commission).__name__}); "
+                "the venue's fee is signed but is never a value with no "
+                "size at all"
+            )
+        for _term, _value in (
+            ("placed_ms", self.placed_ms),
+            ("last_fill_ms", self.last_fill_ms),
+        ):
+            if _value is not None and (
+                isinstance(_value, bool)
+                or not isinstance(_value, int)
+                or _value < 0
+            ):
+                raise RouterBingXOrdersError(
+                    f"{BINGX_ORDERS_CODE}: the {_term} for "
+                    f"{self.client_order_id!r} must be a non-negative "
+                    f"integer of epoch milliseconds, got {_value!r} "
+                    f"({type(_value).__name__}); the venue's own instant is "
+                    "never negative and never a fraction of a millisecond"
+                )
         if self.status == VST_ORDER_NOT_FOUND:
             if (
                 self.executed_quantity is not None
                 or self.average_price is not None
                 or self.original_quantity is not None
+                or self.commission is not None
+                or self.placed_ms is not None
+                or self.last_fill_ms is not None
             ):
                 raise RouterBingXOrdersError(
                     f"{BINGX_ORDERS_CODE}: an order the venue holds no "
-                    "record of carries neither an original quantity nor an "
-                    "executed quantity nor an average price, got "
-                    f"{self.original_quantity!r}, {self.executed_quantity!r} "
-                    f"and {self.average_price!r}; there is no order to have "
-                    "filled, and a number here would be invented"
+                    "record of carries neither a quantity, a price, a "
+                    "commission nor a timestamp, got "
+                    f"{self.original_quantity!r}, {self.executed_quantity!r}, "
+                    f"{self.average_price!r}, {self.commission!r}, "
+                    f"{self.placed_ms!r} and {self.last_fill_ms!r}; there is "
+                    "no order to have filled, and a value here would be "
+                    "invented"
                 )
             return
         for term, value in (
@@ -422,6 +488,63 @@ class VSTOrderStatus:
         :data:`VST_ORDER_NOT_FOUND`.
         """
         return self.status in VST_OPEN_ORDER_STATUSES
+
+    @property
+    def fill_ratio(self) -> float:
+        """Executed quantity as a fraction of ``original_quantity``.
+
+        Zero whenever the fraction cannot be read off the venue's own
+        numbers — a not-found order (which carries neither), or a found
+        order whose document named no ``original_quantity`` to divide by —
+        the same stance the sentinel measurements already take: an
+        undeterminable figure is reported as nothing filled, never invented.
+        A fully filled order's ``executed_quantity`` equals its
+        ``original_quantity``, so this answers ``1.0``.
+        """
+        if self.original_quantity is None or self.original_quantity <= 0:
+            return 0.0
+        executed = (
+            self.executed_quantity
+            if self.executed_quantity is not None
+            else Decimal(0)
+        )
+        return float(executed / self.original_quantity)
+
+    @property
+    def commission_bps(self) -> float | None:
+        """The commission as basis points of the filled notional.
+
+        Positive means a cost — the sign flip of the venue's own negative
+        spelling (:attr:`commission`) — so this reads the same direction
+        every other cost figure in this workspace does
+        (:mod:`router.bingx_reconcile`'s realized slippage, adverse
+        positive).  ``None`` when there is no commission to read, or no
+        notional to measure it as a fraction of: an order with nothing
+        filled pays no fee to express as a rate.
+        """
+        if (
+            self.commission is None
+            or self.executed_quantity is None
+            or self.average_price is None
+        ):
+            return None
+        notional = self.executed_quantity * self.average_price
+        if notional <= 0:
+            return None
+        return float(-self.commission / notional * Decimal(10_000))
+
+    @property
+    def place_to_fill_ms(self) -> int | None:
+        """Milliseconds from the venue's placement instant to its last update.
+
+        ``None`` unless both :attr:`placed_ms` and :attr:`last_fill_ms` are
+        known.  For a filled order ``last_fill_ms`` is the instant of that
+        fill, so this is the latency from send to fill; for any other order
+        it is the latency to its last recorded change.
+        """
+        if self.placed_ms is None or self.last_fill_ms is None:
+            return None
+        return self.last_fill_ms - self.placed_ms
 
     def as_dict(self) -> dict[str, Any]:
         """The status as the venue's own field spellings, ready to print.
@@ -594,6 +717,88 @@ def _decimal_field(
     return number
 
 
+def _signed_decimal_field(
+    document: Mapping, field: str, client_order_id: str
+) -> Decimal:
+    """Read one of the venue's *signed* decimal fields, exactly, or refuse it.
+
+    The same discipline :func:`_decimal_field` holds for an
+    always-non-negative measurement, for the one field the venue signs: its
+    ``commission``, negative in every answer this member has recorded
+    (a fill that cost the account money).  A float is refused for the same
+    reason — a binary approximation of a decimal no venue ever sent — but a
+    negative value is read rather than refused, because the sign is the
+    fact this field exists to carry.
+    """
+    value = document[field]
+    if isinstance(value, bool):
+        raise RouterBingXOrdersError(
+            f"{BINGX_ORDERS_CODE}: the {field!r} for {client_order_id!r} "
+            f"must be a decimal, got the boolean {value!r}; a true/false "
+            "spelling is not a fee"
+        )
+    if isinstance(value, Decimal):
+        number = value
+    elif isinstance(value, int):
+        number = Decimal(value)
+    elif isinstance(value, str):
+        try:
+            number = Decimal(value)
+        except InvalidOperation as exc:
+            raise RouterBingXOrdersError(
+                f"{BINGX_ORDERS_CODE}: the {field!r} {value!r} for "
+                f"{client_order_id!r} is not a decimal"
+            ) from exc
+    else:
+        raise RouterBingXOrdersError(
+            f"{BINGX_ORDERS_CODE}: the {field!r} for {client_order_id!r} "
+            f"must be a decimal string or a Decimal, got {value!r} "
+            f"({type(value).__name__}); a float is a binary approximation "
+            "of a decimal no venue ever sent"
+        )
+    if not number.is_finite():
+        raise RouterBingXOrdersError(
+            f"{BINGX_ORDERS_CODE}: the {field!r} for {client_order_id!r} "
+            f"must be finite, got {number!r}"
+        )
+    return number
+
+
+def _millis_field(document: Mapping, field: str, client_order_id: str) -> int:
+    """Read one of the venue's millisecond-epoch fields, or refuse it.
+
+    The live recording sends ``time`` and ``updateTime`` as JSON integers —
+    never a quoted string, unlike the venue's decimals — so an :class:`int`
+    is read directly; a digit-only string is read the same way in case a
+    future version quotes it.  A float, a bool or a negative value is
+    refused, because a venue instant is never any of those.
+    """
+    value = document[field]
+    if isinstance(value, bool):
+        raise RouterBingXOrdersError(
+            f"{BINGX_ORDERS_CODE}: the {field!r} for {client_order_id!r} "
+            "must be an integer of epoch milliseconds, got the boolean "
+            f"{value!r}"
+        )
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        number = int(value.strip())
+    else:
+        raise RouterBingXOrdersError(
+            f"{BINGX_ORDERS_CODE}: the {field!r} for {client_order_id!r} "
+            f"must be an integer of epoch milliseconds, got {value!r} "
+            f"({type(value).__name__})"
+        )
+    if number < 0:
+        raise RouterBingXOrdersError(
+            f"{BINGX_ORDERS_CODE}: the {field!r} for {client_order_id!r} "
+            f"must be non-negative, got {number!r}; the venue's own instant "
+            "is never negative"
+        )
+    return number
+
+
 def _status_from(
     document: Any, symbol: str | None, client_order_id: str
 ) -> VSTOrderStatus:
@@ -664,6 +869,21 @@ def _status_from(
         ),
         average_price=_decimal_field(
             document, AVERAGE_PRICE_FIELD, client_order_id
+        ),
+        commission=(
+            _signed_decimal_field(document, COMMISSION_FIELD, client_order_id)
+            if COMMISSION_FIELD in document
+            else None
+        ),
+        placed_ms=(
+            _millis_field(document, PLACED_TIME_FIELD, client_order_id)
+            if PLACED_TIME_FIELD in document
+            else None
+        ),
+        last_fill_ms=(
+            _millis_field(document, LAST_FILL_TIME_FIELD, client_order_id)
+            if LAST_FILL_TIME_FIELD in document
+            else None
         ),
     )
 
