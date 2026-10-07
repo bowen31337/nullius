@@ -102,7 +102,7 @@ the sidecar seals are one value.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .assignment import DEFAULT_BLOCK_DAYS
@@ -112,6 +112,7 @@ __all__ = [
     "DEFAULT_BLOCK_DAYS",
     "block_indices",
     "block_permute",
+    "block_permute_cross_section",
 ]
 
 
@@ -217,6 +218,162 @@ def block_indices(
     blocks = [items[i : i + block] for i in range(0, len(items), block)]
     _seeded_rng(drawn_seed).shuffle(blocks)
     return tuple(position for block in blocks for position in block)
+
+
+def block_permute_cross_section(
+    panel: Any,
+    *,
+    seed: Any,
+    block_days: Any = DEFAULT_BLOCK_DAYS,
+) -> dict[Any, dict[str, float]]:
+    """Feature 115's block permutation, applied to a symbol-by-date panel.
+
+    §7.2 writes the permutation over ``forward_returns`` — one series — but
+    a Type-R or Type-D node's targets are a *cross-section per rebalance
+    date*: ``{date: {symbol: forward return}}``, and the universe a snapshot
+    carries is not fixed over the window — a symbol lists partway through
+    (feature 72's point-in-time admission rule) or delists before the end.
+    Treating the panel as one series and swapping whole date-rows between
+    blocks — the reading every caller of :func:`block_indices` over a panel
+    had reached for — moves a row's symbols onto a date where some of them
+    never had a bar: a symbol listed in the last block, shuffled onto a date
+    in the first, is a target for a bar that does not exist, and
+    :func:`evaluator.gate_targets`'s support rule refuses it by name (every
+    date's answer must name *exactly* that date's own cross-section, no
+    wider and no narrower). This function is the mechanism that does not
+    make that move.
+
+    **Per symbol, not per row.** Rather than permuting rows of dates, this
+    function permutes each symbol's *own* run of observations: a symbol's
+    series is the values it carries on the dates it is actually present —
+    the same contiguous-block shuffle :func:`block_permute` applies to a
+    bare series, here applied to the compacted sequence of dates *that
+    symbol* has a value on. A date d's permuted row therefore carries a
+    symbol if and only if the unpermuted panel carries that symbol on d —
+    membership never moves, only the value does — which is exactly what
+    keeps every date's permuted cross-section equal to that date's real one:
+    a symbol listed in the last block draws its shuffled value from one of
+    its own later dates and never lands before its listing, and a symbol
+    delisted mid-window never lands after it, because the positions it is
+    ever gathered from or written to are its own.
+
+    **Unchanged for a symbol present throughout.** A symbol with a value on
+    every date in ``panel`` is, in this function's terms, a symbol whose own
+    "dates it is present on" is the panel's whole date axis — so its local
+    permutation is :func:`block_indices` called over ``range(len(panel))``
+    with this call's own ``seed`` and ``block_days``, the identical call a
+    whole-row swap would have made. For a panel where every symbol is
+    present throughout, this function's answer is therefore bit-identical
+    to the whole-row algorithm it replaces; the two differ only where the
+    universe actually varies, which is the one place the whole-row algorithm
+    was wrong.
+
+    **Still one shuffle, still reproducible.** Every symbol's local
+    permutation is read from the same ``seed`` and ``block_days`` — the
+    entry's own stored ``perm_seed``/``block_days`` (§7.1), never a
+    per-symbol derivative — so two calls with the same panel, seed and block
+    length return the same result (§12's determinism contract), and a
+    symbol's own run is still cut into contiguous runs of ``block_days``
+    observations and shuffled as units, preserving the autocorrelation and
+    volatility clustering within a run while destroying the pairing between
+    a date and the value it used to carry (§7.3).
+
+    Refuses, in this order, and each refusal names what it is about:
+
+    1. a ``block_days`` or ``seed`` that :func:`block_permute` would refuse
+       (:class:`~nulloracle.errors.KsGuardError`) — the same contract, read
+       once before the panel is walked;
+    2. a ``panel`` that is not a non-empty mapping of date to a mapping of
+       symbol to finite real (:class:`~nulloracle.errors.KsGuardError`) — a
+       cross-section the permutation cannot act on is no panel a null node
+       could report.
+
+    Returns a plain ``dict`` keyed by the exact dates ``panel`` carried, each
+    row a plain ``dict`` of the symbols that date's unpermuted row carried —
+    never zero-filled, never invented, and never carrying a symbol the date
+    did not already have.
+    """
+    block = _validated_block_days(block_days)
+    drawn_seed = _validated_seed(seed)
+    rows = _validated_panel(panel)
+    days = list(rows)
+    # Every position a symbol is actually present at, in the panel's own
+    # date order — the compacted "series" this function permutes for that
+    # symbol, so a gap in its history (a delisting, a late listing) is
+    # simply absent from its own positions and never a position the
+    # permutation reads from or writes to.
+    positions_by_symbol: dict[str, list[int]] = {}
+    for position, day in enumerate(days):
+        for symbol in rows[day]:
+            positions_by_symbol.setdefault(symbol, []).append(position)
+    permuted: dict[Any, dict[str, float]] = {day: {} for day in days}
+    for symbol, positions in positions_by_symbol.items():
+        values = [rows[days[position]][symbol] for position in positions]
+        order = block_indices(
+            range(len(positions)), seed=drawn_seed, block_days=block
+        )
+        for slot, source_index in enumerate(order):
+            permuted[days[positions[slot]]][symbol] = values[source_index]
+    return permuted
+
+
+def _validated_panel(value: Any) -> dict[Any, dict[str, float]]:
+    """Refuse a cross-sectional panel that is not ``{date: {symbol: return}}``.
+
+    The read-side twin of :func:`_validated_series` for the panel grain:
+    :func:`block_permute_cross_section` acts on one node's whole
+    cross-section, not one symbol's series, so the value it is handed must be
+    a genuine panel — a non-empty mapping whose every row is itself a mapping
+    of non-empty symbol names to finite reals. A row may be empty (a date
+    with no scored symbols is still a date), but the panel as a whole must
+    carry at least one date, and every value present must be a real number a
+    target could be measured from.
+    """
+    if isinstance(value, (str, bytes)) or not isinstance(value, Mapping):
+        raise KsGuardError(
+            f"panel must be a mapping of date to {{symbol: forward return}}, "
+            f"got {type(value).__name__}; feature 115's cross-sectional "
+            "permutation shuffles a node's whole panel, and a value that is "
+            "not a mapping of dates to rows is no panel a null node could "
+            "report"
+        )
+    if not value:
+        raise KsGuardError(
+            "panel must be non-empty; a cross-sectional permutation shuffles "
+            "the dates a panel carries, and an empty panel has no dates to "
+            "shuffle and no null node it could be the panel of"
+        )
+    captured: dict[Any, dict[str, float]] = {}
+    for day, row in value.items():
+        if not isinstance(row, Mapping):
+            raise KsGuardError(
+                f"the panel row for {day!r} must map symbol to forward "
+                f"return, got {type(row).__name__}; a date's cross-section "
+                "is a mapping of symbol to value, and a row that is not one "
+                "is no cross-section the permutation can read"
+            )
+        inner: dict[str, float] = {}
+        for symbol, element in row.items():
+            if not isinstance(symbol, str) or not symbol:
+                raise KsGuardError(
+                    f"the panel's symbols for {day!r} must be non-empty "
+                    f"strings, found {symbol!r} ({type(symbol).__name__})"
+                )
+            if isinstance(element, bool) or not isinstance(element, (int, float)):
+                raise KsGuardError(
+                    f"the panel's target for {symbol!r} on {day!r} must be a "
+                    f"finite real, found {element!r} ({type(element).__name__})"
+                )
+            number = float(element)
+            if not math.isfinite(number):
+                raise KsGuardError(
+                    f"the panel's target for {symbol!r} on {day!r} is not "
+                    f"finite ({element!r}); a non-finite forward return would "
+                    "be served to the caller as a target nobody measured"
+                )
+            inner[symbol] = number
+        captured[day] = inner
+    return captured
 
 
 def _validated_seed(seed: Any) -> int:
