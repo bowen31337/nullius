@@ -32,6 +32,7 @@
 #   ./run.sh bootstrap-fill [args] python -m bootstrap.fill
 #   ./run.sh dream          [args] python -m orchestrator.dream
 #   ./run.sh triage         [args] python -m tripwires.triage
+#   ./run.sh llm-usage      [args] python -m providers.usage: report spend
 #   ./run.sh migrate             python -m app.migrate: apply every
 #                               migrations/versions/0*.py file in chain order
 #   ./run.sh lake-backfill [args]  python -m nullius_ingest.bars_backfill (LAKE
@@ -242,7 +243,7 @@ case "${cmd}" in
     exec docker compose -f "${SCRIPT_DIR}/docker-compose.yml" down
     ;;
 
-  canary|bootstrap-fill|dream|triage|migrate)
+  canary|bootstrap-fill|dream|triage|migrate|llm-usage)
     # None of these needs a secret, so they run with a CLEAN env, like the
     # other no-secret commands above — never wrapped in `op run`. Each shares
     # the research store with `campaign`, defaulting to the same path.
@@ -255,6 +256,7 @@ case "${cmd}" in
       dream)          module="orchestrator.dream" ;;
       triage)         module="tripwires.triage" ;;
       migrate)        module="app.migrate" ;;
+      llm-usage)      module="providers.usage" ;;
     esac
     exec uv run --all-packages python -m "${module}" "$@"
     ;;
