@@ -88,12 +88,15 @@ to, reading each through the member that owns it:
   ``snapshot_mount`` — the seam for a caller that holds a path rather
   than a name — so the read-only modes are re-asserted and every later
   read goes through the mount's own refusals;
-* the **closes** are read once, here, from the mounted ``bars``
-  partitions (one close per symbol per bar date, the venue's string
-  spelling parsed to the finite positive float step 4 validates), so
-  every evaluation of one context aligns its targets over the same
-  sealed bytes — a closes map fetched per node could drift inside one
-  campaign in a way no hash would catch;
+* the **closes** are a lazy view over the mounted ``bars`` partitions
+  (one close per symbol per bar date, the venue's string spelling
+  parsed to the finite positive float step 4 validates) — the roster of
+  symbols and dates is a directory listing, paid for here, but a given
+  symbol's day is read and memoized (keyed by snapshot, symbol and day)
+  only the first time something actually indexes it, so every
+  evaluation of one context still aligns its targets over the same
+  sealed bytes without every partition being opened whether or not a
+  node's evaluation ever touches it;
 * the **cost model and fee schedule** come from the cost-model member's
   own service over ``NULLIUS_COST_MODEL_PATH`` (the shipped §6.2
   document when unset), one parse for the pair, the hash and the rates
@@ -140,8 +143,9 @@ import datetime as dt
 import json
 import math
 import os
+import re
 import shutil
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -303,10 +307,12 @@ class EvaluationContext:
     #: :func:`evaluator.resolve_window` slices and feature 7's
     #: materializer reads through.  A :class:`snapshot.SnapshotMount`.
     snapshot: SnapshotMount
-    #: ``{symbol: {bar date: close}}`` — step 4's ``closes`` argument,
-    #: read once from the mounted ``bars`` partitions as finite positive
-    #: floats, so one context's evaluations all align over the same
-    #: sealed bytes.
+    #: ``{symbol: {bar date: close}}`` — step 4's ``closes`` argument, a
+    #: lazy view over the mounted ``bars`` partitions as finite positive
+    #: floats, read and memoized one symbol-day at a time on first use
+    #: (see :class:`_LazyCloses`), so one context's evaluations all align
+    #: over the same sealed bytes without paying for a partition no
+    #: evaluation ever asks for.
     closes: Mapping[str, Mapping[dt.date, float]]
     #: The loaded cost model — feature 59's resolved
     #: :class:`cost_model.CostModelConfig`, the value step 7's
@@ -408,8 +414,11 @@ def load_evaluation_context(
     database_url = _database_url(source)
 
     mount = _mounted_snapshot(values, named)
-    closes = _closes(mount, named)
-    snapshot_hash = _snapshot_hash(mount, named)
+    symbols = _bars_symbols(mount, named)
+    manifest = _read_manifest(mount, named)
+    _refuse_duplicate_bars(manifest, named)
+    snapshot_hash = manifest.snapshot_hash
+    closes = _LazyCloses(mount, snapshot_hash, symbols)
     cost_model, cost_schedule, cost_model_hash = _cost_inputs(
         source, database_url
     )
@@ -912,18 +921,19 @@ def _mounted_snapshot(
         ) from exc
 
 
-def _snapshot_hash(mount: SnapshotMount, named: str) -> str:
-    """The full ``snapshot_hash``, from the manifest inside the mount.
+def _read_manifest(mount: SnapshotMount, named: str) -> SnapshotManifest:
+    """The sealed manifest, read once — a JSON parse, never a bars read.
 
-    The directory name carries only the first six characters; the score
-    and the charge carry all sixty-four, so the manifest the seal
-    published beside the content is where the context reads it — through
-    the mount's own read path, like every other byte of the snapshot.
+    The directory name carries only the first six characters of
+    ``snapshot_hash``; the score and the charge carry all sixty-four, so
+    the manifest the seal published beside the content is where the
+    context reads it.  It is also where the duplicate-bar check
+    (:func:`_refuse_duplicate_bars`) reads the per-file row counts the
+    seal already computed, which is what lets that refusal fire without
+    opening a single bars partition.
     """
     try:
-        manifest = SnapshotManifest.from_json_bytes(
-            mount.read_text(MANIFEST_NAME)
-        )
+        return SnapshotManifest.from_json_bytes(mount.read_text(MANIFEST_NAME))
     except (SnapshotError, OSError) as exc:
         raise EvaluationConfigError(
             f"{EVALUATION_CONFIG_CODE}: snapshot_mount names a snapshot "
@@ -932,31 +942,13 @@ def _snapshot_hash(mount: SnapshotMount, named: str) -> str:
             "one the seal published, and a mount without it names "
             "content nobody sealed"
         ) from exc
-    return manifest.snapshot_hash
 
 
-def _closes(
-    mount: SnapshotMount, named: str
-) -> dict[str, dict[dt.date, float]]:
-    """Step 4's ``closes``, read once from the mounted bars.
-
-    The alignment's market grid is the closes of the symbols the
-    execution scored, one close per symbol per bar date — the daily
-    candle's own grain, which is why a second row for one (symbol,
-    date) is refused rather than merged: the aligner's rule is *one
-    bar, one close*, and a snapshot that carries two has a staging
-    defect a silent merge would hide.  The venue's string spelling of a
-    close is parsed here to the finite positive float step 4 validates
-    (a price that is not a positive finite number poisons every forward
-    return measured off it), and the bar's date is the row's own
-    ``open_time`` date — the candle's day, not the partition's name, so
-    a partition holding a row of another day still lands where the bar
-    says it belongs.
-
-    Every read goes through the mount's read-only paths — the same
-    handle and the same sealedness back the closes as back everything
-    else, which is what makes the ``snapshot_hash`` on the context name
-    the exact bytes these closes were read from.
+def _bars_symbols(mount: SnapshotMount, named: str) -> tuple[str, ...]:
+    """The symbols the snapshot carries bars for — a directory listing,
+    never a Parquet read (:meth:`SnapshotMount.partitions`).  Refused when
+    the stream is empty: there are no closes to align targets over
+    without it.
     """
     symbols = mount.partitions(BARS_STREAM)
     if not symbols:
@@ -967,51 +959,204 @@ def _closes(
             "measured off the sealed bars (§4.2), and a snapshot "
             "without them cannot serve one"
         )
-    closes: dict[str, dict[dt.date, float]] = {}
-    for symbol in symbols:
-        series: dict[dt.date, float] = {}
-        for iso in mount.dates(BARS_STREAM, symbol):
-            for part in mount.select(BARS_STREAM, symbol, iso):
-                table = _read_part(part, symbol)
-                if "open_time" not in table.column_names:
-                    raise EvaluationConfigError(
-                        f"{EVALUATION_CONFIG_CODE}: snapshot_mount names "
-                        f"a snapshot whose {part!s} carries no "
-                        "'open_time' column; bars are candles (the "
-                        "contract's two required columns name the book "
-                        "and the candle-open instant), and a close "
-                        "whose bar day cannot be read is a close that "
-                        "cannot be keyed"
-                    )
-                if "close" not in table.column_names:
-                    raise EvaluationConfigError(
-                        f"{EVALUATION_CONFIG_CODE}: snapshot_mount names "
-                        f"a snapshot whose {part!s} carries no 'close' "
-                        "column; the alignment's market grid is the "
-                        "closes of the scored symbols, and a bar "
-                        "without one is a bar no target can be "
-                        "measured from"
-                    )
-                for row in table.select(["open_time", "close"]).to_pylist():
-                    moment = row["open_time"]
-                    day = (
-                        moment.date()
-                        if isinstance(moment, dt.datetime)
-                        else moment
-                    )
-                    price = _close_price(row["close"], symbol, day)
-                    if day in series:
-                        raise EvaluationConfigError(
-                            f"{EVALUATION_CONFIG_CODE}: snapshot_mount "
-                            f"names a snapshot whose bars carry "
-                            f"{symbol!r} on {day.isoformat()} twice; one "
-                            "bar, one close — the aligner's grain, and "
-                            "a snapshot that carries two has a staging "
-                            "defect a silent merge would hide"
-                        )
-                    series[day] = price
-        closes[symbol] = series
-    return closes
+    return symbols
+
+
+#: One bars partition's relative path, as the manifest's own ``files``
+#: keys spell it (``"bars/symbol=SYM00/date=2026-09-01/part-0.parquet"``)
+#: — group 1 is the symbol, group 2 the ``date=`` directory's own string.
+_BARS_PARTITION_RE = re.compile(
+    rf"^{re.escape(BARS_STREAM)}/symbol=([^/]+)/date=([^/]+)/[^/]+$"
+)
+
+
+def _refuse_duplicate_bars(manifest: SnapshotManifest, named: str) -> None:
+    """Refuse a symbol-day the manifest's own row counts already show twice.
+
+    The manifest records a row count per file at seal time (feature 31,
+    read from the Parquet footer when the seal ran) — reading it back
+    here costs nothing a JSON parse has not already cost, so "one bar,
+    one close" is checked at load, across every partition, without
+    opening one.  A file whose row count the manifest could not take
+    (``None``) is skipped here; :func:`_read_close` re-applies the same
+    check the moment it actually opens that partition, so no duplicate
+    escapes for the files this free check could not see into.
+    """
+    totals: dict[tuple[str, str], int] = {}
+    for path, entry in manifest.files.items():
+        match = _BARS_PARTITION_RE.match(path)
+        if match is None or entry.row_count is None:
+            continue
+        key = (match.group(1), match.group(2))
+        totals[key] = totals.get(key, 0) + entry.row_count
+    for (symbol, iso), count in totals.items():
+        if count <= 1:
+            continue
+        try:
+            day = dt.date.fromisoformat(iso)
+        except ValueError:
+            continue
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: snapshot_mount names a snapshot "
+            f"whose bars carry {symbol!r} on {day.isoformat()} twice; one "
+            "bar, one close — the aligner's grain, and a snapshot that "
+            "carries two has a staging defect a silent merge would hide"
+        )
+
+
+#: Prices already read, keyed by the exact snapshot, symbol and bar day
+#: they belong to.  Module-level and never cleared: a second evaluation
+#: over the same snapshot in the same process — even through a freshly
+#: loaded context, since feature 8 composes one per ``create_app()`` —
+#: finds every close it already paid to read, and reads no partition
+#: twice.
+_CLOSE_CACHE: dict[tuple[str, str, dt.date], float] = {}
+
+
+class _LazySymbolCloses(Mapping[dt.date, float]):
+    """One symbol's closes — read and memoized one bar at a time.
+
+    The dates this maps are a directory listing
+    (:meth:`SnapshotMount.dates`, free), fetched once and cached on the
+    instance; the *prices* are read only when a date is actually looked
+    up, through :func:`_read_close` — which is where the poisoned-close
+    and duplicate-bar refusals a symbol's own partitions can still raise
+    now fire: at first use, not at load.
+    """
+
+    __slots__ = ("_dates", "_mount", "_snapshot_hash", "_symbol")
+
+    def __init__(
+        self, mount: SnapshotMount, snapshot_hash: str, symbol: str
+    ) -> None:
+        self._mount = mount
+        self._snapshot_hash = snapshot_hash
+        self._symbol = symbol
+        self._dates: tuple[dt.date, ...] | None = None
+
+    def _available(self) -> tuple[dt.date, ...]:
+        if self._dates is None:
+            self._dates = tuple(
+                dt.date.fromisoformat(iso)
+                for iso in self._mount.dates(BARS_STREAM, self._symbol)
+            )
+        return self._dates
+
+    def __contains__(self, day: object) -> bool:
+        return isinstance(day, dt.date) and day in self._available()
+
+    def __getitem__(self, day: dt.date) -> float:
+        if day not in self._available():
+            raise KeyError(day)
+        cache_key = (self._snapshot_hash, self._symbol, day)
+        try:
+            return _CLOSE_CACHE[cache_key]
+        except KeyError:
+            pass
+        price = _read_close(self._mount, self._symbol, day)
+        _CLOSE_CACHE[cache_key] = price
+        return price
+
+    def __iter__(self) -> Iterator[dt.date]:
+        return iter(self._available())
+
+    def __len__(self) -> int:
+        return len(self._available())
+
+
+class _LazyCloses(Mapping[str, Mapping[dt.date, float]]):
+    """Step 4's ``closes`` — one :class:`_LazySymbolCloses` per symbol,
+    built from the roster :func:`_bars_symbols` already paid a directory
+    listing for at load.  Nothing past that listing is read until a
+    caller indexes a specific symbol and date, so a context answers the
+    same full mapping :func:`_closes` used to build eagerly, but reads
+    only the partitions whoever consumes ``closes`` actually touches.
+    """
+
+    __slots__ = ("_mount", "_snapshot_hash", "_symbols")
+
+    def __init__(
+        self, mount: SnapshotMount, snapshot_hash: str, symbols: tuple[str, ...]
+    ) -> None:
+        self._mount = mount
+        self._snapshot_hash = snapshot_hash
+        self._symbols = symbols
+
+    def __contains__(self, symbol: object) -> bool:
+        return symbol in self._symbols
+
+    def __getitem__(self, symbol: str) -> Mapping[dt.date, float]:
+        if symbol not in self._symbols:
+            raise KeyError(symbol)
+        return _LazySymbolCloses(self._mount, self._snapshot_hash, symbol)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._symbols)
+
+    def __len__(self) -> int:
+        return len(self._symbols)
+
+
+def _read_close(mount: SnapshotMount, symbol: str, day: dt.date) -> float:
+    """One symbol-day's close, read from its own partition.
+
+    The content half of the original eager read, scoped to the single
+    ``(symbol, day)`` a lazy lookup asked for: the venue's string
+    spelling of a close is parsed to the finite positive float step 4
+    validates (a price that is not a positive finite number poisons every
+    forward return measured off it), keyed by the row's own
+    ``open_time`` date — the candle's day, not the partition's name, so
+    a partition holding a row of another day still lands where the bar
+    says it belongs.  A second row for this ``(symbol, day)`` is refused
+    rather than merged, the same "one bar, one close" law
+    :func:`_refuse_duplicate_bars` already checked for free across the
+    whole snapshot — held here too, for the partitions that check could
+    not see into (an unknown row count).  ``day`` absent from this
+    partition's own rows answers :class:`KeyError`, like any other
+    missing mapping key.
+    """
+    iso = day.isoformat()
+    series: dict[dt.date, float] = {}
+    for part in mount.select(BARS_STREAM, symbol, iso):
+        table = _read_part(part, symbol)
+        if "open_time" not in table.column_names:
+            raise EvaluationConfigError(
+                f"{EVALUATION_CONFIG_CODE}: snapshot_mount names "
+                f"a snapshot whose {part!s} carries no "
+                "'open_time' column; bars are candles (the "
+                "contract's two required columns name the book "
+                "and the candle-open instant), and a close "
+                "whose bar day cannot be read is a close that "
+                "cannot be keyed"
+            )
+        if "close" not in table.column_names:
+            raise EvaluationConfigError(
+                f"{EVALUATION_CONFIG_CODE}: snapshot_mount names "
+                f"a snapshot whose {part!s} carries no 'close' "
+                "column; the alignment's market grid is the "
+                "closes of the scored symbols, and a bar "
+                "without one is a bar no target can be "
+                "measured from"
+            )
+        for row in table.select(["open_time", "close"]).to_pylist():
+            moment = row["open_time"]
+            row_day = (
+                moment.date() if isinstance(moment, dt.datetime) else moment
+            )
+            price = _close_price(row["close"], symbol, row_day)
+            if row_day in series:
+                raise EvaluationConfigError(
+                    f"{EVALUATION_CONFIG_CODE}: snapshot_mount "
+                    f"names a snapshot whose bars carry "
+                    f"{symbol!r} on {row_day.isoformat()} twice; one "
+                    "bar, one close — the aligner's grain, and "
+                    "a snapshot that carries two has a staging "
+                    "defect a silent merge would hide"
+                )
+            series[row_day] = price
+    if day not in series:
+        raise KeyError(day)
+    return series[day]
 
 
 def _read_part(part: object, symbol: str) -> Any:
