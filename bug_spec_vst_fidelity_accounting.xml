@@ -1,0 +1,42 @@
+<bug_spec>
+  <!-- FID-1. Found 2026-10-08 running `./run.sh vst-fidelity` against the
+       live VST store after the first slot (2026-10-07 12:05 UTC) ran on the
+       fidelity harness (additions_spec_vst_fidelity.xml). Report:
+       reject_rate 0.333, place_to_fill_ms p95 12,953,300 (3.6 h),
+       rounding_drift_bps -9877.7. Raw rows show both are accounting errors,
+       not venue behaviour. Core shape, explicit touches_files. -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/router/src/router/fidelity.py,packages/router/src/router/vst_fidelity.py,packages/router/src/router/bingx_mirror.py,packages/router/tests/test_vst_fidelity_accounting.py">
+    <title>The fidelity accounting counts unfilled cancelled orders as rejects, folds time-to-cancel into fill latency, and measures rounding drift against the position target instead of the order quantity</title>
+    <symptoms>
+      (A) router.fidelity classifies every leg without a fill as leg_state "reject" (~line 490). A PostOnly LIMIT order the venue accepted, which then rested unfilled until step 2 of the next slot cancelled it, is counted as a reject. The SOL-USDT SELL leg of slot 2026-10-07T08:00 (place_to_fill_ms 14,390,000) inflates reject_rate to 0.333. Venue rejects and refused placements are a different thing.
+      (B) That leg's 14,390,000 ms (time until cancel) is folded into the place_to_fill_ms distribution, giving p95 12,953,300 and p99 14,102,660. Latency must describe fills only.
+      (C) router_order_record.target_quantity records the leg's position target (for example 8.524 SOL), while the order sends only the change from the current position (0.07 SOL). vst_fidelity's rounding_drift_bps therefore compares two different quantities and reports -9877.7 bps.
+    </symptoms>
+    <reproduction_steps>
+      Seed a store with one accepted LIMIT order that is later CANCELED with executedQty 0, one FILLED order, and one MARKET fill, with a position target much larger than the order delta. Run reconcile_fidelity, then vst_fidelity: reject_rate counts the cancelled order, latency includes its rest time, and drift is near -100%.
+    </reproduction_steps>
+    <expected>
+      - A new leg_state "unfilled" covers a leg the venue accepted that ended CANCELED or EXPIRED with zero executed quantity. "reject" is kept for a venue rejection (status REJECTED, or a placement the venue refused) and a leg the router refused before sending.
+      - router_order_fidelity's CHECK constraint gains "unfilled". The live table is migrated in place: rebuild-and-copy inside one transaction, existing rows preserved, and existing "reject" rows whose fill record shows an accepted then CANCELED/EXPIRED zero-fill reclassified to "unfilled". It is idempotent, and a second run changes nothing.
+      - vst_fidelity reports reject_rate over sent legs (venue and router rejects only) and adds unfilled_rate. place_to_fill_ms percentiles are computed over legs with executed_quantity > 0 only, and the time to cancel is reported separately as unfilled_rest_ms.
+      - target_quantity records the order quantity before step/tick rounding: the delta the router sized, not the position target. rounding_drift_bps compares sent quantity with that pre-rounding order quantity, in bps of the order's notional. A record from before this fix (target_quantity holding the position target) is excluded from the drift statistic rather than mixed in.
+      - test_vst_fidelity_accounting.py covers:
+        - a cancelled zero-fill leg is unfilled, not reject
+        - a venue REJECTED leg is reject
+        - latency over fills only, and unfilled_rest_ms reported
+        - the in-place migration of a pre-existing table with a reject row that becomes unfilled
+        - target_quantity equals the pre-rounding order delta
+        - drift within the step size for an ordinary leg
+        - pre-fix rows excluded from drift
+        It passes under pytest-xdist.
+    </expected>
+    <actual>Root cause: fidelity.py treats "no fill" as rejection; vst_fidelity takes latency over all legs; bingx_mirror records the position target where the spec meant the pre-rounding order quantity.</actual>
+    <constraints>
+      Placement behaviour is unchanged: no order differs in symbol, side, type, quantity, price or client id
+      No file outside the four listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
