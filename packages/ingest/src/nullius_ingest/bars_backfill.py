@@ -139,6 +139,42 @@ records ``survivorship_free: true``.
 * The write layout, the per-symbol JSON line and the summary line are
   byte-for-byte feature 1's — :func:`main` does not know which source wrote
   them.
+
+**Progress, checkpoints and failure handling (bug fix, archive mode).** A
+``--top N`` archive run ranks every USDT candidate the archive has ever
+listed before any of them is selected — over a wide window this is the
+run's slow part, and it used to do it silently, in memory, with nothing
+checkpointed.  Three changes fix that, all archive-only:
+
+* *Progress.* Every candidate the ranking loop finishes, whether it was
+  scored or dropped, prints one ``{"phase": "rank", "symbols_done": n,
+  "symbols_total": m}`` line through the same ``emit`` :func:`main` passes
+  everything else through, before the existing per-symbol lines.
+* *The rank cache.* Once the whole candidate pool is ranked, the result
+  (every candidate's symbol, median volume and archive-wide last month —
+  never its candle rows, which stay cheap to refetch for only the selected
+  top ``N``) is written to ``<lake>/staging-meta/rank-<first>_<last>.json``,
+  keyed on the window alone so a later run asking for a different ``--top``
+  over the same dates still skips the crawl.  It sits beside ``staging/``,
+  not inside it, so :mod:`snapshot.seal` never touches it.
+* *Per-month writes and resume.* A symbol's months (explicit or selected)
+  are now fetched and written one at a time rather than held in memory
+  until every symbol is done. Before fetching a month, its partitions
+  (``staging/bars/symbol=<S>/date=<that month's days>``) are checked; if
+  they are already there the month is skipped with no fetch at all — the
+  path an interrupted run's rerun takes, picking up only the months it
+  never finished. A month that fails (bad checksum, unparseable rows, a
+  non-404 HTTP status) prints its own ``{"phase": "error", "symbol":
+  ..., "month": ..., "error": ...}`` line and is skipped; the symbol keeps
+  going rather than losing the months that already succeeded, and its own
+  per-symbol line still reads ``"status": "ok"`` with a ``failed_months``
+  list when at least one month wrote. The run's exit code is still
+  :data:`EXIT_REFUSED` when any month failed, even for an otherwise-``"ok"``
+  symbol. ``--restart`` ignores the rank cache and every already-written
+  month, exactly as if the lake were empty.  An error :func:`backfill_bars`
+  itself does not already turn into a one-line refusal (not
+  :class:`BarsBackfillError`) is still caught once, in :func:`main`, as one
+  stderr line — never a raw traceback.
 """
 
 from __future__ import annotations
@@ -180,6 +216,7 @@ __all__ = [
     "LEVERAGED_SUFFIXES",
     "MAX_RETRIES",
     "PAGE_SIZE",
+    "RANK_CACHE_DIRNAME",
     "STABLECOIN_BASES",
     "UNIVERSE_FILENAME",
     "ArchiveFetch",
@@ -227,6 +264,11 @@ LEVERAGED_SUFFIXES: tuple[str, ...] = ("UP", "DOWN", "BULL", "BEAR")
 
 #: The file this module writes beside ``staging/``, never inside it.
 UNIVERSE_FILENAME = "universe.json"
+
+#: The directory an archive ``--top N`` run caches its rank result in, a
+#: sibling of ``staging/`` and ``universe.json`` so :mod:`snapshot.seal`
+#: never sees it — a checkpoint, not published data.
+RANK_CACHE_DIRNAME = "staging-meta"
 
 #: Binance's public data archive — static monthly zips, no API key, no
 #: rate-limit contract (it is a CDN-fronted bucket, not the REST API).
@@ -712,6 +754,76 @@ def _clip_rows_to_window(
     )
 
 
+def _month_already_written(lake_path: Path, symbol: str, month: str) -> bool:
+    """True when ``symbol``'s ``month`` already has at least one written day.
+
+    The resume check a rerun relies on: no separate progress ledger, just the
+    partitions :func:`_write_bars` already left behind. A month is fetched
+    and written as one atomic step (the fetch happens, then every one of its
+    days is written before the next month starts), so one written day is
+    enough to know the month is done.
+    """
+    symbol_root = lake_path / "staging" / BARS_STREAM / f"symbol={symbol}"
+    if not symbol_root.is_dir():
+        return False
+    for partition in symbol_root.glob(f"date={month}-*"):
+        if (partition / "part-0.parquet").is_file():
+            return True
+    return False
+
+
+def _rank_cache_path(lake_path: Path, first: date, last: date) -> Path:
+    return lake_path / RANK_CACHE_DIRNAME / f"rank-{first.isoformat()}_{last.isoformat()}.json"
+
+
+def _load_rank_cache(
+    path: Path, first: date, last: date
+) -> list[tuple[str, float, str]] | None:
+    """The cached whole-window ranking, or ``None`` on a miss or a bad file.
+
+    A missing, unreadable, or malformed cache is treated exactly like a
+    miss — the ranking is simply recomputed — rather than refusing the run
+    over a checkpoint file's own corruption.
+    """
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (
+        not isinstance(payload, Mapping)
+        or payload.get("first") != first.isoformat()
+        or payload.get("last") != last.isoformat()
+    ):
+        return None
+    entries = payload.get("ranking")
+    if not isinstance(entries, list):
+        return None
+    ranking: list[tuple[str, float, str]] = []
+    try:
+        for entry in entries:
+            ranking.append(
+                (str(entry["symbol"]), float(entry["median_volume"]), str(entry["last_archived_month"]))
+            )
+    except (KeyError, TypeError, ValueError):
+        return None
+    return ranking
+
+
+def _save_rank_cache(
+    path: Path, first: date, last: date, ranking: Sequence[tuple[str, float, str]]
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "first": first.isoformat(),
+        "last": last.isoformat(),
+        "ranking": [
+            {"symbol": symbol, "median_volume": median_volume, "last_archived_month": last_month}
+            for symbol, median_volume, last_month in ranking
+        ],
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 # -- Fetching and writing one symbol's candles --------------------------------
 
 
@@ -884,12 +996,19 @@ class SymbolResult:
     rows_written: int = 0
     skipped_non_positive_close: int = 0
     error: str | None = None
+    # Archive mode only: a month that failed (bad checksum, unparseable
+    # rows) while at least one other month of this same symbol still wrote —
+    # reported here, and separately as its own JSON error line at the time
+    # it happened, rather than failing the whole symbol over one bad month.
+    failed_months: tuple[str, ...] = ()
 
     def to_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {"symbol": self.symbol, "status": self.status}
         if self.status == "ok":
             payload["rows_written"] = self.rows_written
             payload["skipped_non_positive_close"] = self.skipped_non_positive_close
+            if self.failed_months:
+                payload["failed_months"] = list(self.failed_months)
         else:
             payload["error"] = self.error
         return payload
@@ -944,6 +1063,80 @@ def _backfill_rest(
     return results, resolved_symbols, selection_rule
 
 
+def _backfill_archive_symbol(
+    lake_path: Path,
+    symbol: str,
+    first_date: date,
+    last_date: date,
+    *,
+    fetch: ArchiveFetch,
+    sleep: Callable[[float], None],
+    emit: Callable[[str], object],
+    restart: bool,
+) -> tuple[SymbolResult, str | None]:
+    """Fetch and write ``symbol``'s window one month at a time.
+
+    Unless ``restart``, a month already on disk (:func:`_month_already_written`)
+    is skipped with no fetch at all — the path a rerun takes after an
+    interrupted run. A month that fails (bad checksum, unparseable rows, a
+    non-404 HTTP status) prints its own JSON line naming ``symbol`` and the
+    month and is then skipped, rather than losing the months that already
+    succeeded; the symbol's own result still reads ``"ok"`` when at least one
+    month wrote, with the failed months named in ``failed_months``. Returns
+    the symbol's result and the last month the archive actually held data
+    for (``None`` if none did).
+    """
+    written = 0
+    skipped = 0
+    failed_months: list[str] = []
+    failure_messages: list[str] = []
+    last_month_with_data: str | None = None
+
+    for month in _months_between(first_date, last_date):
+        if not restart and _month_already_written(lake_path, symbol, month):
+            # Already on disk from an earlier run -- the archive is known to
+            # have held data for this month (that is the only way it could
+            # have been written), so a fully-resumed rerun must not drop it
+            # from `last_month_with_data` just because this run skipped it.
+            last_month_with_data = month
+            continue
+        try:
+            result = _fetch_month(fetch, symbol, month, sleep=sleep)
+        except BarsBackfillError as exc:
+            emit(
+                json.dumps(
+                    {"phase": "error", "symbol": symbol, "month": month, "error": str(exc)}
+                )
+            )
+            failed_months.append(month)
+            failure_messages.append(str(exc))
+            continue
+        if result is None:
+            continue
+        rows, _volumes = result
+        clipped = _clip_rows_to_window(rows, first_date, last_date)
+        month_written, month_skipped = _write_bars(lake_path, symbol, clipped)
+        written += month_written
+        skipped += month_skipped
+        last_month_with_data = month
+
+    if written == 0 and skipped == 0 and failed_months:
+        return (
+            SymbolResult(symbol=symbol, status="error", error="; ".join(failure_messages)),
+            last_month_with_data,
+        )
+    return (
+        SymbolResult(
+            symbol=symbol,
+            status="ok",
+            rows_written=written,
+            skipped_non_positive_close=skipped,
+            failed_months=tuple(failed_months),
+        ),
+        last_month_with_data,
+    )
+
+
 def _backfill_archive(
     lake_path: Path,
     first_date: date,
@@ -953,6 +1146,8 @@ def _backfill_archive(
     top: int | None,
     fetch: ArchiveFetch,
     sleep: Callable[[float], None],
+    emit: Callable[[str], object],
+    restart: bool,
 ) -> tuple[list[SymbolResult], tuple[str, ...], str, dict[str, str]]:
     results: list[SymbolResult] = []
     last_archived_month: dict[str, str] = {}
@@ -960,74 +1155,82 @@ def _backfill_archive(
     if symbols is not None:
         resolved_symbols = _dedupe_symbols(symbols)
         selection_rule = f"explicit symbols: {', '.join(resolved_symbols)}"
-        months = _months_between(first_date, last_date)
         for symbol in resolved_symbols:
-            try:
-                rows, _volumes, observed_last_month = _fetch_symbol_archive_rows(
-                    fetch, symbol, months, sleep=sleep
-                )
-                clipped = _clip_rows_to_window(rows, first_date, last_date)
-                written, skipped = _write_bars(lake_path, symbol, clipped)
-                results.append(
-                    SymbolResult(
-                        symbol=symbol,
-                        status="ok",
-                        rows_written=written,
-                        skipped_non_positive_close=skipped,
-                    )
-                )
-                if observed_last_month is not None:
-                    last_archived_month[symbol] = observed_last_month
-            except BarsBackfillError as exc:
-                results.append(SymbolResult(symbol=symbol, status="error", error=str(exc)))
+            symbol_result, observed_last_month = _backfill_archive_symbol(
+                lake_path,
+                symbol,
+                first_date,
+                last_date,
+                fetch=fetch,
+                sleep=sleep,
+                emit=emit,
+                restart=restart,
+            )
+            results.append(symbol_result)
+            if observed_last_month is not None:
+                last_archived_month[symbol] = observed_last_month
         return results, resolved_symbols, selection_rule, last_archived_month
 
     # --top N: every USDT symbol discovery finds with data overlapping the
     # window is a candidate; each is fetched once and ranked by median daily
-    # quote volume.  A candidate whose fetch fails cannot be ranked and is
+    # quote volume. A candidate whose fetch fails cannot be ranked and is
     # dropped — it was never selected, so it is not a selected symbol's
-    # failure.
-    months_by_symbol = _list_archive_months(fetch, sleep=sleep)
-    window_months = set(_months_between(first_date, last_date))
-    ranking: list[tuple[str, float, tuple[KlineRow, ...], str]] = []
-    for symbol, archive_months in months_by_symbol.items():
-        in_window = tuple(month for month in archive_months if month in window_months)
-        if not in_window:
-            continue
-        try:
-            rows, volumes, _observed = _fetch_symbol_archive_rows(
-                fetch, symbol, in_window, sleep=sleep
-            )
-        except BarsBackfillError:
-            continue
-        clipped = _clip_rows_to_window(rows, first_date, last_date)
-        day_volumes = [
-            volume for day, volume in volumes.items() if first_date <= day <= last_date
+    # failure. The whole-window ranking (never the candle rows themselves) is
+    # cached so a later run — even over a different --top — can skip this
+    # crawl entirely; --restart ignores that cache and redoes it.
+    cache_path = _rank_cache_path(lake_path, first_date, last_date)
+    ranking = None if restart else _load_rank_cache(cache_path, first_date, last_date)
+    if ranking is None:
+        months_by_symbol = _list_archive_months(fetch, sleep=sleep)
+        window_months = set(_months_between(first_date, last_date))
+        candidates = [
+            (symbol, in_window, archive_months[-1])
+            for symbol, archive_months in months_by_symbol.items()
+            if (in_window := tuple(m for m in archive_months if m in window_months))
         ]
-        if not day_volumes:
-            continue
-        median_volume = statistics.median(day_volumes)
-        ranking.append((symbol, median_volume, clipped, archive_months[-1]))
+        total = len(candidates)
+        ranking = []
+        for done, (symbol, in_window, archive_last_month) in enumerate(candidates, start=1):
+            try:
+                _rows, volumes, _observed = _fetch_symbol_archive_rows(
+                    fetch, symbol, in_window, sleep=sleep
+                )
+            except BarsBackfillError:
+                volumes = None
+            emit(json.dumps({"phase": "rank", "symbols_done": done, "symbols_total": total}))
+            if volumes is None:
+                continue
+            day_volumes = [
+                volume for day, volume in volumes.items() if first_date <= day <= last_date
+            ]
+            if not day_volumes:
+                continue
+            median_volume = statistics.median(day_volumes)
+            ranking.append((symbol, median_volume, archive_last_month))
 
-    # Causal: computed once from the whole window and nothing past it, fixed
-    # at the window's end rather than recomputed day by day.
-    ranking.sort(key=lambda item: (-item[1], item[0]))
+        # Causal: computed once from the whole window and nothing past it,
+        # fixed at the window's end rather than recomputed day by day.
+        ranking.sort(key=lambda item: (-item[1], item[0]))
+        _save_rank_cache(cache_path, first_date, last_date, ranking)
+
     selected = ranking[:top]
     resolved_symbols = tuple(item[0] for item in selected)
     selection_rule = (
         f"top {top} USDT spot pairs in Binance's public archive by median "
         f"daily quote volume over {first_date.isoformat()}..{last_date.isoformat()}"
     )
-    for symbol, _median_volume, clipped, archive_last_month in selected:
-        written, skipped = _write_bars(lake_path, symbol, clipped)
-        results.append(
-            SymbolResult(
-                symbol=symbol,
-                status="ok",
-                rows_written=written,
-                skipped_non_positive_close=skipped,
-            )
+    for symbol, _median_volume, archive_last_month in selected:
+        symbol_result, _observed = _backfill_archive_symbol(
+            lake_path,
+            symbol,
+            first_date,
+            last_date,
+            fetch=fetch,
+            sleep=sleep,
+            emit=emit,
+            restart=restart,
         )
+        results.append(symbol_result)
         last_archived_month[symbol] = archive_last_month
     return results, resolved_symbols, selection_rule, last_archived_month
 
@@ -1043,6 +1246,8 @@ def backfill_bars(
     fetch: BinanceFetch | ArchiveFetch | None = None,
     sleep: Callable[[float], None] | None = None,
     clock: Callable[[], datetime] | None = None,
+    emit: Callable[[str], object] | None = None,
+    restart: bool = False,
 ) -> tuple[SymbolResult, ...]:
     """Backfill daily bars for every resolved symbol; return each one's result.
 
@@ -1068,6 +1273,14 @@ def backfill_bars(
     exception is an archive ``--top N`` candidate: it must fetch successfully
     to be ranked at all, so a candidate's failure drops it from the
     candidate pool rather than appearing as an error result.
+
+    ``emit``, archive mode only, is called with one JSON line at a time as
+    the run makes progress — a ``"rank"`` line per candidate during
+    ``--top N`` discovery, and an ``"error"`` line naming the symbol and
+    month whenever one month fails — ahead of the per-symbol lines a caller
+    prints from this function's return value. ``restart``, archive mode
+    only, ignores the rank cache and every already-written month, exactly as
+    if the lake were empty; the default resumes an interrupted run instead.
     """
     if source not in ("rest", "archive"):
         raise BarsBackfillError(f"--source must be 'rest' or 'archive', got {source!r}")
@@ -1089,6 +1302,7 @@ def backfill_bars(
 
     resolved_sleep = sleep if sleep is not None else _default_sleep
     resolved_clock = clock if clock is not None else _utc_now
+    resolved_emit: Callable[[str], object] = emit if emit is not None else (lambda _line: None)
 
     if source == "rest":
         resolved_fetch = fetch if fetch is not None else urllib_fetch
@@ -1112,6 +1326,8 @@ def backfill_bars(
             top=top,
             fetch=resolved_fetch,
             sleep=resolved_sleep,
+            emit=resolved_emit,
+            restart=restart,
         )
 
     _write_universe(
@@ -1165,6 +1381,14 @@ def _build_parser() -> argparse.ArgumentParser:
     group.add_argument(
         "--top", type=int, metavar="N", help="the top N symbols by 24h quote volume"
     )
+    parser.add_argument(
+        "--restart",
+        action="store_true",
+        help=(
+            "archive mode only: ignore the rank cache and every "
+            "already-written month, exactly as if the lake were empty"
+        ),
+    )
     return parser
 
 
@@ -1176,14 +1400,21 @@ def main(
     sleep: Callable[[float], None] | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> int:
-    """``python -m nullius_ingest.bars_backfill --lake LAKE --first D --last D [--source rest|archive] (--symbols S,S,... | --top N)``.
+    """``python -m nullius_ingest.bars_backfill --lake LAKE --first D --last D [--source rest|archive] (--symbols S,S,... | --top N) [--restart]``.
 
-    Prints one JSON line per symbol (its rows written and skipped, or its
-    error) and one summary JSON line, through ``emit`` — the same lines
-    regardless of ``--source``.  Returns :data:`EXIT_OK` when every symbol
-    backfilled; :data:`EXIT_REFUSED` when an argument was invalid (nothing is
-    written) or at least one symbol's own result carries an error (every
-    other symbol's data is still written).
+    Archive mode prints a ``"rank"`` progress line per ``--top N`` candidate
+    and an ``"error"`` line naming any symbol and month that failed, as the
+    run makes progress; then, as before, one JSON line per symbol (its rows
+    written and skipped, or its error) and one summary JSON line, through
+    ``emit`` — the same lines regardless of ``--source``.  Returns
+    :data:`EXIT_OK` when every symbol and every month backfilled;
+    :data:`EXIT_REFUSED` when an argument was invalid (nothing is written),
+    at least one symbol's own result carries an error, or a symbol otherwise
+    marked ``"ok"`` still had a month fail (every other symbol's and every
+    other month's data is still written). An error not already reported as
+    one of the lines above — anything other than :class:`BarsBackfillError`
+    — still exits :data:`EXIT_REFUSED`, with one stderr line and no
+    traceback.
     """
     arguments = _build_parser().parse_args(argv)
     symbols = _parse_symbols_arg(arguments.symbols) if arguments.symbols else None
@@ -1199,9 +1430,14 @@ def main(
             fetch=fetch,
             sleep=sleep,
             clock=clock,
+            emit=emit,
+            restart=arguments.restart,
         )
     except BarsBackfillError as exc:
         print(str(exc), file=sys.stderr)
+        return EXIT_REFUSED
+    except Exception as exc:  # noqa: BLE001 -- an operator sees one line, never a raw traceback
+        print(f"unexpected error: {exc}", file=sys.stderr)
         return EXIT_REFUSED
 
     had_error = False
@@ -1209,9 +1445,9 @@ def main(
     total_skipped = 0
     for result in results:
         emit(json.dumps(result.to_payload()))
-        if result.status == "error":
+        if result.status == "error" or result.failed_months:
             had_error = True
-        else:
+        if result.status == "ok":
             total_written += result.rows_written
             total_skipped += result.skipped_non_positive_close
 
@@ -1219,7 +1455,7 @@ def main(
         json.dumps(
             {
                 "symbols": len(results),
-                "failed": sum(1 for r in results if r.status == "error"),
+                "failed": sum(1 for r in results if r.status == "error" or r.failed_months),
                 "rows_written": total_written,
                 "skipped_non_positive_close": total_skipped,
             }
