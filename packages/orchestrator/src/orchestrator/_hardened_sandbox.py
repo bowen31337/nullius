@@ -66,12 +66,40 @@ launcher, not the child, is what turns that into ``fail_class="timeout"``
 below the hard limit for the same reason ``evaluator._sandbox`` keeps them
 apart: with soft equal to hard the kernel can escalate straight to an
 unattributable ``SIGKILL`` before ``SIGXCPU`` is even delivered.
+
+**bug_spec_hardened_nproc_race.xml (NPROC-1): the process-tree budget is a
+cgroup v2 ``pids.max`` on a delegated cgroup, never a UID-wide
+``RLIMIT_NPROC``.**  ``RLIMIT_NPROC`` is enforced by the kernel against the
+*real UID's* total live task count across the whole host, not against one
+process tree — so a limit derived from an ambient ``/proc`` snapshot plus a
+headroom constant is only ever correct for the instant it was read: any
+thread or process the same user spawns afterward (another worker's own
+sandbox, an editor, a browser) consumes the same shared counter and can tip
+a perfectly healthy child over its budget.  :func:`_pids_mechanism` probes,
+once per process, whether this process's own cgroup v2 leaf
+(``/proc/self/cgroup``) has the ``pids`` controller delegated to its
+children and is writable; if so, :meth:`HardenedSubprocessSandbox.run`
+creates one throwaway child cgroup per run, writes ``pids.max`` to
+``limits.pids`` in it, and the ``preexec_fn`` moves the about-to-exec child
+into it before ``bwrap`` ever runs — a limit scoped to *that run's* tree,
+enforced by the kernel regardless of what else the UID is doing elsewhere.
+Where no such cgroup is writable (the common case off a host with no
+systemd delegation), no process-count rlimit is applied at all: the
+containment then rests on what the executor already has independently of
+NPROC — ``bwrap``'s own PID namespace (``--unshare-all``, so a forking
+child can never see or signal anything outside its own tree), ``RLIMIT_AS``
+bounding the memory a forking child can allocate, and the wall-clock
+watchdog (:meth:`HardenedSubprocessSandbox._kill_group`) bounding how long
+it can run at all. Which of the two this process landed on is logged once,
+at construction of the first sandbox in the process, through this module's
+own logger.
 """
 
 from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import shutil
 import signal
@@ -79,6 +107,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -87,6 +116,8 @@ import sandbox
 from evaluator import EvaluatorSandboxError, SandboxResult
 
 from . import _sandbox_child as _child
+
+_logger = logging.getLogger(__name__)
 
 __all__ = [
     "BWRAP_BINARY",
@@ -190,7 +221,12 @@ class HardenedLimits:
     #: own ``mem_mb``; see that constant's own docstring for why the two
     #: differ.
     runner_mem_mb: int
-    #: ``RLIMIT_NPROC``'s cap on the child's process count.
+    #: The cap on the child's process-tree task count — a cgroup v2
+    #: ``pids.max`` on a delegated cgroup when one is writable, the only
+    #: enforcement scoped to *this run's* tree rather than to the real UID
+    #: host-wide (see the module docstring's NPROC-1 paragraph). Unused
+    #: (no process-count limit applied at all) when no such cgroup is
+    #: available.
     pids: int
     #: The wall-clock budget, in seconds, the watchdog kills the process
     #: group at.
@@ -293,47 +329,176 @@ def _bwrap_argv(bwrap: Path, env: dict[str, str], cwd: str) -> list[str]:
     return argv
 
 
-def _ambient_task_count(uid: int) -> int:
-    """A best-effort count of tasks (processes and their threads) the real
-    UID already has live on this host, read from ``/proc``.
+#: The standard cgroup v2 unified-hierarchy mount point — universal on any
+#: host running only cgroup v2 (no ``hybrid``/``legacy`` mode), which is what
+#: :func:`_own_unified_cgroup_path` itself detects via ``/proc/self/cgroup``'s
+#: own ``0::`` convention before this constant is ever consulted.
+_CGROUP_ROOT: Final[Path] = Path("/sys/fs/cgroup")
 
-    ``RLIMIT_NPROC`` is enforced against the *real UID's* total live task
-    count across every process on the machine, not against one invocation
-    (the same fact ``evaluator._sandbox`` documents for why its own runner
-    does not set it at all).  On a host where that UID already runs
-    hundreds of threads — an editor, a browser, a test runner's own
-    workers — an *absolute* ceiling of ``pids`` would refuse the very first
-    thread polars itself spawns on import, before the signal ever runs.
-    Reading the ambient figure here is what lets :func:`_apply_rlimits` grant
-    *this run* a budget of ``pids`` tasks on top of whatever already exists,
-    which is the only reading of "a process count of 32" that is enforceable
-    outside a PID namespace (gVisor's own job; see feature 5's sibling
-    executor).  Undercounting (a ``/proc`` entry that vanishes mid-scan) is
-    the conservative failure, which is why the scan is best-effort rather
-    than raising for one.
+#: How many times :func:`_remove_cgroup` retries an ``rmdir`` that raced a
+#: just-killed process tree's own kernel-side cleanup, and the pause between
+#: each — generous enough to absorb that race, small enough that a launcher
+#: cleaning up after thousands of runs over a campaign never notices it.
+_CGROUP_CLEANUP_ATTEMPTS: Final[int] = 20
+_CGROUP_CLEANUP_DELAY_S: Final[float] = 0.05
+
+
+@dataclass(frozen=True)
+class _PidsMechanism:
+    """Which boundary this process landed on for the process-tree budget.
+
+    ``cgroup_base`` is the delegated cgroup directory a run's own throwaway
+    child is created under, or ``None`` when no such cgroup is writable —
+    the two branches :func:`_pids_mechanism` logs once per process, and the
+    module docstring's NPROC-1 paragraph names in full.
     """
-    total = 0
+
+    cgroup_base: Path | None
+    detail: str
+
+    @property
+    def available(self) -> bool:
+        """Whether a delegated cgroup is usable for this process's runs."""
+        return self.cgroup_base is not None
+
+
+def _own_unified_cgroup_path() -> str | None:
+    """This process's own cgroup v2 path, or ``None`` off anything else.
+
+    ``/proc/self/cgroup`` carries one ``hierarchy-id:controller-list:path``
+    line per hierarchy; the unified (cgroup v2) hierarchy is always
+    hierarchy id ``0`` with an empty controller list, which is what
+    distinguishes it from a ``hybrid`` mount's legacy (cgroup v1) lines —
+    this executor only ever trusts that one line, never a v1 hierarchy's own
+    (differently-scoped) ``pids`` controller.
+    """
     try:
-        entries = os.listdir("/proc")
+        lines = Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines()
     except OSError:
-        return 0
-    for name in entries:
-        if not name.isdigit():
-            continue
+        return None
+    for line in lines:
+        parts = line.split(":", 2)
+        if len(parts) == 3 and parts[0] == "0" and parts[1] == "":
+            return parts[2]
+    return None
+
+
+def _probe_pids_mechanism() -> _PidsMechanism:
+    """Probe, once, whether this process has a writable delegated cgroup.
+
+    Read-only unless the final write-access check: this executor never tries
+    to *enable* the ``pids`` controller itself (writing ``+pids`` to a
+    parent's own ``cgroup.subtree_control``), because a cgroup this process
+    lives in directly cannot enable controllers for children while it still
+    holds processes of its own (cgroup v2's "no internal processes" rule) —
+    delegation is something a systemd unit's ``Delegate=`` already grants
+    *before* this process starts, and this probe only ever consumes it.
+    """
+    path = _own_unified_cgroup_path()
+    if path is None:
+        return _PidsMechanism(
+            None, "no cgroup v2 unified hierarchy at /proc/self/cgroup (hybrid or legacy mode)"
+        )
+    base = _CGROUP_ROOT if path in ("", "/") else _CGROUP_ROOT / path.lstrip("/")
+    try:
+        if not base.is_dir():
+            return _PidsMechanism(None, f"{base} is not a directory")
+        controllers = (base / "cgroup.subtree_control").read_text(encoding="utf-8").split()
+    except OSError as exc:
+        return _PidsMechanism(None, f"could not read {base}/cgroup.subtree_control: {exc}")
+    if "pids" not in controllers:
+        return _PidsMechanism(
+            None,
+            f"the pids controller is not delegated to children of {base} "
+            "(absent from cgroup.subtree_control)",
+        )
+    probe_dir = base / f".nullius-hardened-probe-{os.getpid()}"
+    try:
+        probe_dir.mkdir()
+        probe_dir.rmdir()
+    except OSError as exc:
+        return _PidsMechanism(None, f"{base} is not writable: {exc}")
+    return _PidsMechanism(base, f"cgroup v2 pids delegation confirmed writable at {base}")
+
+
+_pids_mechanism_lock = threading.Lock()
+_pids_mechanism_cache: _PidsMechanism | None = None
+
+
+def _pids_mechanism() -> _PidsMechanism:
+    """The cached, process-wide answer to :func:`_probe_pids_mechanism`.
+
+    Probed once and logged once — the first :class:`HardenedSubprocessSandbox`
+    built in this process pays the ``/proc`` and cgroupfs reads, and every
+    run after it (in this process, including every later instance) reuses
+    the answer, the same one-probe-per-process posture
+    :func:`orchestrator._gvisor._require_runsc`-style launchers take for
+    their own runtime checks.
+    """
+    global _pids_mechanism_cache
+    with _pids_mechanism_lock:
+        if _pids_mechanism_cache is None:
+            _pids_mechanism_cache = _probe_pids_mechanism()
+            if _pids_mechanism_cache.available:
+                _logger.info(
+                    "HardenedSubprocessSandbox: process-tree budget enforced via cgroup v2 "
+                    "pids.max (%s)",
+                    _pids_mechanism_cache.detail,
+                )
+            else:
+                _logger.info(
+                    "HardenedSubprocessSandbox: no delegated cgroup pids controller available "
+                    "(%s); falling back to the bwrap PID namespace, RLIMIT_AS and the "
+                    "wall-clock watchdog for process-tree containment",
+                    _pids_mechanism_cache.detail,
+                )
+        return _pids_mechanism_cache
+
+
+def _create_leaf_cgroup(base: Path, pids: int) -> Path | None:
+    """Create one throwaway child cgroup under ``base``, capped at ``pids``.
+
+    One cgroup per run rather than one shared cgroup for the executor's
+    whole lifetime, so two runs dispatched back to back (or concurrently,
+    from two launchers in the same process) never share a ``pids.max`` —
+    each run gets the full budget the policy names, the same per-run
+    isolation :func:`_child_env` gives each run's environment.  ``None`` on
+    any failure (the directory vanished, a permission changed mid-run): the
+    caller treats that exactly like :attr:`_PidsMechanism.available` being
+    ``False`` for this one run, rather than raising and losing the signal's
+    result to a defense-in-depth mechanism's own hiccup.
+    """
+    try:
+        leaf = Path(tempfile.mkdtemp(prefix="nullius-hardened-", dir=str(base)))
+    except OSError:
+        return None
+    try:
+        (leaf / "pids.max").write_text(str(int(pids)), encoding="ascii")
+    except OSError:
+        _remove_cgroup(leaf)
+        return None
+    return leaf
+
+
+def _remove_cgroup(path: Path) -> None:
+    """Remove a leaf cgroup, retrying past the kernel's own async cleanup.
+
+    A cgroup cannot be ``rmdir``'d while a task is still attached to it, and
+    the kernel detaches a just-killed process's task from its cgroup
+    asynchronously relative to :meth:`HardenedSubprocessSandbox._kill_group`
+    reaping it — so the first attempt racing that detachment is expected,
+    not a bug, and is retried rather than leaked.  Best-effort past
+    :data:`_CGROUP_CLEANUP_ATTEMPTS`: an empty cgroup directory left behind
+    wastes nothing a kernel cares about and is not worth raising over.
+    """
+    for _ in range(_CGROUP_CLEANUP_ATTEMPTS):
         try:
-            with open(f"/proc/{name}/status", encoding="utf-8") as handle:
-                status_uid: int | None = None
-                threads = 1
-                for line in handle:
-                    if line.startswith("Uid:"):
-                        status_uid = int(line.split()[1])
-                    elif line.startswith("Threads:"):
-                        threads = int(line.split()[1])
-                if status_uid == uid:
-                    total += threads
-        except (OSError, ValueError):
-            continue
-    return total
+            path.rmdir()
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            time.sleep(_CGROUP_CLEANUP_DELAY_S)
 
 
 def _drain_capped(stream: Any, cap: int) -> bytes:
@@ -363,7 +528,7 @@ def _drain_capped(stream: Any, cap: int) -> bytes:
 
 
 def _apply_rlimits(limits: HardenedLimits) -> None:
-    """The ``preexec_fn``: bind every numeric limit before the child execs.
+    """The ``preexec_fn``: bind the host-portable numeric limits before exec.
 
     ``RLIMIT_CPU``'s soft bound is ``cpu_s``; the hard bound is the wider of
     ``cpu_s`` and ``wall_s`` rather than the same value, so an exhausted CPU
@@ -371,13 +536,17 @@ def _apply_rlimits(limits: HardenedLimits) -> None:
     attribute to the right limit) instead of being escalated straight to an
     unattributable ``SIGKILL`` in the same accounting tick — the same
     reasoning ``evaluator._sandbox._apply_limits`` states for its own pair.
-    ``RLIMIT_NPROC`` is set to the host's ambient task count for this UID
-    plus ``pids`` (see :func:`_ambient_task_count`), not to ``pids`` alone.
     ``RLIMIT_FSIZE`` is pinned at zero unconditionally: the box writes no
-    files, structurally rather than by budget.  The new session itself is
-    not set up here: ``Popen(start_new_session=True)`` already calls
-    ``setsid()`` before this hook runs, and calling it twice in one process
-    raises ``EPERM`` — a second ``setsid()`` here would crash every spawn.
+    files, structurally rather than by budget. **No ``RLIMIT_NPROC`` is set
+    here** (NPROC-1, see the module docstring): that limit is per real UID,
+    host-wide, not per process tree, so no value computed from an ambient
+    snapshot is ever safe to apply to one run — the process-tree budget is
+    instead a cgroup v2 ``pids.max`` applied by :func:`_join_cgroup`, when a
+    delegated cgroup is available (see :meth:`HardenedSubprocessSandbox.run`).
+    The new session itself is not set up here: ``Popen(start_new_session=True)``
+    already calls ``setsid()`` before this hook runs, and calling it twice in
+    one process raises ``EPERM`` — a second ``setsid()`` here would crash
+    every spawn.
     """
     import resource
 
@@ -388,10 +557,35 @@ def _apply_rlimits(limits: HardenedLimits) -> None:
     mem_bytes = int(limits.runner_mem_mb) * 1024 * 1024
     resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
 
-    nproc_limit = _ambient_task_count(os.getuid()) + int(limits.pids)
-    resource.setrlimit(resource.RLIMIT_NPROC, (nproc_limit, nproc_limit))
-
     resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
+
+
+def _join_cgroup(cgroup_path: Path) -> None:
+    """Move the current (about-to-exec) process into ``cgroup_path``.
+
+    Called from the ``preexec_fn``, strictly before ``exec`` — the only point
+    at which this is race-free: a pid added to a cgroup *after* it has
+    already exec'd into ``bwrap`` could have forked ``bwrap``'s own
+    namespace-init child first, and that grandchild would have inherited the
+    *old* cgroup rather than this run's leaf, escaping ``pids.max``
+    entirely. Failures are swallowed rather than raised: this hook runs
+    forked but not yet exec'd, where raising would abort the spawn over a
+    defense-in-depth mechanism that :func:`_pids_mechanism` already confirmed
+    was best-effort — the run still gets the PID namespace, ``RLIMIT_AS`` and
+    the wall-clock watchdog either way.
+    """
+    try:
+        with open(cgroup_path / "cgroup.procs", "w", encoding="ascii") as handle:
+            handle.write(str(os.getpid()))
+    except OSError:
+        pass
+
+
+def _preexec_hardening(limits: HardenedLimits, cgroup_path: Path | None) -> None:
+    """The full ``preexec_fn``: rlimits, then this run's cgroup if it has one."""
+    _apply_rlimits(limits)
+    if cgroup_path is not None:
+        _join_cgroup(cgroup_path)
 
 
 def _decode_result_frame(out: bytes) -> dict[str, Any] | None:
@@ -564,69 +758,82 @@ class HardenedSubprocessSandbox:
         env = _child_env(seed, pins=self._thread_pins)
         limits = self.limits
 
-        with tempfile.TemporaryDirectory(prefix="nullius-hardened-") as cwd:
-            proc = subprocess.Popen(
-                _bwrap_argv(self._bwrap, env, cwd),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=cwd,
-                env=env,
-                start_new_session=True,
-                preexec_fn=lambda: _apply_rlimits(limits),  # noqa: PLW1509 - the same fork-hook pattern evaluator._sandbox._spawn already uses
-            )
+        # NPROC-1: a cgroup v2 pids.max on a throwaway per-run leaf cgroup,
+        # when a delegated one is writable — never a UID-wide RLIMIT_NPROC
+        # (see the module docstring and _apply_rlimits's own note). ``None``
+        # when unavailable, which _preexec_hardening reads as "apply no
+        # process-count limit; the PID namespace, RLIMIT_AS and the
+        # wall-clock watchdog are this run's containment instead."
+        mechanism = _pids_mechanism()
+        leaf_cgroup = _create_leaf_cgroup(mechanism.cgroup_base, limits.pids) if mechanism.available else None
 
-            # Draining stdout/stderr on their own threads, started before the
-            # stdin write, is what makes the write below safe regardless of
-            # how much the child eventually writes back: a plain
-            # ``communicate()`` would read both pipes fully into memory
-            # before this launcher gets a chance to discard them, so a child
-            # that is chatty before it reaches feature 1's own redirect (a
-            # start-up traceback, say) could be read without bound.  Each
-            # thread keeps only the first 64 KiB and drains the rest
-            # unretained, so the channel is capped at the OS level, not sliced
-            # off afterward.
-            out_box: list[bytes] = [b""]
-            err_box: list[bytes] = [b""]
-            stdout_thread = threading.Thread(
-                target=lambda: out_box.__setitem__(0, _drain_capped(proc.stdout, _OUTPUT_CAP)),
-                daemon=True,
-            )
-            stderr_thread = threading.Thread(
-                target=lambda: err_box.__setitem__(0, _drain_capped(proc.stderr, _OUTPUT_CAP)),
-                daemon=True,
-            )
-            stdout_thread.start()
-            stderr_thread.start()
-
-            try:
-                proc.stdin.write(framed_request.getvalue())
-            except (BrokenPipeError, OSError):
-                pass  # a child that died before reading is classified below
-            finally:
-                try:
-                    proc.stdin.close()
-                except OSError:
-                    pass
-
-            try:
-                proc.wait(timeout=limits.wall_s)
-            except subprocess.TimeoutExpired:
-                self._kill_group(proc)
-                stdout_thread.join(timeout=5)
-                stderr_thread.join(timeout=5)
-                return SandboxResult(
-                    scores=None,
-                    problems=[],
-                    fail_class="timeout",
-                    detail=f"signal exceeded the {limits.wall_s:g}s wall-clock limit",
-                    seed=seed,
-                    contract_version="",
+        try:
+            with tempfile.TemporaryDirectory(prefix="nullius-hardened-") as cwd:
+                proc = subprocess.Popen(
+                    _bwrap_argv(self._bwrap, env, cwd),
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    cwd=cwd,
+                    env=env,
+                    start_new_session=True,
+                    preexec_fn=lambda: _preexec_hardening(limits, leaf_cgroup),  # noqa: PLW1509 - the same fork-hook pattern evaluator._sandbox._spawn already uses
                 )
 
-            stdout_thread.join(timeout=5)
-            stderr_thread.join(timeout=5)
-            out = out_box[0]
+                # Draining stdout/stderr on their own threads, started before the
+                # stdin write, is what makes the write below safe regardless of
+                # how much the child eventually writes back: a plain
+                # ``communicate()`` would read both pipes fully into memory
+                # before this launcher gets a chance to discard them, so a child
+                # that is chatty before it reaches feature 1's own redirect (a
+                # start-up traceback, say) could be read without bound.  Each
+                # thread keeps only the first 64 KiB and drains the rest
+                # unretained, so the channel is capped at the OS level, not sliced
+                # off afterward.
+                out_box: list[bytes] = [b""]
+                err_box: list[bytes] = [b""]
+                stdout_thread = threading.Thread(
+                    target=lambda: out_box.__setitem__(0, _drain_capped(proc.stdout, _OUTPUT_CAP)),
+                    daemon=True,
+                )
+                stderr_thread = threading.Thread(
+                    target=lambda: err_box.__setitem__(0, _drain_capped(proc.stderr, _OUTPUT_CAP)),
+                    daemon=True,
+                )
+                stdout_thread.start()
+                stderr_thread.start()
+
+                try:
+                    proc.stdin.write(framed_request.getvalue())
+                except (BrokenPipeError, OSError):
+                    pass  # a child that died before reading is classified below
+                finally:
+                    try:
+                        proc.stdin.close()
+                    except OSError:
+                        pass
+
+                try:
+                    proc.wait(timeout=limits.wall_s)
+                except subprocess.TimeoutExpired:
+                    self._kill_group(proc)
+                    stdout_thread.join(timeout=5)
+                    stderr_thread.join(timeout=5)
+                    return SandboxResult(
+                        scores=None,
+                        problems=[],
+                        fail_class="timeout",
+                        detail=f"signal exceeded the {limits.wall_s:g}s wall-clock limit",
+                        seed=seed,
+                        contract_version="",
+                    )
+
+                stdout_thread.join(timeout=5)
+                stderr_thread.join(timeout=5)
+                out = out_box[0]
+        finally:
+            if leaf_cgroup is not None:
+                _remove_cgroup(leaf_cgroup)
 
         envelope = _decode_result_frame(out)
         if envelope is None:
