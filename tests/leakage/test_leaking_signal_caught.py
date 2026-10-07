@@ -326,6 +326,19 @@ def _new_node(context: EvaluationContext) -> str:
     return node_id
 
 
+def _tripwire_verdict_rows(database_url: str, node_id: str) -> dict[str, int]:
+    """``{probe: rejected}`` off :data:`orchestrator._evaluate.TRIPWIRE_VERDICT_TABLE`
+    for ``node_id`` — the row step 10 persists per probe, win or lose.
+    """
+    with closing(sqlite3.connect(_path_of(database_url))) as connection:
+        rows = connection.execute(
+            f"SELECT probe, rejected FROM {evaluate_mod.TRIPWIRE_VERDICT_TABLE} "
+            "WHERE node_id = ?",
+            (node_id,),
+        ).fetchall()
+    return {probe: rejected for probe, rejected in rows}
+
+
 @pytest.fixture
 def context(tmp_path: Path, sealed_snapshot: Any) -> EvaluationContext:
     config = load_cost_model()
@@ -454,18 +467,25 @@ def test_a_leaking_signal_whose_score_is_the_next_day_return_fails_every_probe(
     ledger: TrialLedger,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # bug_spec_tripwires_hard_fail: a step-10 rejection is recorded and
+    # flagged (tripwires_failed, the tripwire_verdict rows), never a node
+    # failure, so M1's exit is asserted through those rather than fail_class.
     answer = _evaluate_candidate(
         context, ledger, monkeypatch, _leaking_next_day_score_fn()
     )
 
-    assert answer.fail_class == "tripwire_fail"
-    assert answer.score.fail_class == "tripwire_fail"
-    detail = answer.fail_detail or ""
-    missing = [name for name in PROBE_NAMES if name not in detail]
+    assert answer.fail_class is None
+    assert answer.score.fail_class is None
+
+    missing = [name for name in PROBE_NAMES if name not in answer.tripwires_failed]
     assert missing == [], (
         f"the next-day-return leak escaped {missing}; every one of the six "
-        f"probes must reject it (fail_detail: {detail!r})"
+        f"probes must reject it (tripwires_failed: {answer.tripwires_failed!r})"
     )
+
+    rejected = _tripwire_verdict_rows(context.database_url, answer.node_id)
+    assert set(rejected) == set(PROBE_NAMES)
+    assert all(rejected[name] == 1 for name in PROBE_NAMES), rejected
 
 
 def test_a_lagged_leak_using_the_return_two_days_ahead_is_still_caught(
@@ -477,10 +497,13 @@ def test_a_lagged_leak_using_the_return_two_days_ahead_is_still_caught(
         context, ledger, monkeypatch, _lagged_two_day_score_fn()
     )
 
-    assert answer.fail_class == "tripwire_fail"
-    detail = answer.fail_detail or ""
-    assert TIME_SHUFFLE_NAME in detail, detail
-    assert LABEL_PERMUTE_NAME in detail, detail
+    assert answer.fail_class is None
+    assert TIME_SHUFFLE_NAME in answer.tripwires_failed, answer.tripwires_failed
+    assert LABEL_PERMUTE_NAME in answer.tripwires_failed, answer.tripwires_failed
+
+    rejected = _tripwire_verdict_rows(context.database_url, answer.node_id)
+    assert rejected[TIME_SHUFFLE_NAME] == 1
+    assert rejected[LABEL_PERMUTE_NAME] == 1
 
 
 def test_an_honest_twenty_day_momentum_signal_passes_clean(
@@ -497,6 +520,7 @@ def test_an_honest_twenty_day_momentum_signal_passes_clean(
     assert answer.score.fail_class is None
     assert answer.score.perturb_stability is not None
     assert math.isfinite(answer.score.perturb_stability)
+    assert answer.tripwires_failed == ()
 
 
 # -- The planted-leak corpus: 0 escapes, through this same sweep ---------------

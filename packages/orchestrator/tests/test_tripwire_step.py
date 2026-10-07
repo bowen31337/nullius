@@ -330,6 +330,21 @@ def _metric_columns(database_url: str, node_id: str) -> dict[str, Any]:
     return dict(zip(columns, row))
 
 
+def _tripwire_verdict_rows(
+    database_url: str, node_id: str
+) -> dict[str, tuple[int, float | None, int]]:
+    """Every row :func:`orchestrator._evaluate` wrote for ``node_id`` in
+    ``tripwire_verdict`` — ``{probe: (rejected, figure, measured)}``.
+    """
+    with closing(sqlite3.connect(_path_of(database_url))) as connection:
+        rows = connection.execute(
+            f"SELECT probe, rejected, figure, measured "
+            f"FROM {evaluate_mod.TRIPWIRE_VERDICT_TABLE} WHERE node_id = ?",
+            (node_id,),
+        ).fetchall()
+    return {probe: (rejected, figure, measured) for probe, rejected, figure, measured in rows}
+
+
 class RecordingEndpoint:
     """A fake ``TargetEndpoint`` answering slices of :data:`_TARGET_BUNDLE`.
 
@@ -508,11 +523,73 @@ def _clean_score_fn(seed: int) -> Any:
     return score_fn
 
 
-def test_evaluate_node_with_a_leaking_executor_tripwire_fails_and_poisons(
+def test_evaluate_node_with_a_leaking_executor_is_flagged_not_failed_by_default(
     context: EvaluationContext,
     ledger: TrialLedger,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """bug_spec_tripwires_hard_fail: at ``TRIPWIRES_GATE_DISCOVERY``'s default
+    ``False``, a rejection is recorded (:data:`evaluate_mod.TRIPWIRE_VERDICT_TABLE`)
+    and flagged (``tripwires_failed``), never a node failure — the node ends
+    exactly as a clean one does.
+    """
+    assert evaluate_mod.TRIPWIRES_GATE_DISCOVERY is False
+    node_id = _new_node(context)
+    executor = _ScriptedExecutor(_leaking_score_fn())
+    monkeypatch.setattr(evaluate_mod, "signal_sandbox", lambda ctx: executor)
+    endpoint = RecordingEndpoint(charges_budget=True)
+    oracle = SubtreeOracle(endpoint, database_url=context.database_url)
+
+    answer = evaluate_node(
+        node_id,
+        CAMPAIGN_ID,
+        0,
+        _NEUTRAL_CODE,
+        context=context,
+        oracle=oracle,
+        ledger=ledger,
+    )
+
+    assert answer.fail_class is None
+    assert answer.score.fail_class is None
+    assert answer.fail_detail is None
+    assert answer.score.perturb_stability is not None
+    assert "time-shuffle" in answer.tripwires_failed
+
+    # The trial was debited as an ordinary success — a rejection is no
+    # longer a distinct outcome word by default.
+    assert answer.debit.appended is True
+    assert answer.debit.charge.outcome == "ok"
+    assert answer.debit.charge.charges_budget == answer.charges_budget
+
+    # The evidence survives: the row is written and its metrics measured.
+    assert answer.persistence is not None
+    assert answer.persistence.tree_written is True
+    columns = _metric_columns(context.database_url, node_id)
+    assert columns["ic_mean"] is not None
+
+    # Feature 131's poisoning does not fire by default.
+    assert PoisonStore(context.database_url).is_poisoned(node_id) is False
+
+    # Every one of the six probes is persisted, including the flagged ones.
+    verdicts = _tripwire_verdict_rows(context.database_url, node_id)
+    assert set(verdicts) == set(PROBE_NAMES)
+    for name in answer.tripwires_failed:
+        rejected, figure, measured = verdicts[name]
+        assert rejected == 1
+        assert measured == 1
+        assert figure is not None
+
+
+def test_evaluate_node_with_a_leaking_executor_tripwire_fails_and_poisons_when_gated(
+    context: EvaluationContext,
+    ledger: TrialLedger,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deployment that sets ``TRIPWIRES_GATE_DISCOVERY`` True gets the old
+    hard fail and poisoning back, unchanged.
+    """
+    monkeypatch.setattr(evaluate_mod, "TRIPWIRES_GATE_DISCOVERY", True)
     node_id = _new_node(context)
     executor = _ScriptedExecutor(_leaking_score_fn())
     monkeypatch.setattr(evaluate_mod, "signal_sandbox", lambda ctx: executor)
@@ -533,6 +610,7 @@ def test_evaluate_node_with_a_leaking_executor_tripwire_fails_and_poisons(
     assert answer.score.fail_class == "tripwire_fail"
     assert answer.score.perturb_stability is None
     assert "time-shuffle" in (answer.fail_detail or "")
+    assert "time-shuffle" in answer.tripwires_failed
 
     # The trial was still debited, and under the node's own charges_budget
     # bit — step 10 ran to completion, so the node is stated, not failed.
@@ -548,6 +626,11 @@ def test_evaluate_node_with_a_leaking_executor_tripwire_fails_and_poisons(
 
     # Feature 131's poisoning fired, driven by the time-shuffle rejection.
     assert PoisonStore(context.database_url).is_poisoned(node_id) is True
+
+    # The verdict table is written identically whether or not the gate
+    # turned the rejection into a node failure.
+    verdicts = _tripwire_verdict_rows(context.database_url, node_id)
+    assert set(verdicts) == set(PROBE_NAMES)
 
 
 def test_evaluate_node_with_a_clean_executor_ends_ok_with_perturb_stability(
@@ -575,6 +658,7 @@ def test_evaluate_node_with_a_clean_executor_ends_ok_with_perturb_stability(
     assert answer.score.fail_class is None
     assert answer.score.perturb_stability is not None
     assert answer.fail_detail is None
+    assert answer.tripwires_failed == ()
 
     assert answer.debit.appended is True
     assert answer.debit.charge.outcome == "ok"
@@ -595,3 +679,46 @@ def test_evaluate_node_with_a_clean_executor_ends_ok_with_perturb_stability(
     for axis in (WINDOW_AXIS, LOOKBACK_AXIS):
         record = stability_of(node_id, axis=axis, database_url=context.database_url)
         assert record.node_id == node_id
+
+    # Every probe is persisted to the verdict table, and none is flagged.
+    verdicts = _tripwire_verdict_rows(context.database_url, node_id)
+    assert set(verdicts) == set(PROBE_NAMES)
+    for rejected, _figure, _measured in verdicts.values():
+        assert rejected == 0
+
+
+def test_tripwire_verdicts_are_refreshed_not_duplicated_on_re_evaluation(
+    context: EvaluationContext,
+    ledger: TrialLedger,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    node_id = _new_node(context)
+    endpoint = RecordingEndpoint(charges_budget=True)
+    oracle = SubtreeOracle(endpoint, database_url=context.database_url)
+
+    for _ in range(2):
+        # A fresh executor each time, over a freshly seeded rng: the same
+        # deterministic score sequence both times, so the re-evaluation is
+        # the idempotent retry this test is about rather than a second,
+        # differing measurement NodeMetricsWriter would refuse.
+        executor = _ScriptedExecutor(_clean_score_fn(seed=42))
+        monkeypatch.setattr(
+            evaluate_mod, "signal_sandbox", lambda ctx, executor=executor: executor
+        )
+        evaluate_node(
+            node_id,
+            CAMPAIGN_ID,
+            0,
+            _NEUTRAL_CODE,
+            context=context,
+            oracle=oracle,
+            ledger=ledger,
+        )
+
+    with closing(sqlite3.connect(_path_of(context.database_url))) as connection:
+        count = connection.execute(
+            f"SELECT COUNT(*) FROM {evaluate_mod.TRIPWIRE_VERDICT_TABLE} "
+            "WHERE node_id = ?",
+            (node_id,),
+        ).fetchone()[0]
+    assert count == len(PROBE_NAMES)

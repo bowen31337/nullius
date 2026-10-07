@@ -121,8 +121,12 @@ import datetime as dt
 import json
 import logging
 import math
+import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Final
+from urllib.parse import unquote, urlparse
 
 import sandbox
 from artifacts import (
@@ -165,10 +169,12 @@ from ._artifact_writer import ArtifactStoreWriter
 from ._charge import charge_failed_node, charge_node
 from ._context import BARS_STREAM, EvaluationContext, signal_sandbox
 from ._tree_writer import NodeMetricsWriter
-from ._tripwire_step import NOT_MEASURED, TripwireOutcome, run_tripwires
+from ._tripwire_step import NOT_MEASURED, PROBE_NAMES, TripwireOutcome, run_tripwires
 
 __all__ = [
     "MIN_SCORED_DATES",
+    "TRIPWIRES_GATE_DISCOVERY",
+    "TRIPWIRE_VERDICT_TABLE",
     "NodeEvaluation",
     "NodePersistence",
     "SandboxExecutionError",
@@ -223,6 +229,21 @@ _STABILITY_AXES: tuple[str, ...] = (WINDOW_AXIS, SUBSAMPLE_AXIS, LOOKBACK_AXIS)
 #: gap.
 _POISONABLE_PROBES: tuple[str, ...] = (TIME_SHUFFLE_NAME, LABEL_PERMUTE_NAME)
 
+#: Whether a step-10 rejection hard-fails a node — ``fail_class
+#: "tripwire_fail"`` and feature 131's poisoning — rather than being merely
+#: recorded and flagged.  ``False`` by default: bug_spec_tripwires_hard_fail
+#: measured that the live pipeline's structural window clipping already
+#: makes the lookahead the probes assume impossible for agent-authored code,
+#: and that on real data an honest, persistent signal (20-day trailing
+#: volatility) is rejected by five of the six probes — a hard fail at that
+#: rate would cost real discoveries for little protection.  Every probe's
+#: verdict is still persisted (:data:`TRIPWIRE_VERDICT_TABLE`) and the
+#: rejecting ones are still named on :attr:`NodeEvaluation.tripwires_failed`
+#: and logged, win or lose, so a rejection is never silent — only never, by
+#: itself, a node failure.  A deployment that wants the old behaviour back
+#: sets this ``True``.
+TRIPWIRES_GATE_DISCOVERY: Final[bool] = False
+
 #: The decision instant a live evaluation resolves its window at: the last
 #: rebalance date of the grid, at the end of its day — the same instant the
 #: momentum e2e journey resolves at, and the honest "as of everything this
@@ -275,25 +296,31 @@ class NodeEvaluation:
     one* (the import screen's refusal, or anything the pipeline's own
     ``try`` caught): a node that was not measured has no metrics to carry
     and nothing was written for it.  The one exception is step 10's
-    tripwire sweep (:mod:`orchestrator._tripwire_step`): a rejection there
-    happens *after* the metrics were measured, so ``fail_class`` is
-    ``"tripwire_fail"`` while ``metrics`` and ``persistence`` are the real,
-    written values — the evidence the spec's own sentence says must
-    survive a leaking node.  ``score`` is always present — a
+    tripwire sweep (:mod:`orchestrator._tripwire_step`): under
+    :data:`TRIPWIRES_GATE_DISCOVERY`'s default ``False`` a rejection there
+    is recorded and flagged, never a node failure, so ``fail_class`` stays
+    ``None`` and ``metrics``/``persistence`` are simply the measured,
+    written values like any other success.  A deployment that sets
+    :data:`TRIPWIRES_GATE_DISCOVERY` restores the old hard fail: a
+    rejection happens *after* the metrics were measured, so ``fail_class``
+    is ``"tripwire_fail"`` while ``metrics`` and ``persistence`` are still
+    the real, written values — the evidence the spec's own sentence says
+    must survive a leaking node.  ``score`` is always present — a
     :class:`signal_agent.ScoreRecord` whose six scalars are the measured
     values and whose ``fail_class`` is ``None`` on success, or whose six
     scalars are the absent measurement ``None`` and whose ``fail_class``
-    names the failure (tripwire_fail excepted, which carries the six
-    measured scalars beside its own ``fail_class``).  ``debit`` is always
-    present too: every evaluated node, failed ones included, is charged
-    exactly once.
+    names the failure (a gated tripwire_fail excepted, which carries the
+    six measured scalars beside its own ``fail_class``).  ``debit`` is
+    always present too: every evaluated node, failed ones included, is
+    charged exactly once.
     """
 
     #: The node this answer is for.
     node_id: str
     #: Feature 80's four scalars plus the horizon and the per-date IC
     #: series, ``None`` on any failure before the metrics were measured —
-    #: present on a ``tripwire_fail`` node, since step 10 runs after step 8.
+    #: present on a gated ``tripwire_fail`` node too, since step 10 runs
+    #: after step 8.
     metrics: NodeMetrics | None
     #: The score, in the shape a replay history reads (§14.1's ``score.json``).
     score: ScoreRecord
@@ -302,10 +329,13 @@ class NodeEvaluation:
     charges_budget: bool
     #: The failure's class name, the spec's own code word
     #: (``disallowed_import``) for a refused import screen, ``"tripwire_fail"``
-    #: when step 10 rejected the node, or ``None`` on success.
+    #: when step 10 rejected the node *and* :data:`TRIPWIRES_GATE_DISCOVERY`
+    #: is set, or ``None`` on success — which, at the default ``False``, is
+    #: what a step-10 rejection leaves this too (see :attr:`tripwires_failed`
+    #: for what step 10 actually found).
     fail_class: str | None
     #: What was written for this node — ``None`` on any failure before the
-    #: metrics were measured, present (row and artifacts both) on a
+    #: metrics were measured, present (row and artifacts both) on a gated
     #: ``tripwire_fail`` node.
     persistence: NodePersistence | None
     #: The ledger's answer to this node's charge — the landed row, its
@@ -325,6 +355,15 @@ class NodeEvaluation:
     #: every failure path, since no date was scored past the point of
     #: failure.
     flat_dates: int = 0
+    #: The probes, among :mod:`orchestrator._tripwire_step`'s
+    #: ``PROBE_NAMES``, that rejected this node — in that fixed order,
+    #: empty when none did and empty on every failure path the pipeline
+    #: never reached step 10 on.  Every probe's own verdict is persisted
+    #: too (:data:`TRIPWIRE_VERDICT_TABLE`); this is the subset step 10
+    #: actually flagged.  Non-empty while ``fail_class`` is still ``None``
+    #: is the common case at :data:`TRIPWIRES_GATE_DISCOVERY`'s default —
+    #: a rejection recorded and flagged, not a node failure.
+    tripwires_failed: tuple[str, ...] = ()
 
 
 # -- The materialize seam: reading the sealed mount for execute_signal ----------
@@ -510,8 +549,10 @@ def _persist(
     module docstring) and are not written here.
 
     ``perturb_stability`` is the lookback-jitter tripwire's own figure
-    (:mod:`orchestrator._tripwire_step`), or ``None`` when step 10 rejected
-    the node or could not measure that axis; it is handed straight to
+    (:mod:`orchestrator._tripwire_step`), or ``None`` when step 10's
+    rejection gated the node into a tripwire failure
+    (:data:`TRIPWIRES_GATE_DISCOVERY`) or that axis could not measure; it is
+    handed straight to
     :class:`_TreeNodeRow`, whose writer already knows a ``None`` there
     means *not measured by this step* and leaves the column untouched
     (see :mod:`orchestrator._tree_writer`).
@@ -793,6 +834,86 @@ def _poison_tripwire_failure(outcome: TripwireOutcome, *, database_url: str) -> 
     )
 
 
+#: The table step 10's six-probe sweep persists one row to per probe, per
+#: node — created if absent and refreshed (never duplicated) on a
+#: re-evaluation, keyed by ``(node_id, probe)``.  Written identically for a
+#: null node and a real one: neither this module nor
+#: :func:`orchestrator._tripwire_step.run_tripwires` reads any null status.
+TRIPWIRE_VERDICT_TABLE: Final[str] = "tripwire_verdict"
+
+_TRIPWIRE_VERDICT_SCHEMA = (
+    f"CREATE TABLE IF NOT EXISTS {TRIPWIRE_VERDICT_TABLE} ("
+    "node_id TEXT NOT NULL, "
+    "probe TEXT NOT NULL, "
+    "rejected INTEGER NOT NULL, "
+    "figure REAL, "
+    "measured INTEGER NOT NULL, "
+    "recorded_at TEXT NOT NULL, "
+    "PRIMARY KEY (node_id, probe)"
+    ")"
+)
+
+
+def _tripwire_sqlite_path(database_url: str) -> Path:
+    """Translate a ``sqlite:///`` URL into a filesystem path.
+
+    The same translation every store in this workspace restates rather than
+    imports (:mod:`orchestrator.closeout`'s own ``_sqlite_path`` states the
+    identical grammar for the identical reason) — this is the one table this
+    module writes to directly, beside the injected writers it uses for
+    everything else.
+    """
+    parsed = urlparse(database_url)
+    return Path(unquote(parsed.path).removeprefix("/"))
+
+
+def _persist_tripwire_verdicts(
+    outcome: TripwireOutcome, *, node_id: str, database_url: str
+) -> None:
+    """Persist every one of step 10's six probe outcomes for ``node_id``.
+
+    One row per probe (:data:`TRIPWIRE_VERDICT_TABLE`, created if absent),
+    upserted on ``(node_id, probe)`` so a re-evaluation refreshes rather
+    than accumulates a second row.  A probe that could not measure is
+    recorded with ``measured=0`` and ``rejected=0`` rather than being left
+    out, so the row set always names all six probes
+    (:data:`orchestrator._tripwire_step.PROBE_NAMES`).  Runs after every
+    evaluation step 10 reaches, whether or not :data:`TRIPWIRES_GATE_DISCOVERY`
+    goes on to turn a rejection into a node failure — the record is the same
+    either way.
+    """
+    recorded_at = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
+    rows = []
+    for name in PROBE_NAMES:
+        verdict = outcome.verdicts[name]
+        measured = verdict is not NOT_MEASURED
+        rejected = bool(measured and verdict.rejected)
+        rows.append(
+            (
+                node_id,
+                name,
+                int(rejected),
+                _tripwire_figure(outcome, name),
+                int(measured),
+                recorded_at,
+            )
+        )
+    path = _tripwire_sqlite_path(database_url)
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(_TRIPWIRE_VERDICT_SCHEMA)
+        connection.executemany(
+            f"INSERT INTO {TRIPWIRE_VERDICT_TABLE} "
+            "(node_id, probe, rejected, figure, measured, recorded_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(node_id, probe) DO UPDATE SET "
+            "rejected = excluded.rejected, "
+            "figure = excluded.figure, "
+            "measured = excluded.measured, "
+            "recorded_at = excluded.recorded_at",
+            rows,
+        )
+
+
 # -- The one call ---------------------------------------------------------------
 
 
@@ -849,19 +970,33 @@ def evaluate_node(
     Once the metrics are measured, :func:`orchestrator._tripwire_step.run_tripwires`
     runs step 10's six leakage probes over the same normalized scores and the
     post-cost target bundle at the metrics horizon — the exact panel a null
-    node and a real node are scored on alike.  A probe that could not
-    measure (too thin a panel, a statistic with zero dispersion) never fails
-    the node; a probe that measured and rejected does.  When any of the six
-    rejected, the node's row and artifacts are still written (the evidence
-    survives), feature 131's poisoning is applied to the node and its
-    subtree through whichever of the time-shuffle or label-permute verdicts
-    itself rejected, and the node is charged ``outcome="tripwire_fail"``
-    rather than failed — step 10 ran to completion and the caller holds its
+    node and a real node are scored on alike.  Every probe's own verdict is
+    persisted, one row per probe, in :data:`TRIPWIRE_VERDICT_TABLE` — created
+    if absent and refreshed on a re-evaluation, identically for a null node
+    and a real one — and the probes that rejected are named, in their fixed
+    order, on the answered ``NodeEvaluation.tripwires_failed``.  A probe that
+    could not measure (too thin a panel, a statistic with zero dispersion)
+    is recorded as such and never counted among the rejections.  When any
+    probe rejected, one ``WARNING`` line is logged naming them.
+
+    What a rejection does to the node depends on :data:`TRIPWIRES_GATE_DISCOVERY`,
+    ``False`` by default (see that constant's own docstring for the
+    false-positive rate on real data that made it so).  At the default, a
+    rejection changes nothing else: the node's row and artifacts are
+    written, ``fail_class`` stays ``None``, and the node is charged
+    ``outcome="ok"`` — the rejection is recorded and flagged, not a node
+    failure. With the constant set, the old hard fail applies: the node's
+    row and artifacts are still written (the evidence survives), feature
+    131's poisoning is applied to the node and its subtree through
+    whichever of the time-shuffle or label-permute verdicts itself
+    rejected, and the node is charged ``outcome="tripwire_fail"`` rather
+    than failed — step 10 ran to completion and the caller holds its
     answer, which :func:`orchestrator._charge.charge_node`'s own docstring
-    states is exactly when the outcome is *stated*, not classified.  When
-    none rejected, the lookback-jitter axis' figure is written onto the
-    node's row as ``perturb_stability`` and the window, universe-subsample
-    and lookback-jitter axes' figures are persisted through
+    states is exactly when the outcome is *stated*, not classified.
+    Either way, when the node is not gated into a tripwire failure, the
+    lookback-jitter axis' figure is written onto the node's row as
+    ``perturb_stability`` and the window, universe-subsample and
+    lookback-jitter axes' figures are persisted through
     :func:`tripwires.stability.record_stability` (the seed axis is not: see
     :mod:`orchestrator._tripwire_step`'s module docstring for why that is
     the tripwires member's own design).
@@ -989,8 +1124,18 @@ def evaluate_node(
 
     cost_adjusted_ir = _cost_adjusted_ir(priced, metrics)
 
-    tripwire_failed = bool(tripwire_outcome.failed)
-    if tripwire_failed:
+    _persist_tripwire_verdicts(
+        tripwire_outcome, node_id=node_id, database_url=context.database_url
+    )
+    if tripwire_outcome.failed:
+        _logger.warning(
+            "node %s flagged by step 10's tripwires: %s",
+            node_id,
+            ", ".join(tripwire_outcome.failed),
+        )
+
+    gated_tripwire_fail = TRIPWIRES_GATE_DISCOVERY and bool(tripwire_outcome.failed)
+    if gated_tripwire_fail:
         fail_class: str | None = "tripwire_fail"
         fail_detail: str | None = _tripwire_fail_detail(tripwire_outcome)[
             :_FAIL_DETAIL_LIMIT
@@ -1017,13 +1162,13 @@ def evaluate_node(
         perturb_stability=perturb_stability,
     )
 
-    if tripwire_failed:
+    if gated_tripwire_fail:
         _poison_tripwire_failure(tripwire_outcome, database_url=context.database_url)
 
     debited = charge_node(
         node_id,
         campaign_id,
-        outcome="tripwire_fail" if tripwire_failed else "ok",
+        outcome="tripwire_fail" if gated_tripwire_fail else "ok",
         charges_budget=charges_budget,
         epoch_id=context.epoch_id,
         evaluator_hash=context.evaluator_hash,
@@ -1051,4 +1196,5 @@ def evaluate_node(
         debit=debited,
         fail_detail=fail_detail,
         flat_dates=flat_dates,
+        tripwires_failed=tripwire_outcome.failed,
     )

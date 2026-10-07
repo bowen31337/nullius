@@ -170,6 +170,7 @@ def _evaluated_event(
     score: Any,
     charges_budget: bool,
     fail_detail: str | None = None,
+    tripwires_failed: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     return {
         "event": "node_evaluated",
@@ -180,6 +181,7 @@ def _evaluated_event(
         "fail_detail": fail_detail,
         "charges_budget": charges_budget,
         "score": _json_score(score),
+        "tripwires_failed": list(tripwires_failed),
     }
 
 
@@ -523,10 +525,11 @@ def _continue_campaign(
                 fail_class=evaluation.fail_class,
                 score=evaluation.score,
                 charges_budget=evaluation.charges_budget,
-                # getattr, not .fail_detail: a duck-typed evaluator (this
-                # module's own test doubles included) may answer an object
-                # that predates the field.
+                # getattr, not .fail_detail / .tripwires_failed: a duck-typed
+                # evaluator (this module's own test doubles included) may
+                # answer an object that predates either field.
                 fail_detail=getattr(evaluation, "fail_detail", None),
+                tripwires_failed=getattr(evaluation, "tripwires_failed", ()),
             )
         )
 
@@ -601,10 +604,12 @@ def _continue_campaign(
                     score=outcome.score,
                     charges_budget=outcome.charges_budget,
                     # ChildOutcome (orchestrator._worker, outside this bug's
-                    # footprint) carries no fail_detail field yet, so this
-                    # degrades to None for every round-loop child rather than
-                    # raising on a frozen dataclass's missing attribute.
+                    # footprint) carries no fail_detail or tripwires_failed
+                    # field yet, so each degrades to its own empty default
+                    # for every round-loop child rather than raising on a
+                    # frozen dataclass's missing attribute.
                     fail_detail=getattr(outcome, "fail_detail", None),
+                    tripwires_failed=getattr(outcome, "tripwires_failed", ()),
                 )
             )
 
