@@ -100,7 +100,7 @@ from __future__ import annotations
 import enum
 import hashlib
 from collections.abc import Callable, Iterable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from .errors import AgentSourceError
 
@@ -329,6 +329,274 @@ class SourceAdoption:
         )
 
 
+# -- CONTRACT-1: the declaration made usable, not merely named ---------------
+#
+# bug_spec_authoring_contract.xml's bug 1: a campaign's authored roots called
+# ``getattr(ctx, "bars")`` and guessed at it, because :meth:`SignalContract.
+# declaration` named the accessor surface without its signatures, its units or
+# the schema the sealed snapshot actually carries.  The four helpers below
+# build the additive detail declaration() now attaches; each reads its facts
+# off the contract member (or the sandbox child's own ceiling) rather than
+# restating them, on the same grounds :func:`contract.inspect_accessors`
+# already gives the accessor *names*.
+
+
+def _signature_text(name: str, method: Any) -> str:
+    """``name(params...) -> polars.DataFrame``, read off the live method.
+
+    Built from :func:`inspect.signature` rather than typed by hand, so a
+    later feature that widens an accessor's parameters changes this string
+    automatically.  Annotations are dropped from the rendering: every
+    accessor module uses ``from __future__ import annotations``, so a raw
+    ``str(parameter)`` would quote each annotation as a string literal
+    (``"freq: 'str'"``) instead of reading as the call an agent should write.
+    """
+    import inspect
+
+    parts: list[str] = []
+    for param in inspect.signature(method).parameters.values():
+        if param.name == "self":
+            continue
+        if param.default is inspect.Parameter.empty:
+            parts.append(param.name)
+        else:
+            parts.append(f"{param.name}={param.default!r}")
+    return f"{name}({', '.join(parts)}) -> polars.DataFrame"
+
+
+def _accessors_detail(contract: Any) -> dict[str, dict[str, Any]]:
+    """Per-accessor signature, parameter units and frame schema.
+
+    Covers the five data accessors the symptom names — ``bars``, ``trades``,
+    ``bookfeat``, ``borrow``, ``feature`` — never ``frames``/``t``/``universe``/
+    ``to_arrow``, which carry no call shape an authored signal needs guessing
+    at.  Each entry's ``signature`` comes from :func:`_signature_text` and its
+    ``returns_columns`` from that accessor's own ``*_REQUIRED_COLUMNS``
+    constant (:mod:`contract.bars`, ``.trades``, ``.bookfeat``, ``.borrow``) —
+    read, not retyped — so a widened required-column set shows up here without
+    a second edit.  ``feature`` carries no such constant (§9.1: the schema is
+    whatever the named, versioned feature stored), so it states that fact
+    instead of a column list. The remaining prose — units, and the sealed
+    snapshot's venue-string convention for OHLCV fields — has no machine
+    constant to read, because it is not type-checked anywhere in the contract;
+    it is the exact gap the symptom names (the momentum root that guessed
+    ``close``'s dtype), so it is stated here in words.
+    """
+    window = contract.MarketWindow
+    return {
+        "bars": {
+            "signature": _signature_text("bars", window.bars),
+            "freq_values": contract.BARS_FREQUENCIES,
+            "lookback_unit": (
+                "bars (rows) of the requested freq, trailing; None reads "
+                "every row the window carries"
+            ),
+            "returns_columns": contract.BARS_REQUIRED_COLUMNS,
+            "returns_notes": (
+                "extra OHLCV columns pass through verbatim; in the sealed "
+                "snapshot open_time is a UTC timestamp while close and "
+                "volume arrive as venue-spelled strings (e.g. \"61234.50\") "
+                "-- cast close to Float64 before arithmetic"
+            ),
+        },
+        "trades": {
+            "signature": _signature_text("trades", window.trades),
+            "lookback_unit": (
+                "seconds before ctx.t, inclusive both ends -- not a row count"
+            ),
+            "returns_columns": contract.TRADES_REQUIRED_COLUMNS,
+            "returns_notes": (
+                "event_time is a UTC timestamp; other tape columns are "
+                "venue-spelled"
+            ),
+        },
+        "bookfeat": {
+            "signature": _signature_text("bookfeat", window.bookfeat),
+            "lookback_unit": "rows (1-second buckets), trailing; None reads every row",
+            "returns_columns": contract.BOOKFEAT_REQUIRED_COLUMNS,
+            "returns_notes": (
+                "name is free-form, addressing bookfeat:<name>; derived "
+                "fields are fixed-point strings"
+            ),
+        },
+        "borrow": {
+            "signature": _signature_text("borrow", window.borrow),
+            "lookback_unit": "rows, trailing; None reads every row",
+            "returns_columns": contract.BORROW_REQUIRED_COLUMNS,
+            "returns_notes": "borrow_rate and other fields are venue-spelled strings",
+        },
+        "feature": {
+            "signature": _signature_text("feature", window.feature),
+            "lookback_unit": "rows, trailing; None reads every row",
+            "returns_notes": (
+                "schema is whatever the named, versioned feature stored; a "
+                "name/version this window does not carry returns an empty, "
+                "columnless frame"
+            ),
+        },
+    }
+
+
+#: ctx.universe's shape and the alignment it demands of a signal's return --
+#: missing from the prompt per the symptom, though :meth:`SignalContract.
+#: declaration`'s existing ``returns`` field already states the alignment
+#: half; this key adds the type half it omitted.
+_UNIVERSE_NOTE: Final[str] = (
+    "ctx.universe is a read-only tuple[str, ...] of symbol strings, in a "
+    "fixed order (the roster tradable as of ctx.t); the returned Series must "
+    "be positionally aligned to it -- index i's score is universe[i]'s score"
+)
+
+#: A short, correct example over the one stream the operator's own snapshot
+#: actually carries (bars at 1d) -- casts the venue-string close to Float64
+#: and returns a Float64 Series aligned to ctx.universe, exactly the two
+#: steps the symptom's momentum root skipped.
+EXAMPLE_SIGNAL_SOURCE: Final[str] = '''def signal(ctx, seed):
+    import polars as pl
+
+    bars = ctx.bars("1d", lookback=20).with_columns(
+        pl.col("close").cast(pl.Float64)
+    )
+    scores: dict[str, float] = {}
+    for symbol in ctx.universe:
+        rows = bars.filter(pl.col("symbol") == symbol).sort("open_time")
+        if rows.height < 2 or rows["close"][0] == 0.0:
+            scores[symbol] = 0.0
+        else:
+            scores[symbol] = rows["close"][-1] / rows["close"][0] - 1.0
+    return pl.Series([scores[s] for s in ctx.universe], dtype=pl.Float64)
+'''
+
+
+def _agent_imports_allowlist() -> tuple[str, ...]:
+    """The sandbox child's own import ceiling, read live rather than restated.
+
+    :data:`orchestrator._sandbox_child.AGENT_IMPORTS_ALLOWLIST` is what the
+    gVisor/bubblewrap child actually enforces against an authored signal's
+    top-level imports -- not :data:`sandbox.COMMITTED_IMPORTS_ALLOWLIST`'s
+    committed JSON document, which is the separate host-side admission test
+    bug 2 of this same spec fixes, and which (at the time of this fix) still
+    over-admits ``numpy``.  Reading the child's own ceiling live means a later
+    change to the runtime's import surface updates what the model is told
+    with no second edit here.
+
+    Deferred and guarded on the same grounds :func:`require_contract` defers
+    ``contract``: a module-scope import would make this component's presence
+    depend on workspace scan order, and ``orchestrator`` is not a declared
+    dependency of this member (it is the reverse: orchestrator depends on
+    signal-agent), so the import is reached for only when this fact is asked
+    for, never at import time.
+    """
+    try:
+        from orchestrator._sandbox_child import AGENT_IMPORTS_ALLOWLIST
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "the authoring declaration names the sandbox child's own import "
+            "ceiling, and the orchestrator member (its _sandbox_child "
+            "bootstrap) is not importable in this environment; run `uv sync "
+            "--all-packages` in the workspace root (or put "
+            "packages/orchestrator/src on sys.path) so the ceiling this "
+            "declaration reports can be read"
+        ) from exc
+    return tuple(sorted(AGENT_IMPORTS_ALLOWLIST))
+
+
+def _parquet_interval(path: Any) -> str | None:
+    """One Parquet file's ``interval`` column value, or ``None``.
+
+    Best-effort: a file that cannot be opened, carries no ``interval``
+    column, or carries none at all answers ``None`` rather than raising --
+    this is a sample read for a prompt-building fact, not a correctness gate
+    any accessor enforces. pyarrow is reached for lazily, since a caller that
+    never configures a ``snapshot`` for :meth:`SignalContract.declaration`
+    must not pay for it.
+    """
+    try:
+        import pyarrow.parquet as pq
+    except ModuleNotFoundError:
+        return None
+    try:
+        schema = pq.read_schema(str(path))
+        if "interval" not in schema.names:
+            return None
+        table = pq.read_table(str(path), columns=["interval"])
+    except Exception:  # noqa: BLE001 - a foreign file's bytes, read best-effort
+        return None
+    if table.num_rows == 0:
+        return None
+    value = table.column("interval")[0].as_py()
+    return value if isinstance(value, str) and value else None
+
+
+def _stream_frequencies(
+    stream: str, partitions: Any, dates: Any, select: Any
+) -> tuple[str, ...]:
+    """The distinct ``interval`` values one symbol's files carry under ``stream``.
+
+    Sampled over the *first* partitioned symbol's whole history rather than
+    every symbol: every producer in this workspace writes one interval per
+    partition tree (:mod:`nullius_ingest.klines`: "a batch is one interval"),
+    so one symbol's files already show every cadence the stream holds, at a
+    fraction of the file-open cost a full-universe scan would pay. A stream
+    whose files carry no ``interval`` column (trades, bookfeat, borrow -- none
+    of the three is frequency-partitioned) answers with an empty tuple: present,
+    with no cadence to report.
+    """
+    symbols = partitions(stream)
+    if not symbols:
+        return ()
+    symbol = symbols[0]
+    frequencies: set[str] = set()
+    for date in dates(stream, symbol):
+        for path in select(stream, symbol, date):
+            freq = _parquet_interval(path)
+            if freq is not None:
+                frequencies.add(freq)
+    return tuple(sorted(frequencies))
+
+
+def _available_streams(snapshot: Any) -> dict[str, tuple[str, ...]] | None:
+    """``{stream: (frequencies present,)}`` off a sealed mount, or ``None``.
+
+    ``None`` -- and the key is absent from :meth:`SignalContract.declaration`'s
+    mapping entirely -- exactly when no ``snapshot`` was configured for the
+    call: the symptom is that a model was told accessor names with no word on
+    which streams the *evaluation* context actually serves, and a declaration
+    that invented an answer with no context configured would trade one
+    guess for another.
+
+    ``snapshot`` is accepted structurally -- anything exposing ``files()``,
+    ``partitions(stream)``, ``dates(stream, symbol)`` and
+    ``select(stream, symbol, date)`` is a sealed snapshot mount to this
+    function, the same surface :class:`snapshot.SnapshotMount` and
+    :func:`evaluator._window._mount_queries` already share -- so this member
+    adds no dependency on ``snapshot`` to read one.  Stream names are the
+    first path segment of every file :meth:`files` reports (never a fixed
+    guess at which stream kinds exist), so a producer this workspace has not
+    written yet (trades, bookfeat, borrow) is reported the moment something
+    seals one.
+    """
+    if snapshot is None:
+        return None
+    files = getattr(snapshot, "files", None)
+    partitions = getattr(snapshot, "partitions", None)
+    dates = getattr(snapshot, "dates", None)
+    select = getattr(snapshot, "select", None)
+    if not all(callable(fn) for fn in (files, partitions, dates, select)):
+        raise TypeError(
+            "declaration()'s snapshot must be a sealed snapshot mount "
+            "exposing files(), partitions(stream), dates(stream, symbol) and "
+            "select(stream, symbol, date) -- snapshot.SnapshotService."
+            "mount(...)'s own shape -- so available_streams names only what "
+            "the evaluation context actually holds, never a guess"
+        )
+    stream_names = sorted({path.split("/", 1)[0] for path in files() if path})
+    return {
+        stream: _stream_frequencies(stream, partitions, dates, select)
+        for stream in stream_names
+    }
+
+
 class SignalContract:
     """Feature 205's law, as the value a composed application carries.
 
@@ -498,7 +766,7 @@ class SignalContract:
             ),
         )
 
-    def declaration(self) -> dict[str, Any]:
+    def declaration(self, *, snapshot: Any | None = None) -> dict[str, Any]:
         """The contract as a plain mapping — what an agent is asked to write.
 
         Assembled from the contract rather than restated: the entrypoint and
@@ -518,10 +786,32 @@ class SignalContract:
         how this method stays on the right side of that line: there is no
         field here for a suggested mechanism, a theme hint, or a summary of
         what has already been tried.
+
+        **CONTRACT-1's additive detail.**  Every key above is unchanged from
+        before that bug's fix; what follows is what it added, because naming
+        an accessor's surface is not the same as making it usable (an
+        authored root that calls ``getattr(ctx, "bars")`` with no signature,
+        no schema and no known stream to read from can only guess):
+
+        * ``accessors_detail`` — :func:`_accessors_detail`'s per-accessor
+          signature, parameter units and frame schema, for the five data
+          accessors (``bars``, ``trades``, ``bookfeat``, ``borrow``,
+          ``feature``).
+        * ``universe`` — :data:`_UNIVERSE_NOTE`, the type ``returns`` above
+          assumes but never states: ``ctx.universe`` is a ``tuple[str, ...]``.
+        * ``allowed_imports`` — :func:`_agent_imports_allowlist`, the sandbox
+          child's own import ceiling.
+        * ``example_signal`` — :data:`EXAMPLE_SIGNAL_SOURCE`, one short,
+          correct signal over ``bars("1d", lookback)``.
+        * ``available_streams`` — :func:`_available_streams` over
+          ``snapshot``, present only when a caller configures one (``None``
+          by default, so every existing call site — none of which passes
+          ``snapshot`` — is unaffected); absent from the mapping entirely
+          when it is not.
         """
         contract = require_contract()
         sig = contract.describe_signal_signature()
-        return {
+        declared: dict[str, Any] = {
             "entrypoint": sig.entrypoint,
             "window_arg": sig.window_arg,
             "seed_arg": sig.seed_arg,
@@ -539,7 +829,15 @@ class SignalContract:
                 "seed the only one that carries randomness: no clock, no "
                 "filesystem, no network, no global state (§5.1, §12)"
             ),
+            "accessors_detail": _accessors_detail(contract),
+            "universe": _UNIVERSE_NOTE,
+            "allowed_imports": _agent_imports_allowlist(),
+            "example_signal": EXAMPLE_SIGNAL_SOURCE,
         }
+        streams = _available_streams(snapshot)
+        if streams is not None:
+            declared["available_streams"] = streams
+        return declared
 
 
 def _invocation_text(sig: SignalSignature) -> str:
