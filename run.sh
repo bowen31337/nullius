@@ -34,6 +34,12 @@
 #   ./run.sh triage         [args] python -m tripwires.triage
 #   ./run.sh migrate             python -m app.migrate: apply every
 #                               migrations/versions/0*.py file in chain order
+#   ./run.sh lake-backfill [args]  python -m nullius_ingest.bars_backfill (LAKE
+#                               defaults to $HOME/.local/share/nullius/lake)
+#   ./run.sh lake-seal     [args]  python -m snapshot.seal (same LAKE default)
+#   ./run.sh evaluator-image       deploy/evaluator/build_image.sh: build the
+#                               evaluator image and print its digest-pinned
+#                               reference, for NULLIUS_EVALUATOR_IMAGE
 #   ./run.sh stack              boot docker dev stack + emit per-service readiness
 #   ./run.sh stack-down         stop the docker dev stack
 #   ./run.sh install            uv sync (Python deps)
@@ -251,6 +257,33 @@ case "${cmd}" in
       migrate)        module="app.migrate" ;;
     esac
     exec uv run --all-packages python -m "${module}" "$@"
+    ;;
+
+  lake-backfill|lake-seal)
+    # Market-data staging and sealing, neither needing a secret. LAKE
+    # defaults to a path outside the repo, like the research/vst stores
+    # above; lake-seal also defaults DATABASE_URL the way `campaign` does,
+    # so its snapshot_manifest row lands in the same research store.
+    mkdir -p "$HOME/.local/share/nullius"
+    LAKE="${LAKE:-$HOME/.local/share/nullius/lake}"
+    mkdir -p "${LAKE}"
+    cd "${SCRIPT_DIR}"
+    case "${cmd}" in
+      lake-backfill)
+        exec uv run --all-packages python -m nullius_ingest.bars_backfill \
+          --lake "${LAKE}" "$@"
+        ;;
+      lake-seal)
+        export DATABASE_URL="${DATABASE_URL:-sqlite:///$HOME/.local/share/nullius/research.db}"
+        exec uv run --all-packages python -m snapshot.seal --lake "${LAKE}" "$@"
+        ;;
+    esac
+    ;;
+
+  evaluator-image)
+    # Builds with podman/buildah (no docker, no secret) and prints the
+    # digest-pinned reference to put in NULLIUS_EVALUATOR_IMAGE.
+    exec "${SCRIPT_DIR}/deploy/evaluator/build_image.sh" "$@"
     ;;
 
   install)

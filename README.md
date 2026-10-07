@@ -113,8 +113,16 @@ The `vst*` commands inject only the VST sub-account key and the Telegram credent
 
 The `orchestrator` member is the inner exploration loop: it plants root signals, lets the exploration policy pick a node, has the signal agent author a child, evaluates it against the frozen evaluator (which debits the trial ledger and applies the planted nulls), persists the attempt, and stops on budget or saturation. Agent-authored signal code runs under a real OS sandbox — gVisor (`runsc`), or a bubblewrap fallback — never in the host process. The Python import guard is defence-in-depth, not the boundary.
 
+A first real campaign needs the market data, the sealed snapshot and the evaluator image in place before it can evaluate anything. Run the whole path once, in order:
+
 ```bash
-./run.sh campaign --type discovery --workspaces 16 --rounds 30
+./run.sh migrate                                                       # apply pending schema migrations
+./run.sh lake-backfill --first YYYY-MM-DD --last YYYY-MM-DD --top N    # archive source for M3-feeding work; LAKE defaults to ~/.local/share/nullius/lake
+./run.sh lake-seal                                                     # seal $LAKE/staging into an immutable snapshot
+./run.sh evaluator-image                                               # build the evaluator image; copy its digest-pinned reference into NULLIUS_EVALUATOR_IMAGE
+./run.sh canary --freeze-reference                                     # one-time: freeze the determinism canary's reference pair
+./run.sh bootstrap-fill                                                # fill the non-financial calibration pool
+./run.sh campaign --type discovery --workspaces 16 --rounds 30         # run the research loop
 ```
 
 The `campaign` verb injects only the `NULLIUS_*` research keys through 1Password (`op run --env-file=.env.campaign.tpl`), keeps its store at `~/.local/share/nullius/research.db` unless `DATABASE_URL` says otherwise, and reads two JSON configs named by the template: the authoring config (the per-role model pins and token budgets) and the evaluation config (the snapshot, dates, seed and sandbox runtime). Copy the checked-in starting points to begin:
