@@ -223,6 +223,34 @@ DEFAULT_TEMPERATURE: Final[float] = 0.7
 #: :data:`DEFAULT_TEMPERATURE`.
 DEFAULT_MAX_TOKENS: Final[int] = 8192
 
+
+class _TemperatureUnstated:
+    """The sentinel marking "no caller stated a temperature at all".
+
+    Distinct from every value a caller *can* state: an explicit ``None``
+    (feature 5's own "no knob", written ``"temperature": null``) and every
+    number in range, including :data:`DEFAULT_TEMPERATURE` itself.  It is
+    :class:`AuthoringConfig`'s own field default and :meth:`from_document`'s
+    answer for a document that omits the key — the one spelling both doors
+    share for "this value was never typed" — and :meth:`AuthoringConfig.__post_init__`
+    resolves it to :data:`DEFAULT_TEMPERATURE` or ``None`` depending on
+    whether the ``depth`` and ``policy`` pins can honour the default,
+    *before* the sampling cross-check runs.  That ordering is the fix: a
+    value this module invented can never reach
+    :func:`_require_sampling_pin_compatible` and be refused as something the
+    config "states", because only a value the caller actually wrote reaches
+    that check at all.
+    """
+
+    def __repr__(self) -> str:
+        return "<temperature unstated>"
+
+
+#: The one instance of :class:`_TemperatureUnstated` this module ever makes —
+#: a sentinel is only useful if every door shares the same object, the way
+#: every other closed set in this module is declared once and read everywhere.
+_TEMPERATURE_UNSTATED: Final[_TemperatureUnstated] = _TemperatureUnstated()
+
 #: The size bounds of ``root_tier``: §14.1's own roots row says *"rotated
 #: across 2–3 providers"*, one is the first-family state
 #: :class:`FrontierTier` admits, and three is the most the architecture draws
@@ -334,15 +362,21 @@ class UnsupportedSamplingError(AuthoringConfigError):
     :mod:`providers._anthropic`'s per-model sampling table (feature 5) marks
     ``claude-opus-5-5``, ``claude-sonnet-5-5`` and their siblings as unable to
     carry ``temperature`` at all — the vendor answers HTTP 400.  A config
-    whose ``depth`` or ``policy`` pin names one of those models *and* states a
-    temperature (the default included: ``temperature`` carries one unless the
-    document says ``null``) has stated a call that cannot be sent as asked,
-    and feature 5's own sentence is explicit about the alternative to
-    catching this at the first live call: *"refused at load ... and never
-    silently dropped"* — a config that loaded clean but then quietly stopped
-    applying the temperature it named would be the campaign discovering its
-    own misconfiguration one call at a time, which is strictly worse than one
+    whose ``depth`` or ``policy`` pin names one of those models *and states a
+    temperature* has stated a call that cannot be sent as asked, and feature
+    5's own sentence is explicit about the alternative to catching this at
+    the first live call: *"refused at load ... and never silently dropped"*
+    — a config that loaded clean but then quietly stopped applying the
+    temperature it named would be the campaign discovering its own
+    misconfiguration one call at a time, which is strictly worse than one
     refusal at the deployment's own launch.
+
+    An *omitted* key never meets this refusal, even for one of these models:
+    omitting ``temperature`` states nothing, and :meth:`AuthoringConfig.__post_init__`
+    resolves the omission to ``None`` for exactly this pin rather than to
+    :data:`DEFAULT_TEMPERATURE` — the model's own default applies, which is
+    no ``temperature`` field at all.  Only a document that writes a number
+    (the default's own value included) meets this class.
 
     Scoped to ``depth`` and ``policy`` only, never ``root_tier``: those two
     roles are each **one** fixed pin, so "this pin accepts a knob the config
@@ -480,12 +514,15 @@ def _require_temperature(value: object, origin: str) -> float | None:
     ``None`` is feature 5's own addition (additions_spec_real_campaign_path.xml)
     and is returned unchanged, ahead of every other check: it is the
     deployment's explicit statement that this config turns no temperature
-    knob at all — the only way to pin ``depth`` or ``policy`` to a model the
-    sampling table withholds temperature from without meeting
-    :class:`UnsupportedSamplingError`.  Omitting the key from a document is a
-    *different* statement (the default :data:`DEFAULT_TEMPERATURE`, read by
-    :meth:`AuthoringConfig.from_document`) — ``None`` is what a document
-    states by writing ``"temperature": null`` outright.
+    knob at all.  Omitting the key from a document is a *different*
+    statement — never this function's business at all, because an omitted
+    key never calls this guard: :meth:`AuthoringConfig.from_document` hands
+    :data:`_TEMPERATURE_UNSTATED` through unchanged, and
+    :meth:`AuthoringConfig.__post_init__` resolves *that* sentinel to
+    :data:`DEFAULT_TEMPERATURE` or ``None`` on its own, depending on whether
+    the pins stated can honour the default — so a config that never typed a
+    temperature can never be told it "states" one.  ``None`` is what a
+    document states by writing ``"temperature": null`` outright.
     """
     if value is None:
         return None
@@ -635,6 +672,23 @@ def _require_sampling_pin_compatible(
         )
 
 
+def _pin_accepts_temperature(pin: ModelPin) -> bool:
+    """Return whether ``pin``'s vendor and model can carry a temperature at all.
+
+    The same table :func:`_require_sampling_pin_compatible` consults, read
+    here for the opposite question: not "does a *stated* value clash with
+    this pin" but "can an unstated temperature's default apply to this pin at
+    all" — what :meth:`AuthoringConfig.__post_init__` asks of both the
+    ``depth`` and ``policy`` pins before it resolves
+    :data:`_TEMPERATURE_UNSTATED`, so the default it picks is never one
+    either pin's vendor would reject.
+    """
+    return not (
+        pin.provider == _ANTHROPIC_PROVIDER
+        and _sampling_mode(pin.model) == NO_SAMPLING_MODE
+    )
+
+
 # ── The configuration ─────────────────────────────────────────────────────────
 
 
@@ -672,7 +726,7 @@ class AuthoringConfig:
     root_tier: tuple[ModelPin, ...]
     depth: ModelPin
     policy: ModelPin
-    temperature: float | None = DEFAULT_TEMPERATURE
+    temperature: float | None | _TemperatureUnstated = _TEMPERATURE_UNSTATED
     max_tokens: int = DEFAULT_MAX_TOKENS
     max_input_tokens: int = 0
     max_output_tokens: int = 0
@@ -691,11 +745,27 @@ class AuthoringConfig:
         object.__setattr__(
             self, "policy", _require_pin(self.policy, "policy", _CONSTRUCTED)
         )
-        object.__setattr__(
-            self,
-            "temperature",
-            _require_temperature(self.temperature, _CONSTRUCTED),
-        )
+        if self.temperature is _TEMPERATURE_UNSTATED:
+            # Resolved here, after the pins above are already ModelPin
+            # instances and before the cross-check below runs, so the value
+            # this module invents is never mistaken for one the caller
+            # typed: the default applies only when both depth and policy can
+            # honour it, and is None — the model's own default, no field
+            # sent — the moment either cannot.
+            object.__setattr__(
+                self,
+                "temperature",
+                DEFAULT_TEMPERATURE
+                if _pin_accepts_temperature(self.depth)
+                and _pin_accepts_temperature(self.policy)
+                else None,
+            )
+        else:
+            object.__setattr__(
+                self,
+                "temperature",
+                _require_temperature(self.temperature, _CONSTRUCTED),
+            )
         object.__setattr__(
             self, "max_tokens", _require_max_tokens(self.max_tokens, _CONSTRUCTED)
         )
@@ -776,11 +846,14 @@ class AuthoringConfig:
             root_tier=document["root_tier"],
             depth=document["depth"],
             policy=document["policy"],
-            # .get, not ["temperature"]: an absent key is the sentence's own
-            # default (DEFAULT_TEMPERATURE), while a key present and null is
-            # feature 5's explicit "no temperature" — .get tells the two
-            # apart exactly because it only substitutes on absence.
-            temperature=document.get("temperature", DEFAULT_TEMPERATURE),
+            # .get, not ["temperature"]: an absent key hands the constructor
+            # _TEMPERATURE_UNSTATED, which __post_init__ resolves to the
+            # sentence's own default or to None depending on the pins, while
+            # a key present and null is feature 5's explicit "no temperature"
+            # — .get tells the two apart exactly because it only substitutes
+            # on absence, and never on DEFAULT_TEMPERATURE directly, which is
+            # what let a value nobody stated reach the sampling refusal.
+            temperature=document.get("temperature", _TEMPERATURE_UNSTATED),
             max_tokens=document.get("max_tokens", DEFAULT_MAX_TOKENS),
             max_input_tokens=document["max_input_tokens"],
             max_output_tokens=document["max_output_tokens"],

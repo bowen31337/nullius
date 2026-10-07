@@ -327,6 +327,45 @@ def test_the_temperature_boundaries_are_admitted(value):
     assert AuthoringConfig.from_document(document(temperature=value)).temperature == value
 
 
+# ── Omitted temperature: the model's own default, never a stated value ────────
+
+
+def test_an_omitted_temperature_with_5x_pins_loads_with_temperature_none():
+    # Omitting the key states nothing — it must not be read back as the 0.7
+    # default and then refused as a value this config never wrote.  A depth
+    # pin the sampling table withholds temperature from resolves the omitted
+    # key to None (the model's own default) rather than raising.
+    payload = document(depth="anthropic/claude-opus-5-5/20260901", effort="high")
+    del payload["temperature"]
+    config = AuthoringConfig.from_document(payload)
+    assert config.temperature is None
+    assert config.effort == "high"
+
+
+def test_an_omitted_temperature_with_haiku_only_pins_loads_with_the_default():
+    # Every pin the deployment stated for depth and policy accepts
+    # temperature, so an omitted key still resolves to the sentence's own
+    # default — unchanged from before the per-model sampling table existed.
+    payload = document(
+        depth="anthropic/claude-haiku-4-5/20251001",
+        policy="anthropic/claude-haiku-4-5/20251001",
+    )
+    del payload["temperature"]
+    config = AuthoringConfig.from_document(payload)
+    assert config.temperature == DEFAULTED["temperature"]
+
+
+def test_an_explicit_default_temperature_with_a_5x_pin_is_still_refused():
+    # A stated value, even the default's own number, is still a statement
+    # the pin cannot honour: only an omitted key (or an explicit null)
+    # escapes the refusal, never an explicit 0.7.
+    pin = "anthropic/claude-opus-5-5/20260901"
+    with pytest.raises(AuthoringConfigError) as raised:
+        AuthoringConfig.from_document(document(depth=pin, temperature=0.7))
+    assert "depth" in str(raised.value)
+    assert "0.7" in str(raised.value)
+
+
 @pytest.mark.parametrize("value", [0, -1, "8192", True])
 def test_a_non_positive_max_tokens_is_refused(value):
     # The output ceiling a request's answer lives under: zero is a call that
