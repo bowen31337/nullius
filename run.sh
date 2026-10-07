@@ -70,6 +70,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #     task's whole-suite gate.
 # One shared writable dir gives agent and gate the same browsers, fetched once.
 export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.pw-browsers}"
+# Every verb prints JSON lines that operators redirect to files and tail
+# (campaign, closeout, dream, lake-backfill). A redirected stdout is
+# block-buffered, so a multi-hour run would otherwise show nothing until it
+# exits.
+export PYTHONUNBUFFERED=1
 ENV_TPL="${SCRIPT_DIR}/.env.tpl"
 ENV_VST_TPL="${SCRIPT_DIR}/.env.vst.tpl"
 ENV_CAMPAIGN_TPL="${SCRIPT_DIR}/.env.campaign.tpl"
