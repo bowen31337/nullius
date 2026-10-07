@@ -1,0 +1,40 @@
+<bug_spec>
+  <!-- PIT-1. Found 2026-10-07 by smoke campaign 87bfda23, the first in which
+       every authored signal ran and returned real scores. All four roots
+       then failed EvaluatorAlignmentError. Reproduced offline, at no spend,
+       on the momentum root's real code against the operator's snapshot:
+       "the closes carry no bar for 'HYPEUSDT' on 2026-07-01, its rebalance
+       date". HYPEUSDT was listed on 2026-09-24 (12 bar days); the evaluation
+       dates run 2026-07-01..2026-09-30. Spend for the campaign: $0.262 (4
+       Opus calls, recorded by providers.usage). Core shape, explicit
+       touches_files. -->
+
+  <bug index="1" shape="core" severity="critical"
+       touches_files="packages/orchestrator/src/orchestrator/_evaluate.py,packages/evaluator/src/evaluator/_execute.py,packages/orchestrator/tests/test_pit_universe_per_date.py,tests/e2e/test_real_data_campaign_e2e.py">
+    <title>Every rebalance date is scored over the universe of the last evaluation date, so a symbol listed late in the window breaks alignment for every signal</title>
+    <symptoms>
+      orchestrator._evaluate resolves the window once at decision_time = evaluation_dates[-1] (resolve_window(ctx.snapshot, ...)). Both orchestrator._evaluate._materialize_from_context and evaluator._execute's default materializer then build every rebalance date's MarketWindow with universe=resolution.universe, the symbols alive on the final date. A symbol listed during the window (HYPEUSDT, first bar 2026-09-24) is therefore in the universe on dates where it has no bar. The signal scores it, and align_targets refuses with EvaluatorAlignmentError: "the closes carry no bar for 'HYPEUSDT' on 2026-07-01, its rebalance date — the universe rule (feature 72) admits a symbol only on a day its sealed bars carry a partition". Every node of every campaign over that snapshot fails at alignment, whatever its signal.
+    </symptoms>
+    <reproduction_steps>
+      Seal a snapshot where one symbol's bars start partway through the evaluation dates. Run execute_signal plus align_targets as orchestrator._evaluate.evaluate_node does, with any conforming signal: EvaluatorAlignmentError names the late symbol on the first evaluation date.
+    </reproduction_steps>
+    <expected>
+      - Each rebalance date's MarketWindow carries the point-in-time universe for that date: exactly the resolved symbols whose sealed bars carry a partition dated that day (feature 72's rule, PRD §C1 survivorship-free universe). It is in the same stable sorted order as today. Both materializers, the orchestrator's and evaluator._execute's default, apply the same rule from one helper, so they cannot drift.
+      - A symbol delisted before the final date stays in the universe on the earlier dates where it has bars. Survivorship is not reintroduced, and the window is not resolved per date if one resolution's slices already answer the per-day question (no extra snapshot reads).
+      - A date on which fewer than two symbols are present gives that date an empty vector, never an alignment refusal for the node. normalize already refuses fewer than two symbols, so the date is skipped as absent, the same as align_targets' absent targets.
+      - test_pit_universe_per_date.py covers:
+        - a symbol listed mid-window: absent before its first bar, present after, and the node aligns and scores
+        - a symbol delisted mid-window: present before its last bar, absent after
+        - the per-date universe equals feature 72's admission rule
+        - no extra Parquet reads per date beyond today's
+        It passes under pytest-xdist.
+      - tests/e2e/test_real_data_campaign_e2e.py's offline snapshot gains one symbol whose bars start after the first evaluation date (a late listing). The campaign still scores real forward returns end to end. This is the regression guard that would have caught this before a live campaign.
+    </expected>
+    <actual>Root cause: execute_signal's materializers use the single resolution's universe, valid at the last decision time, for every earlier rebalance date.</actual>
+    <constraints>
+      align_targets and the feature-72 universe rule are not weakened; the fix is upstream of alignment
+      No file outside the four listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
