@@ -93,26 +93,34 @@ choice.*
       (the null-max-Sharpe table, the ``√(1/T)`` standard error) are stated in,
       so it is pinned here rather than left to a reader to divide the mean by an
       error of its own choosing.
-    - ``ir_standalone`` is the equal-weight book's information ratio over the
-      dates — the mean per-date unit-book post-cost return divided by the
-      population standard deviation of those returns — the "standalone"
-      counterpart to feature 83's ``ir_marginal`` (which is measured against a
-      book), and the number the PRD's ``IR ≈ IC × √breadth`` names: the mean
-      and the standard deviation are taken over the *same* per-date unit-book
-      returns, so the ratio is the Sharpe-like reward-to-variance of holding the
-      signal's equal-weight book on this panel, cost-adjusted, on the same
-      horizon ``ic_mean`` is measured over.
-    - ``turnover`` is the equal-weight book's mean per-date fractional turnover
-      — the fraction of the book's weight that changes hands at each rebalance,
-      ``½ · Σ |w_{d} − w_{d−1}|`` summed over the symbols, averaged over the
-      dates that have a predecessor — which is the standard "how much of the
-      book is replaced each period" number the PRD's ``turnover_series`` is the
-      per-date record of, and the number the live loop's turnover gauge reads.
+    - ``ir_standalone`` is the node's own dollar-neutral book's information
+      ratio over the dates — the mean per-date book post-cost return divided
+      by the population standard deviation of those returns — the
+      "standalone" counterpart to feature 83's ``ir_marginal`` (which is
+      measured against a book), and the number the PRD's ``IR ≈ IC × √breadth``
+      names: the mean and the standard deviation are taken over the *same*
+      per-date book returns, so the ratio is the Sharpe-like reward-to-variance
+      of holding *this signal's own* book on this panel, cost-adjusted, on the
+      same horizon ``ic_mean`` is measured over. The book on each date is the
+      long-short portfolio the day's normalized scores define — weight
+      ``w_i = z_i / Σ|z_j|`` over the symbols that date's scores and post-cost
+      returns share, so gross exposure is 1 and net is 0 whenever the scores
+      were cross-sectionally centered — not the equal-weight market every node
+      scored on the same snapshot would otherwise share, whatever it scored.
+    - ``turnover`` is that same book's mean per-date fractional turnover — the
+      fraction of the book's weight that changes hands at each rebalance,
+      ``½ · Σ |w_{d} − w_{d−1}|`` summed over the symbols (a symbol absent from
+      one date's book holds weight 0 there), averaged over the dates that have
+      a predecessor — which is the standard "how much of the book is replaced
+      each period" number the PRD's ``turnover_series`` is the per-date record
+      of, and the number the live loop's turnover gauge reads.
 
     None of the four is a second implementation of anything: the coefficient is
     feature 81's, the means and standard deviations are the one reduction
-    feature 82's attribution shares, and the turnover is the equal-weight
-    convention feature 82's book uses.
+    feature 82's attribution shares, and the turnover is the per-date book
+    weight this module derives from the node's own scores — not feature 82's
+    equal-weight unit book, which is pinned separately and stays equal-weight
+    (step 8's capacity half sizes a different, deliberately unit-weighted book).
 
 *the scalars are scalars, and the series is not reduced away here.*
     The feature names four scalars and the PRD's artifact keeps ``ic_series``
@@ -142,8 +150,8 @@ steps earlier; this step takes the post-cost returns), align (75), gate (76),
 price (79), persist (:mod:`evaluator._metrics_store` owns the write) or score
 (feature 73).  It takes step 7's record and answers exactly the four questions
 step 8 puts in its scope: *what is the mean information coefficient, how much
-evidence stands behind it, what is the equal-weight book's information ratio,
-and how much of the book turns over each period?*
+evidence stands behind it, what is the node's own dollar-neutral book's
+information ratio, and how much of that book turns over each period?*
 
 **The layering note.**  This module is stdlib-only — dates, mappings, square
 roots and arithmetic; no polars, no pyarrow, no lake, no environment, no HTTP,
@@ -162,7 +170,7 @@ import datetime as dt
 import itertools
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from ._align import HORIZONS
@@ -271,17 +279,35 @@ class NodeMetrics:
     ic_se: float
     #: ``ic_mean / ic_se`` — ``ic_tstat``, the promotion-relevant evidence.
     ic_tstat: float
-    #: The equal-weight book's information ratio over the dates — the mean
-    #: per-date unit-book post-cost return divided by its population standard
-    #: deviation.
+    #: The node's own dollar-neutral book's information ratio over the dates —
+    #: the mean per-date book post-cost return divided by its population
+    #: standard deviation.
     ir_standalone: float
-    #: The equal-weight book's mean per-date fractional turnover.
+    #: That same book's mean per-date fractional turnover.
     turnover: float
     #: How many rebalances turnover averaged over — one fewer than :attr:`dates`.
     turnover_dates: int
     #: The per-date information coefficients — the series whose mean is
     #: ``ic_mean``, carried so the store can check the mean against it.
     ic_series: Mapping[dt.date, float]
+    #: The per-date dollar-neutral book returns — the series
+    #: :attr:`ir_standalone`'s mean and population standard deviation reduce
+    #: from, carried beside it the way :attr:`ic_series` is carried beside
+    #: ``ic_mean``. Empty on a record rebuilt from the metrics store, which
+    #: persists only the four scalars and :attr:`ic_series`; a fresh
+    #: measurement from :func:`compute_node_metrics` always carries it, and
+    #: that is what :mod:`evaluator._persist_store`'s ``cost_adjusted_ir``
+    #: reduces, rather than re-deriving a second, possibly different, book
+    #: from the raw panel (which would need the normalized scores this record
+    #: does not otherwise carry). Excluded from equality (``compare=False``):
+    #: a record rebuilt from the store is still the same measurement as the
+    #: one that produced it even though the store carries no column for this
+    #: field, the same way a reader must not see two NodeMetrics for one
+    #: evaluation disagree merely because one came fresh off the pipeline and
+    #: the other off a read-back.
+    book_returns: Mapping[dt.date, float] = field(
+        default_factory=lambda: MappingProxyType({}), compare=False
+    )
 
     def __post_init__(self) -> None:
         # object.__setattr__ where the constructor normalizes; this record
@@ -341,19 +367,19 @@ class NodeMetrics:
                 "denominator disagrees with its own series is a record no "
                 "reader can size the evidence behind"
             )
-        for field in ("ic_mean", "ic_se", "ic_tstat", "ir_standalone", "turnover"):
-            value = getattr(self, field)
+        for field_name in ("ic_mean", "ic_se", "ic_tstat", "ir_standalone", "turnover"):
+            value = getattr(self, field_name)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise EvaluatorMetricsError(
-                    f"a node metrics' {field} must be a number, got {value!r}"
+                    f"a node metrics' {field_name} must be a number, got {value!r}"
                 )
             if not math.isfinite(float(value)):
                 raise EvaluatorMetricsError(
-                    f"a node metrics' {field} is not finite ({value!r}); a NaN "
+                    f"a node metrics' {field_name} is not finite ({value!r}); a NaN "
                     "or ±inf would reach the node record dressed as a "
                     "measurement"
                 )
-            object.__setattr__(self, field, float(value))
+            object.__setattr__(self, field_name, float(value))
         expected_mean = math.fsum(
             captured[day] for day in sorted(captured)
         ) / len(captured)
@@ -381,6 +407,26 @@ class NodeMetrics:
                 "count, and a record that disagrees with its own series is a "
                 "record no reader can size the turnover behind"
             )
+        captured_book: dict[dt.date, float] = {}
+        for day, value in self.book_returns.items():
+            if not isinstance(day, dt.date) or isinstance(day, dt.datetime):
+                raise EvaluatorMetricsError(
+                    "a node metrics' book_returns must be keyed by calendar "
+                    f"dates, got {day!r}"
+                )
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise EvaluatorMetricsError(
+                    f"the book return on {day.isoformat()} must be a number, "
+                    f"got {value!r}"
+                )
+            if not math.isfinite(float(value)):
+                raise EvaluatorMetricsError(
+                    f"the book return on {day.isoformat()} is not finite "
+                    f"({value!r}); a NaN or ±inf would reach the node record "
+                    "dressed as a measurement"
+                )
+            captured_book[day] = float(value)
+        object.__setattr__(self, "book_returns", MappingProxyType(captured_book))
 
     def __hash__(self) -> int:
         # The mapping is not hashable until it collapses to tuples; the fold
@@ -422,8 +468,10 @@ def compute_node_metrics(
     that horizon prices, correlate the day's normalized scores against the day's
     post-cost returns — both reduced to average ranks, so the coefficient is the
     Spearman rank correlation feature 81 measures — over the symbols the two
-    sides share, and reduce the per-date coefficients and the per-date unit-book
-    returns into the four scalars.
+    sides share, then weight that same joined cross-section by the day's own
+    normalized scores (``w_i = z_i / Σ|z_j|``, a dollar-neutral book: gross
+    exposure 1, net 0) to get the day's book return, and reduce the per-date
+    coefficients and the per-date book returns into the four scalars.
 
     ``returns`` is step 7's own record (:class:`~evaluator.PostCostReturns`),
     and ``scores`` is step 3's own output as ``{rebalance date: {symbol:
@@ -517,7 +565,7 @@ def compute_node_metrics(
     series = returns.series[horizon]
     per_date_ic: dict[dt.date, float] = {}
     per_date_return: dict[dt.date, float] = {}
-    per_date_symbols: dict[dt.date, set[str]] = {}
+    per_date_weights: dict[dt.date, Mapping[str, float]] = {}
     for day in series.dates():
         score_row = validated.get(day)
         if score_row is None:
@@ -525,13 +573,36 @@ def compute_node_metrics(
             # date this horizon did not price has no forward return to pair,
             # and inventing one is the look-ahead the alignment refuses.
             continue
-        per_date_ic[day] = _rank_correlation(
-            score_row, series.at(day), day=day, horizon=horizon
-        )
-        per_date_symbols[day] = set(score_row)
         returns_row = series.at(day)
-        if returns_row:
-            per_date_return[day] = math.fsum(returns_row.values()) / len(returns_row)
+        per_date_ic[day] = _rank_correlation(
+            score_row, returns_row, day=day, horizon=horizon
+        )
+        # The node's book on this date is the dollar-neutral long-short
+        # portfolio its own normalized scores define, over the same joined
+        # cross-section the coefficient above was just measured on (a symbol
+        # with no forward return has nothing a weight could be multiplied
+        # against). Weight w_i = z_i / Σ|z_j|, so gross exposure is 1 and net
+        # is 0 whenever the scores were cross-sectionally centered over this
+        # cross-section — this signal's own book, not the equal-weight market
+        # every node scored on the same snapshot would otherwise share.
+        book_symbols = sorted(set(score_row) & set(returns_row))
+        gross = math.fsum(abs(score_row[symbol]) for symbol in book_symbols)
+        if gross == 0.0:
+            # _rank_correlation above already required these same symbols'
+            # scores to have nonzero rank spread, so they cannot all be
+            # exactly zero; unreachable in practice, refused rather than
+            # producing a NaN book if that invariant is ever broken.
+            raise EvaluatorMetricsError(
+                f"horizon {horizon} on {day.isoformat()} has an all-zero "
+                "normalized score across its joined cross-section, so the "
+                "dollar-neutral book's weights are undefined; refusing "
+                "rather than dividing by zero"
+            )
+        weights = {symbol: score_row[symbol] / gross for symbol in book_symbols}
+        per_date_weights[day] = weights
+        per_date_return[day] = math.fsum(
+            weights[symbol] * returns_row[symbol] for symbol in book_symbols
+        )
     if not per_date_ic:
         raise EvaluatorMetricsError(
             "the priced panel and the normalized scores share no rebalance "
@@ -577,15 +648,16 @@ def compute_node_metrics(
     return_variance = math.fsum(d * d for d in return_deviations) / n_return
     return_std = math.sqrt(return_variance)
     if return_std == 0.0:
-        # The equal-weight book earned the same post-cost return every date —
-        # the signal expressed no cross-sectional edge on the priced panel, so
-        # the information ratio is undefined; refusing rather than dividing by
-        # zero, the same stance the coefficient takes on a constant side.
+        # The node's dollar-neutral book earned the same post-cost return
+        # every date — the signal expressed no cross-sectional edge on the
+        # priced panel, so the information ratio is undefined; refusing
+        # rather than dividing by zero, the same stance the coefficient
+        # takes on a constant side.
         raise EvaluatorMetricsError(
-            f"the metrics horizon ({horizon}) equal-weight book returned a "
-            "constant post-cost return across its dates, so its standard "
-            "deviation is zero and ir_standalone is undefined; refusing rather "
-            "than dividing by zero — a book that never varied has no "
+            f"the metrics horizon ({horizon}) book returned a constant "
+            "post-cost return across its dates, so its standard deviation is "
+            "zero and ir_standalone is undefined; refusing rather than "
+            "dividing by zero — a book that never varied has no "
             "reward-to-variance ratio"
         )
     ir_standalone = return_mean / return_std
@@ -594,18 +666,15 @@ def compute_node_metrics(
     turnover_sum = 0.0
     turnover_count = 0
     for prev_day, day in itertools.pairwise(ordered_days):
-        symbols = per_date_symbols[prev_day] | per_date_symbols[day]
-        # Equal-weight within each date's own panel — 1/N on the N symbols that
-        # date holds — so a symbol that enters or exits the panel moves its full
-        # weight and the remaining symbols re-weight, which the |w_d − w_{d−1}|
-        # term captures (an absent symbol's weight is 0).
-        prev_weight = 1.0 / len(per_date_symbols[prev_day]) if per_date_symbols[prev_day] else 0.0
-        day_weight = 1.0 / len(per_date_symbols[day]) if per_date_symbols[day] else 0.0
+        prev_weights = per_date_weights[prev_day]
+        day_weights = per_date_weights[day]
+        # A symbol that enters or exits the book (or whose weight simply
+        # moves) contributes |w_d − w_{d−1}|; a symbol absent from one side
+        # holds weight 0 there, the same absence convention the book return
+        # itself uses.
+        symbols = set(prev_weights) | set(day_weights)
         turnover_sum += 0.5 * math.fsum(
-            abs(
-                (day_weight if symbol in per_date_symbols[day] else 0.0)
-                - (prev_weight if symbol in per_date_symbols[prev_day] else 0.0)
-            )
+            abs(day_weights.get(symbol, 0.0) - prev_weights.get(symbol, 0.0))
             for symbol in symbols
         )
         turnover_count += 1
@@ -624,4 +693,5 @@ def compute_node_metrics(
         turnover=turnover,
         turnover_dates=turnover_count,
         ic_series=per_date_ic,
+        book_returns=per_date_return,
     )

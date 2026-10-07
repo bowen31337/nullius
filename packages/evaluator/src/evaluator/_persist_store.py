@@ -85,6 +85,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import os
 import sqlite3
 from collections.abc import Mapping
@@ -201,7 +202,8 @@ class NodeRow:
     turnover: float
     #: The marginal information ratio — feature 83's scalar.
     ir_marginal: float
-    #: The mean post-cost edge of the equal-weight book — the cost-adjusted axis.
+    #: The mean post-cost edge of the node's own dollar-neutral book — the
+    #: cost-adjusted axis.
     cost_adjusted_ir: float
     #: Step 10's tripwire metric — ``None`` because step 10 is not this step.
     perturb_stability: Optional[float]
@@ -342,34 +344,30 @@ def _check_agreement(
 # -- The node row ----------------------------------------------------------------
 
 
-def _cost_adjusted_ir(returns: PostCostReturns, metrics: NodeMetrics) -> float:
-    """The mean post-cost edge of the equal-weight book — the cost-adjusted axis.
+def _cost_adjusted_ir(book_returns: Mapping[dt.date, float], *, horizon: int) -> float:
+    """The mean post-cost edge of the node's own dollar-neutral book.
 
-    Over the horizon the four scalars were measured over (:attr:`NodeMetrics.horizon`,
-    the shortest the panel covers), for each rebalance date take the equal-weight
-    mean post-cost return across the symbols that date held, then take the mean
-    of those per-date means. That is "the mean post-cost edge of the equal-weight
-    book" — the same panel ``ir_standalone`` is measured over, reduced to its mean
-    rather than its reward-to-variance, so ``cost_adjusted_ir`` and
-    ``ir_standalone`` sit on one axis and the former is the cost-adjusted edge the
-    latter normalizes. It is carried on the node row as the cost-adjusted IR axis
-    §9.1 names, restated from the priced returns rather than recomputed from the
-    metrics, because it is a property of the panel, not of the four scalars.
+    ``book_returns`` is :attr:`NodeMetrics.book_returns` — the same per-date,
+    signal-weighted (``w_i = z_i / Σ|z_j|``) book returns ``ir_standalone``'s
+    mean and population standard deviation reduce from — taken here to its
+    mean alone, not its reward-to-variance.  That is "the mean post-cost edge
+    of the node's own book": ``cost_adjusted_ir`` and ``ir_standalone`` sit on
+    one axis, and the former is the cost-adjusted edge the latter normalizes.
+    It is carried on the node row as the cost-adjusted IR axis §9.1 names,
+    read from the metrics step 8 just measured (the only place the node's
+    own normalized scores are available to weight a book by) rather than
+    recomputed as an equal-weight reduction of the raw panel — that
+    reduction is the market every node scored on the same snapshot would
+    share, not this node's own book.
     """
-    series = returns.series[metrics.horizon]
-    per_date_means = [
-        (sum(series.at(day).values()) / len(series.at(day)))
-        for day in sorted(series.dates())
-        if series.at(day)
-    ]
-    if not per_date_means:
+    if not book_returns:
         raise EvaluatorArtifactError(
-            f"the returns carry no post-cost edge at the metrics horizon "
-            f"({metrics.horizon}), so there is no cost-adjusted IR to state on "
-            "the node row; the node's headline numbers reduce from a priced "
-            "panel, and a panel with no measured date has none"
+            f"the node metrics carry no per-date book returns at the metrics "
+            f"horizon ({horizon}), so there is no cost-adjusted IR to state on "
+            "the node row; the node's headline numbers reduce from a priced, "
+            "signal-weighted book, and a metrics record without one has none"
         )
-    return sum(per_date_means) / len(per_date_means)
+    return math.fsum(book_returns.values()) / len(book_returns)
 
 
 def _assemble_node_row(
@@ -380,14 +378,18 @@ def _assemble_node_row(
     evaluator_hash: str,
     returns: PostCostReturns,
     metrics: NodeMetrics,
+    book_returns: Mapping[dt.date, float],
     marginal: object,
 ) -> NodeRow:
     """The ``node`` row's metric columns, assembled from the measured records.
 
     The evaluator supplies exactly the columns its records measure; the tree
     member supplies the rest. ``ic_mean``, ``ic_tstat``, ``ir_standalone`` and
-    ``turnover`` come from the metrics; ``ir_marginal`` from the marginal IR;
-    ``cost_adjusted_ir`` from the priced returns; and ``perturb_stability`` is
+    ``turnover`` come from the metrics read back from the store (what actually
+    persisted); ``ir_marginal`` from the marginal IR; ``cost_adjusted_ir`` from
+    ``book_returns`` — the per-date book returns the *freshly measured* metrics
+    carry (feature 80's own store does not persist that series, so it cannot be
+    read back the way the four scalars are); and ``perturb_stability`` is
     carried as ``None`` — step 10's tripwire metric, and step 10 is not this
     step's input, so the honest value is "not measured by this step" rather than
     a zero.
@@ -410,7 +412,7 @@ def _assemble_node_row(
         ir_standalone=metrics.ir_standalone,
         turnover=metrics.turnover,
         ir_marginal=marginal.ir_marginal,
-        cost_adjusted_ir=_cost_adjusted_ir(returns, metrics),
+        cost_adjusted_ir=_cost_adjusted_ir(book_returns, horizon=metrics.horizon),
         perturb_stability=None,
     )
 
@@ -647,6 +649,12 @@ class NodeArtifactStore:
             evaluator_hash=evaluator_hash,
             returns=store_returns,
             metrics=store_metrics,
+            # The per-date book returns are not part of the metrics store's
+            # schema (only the four scalars and ic_series are), so they do not
+            # come back on store_metrics; they come from the metrics the
+            # pipeline just measured and handed to this call — already
+            # checked above to name this node and this cost model.
+            book_returns=metrics.book_returns,
             marginal=store_marginal,
         )
         written_node_id, tree_appended = tree_writer.write_node(node_row)
