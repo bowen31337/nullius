@@ -114,8 +114,10 @@ from .bingx_risk import (
     guard_daily_loss,
 )
 from .errors import RouterError
+from .fidelity import FIDELITY_LEG_REJECTED, FidelitySlot, reconcile_fidelity
 from .limiter import RouterRateLimiter
 from .retry import _sleep
+from .submission_health import ORDER_SUBMISSION_REJECTED, RouterSubmissionHealthStore
 from .submission_result import RouterOrderPlacementStore
 
 __all__ = [
@@ -973,6 +975,67 @@ class _WeightSet:
     weights: Mapping[str, Any]
 
 
+def _reconcile_fidelity(
+    *, book_id: str, previous: datetime, database_url: str
+) -> None:
+    """Feature 5 of the VST fidelity spec, run right after step 3's own
+    reconciliation (which it never changes).
+
+    Computes and persists the previous slot's sim-versus-live fidelity
+    (:func:`router.fidelity.reconcile_fidelity`) purely from stores this
+    slot's own earlier runs already wrote — it never places, cancels or
+    closes anything, and opens no socket — then writes the slot's mean gap
+    and reject rate to the ops member's live metrics and records each
+    rejected leg to this member's own submission-health log.
+
+    **Best-effort, the same stance feature 2's alert takes.**  A fault here
+    — the ops member not being importable, a store that cannot be reached —
+    is logged and the slot still completes: this step adds a diagnostic
+    reading, and a diagnostic that cannot be taken must not turn a placed
+    slot into a failed one.
+    """
+
+    try:
+        fidelity = reconcile_fidelity(
+            FidelitySlot(book_id=book_id, rebalance_ts=previous),
+            database_url=database_url,
+        )
+        if fidelity is None:
+            return
+        if fidelity.gap_bps is not None or fidelity.reject_rate is not None:
+            # Deferred past module scope, like every cross-member import in
+            # this package: the factory's workspace scan puts one member's
+            # src/ on sys.path at a time, so a module-scope import here
+            # would make this module's importability depend on scan order.
+            from ops.live_metrics import LiveMetricsStore
+
+            metrics = LiveMetricsStore(database_url)
+            if fidelity.gap_bps is not None:
+                metrics.record("fill_cost_bps", fidelity.gap_bps)
+            if fidelity.reject_rate is not None:
+                metrics.record("reject_rate", fidelity.reject_rate)
+        rejected = [
+            order
+            for order in fidelity.orders
+            if order.leg_state == FIDELITY_LEG_REJECTED
+        ]
+        if rejected:
+            health = RouterSubmissionHealthStore(database_url)
+            for order in rejected:
+                health.record(
+                    outcome=ORDER_SUBMISSION_REJECTED,
+                    symbol=order.symbol,
+                    client_order_id=order.client_order_id,
+                )
+    except Exception as exc:  # noqa: BLE001 - fidelity reconciliation is best-effort
+        log.warning(
+            "%s: the %s slot's fidelity could not be reconciled (%s)",
+            BINGX_REBALANCE_CODE,
+            previous.isoformat(),
+            scrub_bot_path(f"{type(exc).__name__}: {exc}"),
+        )
+
+
 def _run_slot(
     *,
     book: Mapping[str, Any],
@@ -1027,6 +1090,11 @@ def _run_slot(
         rebalance_ts=previous,
         database_url=database_url,
         env=env,
+    )
+    # Feature 5 of the VST fidelity spec: the real sim-versus-live gap,
+    # beside the fee-only reconciliation above, which stays unchanged.
+    _reconcile_fidelity(
+        book_id=book_id, previous=previous, database_url=database_url
     )
 
     # 4 — build and place this slot's plan, idempotently.
