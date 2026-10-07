@@ -13,7 +13,7 @@
        touches_files. -->
 
   <bug index="1" shape="core" severity="critical"
-       touches_files="packages/signal-agent/src/signal_agent/_authoring_prompt.py,packages/signal-agent/src/signal_agent/_llm_author.py,packages/signal-agent/tests/test_prompt_available_streams.py">
+       touches_files="packages/signal-agent/src/signal_agent/_authoring_prompt.py,packages/signal-agent/src/signal_agent/_llm_author.py,packages/signal-agent/tests/test_prompt_available_streams.py,packages/signal-agent/pyproject.toml,uv.lock">
     <title>The live authoring prompt never carries available_streams, so the model requests streams the snapshot does not hold and every such signal returns a constant vector</title>
     <symptoms>
       SignalContract.declaration(snapshot=...) can report available_streams (bug_spec_authoring_contract.xml bug 1), but _authoring_prompt.py builds the prompt's contract section with signal_contract().declaration() and passes no snapshot (line ~247). _llm_author.py has no snapshot to hand it. The live prompt therefore never says which streams exist, and the model chose 1h bars and borrow data, which this snapshot lacks.
@@ -29,8 +29,8 @@
     </expected>
     <actual>Root cause: the snapshot argument added to declaration() was never threaded through the prompt builder or the composed author.</actual>
     <constraints>
-      signal-agent imports no other member except through the paths it already uses (contract, providers, snapshot via its public API); it does not import orchestrator
-      No file outside the three listed is edited
+      signal-agent may add the snapshot workspace member to its pyproject dependencies (and regenerate uv.lock with `uv lock`) to read the manifest through snapshot's public API; it does not import orchestrator
+      No file outside the five listed is edited
       Do not edit docs/user-journeys/
     </constraints>
   </bug>
