@@ -84,12 +84,11 @@ class TestTheCommittedCeiling:
 
     def test_the_payload_stack_is_admitted(self) -> None:
         """§5.1's contract is polars-native (``bars()`` returns
-        ``pl.DataFrame``, ``signal()`` returns ``pl.Series``), the numeric
-        layer sits beneath it, and the window arrives as Arrow IPC — a
+        ``pl.DataFrame``, ``signal()`` returns ``pl.Series``) and the window arrives as Arrow IPC — a
         ceiling that refused them would refuse every signal the loop can
         legally write."""
         ceiling = committed_imports_allowlist()
-        for term in ("polars", "polars.DataFrame", "numpy", "numpy.linalg", "pyarrow"):
+        for term in ("polars", "polars.DataFrame", "pyarrow"):
             assert ceiling.covers(term), term
 
     def test_the_world_the_box_refuses_is_absent(self) -> None:

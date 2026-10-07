@@ -151,16 +151,16 @@ def test_decode_request_refuses_bad_magic() -> None:
 
 
 def test_agent_allowlist_matches_committed_sandbox_document() -> None:
-    # A subset, not an exact match: the committed document also serves a
-    # static admission screen (orchestrator._evaluate's pre-flight check)
-    # that has no installed runtime to answer to, so it still names `numpy`.
-    # This module's ceiling gates code about to *run* under the evaluation
-    # runtime, which does not install numpy — see
+    # An exact match: the committed document behind the host-side static
+    # screen and this child's ceiling are one allowlist in two spellings
+    # (bug_spec_authoring_contract.xml bug 2), so a module the runtime cannot
+    # import is refused up front rather than charged and crashed in the box.
+    # Neither names numpy: the evaluation runtime does not install it — see
     # `test_every_allowlisted_module_is_importable_in_the_child` below.
     document = json.loads(_SANDBOX_ALLOWLIST_PATH.read_text(encoding="utf-8"))
     assert document["policy"] == "sandbox-imports"
-    assert set(child.AGENT_IMPORTS_ALLOWLIST) <= set(document["allow"])
-    assert "numpy" in document["allow"]
+    assert set(child.AGENT_IMPORTS_ALLOWLIST) == set(document["allow"])
+    assert "numpy" not in document["allow"]
     assert "numpy" not in child.AGENT_IMPORTS_ALLOWLIST
 
 

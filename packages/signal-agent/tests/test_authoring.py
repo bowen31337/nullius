@@ -281,6 +281,14 @@ def test_the_declaration_carries_facts_and_no_guidance(law: SignalContract) -> N
         "contract_version",
         "accessors",
         "purity",
+        # Facts added by bug_spec_authoring_contract.xml bug 1: how to call
+        # the accessors, what they return, what the box may import, and one
+        # executable ABI example. None of them names a theme, a mechanism or
+        # what has been tried, so the declaration still carries no guidance.
+        "accessors_detail",
+        "allowed_imports",
+        "universe",
+        "example_signal",
     }
 
 

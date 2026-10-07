@@ -211,7 +211,6 @@ COMMITTED_ALLOWLIST_TERMS: tuple[str, ...] = (
     "dataclasses",
     "__future__",
     POLARS,
-    NUMPY,
     PYARROW,
 )
 
@@ -252,7 +251,7 @@ SOURCE_WITHIN: str = (
     "import math\n"
     "from decimal import Decimal\n"
     "import polars as pl\n"
-    "from numpy import linalg\n"
+    "import pyarrow as pa\n"
 )
 
 
