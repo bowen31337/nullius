@@ -99,7 +99,7 @@ from __future__ import annotations
 
 import enum
 import hashlib
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Final
 
 from .errors import AgentSourceError
@@ -393,7 +393,9 @@ def _accessors_detail(contract: Any) -> dict[str, dict[str, Any]]:
             ),
             "returns_columns": contract.BARS_REQUIRED_COLUMNS,
             "returns_notes": (
-                "extra OHLCV columns pass through verbatim; in the sealed "
+                "extra OHLCV columns pass through verbatim, but only the "
+                "ones the snapshot holds: stream_columns lists them, so "
+                "never assume high, low or open exist; in the sealed "
                 "snapshot open_time is a UTC timestamp while close and "
                 "volume arrive as venue-spelled strings (e.g. \"61234.50\") "
                 "-- cast close to Float64 before arithmetic"
@@ -567,6 +569,53 @@ def _stream_frequencies(
 #: and the one frequency it serves it at (its ``bars:1d`` frame).
 _EVALUATOR_BARS_STREAM = "bars"
 _EVALUATOR_BARS_FREQUENCY = "1d"
+
+
+def _parquet_columns(path: Any) -> tuple[str, ...]:
+    """One Parquet file's column names, or ``()`` when it cannot be read.
+
+    Best-effort, like :func:`_parquet_interval`: this is a sample read for a
+    fact in the prompt, not a correctness gate.
+    """
+    try:
+        import pyarrow.parquet as pq
+
+        return tuple(pq.read_schema(str(path)).names)
+    except Exception:  # noqa: BLE001 - a foreign file's bytes, read best-effort
+        return ()
+
+
+def _stream_columns(
+    snapshot: Any, streams: Mapping[str, Any]
+) -> dict[str, tuple[str, ...]]:
+    """``{stream: (column names,)}`` from the first file of each stream's
+    first symbol.
+
+    Campaign bb0f1919's roots assumed ``high``/``low``, which the bars note's
+    "extra OHLCV columns" implied, but the sealed bars carry only
+    ``close``/``volume``. One root crashed and two fell back to constant
+    scores. The prompt states the columns that are actually there. The
+    partition columns ``symbol``/``date`` are not in the file schema, so
+    ``symbol`` is added back when the stream's partitions are by symbol.
+    """
+    out: dict[str, tuple[str, ...]] = {}
+    for stream in streams:
+        symbols = snapshot.partitions(stream)
+        if not symbols:
+            out[stream] = ()
+            continue
+        columns: tuple[str, ...] = ()
+        for date in snapshot.dates(stream, symbols[0]):
+            for path in snapshot.select(stream, symbols[0], date):
+                columns = _parquet_columns(path)
+                if columns:
+                    break
+            if columns:
+                break
+        if columns and "symbol" not in columns:
+            columns = ("symbol", *columns)
+        out[stream] = columns
+    return out
 
 
 def _available_streams(snapshot: Any) -> dict[str, tuple[str, ...]] | None:
@@ -851,6 +900,7 @@ class SignalContract:
         streams = _available_streams(snapshot)
         if streams is not None:
             declared["available_streams"] = streams
+            declared["stream_columns"] = _stream_columns(snapshot, streams)
         return declared
 
 

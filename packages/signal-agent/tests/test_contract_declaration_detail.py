@@ -132,6 +132,28 @@ def test_available_streams_reflects_a_tmp_sealed_snapshot_of_1d_bars(
     assert declaration["available_streams"] == {"bars": ("1d",)}
 
 
+def test_stream_columns_names_the_snapshots_actual_bar_columns(
+    law: SignalContract, sealed_mount
+) -> None:
+    """Campaign bb0f1919: roots assumed high/low, which the sealed bars do not
+    carry. The declaration names the columns that are actually there."""
+    pq = pytest.importorskip("pyarrow.parquet")
+    symbol = sealed_mount.partitions("bars")[0]
+    date = sealed_mount.dates("bars", symbol)[0]
+    path = sealed_mount.select("bars", symbol, date)[0]
+    names = tuple(pq.read_schema(str(path)).names)
+    expected = names if "symbol" in names else ("symbol", *names)
+
+    declaration = law.declaration(snapshot=sealed_mount)
+    assert declaration["stream_columns"] == {"bars": expected}
+    assert "high" not in declaration["stream_columns"]["bars"]
+    assert "stream_columns" in declaration["accessors_detail"]["bars"]["returns_notes"]
+
+
+def test_stream_columns_is_absent_with_no_context_configured(law: SignalContract) -> None:
+    assert "stream_columns" not in law.declaration()
+
+
 # -- allowed_imports: the sandbox child's own ceiling, not the stale JSON -----
 
 
