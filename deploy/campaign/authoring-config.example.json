@@ -1,5 +1,4 @@
 {
-  "_comment": "AuthoringConfig for the research loop's two LLM roles. Copy to authoring-config.json and set your pinned (provider/model/version) triples. A version must name a fixed snapshot, never a rolling alias like 'latest' (the pin rule refuses those).",
   "root_tier": [
     "anthropic/claude-opus-5/20260401",
     "openai/gpt-5.6-sol/2026-03-01",
@@ -7,7 +6,8 @@
   ],
   "depth": "deepseek/deepseek-flash/v4.1",
   "policy": "anthropic/claude-opus-5/20260401",
-  "temperature": 0.7,
+  "temperature": null,
+  "effort": "high",
   "max_tokens": 8192,
   "max_input_tokens": 1000000,
   "max_output_tokens": 200000
