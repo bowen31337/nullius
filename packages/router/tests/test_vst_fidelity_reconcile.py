@@ -383,7 +383,7 @@ def test_a_rejected_leg_increments_the_slots_reject_rate(
     _fill(
         rejected,
         symbol="ETH-USDT",
-        status="CANCELED",
+        status="REJECTED",
         executed_quantity=Decimal(0),
         average_price=Decimal(0),
         original_quantity=Decimal(1),
@@ -623,9 +623,9 @@ def test_bingx_rebalance_writes_live_metrics_and_submission_health_for_a_rejecte
     """The spec's second half: step 3's own wiring of feature 5's answer.
 
     The morning slot places two legs; the afternoon slot reconciles it with
-    one leg filled and the other read back as a zero-fill ``CANCELED``
-    order — the ordinary fate of a PostOnly leg the price never reached
-    before the next slot's own sweep cancelled it.  Step 3 must then write
+    one leg filled and the other read back as a venue ``REJECTED`` order.
+    (A zero-fill ``CANCELED`` leg is ``unfilled``, not a reject:
+    bug_spec_vst_fidelity_accounting.xml.)  Step 3 must then write
     the slot's gap and reject rate to the ops member's live metrics and
     record the rejected leg to this member's own submission-health log —
     without changing the existing reconciliation's own answer or the
@@ -661,7 +661,7 @@ def test_bingx_rebalance_writes_live_metrics_and_submission_health_for_a_rejecte
             "symbol": "ETH-USDT",
             "clientOrderId": eth_key,
             "type": "LIMIT",
-            "status": "CANCELED",
+            "status": "REJECTED",
             "origQty": str(eth_record.quantity),
             "executedQty": "0",
             "avgPrice": "0",
