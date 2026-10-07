@@ -1,0 +1,206 @@
+{
+  "code": 0,
+  "msg": "",
+  "data": [
+    {
+      "symbol": "1000PEPE-USDT",
+      "incomeType": "FUNDING_FEE",
+      "income": "-0.02998027",
+      "asset": "VST",
+      "info": "Funding Fee",
+      "time": 1791302438000,
+      "tranId": "1790058112381879764_513_15726875",
+      "tradeId": "1790058112381879764_513_15726874"
+    },
+    {
+      "symbol": "DOGE-USDT",
+      "incomeType": "FUNDING_FEE",
+      "income": "0.04983360",
+      "asset": "VST",
+      "info": "Funding Fee",
+      "time": 1791302436000,
+      "tranId": "1790058112381879764_513_15719685",
+      "tradeId": "1790058112381879764_513_15719684"
+    },
+    {
+      "symbol": "SOL-USDT",
+      "incomeType": "FUNDING_FEE",
+      "income": "-0.10001085",
+      "asset": "VST",
+      "info": "Funding Fee",
+      "time": 1791302433000,
+      "tranId": "1790058112381879764_513_15707985",
+      "tradeId": "1790058112381879764_513_15707984"
+    },
+    {
+      "symbol": "ETH-USDT",
+      "incomeType": "FUNDING_FEE",
+      "income": "0.00749962",
+      "asset": "VST",
+      "info": "Funding Fee",
+      "time": 1791302432000,
+      "tranId": "1790058112381879764_513_15701810",
+      "tradeId": "1790058112381879764_513_15701809"
+    },
+    {
+      "symbol": "BTC-USDT",
+      "incomeType": "FUNDING_FEE",
+      "income": "-0.04512510",
+      "asset": "VST",
+      "info": "Funding Fee",
+      "time": 1791302431000,
+      "tranId": "1790058112381879764_513_15697338",
+      "tradeId": "1790058112381879764_513_15697337"
+    },
+    {
+      "symbol": "1000PEPE-USDT",
+      "incomeType": "FUNDING_FEE",
+      "income": "-0.03021709",
+      "asset": "VST",
+      "info": "Funding Fee",
+      "time": 1791273635000,
+      "tranId": "1790058112381879764_513_15300554",
+      "tradeId": "1790058112381879764_513_15300553"
+    },
+    {
+      "symbol": "DOGE-USDT",
+      "incomeType": "FUNDING_FEE",
+      "income": "0.04998493",
+      "asset": "VST",
+      "info": "Funding Fee",
+      "time": 1791273634000,
+      "tranId": "1790058112381879764_513_15293554",
+      "tradeId": "1790058112381879764_513_15293553"
+    },
+    {
+      "symbol": "SOL-USDT",
+      "incomeType": "FUNDING_FEE",
+      "income": "-0.02119554",
+      "asset": "VST",
+      "info": "Funding Fee",
+      "time": 1791273631000,
+      "tranId": "1790058112381879764_513_15281936",
+      "tradeId": "1790058112381879764_513_15281935"
+    },
+    {
+      "symbol": "ETH-USDT",
+      "incomeType": "FUNDING_FEE",
+      "income": "0.14883295",
+      "asset": "VST",
+      "info": "Funding Fee",
+      "time": 1791273630000,
+      "tranId": "1790058112381879764_513_15276021",
+      "tradeId": "1790058112381879764_513_15276020"
+    },
+    {
+      "symbol": "BTC-USDT",
+      "incomeType": "FUNDING_FEE",
+      "income": "-0.13190732",
+      "asset": "VST",
+      "info": "Funding Fee",
+      "time": 1791273629000,
+      "tranId": "1790058112381879764_513_15271720",
+      "tradeId": "1790058112381879764_513_15271719"
+    },
+    {
+      "symbol": "1000PEPE-USDT",
+      "incomeType": "FUNDING_FEE",
+      "income": "-0.02976043",
+      "asset": "VST",
+      "info": "Funding Fee",
+      "time": 1791244838000,
+      "tranId": "1790058112381879764_513_14896676",
+      "tradeId": "1790058112381879764_513_14896675"
+    },
+    {
+      "symbol": "DOGE-USDT",
+      "incomeType": "FUNDING_FEE",
+      "income": "0.04994352",
+      "asset": "VST",
+      "info": "Funding Fee",
+      "time": 1791244836000,
+      "tranId": "1790058112381879764_513_14887421",
+      "tradeId": "1790058112381879764_513_14887419"
+    },
+    {
+      "symbol": "SOL-USDT",
+      "incomeType": "FUNDING_FEE",
+      "income": "-0.01848171",
+      "asset": "VST",
+      "info": "Funding Fee",
+      "time": 1791244833000,
+      "tranId": "1790058112381879764_513_14875334",
+      "tradeId": "1790058112381879764_513_14875333"
+    },
+    {
+      "symbol": "ETH-USDT",
+      "incomeType": "FUNDING_FEE",
+      "income": "0.01867713",
+      "asset": "VST",
+      "info": "Funding Fee",
+      "time": 1791244831000,
+      "tranId": "1790058112381879764_513_14867767",
+      "tradeId": "1790058112381879764_513_14867766"
+    },
+    {
+      "symbol": "BTC-USDT",
+      "incomeType": "FUNDING_FEE",
+      "income": "-0.02197111",
+      "asset": "VST",
+      "info": "Funding Fee",
+      "time": 1791244830000,
+      "tranId": "1790058112381879764_513_14864724",
+      "tradeId": "1790058112381879764_513_14864723"
+    },
+    {
+      "symbol": "1000PEPE-USDT",
+      "incomeType": "FUNDING_FEE",
+      "income": "-0.02930105",
+      "asset": "VST",
+      "info": "Funding Fee",
+      "time": 1791216044000,
+      "tranId": "1790058112381879764_513_14497525",
+      "tradeId": "1790058112381879764_513_14497524"
+    },
+    {
+      "symbol": "DOGE-USDT",
+      "incomeType": "FUNDING_FEE",
+      "income": "0.04899429",
+      "asset": "VST",
+      "info": "Funding Fee",
+      "time": 1791216042000,
+      "tranId": "1790058112381879764_513_14492523",
+      "tradeId": "1790058112381879764_513_14492521"
+    },
+    {
+      "symbol": "SOL-USDT",
+      "incomeType": "FUNDING_FEE",
+      "income": "-0.00019751",
+      "asset": "VST",
+      "info": "Funding Fee",
+      "time": 1791216039000,
+      "tranId": "1790058112381879764_513_14481079",
+      "tradeId": "1790058112381879764_513_14481077"
+    },
+    {
+      "symbol": "ETH-USDT",
+      "incomeType": "FUNDING_FEE",
+      "income": "0.01638763",
+      "asset": "VST",
+      "info": "Funding Fee",
+      "time": 1791216037000,
+      "tranId": "1790058112381879764_513_14471971",
+      "tradeId": "1790058112381879764_513_14471969"
+    },
+    {
+      "symbol": "BTC-USDT",
+      "incomeType": "FUNDING_FEE",
+      "income": "-0.07315812",
+      "asset": "VST",
+      "info": "Funding Fee",
+      "time": 1791216036000,
+      "tranId": "1790058112381879764_513_14468821",
+      "tradeId": "1790058112381879764_513_14468820"
+    }
+  ]
+}

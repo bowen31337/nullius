@@ -1,0 +1,60 @@
+{
+  "code": 0,
+  "msg": "",
+  "data": {
+    "order": {
+      "symbol": "ETH-USDT",
+      "orderId": 2107744073705066496,
+      "side": "SELL",
+      "positionSide": "BOTH",
+      "type": "LIMIT",
+      "origQty": "0.008",
+      "price": "2632.84",
+      "executedQty": "0.008",
+      "avgPrice": "2632.84",
+      "cumQuote": "21",
+      "stopPrice": "",
+      "profit": "0.0000",
+      "commission": "-0.004213",
+      "status": "FILLED",
+      "time": 1791360321000,
+      "updateTime": 1791360344000,
+      "clientOrderId": "9800eac437384e9c28f3d1ca74b787b283e8c53f",
+      "leverage": "1X",
+      "takeProfit": {
+        "type": "TAKE_PROFIT",
+        "quantity": 0,
+        "stopPrice": 0,
+        "price": 0,
+        "workingType": "",
+        "stopGuaranteed": "false"
+      },
+      "stopLoss": {
+        "type": "STOP",
+        "quantity": 0,
+        "stopPrice": 0,
+        "price": 0,
+        "workingType": "",
+        "stopGuaranteed": "false"
+      },
+      "advanceAttr": 0,
+      "positionID": 2106559153397829634,
+      "takeProfitEntrustPrice": 0,
+      "stopLossEntrustPrice": 0,
+      "orderType": "",
+      "workingType": "MARK_PRICE",
+      "onlyOnePosition": true,
+      "reduceOnly": false,
+      "postOnly": false,
+      "stopGuaranteed": "false",
+      "triggerOrderId": 0,
+      "trailingStopRate": 0,
+      "trailingStopDistance": 0,
+      "is_twap": false,
+      "mainOrderId": "",
+      "priceRate": "",
+      "actPrice": "",
+      "closePosition": "false"
+    }
+  }
+}

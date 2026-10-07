@@ -1,0 +1,204 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — VST fidelity harness: measure live fills against the cost model (M4 groundwork)</project_name>
+  <addition_summary>
+    PRD §11.1 makes the fidelity harness M4's deliverable: prove that live
+    fills, latency, partial fills, rounding and funding match the simulator to
+    within a few basis points. The BingX VST paper bot already trades every 4
+    hours, but an audit on 2026-10-07 found that its forward_cost_reconciliation
+    is not a simulator check:
+    - modeled_cost_bps is only the published fee rate. The cost-model member
+      (book_walk, passive_fill, queue_penalty, latency) is never consulted.
+    - realized is measured against the order's own limit, so a passive fill
+      always shows 0 slippage (hence rows of exactly 0.0).
+    - The decision-time mark, latency, fill ratio, actual commission, rejects,
+      rounding drift and funding are not recorded, and nothing writes the ops
+      live metrics.
+    This spec records what is needed per order and per slot, prices the
+    expected cost with the cost model before each trade, ingests funding, and
+    reports the fidelity distributions. M4 can then start with months of
+    fidelity data already accumulated.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / SQLite at DATABASE_URL (default ~/.local/share/nullius/vst.db for the bot) / pytest.</stack>
+    <test_baseline>main after bug_spec_pit_universe.xml: gate command (uv run --all-packages pytest -n 4 --dist loadfile) 1648 passed; router member suite green.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md, especially its BingX VST section:
+      - Only bingx_flatten --confirm and the daily-loss guard close positions.
+        Nothing here places, cancels or closes anything new.
+      - Live API shapes are pinned in packages/router/tests/fixtures/bingx_vst/live/.
+        Extend those fixtures; never guess a venue shape.
+      - Tests never reach the network or read a credential, and pass under
+        pytest-xdist with tmp stores.
+      - A router store adds columns to an existing table with a probe-then-ALTER
+        (PRAGMA table_info, then ALTER TABLE ... ADD COLUMN), never a rebuild,
+        so the live vst.db upgrades in place.
+      House CLI pattern as in router/bingx_heartbeat.py.
+
+      Pinned live shapes, captured 2026-10-07 from the VST account by read-only
+      signed GETs:
+      - live/query_order_filled.json: GET /openApi/swap/v2/trade/order for a
+        FILLED LIMIT ETH-USDT order. data.order carries origQty, executedQty,
+        price, avgPrice, commission (negative when charged, e.g. "-0.004213"),
+        status "FILLED", time (placement, ms) and updateTime (last fill, ms).
+        postOnly reads false even for the bot's PostOnly orders, which use
+        timeInForce instead.
+      - live/income_funding_fee.json: GET /openApi/swap/v2/user/income with
+        incomeType=FUNDING_FEE. data is a list of {symbol, incomeType
+        "FUNDING_FEE", income (signed string), asset "VST", info, time (ms),
+        tranId, tradeId}.
+
+      Existing pieces:
+      - router/bingx_mirror.py: build_mirror_plan, reprice_passive_order
+        (~:1084), _order_recorder and _place_one (~:1390).
+      - router/submission_result.py: router_order_record (client_order_id,
+        book_id, rebalance_ts, symbol, side, type, quantity, reference_price,
+        placed_at).
+      - router/bingx_reconcile.py: reconcile_rebalance_fill_costs (~:646-870)
+        and read_back_orders (~:759).
+      - router/bingx_orders.py: VSTOrderStatus parses status, original and
+        executed quantity, and avgPrice.
+      - router/bingx_rebalance.py: step 3 reconciles the previous slot (~:1024).
+      - router/submission_health.py: RouterSubmissionHealthStore.record (no
+        production caller).
+      - ops/live_metrics.py: LiveMetricsStore (fill_cost_bps, reject_rate; no
+        production writer).
+      - cost-model member: book_walk.py, passive_fill.py, queue_penalty.py,
+        latency.py.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Per-Order Capture">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/router/pyproject.toml,uv.lock">
+        System declares the router member's dependency on the cost-model workspace member, so that `python -c "import router, cost_model"` returns without ImportError in a fresh `uv sync --all-packages` environment.
+        - The cost-model member is added to packages/router/pyproject.toml
+          dependencies, and uv.lock is regenerated with `uv lock`. No other
+          dependency changes.
+      </feature>
+      <feature index="2" shape="core" depends_on="1"
+               touches_files="packages/router/src/router/bingx_mirror.py,packages/router/src/router/submission_result.py,packages/router/tests/test_vst_decision_record.py">
+        System saves each placed order's decision-time facts and its pre-trade expected cost to router_order_record, so that every order row returns what the simulator predicted before the venue answered.
+        - New nullable columns, added by probe-then-ALTER:
+          - decision_mark: the premiumIndex mark the plan was built from
+          - best_bid, best_ask: from the depth read used for repricing, null
+            for MARKET legs
+          - pre_reprice_limit: the limit before reprice_passive_order
+          - target_quantity: the quantity before step/tick rounding
+          - expected_cost_bps: the cost model's pre-trade estimate. For
+            MARKET legs this is book_walk over the recorded depth plus the
+            taker fee. For LIMIT legs it is passive_fill's expected cost with
+            queue_penalty plus the maker fee. Null when the cost model
+            refuses, never 0.
+          - cost_model_version
+          - sent_at, acked_at: UTC ISO-8601 around the place call in _place_one
+        - Existing rows and columns are unchanged, and placement behaviour is
+          identical: no order differs in symbol, side, type, quantity, price
+          or client id.
+        - Tests use the pinned plan fixtures: every placed leg's row carries
+          the new fields; a MARKET leg's best_bid/best_ask are null; a cost
+          model refusal gives a null expected_cost_bps; an existing vst.db
+          without the columns upgrades in place; the placement bodies are
+          byte-identical to before.
+      </feature>
+      <feature index="3" shape="core" depends_on=""
+               touches_files="packages/router/src/router/bingx_orders.py,packages/router/src/router/bingx_reconcile.py,packages/router/tests/test_vst_fill_record.py">
+        System saves each order's final venue state to a new append-only router_order_fill table at reconciliation, so that every order of a reconciled slot returns its fill ratio, average price, actual commission and fill latency.
+        - VSTOrderStatus also parses commission (signed), time and updateTime
+          (ms), and keeps the raw status, matching the pinned
+          query_order_filled.json and query_order_pending.json.
+        - read_back_orders' results are persisted once per client_order_id
+          (idempotent):
+          - status
+          - original_quantity, executed_quantity, fill_ratio
+          - avg_price
+          - commission (as the venue reports it) and commission_bps (of
+            filled notional, positive meaning a cost)
+          - placed_ms and last_fill_ms from the venue, place_to_fill_ms
+          - read_at
+          Partially filled orders are recorded with their partial executed
+          quantity before step 2 of the next slot cancels the remainder.
+        - Tests: the pinned FILLED fixture yields fill_ratio 1.0, the
+          commission bps and a place_to_fill_ms of 23000. A PENDING order
+          yields fill_ratio 0. A re-read writes no duplicate. No network.
+      </feature>
+      <feature index="4" shape="core" depends_on=""
+               touches_files="packages/router/src/router/bingx_client.py,packages/router/src/router/bingx_funding.py,packages/router/tests/test_vst_funding.py">
+        System saves the VST account's funding-fee income to a router_funding_income table, so that each slot's funding cost returns as a stored, per-symbol figure.
+        - BingXClient.income(income_type, *, start_ms=None, end_ms=None,
+          limit=None) is a signed GET on /openApi/swap/v2/user/income,
+          returning the data list.
+        - router.bingx_funding.ingest_funding(client, store, *, since_ms)
+          stores each FUNDING_FEE row (symbol, income as Decimal text, asset,
+          time, tranId), idempotent on tranId, and returns the count of new
+          rows.
+        - Tests use the pinned income_funding_fee.json through a stub
+          transport: rows are stored, re-ingest is idempotent, and a non-zero
+          code is refused with the client's existing refusal. No network.
+      </feature>
+    </category>
+    <category name="Fidelity Reconciliation and Reporting">
+      <feature index="5" shape="core" depends_on="2,3,4"
+               touches_files="packages/router/src/router/fidelity.py,packages/router/src/router/bingx_rebalance.py,packages/router/tests/test_vst_fidelity_reconcile.py">
+        System compares every filled order's realized cost against the cost model's pre-trade estimate and saves the per-order and per-slot fidelity, so that each reconciled slot returns real sim-versus-live gaps rather than fee-only figures.
+        - router.fidelity.reconcile_fidelity(slot, *, database_url) computes,
+          per filled order:
+          - realized_cost_bps = signed slippage of avg_price against
+            decision_mark + commission_bps
+          - expected_cost_bps (from feature 2)
+          - gap_bps = realized minus expected
+          - maker (fill at the limit, or a negative or zero fee rate implying
+            maker)
+          - place_to_fill_ms
+          Per slot it computes the notional-weighted means, the slot's funding
+          bps over its notional from feature 4, and counts of legs, fills,
+          partials and rejects. It writes router_order_fidelity and
+          router_slot_fidelity (append-only, idempotent per slot).
+        - bingx_rebalance step 3 calls it after the existing reconciliation
+          (which stays unchanged). It then writes fill_cost_bps (the slot's
+          mean gap_bps) and reject_rate to ops LiveMetricsStore, and records
+          each rejected leg via RouterSubmissionHealthStore.record.
+        - It never places, cancels or closes, and the slot's exit codes are
+          unchanged.
+        - A reconciliation fault is logged and the slot still completes, the
+          same stance as the alert path.
+        - Tests over fixtures: a MARKET fill slipping 5 bps against the mark,
+          with a 4 bps expected cost, gives gap 1 bp plus fees. A PostOnly fill
+          repriced away from the mark shows the passive cost the old
+          reconciliation hid. Funding is attributed. A rejected leg increments
+          reject_rate and submission health. The step is idempotent.
+      </feature>
+      <feature index="6" shape="core" depends_on="5"
+               touches_files="packages/router/src/router/vst_fidelity.py,packages/router/tests/test_vst_fidelity_cli.py,run.sh">
+        System reports the fidelity distributions from `python -m router.vst_fidelity [--since YYYY-MM-DD] [--book ID]` and displays one JSON object.
+        - The object carries:
+          - n_orders, n_slots
+          - gap_bps mean with a 95% bootstrap interval (seeded, so it is
+            deterministic)
+          - realized_cost_bps and expected_cost_bps p50/p95
+          - place_to_fill_ms p50/p95/p99
+          - fill_ratio mean, maker_share, reject_rate
+          - rounding drift (target versus sent quantity, in bps of notional)
+          - funding_bps_per_day
+          - a within_tolerance flag against the PRD §11.1 bar: |gap_bps mean|
+            at most 3 bps, with the threshold a documented module constant
+        - An empty store gives n_orders 0 and exit 0. A missing DATABASE_URL
+          exits 2.
+        - run.sh gains `vst-fidelity` (no op run; it reads the store only,
+          with DATABASE_URL defaulting to ~/.local/share/nullius/vst.db as the
+          other vst verbs do). It is listed by `./run.sh help`.
+        - Tests cover the distributions over a seeded fixture store, the
+          empty store, the missing DATABASE_URL and the tolerance flag.
+      </feature>
+    </category>
+  </features_to_add>
+  <integration_points>
+    Feature 1 comes first. Features 2, 3 and 4 capture; feature 5 joins them;
+    feature 6 reports.
+  </integration_points>
+  <out_of_scope>
+    Changing what the bot trades or how it places orders. Live capital.
+    Running evaluation inside the evaluator image. WebSocket staleness and
+    rate-limit headroom (their writers are later work).
+  </out_of_scope>
+</project_specification>
