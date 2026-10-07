@@ -224,6 +224,26 @@ def _pin_parts(pin: object) -> tuple[str, str, str]:
     return provider, model, version
 
 
+def _pin_effort(pin: object) -> str | None:
+    """Read the ``effort`` a pin carries, or ``None`` when it names none.
+
+    Read on ``object.__getattribute__``, the same defence :func:`_pin_parts`
+    applies to the triple: an arbitrary object's ``__getattr__`` must not be
+    able to fabricate an effort level for a pin that never stated one.  A
+    plain :class:`~providers.ModelPin` has no such attribute at all and
+    answers ``None`` here, exactly as it would for the triple's own optional
+    facts — this is the one extra attribute :class:`~providers.AuthoringSession`
+    attaches to the pin it hands its resolver, so the deployment's configured
+    authoring effort reaches :class:`~providers._anthropic.AnthropicProvider`
+    without widening this registry's ``pin -> Provider`` call shape.
+    """
+    try:
+        effort = object.__getattribute__(pin, "effort")
+    except AttributeError:
+        return None
+    return effort if isinstance(effort, str) else None
+
+
 def _required_env(env: Mapping[str, str], name: str, vendor: str) -> str:
     """Read a variable a vendor cannot be called without, refusing if unset.
 
@@ -273,7 +293,11 @@ def live_provider(
     read from.  The built backend is constructed for ``pin.model`` and that
     alone: the wire model is the pin's model, while the pin's version is
     provenance the caller checks after the answer with :func:`require_served`,
-    never sends to the vendor.
+    never sends to the vendor.  For the ``anthropic`` vendor, an ``effort``
+    attribute the pin carries (:func:`_pin_effort`; absent on a plain
+    :class:`~providers.ModelPin`) is threaded into
+    :class:`~providers._anthropic.AnthropicProvider` unchanged — the
+    authoring session is the caller that attaches one.
 
     ``env`` defaults to :data:`os.environ` and is read at call time, so a
     caller — and every test — may hand a mapping of fake values and no real
@@ -293,7 +317,9 @@ def live_provider(
         api_key = _required_env(
             environment, LIVE_PROVIDER_ENV_VARS[_ANTHROPIC], _ANTHROPIC
         )
-        return AnthropicProvider(api_key, model=model, transport=transport)
+        return AnthropicProvider(
+            api_key, model=model, effort=_pin_effort(pin), transport=transport
+        )
     if provider_name in _OPENAI_COMPAT_VENDORS:
         base_url: str | None = None
         if provider_name == _SELF_HOSTED:

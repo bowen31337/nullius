@@ -98,6 +98,7 @@ resolver and a dict of providers, and imports nothing outside this package.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Final
 
 from ._authoring import AUTHORING_ROLES, AuthoringConfig, AuthoringConfigError
@@ -163,6 +164,30 @@ def role_for_depth(child_depth: object) -> str:
             f"negative depth names no role in the tree."
         )
     return ROOT_ROLE if child_depth <= ROOT_TIER_MAX_DEPTH else DEPTH_ROLE
+
+
+@dataclass(frozen=True)
+class _EffortPin:
+    """A pin that also states the authoring config's ``effort``, for one resolve call.
+
+    The resolver a session is built over is a ``pin -> Provider`` callable of
+    exactly one argument — the composed application's own
+    ``LiveProviderResolver.resolve`` is that shape, and widening it is outside
+    this module's reach.  So the config's ``effort`` is threaded through the
+    *pin* instead: this stand-in carries the same three parts
+    :func:`providers._live.live_provider` dispatches on (read, like a real
+    pin, on plain attributes), plus ``effort``, which that registry's
+    :func:`providers._live._pin_effort` reads and a plain
+    :class:`~providers.ModelPin` simply does not have.  Built fresh per
+    :meth:`AuthoringSession._bind` call rather than carried on the pin itself,
+    so :class:`~providers.ModelPin` stays the three-part triple every other
+    reader of a pin already knows.
+    """
+
+    provider: str
+    model: str
+    version: str
+    effort: str | None
 
 
 class AuthoringSession:
@@ -321,8 +346,28 @@ class AuthoringSession:
         no backend) propagate unchanged, because they name the variable an
         operator acts on and re-wrapping them here would put a vaguer sentence
         in front of it.
+
+        When the config names no ``effort`` the resolver sees ``pin`` exactly
+        as handed in — unchanged, for the resolver and for every existing
+        caller of this session.  When it does, the resolver sees a
+        :class:`_EffortPin` carrying it instead, so the live registry can
+        thread the configured effort into :class:`~providers._anthropic.AnthropicProvider`
+        without this session's resolver contract (``pin -> Provider``, one
+        argument) ever changing — see :class:`_EffortPin` for why the pin,
+        and not the call, is where that value rides along.
         """
-        inner = self._resolve(pin)
+        effort = self._config.effort
+        resolved_pin = (
+            pin
+            if effort is None
+            else _EffortPin(
+                provider=pin.provider,
+                model=pin.model,
+                version=pin.version,
+                effort=effort,
+            )
+        )
+        inner = self._resolve(resolved_pin)
         return BudgetedProvider(
             inner,
             max_input_tokens=self._config.max_input_tokens,
