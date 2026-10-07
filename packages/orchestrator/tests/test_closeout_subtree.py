@@ -419,3 +419,53 @@ def test_roots_only_campaign_behaves_exactly_as_before(
     assert guard is not None
     assert guard.null_count == 3
     assert guard.real_count == 3
+
+
+# -- Live stores: roots carry a NULL fail_class -------------------------------
+
+
+def test_roots_with_a_null_fail_class_and_metrics_count_as_evaluated(
+    database_url: str, tmp_path: Path
+) -> None:
+    """Campaign 90d95c6d: the root evaluation path writes metrics but no
+    fail_class, while children carry 'ok'. Close-out dropped all ten scored
+    roots, and the KS guard saw one real score. NULL with metrics is
+    evaluated; a named failure is not."""
+    import sqlite3
+
+    campaign_id = str(uuid.uuid4())
+    discovery.create_campaign(
+        discovery.TYPE_R_CAMPAIGN_TYPE, 4, campaign_id=campaign_id, database_url=database_url,
+    )
+    with sqlite3.connect(_path_of(database_url)) as connection:
+        connection.execute("ALTER TABLE node ADD COLUMN fail_class TEXT")
+
+    roots = {str(uuid.uuid4()): is_null for is_null in (True, True, False, False)}
+    for index, (root, _is_null) in enumerate(roots.items()):
+        _plant_node(database_url, campaign_id, node_id=root, depth=0,
+                    ic_mean=0.01 * (index + 1), ic_tstat=0.2)
+    real_roots = [root for root, is_null in roots.items() if not is_null]
+    child = _plant_node(database_url, campaign_id, node_id=str(uuid.uuid4()),
+                        parent_id=real_roots[0], depth=1, ic_mean=0.07,
+                        ic_tstat=DISCOVERY_TSTAT + 0.5)
+    failed = str(uuid.uuid4())
+    _plant_unevaluated_root(database_url, campaign_id, node_id=failed)
+    with sqlite3.connect(_path_of(database_url)) as connection:
+        connection.execute("UPDATE node SET fail_class = 'ok' WHERE id = ?", (child,))
+        connection.execute(
+            "UPDATE node SET fail_class = 'EvaluatorNormalizeError' WHERE id = ?", (failed,)
+        )
+    all_ids = [*roots, child, failed]
+    for index, node_id in enumerate(all_ids):
+        _charge_ledger(database_url, node_id, campaign_id, epoch_id=f"epoch-{index}")
+
+    assignments = [_assignment(campaign_id, root, is_null=is_null) for root, is_null in roots.items()]
+    assignments.append(_assignment(campaign_id, failed, is_null=False))
+    env = {"DATABASE_URL": database_url, **_seal_sidecar(tmp_path, assignments)}
+
+    lines: list[str] = []
+    assert main(["--campaign-id", campaign_id], env=env, emit=lines.append) == EXIT_OK
+
+    guard = nulloracle.load_ks_guard(campaign_id, database_url=database_url)
+    assert guard is not None
+    assert (guard.null_count, guard.real_count) == (2, 3)

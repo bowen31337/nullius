@@ -382,7 +382,11 @@ def _read_evaluated_nodes(
             ) from exc
     evaluated: list[_EvaluatedNode] = []
     for node_id, fail_class, ic_mean, ic_tstat in rows:
-        if fail_class != "ok" or ic_mean is None or ic_tstat is None:
+        # A NULL fail_class on a row with metrics is an evaluated node: the
+        # root evaluation path writes metrics but no fail_class, and a row
+        # with no recorded failure is one where nothing has failed. Dropping
+        # it left campaign 90d95c6d's ten scored roots out of the KS split.
+        if fail_class not in (None, "ok") or ic_mean is None or ic_tstat is None:
             continue
         evaluated.append(
             _EvaluatedNode(node_id=node_id, ic_mean=ic_mean, ic_tstat=ic_tstat)
