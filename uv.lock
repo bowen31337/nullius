@@ -750,6 +750,7 @@ dependencies = [
     { name = "nullius" },
     { name = "nullius-contract" },
     { name = "providers" },
+    { name = "snapshot" },
 ]
 
 [package.metadata]
@@ -758,6 +759,7 @@ requires-dist = [
     { name = "nullius", editable = "." },
     { name = "nullius-contract", editable = "packages/contract" },
     { name = "providers", editable = "packages/providers" },
+    { name = "snapshot", editable = "packages/snapshot" },
 ]
 
 [[package]]

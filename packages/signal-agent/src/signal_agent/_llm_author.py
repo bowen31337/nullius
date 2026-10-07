@@ -140,16 +140,34 @@ since a root's id is given rather than derived).
 
 from __future__ import annotations
 
+import json
+import os
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Final
 
 from ._authored import AUTHORED_OUTPUT_CODE, AuthoredOutputError, parse_authored
-from ._authoring_prompt import build_authoring_prompt, to_request
+from ._authoring_prompt import AuthoringPromptError, build_authoring_prompt, to_request
 from .errors import SignalAgentError
 
 __all__ = ["AUTHORING_REFUSED_CODE", "AuthoredSignal", "AuthoringRefusedError", "LLMSignalAuthor"]
+
+#: The environment variable naming the live evaluation's configuration file —
+#: the same ``NULLIUS_EVALUATION_CONFIG`` ``orchestrator._context`` loads the
+#: evaluator's sealed snapshot from (bug_spec_prompt_available_streams.xml).
+#: This member reads only its ``snapshot_mount`` key, never the other six —
+#: the sandbox gate, the cost model and ``DATABASE_URL`` that loader also
+#: demands are no business of a prompt builder, and importing orchestrator to
+#: reach them would invert the workspace's one-way dependency (orchestrator
+#: depends on signal-agent, never the reverse).
+EVALUATION_CONFIG_ENV: Final[str] = "NULLIUS_EVALUATION_CONFIG"
+
+#: The greppable code word every resolution refusal below opens with — the
+#: same word ``orchestrator._context.EvaluationConfigError`` opens with, so an
+#: operator grepping a campaign log for one finds the other.
+EVALUATION_CONFIG_CODE: Final[str] = "evaluation_config"
 
 #: The token every refusal :class:`AuthoringRefusedError` opens with — the
 #: greppable word an operator's campaign log carries, the discipline every
@@ -312,6 +330,115 @@ def _require_max_retries(value: object) -> int:
     return value
 
 
+def _resolve_available_streams_snapshot(
+    env: Mapping[str, str] | None,
+) -> Any | None:
+    """The sealed snapshot ``NULLIUS_EVALUATION_CONFIG`` names, or ``None``.
+
+    bug_spec_prompt_available_streams.xml's fix: the composed author resolves
+    this once, at construction, so every prompt it builds can carry
+    ``available_streams`` — the same snapshot the evaluator mounts, read here
+    through :meth:`snapshot.SnapshotMount.for_directory` (the seam for a
+    caller, like this one, that holds a path rather than a lake and a name)
+    and then its sealed ``MANIFEST.json``.  Mounting re-asserts the sealed
+    file modes and the manifest is one JSON parse — no Parquet file is
+    opened by either, so resolving this at composition stays cheap even over
+    a real deployment's lake.
+
+    Unset or blank is the unconfigured state — ``None``, silently, the same
+    answer ``orchestrator._context.load_evaluation_context`` gives for the
+    same variable — and :func:`signal_agent._authoring_prompt.
+    build_authoring_prompt` renders a prompt with no ``available_streams``
+    key for it, unchanged from before this bug's fix.  Every other
+    configured-but-broken shape — an unreadable file, invalid JSON, a
+    missing or blank ``snapshot_mount``, a path that does not mount as a
+    sealed snapshot, a manifest that cannot be read or does not validate —
+    raises :class:`~signal_agent._authoring_prompt.AuthoringPromptError`,
+    opening with the same ``evaluation_config`` code word
+    :class:`orchestrator._context.EvaluationConfigError`'s own messages open
+    with, rather than silently omitting the field composition was asked to
+    carry.
+
+    Reads only ``snapshot_mount`` of the document's seven keys: the other
+    six configure the sandbox gate, the cost model and the store, none of
+    which this member's prompt needs, and requiring them here would make
+    composing this author depend on facts orchestrator's own loader owns.
+    ``snapshot`` is a declared dependency of this member (unlike
+    ``orchestrator``, which this module never imports) but is reached for
+    here, deferred, for the scan-order reason every sibling-member import in
+    this member already states: the factory's workspace scan puts one
+    member's ``src/`` on ``sys.path`` at a time.
+    """
+    source = os.environ if env is None else env
+    named = source.get(EVALUATION_CONFIG_ENV)
+    if named is None or not named.strip():
+        return None
+
+    try:
+        text = Path(named).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise AuthoringPromptError(
+            f"{EVALUATION_CONFIG_CODE}: {EVALUATION_CONFIG_ENV} names the "
+            f"file {named!r}, which cannot be read: {exc}; the authoring "
+            "prompt's available_streams is read from the same evaluation "
+            "configuration the evaluator mounts, and a file that cannot be "
+            "read is refused rather than silently leaving the field out "
+            "(feature 5)."
+        ) from exc
+    try:
+        document = json.loads(text)
+    except ValueError as exc:
+        raise AuthoringPromptError(
+            f"{EVALUATION_CONFIG_CODE}: {EVALUATION_CONFIG_ENV} names the "
+            f"file {named!r}, which is not valid JSON: {exc}"
+        ) from exc
+    if not isinstance(document, dict):
+        raise AuthoringPromptError(
+            f"{EVALUATION_CONFIG_CODE}: {EVALUATION_CONFIG_ENV} names the "
+            f"file {named!r}, which holds {type(document).__name__} and not "
+            "a JSON object"
+        )
+
+    raw = document.get("snapshot_mount")
+    if not isinstance(raw, str) or not raw.strip():
+        raise AuthoringPromptError(
+            f"{EVALUATION_CONFIG_CODE}: snapshot_mount is missing or not a "
+            f"non-blank path string in the evaluation configuration at "
+            f"{named!r}; it names the sealed snapshot directory the "
+            "evaluator mounts, and this author's prompt reads the same one"
+        )
+
+    import snapshot
+
+    try:
+        mount = snapshot.SnapshotMount.for_directory(raw)
+    except (snapshot.SnapshotError, OSError) as exc:
+        raise AuthoringPromptError(
+            f"{EVALUATION_CONFIG_CODE}: snapshot_mount names {raw!r}, which "
+            f"does not mount as a sealed snapshot: {exc}; the evaluation "
+            "reads the market only through a mounted snapshot (§4.2), so "
+            "the configuration must name the directory the seal published"
+        ) from exc
+
+    # Reads the sealed MANIFEST.json -- a JSON parse, never a bars partition
+    # -- the same single read orchestrator._context._read_manifest pays for
+    # the evaluator's own mount, so a snapshot whose manifest cannot be read
+    # or does not validate is refused here rather than discovered the first
+    # time a prompt asks it for available_streams.
+    try:
+        snapshot.SnapshotManifest.from_json_bytes(mount.read_text(snapshot.MANIFEST_NAME))
+    except (snapshot.SnapshotError, OSError) as exc:
+        raise AuthoringPromptError(
+            f"{EVALUATION_CONFIG_CODE}: snapshot_mount names {raw!r}, whose "
+            f"{snapshot.MANIFEST_NAME} cannot be read through the mount: "
+            f"{exc}; the authoring prompt's available_streams is read "
+            "through the same sealed snapshot the evaluator mounts, and one "
+            "without a readable manifest is not one this author can trust"
+        ) from exc
+
+    return mount
+
+
 class LLMSignalAuthor:
     """Author one refined signal with a pinned model, gates included.
 
@@ -343,6 +470,7 @@ class LLMSignalAuthor:
         guidance: Any,
         config: Any,
         max_retries: int = 1,
+        env: Mapping[str, str] | None = None,
     ) -> None:
         self._session = session
         self._history_store = history_store
@@ -351,6 +479,12 @@ class LLMSignalAuthor:
         self._guidance = guidance
         self._config = config
         self._max_retries = _require_max_retries(max_retries)
+        # bug_spec_prompt_available_streams.xml: resolved once, at
+        # construction (``env=None`` reads the process environment, the same
+        # moment the composed deployment's own NULLIUS_EVALUATION_CONFIG is
+        # live), so every prompt this author builds — root, child and retry
+        # alike — carries the same snapshot the evaluator mounts.
+        self._snapshot = _resolve_available_streams_snapshot(env)
 
     # -- The callable discovery's seam invokes -------------------------------
 
@@ -382,7 +516,7 @@ class LLMSignalAuthor:
         held = self._held_code(history)
 
         parts = build_authoring_prompt(
-            workspace, entries, clause=self._anti_convergence
+            workspace, entries, clause=self._anti_convergence, snapshot=self._snapshot
         )
         # Feature 208 first, on the named parts — the gate reads the prompt's
         # structure, which is what feature 5 built.  It never raises on
@@ -458,7 +592,7 @@ class LLMSignalAuthor:
             campaign_id=campaign_id, theme_root=theme_root, depth=child_depth
         )
         parts = build_authoring_prompt(
-            workspace, entries, clause=self._anti_convergence
+            workspace, entries, clause=self._anti_convergence, snapshot=self._snapshot
         )
         # Feature 208 first, on the named parts — the gate reads the prompt's
         # structure, which is what feature 5 built.  It never raises on

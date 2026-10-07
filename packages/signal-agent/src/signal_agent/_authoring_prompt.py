@@ -230,7 +230,33 @@ _ANSWER_FORMAT: Final[Mapping[str, str]] = {
 }
 
 
-def _task_part(workspace: object) -> dict[str, Any]:
+def _available_streams_statement(streams: Mapping[str, tuple[str, ...]]) -> str:
+    """The plain statement ``available_streams`` earns its place in the prompt with.
+
+    bug_spec_prompt_available_streams.xml: naming the streams a snapshot
+    holds is not the same as telling the model what happens to a stream it
+    does *not* list, and the live prompt must say so in words — generated
+    from ``streams`` itself, never a sentence hard-coded to one snapshot's
+    own cadence (the bug's own symptom: a model that reached for ``1h``
+    bars and ``borrow`` data a 1d-only snapshot does not hold).  A stream
+    with no recorded frequency (``trades``, ``bookfeat``, ``borrow`` are
+    not frequency-partitioned) is named alone; one that is lists its
+    frequencies.
+    """
+    parts = []
+    for stream in sorted(streams):
+        freqs = streams[stream]
+        parts.append(f"{stream} at {', '.join(freqs)}" if freqs else stream)
+    listed = "; ".join(parts) if parts else "nothing"
+    return (
+        f"This evaluation's sealed snapshot holds only: {listed}. Every "
+        "accessor or frequency not listed here returns an empty frame for "
+        "this evaluation -- build the signal from the listed streams only, "
+        "and express the theme through them."
+    )
+
+
+def _task_part(workspace: object, snapshot: Any | None = None) -> dict[str, Any]:
     """The task section: the signal ABI, the node's place, and the format.
 
     A mapping of facts, assembled from feature 205's own
@@ -239,12 +265,29 @@ def _task_part(workspace: object) -> dict[str, Any]:
     states for its own declaration, and for the same reason: a hard-coded
     ``signal(ctx: MarketWindow, seed: int) -> pl.Series`` here would be a
     second thing to keep in sync with the contract member's own ABI.
+
+    ``snapshot`` is threaded straight into :meth:`~signal_agent.
+    SignalContract.declaration`'s own ``snapshot`` argument
+    (bug_spec_prompt_available_streams.xml): ``None`` (the default, and what
+    every caller that configures no evaluation context hands in) answers a
+    declaration with no ``available_streams`` key, unchanged from before
+    that bug's fix.  When ``available_streams`` is present, the *contract
+    section itself* also states plainly what it means — a
+    ``available_streams_note`` key, generated from that same mapping by
+    :func:`_available_streams_statement` and folded into the declaration
+    dict returned here (never a second, sibling fact at the task level, and
+    never hard-coded to one snapshot's own cadence), so the two cannot
+    disagree about what the snapshot holds.
     """
+    contract = signal_contract().declaration(snapshot=snapshot)
+    streams = contract.get("available_streams")
+    if streams is not None:
+        contract["available_streams_note"] = _available_streams_statement(streams)
     return {
         "campaign_id": _validated_campaign_id(workspace),
         "theme_root": _validated_theme_root(workspace),
         "depth": _validated_depth(workspace),
-        "contract": signal_contract().declaration(),
+        "contract": contract,
         "answer_format": dict(_ANSWER_FORMAT),
     }
 
@@ -418,6 +461,7 @@ def build_authoring_prompt(
     history: Iterable[tuple[Any, ScoreRecord | None]],
     *,
     clause: object,
+    snapshot: Any | None = None,
 ) -> AuthoringPrompt:
     """Build the C3 authoring prompt's three named parts.
 
@@ -426,7 +470,12 @@ def build_authoring_prompt(
     sequence of ``(PriorProposal, ScoreRecord | None)`` pairs — the store's
     own order, carried whole: nothing is summarised, sampled or truncated.
     ``clause`` is the committed anti-convergence clause, as its text, or as a
-    value carrying a ``text()`` method that returns it.
+    value carrying a ``text()`` method that returns it.  ``snapshot``, when
+    given, is the sealed snapshot mount feature 7's composed author resolved
+    from ``NULLIUS_EVALUATION_CONFIG`` (bug_spec_prompt_available_streams.xml)
+    — passed straight through to :meth:`~signal_agent.SignalContract.
+    declaration`, so the task's ``contract`` carries ``available_streams``
+    exactly when a caller configured one.
 
     The returned :class:`AuthoringPrompt` is the value
     :meth:`~signal_agent.PromptGuidanceGate.admit` screens and
@@ -435,7 +484,7 @@ def build_authoring_prompt(
     it cannot name the parts of, and never summarises, samples or truncates
     anything it is handed.
     """
-    task = _task_part(workspace)
+    task = _task_part(workspace, snapshot)
     anti_convergence = _clause_text(clause)
     entries = _validated_history(history)
     return AuthoringPrompt(
