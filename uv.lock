@@ -709,12 +709,14 @@ name = "router"
 version = "0.1.0"
 source = { editable = "packages/router" }
 dependencies = [
+    { name = "cost-model" },
     { name = "nullius" },
     { name = "nullius-ingest" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "cost-model", editable = "packages/cost-model" },
     { name = "nullius", editable = "." },
     { name = "nullius-ingest", editable = "packages/ingest" },
 ]
