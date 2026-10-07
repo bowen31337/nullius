@@ -1,0 +1,96 @@
+<bug_spec>
+  <!-- TRIP-1. Found 2026-10-08 verifying 3fa7336 (additions_spec_tripwires_live.xml
+       feature 2, step 10). Four gate e2e tests now fail. Their honest
+       fixture momentum signal (4 symbols, 21 dates, AR(1) returns) ends
+       fail_class "tripwire_fail" (time-shuffle 3.68, seed, lookback-jitter;
+       or window-offset 3.80).
+
+       deploy/campaign/tripwire_fp_check.py runs the live run_tripwires on
+       three honest signals over the real snapshot
+       2026-10-06T00:00:00Z_155955, 92 dates:
+         20d momentum  failed ()                                          perturb 0.35
+         5d reversal   failed ()                                          perturb 0.49
+         20d vol       failed (time-shuffle, seed, window-offset,
+                               universe-subsample, lookback-jitter)       perturb 0.29
+       The time-shuffle probe's own docstring says what it detects: whatever
+       survives a date-shuffle is information "that does not depend on the
+       pairing — a full-sample normalization, a symbol-level fit". A
+       persistent honest characteristic, such as volatility ranks that
+       predict a coin's window-mean return, survives the same way. The √T
+       null assumes returns have no persistent per-symbol component, and
+       real crypto returns have one. The four re-run probes wrap the
+       time-shuffle, so they inherit this. Label-permute passes.
+
+       Decision (author): in the live pipeline a signal cannot see the
+       future structurally (the evaluator clips every window to its decision
+       date before the sandbox runs), so step 10 mostly guards against
+       evaluator bugs. A hard fail there kills real slow-factor
+       discoveries. Tripwire rejections are therefore recorded as advisory
+       at discovery time and gate promotion, where a false positive costs
+       one review, not a branch. Core shape, explicit touches_files. -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/orchestrator/src/orchestrator/_tripwire_step.py,packages/orchestrator/src/orchestrator/_evaluate.py,packages/orchestrator/src/orchestrator/_campaign.py,packages/orchestrator/tests/test_tripwire_step.py,tests/leakage/test_leaking_signal_caught.py">
+    <title>Step 10 hard-fails honest persistent signals as tripwire_fail; rejections must be recorded and flagged, not fail the node</title>
+    <symptoms>
+      Since 3fa7336, evaluate_node sets fail_class "tripwire_fail" and poisons the subtree whenever any of the six probes rejects. On real data, the honest 20d volatility signal is rejected by five probes; the header gives the measurements. Four gate tests fail:
+      - tests/e2e/test_live_campaign_end_to_end.py::test_every_node_row_has_metrics_or_a_fail_class
+      - tests/e2e/test_live_campaign_end_to_end.py::test_the_ledger_holds_one_debit_per_node_at_the_oracles_charges_budget
+      - tests/e2e/test_live_evaluation_end_to_end.py::test_each_childs_metrics_land_on_its_own_node_row
+      - tests/e2e/test_live_evaluation_end_to_end.py::test_each_child_is_debited_once_under_the_oracles_own_charges_budget
+    </symptoms>
+    <reproduction_steps>
+      uv run --all-packages pytest -n 4 --dist loadfile: 4 failed, 1648 passed. Separately, run deploy/campaign/tripwire_fp_check.py on the real snapshot: 20d vol is rejected by five probes.
+    </reproduction_steps>
+    <expected>
+      - run_tripwires is unchanged: the same probes, verdicts and figures.
+      - evaluate_node no longer sets fail_class "tripwire_fail" and no longer poisons on a rejection. A node whose pipeline succeeded stays fail_class None/"ok" with its metrics. perturb_stability and the axis figures are still recorded as today.
+      - Every probe's outcome is persisted per node in a table tripwire_verdict (node_id, probe, rejected INTEGER, figure REAL NULL, measured INTEGER, recorded_at; PRIMARY KEY (node_id, probe)), created if absent and refreshed on re-evaluation. This happens identically for null and real nodes.
+      - NodeEvaluation gains tripwires_failed: tuple[str, ...], in fixed probe order. The node_evaluated event carries it as "tripwires_failed", a list that is empty when clean.
+      - One WARNING log line is written per flagged node, naming the probes.
+      - Module constant TRIPWIRES_GATE_DISCOVERY = False, documented with this spec's measurement as the reason. Setting it True restores the hard fail (tripwire_fail and poison) for a deployment that wants it, and test_tripwire_step.py covers both settings.
+      - tests/leakage/test_leaking_signal_caught.py keeps M1's exit. The leaking signals are still rejected by all six probes (a) and by time-shuffle plus label-permute (b). It now asserts this through tripwires_failed and the tripwire_verdict rows rather than through fail_class. The honest momentum case still has no rejection.
+      - The four gate tests above pass unchanged. The orchestrator member suite and the root tests/ suite pass.
+    </expected>
+    <actual>Root cause: step 10 treats a time-shuffle-family rejection as proof of leakage, but on real data persistent honest signals trigger it. The live pipeline's structural window clipping makes agent-code leakage impossible, so a hard fail costs real discoveries for little protection.</actual>
+    <constraints>
+      The tripwires member is unchanged
+      No file outside the five listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="high" depends_on="1"
+       touches_files="packages/promotion/src/promotion/tripwire_gate.py,packages/promotion/src/promotion/decision.py,packages/promotion/src/promotion/__init__.py,packages/promotion/tests/test_tripwire_gate.py">
+    <title>Promotion does not consult the tripwires, so a node flagged for possible leakage could be promoted without review</title>
+    <symptoms>
+      With bug 1, discovery-time tripwire rejections become advisory rows in tripwire_verdict, but promotion.record_decision (decision.py) reads none of them. The protection moves to promotion only if promotion enforces it.
+    </symptoms>
+    <reproduction_steps>
+      Write a tripwire_verdict row with rejected=1 for a node, pre-register it, then call promotion.record_decision for it. The decision is recorded.
+    </reproduction_steps>
+    <expected>
+      - New promotion.tripwire_gate with rejects_tripwire_flagged(node_id, *, database_url) and a TripwireFlaggedError whose message opens with the code word "tripwire_flagged" and names each rejected probe and figure.
+      - The gate reads tripwire_verdict by its restated table name, as promotion restates other members' spellings, and never imports the tripwires or orchestrator members.
+      - It refuses when any probe rejected.
+      - It also refuses when the node has no tripwire_verdict rows at all ("not probed", code word "tripwire_unmeasured"), since a node that was never probed cannot be promoted as clean.
+      - A probe recorded as not measured (measured=0) is not a rejection. A node whose every probe is unmeasured is refused as tripwire_unmeasured.
+      - record_decision calls the gate before writing, beside its existing pre-registration check. A refusal writes nothing.
+      - An explicit operator override is supported: record_decision(..., acknowledge_tripwires="&lt;reason text, at least 20 chars&gt;") records the decision anyway. It persists the reason and the probe list in a promotion_tripwire_override table (node_id PRIMARY KEY, reason, probes, recorded_at), so a promotion past a flag is never silent.
+      - test_tripwire_gate.py covers:
+        - a flagged node is refused, and its message names the probes
+        - a clean node passes
+        - an unprobed node is refused as unmeasured
+        - all-unmeasured is refused
+        - the override records and passes; a short reason is refused
+        - a refusal writes no decision row
+        It passes under pytest-xdist. The promotion member suite passes.
+    </expected>
+    <actual>Root cause: the promotion path has no tripwire check, because step 10 used to fail nodes directly.</actual>
+    <constraints>
+      Existing promotion refusals and their order are unchanged; the tripwire gate is added after them
+      No file outside the four listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
