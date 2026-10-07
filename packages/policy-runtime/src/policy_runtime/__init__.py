@@ -1342,25 +1342,35 @@ def policy_question(
 def build_campaign_tree() -> CampaignTree | None:
     """Component builder: the campaign tree the deployment's artifact store holds.
 
-    Takes no arguments — that is the factory's registration protocol — and
-    resolves the tree from the deployment's artifact store at build time, so a
-    composed application carries the read-side question for the tree the
-    process is actually pointed at.  Returns ``None`` for a deployment that
-    names no store rather than raising — the degrade-don't-break stance every
-    store-bound builder in this workspace takes (:func:`artifacts.build_dedup_gate`,
-    :func:`canary._registered_reference_store`), because the factory builds
-    every registered component on every ``create_app()`` call and a builder
-    that raised would take composition down for every unrelated feature.
-    ``None`` is a discoverable state, not an error: it is a deployment with no
-    campaign tree to front — while a replay that *must* have one is the caller
-    that must not find itself in it.
+    Takes no arguments — that is the factory's registration protocol.
+    Returns ``None`` for a deployment that names no store, or whose store
+    holds no committed campaign, rather than raising — the degrade-don't-break
+    stance every store-bound builder in this workspace takes
+    (:func:`artifacts.build_dedup_gate`, :func:`canary._registered_reference_store`),
+    because the factory builds every registered component on every
+    ``create_app()`` call and a builder that raised would take composition
+    down for every unrelated feature.  ``None`` is a discoverable state, not
+    an error: it is a deployment with no campaign tree to front — while a
+    replay that *must* have one is the caller that must not find itself in
+    it.
 
-    Construction performs no I/O: the store is resolved on first use, so
-    composing an application that carries this component touches no disk, and
-    the tree is read only when a caller demands it.  The tree is the same
-    ``(node_id -> parent_id, depth, payload)`` node model the frozen evaluator
-    and the nightly canary address, owned by this member rather than imported
-    from canary because a member never imports another member.
+    When the store *does* name a committed campaign, this returns a lazy
+    carrier (:class:`_LazyCampaignTree`) rather than the tree itself: every
+    node's payload is read only the first time a caller actually reaches
+    through the carrier (``.nodes``, ``.node(...)``) — the same moment a
+    replay or a question needs the tree — so composing an application that
+    carries this component never pays for a campaign nobody is about to walk.
+    The tree is the same ``(node_id -> parent_id, depth, payload)`` node model
+    the frozen evaluator and the nightly canary address, owned by this member
+    rather than imported from canary because a member never imports another
+    member.
+
+    This builder never calls :func:`app.module_loader.create_app` — the
+    recursion bug this component used to carry, where resolving the tree
+    composed the application again, which built this very component again,
+    recursing until ``RecursionError`` while paying for every other builder
+    (notably a live evaluator's snapshot read) once per recursion level.  See
+    :func:`_resolve_tree` for how the artifact store is reached instead.
     """
     return _resolve_tree()
 
@@ -1374,45 +1384,140 @@ def build_campaign_tree() -> CampaignTree | None:
 build_campaign_tree_component = build_campaign_tree
 
 
-def _resolve_tree() -> CampaignTree | None:
+class _LazyCampaignTree:
+    """Defers a committed campaign's node reads to the first real use.
+
+    :func:`_resolve_tree` hands this out once it has confirmed — cheaply,
+    through :meth:`artifacts.ArtifactStore.campaign_ids`, a directory listing
+    — that the deployment's store names at least one committed campaign.
+    Reading every node's payload is the part of the old recursion bug's cost
+    that scaled with the tree's size (as against the part that scaled with
+    the whole composition, which :func:`_resolve_tree` no longer pays at
+    all), so it stays deferred to whichever attribute a caller reaches for
+    first — ``nodes``, ``node``, ``tree_id`` — all routed through
+    :meth:`__getattr__`, which resolves once, caches the result on this
+    carrier, and answers every later access from the resolved
+    :class:`CampaignTree` directly.
+
+    Duck-typed rather than a :class:`CampaignTree` subclass: a replay or a
+    :class:`PolicyQuestion` never ``isinstance``-checks the tree it is
+    handed (the module loader's synthetic re-import already makes that
+    comparison meaningless across the composition seam — see this module's
+    own docstring), so answering the same attributes on demand is the whole
+    of the contract.
+    """
+
+    __slots__ = ("_store", "_tree")
+
+    def __init__(self, store: Any) -> None:
+        self._store = store
+        self._tree: CampaignTree | None = None
+
+    def _resolve(self) -> CampaignTree:
+        tree = self._tree
+        if tree is None:
+            tree = _read_committed_tree(self._store)
+            self._tree = tree
+        return tree
+
+    def __getattr__(self, name: str) -> Any:
+        # Only reached for a name this carrier does not itself carry (every
+        # name but ``_store``/``_tree``, its own slots) — which is exactly
+        # the tree's own surface, so any such access is "first use".
+        return getattr(self._resolve(), name)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid only
+        return f"_LazyCampaignTree(resolved={self._tree is not None})"
+
+
+def _resolve_tree() -> CampaignTree | _LazyCampaignTree | None:
     """The campaign tree the deployment's artifact store holds, or ``None``.
 
-    Resolved lazily so construction performs no I/O — the store is imported
-    inside the function, not at module scope, keeping this module
-    import-cheap and free of a hard dependency on the store's availability at
-    composition time.  A deployment that names no store, or a store that holds
-    no committed campaign, composes ``None`` — a discoverable state — rather
-    than raising, and the replay that must have a tree is the caller that
-    resolves it explicitly and refuses against it.
+    Reaches the artifacts member's own component by reading the one process-wide
+    component registry :func:`app.module_loader.create_app` itself reads from
+    (:func:`app.module_loader.registered_components`) and calling that one
+    registered builder directly — never
+    :func:`app.module_loader.create_app`, which is the fix for the recursion
+    this function used to cause: the old body called ``create_app()`` to
+    reach the artifacts component, and ``create_app()`` scans and builds
+    *every* registered component on every call — including this one — so a
+    builder that composed the application from inside its own build recursed
+    until ``RecursionError`` (silently swallowed below), paying for every
+    sibling builder — notably a live evaluator's snapshot read — once per
+    recursion level.  Reading one already-registered builder's result directly
+    touches none of that: it never calls ``create_app`` and never rebuilds a
+    single sibling component.
+
+    The registry may not be populated yet when this runs outside composition
+    (a direct call, or a fresh process that has not run ``create_app()`` or
+    ``scan_components()``) — :func:`app.module_loader.scan_components` is
+    what populates it, and unlike ``create_app()`` it only imports workspace
+    packages to fire their ``@register`` calls, never invoking a single
+    builder, so calling it here cannot recurse.
+
+    A deployment that names no store, or whose store holds no committed
+    campaign, resolves ``None`` — a discoverable state — rather than raising,
+    and the replay that must have a tree is the caller that resolves it
+    explicitly and refuses against it.  The one read this function performs
+    itself is cheap: listing the store's campaign ids.  A deployment whose
+    store does name a committed campaign gets a :class:`_LazyCampaignTree`,
+    not a resolved tree — reading every node's payload is deferred to that
+    carrier's first real use, so construction still performs no I/O beyond
+    the cheap presence check above.
     """
     try:  # pragma: no cover - exercised through the composed component
-        from app.module_loader import create_app
+        from app.module_loader import registered_components, scan_components
 
-        # "artifacts" is the artifacts member's own component name.
-        store = create_app().get("artifacts")
+        found = {component.name: component for component in registered_components()}
+        if "artifacts" not in found:
+            scan_components()
+            found = {component.name: component for component in registered_components()}
+        artifacts_component = found.get("artifacts")
+        if artifacts_component is None:
+            return None
+        # "artifacts" is the artifacts member's own component name; its
+        # builder is called directly rather than through create_app(), which
+        # is the whole of this function's fix.
+        store = artifacts_component.builder()
         if store is None:
             return None
-        # Read the store's committed nodes into this member's own tree model.
-        # A member never imports another member, so the store's node listing is
-        # read as raw specs and rebuilt here — the one fact they share is the
-        # node model, and it is small enough to restate.
-        specs: dict[str, tuple[str | None, int, dict[str, Any]]] = {}
-        for campaign_id in store.campaign_ids():
-            for node_id in store.node_ids(campaign_id):
-                # The store holds the node's canonical payload bytes; rebuild the
-                # (parent_id, depth, payload) spec the tree freezes from.
-                files = store.files(campaign_id, node_id)
-                if not files:
-                    continue
-                payload_bytes = store.read(campaign_id, node_id, files[0])
-                payload = json.loads(payload_bytes.decode("utf-8"))
-                specs[node_id] = (
-                    payload.get("parent_id"),
-                    int(payload.get("depth", 0)),
-                    payload,
-                )
-        if not specs:
+        if not store.campaign_ids():
             return None
-        return CampaignTree.freeze(specs)
-    except Exception:  # noqa: BLE001 - a missing store must not break composition
+        return _LazyCampaignTree(store)
+    except Exception:  # noqa: BLE001 - a missing or broken store must not break composition
         return None
+
+
+def _read_committed_tree(store: Any) -> CampaignTree:
+    """Read every committed node's payload from ``store`` into a frozen tree.
+
+    The one place the artifact store's raw bytes become this member's own
+    node model — the read :func:`_resolve_tree` used to perform eagerly on
+    every recursion level, now performed exactly once, by
+    :class:`_LazyCampaignTree`, the first time a caller reaches through it.
+    A member never imports another member, so the store's node listing is
+    read as raw specs and rebuilt here — the one fact they share is the node
+    model, and it is small enough to restate.
+
+    Raises :class:`PolicyTreeError` (through :meth:`CampaignTree.freeze`) if
+    the store's committed campaigns name no node with a readable file — a
+    store whose ``campaign_ids()`` was non-empty but whose nodes carry
+    nothing is a malformed commit, not an absent one, so this does not
+    degrade to ``None`` the way :func:`_resolve_tree`'s presence check does.
+    """
+    specs: dict[str, tuple[str | None, int, dict[str, Any]]] = {}
+    for campaign_id in store.campaign_ids():
+        for node_id in store.node_ids(campaign_id):
+            # The store holds the node's canonical payload bytes; rebuild the
+            # (parent_id, depth, payload) spec the tree freezes from.
+            files = store.files(campaign_id, node_id)
+            if not files:
+                continue
+            payload_bytes = store.read(campaign_id, node_id, files[0])
+            payload = json.loads(payload_bytes.decode("utf-8"))
+            specs[node_id] = (
+                payload.get("parent_id"),
+                int(payload.get("depth", 0)),
+                payload,
+            )
+    return CampaignTree.freeze(specs)
