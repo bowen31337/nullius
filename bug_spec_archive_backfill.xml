@@ -1,0 +1,76 @@
+<bug_spec>
+  <!-- ARCH-1. Found 2026-10-07 running the shipped survivorship-free backfill:
+       ./run.sh lake-backfill with the archive source, dates 2019-01-01 to
+       2026-09-30, top 100. After about 2h20m it crashed with a raw traceback
+       and had written nothing. The traceback ended in klines.py:349
+       _millis_to_utc with "OverflowError: date value out of range". Binance's
+       public archive switched spot kline timestamps from milliseconds to
+       microseconds starting 2025-01. Two real monthly files are pinned in
+       packages/ingest/tests/fixtures/binance_archive/:
+       BTCUSDT-1d-2024-12.zip (open_time 1733011200000, 13 digits, ms) and
+       BTCUSDT-1d-2025-01.zip (open_time 1735689600000000, 16 digits, us),
+       each with its .CHECKSUM. Core shape, explicit touches_files. -->
+
+  <bug index="1" shape="core" severity="critical"
+       touches_files="packages/ingest/src/nullius_ingest/klines.py,packages/ingest/tests/test_archive_timestamp_units.py">
+    <title>Kline parsing assumes milliseconds, so every Binance archive file from 2025 on overflows (microsecond timestamps)</title>
+    <symptoms>
+      nullius_ingest.klines._parse_candle passes open_time and close_time through _as_epoch_millis and _millis_to_utc. Binance's archive CSVs from 2025-01 on carry 16-digit microsecond epochs (1735689600000000 for 2025-01-01T00:00Z), so _millis_to_utc raises OverflowError, and the survivorship-free backfill dies on the first 2025 file it reads.
+    </symptoms>
+    <reproduction_steps>
+      Parse the first CSV row of the pinned BTCUSDT-1d-2025-01.zip with parse_klines: OverflowError.
+    </reproduction_steps>
+    <expected>
+      - Epoch values are read by magnitude:
+        - 13 digits (or below 10^14) is milliseconds
+        - 16 digits (10^15 to 10^17) is microseconds and is converted exactly to the same instant
+        - any other magnitude is refused with a named error. It is never guessed and never overflows.
+        The live REST path, which is milliseconds, is unchanged.
+      - The 2024-12 and 2025-01 pinned files both parse to UTC midnight open times: 2024-12-01T00:00Z and 2025-01-01T00:00Z respectively.
+      - close_time is handled the same way.
+      - test_archive_timestamp_units.py covers both pinned zips (checksums verified first), a mixed-unit sequence across a year boundary, a refused 19-digit value, and the REST fixtures' millisecond rows unchanged. It passes under pytest-xdist.
+    </expected>
+    <actual>Root cause: klines treats every epoch as milliseconds; Binance's archive changed spot timestamps to microseconds from 2025.</actual>
+    <constraints>
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="high"
+       touches_files="packages/ingest/src/nullius_ingest/bars_backfill.py,packages/ingest/tests/test_backfill_resume_progress.py">
+    <title>The archive backfill shows no progress, keeps nothing until the very end, and dies with a raw traceback, so a multi-hour run that fails loses everything</title>
+    <symptoms>
+      `./run.sh lake-backfill --source archive --top 100` over 2019-2026:
+      - It printed nothing for 2h20m. It ranks every USDT symbol over the whole window before writing any partition: about 565 MiB of archive listings and files were read at about 8 MiB/min with no output.
+      - It then died on bug 1 with a Python traceback, not a one-line refusal.
+      - It left no Parquet partitions and no ranking cache, so a rerun starts from zero.
+    </symptoms>
+    <reproduction_steps>
+      Run the archive backfill over a multi-year window; stop it or let it fail partway: no output during ranking, nothing persisted, and a traceback on failure.
+    </reproduction_steps>
+    <expected>
+      - Progress: one JSON line per ranked symbol batch during ranking ({"phase": "rank", "symbols_done": n, "symbols_total": m}), then the existing per-symbol lines.
+      - Checkpoint and resume:
+        - The ranking result is cached in &lt;LAKE&gt;/staging-meta/rank-&lt;window&gt;.json once computed.
+        - Each monthly archive file is verified and written into its bars partitions as it is fetched, not at the end.
+        - A rerun with the same arguments reuses the cache, skips months already written (checked by partition presence), and finishes from where it stopped.
+        - --restart ignores both and starts clean.
+        The cache sits outside staging/ so it is never sealed.
+      - Failure handling: any per-file failure (checksum mismatch, unparseable row) is one JSON error line naming symbol and month, and that month is skipped. The command exits 1 at the end if any month failed, with a summary line. An unexpected error exits 1 with one stderr line and no traceback.
+      - test_backfill_resume_progress.py, with an injected fetch over the pinned archive fixtures, covers:
+        - progress lines during ranking
+        - an interrupted run (the fetch raises after N files) that resumes on rerun without refetching written months
+        - --restart
+        - a checksum-mismatch month that is skipped and reported, with exit 1
+        - an unexpected error giving one stderr line and no traceback
+        No network, and it passes under pytest-xdist.
+    </expected>
+    <actual>Root cause: bars_backfill computes the whole ranking and fetch in memory before writing, prints nothing until symbols are written, and lets exceptions escape main().</actual>
+    <constraints>
+      The output layout and universe.json fields are unchanged
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
