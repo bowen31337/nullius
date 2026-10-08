@@ -708,10 +708,29 @@ def gate_targets(
                 "evaluations"
             )
         directives.append((horizon, response.charges_budget))
+        # Project each aligned date's answer onto that date's scored
+        # cross-section. The request names one symbol tuple for the whole
+        # grid, while the scored set varies by date (a signal leaves a
+        # symbol unscored, e.g. a flat stablecoin), so the honest answer can
+        # be wider on some dates (archive smoke 2a0700fa: USDCUSDT on
+        # 2022-09-26). Extra symbols are dropped before anything reads the
+        # series, identically on both branches, so they cannot widen what the
+        # metrics measure. A narrower answer, or an extra or missing date, is
+        # still refused by _check_support.
+        aligned_days = set(aligned_series.dates())
+        projected = {
+            day: (
+                {symbol: value for symbol, value in row.items()
+                 if symbol in set(aligned_series.at(day))}
+                if day in aligned_days
+                else row
+            )
+            for day, row in response.target_series.items()
+        }
         supplied = TargetSeries(
             horizon=horizon,
             snapshot_name=alignment.snapshot_name,
-            values=response.target_series,
+            values=projected,
         )
         _check_support(supplied, aligned_series)
         series[horizon] = supplied

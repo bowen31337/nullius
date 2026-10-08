@@ -421,19 +421,22 @@ def test_an_answer_missing_a_date_is_refused() -> None:
         gate_targets(_MAIN, oracle, **_identity())
 
 
-def test_a_symbol_nobody_scored_is_refused() -> None:
-    # The oracle answers for the cross-section it was asked for, no wider:
-    # a CCC target on a scored date is a label for a symbol nobody scored,
-    # and carrying it would let a substituted series widen the measured
-    # cross-section behind the metrics' back.
+def test_a_symbol_nobody_scored_is_projected_away() -> None:
+    # A CCC target on a scored date names a symbol nobody scored there. The
+    # request carries one symbol tuple for the whole grid while the scored
+    # set varies by date, so an honest answer can be wider (archive smoke
+    # 2a0700fa). The gate drops CCC before anything reads the series, so it
+    # cannot widen what the metrics measure.
     def _wider(horizon: int, values: dict[dt.date, dict[str, float]]):
         return {
             day: {**row, "CCC": 0.0} for day, row in values.items()
         }
 
     oracle, _ = _oracle(_MAIN, rewrite=_wider)
-    with pytest.raises(EvaluatorGateError, match="whom nobody scored"):
-        gate_targets(_MAIN, oracle, **_identity())
+    gated = gate_targets(_MAIN, oracle, **_identity())
+    for horizon in gated.series:
+        for day in gated.targets(horizon).dates():
+            assert "CCC" not in gated.targets(horizon).at(day)
 
 
 def test_a_scored_symbol_gone_missing_is_refused() -> None:
