@@ -18,7 +18,7 @@ and ``test_closeout_subtree.py`` use.
 One test per claim the feature sentence makes:
 
 * **perfectly separated stabilities give AUC 1.0** -- every real node's
-  ``perturb_stability`` above every null node's.
+  ``perturb_stability`` (an instability magnitude) below every null node's.
 * **a reversed ordering gives 0.0** -- every real node's below every null
   node's.
 * **ties give 0.5** -- a sample that is nothing but ties.
@@ -254,8 +254,8 @@ def test_perfectly_separated_stabilities_give_auc_one(
 ) -> None:
     campaign_id, env, _null_ids, _real_ids = _plant_campaign(
         database_url, tmp_path,
-        null_stabilities=[0.01, 0.02, 0.03],
-        real_stabilities=[0.50, 0.60, 0.70],
+        null_stabilities=[0.50, 0.60, 0.70],
+        real_stabilities=[0.01, 0.02, 0.03],
     )
 
     lines: list[str] = []
@@ -275,8 +275,8 @@ def test_perfectly_separated_stabilities_give_auc_one(
 def test_reversed_ordering_gives_auc_zero(database_url: str, tmp_path: Path) -> None:
     campaign_id, env, _null_ids, _real_ids = _plant_campaign(
         database_url, tmp_path,
-        null_stabilities=[0.50, 0.60, 0.70],
-        real_stabilities=[0.01, 0.02, 0.03],
+        null_stabilities=[0.01, 0.02, 0.03],
+        real_stabilities=[0.50, 0.60, 0.70],
     )
 
     lines: list[str] = []
@@ -358,23 +358,23 @@ def test_children_are_labelled_by_their_root(database_url: str, tmp_path: Path) 
     root_null = str(uuid.uuid4())
     _plant_node(
         database_url, campaign_id, node_id=root_null, depth=0,
-        ic_mean=0.1, ic_tstat=0.4, perturb_stability=0.02,
+        ic_mean=0.1, ic_tstat=0.4, perturb_stability=0.60,
     )
     child_null = _plant_node(
         database_url, campaign_id, node_id=str(uuid.uuid4()), parent_id=root_null,
-        depth=1, ic_mean=0.15, ic_tstat=0.5, perturb_stability=0.03,
+        depth=1, ic_mean=0.15, ic_tstat=0.5, perturb_stability=0.70,
     )
     root_real = str(uuid.uuid4())
     _plant_node(
         database_url, campaign_id, node_id=root_real, depth=0,
-        ic_mean=0.2, ic_tstat=0.6, perturb_stability=0.60,
+        ic_mean=0.2, ic_tstat=0.6, perturb_stability=0.02,
     )
     # Clears DISCOVERY_TSTAT (2.0) -- feature 267's FDR_deploy refuses a
     # campaign that declared nothing at all, orthogonal to this test's own
     # claim about the triage sample.
     child_real = _plant_node(
         database_url, campaign_id, node_id=str(uuid.uuid4()), parent_id=root_real,
-        depth=1, ic_mean=0.25, ic_tstat=2.5, perturb_stability=0.70,
+        depth=1, ic_mean=0.25, ic_tstat=2.5, perturb_stability=0.03,
     )
 
     all_ids = [root_null, child_null, root_real, child_real]
@@ -393,7 +393,7 @@ def test_children_are_labelled_by_their_root(database_url: str, tmp_path: Path) 
     assert exit_code in (EXIT_OK, EXIT_VOID)
     payload = json.loads(lines[0])
     # Both children's stabilities land on their root's side: two null
-    # readings (0.02, 0.03), two real readings (0.60, 0.70), perfectly
+    # readings (0.60, 0.70), two real readings (0.02, 0.03), perfectly
     # separated -- the child never needs its own sidecar entry.
     assert payload["triage_null_count"] == 2
     assert payload["triage_real_count"] == 2
@@ -416,7 +416,7 @@ def test_rerun_refreshes_the_row(database_url: str, tmp_path: Path) -> None:
     first_lines: list[str] = []
     main(["--campaign-id", campaign_id], env=env, emit=first_lines.append)
     first_payload = json.loads(first_lines[0])
-    assert first_payload["triage_auc"] == 1.0
+    assert first_payload["triage_auc"] == 0.0
 
     with closing(sqlite3.connect(_path_of(database_url))) as connection:
         row_count = connection.execute(
@@ -437,7 +437,7 @@ def test_rerun_refreshes_the_row(database_url: str, tmp_path: Path) -> None:
     second_payload = json.loads(second_lines[0])
 
     assert exit_code in (EXIT_OK, EXIT_VOID)
-    assert second_payload["triage_auc"] == 0.0
+    assert second_payload["triage_auc"] == 1.0
 
     with closing(sqlite3.connect(_path_of(database_url))) as connection:
         row_count = connection.execute(
@@ -446,5 +446,5 @@ def test_rerun_refreshes_the_row(database_url: str, tmp_path: Path) -> None:
     assert row_count == 1
 
     auc, null_count, real_count, _computed_at = _triage_row(database_url, campaign_id)
-    assert auc == 0.0
+    assert auc == 1.0
     assert (null_count, real_count) == (3, 3)

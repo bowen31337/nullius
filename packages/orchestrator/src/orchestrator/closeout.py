@@ -439,7 +439,15 @@ def _triage_auc(
 ) -> float | None:
     """The M1 triage figure: the perturbation-stability AUC that separates
     ``real_stabilities`` from ``null_stabilities``, real as the positive
-    class and a higher stability read as more real.
+    class and a *lower* figure read as more real.
+
+    ``node.perturb_stability`` is the lookback-jitter figure,
+    ``|rerun Sharpe - reference Sharpe| / threshold``
+    (:func:`tripwires.lookback.lookback_figure`). It is 0 when the jittered
+    window changed nothing and grows as the node gets less stable, so it is
+    an instability magnitude. The first real campaigns' AUCs (0.20 and 0.33)
+    came out inverted under the original "higher reads as more real"
+    orientation.
 
     A Mann-Whitney U over the two samples, normalized to ``[0, 1]`` by
     ``n_real * n_null`` -- the rank-sum form, so a tie between a null and a
@@ -454,9 +462,10 @@ def _triage_auc(
     n_real = len(real_stabilities)
     if n_null < TRIAGE_MIN_SIDE or n_real < TRIAGE_MIN_SIDE:
         return None
+    # Ranked on the negated figure, so the most stable node ranks highest.
     labelled = sorted(
-        [(value, False) for value in null_stabilities]
-        + [(value, True) for value in real_stabilities]
+        [(-value, False) for value in null_stabilities]
+        + [(-value, True) for value in real_stabilities]
     )
     total = len(labelled)
     rank_sum_real = 0.0
