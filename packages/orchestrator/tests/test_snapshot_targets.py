@@ -288,3 +288,25 @@ def test_the_live_route_serves_only_the_rebalance_grid() -> None:
 
     dense = SimpleNamespace(closes=closes, horizon=1, evaluation_dates=tuple(days[:-1]))
     assert grid_forward_returns(dense)(request) == snapshot_forward_returns(dense)(request)
+
+
+def test_the_answer_uses_the_requests_horizon_not_the_metrics_horizon() -> None:
+    """Archive smoke campaign 2a0700fa: context.horizon was 5, and every
+    per-horizon ask was answered with 5-day returns, so the gate's horizon-1
+    check found KEEPUSDT missing on 2022-02-14."""
+    import datetime as dt
+
+    from orchestrator._targets import snapshot_forward_returns
+
+    days = [dt.date(2024, 1, 1) + dt.timedelta(days=i) for i in range(10)]
+    closes = {"AAA": {d: float(100 + i) for i, d in enumerate(days)}}
+    context = SimpleNamespace(closes=closes, horizon=5, evaluation_dates=tuple(days))
+    targets = snapshot_forward_returns(context)
+
+    h1 = targets(SimpleNamespace(symbols=None, date_range=None, horizon=1))
+    h5 = targets(SimpleNamespace(symbols=None, date_range=None, horizon=5))
+    assert h1[days[0]]["AAA"] == pytest.approx(101 / 100 - 1)
+    assert h5[days[0]]["AAA"] == pytest.approx(105 / 100 - 1)
+    assert days[8] in h1 and days[8] not in h5
+    no_horizon = targets(SimpleNamespace(symbols=None, date_range=None))
+    assert no_horizon == h5

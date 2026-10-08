@@ -102,6 +102,12 @@ def snapshot_forward_returns(
             tuple(requested_symbols) if requested_symbols is not None else tuple(closes)
         )
         span = getattr(request, "date_range", None)
+        # The evaluator asks once per aligned horizon (1, 2, 5, 10, 20), so the
+        # answer's horizon is the request's own. context.horizon is only the
+        # metrics horizon: serving it for every ask labelled 5-day returns as
+        # horizon-1 (archive smoke campaign 2a0700fa, KEEPUSDT on 2022-02-14).
+        asked = getattr(request, "horizon", None)
+        step = asked if isinstance(asked, int) and not isinstance(asked, bool) else horizon
 
         series: dict[dt.date, dict[str, float]] = {}
         for symbol in symbols:
@@ -112,7 +118,7 @@ def snapshot_forward_returns(
             for index, entry_day in enumerate(ordered):
                 if span is not None and not (span[0] <= entry_day <= span[1]):
                     continue
-                exit_index = index + horizon
+                exit_index = index + step
                 if exit_index >= len(ordered):
                     continue
                 entry_close = by_date[entry_day]
