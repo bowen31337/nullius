@@ -117,11 +117,13 @@ idempotent-by-node debit.  Nothing in this module remembers a prior call.
 
 from __future__ import annotations
 
+import bisect
 import datetime as dt
 import json
 import logging
 import math
 import sqlite3
+import threading
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -374,6 +376,73 @@ class NodeEvaluation:
 # -- The materialize seam: reading the sealed mount for execute_signal ----------
 
 
+#: One bars panel per (mount, symbol, admitted set), shared by every node and
+#: every rebalance date of a process. The window used to be rebuilt per date
+#: by looping over every partition of every symbol and concatenating one-row
+#: tables: about 37M Python iterations per node on the 2019-2026 archive
+#: (about 50 min per node, GIL-bound, so threads did not help). A panel now
+#: grows only up to the decision date being materialized: each partition is
+#: read once, never ahead of the day it serves (the no-look-ahead read
+#: invariant), and each date takes a bisect slice of one contiguous table.
+#: The entry holds the mount itself, so a recycled id() can never serve
+#: another mount's rows.
+_PANELS: dict[tuple[int, str, int, str], dict[str, Any]] = {}
+_PANELS_LOCK = threading.Lock()
+
+
+def _symbol_panel(
+    mount: Any, resolution: Any, symbol: str, decision_date: dt.date
+) -> tuple[list[dt.date], Any]:
+    """``(row dates, table)`` for one symbol's bars, read up to ``decision_date``.
+
+    Covers every partition ``resolution`` admits for the symbol that is dated
+    at or before ``decision_date``, oldest first. The table is ``None`` when
+    none is. Partitions are read on demand, so a later date extends the panel
+    rather than rereading it.
+    """
+    admitted = tuple(resolution.dates(BARS_STREAM, symbol))
+    # The admitted set is part of the key: a resolution at a later decision
+    # time admits more partitions and must not reuse a shorter panel.
+    key = (id(mount), symbol, len(admitted), max(admitted) if admitted else "")
+    with _PANELS_LOCK:
+        entry = _PANELS.get(key)
+        if entry is None or entry["mount"] is not mount:
+            entry = {
+                "mount": mount,
+                "pending": sorted(admitted),
+                "days": [],
+                "table": None,
+            }
+            _PANELS[key] = entry
+        pending: list[str] = entry["pending"]
+        due = 0
+        while due < len(pending) and dt.date.fromisoformat(pending[due]) <= decision_date:
+            due += 1
+        if due:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+
+            fresh: list[Any] = []
+            for iso in pending[:due]:
+                paths = list(mount.select(BARS_STREAM, symbol, iso))
+                if not paths:
+                    continue
+                table = pq.read_table(str(paths[0]))
+                if table.num_rows == 0:
+                    continue
+                entry["days"].extend([dt.date.fromisoformat(iso)] * table.num_rows)
+                fresh.append(table)
+            del pending[:due]
+            if fresh:
+                parts = ([entry["table"]] if entry["table"] is not None else []) + fresh
+                # One contiguous chunk per symbol: each partition is a
+                # one-row table, and a panel left as ~1,600 chunks made every
+                # later compute call pay per-chunk overhead (0.79 s for one
+                # 22k-row filter).
+                entry["table"] = pa.concat_tables(parts).combine_chunks()
+        return entry["days"], entry["table"]
+
+
 def _materialize_from_context(context: EvaluationContext) -> Any:
     """The production lake reader, over this evaluation's sealed mount.
 
@@ -409,12 +478,10 @@ def _materialize_from_context(context: EvaluationContext) -> Any:
     # mean "no cap beyond this suite's own tiny history", which the default
     # depth already is for them.
     max_history_days = getattr(context, "max_history_days", DEFAULT_MAX_HISTORY_DAYS)
-    cache: dict[tuple[str, str], Any] = {}
 
     def materialize(resolution: Any, decision_time: dt.datetime) -> Any:
         import pyarrow as pa
         import pyarrow.compute as pc
-        import pyarrow.parquet as pq
         from contract.bars import bars_frame_name
         from contract.window import MarketWindow
 
@@ -423,17 +490,15 @@ def _materialize_from_context(context: EvaluationContext) -> Any:
         universe = pit_universe(resolution, decision_date)
         tables: list[Any] = []
         for symbol in universe:
-            for iso in resolution.dates(BARS_STREAM, symbol):
-                day = dt.date.fromisoformat(iso)
-                if day > decision_date or day <= earliest_date:
-                    continue
-                key = (symbol, iso)
-                if key not in cache:
-                    paths = list(mount.select(BARS_STREAM, symbol, iso))
-                    cache[key] = (
-                        pq.read_table(str(paths[0])) if paths else pa.table({})
-                    )
-                tables.append(cache[key])
+            days, table = _symbol_panel(mount, resolution, symbol, decision_date)
+            if table is None:
+                continue
+            # Rows dated in (earliest_date, decision_date], the same
+            # partitions the per-partition loop used to select.
+            lo = bisect.bisect_right(days, earliest_date)
+            hi = bisect.bisect_right(days, decision_date)
+            if hi > lo:
+                tables.append(table.slice(lo, hi - lo))
         frame = pa.concat_tables(tables) if tables else pa.table({})
         if frame.num_rows:
             frame = frame.filter(

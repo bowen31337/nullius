@@ -239,3 +239,32 @@ def test_the_depth_note_is_absent_when_no_depth_is_configured() -> None:
     declared = signal_contract().declaration()
     bars_notes = declared["accessors_detail"]["bars"]["returns_notes"]
     assert "trailing daily candles" not in bars_notes
+
+
+
+def test_the_cached_panel_serves_exactly_the_per_partition_rows(mount: Any) -> None:
+    """Archive smoke 6db69c83 spent about an hour per node rebuilding each
+    date's window partition by partition. The cached-panel materializer must
+    serve the same rows, in the same order, for every date, across two
+    materializers on one mount, and from resolutions at different decision
+    times (a later resolution admits more partitions)."""
+    context = SimpleNamespace(snapshot=mount, max_history_days=MAX_HISTORY_DAYS)
+    for last in (ALL_DAYS[12], ALL_DAYS[-1]):
+        last_time = dt.datetime.combine(last, dt.time(23, 59, tzinfo=dt.UTC))
+        resolution = resolve_window(mount, last_time)
+        first = _materialize_from_context(context)
+        second = _materialize_from_context(context)
+        for day in ALL_DAYS[: ALL_DAYS.index(last) + 1]:
+            decision_time = dt.datetime.combine(day, dt.time(23, 59, tzinfo=dt.UTC))
+            frame = first(resolution, decision_time).frames[bars_frame_name("1d")]
+            expected = [
+                pq.read_table(str(path))
+                for iso in sorted(resolution.dates("bars", SYMBOL))
+                if day - dt.timedelta(days=MAX_HISTORY_DAYS)
+                < dt.date.fromisoformat(iso)
+                <= day
+                for path in mount.select("bars", SYMBOL, iso)
+            ]
+            assert frame.equals(pa.concat_tables(expected))
+            again = second(resolution, decision_time).frames[bars_frame_name("1d")]
+            assert again.equals(frame)
