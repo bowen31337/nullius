@@ -53,6 +53,7 @@ import textwrap
 from pathlib import Path
 
 import pyarrow as pa
+import pytest
 from contract.payload import serialize_window
 from contract.window import MarketWindow
 from orchestrator import _sandbox_child as child
@@ -238,3 +239,20 @@ def test_import_with_zero_python_frames_is_admitted_for_a_native_term() -> None:
 
 def test_import_via_a_bare_native_trampoline_frame_is_admitted_for_a_native_term() -> None:
     assert _run_native_import_harness("io", bare_entrypoint=False) == "ADMITTED"
+
+
+@pytest.mark.parametrize("module", sorted(child.AGENT_IMPORTS_ALLOWLIST))
+def test_every_allowlisted_module_imports_through_the_real_child(module: str) -> None:
+    """Campaign tri2 node ec90a097: 'import statistics' was refused with
+    disallowed_import '_io', and so were random and fractions, because their
+    own stdlib imports ran after the guard was armed. Every module a signal
+    is told it may import must import."""
+    source = (
+        f"import {module}\n"
+        "import polars as pl\n\n"
+        "def signal(ctx, seed):\n"
+        "    return pl.Series([float(i) for i, _ in enumerate(ctx.universe)])\n"
+    )
+    result, rc, _err = run_signal(source, universe=("AAA", "BBBB"))
+    assert rc == 0
+    assert result["fail_class"] is None, result["detail"]

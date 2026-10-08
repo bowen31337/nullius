@@ -650,6 +650,25 @@ def _redirect_stdio() -> int:
     return result_fd
 
 
+def _preload_allowlist() -> None:
+    """Import every module a signal may import before the guard goes up.
+
+    An allowlisted stdlib module loads its own implementation modules when
+    first imported: random loads _sha2 and os, statistics loads random and
+    decimal, fractions loads decimal. Loaded after the guard is armed, those
+    internal imports were refused ("disallowed_import: '_io'"), so 3 of the
+    14 allowlisted modules could not be imported at all (campaign tri2, node
+    ec90a097). Loaded here, a signal's import of one is a cache hit. What a
+    signal may import itself is still decided by the static screen and by
+    AGENT_IMPORTS_ALLOWLIST, both unchanged; the OS sandbox stays the
+    boundary.
+    """
+    import importlib
+
+    for name in sorted(AGENT_IMPORTS_ALLOWLIST):
+        importlib.import_module(name)
+
+
 def main() -> None:
     """The bootstrap's entry point — one request in, one result out."""
     result_fd = _redirect_stdio()
@@ -660,6 +679,7 @@ def main() -> None:
         except Exception as exc:  # noqa: BLE001 - a malformed request is a boundary failure
             result = _fail("payload", f"the request could not be read: {exc}")
         else:
+            _preload_allowlist()
             _install_import_guard()
             result = run_signal(request.source, request.seed, request.window_payload)
 
