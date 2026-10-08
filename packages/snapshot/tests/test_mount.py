@@ -702,6 +702,18 @@ class TestReadingThroughTheMount:
         # No ETHUSDT bytes cross the boundary for a BTCUSDT query.
         assert b"ETHUSDT" not in b"".join(part.read_bytes() for part in parts)
 
+    def test_select_matches_the_glob_it_replaced(self, mount: SnapshotMount) -> None:
+        # select builds the partition path instead of globbing (each glob
+        # scanned the symbol's whole history: 79% of an archive campaign).
+        # It must answer exactly what the glob answered.
+        for symbol in ("BTCUSDT", "ETHUSDT"):
+            for date in ("2026-09-01", "2026-09-02"):
+                built = mount.select("bars", symbol, date)
+                globbed = mount.root.glob(f"bars/symbol={symbol}/date={date}/*.parquet")
+                assert [p.relative for p in built] == [p.relative for p in globbed]
+        assert mount.select("borrow", "BTCUSDT", "2026-09-01") == ()
+        assert mount.select("nonesuch", "BTCUSDT", "2026-09-01") == ()
+
     def test_glob_returns_read_only_paths(self, mount: SnapshotMount) -> None:
         matches = mount.root.glob("bars/symbol=*/date=*/*.parquet")
         assert len(matches) == 3

@@ -145,6 +145,7 @@ import math
 import os
 import re
 import shutil
+import threading
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -1138,6 +1139,10 @@ def _refuse_duplicate_bars(manifest: SnapshotManifest, named: str) -> None:
 #: finds every close it already paid to read, and reads no partition
 #: twice.
 _CLOSE_CACHE: dict[tuple[str, str, dt.date], float] = {}
+#: Serializes cache misses, so concurrent node evaluations never read the same
+#: close twice (with 8 workers every node missed at once and the archive's
+#: 139k closes were read about 8 times over).
+_CLOSE_LOCK = threading.Lock()
 
 
 class _LazySymbolCloses(Mapping[dt.date, float]):
@@ -1180,9 +1185,13 @@ class _LazySymbolCloses(Mapping[dt.date, float]):
             return _CLOSE_CACHE[cache_key]
         except KeyError:
             pass
-        price = _read_close(self._mount, self._symbol, day)
-        _CLOSE_CACHE[cache_key] = price
-        return price
+        with _CLOSE_LOCK:
+            cached = _CLOSE_CACHE.get(cache_key)
+            if cached is not None:
+                return cached
+            price = _read_close(self._mount, self._symbol, day)
+            _CLOSE_CACHE[cache_key] = price
+            return price
 
     def __iter__(self) -> Iterator[dt.date]:
         return iter(self._available())

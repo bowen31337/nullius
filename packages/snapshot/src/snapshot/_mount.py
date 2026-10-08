@@ -864,7 +864,23 @@ class SnapshotMount:
         partition's files and nothing else, so a symbol's whole history
         never has to cross the mount boundary.
         """
-        return tuple(self.root.glob(f"{stream}/symbol={symbol}/date={date}/*.parquet"))
+        # The partition directory is built, not globbed: Python 3.12's
+        # pathlib glob scans every level of the pattern, so each one-day
+        # lookup listed the symbol's whole history (~1,600 entries on the
+        # 2019-2026 archive). That was 79% of a campaign's time and tens of
+        # GB of reads. glob's guarantees are kept: a symlink at any of the
+        # three levels matches nothing, and only regular .parquet files are
+        # returned, in name order (children() sorts).
+        level = self.root
+        for part in (stream, f"symbol={symbol}", f"date={date}"):
+            level = level / part
+            if level.path.is_symlink() or not level.is_dir():
+                return ()
+        return tuple(
+            entry
+            for entry in level.children()
+            if entry.name.endswith(".parquet") and entry.is_file()
+        )
 
     # -- Observability ------------------------------------------------------
 
