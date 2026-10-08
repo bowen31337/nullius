@@ -1,0 +1,81 @@
+<bug_spec>
+  <!-- PERF-1. Found 2026-10-09. The archive config
+       (~/.config/nullius/campaign/evaluation-config-archive.json: snapshot
+       2026-10-08T03:33:28Z_540e93, 100 symbols from 2019 on, 235 weekly
+       dates) took 1 h 45 min for a 2-root smoke campaign (2a0700fa), about
+       50 min per node, or ~12.7 s per rebalance date.
+
+       The 92-day snapshot ran at ~2.3 s per date, with ~40 symbols × ~700
+       days of history per window. The archive carries up to 100 symbols ×
+       1,600 days. The time scales with the window's size, not with sandbox
+       boot. Nodes are also evaluated one at a time on a 16-core,
+       15 GB host.
+
+       At this rate a 32-root triage campaign takes about 27 h, so M1's
+       triage sample (about 30 nulls) and every later milestone are
+       infeasible. Core shape, explicit touches_files. -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/orchestrator/src/orchestrator/_context.py,packages/orchestrator/src/orchestrator/_evaluate.py,packages/signal-agent/src/signal_agent/_authoring.py,deploy/campaign/evaluation-config.example.json,packages/orchestrator/tests/test_window_history_cap.py">
+    <title>Every rebalance date's window carries the snapshot's entire history, so per-date sandbox cost grows with the data window rather than with what a signal can use</title>
+    <symptoms>
+      orchestrator._evaluate._materialize_from_context (~line 372) reads every bars partition at or before the decision date for every PIT-universe symbol. On the 2019–2026 archive, a 2026 date serializes about 150k rows into the sandbox.
+    </symptoms>
+    <reproduction_steps>
+      Time materialize plus serialize_window for the archive config's last date against its first. The cost grows linearly with history.
+    </reproduction_steps>
+    <expected>
+      - The evaluation config gains an optional key max_history_days: a positive int, default 400, documented in deploy/campaign/evaluation-config.example.json.
+      - The materializer reads only partitions dated in (decision_date − max_history_days, decision_date]. The PIT universe rule is unchanged.
+      - Truncation applies to every node, real and null alike.
+      - The authoring declaration states the depth so agents write against it. The bars accessor's returns_notes, or stream_columns' sibling note, says "each window carries at most N trailing daily candles per symbol; a longer lookback returns what exists". N is read from the evaluation context when one is configured, and is absent otherwise.
+      - test_window_history_cap.py covers, on a tmp sealed snapshot:
+        - a window at a late date carries only the last N days
+        - an early date carries everything available
+        - the default applies when the key is absent
+        - a non-positive value is refused at config load with a named error
+        - the declaration names N
+        It passes under pytest-xdist.
+    </expected>
+    <actual>Root cause: the window is the whole history at or before t, because nothing bounds its depth.</actual>
+    <constraints>
+      Window truncation at t, the PIT universe and the contract's accessors are unchanged
+      No file outside the five listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="high"
+       touches_files="packages/orchestrator/src/orchestrator/_campaign.py,packages/orchestrator/src/orchestrator/_context.py,packages/orchestrator/tests/test_concurrent_evaluation.py">
+    <title>A campaign evaluates its nodes one at a time, so a 32-root campaign uses one of 16 cores</title>
+    <symptoms>
+      The 32-root campaigns of 2026-10-08 evaluated roots sequentially, with one gVisor sandbox alive at any moment and the host at about 6% CPU. Evaluation dominates wall time, since authoring all 32 roots takes about 10 min.
+    </symptoms>
+    <reproduction_steps>
+      Run the offline campaign e2e with 8 roots and time it. Wall time equals the sum of per-node times.
+    </reproduction_steps>
+    <expected>
+      - The evaluation config gains an optional key evaluation_workers: an int from 1 to 16, default 4.
+      - Root evaluation, and a round's child evaluations, run on a bounded thread pool of that size. Each node still runs in its own sandbox. Concurrent runsc containers use distinct container ids and the existing state root; verify that they never collide.
+      - Results are identical to evaluation_workers=1:
+        - the same node rows, scores and ledger rows (set-equal)
+        - node_evaluated events emitted in the deterministic order a serial run would emit them, i.e. buffered and released in node order
+        - the same stop_reason
+        - one campaign's events are never interleaved with another's
+      - SQLite writes (ledger, tree, stores) stay correct under concurrency. They are serialized through the existing store connections or a single writer lock, never two writers in one transaction, so no "database is locked" escapes.
+      - A failing node never cancels its siblings.
+      - test_concurrent_evaluation.py, with the stub executor the offline e2e already uses:
+        - evaluation_workers 1 and 4 produce identical persisted rows and identical event order
+        - 4 workers are at least 2.5× faster on 8 nodes with a sleeping stub executor
+        - a raising node leaves its siblings evaluated
+        - out-of-range values are refused at config load
+        It passes under pytest-xdist.
+    </expected>
+    <actual>Root cause: the round loop and root planting call evaluate_node serially.</actual>
+    <constraints>
+      Determinism of every persisted record and of the event stream is unchanged
+      No file outside the three listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
