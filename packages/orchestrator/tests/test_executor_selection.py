@@ -40,12 +40,14 @@ outside a pytest temporary directory.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import contract
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -64,7 +66,14 @@ from orchestrator._context import (
     signal_sandbox,
 )
 from orchestrator._evaluate import SandboxExecutionError, evaluate_node
-from orchestrator._gvisor import GVisorSandbox, _tree_sha256
+from orchestrator._gvisor import (
+    GVisorSandbox,
+    _host_app_dir,
+    _host_child_bootstrap_path,
+    _host_contract_dir,
+    _source_tree_sha256,
+    _tree_sha256,
+)
 from orchestrator._hardened_sandbox import HardenedSubprocessSandbox
 from orchestrator._oci_bundle import CHILD_BOOTSTRAP_PATH
 from snapshot import SnapshotService
@@ -243,8 +252,26 @@ def test_signal_sandbox_answers_gvisor_sandbox_for_gvisor(
     # campaign-driver gVisor manifest check: construction also verifies
     # runtime_root against <runtime_root>.manifest.json's tree_sha256, so
     # this stub root needs a manifest matching its own (stub) contents.
+    #
+    # bug_spec_gvisor_runtime_staleness.xml: construction now also requires
+    # contract_source_sha256, app_source_sha256, child_bootstrap_sha256 and
+    # contract_version, refusing a manifest missing any of them. Computed
+    # here against this test process's own real, unmocked sources (the same
+    # resolvers GVisorSandbox itself uses) — exercising a stale mismatch is
+    # test_gvisor_runtime_staleness.py's job, not this file's.
     manifest_path = Path(f"{runtime_root}.manifest.json")
-    manifest_path.write_text(json.dumps({"tree_sha256": _tree_sha256(runtime_root)}), encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "tree_sha256": _tree_sha256(runtime_root),
+                "contract_source_sha256": _source_tree_sha256(_host_contract_dir()),
+                "app_source_sha256": _source_tree_sha256(_host_app_dir()),
+                "child_bootstrap_sha256": hashlib.sha256(_host_child_bootstrap_path().read_bytes()).hexdigest(),
+                "contract_version": contract.CONTRACT_VERSION,
+            }
+        ),
+        encoding="utf-8",
+    )
 
     context = _bare_context(
         sandbox_runtime="gvisor",

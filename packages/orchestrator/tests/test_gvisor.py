@@ -52,6 +52,7 @@ import time
 import uuid
 from pathlib import Path
 
+import contract
 import pyarrow as pa
 import pytest
 from contract.window import MarketWindow
@@ -96,11 +97,26 @@ def _write_manifest(root: Path, *, tree_sha256: object = _ABSENT) -> Path:
     ``tree_sha256=None`` omits the key entirely (the "manifest carries no
     tree_sha256" case); any other explicit value is written verbatim (a
     deliberately wrong digest, for the mismatch case).
+
+    bug_spec_gvisor_runtime_staleness.xml: GVisorSandbox construction now
+    also requires ``contract_source_sha256``, ``app_source_sha256``,
+    ``child_bootstrap_sha256`` and ``contract_version`` (refusing a manifest
+    missing any of them, the same way it refuses a mismatch), recomputed
+    from the host's own sources. Every manifest this suite writes for a
+    passing construction needs them too — computed here against this test
+    process's own real, unmocked sources (via the same resolvers
+    GVisorSandbox itself uses), never a deliberately wrong value, since
+    exercising a stale-source mismatch is test_gvisor_runtime_staleness.py's
+    job, not this file's.
     """
     digest = gv._tree_sha256(root) if tree_sha256 is _ABSENT else tree_sha256
     manifest: dict[str, object] = {"root": str(root)}
     if digest is not None:
         manifest["tree_sha256"] = digest
+        manifest["contract_source_sha256"] = gv._source_tree_sha256(gv._host_contract_dir())
+        manifest["app_source_sha256"] = gv._source_tree_sha256(gv._host_app_dir())
+        manifest["child_bootstrap_sha256"] = hashlib.sha256(gv._host_child_bootstrap_path().read_bytes()).hexdigest()
+        manifest["contract_version"] = contract.CONTRACT_VERSION
     manifest_path = Path(f"{root}.manifest.json")
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     return manifest_path

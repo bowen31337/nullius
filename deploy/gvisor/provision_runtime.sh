@@ -33,6 +33,18 @@
 # (LC_ALL=C — plain codepoint order, so no locale can make this script and
 # Python disagree on how "./a" and "./B" sort).
 #
+# bug_spec_gvisor_runtime_staleness.xml: tree_sha256 only proves the root is
+# internally intact, never that it is current — a root provisioned from an
+# older checkout matches its own manifest forever while serving a stale
+# contract/app/child. So the manifest also carries contract_source_sha256
+# and app_source_sha256 (the same per-file line shape as tree_sha256, over
+# the staged site/contract and site/app, __pycache__ pruned instead of
+# permission-filtered — a plain source tree has no root-only files) and
+# contract_version (read from the baked contract). GVisorSandbox recomputes
+# all three from the *host's* own sources at construction
+# (orchestrator._gvisor._require_current_runtime_sources) and refuses a
+# mismatch, naming the remedy below.
+#
 # Needs: sudo, debootstrap, uv, network access to the Ubuntu mirror and PyPI.
 set -euo pipefail
 
@@ -63,6 +75,21 @@ mkdir -p "$STAGE/site/contract" "$STAGE/site/app"
 cp -a "$REPO/packages/contract/src/contract/." "$STAGE/site/contract/"
 cp -a "$REPO/src/app/." "$STAGE/site/app/"
 find "$STAGE/site" -name __pycache__ -prune -exec rm -rf {} +
+
+# bug_spec_gvisor_runtime_staleness.xml: a root provisioned from an older
+# checkout still matches its own tree_sha256 forever, even once the host's
+# own contract/app/child sources move on, because that digest only proves
+# the root is internally intact. orchestrator._gvisor.GVisorSandbox
+# (orchestrator._gvisor._require_current_runtime_sources) recomputes these
+# same digests from the *host's* own sources at every construction and
+# refuses a mismatch — so this script's digest, line format and sort order
+# must agree with orchestrator._gvisor._source_tree_sha256's documented
+# pipeline: every non-__pycache__ file (already pruned above), "<hex>
+# ./<relpath>\n" per sha256sum's own two-space shape, LC_ALL=C order.
+CONTRACT_SOURCE_DIGEST="$(cd "$STAGE/site/contract" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+APP_SOURCE_DIGEST="$(cd "$STAGE/site/app" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+CONTRACT_VERSION="$(awk -F'"' '/^CONTRACT_VERSION = / {print $2; exit}' "$STAGE/site/contract/__init__.py")"
+[[ -n "$CONTRACT_VERSION" ]] || { echo "error: CONTRACT_VERSION not found in contract/__init__.py" >&2; exit 1; }
 sudo mkdir -p "$ROOT.new/$SITE"
 sudo cp -a "$STAGE/site/." "$ROOT.new/$SITE/"
 
@@ -107,6 +134,8 @@ sudo tee "$ROOT.new.manifest.json" >/dev/null <<EOF
 {"root": "$ROOT", "suite": "$SUITE", "python": "$PY", "polars": "$POLARS",
  "pyarrow": "$PYARROW", "contract_from_commit": "$COMMIT", "tree_sha256": "$DIGEST",
  "child_bootstrap_path": "/$CHILD_RELPATH", "child_bootstrap_sha256": "$CHILD_DIGEST",
+ "contract_source_sha256": "$CONTRACT_SOURCE_DIGEST", "app_source_sha256": "$APP_SOURCE_DIGEST",
+ "contract_version": "$CONTRACT_VERSION",
  "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
 

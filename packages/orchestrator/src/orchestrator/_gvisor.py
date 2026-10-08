@@ -92,6 +92,7 @@ from ._hardened_sandbox import HardenedLimits
 from ._oci_bundle import CHILD_BOOTSTRAP_PATH, PathLike
 
 __all__ = [
+    "GVISOR_RUNTIME_STALE_CODE",
     "GVISOR_UNAVAILABLE_CODE",
     "GVisorSandbox",
     "GVisorUnavailableError",
@@ -106,6 +107,13 @@ __all__ = [
 #: nothing to run under — a different failure with a different repair (install
 #: or point at ``runsc``, rather than edit a policy document).
 GVISOR_UNAVAILABLE_CODE: Final[str] = "isolation_required"
+
+#: The greppable code word a construction-time refusal carries when the
+#: runtime root's baked contract, app or sandbox-child source no longer
+#: matches the host's own copies (bug_spec_gvisor_runtime_staleness.xml) —
+#: distinct from :data:`GVISOR_UNAVAILABLE_CODE` because the remedy differs:
+#: re-provision the root, not install or point at ``runsc``.
+GVISOR_RUNTIME_STALE_CODE: Final[str] = "gvisor_runtime_stale"
 
 #: The from-scratch environment every ``runsc`` invocation this module makes
 #: is spawned with — never ``os.environ``.  This governs the *host-side*
@@ -308,6 +316,128 @@ def _require_matching_manifest(runtime_root: PathLike) -> None:
         )
 
 
+#: The manifest keys ``deploy/gvisor/provision_runtime.sh`` writes beside
+#: ``tree_sha256``, each recomputed by :func:`_require_current_runtime_sources`
+#: from the host's own sources and compared against the manifest's recording
+#: of it. A manifest written before this guard existed (such as a root
+#: provisioned before bug_spec_gvisor_runtime_staleness.xml) carries none of
+#: these, and is refused the same way as a mismatch — never passed silently.
+_STALENESS_MANIFEST_FIELDS: Final[tuple[str, ...]] = (
+    "contract_source_sha256",
+    "app_source_sha256",
+    "child_bootstrap_sha256",
+    "contract_version",
+)
+
+
+def _source_tree_sha256(root: PathLike) -> str:
+    """sha256 over sorted (relpath, file sha256) lines of every non-__pycache__ file.
+
+    The same per-file line shape :func:`_tree_sha256` uses (``"<hex>
+    ./<relpath>\\n"``, two spaces, plain codepoint sort), but for a plain
+    source tree rather than a debootstrap runtime root: ``__pycache__`` is
+    pruned (a host checkout that has imported its own packages carries
+    bytecode caches a freshly baked copy never does) instead of filtering by
+    world-readable permission, which has nothing to do with a git-tracked
+    source tree. Mirrors ``deploy/gvisor/provision_runtime.sh``'s own
+    pipeline over the staged ``site/contract`` and ``site/app`` directories.
+    """
+    root = Path(root)
+    relpaths: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+        for name in filenames:
+            candidate = Path(dirpath) / name
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+            relpaths.append(candidate.relative_to(root).as_posix())
+    relpaths.sort()
+
+    lines = [f"{hashlib.sha256((root / rel).read_bytes()).hexdigest()}  ./{rel}\n" for rel in relpaths]
+    return hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()
+
+
+def _host_contract_dir() -> Path:
+    """``packages/contract/src/contract``, from the imported package's own ``__file__``.
+
+    Never a hard-coded path: a workspace member can be reached under the
+    module loader's synthetic scan name, and the only thing that is always
+    true of ``contract`` is that it is a real, already-importable package
+    with a ``__file__`` pointing at its own ``__init__.py``.
+    """
+    import contract
+
+    return Path(contract.__file__).parent
+
+
+def _host_app_dir() -> Path:
+    """``src/app``, from the imported namespace package's own ``__path__``.
+
+    ``app`` has no ``__init__.py`` (a PEP 420 namespace package), so it has
+    no ``__file__`` to anchor on — ``__path__`` is where ``sys.path`` landed
+    it instead.
+    """
+    import app
+
+    return Path(next(iter(app.__path__)))
+
+
+def _host_child_bootstrap_path() -> Path:
+    """``orchestrator/_sandbox_child.py``, from its own ``__file__``."""
+    return Path(_child.__file__)
+
+
+def _require_current_runtime_sources(runtime_root: PathLike) -> None:
+    """Raise unless the root's baked contract, app and child match the host's own.
+
+    :func:`_require_matching_manifest` only proves the root is internally
+    intact — that its contents still hash to what its own manifest recorded
+    at provisioning time. A root provisioned from an older checkout passes
+    that check forever, even once the host's own ``packages/contract``,
+    ``src/app`` and ``orchestrator/_sandbox_child.py`` have moved on
+    (bug_spec_gvisor_runtime_staleness.xml): this is the other half of the
+    manifest's contract, comparing the three source digests
+    ``deploy/gvisor/provision_runtime.sh`` writes beside ``tree_sha256``
+    against a fresh recomputation over the host's own sources.
+
+    Called after :func:`_require_matching_manifest`, never before it: a root
+    that fails the tree digest is refused for that reason first, regardless
+    of whether it would also fail this one.
+    """
+    manifest_path = _manifest_path(runtime_root)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    missing = [field for field in _STALENESS_MANIFEST_FIELDS if field not in manifest]
+    if missing:
+        raise GVisorUnavailableError(
+            f"{GVISOR_RUNTIME_STALE_CODE}: the manifest at {manifest_path} for runtime "
+            f"root ({runtime_root!r}) is missing {', '.join(missing)} — provisioned "
+            "before the staleness guard; re-provision with "
+            "deploy/gvisor/provision_runtime.sh (needs sudo)."
+        )
+
+    host_digests = {
+        "contract": (_source_tree_sha256(_host_contract_dir()), "contract_source_sha256"),
+        "app": (_source_tree_sha256(_host_app_dir()), "app_source_sha256"),
+        "child": (
+            hashlib.sha256(_host_child_bootstrap_path().read_bytes()).hexdigest(),
+            "child_bootstrap_sha256",
+        ),
+    }
+    stale = [name for name, (host_digest, key) in host_digests.items() if host_digest != manifest.get(key)]
+    if stale:
+        import contract
+
+        raise GVisorUnavailableError(
+            f"{GVISOR_RUNTIME_STALE_CODE}: the runtime root ({runtime_root!r}) was "
+            f"provisioned from an older checkout and no longer matches the host's own "
+            f"sources — stale: {', '.join(stale)}; manifest contract_version="
+            f"{manifest.get('contract_version')!r}, host contract_version="
+            f"{contract.CONTRACT_VERSION!r}. Re-provision with "
+            "deploy/gvisor/provision_runtime.sh (needs sudo)."
+        )
+
+
 def _reports_sandbox_violation(stderr: bytes) -> bool:
     """Whether ``runsc``'s own stderr names a sandbox violation.
 
@@ -331,7 +461,13 @@ class GVisorSandbox:
     ``runtime_root`` against its own ``<runtime_root>.manifest.json`` (see
     :func:`_require_matching_manifest` — a missing manifest, malformed JSON,
     a missing ``tree_sha256``, or a digest mismatch all refuse construction
-    rather than run agent code in a root that cannot be trusted), and reads
+    rather than run agent code in a root that cannot be trusted), then
+    verifies that root is not merely intact but *current* (see
+    :func:`_require_current_runtime_sources` — a root provisioned from an
+    older checkout still matches its own manifest forever, so this
+    recomputes the contract, app and child digests from the host's own
+    sources and refuses a mismatch with :data:`GVISOR_RUNTIME_STALE_CODE`),
+    and reads
     the sandbox member's default limits once if none are given, so a
     per-node evaluation that calls :meth:`run` repeatedly pays none of those
     costs twice.
@@ -349,6 +485,7 @@ class GVisorSandbox:
         self.runsc: Path = _require_runsc(runsc)
         _require_child_bootstrap(runtime_root)
         _require_matching_manifest(runtime_root)
+        _require_current_runtime_sources(runtime_root)
         self.runtime_root = runtime_root
         self.state_root: Path = Path(state_root).resolve()
         self.state_root.mkdir(parents=True, exist_ok=True)
