@@ -84,7 +84,7 @@ from ._context import (
 )
 from ._evaluate import NodeEvaluation, evaluate_node
 from ._oracle import OracleTargetError, SubtreeOracle
-from ._targets import snapshot_forward_returns
+from ._targets import grid_forward_returns, snapshot_forward_returns
 from ._tree_writer import NodeMetricsWriter
 
 __all__ = [
@@ -246,7 +246,7 @@ def _sidecar_backed_endpoint(sidecar: Any, context: EvaluationContext) -> Any:
     Builds a fresh :class:`nulloracle.TargetEndpoint` over ``sidecar`` (the
     composed ``"nulloracle"`` component — the same sidecar
     ``"nulloracle-target-route"`` was built from, so both name one world),
-    with :func:`~orchestrator._targets.snapshot_forward_returns` bound to
+    with :func:`~orchestrator._targets.grid_forward_returns` (the snapshot's forward returns on the context's own rebalance grid) bound to
     ``context`` as its ``targets`` seam and nulloracle's own
     nulloracle's per-symbol :func:`~nulloracle.blockpermute.block_permute_cross_section` as its ``permute``
     seam — the same reconciliation ``nulloracle.build_target_route``'s own
@@ -270,7 +270,7 @@ def _sidecar_backed_endpoint(sidecar: Any, context: EvaluationContext) -> Any:
         return block_permute_cross_section(series, seed=seed, block_days=block_days)
 
     return TargetEndpoint(
-        sidecar, targets=snapshot_forward_returns(context), permute=_permute
+        sidecar, targets=grid_forward_returns(context), permute=_permute
     )
 
 

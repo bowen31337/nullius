@@ -261,3 +261,30 @@ def test_the_sidecar_backed_endpoint_permutes_per_symbol_not_per_row() -> None:
     }
     permuted = block_permute_cross_section(panel, seed=7, block_days=20)
     assert all(set(row) <= set(panel[day]) for day, row in permuted.items())
+
+
+def test_the_live_route_serves_only_the_rebalance_grid() -> None:
+    """Archive campaign 1 (2026-10-08) scored a weekly grid, but the route
+    served every trading day in the span, and the gate refused every node.
+    grid_forward_returns serves exactly context.evaluation_dates; a dense
+    grid is unchanged."""
+    import datetime as dt
+
+    from orchestrator._targets import grid_forward_returns, snapshot_forward_returns
+
+    days = [dt.date(2024, 1, 1) + dt.timedelta(days=i) for i in range(30)]
+    closes = {
+        sym: {d: 100.0 + i * (k + 1) for i, d in enumerate(days)}
+        for k, sym in enumerate(("AAA", "BBB"))
+    }
+    weekly = tuple(days[0:28:7])
+    request = SimpleNamespace(symbols=None, date_range=(days[0], days[-1]))
+
+    sparse = SimpleNamespace(closes=closes, horizon=1, evaluation_dates=weekly)
+    served = grid_forward_returns(sparse)(request)
+    assert sorted(served) == list(weekly)
+    full = snapshot_forward_returns(sparse)(request)
+    assert all(served[d] == full[d] for d in weekly)
+
+    dense = SimpleNamespace(closes=closes, horizon=1, evaluation_dates=tuple(days[:-1]))
+    assert grid_forward_returns(dense)(request) == snapshot_forward_returns(dense)(request)

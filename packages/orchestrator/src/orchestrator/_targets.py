@@ -61,7 +61,7 @@ import datetime as dt
 from collections.abc import Callable, Mapping
 from typing import Any
 
-__all__ = ["snapshot_forward_returns"]
+__all__ = ["grid_forward_returns", "snapshot_forward_returns"]
 
 
 def snapshot_forward_returns(
@@ -121,3 +121,26 @@ def snapshot_forward_returns(
         return series
 
     return _forward_returns
+
+
+def grid_forward_returns(
+    context: Any,
+) -> Callable[[Any], dict[dt.date, dict[str, float]]]:
+    """:func:`snapshot_forward_returns`, narrowed to the context's own
+    rebalance grid (``context.evaluation_dates``).
+
+    The live target route serves exactly the dates a node is scored on. The
+    gate requires the served support to equal the alignment's support, and
+    the null permutation must shuffle blocks of rebalances, not blocks of
+    calendar days. A dense daily grid serves the same panel as before. A
+    sparse grid (the weekly archive config) used to receive every trading
+    day in the span, and every node failed EvaluatorGateError (archive
+    campaign 1, 2026-10-08).
+    """
+    grid = frozenset(context.evaluation_dates)
+    base = snapshot_forward_returns(context)
+
+    def _on_grid(request: Any) -> dict[dt.date, dict[str, float]]:
+        return {day: row for day, row in base(request).items() if day in grid}
+
+    return _on_grid
