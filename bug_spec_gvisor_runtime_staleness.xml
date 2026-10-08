@@ -1,0 +1,59 @@
+<bug_spec>
+  <!-- GV-STALE-1. Found 2026-10-08. Campaign tri1 ran with the worktree
+       pinned at d545bd2, which includes 423598f (per-symbol bars lookback,
+       contract 0.2.0). Root a395bfcb still failed "0 of 92 dates expressed a
+       preference". Run on the host against the same snapshot, its signal
+       gives 39 distinct scores.
+
+       The gVisor runtime root /opt/nullius/gvisor-runtime was provisioned
+       on 2026-10-06. It carries its own baked copies of
+       packages/contract/src/contract (CONTRACT_VERSION "0.1.0"), src/app and
+       orchestrator/_sandbox_child.py. The sandbox therefore runs agent code
+       against the stale contract and child. The polars `_io` lazy-import
+       fix (0d26ba4) is not live either.
+
+       orchestrator._gvisor._require_matching_manifest checks only the
+       root's own tree_sha256 against its manifest. That proves the root is
+       intact, not current, and nothing compares the baked copies with the
+       host's sources. Core shape, explicit touches_files. -->
+
+  <bug index="1" shape="core" severity="critical"
+       touches_files="packages/orchestrator/src/orchestrator/_gvisor.py,deploy/gvisor/provision_runtime.sh,packages/orchestrator/tests/test_gvisor_runtime_staleness.py">
+    <title>A gVisor runtime root provisioned from an older checkout silently runs agent code against a stale contract and sandbox child</title>
+    <symptoms>
+      The runtime root bakes the contract package, the app package and the sandbox child bootstrap at provision time. When the host's copies change, the root keeps running the old ones. The manifest check passes, because the root still matches its own manifest.
+
+      As a result, since 423598f every campaign's sandbox has served contract 0.1.0's frame-wide bars lookback while the host and the prompt describe 0.2.0's per-symbol rule. Signals written against the documented ABI fail as constant scores. Every such failure is a charged trial.
+    </symptoms>
+    <reproduction_steps>
+      Provision a test root (or build a fake one in tmp with a manifest), then edit packages/contract/src/contract/__init__.py on the host. Constructing GVisorSandbox still succeeds and runs the old contract.
+    </reproduction_steps>
+    <expected>
+      - provision_runtime.sh writes source digests into the manifest:
+        - contract_source_sha256: sha256 over the sorted (relpath, file sha256) lines of every non-__pycache__ file under the baked site/contract
+        - app_source_sha256: the same, over site/app
+        - the existing child_bootstrap_sha256
+        - contract_version: read from the baked contract
+      - GVisorSandbox construction (beside _require_matching_manifest) recomputes the same three digests from the host's own sources: packages/contract/src/contract, src/app and orchestrator/_sandbox_child.py, located from the imported modules' __file__, never a hard-coded path. It raises GVisorUnavailableError with code word "gvisor_runtime_stale" when any of them differs. The message names:
+        - each component that differs
+        - the manifest's and the host's contract_version
+        - the exact remedy: `deploy/gvisor/provision_runtime.sh` (needs sudo)
+      - A manifest that lacks the new fields, such as the live 2026-10-06 one, is refused the same way: "provisioned before the staleness guard; re-provision". It never passes silently.
+      - The digest function is shared by the script and the check: the script calls `python -I -c` on a small function in orchestrator._gvisor, or both implement the documented line format, which the test pins.
+      - The bwrap ("unisolated") path is unaffected, since it runs the host's packages.
+      - test_gvisor_runtime_staleness.py uses a fake root in tmp with a manifest, and needs no runsc and no sudo:
+        - matching digests construct fine
+        - a changed host contract file is refused with gvisor_runtime_stale, naming "contract" and both versions
+        - a changed child is refused, naming the child
+        - a manifest without the fields is refused
+        - the digest is independent of __pycache__ and file mtimes
+        It passes under pytest-xdist. The orchestrator member suite passes; the real-runsc tests still skip without NULLIUS_GVISOR_RUNTIME_ROOT.
+    </expected>
+    <actual>Root cause: the manifest check proves the root is intact, not that it is current. The baked Z0 code is never compared with the host's.</actual>
+    <constraints>
+      The tree_sha256 check is unchanged and still runs first
+      No file outside the three listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
