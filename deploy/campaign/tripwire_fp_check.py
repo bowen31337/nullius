@@ -6,10 +6,6 @@ rejected.
 Usage: uv run --all-packages python -I deploy/campaign/tripwire_fp_check.py \
     ~/.config/nullius/campaign/evaluation-config.json 0
 """
-
-Usage: uv run --all-packages python -I deploy/campaign/null_power_check.py \
-    ~/.config/nullius/campaign/evaluation-config.json 300
-"""
 import datetime as dt
 import glob
 import json
