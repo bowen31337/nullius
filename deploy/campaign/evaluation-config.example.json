@@ -8,5 +8,6 @@
   "sandbox_runtime": "gvisor",
   "gvisor_runtime_root": "/opt/nullius/gvisor-runtime",
   "gvisor_state_root": "/opt/nullius/gvisor-state",
-  "lake_roots": ["/opt/nullius/lake"]
+  "lake_roots": ["/opt/nullius/lake"],
+  "max_history_days": 400
 }

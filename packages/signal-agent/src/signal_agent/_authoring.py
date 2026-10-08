@@ -364,7 +364,21 @@ def _signature_text(name: str, method: Any) -> str:
     return f"{name}({', '.join(parts)}) -> polars.DataFrame"
 
 
-def _accessors_detail(contract: Any) -> dict[str, dict[str, Any]]:
+#: bug_spec_evaluation_throughput.xml: the sentence
+#: :func:`_accessors_detail` appends to the bars accessor's ``returns_notes``
+#: when a caller's ``max_history_days`` is configured — the depth
+#: :func:`orchestrator._evaluate._materialize_from_context` actually bounds a
+#: window to, so an authored signal's lookback is written against a real
+#: ceiling rather than discovered by a crash on a truncated window.
+_WINDOW_HISTORY_NOTE_TEMPLATE: Final[str] = (
+    "each window carries at most {n} trailing daily candles per symbol; a "
+    "longer lookback returns what exists"
+)
+
+
+def _accessors_detail(
+    contract: Any, *, max_history_days: int | None = None
+) -> dict[str, dict[str, Any]]:
     """Per-accessor signature, parameter units and frame schema.
 
     Covers the five data accessors the symptom names — ``bars``, ``trades``,
@@ -381,8 +395,28 @@ def _accessors_detail(contract: Any) -> dict[str, dict[str, Any]]:
     constant to read, because it is not type-checked anywhere in the contract;
     it is the exact gap the symptom names (the momentum root that guessed
     ``close``'s dtype), so it is stated here in words.
+
+    ``max_history_days``, when given (an evaluation context configured one),
+    appends :data:`_WINDOW_HISTORY_NOTE_TEMPLATE`'s sentence to the bars
+    accessor's own ``returns_notes`` — the one accessor this depth bounds.
+    ``None`` (the default, and what every caller that configures no
+    evaluation context hands in) leaves that note out entirely, unchanged
+    from before bug_spec_evaluation_throughput.xml.
     """
     window = contract.MarketWindow
+    bars_notes = (
+        "extra OHLCV columns pass through verbatim, but only the "
+        "ones the snapshot holds: stream_columns lists them, so "
+        "never assume high, low or open exist; in the sealed "
+        "snapshot open_time is a UTC timestamp while close and "
+        "volume arrive as venue-spelled strings (e.g. \"61234.50\") "
+        "-- cast close to Float64 before arithmetic"
+    )
+    if max_history_days is not None:
+        bars_notes = (
+            f"{bars_notes}; "
+            f"{_WINDOW_HISTORY_NOTE_TEMPLATE.format(n=max_history_days)}"
+        )
     return {
         "bars": {
             "signature": _signature_text("bars", window.bars),
@@ -392,14 +426,7 @@ def _accessors_detail(contract: Any) -> dict[str, dict[str, Any]]:
                 "reads every candle the window carries"
             ),
             "returns_columns": contract.BARS_REQUIRED_COLUMNS,
-            "returns_notes": (
-                "extra OHLCV columns pass through verbatim, but only the "
-                "ones the snapshot holds: stream_columns lists them, so "
-                "never assume high, low or open exist; in the sealed "
-                "snapshot open_time is a UTC timestamp while close and "
-                "volume arrive as venue-spelled strings (e.g. \"61234.50\") "
-                "-- cast close to Float64 before arithmetic"
-            ),
+            "returns_notes": bars_notes,
         },
         "trades": {
             "signature": _signature_text("trades", window.trades),
@@ -829,7 +856,12 @@ class SignalContract:
             ),
         )
 
-    def declaration(self, *, snapshot: Any | None = None) -> dict[str, Any]:
+    def declaration(
+        self,
+        *,
+        snapshot: Any | None = None,
+        max_history_days: int | None = None,
+    ) -> dict[str, Any]:
         """The contract as a plain mapping — what an agent is asked to write.
 
         Assembled from the contract rather than restated: the entrypoint and
@@ -871,6 +903,14 @@ class SignalContract:
           by default, so every existing call site — none of which passes
           ``snapshot`` — is unaffected); absent from the mapping entirely
           when it is not.
+
+        **bug_spec_evaluation_throughput.xml's additive note.**
+        ``max_history_days``, when a caller hands in the depth an evaluation
+        context configured (:data:`None` otherwise, and absent from every
+        existing call site), is read into ``accessors_detail``'s own bars
+        entry by :func:`_accessors_detail` — the note that states the window's
+        actual trailing-day ceiling rather than leaving an agent to discover
+        it by writing a lookback the window silently cannot serve.
         """
         contract = require_contract()
         sig = contract.describe_signal_signature()
@@ -892,7 +932,9 @@ class SignalContract:
                 "seed the only one that carries randomness: no clock, no "
                 "filesystem, no network, no global state (§5.1, §12)"
             ),
-            "accessors_detail": _accessors_detail(contract),
+            "accessors_detail": _accessors_detail(
+                contract, max_history_days=max_history_days
+            ),
             "universe": _UNIVERSE_NOTE,
             "allowed_imports": _agent_imports_allowlist(),
             "example_signal": EXAMPLE_SIGNAL_SOURCE,

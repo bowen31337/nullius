@@ -167,7 +167,12 @@ from tripwires import (
 
 from ._artifact_writer import ArtifactStoreWriter
 from ._charge import charge_failed_node, charge_node
-from ._context import BARS_STREAM, EvaluationContext, signal_sandbox
+from ._context import (
+    BARS_STREAM,
+    DEFAULT_MAX_HISTORY_DAYS,
+    EvaluationContext,
+    signal_sandbox,
+)
 from ._tree_writer import NodeMetricsWriter
 from ._tripwire_step import NOT_MEASURED, PROBE_NAMES, TripwireOutcome, run_tripwires
 
@@ -383,15 +388,27 @@ def _materialize_from_context(context: EvaluationContext) -> Any:
     evaluation grid is admitted only on the dates its sealed bars actually
     carry a partition, the same rule :func:`evaluator._execute._materialize_default`
     applies from the one shared helper, so the two materializers cannot
-    drift apart.  Only the partitions that per-date universe names, at or
-    before the decision date, are read through the mount's own ``select``,
-    so the same read-only handle and the same sealedness back every score
-    this evaluation computes, and a symbol not yet listed (or already
-    delisted) on a given date is never read for it.  A small per-partition
-    cache keeps one evaluation from re-reading the same compressed bytes
-    twice across rebalance dates.
+    drift apart.  Only the partitions that per-date universe names, dated
+    in ``(decision_date - context.max_history_days, decision_date]``, are
+    read through the mount's own ``select`` — bug_spec_evaluation_throughput.xml's
+    own bound on a window's depth, applied after the point-in-time universe
+    rule rather than in place of it, so a 2026 date on a multi-year archive
+    pays for :attr:`~orchestrator._context.EvaluationContext.max_history_days`
+    trailing days per symbol rather than the snapshot's entire history, and
+    an early date whose own history is shorter than that still carries
+    everything it has.  The same read-only handle and the same sealedness
+    back every score this evaluation computes, and a symbol not yet listed
+    (or already delisted, or truncated out of range) on a given date is
+    never read for it.  A small per-partition cache keeps one evaluation
+    from re-reading the same compressed bytes twice across rebalance dates.
     """
     mount = context.snapshot
+    # getattr, not context.max_history_days: a few tests hand this function a
+    # bare duck-typed context carrying only ``snapshot`` (the production
+    # EvaluationContext always has the field, defaulted), and those callers
+    # mean "no cap beyond this suite's own tiny history", which the default
+    # depth already is for them.
+    max_history_days = getattr(context, "max_history_days", DEFAULT_MAX_HISTORY_DAYS)
     cache: dict[tuple[str, str], Any] = {}
 
     def materialize(resolution: Any, decision_time: dt.datetime) -> Any:
@@ -401,11 +418,14 @@ def _materialize_from_context(context: EvaluationContext) -> Any:
         from contract.bars import bars_frame_name
         from contract.window import MarketWindow
 
-        universe = pit_universe(resolution, decision_time.date())
+        decision_date = decision_time.date()
+        earliest_date = decision_date - dt.timedelta(days=max_history_days)
+        universe = pit_universe(resolution, decision_date)
         tables: list[Any] = []
         for symbol in universe:
             for iso in resolution.dates(BARS_STREAM, symbol):
-                if dt.date.fromisoformat(iso) > decision_time.date():
+                day = dt.date.fromisoformat(iso)
+                if day > decision_date or day <= earliest_date:
                     continue
                 key = (symbol, iso)
                 if key not in cache:

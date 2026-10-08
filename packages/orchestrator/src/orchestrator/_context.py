@@ -176,6 +176,7 @@ __all__ = [
     "ACKNOWLEDGE_UNISOLATED_KEY",
     "BARS_STREAM",
     "BWRAP_RUNTIME",
+    "DEFAULT_MAX_HISTORY_DAYS",
     "EVALUATION_CONFIG_CODE",
     "EVALUATION_CONFIG_ENV",
     "GVISOR_RUNTIME",
@@ -183,6 +184,7 @@ __all__ = [
     "GVISOR_STATE_ROOT_KEY",
     "ISOLATION_REQUIRED",
     "LAKE_ROOTS_KEY",
+    "MAX_HISTORY_DAYS_KEY",
     "REQUIRED_KEYS",
     "SANDBOX_RUNTIMES",
     "EvaluationConfigError",
@@ -259,6 +261,20 @@ ISOLATION_REQUIRED: Final[str] = "isolation_required"
 #: ``ROSTER_STREAM``), spelled here because the snapshot layout names it
 #: and this module walks it directly.
 BARS_STREAM: Final[str] = "bars"
+
+#: The optional key bounding how many trailing days of sealed bars one
+#: rebalance date's window carries, per symbol.  bug_spec_evaluation_throughput.xml:
+#: without a bound, a 2026 date on a 2019-on archive materializes its
+#: *entire* history (about 150k rows) into the sandbox, because nothing
+#: limited the depth. Optional, unlike :data:`REQUIRED_KEYS` — a document
+#: that omits it gets :data:`DEFAULT_MAX_HISTORY_DAYS` rather than a
+#: refusal, since "cap a window's depth" is a performance knob a
+#: deployment may never need to touch, not a fact every run must state.
+MAX_HISTORY_DAYS_KEY: Final[str] = "max_history_days"
+
+#: The trailing-day depth :func:`orchestrator._evaluate._materialize_from_context`
+#: bounds a window to when the document carries no :data:`MAX_HISTORY_DAYS_KEY`.
+DEFAULT_MAX_HISTORY_DAYS: Final[int] = 400
 
 
 class EvaluationConfigError(Exception):
@@ -363,6 +379,15 @@ class EvaluationContext:
     #: 4's own refusal) — a possibly-empty tuple, required only when
     #: ``sandbox_runtime`` is ``"gvisor"``; empty for ``"unisolated"``.
     lake_roots: tuple[Path, ...] = ()
+    #: How many trailing days of sealed bars each rebalance date's window
+    #: carries, per symbol — read from the optional
+    #: :data:`MAX_HISTORY_DAYS_KEY` (:data:`DEFAULT_MAX_HISTORY_DAYS` when
+    #: absent). :func:`orchestrator._evaluate._materialize_from_context` is
+    #: the one reader: a partition dated at or before
+    #: ``decision_date - max_history_days`` is never read for that date, so
+    #: a late date on a long-lived snapshot pays for this many trailing
+    #: days, not the snapshot's entire history.
+    max_history_days: int = DEFAULT_MAX_HISTORY_DAYS
 
 
 def load_evaluation_context(
@@ -411,6 +436,7 @@ def load_evaluation_context(
     seed = _seed(values, named)
     epoch_id = _epoch_id(values, named)
     artifact_dir = _artifact_dir(values, named)
+    max_history_days = _max_history_days(document, named)
     database_url = _database_url(source)
 
     mount = _mounted_snapshot(values, named)
@@ -442,6 +468,7 @@ def load_evaluation_context(
         gvisor_runtime_root=gvisor_runtime_root,
         gvisor_state_root=gvisor_state_root,
         lake_roots=lake_roots,
+        max_history_days=max_history_days,
     )
 
 
@@ -506,6 +533,7 @@ def _refuse_unknown_keys(document: Mapping[str, Any], named: str) -> None:
             GVISOR_RUNTIME_ROOT_KEY,
             GVISOR_STATE_ROOT_KEY,
             LAKE_ROOTS_KEY,
+            MAX_HISTORY_DAYS_KEY,
         )
     )
     for key in document:
@@ -515,9 +543,10 @@ def _refuse_unknown_keys(document: Mapping[str, Any], named: str) -> None:
                 f"evaluation configuration at {named!r} (the keys are "
                 f"{', '.join(REQUIRED_KEYS)}, plus "
                 f"{ACKNOWLEDGE_UNISOLATED_KEY!r} when the runtime is "
-                f"unisolated, and {GVISOR_RUNTIME_ROOT_KEY!r}, "
+                f"unisolated, {GVISOR_RUNTIME_ROOT_KEY!r}, "
                 f"{GVISOR_STATE_ROOT_KEY!r} and {LAKE_ROOTS_KEY!r} when it "
-                "is gvisor); the file never holds a credential — every "
+                f"is gvisor, and the always-optional {MAX_HISTORY_DAYS_KEY!r}); "
+                "the file never holds a credential — every "
                 "key is one the loader defines, and an unknown key is "
                 "refused rather than read past. Credentials live where "
                 "the members already read them: the sidecar key in "
@@ -677,6 +706,32 @@ def _artifact_dir(values: Mapping[str, Any], named: str) -> Path:
             f"path string, got {raw!r} ({type(raw).__name__})"
         )
     return Path(raw)
+
+
+def _max_history_days(document: Mapping[str, Any], named: str) -> int:
+    """The trailing-day depth a window is bounded to — optional, unlike
+    :data:`REQUIRED_KEYS`.
+
+    :data:`DEFAULT_MAX_HISTORY_DAYS` when :data:`MAX_HISTORY_DAYS_KEY` is
+    absent — the one key this module defaults rather than refuses, because
+    bounding a window's depth is a performance knob, not a fact every run
+    must state.  A present value is still a positive integer, refused by
+    name otherwise (:data:`MAX_HISTORY_DAYS_KEY`): a non-positive cap
+    bounds a rebalance date's window to nothing or less, which starves
+    every signal rather than merely limiting its lookback.
+    """
+    if MAX_HISTORY_DAYS_KEY not in document:
+        return DEFAULT_MAX_HISTORY_DAYS
+    raw = document[MAX_HISTORY_DAYS_KEY]
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {MAX_HISTORY_DAYS_KEY} must be a "
+            f"positive integer (a count of trailing days), got {raw!r} "
+            f"({type(raw).__name__}); a non-positive cap bounds a "
+            "rebalance date's window to nothing or less, which starves "
+            "every signal rather than merely limiting its lookback"
+        )
+    return raw
 
 
 # -- The sandbox gate ---------------------------------------------------------
