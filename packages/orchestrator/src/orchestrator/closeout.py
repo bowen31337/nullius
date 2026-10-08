@@ -79,6 +79,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import logging
 import os
 import sqlite3
 import sys
@@ -152,6 +153,8 @@ EXIT_VOID = 3
 #: finished campaign's tree.
 NODE_TABLE = "node"
 
+_logger = logging.getLogger(__name__)
+
 #: The M1 triage figure's own table -- created here (``CREATE TABLE IF NOT
 #: EXISTS``, the contract every store in this workspace states), unlike
 #: ``node``: this one is close-out's own research row, not a tree table a
@@ -191,7 +194,7 @@ class CloseoutResult:
     calibration_status: str
     sensitivity: float
     specificity: float
-    fdr_deploy: float
+    fdr_deploy: float | None
     type_b: int | None
     discoveries: int
     budget_charging_trials: int
@@ -607,8 +610,23 @@ def close_out(
     #    campaign's discoveries, each mapped to its root -- the scorer's
     #    own verb collapses a subtree's repeated discoveries into one pick.
     figures = scorer.calibration_figures(population=root_ids, picks=discovery_roots)
-    # 4. FDR_deploy, reweighted and persisted from that pair.
-    fdr_value = scoring.FdrDeployStore(database_url).persist(campaign, figures)
+    # 4. FDR_deploy, reweighted and persisted from that pair. A campaign
+    #    that declared no discovery sits at the (sensitivity 0, specificity
+    #    1) corner, where FDR_deploy is 0/0 and the store refuses it. That is
+    #    an undefined figure, not a failed close-out: it is reported as None
+    #    and every later step (calibration pair, discovery rate, triage) still
+    #    runs (campaign 1ffef8b3 lost all three to this refusal).
+    if discoveries:
+        fdr_value: float | None = scoring.FdrDeployStore(database_url).persist(
+            campaign, figures
+        )
+    else:
+        fdr_value = None
+        _logger.info(
+            "campaign %s declared no discovery; FDR_deploy is undefined (0/0) "
+            "and is not persisted",
+            campaign,
+        )
     # 5. The pair itself, persisted for the dashboard's trend.
     ops.NullCalibrations(database_url).record(
         campaign, sensitivity=figures.sensitivity, specificity=figures.specificity

@@ -469,3 +469,36 @@ def test_roots_with_a_null_fail_class_and_metrics_count_as_evaluated(
     guard = nulloracle.load_ks_guard(campaign_id, database_url=database_url)
     assert guard is not None
     assert (guard.null_count, guard.real_count) == (2, 3)
+
+
+def test_a_campaign_with_no_discovery_closes_out_with_fdr_undefined(
+    database_url: str, tmp_path: Path
+) -> None:
+    """Campaign 1ffef8b3 declared no discovery. FDR_deploy is 0/0 at the
+    (sensitivity 0, specificity 1) corner, and its refusal aborted close-out
+    before the discovery rate and the triage figure. Now FDR_deploy is null
+    and the rest of close-out still runs."""
+    campaign_id = str(uuid.uuid4())
+    discovery.create_campaign(
+        discovery.TYPE_R_CAMPAIGN_TYPE, 4, campaign_id=campaign_id, database_url=database_url,
+    )
+    roots = {str(uuid.uuid4()): is_null for is_null in (True, True, False, False)}
+    for index, root in enumerate(roots):
+        _plant_node(database_url, campaign_id, node_id=root, depth=0,
+                    ic_mean=0.01 * (index + 1), ic_tstat=0.3)
+        _charge_ledger(database_url, root, campaign_id, epoch_id=f"epoch-{index}")
+    env = {
+        "DATABASE_URL": database_url,
+        **_seal_sidecar(tmp_path, [_assignment(campaign_id, r, is_null=n) for r, n in roots.items()]),
+    }
+
+    lines: list[str] = []
+    assert main(["--campaign-id", campaign_id], env=env, emit=lines.append) == EXIT_OK
+    payload = json.loads(lines[0])
+    assert payload["fdr_deploy"] is None
+    assert payload["discoveries"] == 0
+
+    import ops
+
+    rate = ops.DiscoveryRates(database_url).rate(campaign_id)
+    assert rate is not None and rate.discoveries == 0 and rate.ledger_trials == 4
