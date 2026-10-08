@@ -55,10 +55,12 @@ once the round has run, rather than catching it directly.
 
 from __future__ import annotations
 
+import concurrent.futures
 import dataclasses
 import json
 import logging
 import sqlite3
+import threading
 import uuid
 from collections.abc import Callable
 from contextlib import closing
@@ -74,6 +76,7 @@ import signal_agent
 from artifacts import ArtifactStore, executed_source
 from policy_runtime import budget_account, prefix_view
 
+from ._context import DEFAULT_EVALUATION_WORKERS
 from ._live_tree import live_question
 from ._roots import plant_root
 from ._worker import NodeWorker
@@ -227,8 +230,29 @@ def _campaign_ledger_rows(context: Any, campaign_id: str) -> tuple[Any, ...]:
     return tuple(row for row in trial_ledger.rows() if row.campaign_id == campaign_id)
 
 
+def _evaluation_worker_count(context: Any, pending: int) -> int:
+    """How many concurrent evaluation slots to run, bounded by the work itself.
+
+    ``context.evaluation_workers`` (bug_spec_evaluation_throughput.xml, bug
+    2: an optional int from 1 to 16, already validated at config-load time
+    by :func:`orchestrator._context.load_evaluation_context`) when the
+    duck-typed ``context`` carries one; :data:`DEFAULT_EVALUATION_WORKERS`
+    for every fake this module's own tests — and every caller built before
+    this fix — that carries neither the attribute nor an opinion about it,
+    the same ``getattr`` stance this module already takes for
+    ``fail_detail``/``tripwires_failed`` on a duck-typed evaluation. Capped
+    at ``pending`` (a pool wider than the work handed to it only starts
+    slots that sit idle) and never below 1, so an empty batch never asks a
+    thread pool for zero workers.
+    """
+    configured = getattr(context, "evaluation_workers", DEFAULT_EVALUATION_WORKERS)
+    if pending <= 0:
+        return 1
+    return max(1, min(configured, pending))
+
+
 def _dispatch_round(
-    worker: NodeWorker, batch: list[str], *, width: int
+    worker: NodeWorker, batch: list[str], *, width: int, evaluation_workers: int
 ) -> list[discovery.WorkerResult]:
     """Run one round's batch, retry every interruption, answer the standing results.
 
@@ -236,18 +260,129 @@ def _dispatch_round(
     interruption (see the module docstring), so the stream is drained and
     split with :func:`discovery.is_interruption` first: the interrupted half
     goes through the retry, the rest stands as :func:`discovery.run_batch`
-    answered it, and the two are folded back into one list in no particular
-    order — a caller that cares sorts by ``job``, the pool's own discipline.
+    answered it.
+
+    **Concurrency is bounded by ``evaluation_workers``, not ``width``.**
+    ``width`` is the campaign's own exploration-batch size (policy-selected,
+    no hardware opinion); ``evaluation_workers`` is this host's own cap on
+    how many sandboxes may run at once (bug_spec_evaluation_throughput.xml,
+    bug 2).  ``discovery.run_batch``'s own ``width`` keyword is reused as
+    the dispatch's slot count — it is already a bounded thread pool, so
+    this is the minimal change that caps it — but dispatched at
+    ``min(width, evaluation_workers)`` concurrent slots rather than
+    ``width`` many, so a batch wider than the configured cap never starts
+    more sandboxes than the deployment allows.
+
+    **Results are returned in the batch's own order, not completion
+    order.** ``discovery.run_batch`` yields as each slot finishes — real
+    concurrency means a later-submitted job can finish first — so the two
+    halves are folded back together and sorted by each result's own
+    ``job`` (the parent id it answers, echoed back unchanged) against the
+    batch's index: the same order a serial, one-slot run would have
+    produced, which is what lets the round loop's ``node_evaluated``
+    events stay deterministic regardless of how many slots actually ran.
     """
-    results = list(discovery.run_batch(worker, batch, width=width))
+    slots = max(1, min(width, evaluation_workers))
+    results = list(discovery.run_batch(worker, batch, width=slots))
     interrupted = [result for result in results if discovery.is_interruption(result)]
     settled = [result for result in results if not discovery.is_interruption(result)]
-    retried = discovery.retry_interrupted(worker, interrupted, retries=_RETRIES, width=width)
-    return settled + [retry.result for retry in retried]
+    retried = discovery.retry_interrupted(worker, interrupted, retries=_RETRIES, width=slots)
+    combined = settled + [retry.result for retry in retried]
+    order = {job: index for index, job in enumerate(batch)}
+    combined.sort(key=lambda result: order[result.job])
+    return combined
 
 
 def _is_token_budget_error(error: BaseException | None) -> bool:
     return isinstance(error, providers.BudgetExhaustedError)
+
+
+# -- Root evaluation: concurrent dispatch, deterministic release ----------------
+
+
+def _evaluate_roots_concurrently(
+    unevaluated_roots: list[tuple[str, str, str | None]],
+    *,
+    campaign_id: str,
+    evaluator: Any,
+    history_store: Any,
+    emit: Callable[[dict[str, Any]], None],
+    workers: int,
+) -> None:
+    """Evaluate every root concurrently; persist and emit in planting order.
+
+    Every root's ``evaluator.evaluate(...)`` call is submitted to a thread
+    pool of ``workers`` slots up front — bug_spec_evaluation_throughput.xml,
+    bug 2's whole point: a 32-root campaign used to run its sandboxes one at
+    a time regardless of the host's core count, because this was a plain
+    serial ``for`` loop. Each root still runs in its own sandbox (a fresh
+    :class:`~orchestrator._context.EvaluationContext`-backed executor per
+    call, built by ``evaluator.evaluate`` itself).
+
+    **Buffered and released in planting order, not completion order.**  The
+    futures are submitted in ``unevaluated_roots``' own order and then
+    *read back* in that same order — ``Future.result()`` blocks for the
+    one future being read, not for the pool, so every sibling the pool has
+    room for is already running concurrently underneath this loop.  The
+    outcome is the one a serial run would have produced byte for byte: the
+    same persisted proposal/score pairs and the same ``node_evaluated``
+    event order, regardless of ``workers``.
+
+    **One root's persisted write never races another's.**  Every success
+    writes through ``history_store.persist`` under one lock shared by this
+    call's own roots — a single writer at a time, the SQLite-safe shape the
+    bug's own constraint asks for, scoped to this one campaign's roots and
+    never shared with another concurrent campaign's call.
+
+    **A raising root never stops its siblings.**  Every future is still
+    read back and every successful sibling is still persisted and emitted,
+    whichever side of the raising root it falls on in planting order; the
+    first exception encountered is re-raised only once every sibling has
+    been handled — the same "the campaign stops" outcome an unhandled
+    exception already had in the old serial loop, minus the siblings a
+    serial loop would never have reached because it stopped at the first
+    one.
+    """
+    if not unevaluated_roots:
+        return
+
+    write_lock = threading.Lock()
+
+    def _evaluate_one(node_id: str, code: str) -> Any:
+        return evaluator.evaluate(node_id, campaign_id, 0, code)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [
+            pool.submit(_evaluate_one, node_id, code)
+            for node_id, code, _proposal in unevaluated_roots
+        ]
+
+        first_error: BaseException | None = None
+        for (node_id, _code, proposal), future in zip(unevaluated_roots, futures):
+            try:
+                evaluation = future.result()
+            except BaseException as exc:  # noqa: BLE001 - a sibling's failure is data, not this call's
+                if first_error is None:
+                    first_error = exc
+                continue
+            if proposal is not None:
+                with write_lock:
+                    history_store.persist(node_id, proposal, score=evaluation.score)
+            emit(
+                _evaluated_event(
+                    campaign_id,
+                    node_id,
+                    0,
+                    fail_class=evaluation.fail_class,
+                    score=evaluation.score,
+                    charges_budget=evaluation.charges_budget,
+                    fail_detail=getattr(evaluation, "fail_detail", None),
+                    tripwires_failed=getattr(evaluation, "tripwires_failed", ()),
+                )
+            )
+
+    if first_error is not None:
+        raise first_error
 
 
 # -- Resuming: reading what a campaign already has -------------------------------
@@ -513,25 +648,14 @@ def _continue_campaign(
     never raised into this call), and answers the :class:`CampaignResult`
     both entry points hand back.
     """
-    for node_id, code, proposal in unevaluated_roots:
-        evaluation = evaluator.evaluate(node_id, campaign_id, 0, code)
-        if proposal is not None:
-            history_store.persist(node_id, proposal, score=evaluation.score)
-        emit(
-            _evaluated_event(
-                campaign_id,
-                node_id,
-                0,
-                fail_class=evaluation.fail_class,
-                score=evaluation.score,
-                charges_budget=evaluation.charges_budget,
-                # getattr, not .fail_detail / .tripwires_failed: a duck-typed
-                # evaluator (this module's own test doubles included) may
-                # answer an object that predates either field.
-                fail_detail=getattr(evaluation, "fail_detail", None),
-                tripwires_failed=getattr(evaluation, "tripwires_failed", ()),
-            )
-        )
+    _evaluate_roots_concurrently(
+        unevaluated_roots,
+        campaign_id=campaign_id,
+        evaluator=evaluator,
+        history_store=history_store,
+        emit=emit,
+        workers=_evaluation_worker_count(context, len(unevaluated_roots)),
+    )
 
     worker = NodeWorker(
         author,
@@ -583,7 +707,12 @@ def _continue_campaign(
             )
             break
 
-        final_results = _dispatch_round(worker, batch, width=width)
+        final_results = _dispatch_round(
+            worker,
+            batch,
+            width=width,
+            evaluation_workers=_evaluation_worker_count(context, len(batch)),
+        )
 
         token_budget_hit = False
         for result in final_results:

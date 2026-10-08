@@ -176,15 +176,19 @@ __all__ = [
     "ACKNOWLEDGE_UNISOLATED_KEY",
     "BARS_STREAM",
     "BWRAP_RUNTIME",
+    "DEFAULT_EVALUATION_WORKERS",
     "DEFAULT_MAX_HISTORY_DAYS",
     "EVALUATION_CONFIG_CODE",
     "EVALUATION_CONFIG_ENV",
+    "EVALUATION_WORKERS_KEY",
     "GVISOR_RUNTIME",
     "GVISOR_RUNTIME_ROOT_KEY",
     "GVISOR_STATE_ROOT_KEY",
     "ISOLATION_REQUIRED",
     "LAKE_ROOTS_KEY",
+    "MAX_EVALUATION_WORKERS",
     "MAX_HISTORY_DAYS_KEY",
+    "MIN_EVALUATION_WORKERS",
     "REQUIRED_KEYS",
     "SANDBOX_RUNTIMES",
     "EvaluationConfigError",
@@ -275,6 +279,30 @@ MAX_HISTORY_DAYS_KEY: Final[str] = "max_history_days"
 #: The trailing-day depth :func:`orchestrator._evaluate._materialize_from_context`
 #: bounds a window to when the document carries no :data:`MAX_HISTORY_DAYS_KEY`.
 DEFAULT_MAX_HISTORY_DAYS: Final[int] = 400
+
+#: The optional key bounding how many evaluations — a root, or a round's
+#: child — ``orchestrator._campaign`` runs at once, each in its own
+#: sandbox.  bug_spec_evaluation_throughput.xml, bug 2: a campaign used to
+#: evaluate every node one at a time regardless of the host's core count,
+#: because nothing bounded (or raised) the concurrency at all.  Optional,
+#: the same stance :data:`MAX_HISTORY_DAYS_KEY` already takes for its own
+#: performance knob: a document that omits it gets
+#: :data:`DEFAULT_EVALUATION_WORKERS` rather than a refusal, since "how many
+#: sandboxes run at once" is a throughput knob a deployment may never need
+#: to touch.
+EVALUATION_WORKERS_KEY: Final[str] = "evaluation_workers"
+
+#: :data:`EVALUATION_WORKERS_KEY`'s default when the document omits it.
+DEFAULT_EVALUATION_WORKERS: Final[int] = 4
+
+#: :data:`EVALUATION_WORKERS_KEY`'s inclusive bounds.  Below
+#: :data:`MIN_EVALUATION_WORKERS` is not a thread count; above
+#: :data:`MAX_EVALUATION_WORKERS` is a concurrency this configuration
+#: document is not trusted to set for a host whose core count it was never
+#: told — the ceiling is a deliberate cap on gVisor containers started at
+#: once, not a number a deployment is expected to reach for every host.
+MIN_EVALUATION_WORKERS: Final[int] = 1
+MAX_EVALUATION_WORKERS: Final[int] = 16
 
 
 class EvaluationConfigError(Exception):
@@ -388,6 +416,14 @@ class EvaluationContext:
     #: a late date on a long-lived snapshot pays for this many trailing
     #: days, not the snapshot's entire history.
     max_history_days: int = DEFAULT_MAX_HISTORY_DAYS
+    #: How many evaluations — a root, or a round's child — run concurrently,
+    #: each in its own sandbox.  Read from the optional
+    #: :data:`EVALUATION_WORKERS_KEY` (:data:`DEFAULT_EVALUATION_WORKERS`
+    #: when absent), bounded to :data:`MIN_EVALUATION_WORKERS`..
+    #: :data:`MAX_EVALUATION_WORKERS`.  ``orchestrator._campaign`` is the one
+    #: reader: it bounds its root-evaluation and round-dispatch thread pools
+    #: to this many slots, never more.
+    evaluation_workers: int = DEFAULT_EVALUATION_WORKERS
 
 
 def load_evaluation_context(
@@ -437,6 +473,7 @@ def load_evaluation_context(
     epoch_id = _epoch_id(values, named)
     artifact_dir = _artifact_dir(values, named)
     max_history_days = _max_history_days(document, named)
+    evaluation_workers = _evaluation_workers(document, named)
     database_url = _database_url(source)
 
     mount = _mounted_snapshot(values, named)
@@ -469,6 +506,7 @@ def load_evaluation_context(
         gvisor_state_root=gvisor_state_root,
         lake_roots=lake_roots,
         max_history_days=max_history_days,
+        evaluation_workers=evaluation_workers,
     )
 
 
@@ -534,6 +572,7 @@ def _refuse_unknown_keys(document: Mapping[str, Any], named: str) -> None:
             GVISOR_STATE_ROOT_KEY,
             LAKE_ROOTS_KEY,
             MAX_HISTORY_DAYS_KEY,
+            EVALUATION_WORKERS_KEY,
         )
     )
     for key in document:
@@ -545,7 +584,8 @@ def _refuse_unknown_keys(document: Mapping[str, Any], named: str) -> None:
                 f"{ACKNOWLEDGE_UNISOLATED_KEY!r} when the runtime is "
                 f"unisolated, {GVISOR_RUNTIME_ROOT_KEY!r}, "
                 f"{GVISOR_STATE_ROOT_KEY!r} and {LAKE_ROOTS_KEY!r} when it "
-                f"is gvisor, and the always-optional {MAX_HISTORY_DAYS_KEY!r}); "
+                f"is gvisor, and the always-optional {MAX_HISTORY_DAYS_KEY!r} "
+                f"and {EVALUATION_WORKERS_KEY!r}); "
                 "the file never holds a credential — every "
                 "key is one the loader defines, and an unknown key is "
                 "refused rather than read past. Credentials live where "
@@ -730,6 +770,38 @@ def _max_history_days(document: Mapping[str, Any], named: str) -> int:
             f"({type(raw).__name__}); a non-positive cap bounds a "
             "rebalance date's window to nothing or less, which starves "
             "every signal rather than merely limiting its lookback"
+        )
+    return raw
+
+
+def _evaluation_workers(document: Mapping[str, Any], named: str) -> int:
+    """How many evaluations run concurrently — optional, unlike
+    :data:`REQUIRED_KEYS`.
+
+    :data:`DEFAULT_EVALUATION_WORKERS` when :data:`EVALUATION_WORKERS_KEY`
+    is absent.  A present value outside
+    :data:`MIN_EVALUATION_WORKERS`..\\ :data:`MAX_EVALUATION_WORKERS` is
+    refused by name: this is how many sandboxes ``orchestrator._campaign``
+    runs at once, not an exploration width, so a value below one is not a
+    thread count and a value above the ceiling is a concurrency this
+    document is not trusted to set for a host whose core count it was
+    never told.
+    """
+    if EVALUATION_WORKERS_KEY not in document:
+        return DEFAULT_EVALUATION_WORKERS
+    raw = document[EVALUATION_WORKERS_KEY]
+    if (
+        isinstance(raw, bool)
+        or not isinstance(raw, int)
+        or not (MIN_EVALUATION_WORKERS <= raw <= MAX_EVALUATION_WORKERS)
+    ):
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {EVALUATION_WORKERS_KEY} must be an "
+            f"integer from {MIN_EVALUATION_WORKERS} to "
+            f"{MAX_EVALUATION_WORKERS}, got {raw!r} ({type(raw).__name__}); "
+            "this bounds how many sandboxes a campaign runs at once, not "
+            "an exploration width, and a value outside that range is "
+            "refused rather than clamped"
         )
     return raw
 
