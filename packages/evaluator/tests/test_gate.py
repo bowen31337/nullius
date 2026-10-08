@@ -48,6 +48,7 @@ import datetime as dt
 import math
 from types import MappingProxyType
 
+import contract
 import pytest
 
 from evaluator import (
@@ -90,7 +91,7 @@ def _execution(
             ),
             universe=universe,
             seed=7,
-            contract_version="0.1.0",
+            contract_version=contract.CONTRACT_VERSION,
             problems=[],
         )
         for day in dates

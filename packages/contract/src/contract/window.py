@@ -1060,18 +1060,28 @@ class MarketWindow(metaclass=_EnforceNoTimestampAccessor):
         ever return a subset of the candles at or before ``t``, never one the
         window's slicing was meant to exclude.
 
-        **The lookback is a row count, not a duration.**  The candle stream is
-        bucketed — one row per closed interval — so ``lookback`` counts rows on
-        the shared discipline :meth:`feature`, :meth:`borrow` and
-        :meth:`bookfeat` apply: ``None`` (the default) is every row the window
-        carries — still truncated at ``t`` — and a non-negative ``int`` is the
-        trailing ``lookback`` rows, taken from the recent end of the oldest-
-        first frame.  A negative value or a ``bool`` is refused rather than
-        clamped, via :func:`contract.bars.validate_bars_lookback`.  That is the
-        one respect in which this accessor differs from :meth:`trades`, whose
-        lookback is measured in seconds because the trade tape is not bucketed;
-        here the rows are already closed seconds/minutes/days, so a count is the
-        stable quantity.
+        **The lookback is a row count, per symbol, not a duration.**  The
+        candle stream is bucketed — one row per closed interval — so
+        ``lookback`` counts rows, but this accessor's frame carries *every*
+        symbol in the universe at once, and "the trailing N rows" of a
+        multi-symbol frame has no meaning a caller could use other than each
+        symbol's own trailing N — the frame-wide reading :meth:`feature`,
+        :meth:`borrow` and :meth:`bookfeat` apply would hand back about
+        ``N / len(universe)`` candles per symbol, not the ``N`` its signature
+        promises.  So ``bars`` counts per symbol: ``None`` (the default) is
+        every row the window carries — still truncated at ``t`` — and a
+        non-negative ``int`` is, for each symbol present in the frame, that
+        symbol's own trailing ``lookback`` candles, the result reassembled
+        oldest-first by ``(symbol, open_time)``.  A symbol with fewer than
+        ``lookback`` candles of its own contributes all of them, never padded
+        and never an error.  A negative value or a ``bool`` is refused rather
+        than clamped, via :func:`contract.bars.validate_bars_lookback`.  That
+        is the one respect in which this accessor differs from :meth:`trades`,
+        whose lookback is measured in seconds because the trade tape is not
+        bucketed; here the rows are already closed seconds/minutes/days, so a
+        count is the stable quantity — just one counted per symbol rather than
+        across the frame, because a multi-symbol frame has no other count a
+        caller could use.
 
         The rows live under fixed-prefix frame names, ``bars:<freq>`` — not
         versioned the way :meth:`feature`'s addresses are, because an OHLC
@@ -1097,20 +1107,27 @@ class MarketWindow(metaclass=_EnforceNoTimestampAccessor):
             :func:`contract.bars.validate_bars_freq`).
         lookback:
             ``None`` (the default) for every row the window carries — still
-            truncated at ``t`` — or a non-negative ``int`` for the trailing
-            ``lookback`` candles, counted across the whole frame with the
-            recent end the one a lookback means.  The same numeric discipline
-            :meth:`feature`, :meth:`borrow` and :meth:`bookfeat` apply, via
-            :func:`contract.bars.validate_bars_lookback` — a negative value or
-            a ``bool`` is refused rather than clamped.
+            truncated at ``t`` — or a non-negative ``int`` for, *per symbol*,
+            that symbol's own trailing ``lookback`` candles — the recent end
+            is the one a lookback means, and a symbol carrying fewer than
+            ``lookback`` candles of its own returns all of them rather than
+            raising or padding.  Validation follows the same numeric
+            discipline :meth:`feature`, :meth:`borrow` and :meth:`bookfeat`
+            apply, via :func:`contract.bars.validate_bars_lookback` — a
+            negative value or a ``bool`` is refused rather than clamped — but
+            what the count is *of* is this accessor's own: a frame carrying
+            every symbol in the universe at once has no whole-frame row count
+            a caller could use, so ``bars`` is the one accessor among them
+            that counts per symbol rather than across the frame.
 
         Returns
         -------
         polars.DataFrame
             The candle rows as carried by this window, truncated at ``t`` and
-            (when a lookback was given) the trailing ``lookback`` of them,
-            converted from the stored Arrow table.  A window that carries no
-            frame under ``bars:<freq>`` returns a frame with *no columns*
+            (when a lookback was given) each symbol's own trailing
+            ``lookback`` of them, reassembled oldest-first by ``(symbol,
+            open_time)``.  A window that carries no frame under
+            ``bars:<freq>`` returns a frame with *no columns*
             (``shape == (0, 0)``) — the miss, reported as nothing rather than
             as a substitute frame; a present frame read down to nothing returns
             *0 rows with the frame's columns* (``shape == (0, n)``).  So the
@@ -1173,14 +1190,22 @@ class MarketWindow(metaclass=_EnforceNoTimestampAccessor):
         # frame carries are sliced to open_time <= t and can never answer with
         # a candle opened after the decision time.
         frame = truncate_bars_frame(frame, self._t)
-        if rows is not None:
-            # The *trailing* slice, on the same terms as :meth:`feature` and
-            # :meth:`bookfeat`: the recent end of an oldest-first frame — the
-            # candles nearest the decision time — with an over-long lookback
-            # reading as the whole frame rather than as "no data".
-            offset = max(frame.num_rows - rows, 0)
-            frame = frame.slice(offset, rows)
-        return pl.from_arrow(frame)
+        if rows is None:
+            return pl.from_arrow(frame)
+        if rows == 0:
+            # A plain Arrow slice: group_by(...).tail(0) below would pad every
+            # symbol with one null row instead of dropping it, so zero is
+            # handled here rather than through the per-symbol path.
+            return pl.from_arrow(frame.slice(0, 0))
+        # Unlike every other accessor's lookback, this frame carries every
+        # symbol in the universe at once, so "the trailing N rows" can only
+        # mean each symbol's own trailing N (see the lookback discipline
+        # above) — a per-symbol slice, not the shared Arrow offset-slice
+        # :meth:`feature`, :meth:`borrow` and :meth:`bookfeat` take.
+        candles = pl.from_arrow(frame).sort(
+            ["symbol", "open_time"], maintain_order=True
+        )
+        return candles.group_by("symbol", maintain_order=True).tail(rows)
 
     def to_arrow(self):
         """Serialize this window to an Arrow IPC payload (feature 14).

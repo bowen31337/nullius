@@ -66,7 +66,7 @@ CODE_HASH = "a3f1" * 16  # 64 hex characters, the shape feature 98's column take
 def test_the_stamp_is_declared_beside_the_abi_it_versions():
     # One definition of the number, in the package the ABI lives in. A second
     # copy is how a persisted node's stamp drifts from the code it describes.
-    assert contract.CONTRACT_VERSION == CONTRACT_VERSION == "0.1.0"
+    assert contract.CONTRACT_VERSION == CONTRACT_VERSION == "0.2.0"
     assert contract_version() == CONTRACT_VERSION
 
 

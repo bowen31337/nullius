@@ -92,6 +92,7 @@ import inspect
 import json
 from pathlib import Path
 
+import contract
 import pytest
 from artifacts import (
     IC_SERIES_FILENAME,
@@ -213,7 +214,7 @@ def _execution(dates) -> SignalExecution:
             decision_time=dt.datetime.combine(day, dt.time(tzinfo=dt.UTC)),
             universe=("AAA", "BBB"),
             seed=7,
-            contract_version="0.1.0",
+            contract_version=contract.CONTRACT_VERSION,
             problems=[],
         )
         for day in dates

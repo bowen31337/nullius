@@ -60,6 +60,7 @@ from pathlib import Path
 
 import pyarrow as pa
 import pytest
+from contract import CONTRACT_VERSION
 from contract.payload import serialize_window
 from contract.window import MarketWindow
 from orchestrator import _sandbox_child as child
@@ -205,7 +206,7 @@ def test_benign_signal_scores_and_is_deterministic() -> None:
         assert err == b""
         assert result["fail_class"] is None
         assert result["detail"] == ""
-        assert result["contract_version"] == "0.1.0"
+        assert result["contract_version"] == CONTRACT_VERSION
 
     # The scores field is base64 of a JSON array of floats, positional
     # against the window's universe — decode it and check the actual

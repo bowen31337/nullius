@@ -43,6 +43,7 @@ from __future__ import annotations
 import datetime as dt
 from types import MappingProxyType
 
+import contract
 import pytest
 
 from evaluator import (
@@ -98,7 +99,7 @@ def _execution(
             ),
             universe=tuple(symbols),
             seed=7,
-            contract_version="0.1.0",
+            contract_version=contract.CONTRACT_VERSION,
             problems=[] if conforming else ["length"],
         )
     return SignalExecution(

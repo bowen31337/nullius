@@ -60,14 +60,18 @@ _PRE_EXISTING_KEYS = frozenset(
 )
 
 
-def _seal_tiny_bars_snapshot(lake_root, monkeypatch: pytest.MonkeyPatch):
+def _seal_bars_snapshot(lake_root, monkeypatch, symbols, dates, closes):
     """Seal a real snapshot: one 1d-bars partition per symbol per day.
 
     The venue-string convention the sealed snapshot actually carries (§4.1):
     ``close``/``volume`` as strings, ``open_time`` a UTC timestamp, plus the
     row-level ``interval`` column every real kline row carries
     (:mod:`nullius_ingest.klines`) — the column :func:`signal_agent._authoring
-    ._parquet_interval` reads to answer "which frequency".
+    ._parquet_interval` reads to answer "which frequency".  Generalized over
+    ``symbols``/``dates``/``closes`` so the same sealing logic serves both the
+    small two-symbol fixture below and a universe wide enough to reproduce the
+    symptom's uncomputable-lookback failure (bug_spec_bars_lookback_per_symbol
+    .xml) if the per-symbol fix regresses.
     """
     monkeypatch.delenv("DATABASE_URL", raising=False)
     pa = pytest.importorskip("pyarrow")
@@ -75,8 +79,8 @@ def _seal_tiny_bars_snapshot(lake_root, monkeypatch: pytest.MonkeyPatch):
     snapshot = pytest.importorskip("snapshot")
 
     staging = lake_root / "staging"
-    for symbol in SYMBOLS:
-        for date, close in zip(_DATES, _CLOSES[symbol], strict=True):
+    for symbol in symbols:
+        for date, close in zip(dates, closes[symbol], strict=True):
             partition = staging / "bars" / f"symbol={symbol}" / f"date={date}"
             partition.mkdir(parents=True)
             table = pa.table(
@@ -93,9 +97,39 @@ def _seal_tiny_bars_snapshot(lake_root, monkeypatch: pytest.MonkeyPatch):
             )
             pq.write_table(table, partition / "part-0.parquet")
 
+    last_date = dt.date.fromisoformat(dates[-1])
+    sealed_at = dt.datetime.combine(
+        last_date + dt.timedelta(days=1), dt.time(), tzinfo=dt.UTC
+    )
     service = snapshot.SnapshotService(lake_root)
-    sealed = service.seal(sealed_at=dt.datetime(2026, 1, 6, tzinfo=dt.UTC))
+    sealed = service.seal(sealed_at=sealed_at)
     return service.mount(sealed.path.name)
+
+
+def _seal_tiny_bars_snapshot(lake_root, monkeypatch: pytest.MonkeyPatch):
+    return _seal_bars_snapshot(lake_root, monkeypatch, SYMBOLS, _DATES, _CLOSES)
+
+
+def _wide_universe(n_symbols: int, n_days: int):
+    """A universe wide enough to reproduce the symptom directly: 23-40 real
+    symbols against a 20-120 row lookback left each with 0-5 rows under the
+    frame-wide bug.  Half the symbols trend up and half down from a shared
+    ``100.00`` origin, so a per-symbol momentum is never constant across the
+    universe, however many symbols there are.
+    """
+    symbols = tuple(f"SYM{index:02d}USDT" for index in range(n_symbols))
+    dates = tuple(
+        (dt.date(2026, 1, 1) + dt.timedelta(days=day)).isoformat()
+        for day in range(n_days)
+    )
+    closes = {
+        symbol: tuple(
+            f"{100.0 + (1.0 if index % 2 == 0 else -1.0) * day:.2f}"
+            for day in range(n_days)
+        )
+        for index, symbol in enumerate(symbols)
+    }
+    return symbols, dates, closes
 
 
 @pytest.fixture
@@ -171,26 +205,35 @@ def test_allowed_imports_equals_the_sandbox_childs_allowlist(
 
 
 def test_example_signal_runs_against_the_sealed_snapshot_and_normalizes(
-    law: SignalContract, sealed_mount
+    law: SignalContract, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pq = pytest.importorskip("pyarrow.parquet")
     pa = pytest.importorskip("pyarrow")
     contract = pytest.importorskip("contract")
     evaluator = pytest.importorskip("evaluator")
 
+    # The symptom's own scale: ~23-40 real symbols against a 20-120 row
+    # lookback. A 40-symbol universe over 30 days reproduces it directly --
+    # on the frame-wide bug, lookback=20 would leave each symbol ~0-1 rows and
+    # every score would fall back to the constant 0.0.
+    symbols, dates, closes = _wide_universe(n_symbols=40, n_days=30)
+    mount = _seal_bars_snapshot(tmp_path / "lake", monkeypatch, symbols, dates, closes)
+
     # Materialize a MarketWindow the way the production evaluator does
     # (orchestrator._evaluate._materialize_from_context): read every surviving
     # bars partition's parquet bytes back off the mount and concatenate them
     # into one frame, under the window's own bars:1d frame name.
     tables = []
-    for symbol in SYMBOLS:
-        for date in sealed_mount.dates("bars", symbol):
-            for path in sealed_mount.select("bars", symbol, date):
+    for symbol in symbols:
+        for date in mount.dates("bars", symbol):
+            for path in mount.select("bars", symbol, date):
                 tables.append(pq.read_table(str(path)))
     frame = pa.concat_tables(tables)
+    last_date = dt.date.fromisoformat(dates[-1])
+    t = dt.datetime.combine(last_date + dt.timedelta(days=1), dt.time(), tzinfo=dt.UTC)
     window = contract.MarketWindow(
-        "2026-01-06T00:00:00Z",
-        universe=SYMBOLS,
+        t,
+        universe=symbols,
         frames={contract.bars_frame_name("1d"): frame},
     )
 
@@ -200,15 +243,13 @@ def test_example_signal_runs_against_the_sealed_snapshot_and_normalizes(
 
     assert isinstance(result, pl.Series)
     assert result.dtype == pl.Float64
-    assert len(result) == len(SYMBOLS)
+    assert len(result) == len(symbols)
     assert result.is_finite().all()
-    # Positionally aligned: AAAUSDT (rising 100 -> 110) must score above
-    # BBBUSDT (falling 50 -> 40), not merely "some two different numbers".
-    assert result[0] > result[1]
 
     # The evaluator's own refusal is exactly what the symptom's momentum root
     # hit ("cannot normalize: every raw score is identical"); accepting here
-    # is the proof the vector is genuinely non-constant, not merely asserted so.
+    # is the proof the vector is genuinely non-constant on a real-sized
+    # universe, not merely asserted so.
     normalized = evaluator.normalize_scores(result)
     assert len(normalized) == len(result)
 

@@ -31,11 +31,12 @@ different direction, plus the one this accessor owns:
   against a window carrying nothing.  Each frequency lives under its own frame
   name, ``bars:<freq>``, and the lookup is exact — a window carrying "1h"
   answers ``bars("1m")`` with an empty frame, not the other cadence's candles.
-* **the lookback is a row count, not a duration** — the candle stream is
-  bucketed, so ``lookback`` counts rows on the shared discipline every other
-  accessor uses: ``None`` is every row the window carries (still truncated), a
-  non-negative ``int`` is the trailing rows, and negative / ``bool`` / non-int
-  are refused rather than clamped.
+* **the lookback is a row count, per symbol, not a duration** — the candle
+  stream is bucketed, so ``lookback`` counts rows, but a bars frame carries
+  every symbol in the universe at once: ``None`` is every row the window
+  carries (still truncated), a non-negative ``int`` is each symbol's own
+  trailing rows (a symbol with fewer than ``lookback`` candles returns all of
+  its own), and negative / ``bool`` / non-int are refused rather than clamped.
 * **the row promise is kept, or refused** — feature 5 says a *Polars frame*, so
   a present bars frame must carry ``symbol`` and ``open_time`` (which book,
   which candle-open instant — the two columns the accessor's own mechanics turn
@@ -381,10 +382,13 @@ def test_lookback_none_returns_every_row_the_window_carries(window, candles_fram
 
 
 def test_a_row_count_lookback_takes_the_trailing_rows(window):
-    # The candle stream is bucketed, so lookback counts rows: the trailing two
-    # candles of an oldest-first frame are the two nearest the decision time.
+    # The candle stream is bucketed, so lookback counts rows -- per symbol,
+    # since this frame carries both BTCUSDT and ETHUSDT at once: BTCUSDT's
+    # own trailing two candles (11:59:30 and 12:00:00) and ETHUSDT's own
+    # trailing two (its only two), reassembled oldest-first by (symbol,
+    # open_time) rather than interleaved by time across the whole frame.
     answer = window.bars("1m", 2)
-    assert answer["trade_count"].to_list() == [203, 103]
+    assert answer["trade_count"].to_list() == [102, 103, 202, 203]
 
 
 def test_a_lookback_wider_than_the_frame_returns_the_whole_frame(window, candles_frame):

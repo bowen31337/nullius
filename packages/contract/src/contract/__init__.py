@@ -214,7 +214,7 @@ __all__ = [
 # hash), answers "is a stored stamp the ABI this build speaks", and refuses to
 # persist a stamp no reader could compare.  The constant stays here, one import
 # away from the ABI it versions, so the number has exactly one definition.
-CONTRACT_VERSION = "0.1.0"
+CONTRACT_VERSION = "0.2.0"
 
 
 #: Where the ABI lives, as a stable importable reference (``module:attribute``).

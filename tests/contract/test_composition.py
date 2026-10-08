@@ -51,7 +51,7 @@ def test_factory_scans_and_composes_the_contract_component():
     app = create_app(CONTRACT_SRC)
     assert "contract" in app
     component = app.get("contract")
-    assert component["contract_version"] == "0.1.0"
+    assert component["contract_version"] == "0.2.0"
     assert component["market_window"] == "contract:MarketWindow"
 
 

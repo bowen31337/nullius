@@ -388,8 +388,8 @@ def _accessors_detail(contract: Any) -> dict[str, dict[str, Any]]:
             "signature": _signature_text("bars", window.bars),
             "freq_values": contract.BARS_FREQUENCIES,
             "lookback_unit": (
-                "bars (rows) of the requested freq, trailing; None reads "
-                "every row the window carries"
+                "trailing candles per symbol of the requested freq; None "
+                "reads every candle the window carries"
             ),
             "returns_columns": contract.BARS_REQUIRED_COLUMNS,
             "returns_notes": (

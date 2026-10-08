@@ -46,7 +46,7 @@ from types import MappingProxyType
 
 import polars as pl
 import pytest
-from contract import MarketWindow
+from contract import CONTRACT_VERSION, MarketWindow
 
 from evaluator import (
     EvaluatorSignalError,
@@ -110,7 +110,7 @@ class StubSandbox(SignalSandbox):
             fail_class=self._fail_class,
             detail="",
             seed=seed,
-            contract_version="0.1.0",
+            contract_version=CONTRACT_VERSION,
         )
 
 

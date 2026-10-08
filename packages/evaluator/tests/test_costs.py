@@ -50,6 +50,7 @@ import datetime as dt
 import math
 import sqlite3
 
+import contract
 import pytest
 
 from evaluator import (
@@ -103,7 +104,7 @@ def _execution(
             decision_time=dt.datetime.combine(day, dt.time(tzinfo=dt.UTC)),
             universe=universe,
             seed=7,
-            contract_version="0.1.0",
+            contract_version=contract.CONTRACT_VERSION,
             problems=[],
         )
         for day in dates
