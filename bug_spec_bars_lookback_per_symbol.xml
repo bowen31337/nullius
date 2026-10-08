@@ -1,0 +1,52 @@
+<bug_spec>
+  <!-- LOOK-1. Found 2026-10-08 in campaign m1c, worktree at 8e72742. Four of
+       its first nodes failed EvaluatorNormalizeError: "only 0 of 92
+       rebalance dates expressed a preference". The same failure hit 2 of 12
+       roots in each of campaigns 90d95c6d and bb0f1919.
+
+       The authored code of two of them (c8275bb0, 4c2293c2) calls
+       ctx.bars("1d", lookback=40) and ctx.bars("1d", lookback=120), then
+       falls back to all-zero scores when a symbol has too few rows.
+       contract.MarketWindow.bars counts lookback as "the trailing lookback
+       candles, counted across the whole frame" (window.py ~:1063). Over the
+       sealed snapshot's ~23–40 symbols per date, lookback=40 is about one
+       day per symbol, so every 20-day feature is uncomputable.
+
+       The authoring prompt's own EXAMPLE_SIGNAL_SOURCE
+       (signal-agent _authoring.py ~:452) calls ctx.bars("1d", lookback=20).
+       On the real snapshot it gives every symbol fewer than 2 rows and
+       returns all zeros. Its test passes only because the fixture has 4
+       symbols. Core shape, explicit touches_files. -->
+
+  <bug index="1" shape="core" severity="critical"
+       touches_files="packages/contract/src/contract/window.py,packages/contract/src/contract/__init__.py,packages/signal-agent/src/signal_agent/_authoring.py,tests/contract/test_market_window.py,tests/contract/test_bars_lookback_per_symbol.py,packages/signal-agent/tests/test_contract_declaration_detail.py,packages/evaluator/tests/test_costs.py,packages/evaluator/tests/test_decay.py,packages/evaluator/tests/test_capacity.py,packages/evaluator/tests/test_gate.py,packages/evaluator/tests/test_metrics.py,packages/evaluator/tests/test_persist.py,packages/evaluator/tests/test_marginal.py,packages/evaluator/tests/test_execute.py,packages/evaluator/tests/test_align.py,packages/orchestrator/tests/test_artifact_writer.py">
+    <title>ctx.bars' lookback counts rows across the whole multi-symbol frame, so lookback=N gives each symbol about N/universe rows, and the prompt's own example returns constant zeros on a real universe</title>
+    <symptoms>
+      MarketWindow.bars(freq, lookback=N) returns the trailing N rows of the whole oldest-first frame. Every caller, including the prompt's own example, reads it as the trailing N candles per symbol.
+
+      On the real snapshot, about 23–40 symbols per date, a 20-to-120-row lookback leaves each symbol 0–5 rows. Lookback features are uncomputable, signals take their zero fallback, and the node fails "0 of 92 rebalance dates expressed a preference". That is 2 to 4 roots per 12-root campaign, each a charged trial. Nodes that do not fail are computed on a far shorter history than their code states.
+    </symptoms>
+    <reproduction_steps>
+      Build a MarketWindow with 40 symbols × 60 daily candles and call bars("1d", lookback=20). The frame has 20 rows, about 1 per symbol. Run EXAMPLE_SIGNAL_SOURCE against it: every score is 0.0, and normalize_scores refuses it.
+    </reproduction_steps>
+    <expected>
+      - bars(freq, lookback=N) returns, for each symbol, that symbol's trailing N candles at or before t, ordered oldest-first by (symbol, open_time), as before. lookback=None still returns every candle the window carries. A symbol with fewer than N candles returns all of its own. Validation and the t-truncation are unchanged.
+      - The docstring and its Parameters entry say "per symbol" explicitly. feature, borrow, bookfeat and trades are unchanged; the docstring notes that bars counts per symbol.
+      - contract.CONTRACT_VERSION goes from "0.1.0" to "0.2.0", because the ABI's meaning changed. Tests that pin the literal contract version read contract.CONTRACT_VERSION instead, or move to "0.2.0". This covers the evaluator test files listed and orchestrator test_artifact_writer.py. No production code compares against a literal.
+      - signal-agent _authoring.py:
+        - the bars accessor's lookback_unit says "trailing candles per symbol of the requested freq; None reads every candle the window carries"
+        - EXAMPLE_SIGNAL_SOURCE keeps lookback=20 (now per symbol) and stays a correct momentum example
+      - Tests:
+        - tests/contract/test_bars_lookback_per_symbol.py covers 40 symbols × 60 candles: each symbol gets exactly 20 rows; a symbol with 5 candles gets 5; lookback=0 gives an empty frame with the columns kept; None gives everything; t-truncation still holds; ordering is stable.
+        - Existing tests/contract/test_market_window.py lookback tests are updated to the per-symbol rule, keeping their intent.
+        - test_contract_declaration_detail.py's example test also runs the example over a 40-symbol × 30-day sealed snapshot, and its scores pass normalize_scores (they are not constant).
+        All pass under pytest-xdist. The contract, signal-agent, evaluator and orchestrator member suites and the root tests/ suite pass.
+    </expected>
+    <actual>Root cause: the bars accessor applies the shared rows-across-frame lookback discipline to a multi-symbol candle frame, where per-symbol is the only meaning a caller can use.</actual>
+    <constraints>
+      Only bars' lookback semantics change; every other accessor is unchanged
+      No file outside the sixteen listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
