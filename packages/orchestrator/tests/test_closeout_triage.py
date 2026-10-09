@@ -339,7 +339,11 @@ def test_too_few_on_one_side_gives_null_auc_and_rest_unchanged(
     )
     guard = nulloracle.load_ks_guard(campaign_id, database_url=database_url)
     assert guard is not None
-    assert (guard.null_count, guard.real_count) == (3, 3)
+    # _plant_campaign's last real root clears DISCOVERY_TSTAT so the
+    # campaign always has a discovery (see its own docstring) -- excluded
+    # from the gate's own sample by the non-significance truncation
+    # (bug_spec_ks_guard_root_level.xml), leaving two real roots, not three.
+    assert (guard.null_count, guard.real_count) == (3, 2)
 
     auc, null_count, real_count, _computed_at = _triage_row(database_url, campaign_id)
     assert auc is None

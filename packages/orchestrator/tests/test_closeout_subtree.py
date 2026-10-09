@@ -16,9 +16,12 @@ suite never did.
 
 One test per claim the bug's expected behaviour makes:
 
-* **a two-root campaign with children closes out, and its KS split counts
-  children on their root's side** -- the KS guard's persisted sample sizes
-  include every evaluated node, root or child.
+* **a two-root campaign with children closes out, and discoveries map
+  children to their root's side** -- the discovery count, sensitivity and
+  specificity all read a child's discovery as its root's (the KS gate's own
+  sample stays root-only, bug_spec_ks_guard_root_level.xml, and this
+  fixture's two roots fall below its minimum sample, so the gate itself is
+  not computed here).
 * **a child discovery under a null root counts as a null pick** -- lowers
   specificity exactly as a root-level false discovery would.
 * **two discoveries in one subtree count once** -- two children of one real
@@ -57,6 +60,7 @@ import ledger
 import nulloracle
 import pytest
 from orchestrator.closeout import (
+    CALIBRATION_STATUS_INSUFFICIENT,
     DISCOVERY_TSTAT,
     EXIT_OK,
     EXIT_REFUSED,
@@ -268,12 +272,15 @@ def test_subtree_campaign_closes_out_and_ks_split_counts_children_on_root_side(
     # collapsed to one pick) -- sensitivity 1.0, not clipped or doubled.
     assert payload["sensitivity"] == 1.0
 
-    guard = nulloracle.load_ks_guard(campaign_id, database_url=database_url)
-    assert guard is not None
-    # Every evaluated node landed on its root's side: three null-root nodes
-    # (the root and its two children), three real-root nodes likewise.
-    assert guard.null_count == 3
-    assert guard.real_count == 3
+    # The KS gate's own sample is root-only (bug_spec_ks_guard_root_level.xml):
+    # the children above count toward discoveries/sensitivity/specificity
+    # (root-mapped), but never toward the gate itself. This campaign plants
+    # exactly one null root and one real root, below nulloracle.KS_MIN_SAMPLE
+    # on both sides, so the gate is not computed at all -- insufficient, not
+    # the three-a-side the pre-root-level gate would have counted here.
+    assert payload["calibration_status"] == CALIBRATION_STATUS_INSUFFICIENT
+    assert payload["ks_root_counts"] == [1, 1]
+    assert nulloracle.load_ks_guard(campaign_id, database_url=database_url) is None
 
     import ops
 
@@ -418,7 +425,11 @@ def test_roots_only_campaign_behaves_exactly_as_before(
     guard = nulloracle.load_ks_guard(campaign_id, database_url=database_url)
     assert guard is not None
     assert guard.null_count == 3
-    assert guard.real_count == 3
+    # The 3.2-ic_tstat real root is the campaign's one discovery -- excluded
+    # from the gate by the non-significance truncation
+    # (bug_spec_ks_guard_root_level.xml), so the real side of the gate is
+    # two, not three.
+    assert guard.real_count == 2
 
 
 # -- Live stores: roots carry a NULL fail_class -------------------------------
@@ -468,7 +479,10 @@ def test_roots_with_a_null_fail_class_and_metrics_count_as_evaluated(
 
     guard = nulloracle.load_ks_guard(campaign_id, database_url=database_url)
     assert guard is not None
-    assert (guard.null_count, guard.real_count) == (2, 3)
+    # The gate's own sample is root-only (bug_spec_ks_guard_root_level.xml):
+    # the child's discovery-level ic_mean never joins it, so the real side
+    # is the two real roots, not the root plus its child.
+    assert (guard.null_count, guard.real_count) == (2, 2)
 
 
 def test_a_campaign_with_no_discovery_closes_out_with_fdr_undefined(

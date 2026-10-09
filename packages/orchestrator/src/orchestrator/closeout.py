@@ -64,14 +64,48 @@ previous, all-node statistic is still computed -- :attr:`CloseoutResult.
 ks_pvalue_all_nodes` -- and still printed, as a diagnostic an operator can
 compare the gate against, but it never decides the verdict; which variant
 produced the persisted ``ks_pvalue`` is named by :attr:`CloseoutResult.
-ks_variant` (:data:`KS_VARIANT_ROOT_NONSIG`, the one this module computes).
-A campaign whose non-significant roots number fewer than :data:`nulloracle.
+ks_variant` (:data:`KS_VARIANT_ROOT_NONSIG` for this, the Type-R rule --
+see below for Type-D's).  A campaign whose non-significant roots number
+fewer than :data:`nulloracle.
 KS_MIN_SAMPLE` on either side after this truncation cannot be tested at
 all -- the gate is not computed, and :data:`CALIBRATION_STATUS_INSUFFICIENT`
 names that state rather than reporting the ``'ok'`` an un-read campaign
 already carries by default; :attr:`CloseoutResult.ks_root_counts` is the
 ``(n_null, n_real)`` the gate saw after filtering, so the reading is
 checkable the same way a guard's own stored sample sizes already are.
+
+**The gate's sampling unit follows the campaign type
+(bug_spec_closeout_type_d_ks_branch.xml).**  Root-only sampling is a Type-R
+reading of PRD §4.1.2's rule *"null status inherited by the whole
+subtree"*: every node under a null root is null, every node under a real
+root is real, so the root's own score is a value every other node of its
+subtree would answer the same label for, and the gate loses nothing by
+reading one.  A Type-D campaign is built by the opposite rule -- *"all
+roots real; a branch flips null at depth d ... every descendant is null
+thereafter"* -- so a Type-D root is never anything but real, and a gate
+that still read only roots would find no null to compare at all, which is
+this bug: the KS gate was never computed for a single Type-D campaign.  So
+for a Type-D campaign the gate's unit is **one value per branch, picked by
+depth**: each evaluated node is labelled by :class:`nulloracle.TypeDOracle`
+resolution -- null at or past its branch's flip, real otherwise, the same
+resolution the Type-B step below already reads -- and each branch (a root
+and its subtree, the same grouping :func:`_resolve_root` already answers)
+contributes at most one null value (its **shallowest** null node) and one
+real value (its **deepest** real node).  Shallowest and deepest, rather
+than every node past or before the flip, for the same pseudo-replication
+reason root-only sampling excludes a Type-R child: a branch that was
+refined several times past its flip would otherwise count its correlated
+descendants as independent samples on the null side, and a branch refined
+several times before it would do the same on the real side.  The same
+non-significance truncation (``|ic_tstat| < DISCOVERY_TSTAT``) and the same
+:data:`nulloracle.KS_MIN_SAMPLE` floor apply to this sample exactly as they
+do to the Type-R one; only the unit and the label differ.  Which rule
+produced the sample is named by :attr:`CloseoutResult.ks_variant` --
+:data:`KS_VARIANT_ROOT_NONSIG` for Type-R, :data:`KS_VARIANT_BRANCH_NONSIG`
+for Type-D -- and :attr:`CloseoutResult.ks_root_counts` is the ``(n_null,
+n_real)`` either rule saw, the name kept rather than renamed per campaign
+type because it is still "how many values landed on each side of the
+gate," whichever unit produced them.
 
 **Why this module reads ``node`` with raw SQL rather than a shared
 reader.**  No member in this workspace exposes "every evaluated node of a
@@ -153,6 +187,7 @@ __all__ = [
     "EXIT_OK",
     "EXIT_REFUSED",
     "EXIT_VOID",
+    "KS_VARIANT_BRANCH_NONSIG",
     "KS_VARIANT_ROOT_NONSIG",
     "M2_FIXED_BETA",
     "M2_FIXED_POLICY_VERSION",
@@ -203,6 +238,15 @@ CALIBRATION_STATUS_INSUFFICIENT = "insufficient"
 #: without re-deriving the rule from this module's source, and so a future
 #: second variant would have a name to be told apart from.
 KS_VARIANT_ROOT_NONSIG = "root-nonsig"
+
+#: The Type-D gate variant: one ``ic_mean`` per branch -- the branch's
+#: shallowest null node and deepest real node, each labelled by
+#: :class:`nulloracle.TypeDOracle`'s own depth resolution rather than the
+#: sidecar (a Type-D root is never null, so the root-only rule above would
+#: find no null to compare -- bug_spec_closeout_type_d_ks_branch.xml) --
+#: truncated to the same non-significant band :data:`KS_VARIANT_ROOT_NONSIG`
+#: applies.
+KS_VARIANT_BRANCH_NONSIG = "branch-nonsig"
 
 #: The policy version every close-out world score is persisted under — a
 #: single, fixed baseline (additions_spec_m2_baseline_financial_worlds.xml,
@@ -879,11 +923,25 @@ def close_out(
             "an unknown id names no campaign to close out"
         )
     campaign = record.campaign_id
+    is_type_d = record.campaign_type == discovery.TYPE_D_CAMPAIGN_TYPE
 
     root_ids = _read_campaign_root_ids(database_url, campaign)
     roots = frozenset(root_ids)
     evaluated = _read_evaluated_nodes(database_url, campaign)
     root_oracle = SubtreeOracle(_NoPostEndpoint(), database_url=database_url)
+
+    # Type-D only: every evaluated node's own depth-based resolution,
+    # answered once through the same oracle the Type-B step (step 6 below)
+    # already reads -- the gate's branch sample built in the loop below and
+    # the Type-B accounting both read this one resolution per node rather
+    # than asking the oracle twice.
+    node_resolutions: dict[str, nulloracle.TypeDResolution] = {}
+    if is_type_d:
+        type_d_oracle = nulloracle.TypeDOracle(database_url)
+        for node in evaluated:
+            node_resolutions[node.node_id] = type_d_oracle.resolve_request(
+                node.node_id, (0.0,), permute=lambda series: series
+            )
 
     null_scores: list[float] = []
     real_scores: list[float] = []
@@ -892,10 +950,17 @@ def close_out(
     triage_null: list[float] = []
     triage_real: list[float] = []
     # root_id -> (ic_mean, ic_tstat, is_null) of the root's *own* evaluation
-    # -- the gate's population (bug_spec_ks_guard_root_level.xml).  Set only
-    # when the root itself was evaluated (node.node_id == root_id); a child
-    # never adds or overwrites an entry here.
+    # -- the Type-R gate's population (bug_spec_ks_guard_root_level.xml).
+    # Set only when the root itself was evaluated (node.node_id == root_id);
+    # a child never adds or overwrites an entry here.
     root_level: dict[str, tuple[float, float, bool]] = {}
+    # root_id -> (depth, ic_mean, ic_tstat) of the branch's shallowest null
+    # node and deepest real node -- the Type-D gate's population
+    # (bug_spec_closeout_type_d_ks_branch.xml).  "Branch" and "root" are the
+    # same key here: a Type-D flip is drawn on a branch's root, so grouping
+    # by _resolve_root's answer groups by branch.
+    branch_null: dict[str, tuple[int, float, float]] = {}
+    branch_real: dict[str, tuple[int, float, float]] = {}
     for node in evaluated:
         root_id = _resolve_root(
             root_oracle, node.node_id, campaign=campaign, roots=roots
@@ -912,6 +977,20 @@ def close_out(
         (null_scores if entry.is_null else real_scores).append(node.ic_mean)
         if node.node_id == root_id:
             root_level[root_id] = (node.ic_mean, node.ic_tstat, entry.is_null)
+        if is_type_d:
+            resolution = node_resolutions[node.node_id]
+            if resolution.real:
+                deepest = branch_real.get(root_id)
+                if deepest is None or resolution.depth > deepest[0]:
+                    branch_real[root_id] = (
+                        resolution.depth, node.ic_mean, node.ic_tstat,
+                    )
+            else:
+                shallowest = branch_null.get(root_id)
+                if shallowest is None or resolution.depth < shallowest[0]:
+                    branch_null[root_id] = (
+                        resolution.depth, node.ic_mean, node.ic_tstat,
+                    )
         if node.ic_tstat >= DISCOVERY_TSTAT:
             discoveries.append(node.node_id)
             discovery_roots.append(root_id)
@@ -939,27 +1018,44 @@ def close_out(
     diagnostic = nulloracle.ks_two_sample(null_scores, real_scores)
     ks_pvalue_all_nodes = diagnostic.pvalue
 
-    # The gate's own sample: one ic_mean per root -- never a child's --
-    # truncated to roots whose own |ic_tstat| has not already cleared
-    # DISCOVERY_TSTAT on either side, so the comparison is "no edge vs no
-    # edge" on both labels (PRD §4.3) rather than a test genuine edge or a
-    # root's correlated children can fail on their own.
-    null_root_scores = [
-        ic_mean
-        for ic_mean, ic_tstat, is_null in root_level.values()
-        if is_null and abs(ic_tstat) < DISCOVERY_TSTAT
-    ]
-    real_root_scores = [
-        ic_mean
-        for ic_mean, ic_tstat, is_null in root_level.values()
-        if not is_null and abs(ic_tstat) < DISCOVERY_TSTAT
-    ]
-    ks_root_counts = (len(null_root_scores), len(real_root_scores))
+    # The gate's own sample, its unit following the campaign type: one
+    # ic_mean per root for Type-R (never a child's), one per branch for
+    # Type-D (its shallowest null and deepest real, never a pseudo-
+    # replicated descendant in between) -- truncated, either way, to values
+    # whose own |ic_tstat| has not already cleared DISCOVERY_TSTAT on
+    # either side, so the comparison is "no edge vs no edge" on both labels
+    # (PRD §4.3) rather than a test genuine edge or a correlated descendant
+    # can fail on their own.
+    if is_type_d:
+        null_gate_scores = [
+            ic_mean
+            for _depth, ic_mean, ic_tstat in branch_null.values()
+            if abs(ic_tstat) < DISCOVERY_TSTAT
+        ]
+        real_gate_scores = [
+            ic_mean
+            for _depth, ic_mean, ic_tstat in branch_real.values()
+            if abs(ic_tstat) < DISCOVERY_TSTAT
+        ]
+        ks_variant = KS_VARIANT_BRANCH_NONSIG
+    else:
+        null_gate_scores = [
+            ic_mean
+            for ic_mean, ic_tstat, is_null in root_level.values()
+            if is_null and abs(ic_tstat) < DISCOVERY_TSTAT
+        ]
+        real_gate_scores = [
+            ic_mean
+            for ic_mean, ic_tstat, is_null in root_level.values()
+            if not is_null and abs(ic_tstat) < DISCOVERY_TSTAT
+        ]
+        ks_variant = KS_VARIANT_ROOT_NONSIG
+    ks_root_counts = (len(null_gate_scores), len(real_gate_scores))
     if (
-        len(null_root_scores) < nulloracle.KS_MIN_SAMPLE
-        or len(real_root_scores) < nulloracle.KS_MIN_SAMPLE
+        len(null_gate_scores) < nulloracle.KS_MIN_SAMPLE
+        or len(real_gate_scores) < nulloracle.KS_MIN_SAMPLE
     ):
-        # Too few non-significant roots on one side to compare at all: the
+        # Too few non-significant values on one side to compare at all: the
         # gate is not computed, and the campaign is neither cleared nor
         # voided on a p-value no test produced.  campaign.ks_pvalue and
         # calibration_status are left exactly as they already were -- the
@@ -970,7 +1066,7 @@ def close_out(
         # 1. The KS guard, over the gate's sample above -- only the two
         #    lists reach it, never a node id.
         ks_record = nulloracle.KsGuard(database_url).guard(
-            campaign, null_root_scores, real_root_scores
+            campaign, null_gate_scores, real_gate_scores
         )
         # 2. The verdict, read back off the p-value the guard just persisted.
         verdict = nulloracle.CampaignVerdict(database_url).void_if_detectable(
@@ -1006,20 +1102,16 @@ def close_out(
     )
 
     type_b: int | None = None
-    if record.campaign_type == discovery.TYPE_D_CAMPAIGN_TYPE:
+    if is_type_d:
         # 6. Type-B depth past the flip, Type-D campaigns only -- each
         #    evaluated node's depth and its branch's flip, joined by the
-        #    oracle's own resolution rather than restated here.  Resolved
-        #    by the node's own id (never the root): a Type-D node's
-        #    branch -- and the flip it may sit past -- is a fact of depths
-        #    the oracle reads straight off the tree, not of the sidecar,
-        #    so it is not refused for a child the way the sidecar's own
-        #    per-root entries would be.
-        oracle = nulloracle.TypeDOracle(database_url)
-        explored = [
-            oracle.resolve_request(node.node_id, (0.0,), permute=lambda series: series)
-            for node in evaluated
-        ]
+        #    same resolution the gate's branch sample above already read
+        #    (resolved by the node's own id, never the root: a Type-D
+        #    node's branch -- and the flip it may sit past -- is a fact of
+        #    depths the oracle reads straight off the tree, not of the
+        #    sidecar, so it is not refused for a child the way the
+        #    sidecar's own per-root entries would be).
+        explored = [node_resolutions[node.node_id] for node in evaluated]
         # commitment_error_rate is discarded below (Type-A is not this
         # campaign's figure to report here) -- picks are handed as the
         # same root-mapped discoveries calibration_figures took, so the
@@ -1119,7 +1211,7 @@ def close_out(
         campaign_id=campaign,
         ks_pvalue=ks_pvalue,
         ks_pvalue_all_nodes=ks_pvalue_all_nodes,
-        ks_variant=KS_VARIANT_ROOT_NONSIG,
+        ks_variant=ks_variant,
         ks_root_counts=ks_root_counts,
         calibration_status=calibration_status,
         sensitivity=figures.sensitivity,

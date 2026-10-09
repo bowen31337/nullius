@@ -59,6 +59,7 @@ from orchestrator.closeout import (
     EXIT_OK,
     EXIT_REFUSED,
     EXIT_VOID,
+    KS_VARIANT_BRANCH_NONSIG,
     main,
 )
 
@@ -227,6 +228,30 @@ def _build_type_r_campaign(database_url: str, tmp_path: Path) -> tuple[str, dict
 
 
 def _build_type_d_campaign(database_url: str, tmp_path: Path) -> tuple[str, dict[str, str], list[str]]:
+    """Four branches, each a real root (PRD §4.1.2: every Type-D root is
+    real) with a child below its own flip and a grandchild past it -- the
+    shape bug_spec_closeout_type_d_ks_branch.xml requires, where the Type-D
+    gate's null sample lives in descendants past the flip, never in a root.
+
+    Per branch: the root (depth 0) is itself a discovery (``ic_tstat`` well
+    past :data:`~orchestrator.closeout.DISCOVERY_TSTAT`); its child (depth
+    1, below the branch's flip at depth 2) is the gate's **deepest real**
+    representative, non-significant; its grandchild (depth 2, at the flip)
+    is the gate's **shallowest null** representative, also non-significant
+    -- the same fully-separated values
+    (``bug_spec_ks_guard_root_level.xml``'s own reproduction) the pre-fix
+    all-root fixture used, so the KS test is just as decisive (exact
+    two-sample, n=m=4: p ~= 0.0286) and the campaign is still voided.
+
+    Two of the four roots are additionally sealed null and two real in the
+    sidecar -- orthogonal to the depth-based branch labels above, and
+    needed only so :meth:`scoring.NullPickScorer.calibration_figures` (fed
+    this campaign's root population regardless of type) sees a non-empty
+    class on each side; no production path seals a Type-D root in the
+    sidecar at all (nulloracle's own sidecar is Type-R-only), so this is
+    the same test-time convenience the existing Type-D subtree fixture
+    already relies on.
+    """
     campaign_id = str(uuid.uuid4())
     discovery.create_campaign(
         discovery.TYPE_D_CAMPAIGN_TYPE,
@@ -234,31 +259,41 @@ def _build_type_d_campaign(database_url: str, tmp_path: Path) -> tuple[str, dict
         campaign_id=campaign_id,
         database_url=database_url,
     )
-    # Fully separated: every null score far below every real one, so the
-    # KS test is decisive (exact two-sample, n=m=4: p ~= 0.0286) and the
-    # campaign is voided.
-    null_ids = [
-        _plant_node(database_url, campaign_id, node_id=str(uuid.uuid4()), depth=2, ic_mean=v, ic_tstat=t)
-        for v, t in ((-0.90, -4.0), (-0.80, -3.6), (-0.70, -3.1), (-0.60, -2.7))
-    ]
-    real_ids = [
-        _plant_node(database_url, campaign_id, node_id=str(uuid.uuid4()), depth=1, ic_mean=v, ic_tstat=t)
-        for v, t in ((0.60, 2.7), (0.70, 3.1), (0.80, 3.6), (0.95, 4.2))
-    ]
-    all_ids = null_ids + real_ids
-    for node_id in null_ids:
-        # Flip at depth 1: these nodes (depth 2) sit at or beyond it, the
-        # Type-B error this close-out measures.
-        _set_flip_depth(database_url, node_id, 1)
-    for node_id in real_ids:
-        _set_flip_depth(database_url, node_id, 5)
+    root_ic = ((0.60, 2.7), (0.70, 3.1), (0.80, 3.6), (0.95, 4.2))
+    mid_ic = ((0.60, 0.9), (0.70, 1.1), (0.80, 1.3), (0.95, 1.5))
+    child_ic = ((-0.90, -1.9), (-0.80, -1.7), (-0.70, -1.5), (-0.60, -1.3))
+    roots: list[str] = []
+    mids: list[str] = []
+    children: list[str] = []
+    for (root_mean, root_tstat), (mid_mean, mid_tstat), (child_mean, child_tstat) in zip(
+        root_ic, mid_ic, child_ic
+    ):
+        root_id = _plant_node(
+            database_url, campaign_id, node_id=str(uuid.uuid4()), depth=0,
+            ic_mean=root_mean, ic_tstat=root_tstat,
+        )
+        # The flip is drawn on the branch's root (nulloracle's own
+        # convention): depth 0-1 stays real, depth 2 and past is null.
+        _set_flip_depth(database_url, root_id, 2)
+        mid_id = _plant_node(
+            database_url, campaign_id, node_id=str(uuid.uuid4()), parent_id=root_id,
+            depth=1, ic_mean=mid_mean, ic_tstat=mid_tstat,
+        )
+        child_id = _plant_node(
+            database_url, campaign_id, node_id=str(uuid.uuid4()), parent_id=mid_id,
+            depth=2, ic_mean=child_mean, ic_tstat=child_tstat,
+        )
+        roots.append(root_id)
+        mids.append(mid_id)
+        children.append(child_id)
+    all_ids = roots + mids + children
     for index, node_id in enumerate(all_ids):
         _charge_ledger(
             database_url, node_id, campaign_id,
             charges_budget=True, epoch_id=f"epoch-{index}",
         )
-    assignments = [_assignment(campaign_id, n, is_null=True) for n in null_ids]
-    assignments += [_assignment(campaign_id, n, is_null=False) for n in real_ids]
+    assignments = [_assignment(campaign_id, n, is_null=True) for n in roots[:2]]
+    assignments += [_assignment(campaign_id, n, is_null=False) for n in roots[2:]]
     env = {"DATABASE_URL": database_url, **_seal_sidecar(tmp_path, assignments)}
     return campaign_id, env, all_ids
 
@@ -321,10 +356,11 @@ def test_type_d_campaign_voids_and_measures_type_b(database_url: str, tmp_path: 
     assert exit_code == EXIT_VOID
     payload = json.loads(lines[0])
     assert payload["calibration_status"] == nulloracle.CALIBRATION_STATUS_VOID
-    assert payload["type_b"] == 4  # the four null (depth=2, flip=1) nodes
-    assert payload["discoveries"] == 4  # all four real nodes clear ic_tstat 2.0
-    assert payload["budget_charging_trials"] == 8
-    assert payload["ledger_trials"] == 8
+    assert payload["ks_variant"] == KS_VARIANT_BRANCH_NONSIG
+    assert payload["type_b"] == 4  # the four grandchildren past their flip
+    assert payload["discoveries"] == 4  # all four roots clear ic_tstat 2.0
+    assert payload["budget_charging_trials"] == 12
+    assert payload["ledger_trials"] == 12
 
     import ops
     import scoring

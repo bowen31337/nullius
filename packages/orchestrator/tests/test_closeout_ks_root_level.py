@@ -38,6 +38,11 @@ One test per claim the bug's expected behaviour makes:
   after truncation leaves the campaign neither ok nor VOID.
 * **the truncation is applied to both sides**, not only the one a bug might
   remember to filter.
+* **a Type-D campaign's gate samples branches, not roots** -- every Type-D
+  root is real (PRD §4.1.2), so the root-level rule above would find zero
+  nulls in any Type-D campaign; the gate's unit for this type is one value
+  per branch (bug_spec_closeout_type_d_ks_branch.xml), and a branch
+  refined past its own flip still contributes only its shallowest null.
 
 No test opens a network connection, reads a real credential, or writes
 outside a pytest temporary directory, and none holds state at module scope,
@@ -67,6 +72,7 @@ from orchestrator.closeout import (
     CALIBRATION_STATUS_INSUFFICIENT,
     EXIT_OK,
     EXIT_VOID,
+    KS_VARIANT_BRANCH_NONSIG,
     KS_VARIANT_ROOT_NONSIG,
     main,
 )
@@ -150,6 +156,23 @@ def _plant_many(
                 (node_id, parent_id, campaign_id, "macro", depth, ic_mean, ic_tstat)
                 for node_id, parent_id, depth, ic_mean, ic_tstat in rows
             ],
+        )
+
+
+def _set_flip_depth(database_url: str, node_id: str, flip_depth: int) -> None:
+    """Fix one node's ``flip_depth`` directly -- §7.3's draw, pinned to one
+    value for a reproducible test rather than drawn through
+    :class:`nulloracle.FlipDepth`."""
+    path = _path_of(database_url)
+    with closing(sqlite3.connect(path)) as connection, connection:
+        has_column = any(
+            row[1] == "flip_depth"
+            for row in connection.execute("PRAGMA table_info(node)")
+        )
+        if not has_column:
+            connection.execute("ALTER TABLE node ADD COLUMN flip_depth INT")
+        connection.execute(
+            "UPDATE node SET flip_depth = ? WHERE id = ?", (flip_depth, node_id)
         )
 
 
@@ -518,3 +541,103 @@ def test_truncation_is_applied_to_both_sides(
     guard = nulloracle.load_ks_guard(campaign_id, database_url=database_url)
     assert guard is not None
     assert (guard.null_count, guard.real_count) == (3, 3)
+
+
+# -----------------------------------------------------------------------
+# A Type-D campaign: the gate's sample is per-branch, not per-root
+# -----------------------------------------------------------------------
+
+
+def test_type_d_gate_samples_branches_not_roots_and_excludes_pseudo_replication(
+    database_url: str, tmp_path: Path
+) -> None:
+    """Every Type-D root is real (PRD §4.1.2) -- a root-level gate, read the
+    Type-R way, would find zero nulls in any Type-D campaign at all (this
+    bug: bug_spec_closeout_type_d_ks_branch.xml).  Five branches, each a
+    real root with a child below its own flip and a grandchild at or
+    beyond it: the grandchild is the gate's null representative, never the
+    (always-real) root.  One branch also carries a great-grandchild
+    further past the same flip, with an extreme, individually
+    non-significant ic_mean that would VOID the campaign on this sample
+    alone if the gate counted every past-flip node instead of only the
+    branch's shallowest -- the same pseudo-replication exclusion the Type-R
+    rule applies to a root's own children.
+    """
+    campaign_id = str(uuid.uuid4())
+    discovery.create_campaign(
+        discovery.TYPE_D_CAMPAIGN_TYPE, 8, campaign_id=campaign_id, database_url=database_url,
+    )
+
+    # Five branches: root (depth 0, real, trivially non-significant) ->
+    # child (depth 1, real, below the flip at depth 2) -> grandchild
+    # (depth 2, null, at the flip).  Fully separated child/grandchild
+    # ic_mean, both individually non-significant.
+    real_values = [(0.60, 0.9), (0.70, 1.1), (0.80, 1.3), (0.95, 1.5), (0.55, 0.7)]
+    null_values = [(-0.90, -1.9), (-0.80, -1.7), (-0.70, -1.5), (-0.60, -1.3), (-0.85, -1.8)]
+
+    roots: list[str] = []
+    grandchildren: list[str] = []
+    all_ids: list[str] = []
+    for (real_mean, real_tstat), (null_mean, null_tstat) in zip(real_values, null_values):
+        root_id = _plant_node(
+            database_url, campaign_id, node_id=str(uuid.uuid4()),
+            depth=0, ic_mean=0.0, ic_tstat=0.0,
+        )
+        _set_flip_depth(database_url, root_id, 2)
+        child_id = _plant_node(
+            database_url, campaign_id, node_id=str(uuid.uuid4()), parent_id=root_id,
+            depth=1, ic_mean=real_mean, ic_tstat=real_tstat,
+        )
+        grandchild_id = _plant_node(
+            database_url, campaign_id, node_id=str(uuid.uuid4()), parent_id=child_id,
+            depth=2, ic_mean=null_mean, ic_tstat=null_tstat,
+        )
+        # A sibling discovery, below the same flip -- so every branch
+        # declares one discovery (scoring.account_errors' own Type-A rate
+        # refuses an empty pick set) without disturbing the branch's
+        # "deepest real" choice above: both sit at depth 1, and the gate
+        # keeps the first one seen (``child_id``) rather than this one.
+        discovery_id = _plant_node(
+            database_url, campaign_id, node_id=str(uuid.uuid4()), parent_id=root_id,
+            depth=1, ic_mean=0.5, ic_tstat=2.7,
+        )
+        roots.append(root_id)
+        grandchildren.append(grandchild_id)
+        all_ids += [root_id, child_id, grandchild_id, discovery_id]
+
+    # One branch's null side is pseudo-replicated: a great-grandchild sits
+    # even further past the same flip, with an extreme ic_mean that would
+    # VOID the campaign by itself if the gate counted every past-flip node
+    # rather than only the branch's shallowest.
+    great_grandchild_id = _plant_node(
+        database_url, campaign_id, node_id=str(uuid.uuid4()), parent_id=grandchildren[0],
+        depth=3, ic_mean=50.0, ic_tstat=1.0,
+    )
+    all_ids.append(great_grandchild_id)
+    _charge_all(database_url, campaign_id, all_ids)
+
+    # Two of the five roots sealed null and three real in the sidecar --
+    # orthogonal to the depth-based branch labels above, needed only so
+    # scoring.NullPickScorer.calibration_figures (fed this campaign's root
+    # population regardless of type) sees a non-empty class on each side;
+    # no production path seals a Type-D root in the sidecar at all.
+    assignments = [_assignment(campaign_id, r, is_null=True) for r in roots[:2]]
+    assignments += [_assignment(campaign_id, r, is_null=False) for r in roots[2:]]
+    env = {"DATABASE_URL": database_url, **_seal_sidecar(tmp_path, assignments)}
+
+    lines: list[str] = []
+    exit_code = main(["--campaign-id", campaign_id], env=env, emit=lines.append)
+
+    assert exit_code == EXIT_VOID
+    payload = json.loads(lines[0])
+    assert payload["calibration_status"] == nulloracle.CALIBRATION_STATUS_VOID
+    assert payload["ks_variant"] == KS_VARIANT_BRANCH_NONSIG
+    # Five branches, five null values and five real values -- never the
+    # root-level zero a Type-D campaign (every root real) would give, and
+    # never six on the null side, which the leaked great-grandchild would
+    # have produced.
+    assert tuple(payload["ks_root_counts"]) == (5, 5)
+
+    guard = nulloracle.load_ks_guard(campaign_id, database_url=database_url)
+    assert guard is not None
+    assert (guard.null_count, guard.real_count) == (5, 5)
