@@ -387,3 +387,45 @@ The owner chose to keep `GET /` behind a bearer token. A plain browser visit ans
 **Result: 19 of 21 pass, 0 fail. The 2 blocked journeys are blocked only by the owner's no-spend choice, and every no-cost step in them passes. No traceback or `RuntimeWarning` anywhere. All five Run 8 findings are resolved.**
 
 **To close J16 and J21:** run `./run.sh campaign … --allowance <small>` (real LLM spend; the campaign now closes itself out, so the Gate evidence rows fill) and `./run.sh vst --status` / `vst-rebalance` (VST, simulated funds) when the owner authorises them.
+
+## Run 10 (J16 with real spend; M1 measured): 2026-10-08 to 2026-10-09, `main` at `4e95b9a`
+
+- **What ran:** live Type-R campaigns under `./run.sh campaign`, with the owner's approval. They used gVisor sandboxing (root re-provisioned at `63157c3` and again for `8ffff75`), Opus 5.5 root authoring, and automatic close-out. The last five ran on the survivorship-free archive snapshot `2026-10-08T03:33:28Z_540e93`: 100 symbols, 2019–2026, delistings included. They used `evaluation-config-archive.json`: 235 weekly dates from 2022-01 to 2026-06, horizon 5, 400-day history cap, 8 evaluation workers.
+- **Spend:** $28.70 recorded in total across all campaigns. The five archive triage campaigns cost $10.51.
+
+| # | Journey | Verdict | Observed |
+|---|---|---|---|
+| J16 | Run a campaign | ✅ **pass** | `archT1`–`archT5`: 33/33 nodes scored each, 0 sandbox failures, automatic close-out every time. Exit 0 ×4, plus one exit 3 (VOID, KS p 0.013), which is the documented VOID code. |
+
+**M1 results (pooled over the five archive campaigns, 165 nodes, 25 planted nulls):**
+
+| Measure | Value |
+|---|---|
+| KS guard | ok in 4 of 5 (p 0.08, 0.013 VOID, 0.42, 0.21, 0.12) |
+| Discoveries (t ≥ 2) | 59 |
+| Sensitivity | 0.41 (56 of 135 real roots) |
+| Specificity | 0.96 (24 of 25 nulls; 95% CI about 0.80–1.00) |
+| FDR_deploy at π₀ = 0.9 | about 0.46 (wide, set by the specificity CI) |
+| Triage AUC, perturbation stability (`deploy/campaign/pooled_triage.py`) | **0.43 ± 0.06** |
+
+**Verdict:** the PRD's "single robustness statistic" branch (AUC ≈ 0.85) is ruled out. Perturbation stability does not separate planted nulls from real signals, so the learned-signature branch, and M3, is the one worth building.
+
+**Defects found and fixed during the run:**
+- the time-leaking null permutation
+- tripwire false positives on persistent signals (made advisory, with a promotion gate)
+- `ctx.bars` lookback counted across the frame
+- a stale gVisor root, now guarded
+- the sandbox import allowlist preload
+- target-route grid, horizon and symbol support
+- close-out root mapping, NULL fail_class and the no-discovery case
+- the triage orientation
+- evaluation throughput (per-symbol panels, mount.select without glob, close-cache lock)
+
+On the 92-day window, the same pipeline gave FDR_deploy 0.98. The longer window is what gives discoveries power.
+
+**Open for the next round:**
+- register the closed-out campaigns as replay worlds (the pool is 45 bootstrap, 0 financial)
+- per-commit out-of-sample IR (M2)
+- process-based node evaluation (GIL-bound at 8 threads)
+- the KS guard reading genuine real-node dispersion as detectability
+- the migration 0118 statements/upgrade index mismatch
