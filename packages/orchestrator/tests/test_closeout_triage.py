@@ -398,8 +398,14 @@ def test_children_are_labelled_by_their_root(database_url: str, tmp_path: Path) 
     assert payload["triage_null_count"] == 2
     assert payload["triage_real_count"] == 2
     assert payload["triage_auc"] == 1.0
-    # No node id anywhere in the printed line.
+    # No node id anywhere in the printed line, except the committed pick's
+    # own (additions_spec_m2_baseline_financial_worlds.xml feature 2 prints
+    # committed_pick -- a node id, never a null/real label, which is what
+    # PRD §4.2 actually forbids).
+    committed = payload["committed_pick"]
     for node_id in all_ids:
+        if node_id == committed:
+            continue
         assert node_id not in lines[0]
 
 

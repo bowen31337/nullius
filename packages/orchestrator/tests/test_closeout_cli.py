@@ -386,8 +386,20 @@ def test_stdout_never_pairs_a_node_id_with_a_null_label(
     main(["--campaign-id", campaign_id], env=env, emit=lines.append)
 
     line = lines[0]
+    # additions_spec_m2_baseline_financial_worlds.xml feature 2 now prints
+    # the committed node's own id as committed_pick -- PRD §4.2 forbids a
+    # node id beside its null/real *label*, not the pick's bare identity
+    # (closeout's own docstring: "the pick's null status is used only for
+    # calibration, never printed"). So every node id but the committed
+    # pick's own must still be absent, and the committed one must appear
+    # nowhere but that one field.
+    committed = json.loads(line)["committed_pick"]
     for node_id in node_ids:
+        if node_id == committed:
+            continue
         assert node_id not in line
+    if committed is not None:
+        assert line.count(committed) == 1
 
 
 # -- Refusals -----------------------------------------------------------------

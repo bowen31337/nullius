@@ -132,9 +132,15 @@ import discovery
 import ledger
 import nulloracle
 import ops
+import policy_runtime
+import replay
 import scoring
+from artifacts import ArtifactStore
 
+from ._context import EvaluationContext, load_evaluation_context
+from ._evaluate import evaluate_on_dates
 from ._oracle import OracleTargetError, SubtreeOracle
+from ._targets import snapshot_forward_returns
 
 __all__ = [
     "CALIBRATION_STATUS_INSUFFICIENT",
@@ -148,6 +154,8 @@ __all__ = [
     "EXIT_REFUSED",
     "EXIT_VOID",
     "KS_VARIANT_ROOT_NONSIG",
+    "M2_FIXED_BETA",
+    "M2_FIXED_POLICY_VERSION",
     "TRIAGE_MIN_SIDE",
     "CloseoutError",
     "CloseoutResult",
@@ -195,6 +203,24 @@ CALIBRATION_STATUS_INSUFFICIENT = "insufficient"
 #: without re-deriving the rule from this module's source, and so a future
 #: second variant would have a name to be told apart from.
 KS_VARIANT_ROOT_NONSIG = "root-nonsig"
+
+#: The policy version every close-out world score is persisted under — a
+#: single, fixed baseline (additions_spec_m2_baseline_financial_worlds.xml,
+#: feature 2) rather than a revision's own version, so dreaming's own
+#: "m2-fixed" arm (feature 3, out of this module's scope) always has one
+#: name to compare a candidate's "{version}#financial" rows against,
+#: whichever campaign the world came from.
+M2_FIXED_POLICY_VERSION = "m2-fixed"
+
+#: The beta the fixed baseline is scored at. Close-out commits the single
+#: top in-sample node and never explores, so "m2-fixed" is not a function
+#: of beta the way a swept revision's own rounds are -- but
+#: ``replay_score.beta`` is ``NOT NULL`` (migration 0109) and
+#: :func:`replay.persist_replay_score` requires a finite number. ``0.5`` is
+#: the workspace's own default explore/exploit scalar
+#: (:func:`orchestrator.dream.main`'s own ``--beta`` default), reused here
+#: as the one fixed point every "m2-fixed" row is filed under.
+M2_FIXED_BETA = 0.5
 
 #: Calibrated: the campaign closed out and its verdict is not VOID.
 EXIT_OK = 0
@@ -273,6 +299,10 @@ class CloseoutResult:
     triage_auc: float | None
     triage_null_count: int
     triage_real_count: int
+    committed_pick: str | None
+    oos_ir: float | None
+    oos_ic_tstat: float | None
+    world_persisted: bool
 
     @property
     def is_void(self) -> bool:
@@ -287,6 +317,12 @@ class CloseoutResult:
         count -- and none of them is a node's own identity. The same holds
         for the M1 triage figure: ``triage_auc`` and the two side counts are
         the whole of it, never a node id or its label.
+
+        ``committed_pick`` is the one node id this payload *does* print --
+        the node close-out committed to, or ``null`` for a miss.  The
+        pick's own identity is not what PRD §4.2 protects; only its null
+        status is, and that status is read only for calibration above and
+        never joins this payload (feature 2).
         """
         return {
             "campaign_id": self.campaign_id,
@@ -305,6 +341,10 @@ class CloseoutResult:
             "triage_auc": self.triage_auc,
             "triage_null_count": self.triage_null_count,
             "triage_real_count": self.triage_real_count,
+            "committed_pick": self.committed_pick,
+            "oos_ir": self.oos_ir,
+            "oos_ic_tstat": self.oos_ic_tstat,
+            "world_persisted": self.world_persisted,
         }
 
 
@@ -610,12 +650,201 @@ def _persist_triage(
         ) from exc
 
 
+# -- The commit: policy-runtime's EpisodeCommit, over this module's own tree --
+
+
+class _ClosingTree:
+    """The address seam :class:`policy_runtime.EpisodeCommit` needs -- the
+    campaign's evaluated node ids, and nothing posted.
+
+    Close-out already knows every node id it may commit to (the ``evaluated``
+    rows its own read produced); this is the minimal carrier that lets
+    :func:`policy_runtime.episode_commit` validate the one commit through the
+    same seam a live episode's question does, rather than restating the
+    cardinality and one-way-door checks :mod:`policy_runtime.commit` already
+    owns.  The same stand-in-over-a-known-set shape as :class:`_NoPostEndpoint`
+    above, for the sibling reason: nothing here is ever posted to.
+    """
+
+    def __init__(self, node_ids: frozenset[str]) -> None:
+        self._node_ids = node_ids
+
+    def node(self, node_id: str) -> str:
+        if node_id not in self._node_ids:
+            raise policy_runtime.PolicyAddressError(
+                f"{CLOSEOUT_CODE}: close-out tried to commit to node "
+                f"{node_id!r}, which is not one of this campaign's evaluated "
+                "nodes"
+            )
+        return node_id
+
+
+class _ClosingQuestion:
+    """Fronts :class:`_ClosingTree` as the ``question`` :class:`policy_runtime.
+    EpisodeCommit` requires -- a public ``tree`` carrying a callable
+    ``node()``, the whole of that record's address-seam demand."""
+
+    def __init__(self, node_ids: frozenset[str]) -> None:
+        self.tree = _ClosingTree(node_ids)
+
+
+def _commit_top_node(evaluated: Sequence[_EvaluatedNode]) -> policy_runtime.Termination:
+    """Commit to the evaluated node with the highest in-sample ``ic_tstat``,
+    if any clears :data:`DISCOVERY_TSTAT` -- feature 2's commit rule, run
+    through :func:`policy_runtime.episode_commit` so the one-way-door and
+    one-node cardinality it already enforces are not restated here.
+
+    Ties are broken by node id, ascending: a deterministic total order over
+    ``(-ic_tstat, node_id)`` picks the same winner on every call over the
+    same rows, which a direct ``max()`` without a tie-break key would not
+    guarantee.  With no eligible node (every ``ic_tstat`` below the bar, or
+    no evaluated node at all), nothing is committed and the returned
+    :class:`~policy_runtime.Termination` carries no pick -- the campaign is
+    a miss, scored :data:`policy_runtime.NON_COMMITTING_SCORE` by the caller
+    that reads it, never refused.
+    """
+    record = policy_runtime.episode_commit(
+        _ClosingQuestion(frozenset(node.node_id for node in evaluated))
+    )
+    eligible = [node for node in evaluated if node.ic_tstat >= DISCOVERY_TSTAT]
+    if eligible:
+        winner = min(eligible, key=lambda node: (-node.ic_tstat, node.node_id))
+        record.commit(winner.node_id)
+    return record.terminate()
+
+
+# -- The out-of-sample read: the committed node's stored code, over oos_dates --
+
+
+def _oos_target_endpoint(sidecar: Any, context: EvaluationContext) -> Any:
+    """A real :class:`nulloracle.TargetEndpoint` over ``sidecar``, serving
+    forward returns narrowed to ``context.oos_dates`` -- the OOS grid's own
+    echo of :func:`orchestrator._sidecar_backed_endpoint`'s production
+    wiring (which narrows to ``context.evaluation_dates`` instead).
+
+    The same reconciliation that production endpoint makes: the snapshot's
+    own close-to-close forward returns (:func:`orchestrator._targets.
+    snapshot_forward_returns`), narrowed to the one grid this read is over
+    (feature 1's own note on why an unnarrowed supply fails a sparse grid's
+    gate -- ``orchestrator._targets.grid_forward_returns``'s docstring), and
+    nulloracle's own per-symbol block permutation
+    (:func:`nulloracle.blockpermute.block_permute_cross_section`) for the
+    null branch, read from the sidecar's own sealed seed and block length.
+    Built fresh per call -- cheap, and it holds no state of its own, the
+    same stance :class:`nulloracle.TargetEndpoint` itself takes.
+    """
+    from nulloracle.blockpermute import block_permute_cross_section
+
+    grid = frozenset(context.oos_dates)
+    base = snapshot_forward_returns(context)
+
+    def _targets(request: Any) -> dict[Any, dict[str, float]]:
+        return {day: row for day, row in base(request).items() if day in grid}
+
+    def _permute(series: Any, *, seed: Any, block_days: Any) -> dict[Any, Any]:
+        return block_permute_cross_section(series, seed=seed, block_days=block_days)
+
+    return nulloracle.TargetEndpoint(sidecar, targets=_targets, permute=_permute)
+
+
+def _oos_reading(
+    node_id: str,
+    *,
+    campaign_id: str,
+    database_url: str,
+    sidecar: Any,
+    context: EvaluationContext,
+) -> tuple[float, float]:
+    """The committed node's OOS cost-adjusted IR and OOS ``ic_tstat``.
+
+    Reads the node's stored ``code.py`` artifact back
+    (:meth:`artifacts.ArtifactStore.read`, the same file
+    :mod:`orchestrator._evaluate`'s in-sample write produced) and runs it
+    through :func:`orchestrator._evaluate.evaluate_on_dates` over
+    ``context.oos_dates``, gated through a real oracle over this campaign's
+    own sealed sidecar -- so a planted-null commit is measured on its
+    permuted branch out of sample exactly as it was in sample.  Every
+    failure the read or the chain raises (an artifact the node never wrote,
+    a sandbox failure, a gate refusal) propagates unchanged: this function
+    charges nothing and persists nothing, so there is no failure path of
+    its own to translate.
+    """
+    code = ArtifactStore(context.artifact_dir).read(campaign_id, node_id, "code.py")
+    oracle = SubtreeOracle(
+        _oos_target_endpoint(sidecar, context), database_url=database_url
+    )
+    metrics, cost_adjusted_ir = evaluate_on_dates(
+        node_id,
+        code.decode("utf-8"),
+        context=context,
+        oracle=oracle,
+        dates=context.oos_dates,
+    )
+    return cost_adjusted_ir, metrics.ic_tstat
+
+
+# -- The world: one m2-fixed replay_score row per campaign, refreshed on rerun --
+
+
+def _m2_fixed_is_holdout(database_url: str, world_id: str) -> bool:
+    """The campaign's rotation, if one exists -- ``True`` otherwise.
+
+    "The campaign's rotation" is whatever ``is_holdout`` this world's own
+    most recent ``m2-fixed`` row already carried -- close-out's own prior
+    write, or (additions_spec_m2_baseline_financial_worlds.xml feature 3,
+    out of this module's scope) a dreaming cycle's baseline sweep scoring
+    this same financial world under the same policy version.  Read before
+    that row is refreshed, so a rerun does not quietly flip a world between
+    train and holdout on every close-out. ``True`` when no such row exists
+    yet: an unrotated financial world defaults to held out, the same
+    conservative reading an un-dreamt bootstrap world gets before its first
+    rotation.
+
+    A database that has never persisted a replay score at all (``replay_
+    score`` does not exist yet) answers ``True`` the same way -- there is no
+    prior rotation to read, not a broken store.
+    """
+    path = _sqlite_path(database_url)
+    with closing(sqlite3.connect(path)) as connection:
+        try:
+            row = connection.execute(
+                f"SELECT is_holdout FROM {replay.REPLAY_SCORE_TABLE} "
+                "WHERE policy_version = ? AND world_id = ? "
+                "ORDER BY created_at DESC, id DESC LIMIT 1",
+                (M2_FIXED_POLICY_VERSION, world_id),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return True
+    return True if row is None else bool(row[0])
+
+
+def _clear_m2_fixed_rows(database_url: str, world_id: str) -> None:
+    """Delete every existing ``m2-fixed`` row for ``world_id``, so the fresh
+    row :func:`replay.persist_replay_score` is about to write is the only
+    one -- the "rerunning close-out refreshes that row and never duplicates
+    it" rule, enforced here because :func:`replay.persist_replay_score`'s
+    own law is one fresh row per call, never an upsert (feature 255's own
+    docstring: "each run is its own row").
+    """
+    path = _sqlite_path(database_url)
+    with closing(sqlite3.connect(path)) as connection, connection:
+        try:
+            connection.execute(
+                f"DELETE FROM {replay.REPLAY_SCORE_TABLE} "
+                "WHERE policy_version = ? AND world_id = ?",
+                (M2_FIXED_POLICY_VERSION, world_id),
+            )
+        except sqlite3.OperationalError:
+            pass
+
+
 def close_out(
     campaign_id: str,
     *,
     database_url: str,
     scorer: scoring.NullPickScorer,
     sidecar: Any,
+    context: EvaluationContext | None = None,
 ) -> CloseoutResult:
     """Close out one campaign -- feature 13's whole sentence, one call.
 
@@ -625,6 +854,15 @@ def close_out(
     scorer's own law lets no label or sidecar accessor out, and the split
     this function runs for the KS guard is this process's own read, not
     the scorer's verb.
+
+    ``context`` is the resolved :class:`~orchestrator._context.
+    EvaluationContext` (:func:`~orchestrator._context.load_evaluation_context`'s
+    answer, or ``None`` when unconfigured) -- additions_spec_m2_baseline_
+    financial_worlds.xml, "Out-of-Sample Evaluation", feature 2's own input:
+    when it is not ``None`` and its ``oos_dates`` is not empty, the node
+    this call commits to is scored out of sample through it; otherwise the
+    OOS reading is unavailable (``None``) and the world is still persisted,
+    scored by the miss rule.
 
     Refuses with :class:`CloseoutError` for an unknown campaign or an
     evaluated node whose root cannot be resolved -- its walk leaves the
@@ -822,6 +1060,61 @@ def close_out(
         real_count=triage_real_count,
     )
 
+    # 9. The M2 commit -- one pick per campaign, scored out of sample, and
+    #    persisted as the campaign's financial replay-world score
+    #    (additions_spec_m2_baseline_financial_worlds.xml, "Out-of-Sample
+    #    Evaluation", feature 2).  Runs after every calibration step above:
+    #    the commit reads the same in-sample ic_tstat those steps already
+    #    measured, and the world is admitted or refused by the campaign's
+    #    calibration_status as that machinery just left it.
+    termination = _commit_top_node(evaluated)
+    committed_pick = termination.pick.node_id if termination.committed else None
+
+    oos_ir: float | None = None
+    oos_ic_tstat: float | None = None
+    if termination.committed and context is not None and context.oos_dates:
+        oos_ir, oos_ic_tstat = _oos_reading(
+            termination.pick.node_id,
+            campaign_id=campaign,
+            database_url=database_url,
+            sidecar=sidecar,
+            context=context,
+        )
+
+    # The world is this campaign itself: a financial world's identity is
+    # its own campaign id (additions_spec_m2_baseline_financial_worlds.xml
+    # feature 3's score_on_financial_world(policy, campaign_id, ...) reads
+    # the replay pool's financial worlds by that same id), never a
+    # synthesized backfill id -- a live campaign's world *is* the regime it
+    # ran in, and needs no second identity to name it by.
+    world_id = campaign
+    manifest = discovery.finish_campaign(campaign, database_url=database_url)
+    try:
+        discovery.admit_completed_campaigns([manifest])
+    except discovery.VoidCampaignError:
+        # §7.4's own gate: a VOID campaign is excluded from the replay pool,
+        # so this campaign is not persisted as a world at all -- the figures
+        # above are already saved, and the VOID verdict (if any) is already
+        # the printed calibration_status.
+        world_persisted = False
+    else:
+        world_persisted = True
+        score = (
+            oos_ir
+            if termination.committed and oos_ir is not None
+            else replay.NON_COMMITTING_SCORE
+        )
+        is_holdout = _m2_fixed_is_holdout(database_url, world_id)
+        _clear_m2_fixed_rows(database_url, world_id)
+        replay.persist_replay_score(
+            replay.TerminalPick(pick=termination.pick, score=score),
+            M2_FIXED_POLICY_VERSION,
+            world_id,
+            M2_FIXED_BETA,
+            is_holdout=is_holdout,
+            database_url=database_url,
+        )
+
     return CloseoutResult(
         campaign_id=campaign,
         ks_pvalue=ks_pvalue,
@@ -839,6 +1132,10 @@ def close_out(
         triage_auc=triage_auc,
         triage_null_count=triage_null_count,
         triage_real_count=triage_real_count,
+        committed_pick=committed_pick,
+        oos_ir=oos_ir,
+        oos_ic_tstat=oos_ic_tstat,
+        world_persisted=world_persisted,
     )
 
 
@@ -922,11 +1219,19 @@ def main(
         return EXIT_CONFIG
 
     try:
+        # Loaded inside the same refusal path as close_out's own collaborators:
+        # an unset NULLIUS_EVALUATION_CONFIG is the unconfigured state
+        # (None, no OOS reading -- feature 2's own documented "no oos_dates"
+        # case), but a configured-and-broken one is refused the same way any
+        # other collaborator's refusal is here, naming the key or variable at
+        # fault (EvaluationConfigError's own words).
+        context = load_evaluation_context(env=source)
         result = close_out(
             arguments.campaign_id,
             database_url=database_url,
             scorer=scorer,
             sidecar=sidecar,
+            context=context,
         )
     except Exception as exc:  # noqa: BLE001 - every collaborator's own
         # refusal is caught here: nulloracle, scoring, ops, ledger and
