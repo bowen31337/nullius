@@ -22,14 +22,33 @@ pool's size against the ladder floor (feature 275's ``rejects_thin_pool``,
 through feature 186's ``world_census``); then the incumbent's own
 admission (feature 230's ``screen_policy``).
 
-**Financial worlds are not scored by this CLI.** ``score_on_world``
-(feature 4, :mod:`orchestrator._bootstrap_eval`) drives a bootstrap
-world's own question object -- it has no reading for a world this member
-cannot construct one for. So the sweep's world list is always the
-bootstrap pool's own worlds (:meth:`bootstrap.BootstrapPool.worlds`), and
-``n_financial`` -- the worlds ``world_census`` counts in ``replay_score``
-that the bootstrap pool does not hold -- is counted and reported, never
-swept.
+**Financial worlds are a second arm, admitted and swept beside the
+bootstrap pool.** ``additions_spec_m2_baseline_financial_worlds.xml``
+feature 3: the completed, non-``VOID`` campaigns
+(:func:`discovery.admit_completed_campaigns` over every manifest
+:class:`discovery.CampaignManifests` holds) are this cycle's financial
+worlds, and ``n_financial`` is now their count -- not the worlds
+``world_census`` counts in ``replay_score`` that the bootstrap pool does
+not hold, which was always a byproduct reading of a prior cycle's own
+writes rather than the admitted pool itself. The bootstrap sweep is
+unchanged: ``score_on_world`` (feature 4, :mod:`orchestrator._bootstrap_eval`)
+still drives every bootstrap world's own question object, and the
+bootstrap pool's world list is still :meth:`bootstrap.BootstrapPool.worlds`.
+Beside it, every widened candidate is replayed over every admitted
+financial world through :func:`orchestrator._financial_eval.
+score_on_financial_world` (feature 245's stored-tree transition, feature
+249's committed pick -- no node is generated), each committed pick scored
+by its out-of-sample IR and persisted with ``policy_version
+f"{candidate.module_id}#financial"``, and the cycle's own winner is
+compared against the ``"m2-fixed"`` baseline (:data:`orchestrator.closeout.
+M2_FIXED_POLICY_VERSION`) with :func:`dreaming.paired_pool_difference` --
+reported as its own ``financial_arm`` figure, separate from the bootstrap
+``train_mean``/``holdout_mean``/``gap``. With fewer than
+:data:`DREAMING_MIN_FINANCIAL_WORLDS` admitted, or with no out-of-sample
+grid configured for this process (``NULLIUS_EVALUATION_CONFIG`` unset, or
+set with no ``oos_dates``), the financial arm is reported ``"thin"``
+rather than computed -- the bootstrap arm runs exactly as before either
+way.
 
 **Selection is a two-phase sweep, not one.** ``dreaming.commit_selection``
 reads every one of a candidate's ``replay_score`` rows at the episode's
@@ -81,18 +100,24 @@ from pathlib import Path
 from typing import Any
 
 import bootstrap
+import discovery
 import dreaming
 import policy_runtime
 from canary import CanaryDeterminismBrokenError, require_dreaming_allowed
 from ops import MetaOverfitGaps
 
 from ._bootstrap_eval import score_on_world
+from ._context import EvaluationConfigError, EvaluationContext, load_evaluation_context
+from ._financial_eval import FinancialEvalContext, score_on_financial_world
+from .closeout import M2_FIXED_POLICY_VERSION
 
 __all__ = [
+    "DREAMING_MIN_FINANCIAL_WORLDS",
     "DREAM_CODE",
     "EXIT_CONFIG",
     "EXIT_OK",
     "EXIT_REFUSED",
+    "FINANCIAL_SUFFIX",
     "POLICY_ISOLATION_CODE",
     "POLICY_SCREENING_CODE",
     "main",
@@ -127,6 +152,22 @@ EXIT_CONFIG = 2
 #: structure-preserving reviser (feature 271's own); ``llm`` names the
 #: isolation gap and is always refused.
 _REVISERS = ("jitter", "llm")
+
+#: The floor below which the financial arm is reported ``"thin"`` rather
+#: than computed -- additions_spec_m2_baseline_financial_worlds.xml feature
+#: 3's own documented constant. Two is also :func:`dreaming.paired_ir_difference`'s
+#: own minimum (a single paired world has no spread to measure), so a pool
+#: that clears this floor is one the paired statistic can actually take.
+DREAMING_MIN_FINANCIAL_WORLDS = 2
+
+#: The suffix a financial-world row's ``policy_version`` carries, so a
+#: candidate's bootstrap-pool row and its financial-world row never share
+#: one version -- their quantities differ (a bootstrap world's ``r2_holdout``
+#: against a financial world's out-of-sample IR), and the paired statistic
+#: compares ``f"{module_id}{FINANCIAL_SUFFIX}"`` against
+#: :data:`orchestrator.closeout.M2_FIXED_POLICY_VERSION` on this suffix's own
+#: rows alone.
+FINANCIAL_SUFFIX = "#financial"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -224,6 +265,100 @@ def _existing_winner(database_url: str, widened: Sequence[Any]) -> Any | None:
     return None
 
 
+def _admitted_financial_campaigns(database_url: str) -> tuple[str, ...]:
+    """The completed, non-``VOID`` campaigns admitted as financial worlds.
+
+    Every manifest :class:`discovery.CampaignManifests` holds, filtered one
+    at a time through :func:`discovery.admit_completed_campaigns` -- a
+    single-manifest call per campaign (the same shape
+    :func:`orchestrator.closeout.close_out` already uses for its own M2
+    commit), because the function's own batch form refuses the *whole*
+    batch the moment one campaign is ``VOID`` (docs §7.4), and this cycle's
+    job is to admit every campaign it can rather than refuse the lot over
+    one voided one. :meth:`~discovery.CampaignManifests.completed` creates
+    its own table on first read, so a database this cycle's own migrations
+    never touched (no completed campaign has ever been persisted here)
+    answers an empty tuple rather than raising.
+    """
+    manifests = discovery.CampaignManifests(database_url).completed()
+    admitted: list[str] = []
+    for manifest in manifests:
+        try:
+            discovery.admit_completed_campaigns([manifest])
+        except discovery.VoidCampaignError:
+            continue
+        admitted.append(manifest.campaign_id)
+    return tuple(admitted)
+
+
+def _financial_arm(
+    widened: Any,
+    winner: Any,
+    *,
+    database_url: str,
+    beta: float,
+    evaluation_context: EvaluationContext | None,
+    replay_component: Any,
+) -> tuple[int, object]:
+    """Score every widened candidate on every admitted financial world.
+
+    Answers ``(n_financial, financial_arm)``: the admitted campaign count,
+    always honestly reported, and either the string ``"thin"`` (fewer than
+    :data:`DREAMING_MIN_FINANCIAL_WORLDS` admitted, or no out-of-sample grid
+    configured for this process) or the paired statistic comparing the
+    cycle's own winner against :data:`orchestrator.closeout.
+    M2_FIXED_POLICY_VERSION` on the admitted worlds (every one of them
+    treated as held out -- there is no train/holdout split for financial
+    worlds, every candidate already contended for the win on the bootstrap
+    pool's own split).
+
+    Every widened candidate -- not only the winner -- is swept, through one
+    shared :class:`orchestrator._financial_eval.FinancialEvalContext`, so two
+    candidates committing the same node of one campaign's tree share one
+    out-of-sample read (the feature's own per-run cache).
+    """
+    campaigns = _admitted_financial_campaigns(database_url)
+    n_financial = len(campaigns)
+    if (
+        n_financial < DREAMING_MIN_FINANCIAL_WORLDS
+        or evaluation_context is None
+        or not evaluation_context.oos_dates
+    ):
+        return n_financial, "thin"
+
+    financial_context = FinancialEvalContext(evaluation=evaluation_context)
+    for candidate in widened:
+        version = f"{candidate.module_id}{FINANCIAL_SUFFIX}"
+        for campaign_id in campaigns:
+            pick = score_on_financial_world(
+                candidate.source, campaign_id, context=financial_context
+            )
+            replay_component.persist_replay_score(
+                pick,
+                version,
+                campaign_id,
+                beta,
+                is_holdout=True,
+                database_url=database_url,
+            )
+
+    try:
+        comparison = dreaming.paired_pool_difference(
+            f"{winner.module_id}{FINANCIAL_SUFFIX}",
+            M2_FIXED_POLICY_VERSION,
+            database_url=database_url,
+        )
+    except dreaming.PairedComparisonError:
+        return n_financial, "thin"
+    return n_financial, {
+        "paired_worlds": comparison.paired_worlds,
+        "candidate_mean": comparison.candidate_mean,
+        "baseline_mean": comparison.baseline_mean,
+        "mean_difference": comparison.mean_difference,
+        "p_value": comparison.p_value,
+    }
+
+
 def run_cycle(
     *,
     incumbent_source: str,
@@ -235,6 +370,7 @@ def run_cycle(
     replay_component: Any,
     census: Any,
     pool: Any,
+    evaluation_context: EvaluationContext | None = None,
 ) -> dict[str, object]:
     """Run one dreaming cycle and answer the summary payload -- the join.
 
@@ -248,6 +384,13 @@ def run_cycle(
     (:func:`main`) has already run every precondition this function does
     not re-check: the canary's halt, the pool's floor, and the incumbent's
     own admission.
+
+    ``evaluation_context``, when given, is what lets this cycle also score
+    the financial arm (see :func:`_financial_arm`) -- ``None`` (the default,
+    and what every caller that never configured ``NULLIUS_EVALUATION_CONFIG``
+    gets from :func:`main`) reports the financial arm ``"thin"`` regardless
+    of how many campaigns are admitted, because there is no out-of-sample
+    grid to score a committed pick over.
     """
     cap_record = dreaming.record_cycle_cap(
         iteration_id, census.total, database_url=database_url
@@ -285,17 +428,30 @@ def run_cycle(
     def evaluator(candidate: Any, world_id: str) -> Any:
         return score_on_world(candidate.source, world_by_id[world_id], round_cap=round_cap)
 
+    # dreaming.pool_worlds (the read split_replay_pool's own split is taken
+    # over) unions bootstrap_world with every world replay_score already
+    # names -- which, the moment a single campaign has been closed out
+    # (its own "m2-fixed" row) or this feature's own financial arm has
+    # written a "#financial" row in an earlier cycle, includes financial
+    # worlds beside bootstrap ones. The bootstrap sweep above only knows how
+    # to replay a *bootstrap* world's own question object
+    # (score_on_world's own docstring), so it is narrowed here to the split's
+    # bootstrap-only worlds -- a financial world's place in this cycle is
+    # the financial arm below, never this sweep.
+    train_worlds = [world_id for world_id in split.train if world_id in world_by_id]
+    holdout_worlds = [world_id for world_id in split.holdout if world_id in world_by_id]
+
     train_report = dreaming.sweep_candidates(
         widened,
         evaluator=evaluator,
         beta=beta,
-        worlds=list(split.train),
+        worlds=train_worlds,
         split=split,
         database_url=database_url,
         replay=replay_component,
     )
 
-    strata = {"train": split.train}
+    strata = {"train": tuple(train_worlds)}
     try:
         winner = dreaming.commit_selection(
             widened,
@@ -314,7 +470,7 @@ def run_cycle(
         [winner],
         evaluator=evaluator,
         beta=beta,
-        worlds=list(split.holdout),
+        worlds=holdout_worlds,
         split=split,
         database_url=database_url,
         replay=replay_component,
@@ -336,20 +492,30 @@ def run_cycle(
         iteration_id,
         train_mean=train_mean,
         holdout_mean=holdout_mean,
-        train_worlds=len(split.train),
-        holdout_worlds=len(split.holdout),
+        train_worlds=len(train_worlds),
+        holdout_worlds=len(holdout_worlds),
+    )
+
+    n_financial, financial_arm = _financial_arm(
+        widened,
+        winner,
+        database_url=database_url,
+        beta=beta,
+        evaluation_context=evaluation_context,
+        replay_component=replay_component,
     )
 
     return {
         "iteration_id": iteration_id,
         "n_bootstrap": census.n_bootstrap,
-        "n_financial": census.n_financial,
+        "n_financial": n_financial,
         "revision_cap": revision_cap,
         "module_id": winner.module_id,
         "code_hash": winner.code_hash,
         "train_mean": gap_record.train_mean,
         "holdout_mean": gap_record.holdout_mean,
         "gap": gap_record.gap,
+        "financial_arm": financial_arm,
         "replay_score_rows": train_report.pair_count + holdout_report.pair_count,
         "_winner_source": winner.source,
     }
@@ -372,6 +538,14 @@ def main(
     from (a real :func:`~app.module_loader.create_app` when ``None``) --
     so the suite drives this command in-process, with no subprocess and no
     real environment.
+
+    ``env`` is also where ``NULLIUS_EVALUATION_CONFIG`` is read from, the
+    same variable ``./run.sh campaign`` configures
+    (:func:`orchestrator._context.load_evaluation_context`) -- optional for
+    this CLI, unlike ``campaign``'s own required reading of it: unset, this
+    cycle still runs, with the financial arm reported ``"thin"`` (see
+    :func:`run_cycle`); set but malformed, this command refuses the same way
+    ``campaign`` would, naming the broken key.
     """
     parser = _build_parser()
     arguments = parser.parse_args(argv)
@@ -445,6 +619,12 @@ def main(
         )
         return EXIT_REFUSED
 
+    try:
+        evaluation_context = load_evaluation_context(env=source)
+    except EvaluationConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_REFUSED
+
     composed = app if app is not None else _create_app()
     replay_component = composed.get("replay")
     if replay_component is None:
@@ -465,6 +645,7 @@ def main(
             replay_component=replay_component,
             census=census,
             pool=pool,
+            evaluation_context=evaluation_context,
         )
     except dreaming.DreamingError as exc:
         print(str(exc), file=sys.stderr)
