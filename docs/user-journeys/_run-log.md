@@ -429,3 +429,19 @@ On the 92-day window, the same pipeline gave FDR_deploy 0.98. The longer window 
 - process-based node evaluation (GIL-bound at 8 threads)
 - the KS guard reading genuine real-node dispersion as detectability
 - the migration 0118 statements/upgrade index mismatch
+
+### Run 10, addendum (2026-10-09, `main` at `2dd55a4`): M2 per-commit OOS IR and the first financial worlds
+
+These were re-closed-out with no LLM spend, after the round that added out-of-sample commits, the root-level and Type-D KS gate, process-pool evaluation and financial worlds. `oos_dates` covers 9 weekly dates (2026-07-27 to 2026-09-21), embargoed horizon + 20 days after the in-sample window.
+
+| Campaign | KS gate (root-nonsig) | KS all-node (diagnostic) | Verdict | Committed pick OOS IC t | OOS IR | Financial world |
+|---|---|---|---|---|---|---|
+| archT1 | 0.74 | 0.08 | ok | +1.33 | +0.0017 | yes |
+| archT2 | 0.12 | 0.013 | VOID (sticky from the first close-out) | +1.99 | +0.0021 | no |
+| archT3 | 0.048 | 0.42 | VOID | +1.87 | +0.0015 | no |
+| archT4 | 0.81 | 0.21 | ok | +1.27 | −0.0002 | yes |
+| archT5 | 0.07 | 0.12 | ok | +2.07 | +0.0017 | yes |
+
+- All five committed picks keep a positive OOS IC; 4 of 5 also have a positive OOS IR. The window is thin, at 9 weeks.
+- The census is 45 bootstrap + **3 financial** = 48. VOID campaigns are excluded, as designed. A VOID verdict never clears on rerun, so the guard cannot be re-tested until it passes.
+- Future campaigns use `evaluation-config-archive-m3.json`: 183 in-sample weeks (2022-01 to 2025-06) and 60 OOS weeks (2025-08 to 2026-09).
