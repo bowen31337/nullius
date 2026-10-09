@@ -35,6 +35,44 @@ repeated node.  A node whose walk cannot reach a root, or reaches one this
 campaign did not plant, or reaches a root the sidecar holds no entry for,
 is refused by this module rather than read as unlabelled.
 
+**Why the KS guard's sample is one value per root, truncated to the
+non-significant band, rather than every evaluated node's own ic_mean
+(bug_spec_ks_guard_root_level.xml).**  PRD §4.3 states the guard's whole
+premise: *"the nulls are detectable, the agent may be learning to identify
+them"* -- a statement about whether the null branches' construction (the
+block permutation and its length) leaks, not about whether a real root
+carries genuine edge.  Feeding the guard every evaluated node's realised
+``ic_mean`` conflated the two: on a window where real signals have power,
+the real side is a mixture of edge and noise while the null side is noise
+alone, so the two-sample test rejected "real roots have edge" and reported
+it as "the null is detectable" -- archT2 voided at ``p=0.013`` this way
+while its four sibling campaigns, drawn from the same mechanism, cleared
+0.08-0.42.  A child inherits its root's label, so a policy that refined one
+root several times also counted its correlated children as independent
+samples, inflating whichever side that root sat on.  Neither failure is
+about the null branch's construction, which is the only thing §7.4's alert
+(*"investigate block length and permutation scheme"*) can act on.
+
+So this module's sample for the gate is **one ic_mean per root** -- never a
+child's -- and only from roots whose own ``|ic_tstat|`` has not already
+cleared :data:`DISCOVERY_TSTAT` on either side: that is the comparison the
+permutation scheme governs, "no edge vs no edge" on both sides, and it is
+what §7.4's ``p < 0.05`` decides a campaign's ``calibration_status`` on --
+:class:`nulloracle.KsGuard` and :class:`nulloracle.CampaignVerdict`
+themselves are unchanged, and never see a child or a significant root.  The
+previous, all-node statistic is still computed -- :attr:`CloseoutResult.
+ks_pvalue_all_nodes` -- and still printed, as a diagnostic an operator can
+compare the gate against, but it never decides the verdict; which variant
+produced the persisted ``ks_pvalue`` is named by :attr:`CloseoutResult.
+ks_variant` (:data:`KS_VARIANT_ROOT_NONSIG`, the one this module computes).
+A campaign whose non-significant roots number fewer than :data:`nulloracle.
+KS_MIN_SAMPLE` on either side after this truncation cannot be tested at
+all -- the gate is not computed, and :data:`CALIBRATION_STATUS_INSUFFICIENT`
+names that state rather than reporting the ``'ok'`` an un-read campaign
+already carries by default; :attr:`CloseoutResult.ks_root_counts` is the
+``(n_null, n_real)`` the gate saw after filtering, so the reading is
+checkable the same way a guard's own stored sample sizes already are.
+
 **Why this module reads ``node`` with raw SQL rather than a shared
 reader.**  No member in this workspace exposes "every evaluated node of a
 campaign" as a public call: :mod:`orchestrator._live_tree` and
@@ -99,6 +137,7 @@ import scoring
 from ._oracle import OracleTargetError, SubtreeOracle
 
 __all__ = [
+    "CALIBRATION_STATUS_INSUFFICIENT",
     "CLOSEOUT_CODE",
     "CLOSEOUT_TRIAGE_TABLE",
     "CLOSEOUT_UNEVALUATED_CODE",
@@ -108,6 +147,7 @@ __all__ = [
     "EXIT_OK",
     "EXIT_REFUSED",
     "EXIT_VOID",
+    "KS_VARIANT_ROOT_NONSIG",
     "TRIAGE_MIN_SIDE",
     "CloseoutError",
     "CloseoutResult",
@@ -136,6 +176,25 @@ DATABASE_URL_ENV = "DATABASE_URL"
 #: module constant, documented here, rather than a number repeated at each
 #: call site.
 DISCOVERY_TSTAT = 2.0
+
+#: Close-out's own third calibration reading, alongside nulloracle's ``'ok'``
+#: and ``'VOID'``: the gate's root-level sample was too thin, on at least
+#: one side, to compute a KS p-value at all after truncating to roots whose
+#: own ``|ic_tstat|`` stays below :data:`DISCOVERY_TSTAT` (PRD §4.3;
+#: bug_spec_ks_guard_root_level.xml).  Never written to the campaign row --
+#: :mod:`nulloracle`'s own ``calibration_status`` column carries only the
+#: two values its own verdict pronounces -- but reported here so a reader
+#: of the printed line can tell "untested, too little evidence" from "tested
+#: and cleared".
+CALIBRATION_STATUS_INSUFFICIENT = "insufficient"
+
+#: The one gate variant this module computes: one ``ic_mean`` per root,
+#: excluding every child, truncated to roots whose own ``ic_tstat`` has not
+#: already cleared :data:`DISCOVERY_TSTAT` on either side.  Named so a
+#: reader of :attr:`CloseoutResult.ks_pvalue` knows which sample produced it
+#: without re-deriving the rule from this module's source, and so a future
+#: second variant would have a name to be told apart from.
+KS_VARIANT_ROOT_NONSIG = "root-nonsig"
 
 #: Calibrated: the campaign closed out and its verdict is not VOID.
 EXIT_OK = 0
@@ -187,10 +246,22 @@ class CloseoutResult:
     ``type_b`` is ``None`` for a Type-R campaign (the figure is Type-D's
     own, prd §4.1.2) and the measured count -- possibly ``0`` -- for a
     Type-D one.
+
+    ``ks_pvalue`` is the root-level gate's p-value (:data:`KS_VARIANT_ROOT_
+    NONSIG`, the sample :mod:`nulloracle.ksguard`'s store actually persisted
+    and :mod:`nulloracle.verdict` actually voided on) -- ``None`` when
+    ``calibration_status`` is :data:`CALIBRATION_STATUS_INSUFFICIENT`, the
+    gate was never computed.  ``ks_pvalue_all_nodes`` is the diagnostic --
+    every evaluated node's own ``ic_mean``, root and child alike, the sample
+    this module gated on before bug_spec_ks_guard_root_level.xml -- always
+    present, and never the figure the verdict is pronounced on.
     """
 
     campaign_id: str
-    ks_pvalue: float
+    ks_pvalue: float | None
+    ks_pvalue_all_nodes: float
+    ks_variant: str
+    ks_root_counts: tuple[int, int]
     calibration_status: str
     sensitivity: float
     specificity: float
@@ -220,6 +291,9 @@ class CloseoutResult:
         return {
             "campaign_id": self.campaign_id,
             "ks_pvalue": self.ks_pvalue,
+            "ks_pvalue_all_nodes": self.ks_pvalue_all_nodes,
+            "ks_variant": self.ks_variant,
+            "ks_root_counts": list(self.ks_root_counts),
             "calibration_status": self.calibration_status,
             "sensitivity": self.sensitivity,
             "specificity": self.specificity,
@@ -579,6 +653,11 @@ def close_out(
     discovery_roots: list[str] = []
     triage_null: list[float] = []
     triage_real: list[float] = []
+    # root_id -> (ic_mean, ic_tstat, is_null) of the root's *own* evaluation
+    # -- the gate's population (bug_spec_ks_guard_root_level.xml).  Set only
+    # when the root itself was evaluated (node.node_id == root_id); a child
+    # never adds or overwrites an entry here.
+    root_level: dict[str, tuple[float, float, bool]] = {}
     for node in evaluated:
         root_id = _resolve_root(
             root_oracle, node.node_id, campaign=campaign, roots=roots
@@ -593,6 +672,8 @@ def close_out(
                 "without one"
             )
         (null_scores if entry.is_null else real_scores).append(node.ic_mean)
+        if node.node_id == root_id:
+            root_level[root_id] = (node.ic_mean, node.ic_tstat, entry.is_null)
         if node.ic_tstat >= DISCOVERY_TSTAT:
             discoveries.append(node.node_id)
             discovery_roots.append(root_id)
@@ -607,13 +688,58 @@ def close_out(
                 node.perturb_stability
             )
 
-    # 1. The KS guard, over the in-sample scores split above -- only the
-    #    two lists reach it, never a node id.
-    ks_record = nulloracle.KsGuard(database_url).guard(
-        campaign, null_scores, real_scores
-    )
-    # 2. The verdict, read back off the p-value the guard just persisted.
-    verdict = nulloracle.CampaignVerdict(database_url).void_if_detectable(campaign)
+    # The diagnostic: §7.4's test over every evaluated node's realised
+    # ic_mean, root and child alike -- the sample this module gated on
+    # before bug_spec_ks_guard_root_level.xml.  Computed and reported, never
+    # persisted through the guard's own store: that store's one row per
+    # campaign is the gate's (step 1 below), and a second write would be a
+    # second answer to "what is this campaign's ks_pvalue".  Refuses exactly
+    # as the gate below would for a campaign too small to measure at all
+    # (nulloracle.KS_MIN_SAMPLE on a side) -- the same refusal this call
+    # replaces, so a one-sided plant still refuses close-out outright rather
+    # than reporting a diagnostic no test produced.
+    diagnostic = nulloracle.ks_two_sample(null_scores, real_scores)
+    ks_pvalue_all_nodes = diagnostic.pvalue
+
+    # The gate's own sample: one ic_mean per root -- never a child's --
+    # truncated to roots whose own |ic_tstat| has not already cleared
+    # DISCOVERY_TSTAT on either side, so the comparison is "no edge vs no
+    # edge" on both labels (PRD §4.3) rather than a test genuine edge or a
+    # root's correlated children can fail on their own.
+    null_root_scores = [
+        ic_mean
+        for ic_mean, ic_tstat, is_null in root_level.values()
+        if is_null and abs(ic_tstat) < DISCOVERY_TSTAT
+    ]
+    real_root_scores = [
+        ic_mean
+        for ic_mean, ic_tstat, is_null in root_level.values()
+        if not is_null and abs(ic_tstat) < DISCOVERY_TSTAT
+    ]
+    ks_root_counts = (len(null_root_scores), len(real_root_scores))
+    if (
+        len(null_root_scores) < nulloracle.KS_MIN_SAMPLE
+        or len(real_root_scores) < nulloracle.KS_MIN_SAMPLE
+    ):
+        # Too few non-significant roots on one side to compare at all: the
+        # gate is not computed, and the campaign is neither cleared nor
+        # voided on a p-value no test produced.  campaign.ks_pvalue and
+        # calibration_status are left exactly as they already were -- the
+        # guard did not run, the same state an un-read campaign is in.
+        calibration_status = CALIBRATION_STATUS_INSUFFICIENT
+        ks_pvalue: float | None = None
+    else:
+        # 1. The KS guard, over the gate's sample above -- only the two
+        #    lists reach it, never a node id.
+        ks_record = nulloracle.KsGuard(database_url).guard(
+            campaign, null_root_scores, real_root_scores
+        )
+        # 2. The verdict, read back off the p-value the guard just persisted.
+        verdict = nulloracle.CampaignVerdict(database_url).void_if_detectable(
+            campaign
+        )
+        calibration_status = verdict.status
+        ks_pvalue = ks_record.pvalue
 
     # 3. The calibration figures, over the planted roots and the
     #    campaign's discoveries, each mapped to its root -- the scorer's
@@ -698,8 +824,11 @@ def close_out(
 
     return CloseoutResult(
         campaign_id=campaign,
-        ks_pvalue=ks_record.pvalue,
-        calibration_status=verdict.status,
+        ks_pvalue=ks_pvalue,
+        ks_pvalue_all_nodes=ks_pvalue_all_nodes,
+        ks_variant=KS_VARIANT_ROOT_NONSIG,
+        ks_root_counts=ks_root_counts,
+        calibration_status=calibration_status,
         sensitivity=figures.sensitivity,
         specificity=figures.specificity,
         fdr_deploy=fdr_value,
