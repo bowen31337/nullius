@@ -1,0 +1,55 @@
+<bug_spec>
+  <!-- KS-1. Found 2026-10-09 across the five archive campaigns (archT1–5,
+       _run-log.md Run 10). archT2 was voided at KS p=0.013, while 12 of its
+       33 real nodes had |t|>2.
+
+       orchestrator/closeout.py (~:576-612) feeds nulloracle KsGuard every
+       evaluated node's realised ic_mean: roots and children, split by the
+       root's sidecar label. Two problems follow:
+       (a) Realised IC moves with genuine edge. On the 4.5-year window,
+           real roots carry real signal (sensitivity 0.41), so the
+           real-node distribution is legitimately wider than the null's.
+           D then measures "real roots have edge", not "the null is
+           detectable". PRD §4.3 states the threat as "the agent may be
+           learning to identify them", and the remedy as block length and
+           permutation scheme, i.e. about the null being distinguishable as
+           data.
+       (b) Children of one root are correlated but counted as independent
+           samples, so the effective n is overstated and p is too small.
+       Core shape, explicit touches_files. -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/orchestrator/src/orchestrator/closeout.py,packages/orchestrator/tests/test_closeout_ks_root_level.py">
+    <title>The KS guard compares every node's realised IC, so genuine real-node edge and child pseudo-replication read as "detectable nulls" and void calibrated campaigns</title>
+    <symptoms>
+      The guard sample is every evaluated node's ic_mean, split by root label. On a window where real signals have power, the real side is a mixture of edge plus noise and the null side is noise, so KS rejects even when the null is a perfect stand-in for "no edge". Children of the root a policy chose to refine also inflate one side. archT2 was VOID at p 0.013; its four sibling campaigns gave 0.08, 0.42, 0.21 and 0.12.
+    </symptoms>
+    <reproduction_steps>
+      Close out a synthetic campaign with 25 null roots (IC ~ N(0, s)) and 140 real roots, 40% of which carry a true IC of 0.05, plus children copied from the top roots. The guard voids it, although the nulls are exactly "no edge".
+    </reproduction_steps>
+    <expected>
+      - The gating sample is one value per root, never per node. Each null root and real root contributes its own ic_mean (the root node's own evaluation). Children are excluded from the gate.
+      - The gate compares roots without detectable edge on both sides. Only roots with |ic_tstat| &lt; DISCOVERY_TSTAT enter, and the same truncation is applied to both labels, so "no edge vs no edge" is tested. That is the comparison the permutation scheme governs.
+      - With fewer than KS_MIN_SAMPLE on a side after filtering, the gate is not computed: calibration_status "insufficient", which is not VOID and not ok. It is documented.
+      - The previous all-node statistic is still computed and persisted as a diagnostic. CloseoutResult and the JSON line gain:
+        - ks_pvalue_all_nodes
+        - ks_variant = "root-nonsig" for the gate
+        - ks_root_counts as (n_null, n_real) after filtering
+      - The persisted VOID decision follows the gate only.
+      - The rule, and why, is stated in the module docstring, citing PRD §4.3 and this spec.
+      - test_closeout_ks_root_level.py covers:
+        - the reproduction above is ok, not VOID, while the diagnostic statistic still rejects
+        - a leaking null (null roots' IC systematically offset, inside the non-significant band) is still VOID
+        - children are excluded from the gate
+        - the "insufficient" path
+        - the truncation is applied to both sides
+        It passes under pytest-xdist. The orchestrator member suite and root tests/ pass, including tests/e2e/test_planted_null_ks_guard.py (updated only if it pins the old all-node sample; its intent of catching a detectable null is kept).
+    </expected>
+    <actual>Root cause: the guard's sample is realised outcome IC over all nodes, which mixes genuine edge and correlated children into the detectability test.</actual>
+    <constraints>
+      nulloracle's KS test itself is unchanged; only close-out's choice of sample changes
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>

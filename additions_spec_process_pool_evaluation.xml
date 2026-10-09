@@ -1,0 +1,86 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — process-based node evaluation (use the host's cores)</project_name>
+  <addition_summary>
+    Node evaluation is GIL-bound pure Python: alignment and validation over
+    cached closes, plus the materializer. The thread pool from 389a095
+    therefore gives about one core of throughput. With evaluation_workers=8
+    on the 16-core host, each 32-root archive campaign of 2026-10-09 took
+    about 65 min (_run-log.md Run 10); the 8 threads mostly wait on the
+    GIL. M3 needs many more financial worlds (architecture §10.6: the gate
+    is judged on financial holdout worlds), so evaluation throughput bounds
+    the whole research loop.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / SQLite / gVisor runsc sandbox / pytest.</stack>
+    <test_baseline>main at df3b55e: gate 1663 passed; orchestrator 548 passed 5 skipped.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md. Pools today:
+      - _campaign.py ~:303-375: root evaluation on a ThreadPoolExecutor,
+        with results released in planting order and history_store.persist
+        under a write_lock.
+      - _dispatch_round ~:254-293 calls discovery.run_batch with a
+        NodeWorker (_worker.py ~:173), which authors (LLM I/O), records the
+        attempt, then calls evaluator.evaluate.
+      - LiveEvaluator.evaluate (__init__.py ~:138-211) calls create_app()
+        per call, resolves the target route, sidecar and ledger, builds a
+        SubtreeOracle and calls evaluate_node.
+      - EvaluationContext is a frozen dataclass of paths and values, plus
+        SnapshotMount (no file descriptors) and _LazyCloses (__slots__).
+        Rebuilding it per worker with load_evaluation_context() is safest.
+      - Module caches (_CLOSE_CACHE, _PANELS) are per process.
+      - evaluate_node's SQLite writes (ledger debit, tripwire verdicts,
+        stability, node metrics, poison) each open their own connection.
+      - gVisor container ids are uuid4 under one state root.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Evaluation Throughput">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/orchestrator/src/orchestrator/_process_pool.py,packages/orchestrator/src/orchestrator/__init__.py,packages/orchestrator/src/orchestrator/_context.py,packages/orchestrator/src/orchestrator/_campaign.py,deploy/campaign/evaluation-config.example.json,packages/orchestrator/tests/test_process_pool_evaluation.py">
+        System evaluates nodes in worker processes, so that a campaign's evaluation runs on as many cores as evaluation_workers names instead of one GIL.
+        - New orchestrator._process_pool.ProcessEvaluator has the same
+          .evaluate(node_id, campaign_id, depth, code) -> NodeEvaluation
+          shape as LiveEvaluator.
+          - It uses a ProcessPoolExecutor with the spawn context and
+            max_workers = evaluation_workers.
+          - Its initializer loads the evaluation context once per worker
+            (load_evaluation_context with the parent's environment) and
+            composes the app once (create_app()), so the sidecar, target
+            route and ledger are resolved once per worker, not per node.
+          - Each task runs the existing evaluate_node and returns the
+            NodeEvaluation. It must pickle, so verify NodeMetrics,
+            ScoreRecord and the pipeline's exceptions round-trip, and make
+            any that do not picklable.
+        - The evaluation config gains evaluation_mode: "process" (the
+          default) or "thread". "thread" keeps today's in-process
+          LiveEvaluator. It is documented in the example config.
+          build_live_evaluator returns the evaluator the mode names.
+        - The existing thread pools in _campaign.py and run_batch stay.
+          Each thread's .evaluate() now blocks on the process pool, so
+          authoring and LLM I/O stay on parent threads, and history_store
+          and emit stay in the parent in their existing deterministic
+          order.
+        - SQLite writes inside evaluate_node stay in the worker. Every
+          connection those stores open sets busy_timeout of at least 30 s,
+          so concurrent writers wait rather than fail.
+        - Memory: per-worker caches are bounded by the existing
+          max_history_days panel. The pool's worker count is
+          min(evaluation_workers, cpu_count - 2), and the cap is logged.
+        - The pool shuts down cleanly at campaign end and on SIGTERM, with
+          no orphan workers or runsc processes.
+        - test_process_pool_evaluation.py, with a module-level picklable
+          stub executor configured through the environment, covers:
+          - modes "process" and "thread" produce identical persisted node
+            rows, ledger rows (set-equal) and node_evaluated event order on
+            an 8-root offline campaign
+          - process mode with 4 workers runs a CPU-bound stub at least 2.5x
+            faster than thread mode on 8 nodes
+          - a node raising in a worker surfaces as that node's failure
+            without cancelling its siblings
+          - shutdown leaves no child processes
+          It passes under pytest-xdist.
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>

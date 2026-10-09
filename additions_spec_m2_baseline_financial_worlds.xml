@@ -1,0 +1,166 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — M2 baseline (per-commit out-of-sample IR) and real campaigns as financial replay worlds</project_name>
+  <addition_summary>
+    PRD M2's exit is "a measured baseline on planted nulls — sensitivity,
+    specificity, and per-commit OOS IR". The archive campaigns of 2026-10-09
+    (archT1–5, docs/user-journeys/_run-log.md Run 10) measured sensitivity
+    0.41 and specificity 0.96, but per-commit OOS IR does not exist:
+    - Live campaigns never commit a pick. Close-out's "discoveries" are
+      in-sample nodes with ic_tstat >= 2.0 (closeout.py ~:596).
+    - The evaluator has a single date window (EvaluationContext.
+      evaluation_dates), so every IR it reports is in-sample.
+    - The replay pool's census counts 45 bootstrap and 0 financial worlds,
+      because financial membership is a replay_score row
+      (bootstrap/_census.py :188-196) and nothing writes one for a real
+      campaign. dream.py states "Financial worlds are not scored by this
+      CLI" (~:25-33).
+    M3's gate (PRD M3, architecture §10.6) is a paired ΔIR of committed
+    picks, judged on financial holdout worlds, so all of this must exist
+    before M3.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / SQLite at DATABASE_URL (~/.local/share/nullius/research.db) / pytest.</stack>
+    <test_baseline>main at df3b55e: gate 1663 passed; orchestrator 548 passed 5 skipped; promotion 578 passed 1 failed (pre-existing, bug_spec_promotion_schema_convergence.xml).</test_baseline>
+    <conventions>
+      Follow CLAUDE.md. Null status never leaves the scorer process: only
+      close-out, which already holds the sidecar, may join labels.
+
+      Existing pieces:
+      - policy-runtime commit.py: CommittedPick(node_id) ~:175, the commit
+        outcome with .score(scorer) ~:242-298, EpisodeCommit.commit() ~:380.
+        NON_COMMITTING_SCORE (-inf) applies to a miss.
+      - replay pick.py: committed_pick(), TerminalPick ~:196/:252.
+      - replay score.py: persist_replay_score(...) ~:173, writing replay_score
+        (policy_version, world_id, beta, score, committed_pick, is_holdout).
+      - regime origins.py: the world id key that replay_score joins use
+        (~:260, :666).
+      - discovery manifest.py: admit_completed_campaigns ~:840 refuses VOID
+        campaigns from the pool (architecture §7.4: "A VOID campaign is
+        excluded from the replay pool"). No production caller exists.
+      - orchestrator _evaluate.py: evaluate_node ~:1005 (execute → align →
+        gate → costs → metrics → tripwires → debit → persist);
+        _cost_adjusted_ir ~:561. The node's code.py artifact is written at
+        ~:712.
+      - orchestrator _context.py: REQUIRED_KEYS ~:214-222 and the
+        _evaluation_dates validator ~:621. The evaluator's embargo comes
+        from evaluator _config.py ~:100.
+      - dreaming paired.py: paired_ir_difference / paired_pool_difference /
+        _pool_arm ~:594/:987, reading replay_score by policy_version.
+      - Bootstrap worlds score r2_holdout (orchestrator _bootstrap_eval.py
+        ~:127). That is a different quantity from IR, so financial rows must
+        use their own policy_version arm and never share one with bootstrap
+        rows.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Out-of-Sample Evaluation">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/orchestrator/src/orchestrator/_context.py,packages/orchestrator/src/orchestrator/_evaluate.py,deploy/campaign/evaluation-config.example.json,packages/orchestrator/tests/test_oos_evaluation.py">
+        System evaluates a stored node's signal on a configured out-of-sample date window without charging the ledger or touching its node row, so that an operator returns any node's OOS IR from the same pipeline the in-sample score came from.
+        - The evaluation config gains an optional oos_dates key: ISO dates,
+          sorted, unique. It is validated like evaluation_dates. Every OOS
+          date must come strictly after max(evaluation_dates) + horizon +
+          embargo, counted in calendar days of the bars, so OOS forward
+          returns never overlap the in-sample window. Otherwise it is refused
+          at load with a named error. Absent means no OOS window, and the
+          features below report OOS as unavailable rather than inventing one.
+          The key is documented in deploy/campaign/evaluation-config.example.json.
+        - New orchestrator._evaluate.evaluate_on_dates(node_id, code, *,
+          context, oracle, dates) runs the same chain as evaluate_node
+          (execute → score → align → gate through the same oracle, so null
+          nodes get null targets → costs → compute_node_metrics) over dates.
+          It returns NodeMetrics plus the cost-adjusted IR.
+        - It books no ledger debit, writes no node row, no artifact, no
+          tripwire verdict and no stability record. Failures raise the
+          pipeline's own errors.
+        - test_oos_evaluation.py, over a tmp sealed snapshot with a stub
+          executor, covers:
+          - a momentum signal's OOS metrics over later dates differ from its
+            in-sample ones
+          - nothing is written: ledger, node and artifact counts are
+            unchanged
+          - an oos_dates value that overlaps the embargo is refused at load
+          - an absent key leaves context.oos_dates as an empty tuple
+          - a null node gets permuted targets out of sample too, through the
+            same oracle
+          It passes under pytest-xdist.
+      </feature>
+      <feature index="2" shape="core" depends_on="1"
+               touches_files="packages/orchestrator/src/orchestrator/closeout.py,packages/orchestrator/tests/test_closeout_commit_oos.py">
+        System commits one pick per campaign at close-out and scores it out of sample, so that `./run.sh closeout --campaign-id ID` returns the M2 per-commit OOS IR and persists it as the campaign's financial replay-world score.
+        - After the calibration steps, close-out commits the evaluated node
+          with the highest in-sample ic_tstat, if any has
+          ic_tstat >= DISCOVERY_TSTAT. Ties are broken by node id. The
+          commit goes through policy-runtime's EpisodeCommit/CommittedPick;
+          with no eligible node the campaign is a miss.
+        - When oos_dates is configured, the committed node's stored code is
+          evaluated with evaluate_on_dates over oos_dates, and its OOS
+          cost-adjusted IR (oos_ir) and OOS ic_tstat are recorded.
+        - The world score is persisted with replay.persist_replay_score:
+          - TerminalPick(pick=CommittedPick(id), score=oos_ir), or the miss
+            score (NON_COMMITTING_SCORE) for a miss
+          - policy_version "m2-fixed"
+          - world_id = the campaign's regime-origin world id
+          - beta = the scorer's configured beta
+          - is_holdout chosen by the campaign's rotation if one exists,
+            True otherwise
+          Rerunning close-out refreshes that row and never duplicates it.
+        - A VOID campaign is not persisted as a world. This goes through
+          discovery.admit_completed_campaigns, the existing VOID gate.
+        - CloseoutResult and the JSON line gain committed_pick (the node id
+          or null), oos_ir (or null), oos_ic_tstat (or null) and
+          world_persisted (bool).
+        - The pick's null status is used only for calibration, never
+          printed.
+        - test_closeout_commit_oos.py covers:
+          - a campaign with a discovery commits the top node, persists one
+            m2-fixed replay_score row, and a rerun keeps it one row
+          - a no-discovery campaign is persisted as a miss
+          - a VOID campaign is not persisted
+          - no oos_dates gives oos_ir null with the world still persisted
+            using the miss rule (documented)
+          - the census then counts n_financial = 1
+          It passes under pytest-xdist.
+      </feature>
+    </category>
+    <category name="Financial Worlds in Dreaming">
+      <feature index="3" shape="core" depends_on="2"
+               touches_files="packages/orchestrator/src/orchestrator/dream.py,packages/orchestrator/src/orchestrator/_financial_eval.py,packages/orchestrator/tests/test_dream_financial_worlds.py">
+        System scores dreaming candidates on admitted financial worlds with the same per-commit OOS IR, so that a dreaming cycle returns paired ΔIR on real campaigns, not on bootstrap worlds alone.
+        - dream.py takes the completed, non-VOID campaigns
+          (admit_completed_campaigns over the manifests) as financial worlds
+          beside the bootstrap pool, and records n_financial in the cycle
+          output.
+        - New orchestrator._financial_eval.score_on_financial_world(policy,
+          campaign_id, *, context) replays the candidate policy over the
+          campaign's stored tree (replay transition / committed_pick; no
+          node is generated, per feature 245). It commits as the policy
+          decides and scores the committed node by its OOS IR, through
+          evaluate_on_dates over the configured oos_dates.
+        - (node_id, oos_dates) results are cached in the run, so two
+          policies committing the same node are evaluated once.
+        - Scores are persisted with policy_version f"{version}#financial".
+          The baseline arm is "m2-fixed". A financial row and a bootstrap
+          row never share a version, because their quantities (IR against
+          r2_holdout) differ.
+        - The paired statistic for financial worlds compares
+          f"{candidate}#financial" against "m2-fixed" on the holdout
+          financial worlds, and is reported separately from the bootstrap
+          comparison.
+        - With fewer than DREAMING_MIN_FINANCIAL_WORLDS (documented
+          constant, default 2) admitted, the financial arm is reported as
+          "thin", not computed. The bootstrap arm runs as before.
+        - test_dream_financial_worlds.py, with two fake completed campaigns
+          and a stub evaluate_on_dates, covers:
+          - a cycle scores both arms
+          - rows carry the #financial suffix
+          - a VOID campaign is excluded
+          - the per-node cache is hit for a second policy
+          - a thin financial pool reports thin
+          - existing bootstrap-only behaviour is unchanged
+          It passes under pytest-xdist.
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>

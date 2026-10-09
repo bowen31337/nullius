@@ -1,0 +1,49 @@
+<bug_spec>
+  <!-- MIG-1. Found 2026-10-08 verifying run15. One test fails:
+       packages/promotion/tests/test_promotion_pre_register.py::
+       test_the_store_and_the_migrations_converge_either_way_round.
+
+       A database migrated first carries the index node_campaign_id_parent_id,
+       and a database the promotion store creates first does not. It has
+       failed since dc52090 (2026-10-06), which made
+       migrations/versions/0118_node_table.py upgrade() also finish 0113's
+       indexes (re-running 0113's upgrade), while 0118's statements() still
+       returns only the table DDL. promotion.schema._statements_for collects
+       each owner's statements() and runs them, so the store-first schema
+       lacks the index that upgrade() guarantees. Core shape, explicit
+       touches_files. -->
+
+  <bug index="1" shape="core" severity="medium"
+       touches_files="packages/promotion/src/promotion/schema.py,packages/promotion/tests/test_promotion_pre_register.py,packages/promotion/tests/test_schema_owner_upgrade.py">
+    <title>The promotion store bootstraps from each migration's statements() but the migration chain applies upgrade(), so the two schemas diverge on 0118's node index</title>
+    <symptoms>
+      The two paths differ on one index:
+      - promotion.schema bootstrap_schema / bootstrap_calibration_schema / the decision bootstrap run _statements_for(order), which is every owner revision's statements(dialect).
+      - Since dc52090, 0118_node_table.upgrade(connection) also re-runs 0113's index upgrade, so the migrated chain carries node_campaign_id_parent_id.
+      The store-first database never gets it, and the module's own convergence test fails. The effect is one index missing in a store-created database, which is a performance gap, not a correctness one.
+    </symptoms>
+    <reproduction_steps>
+      PYTHONPATH=src:packages/promotion/src uv run --no-sync pytest -q -p no:cacheprovider packages/promotion/tests/test_promotion_pre_register.py -k converge
+    </reproduction_steps>
+    <expected>
+      - The store runs each owner migration the way the chain does, keeping the module's rule that "the migration is the author".
+        - For each owner revision it calls that migration's own upgrade(connection) (or upgrade(connection, dialect), whichever the revision's signature takes) inside the store's existing transaction, instead of executing statements().
+        - It never authors, selects or edits a statement itself.
+        - bootstrap_schema and its siblings still return the DDL that ran: the concatenation of the upgrade() return values.
+      - Every owner's upgrade is idempotent, and that stays true for this store: calling the bootstrap on a fully migrated database changes no table and no index (the existing "left exactly as it was" test).
+      - The store-first and migrated-first schemas are identical. test_the_store_and_the_migrations_converge_either_way_round passes unchanged.
+      - New test_schema_owner_upgrade.py covers:
+        - each bootstrap's returned DDL contains node_campaign_id_parent_id when 0118 is an owner
+        - a second bootstrap is a no-op
+        - an owner upgrade that raises surfaces as the store's existing PromotionStoreError, naming the revision
+        It passes under pytest-xdist.
+      - The promotion member suite is fully green (it is 578 passed, 1 failed today). The root tests/ suite passes.
+    </expected>
+    <actual>Root cause: promotion.schema treats statements() as the migration's whole effect, but 0118's upgrade() does more than its statements() list.</actual>
+    <constraints>
+      No migration file is edited
+      No file outside the three listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
