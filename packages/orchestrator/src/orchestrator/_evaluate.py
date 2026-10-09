@@ -124,6 +124,7 @@ import logging
 import math
 import sqlite3
 import threading
+from collections.abc import Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -183,9 +184,11 @@ __all__ = [
     "TRIPWIRES_GATE_DISCOVERY",
     "TRIPWIRE_VERDICT_TABLE",
     "NodeEvaluation",
+    "NodeIdentityError",
     "NodePersistence",
     "SandboxExecutionError",
     "evaluate_node",
+    "evaluate_on_dates",
 ]
 
 _logger = logging.getLogger(__name__)
@@ -270,6 +273,20 @@ class SandboxExecutionError(Exception):
     which for this class is the literal string ``"SandboxExecutionError"`` —
     the spec's "the failure's class name", read off ``type(exc).__name__``
     the same way every other pipeline exception is.
+    """
+
+
+class NodeIdentityError(Exception):
+    """A stored node's own ``campaign_id`` and ``depth`` could not be read.
+
+    :func:`evaluate_on_dates` asks the same oracle an in-sample evaluation
+    asked, and :func:`evaluator.gate_targets` builds that ask from the
+    node's own campaign and depth — the identity a Type-D oracle resolves
+    its flip on, and the campaign the sidecar's sealed assignment is scoped
+    to.  Unlike :func:`evaluate_node`, ``evaluate_on_dates`` is handed only
+    a node id: an out-of-sample evaluation runs over a node that is already
+    stored, so its row is where both facts are read from, never supplied by
+    the caller.  Raised when the tree holds no such row.
     """
 
 
@@ -1283,3 +1300,130 @@ def evaluate_node(
         flat_dates=flat_dates,
         tripwires_failed=tripwire_outcome.failed,
     )
+
+
+# -- The out-of-sample call: the same chain, over a different grid, nothing written --
+
+#: The node table's own identity columns, read (never written) for
+#: :func:`evaluate_on_dates` — the same table
+#: :mod:`orchestrator._tree_writer` updates and :mod:`orchestrator._oracle`
+#: walks, named locally rather than imported because this is the one place
+#: in this module that reads identity off it rather than a metric.
+_NODE_IDENTITY_TABLE: Final[str] = "node"
+
+
+def _node_identity(database_url: str, node_id: str) -> tuple[str, int]:
+    """One stored node's own ``(campaign_id, depth)`` — read, never written.
+
+    :func:`evaluator.gate_targets` builds its ask from the node identity
+    (``campaign_id`` and ``depth``) the caller supplies; ``evaluate_node``
+    gets both from its own caller, but ``evaluate_on_dates`` is handed only
+    a node id — the node it evaluates is already stored, so its existing row
+    is where both facts come from, read fresh on every call rather than
+    threaded in by a caller that may not hold them.
+
+    Raises :class:`NodeIdentityError` when the tree holds no such row.
+    """
+    path = _tripwire_sqlite_path(database_url)
+    with closing(sqlite3.connect(path)) as connection:
+        row = connection.execute(
+            f"SELECT campaign_id, depth FROM {_NODE_IDENTITY_TABLE} WHERE id = ?",
+            (node_id,),
+        ).fetchone()
+    if row is None:
+        raise NodeIdentityError(
+            f"the tree holds no node {node_id!r} to read a campaign and "
+            "depth from; evaluate_on_dates evaluates a node that is already "
+            "stored, and a node the tree does not hold has neither an "
+            "identity to ask the oracle with nor a signal to evaluate "
+            "out of sample"
+        )
+    campaign_id, depth = row
+    return campaign_id, depth
+
+
+def evaluate_on_dates(
+    node_id: str,
+    code: str,
+    *,
+    context: EvaluationContext,
+    oracle: Oracle,
+    dates: Sequence[dt.date],
+) -> tuple[NodeMetrics, float]:
+    """Score a stored node's signal over ``dates`` — the same chain, nothing written.
+
+    additions_spec_m2_baseline_financial_worlds.xml, "Out-of-Sample
+    Evaluation", feature 1: the pipeline ``evaluate_node`` already proved —
+    ``execute_signal``, the per-date normalization, ``align_targets``,
+    ``gate_targets`` (through the caller's own ``oracle``, so a null node
+    gets permuted targets out of sample exactly as it does in sample),
+    ``apply_costs``, ``compute_node_metrics`` — run again over ``dates``
+    instead of ``context.evaluation_dates``.  The window is resolved at the
+    end of ``dates``' own last day (the same no-look-ahead reading
+    ``evaluate_node`` gives its own grid), and ``execute_signal`` is handed
+    the same :func:`orchestrator._context.signal_sandbox` executor
+    ``evaluate_node`` always uses — never the evaluator's own unconfined
+    default.
+
+    Three things this call does *not* do, which is the whole of what makes
+    it an out-of-sample read rather than a second evaluation of the node:
+    it never screens ``code``'s imports (the node is already stored, which
+    means its code already cleared that screen the one time it had to); it
+    never runs step 10's tripwire sweep or the empty-book marginal-IR
+    stand-in (neither is part of the chain this feature names, and neither
+    is in its return value); and it books no ledger debit, writes no node
+    row, no artifact, no tripwire verdict and no stability record — an
+    out-of-sample read measures a node, it does not re-evaluate one.  The
+    node's own ``campaign_id`` and ``depth`` — what ``gate_targets`` needs
+    to ask the oracle the same question an in-sample evaluation would —
+    are read off its existing row (see :func:`_node_identity`), since this
+    function is handed only the node id.
+
+    Answers ``(metrics, cost_adjusted_ir)`` — the measured
+    :class:`~evaluator.NodeMetrics` and the same cost-adjusted axis
+    :func:`_cost_adjusted_ir` restates onto a live node's row, computed here
+    and handed back rather than written anywhere.
+
+    Every exception the chain raises — a window, a non-conforming score
+    vector (:class:`SandboxExecutionError`), a gate or cost or metrics
+    failure — propagates unchanged: this function charges nothing, so there
+    is no failure path to charge it under, and a caller sees exactly the
+    pipeline's own error.  :class:`NodeIdentityError` is raised first, before
+    any sandbox spawns, when the tree holds no row for ``node_id``.
+    """
+    campaign_id, depth = _node_identity(context.database_url, node_id)
+    grid = tuple(dates)
+    executor = signal_sandbox(context)
+
+    decision_time = dt.datetime.combine(grid[-1], _END_OF_DAY)
+    resolution = resolve_window(context.snapshot, decision_time)
+    execution = execute_signal(
+        resolution,
+        code,
+        seed=context.seed,
+        rebalance_dates=grid,
+        sandbox=executor,
+        materialize=_materialize_from_context(context),
+    )
+    for day in execution.dates():
+        vector = execution.vector(day)
+        if not vector.conforming:
+            raise SandboxExecutionError(
+                f"the sandbox did not return a conforming score vector for "
+                f"node {node_id!r} at {day.isoformat()} (out of sample): "
+                f"{vector.problems or _executor_failure(executor)}"
+            )
+
+    scores, _flat_dates = _score_rebalance_dates(execution, node_id)
+    alignment = align_targets(execution, context.closes)
+    gated = gate_targets(
+        alignment, oracle, node_id=node_id, campaign_id=campaign_id, depth=depth
+    )
+    priced = apply_costs(
+        gated,
+        _cost_schedule_from_context(context),
+        node_id=node_id,
+        cost_model=context.cost_model,
+    )
+    metrics = compute_node_metrics(priced, scores)
+    return metrics, _cost_adjusted_ir(priced, metrics)

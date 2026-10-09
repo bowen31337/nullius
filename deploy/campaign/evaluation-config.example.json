@@ -11,5 +11,6 @@
   "lake_roots": ["/opt/nullius/lake"],
   "max_history_days": 400,
   "evaluation_workers": 4,
-  "evaluation_mode": "process"
+  "evaluation_mode": "process",
+  "oos_dates": ["2026-09-25", "2026-09-26", "2026-09-27"]
 }

@@ -158,6 +158,7 @@ from cost_model import (
     FeeSchedule,
 )
 from evaluator import (
+    DEFAULT_CONFIG,
     EvaluatorConfigError,
     EvaluatorImageError,
     EvaluatorService,
@@ -193,6 +194,7 @@ __all__ = [
     "MAX_EVALUATION_WORKERS",
     "MAX_HISTORY_DAYS_KEY",
     "MIN_EVALUATION_WORKERS",
+    "OOS_DATES_KEY",
     "REQUIRED_KEYS",
     "SANDBOX_RUNTIMES",
     "TEST_STUB_SANDBOX_ENV",
@@ -334,6 +336,18 @@ EVALUATION_MODES: Final[tuple[str, str]] = ("process", "thread")
 #: :data:`EVALUATION_MODE_KEY`'s default when the document omits it — the
 #: spec's own words, ``evaluation_mode: "process" (the default)``.
 DEFAULT_EVALUATION_MODE: Final[str] = "process"
+
+#: The optional key naming the out-of-sample evaluation grid —
+#: additions_spec_m2_baseline_financial_worlds.xml feature 1.  Absent means
+#: no OOS window: :func:`orchestrator._evaluate.evaluate_on_dates` has no
+#: grid to run, and a caller reports OOS as unavailable rather than
+#: inventing one.  Present, it is validated like :data:`REQUIRED_KEYS`'s own
+#: ``evaluation_dates`` (the extended ISO spelling, round-tripped) plus two
+#: rules the in-sample grid does not need (see :func:`_oos_dates`): sorted
+#: and de-duplicated, and every date strictly after the in-sample window's
+#: own embargo, so an OOS forward return can never reach back into a bar the
+#: in-sample window's forward returns already covered.
+OOS_DATES_KEY: Final[str] = "oos_dates"
 
 #: Test-only environment variable naming a stub signal executor as
 #: ``"<path-to-.py-file>:<zero-arg-factory-name>"`` — read directly off
@@ -483,6 +497,11 @@ class EvaluationContext:
     #: one hook for a process-pool test that cannot monkeypatch across a
     #: spawned worker's own process boundary.
     test_stub_sandbox: str | None = None
+    #: The out-of-sample grid, read from the optional :data:`OOS_DATES_KEY`
+    #: — an empty tuple when the document omits it, which means *no OOS
+    #: window* rather than an invented one.
+    #: :func:`orchestrator._evaluate.evaluate_on_dates` is the one reader.
+    oos_dates: tuple[dt.date, ...] = ()
 
 
 def load_evaluation_context(
@@ -534,6 +553,7 @@ def load_evaluation_context(
     max_history_days = _max_history_days(document, named)
     evaluation_workers = _evaluation_workers(document, named)
     evaluation_mode = _evaluation_mode(document, named)
+    oos_dates = _oos_dates(document, named, dates, horizon)
     test_stub_sandbox = source.get(TEST_STUB_SANDBOX_ENV) or None
     database_url = _database_url(source)
 
@@ -570,6 +590,7 @@ def load_evaluation_context(
         evaluation_workers=evaluation_workers,
         evaluation_mode=evaluation_mode,
         test_stub_sandbox=test_stub_sandbox,
+        oos_dates=oos_dates,
     )
 
 
@@ -637,6 +658,7 @@ def _refuse_unknown_keys(document: Mapping[str, Any], named: str) -> None:
             MAX_HISTORY_DAYS_KEY,
             EVALUATION_WORKERS_KEY,
             EVALUATION_MODE_KEY,
+            OOS_DATES_KEY,
         )
     )
     for key in document:
@@ -649,7 +671,8 @@ def _refuse_unknown_keys(document: Mapping[str, Any], named: str) -> None:
                 f"unisolated, {GVISOR_RUNTIME_ROOT_KEY!r}, "
                 f"{GVISOR_STATE_ROOT_KEY!r} and {LAKE_ROOTS_KEY!r} when it "
                 f"is gvisor, and the always-optional {MAX_HISTORY_DAYS_KEY!r}, "
-                f"{EVALUATION_WORKERS_KEY!r} and {EVALUATION_MODE_KEY!r}); "
+                f"{EVALUATION_WORKERS_KEY!r}, {EVALUATION_MODE_KEY!r} and "
+                f"{OOS_DATES_KEY!r}); "
                 "the file never holds a credential — every "
                 "key is one the loader defines, and an unknown key is "
                 "refused rather than read past. Credentials live where "
@@ -731,6 +754,107 @@ def _evaluation_dates(values: Mapping[str, Any], named: str) -> tuple[dt.date, .
                 "grid two evaluations could disagree about"
             )
         dates.append(day)
+    return tuple(dates)
+
+
+def _oos_dates(
+    document: Mapping[str, Any],
+    named: str,
+    evaluation_dates: tuple[dt.date, ...],
+    horizon: int,
+) -> tuple[dt.date, ...]:
+    """The optional out-of-sample grid — ``()`` when :data:`OOS_DATES_KEY` is absent.
+
+    additions_spec_m2_baseline_financial_worlds.xml feature 1.  Present, a
+    date is validated the way :func:`_evaluation_dates` validates one (the
+    extended ISO spelling ``YYYY-MM-DD``, checked by round-trip), plus two
+    rules the in-sample grid does not need: the dates must arrive sorted and
+    de-duplicated (unlike ``evaluation_dates``, which keeps the document's
+    own order, the OOS grid has no other order to keep, so a document that
+    wrote it any other way made a mistake worth refusing rather than
+    silently re-sorting), and every date must land strictly after the
+    in-sample window's own embargo.
+
+    The embargo boundary is ``max(evaluation_dates) + horizon + embargo``,
+    counted in calendar days of the bars (this snapshot's bars are daily, so
+    a bar and a calendar day are the same step): the in-sample window's last
+    rebalance date's own forward return reaches ``horizon`` bars past it,
+    and the evaluator's own cross-validation embargo
+    (:data:`evaluator.DEFAULT_CONFIG`'s ``embargo_periods``) is the same
+    margin this workspace already keeps between a split boundary and the
+    training bars that follow it — restated here as calendar days rather
+    than grid periods, for the same reason: a bar within it of the in-sample
+    window is scored from features or labels that reach back across the
+    boundary. An OOS date inside that margin would compute a forward return
+    that overlaps bars the in-sample evaluation already used, which is
+    exactly the leak an out-of-sample score exists to rule out.
+
+    Refused with :class:`EvaluationConfigError` for every shape
+    :func:`_evaluation_dates` already refuses (not a list, an empty list, a
+    non-string entry, an unparsable or non-canonical spelling), for a grid
+    that is not sorted and de-duplicated, and for a date that does not clear
+    the embargo boundary.
+    """
+    if OOS_DATES_KEY not in document:
+        return ()
+    raw = document[OOS_DATES_KEY]
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {OOS_DATES_KEY} must be a list of "
+            f"ISO dates, got {type(raw).__name__}; absent means no OOS "
+            "window, and a single date or a string of dates is not a grid"
+        )
+    if not raw:
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {OOS_DATES_KEY} is empty; an absent "
+            f"key is how a configuration states no OOS window — name the "
+            f"grid or drop {OOS_DATES_KEY!r} entirely"
+        )
+    dates: list[dt.date] = []
+    for spelling in raw:
+        if not isinstance(spelling, str):
+            raise EvaluationConfigError(
+                f"{EVALUATION_CONFIG_CODE}: {OOS_DATES_KEY} must hold ISO "
+                f"date strings, got {spelling!r} ({type(spelling).__name__})"
+            )
+        try:
+            day = dt.date.fromisoformat(spelling.strip())
+        except ValueError as exc:
+            raise EvaluationConfigError(
+                f"{EVALUATION_CONFIG_CODE}: {OOS_DATES_KEY} holds "
+                f"{spelling!r}, which is not an ISO date (expected "
+                "YYYY-MM-DD)"
+            ) from exc
+        if day.isoformat() != spelling.strip():
+            raise EvaluationConfigError(
+                f"{EVALUATION_CONFIG_CODE}: {OOS_DATES_KEY} holds "
+                f"{spelling!r}, which is not the extended ISO spelling "
+                f"YYYY-MM-DD ({day.isoformat()} is the same day written "
+                "another way)"
+            )
+        dates.append(day)
+    if dates != sorted(set(dates)):
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {OOS_DATES_KEY} must be sorted and "
+            "de-duplicated, got "
+            f"{[day.isoformat() for day in dates]!r}"
+        )
+
+    embargo_days = DEFAULT_CONFIG["embargo_periods"]
+    earliest_allowed = max(evaluation_dates) + dt.timedelta(
+        days=horizon + embargo_days
+    )
+    for day in dates:
+        if day <= earliest_allowed:
+            raise EvaluationConfigError(
+                f"{EVALUATION_CONFIG_CODE}: {OOS_DATES_KEY} holds "
+                f"{day.isoformat()}, which is not strictly after "
+                f"{earliest_allowed.isoformat()} "
+                f"(max(evaluation_dates) {max(evaluation_dates).isoformat()} "
+                f"+ horizon {horizon} + embargo {embargo_days} calendar "
+                "days of the bars); an earlier OOS date would compute a "
+                "forward return that overlaps the in-sample window"
+            )
     return tuple(dates)
 
 
