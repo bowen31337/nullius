@@ -420,26 +420,33 @@ def run_cycle(
     finally:
         freeze.release(hold)
 
-    split = dreaming.split_replay_pool(database_url=database_url, rotation=iteration_id)
-    dreaming.record_cycle_holdout(iteration_id, database_url=database_url)
-
     world_by_id = {record.world_id: pool.world(record.world_id) for record in pool.worlds()}
+
+    # dreaming.split_replay_pool's own pool_worlds() reads bootstrap_world
+    # UNIONed with every world replay_score already names -- which, the
+    # moment a single campaign has been closed out (its own "m2-fixed" row)
+    # or this feature's own financial arm has written a "#financial" row in
+    # an earlier cycle, folds financial worlds into the same digest rank the
+    # bootstrap worlds are split by. That does not just mis-tag a few rows:
+    # it changes the pool size the 70/30 arithmetic is taken over and so the
+    # *count* of bootstrap worlds assigned to each half, and it can move a
+    # bootstrap world across the train/holdout line depending on how a
+    # financial world's id happens to rank beside it -- the whole bootstrap
+    # arm's split becomes a function of which financial worlds this database
+    # happens to hold, not of the bootstrap pool and the rotation alone.
+    # dreaming.split_pool is the pure half of feature 278's judgment -- the
+    # world ids and a rotation in, the two halves out, with no database read
+    # of its own -- so calling it directly over the bootstrap pool's own
+    # worlds keeps the bootstrap arm's split exactly what it was before
+    # financial worlds existed, independent of anything replay_score holds.
+    split = dreaming.split_pool(tuple(world_by_id), rotation=iteration_id)
+    dreaming.record_cycle_holdout(iteration_id, database_url=database_url)
 
     def evaluator(candidate: Any, world_id: str) -> Any:
         return score_on_world(candidate.source, world_by_id[world_id], round_cap=round_cap)
 
-    # dreaming.pool_worlds (the read split_replay_pool's own split is taken
-    # over) unions bootstrap_world with every world replay_score already
-    # names -- which, the moment a single campaign has been closed out
-    # (its own "m2-fixed" row) or this feature's own financial arm has
-    # written a "#financial" row in an earlier cycle, includes financial
-    # worlds beside bootstrap ones. The bootstrap sweep above only knows how
-    # to replay a *bootstrap* world's own question object
-    # (score_on_world's own docstring), so it is narrowed here to the split's
-    # bootstrap-only worlds -- a financial world's place in this cycle is
-    # the financial arm below, never this sweep.
-    train_worlds = [world_id for world_id in split.train if world_id in world_by_id]
-    holdout_worlds = [world_id for world_id in split.holdout if world_id in world_by_id]
+    train_worlds = list(split.train)
+    holdout_worlds = list(split.holdout)
 
     train_report = dreaming.sweep_candidates(
         widened,
