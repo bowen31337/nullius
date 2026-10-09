@@ -107,6 +107,7 @@ from orchestrator import (
     load_evaluation_context,
     snapshot_forward_returns,
 )
+from orchestrator._process_pool import ProcessEvaluator
 from snapshot import SnapshotService
 
 from app.module_loader import Application, Registration, create_app
@@ -208,19 +209,49 @@ def live(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LiveWorld:
     return LiveWorld(environment, document)
 
 
-def _assert_is_a_live_evaluator(component: object) -> None:
+#: The two ``evaluation_mode`` values :func:`orchestrator.build_live_evaluator`
+#: switches on (``orchestrator._context.EVALUATION_MODES``) — ``"process"``
+#: is the default this suite's ``live`` fixture document omits, ``"thread"``
+#: the one that still answers a :class:`~orchestrator.LiveEvaluator`.
+EVALUATION_MODES = ("process", "thread")
+
+
+def _set_evaluation_mode(live: LiveWorld, mode: str) -> None:
+    """Rewrite ``live``'s configuration document with an explicit
+    ``evaluation_mode``, the same key :mod:`test_process_pool_evaluation`
+    writes for every environment it builds.
+    """
+    document = dict(live.document)
+    document["evaluation_mode"] = mode
+    config_path = Path(live.environment["NULLIUS_EVALUATION_CONFIG"])
+    config_path.write_text(json.dumps(document), encoding="utf-8")
+
+
+def _evaluator_class_for(mode: str) -> type:
+    return LiveEvaluator if mode == "thread" else ProcessEvaluator
+
+
+def _assert_is_the_mode_s_evaluator(component: object, mode: str) -> None:
     """Pin a composed component by class name and module, not ``isinstance``.
 
     ``create_app`` imports this member under a synthetic module name on
     every call (``_nullius_scanned_orchestrator``), so a component it
-    builds and the :class:`~orchestrator.LiveEvaluator` this file imports
+    builds and the :class:`~orchestrator.LiveEvaluator` /
+    :class:`~orchestrator._process_pool.ProcessEvaluator` this file imports
     canonically are two distinct class objects — the same two-copies fact
     ``packages/canary/tests/test_component.py`` documents for its own
     component.  ``isinstance`` across the copies cannot hold, so identity
-    is checked by name instead.
+    is checked by name instead — the name and module suffix the configured
+    ``mode`` names: ``LiveEvaluator``/``orchestrator`` for ``"thread"``,
+    ``ProcessEvaluator``/``orchestrator._process_pool`` otherwise.
     """
-    assert type(component).__name__ == "LiveEvaluator"
-    assert type(component).__module__.endswith("orchestrator")
+    expected_name, expected_module_suffix = (
+        ("LiveEvaluator", "orchestrator")
+        if mode == "thread"
+        else ("ProcessEvaluator", "orchestrator._process_pool")
+    )
+    assert type(component).__name__ == expected_name
+    assert type(component).__module__.endswith(expected_module_suffix)
 
 
 def _assert_raised_an_evaluation_config_error(error: BaseException) -> None:
@@ -251,15 +282,17 @@ def _apply_environment(
 # -- The component name and shape ------------------------------------------
 
 
+@pytest.mark.parametrize("mode", EVALUATION_MODES)
 def test_the_member_alone_registers_the_component(
-    live: LiveWorld, monkeypatch: pytest.MonkeyPatch
+    live: LiveWorld, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
+    _set_evaluation_mode(live, mode)
     _apply_environment(monkeypatch, live.environment)
     app = create_app(MEMBER_SRC, registry=Registration())
     assert isinstance(app, Application)
     assert COMPONENT_NAME in app
     assert COMPONENT_NAME in app.order
-    _assert_is_a_live_evaluator(app.get(COMPONENT_NAME))
+    _assert_is_the_mode_s_evaluator(app.get(COMPONENT_NAME), mode)
 
 
 def test_the_full_workspace_carries_the_component() -> None:
@@ -285,14 +318,16 @@ def test_a_blank_variable_answers_none(monkeypatch: pytest.MonkeyPatch) -> None:
     assert orchestrator.build_live_evaluator() is None
 
 
+@pytest.mark.parametrize("mode", EVALUATION_MODES)
 def test_a_configured_environment_answers_a_live_evaluator(
-    live: LiveWorld, monkeypatch: pytest.MonkeyPatch
+    live: LiveWorld, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
+    _set_evaluation_mode(live, mode)
     _apply_environment(monkeypatch, live.environment)
 
     live_evaluator = orchestrator.build_live_evaluator()
 
-    assert isinstance(live_evaluator, LiveEvaluator)
+    assert isinstance(live_evaluator, _evaluator_class_for(mode))
     assert isinstance(live_evaluator.context, EvaluationContext)
     # The builder's whole content is one call to the loader: the context
     # it wraps is exactly what a direct call answers for the very same
@@ -326,9 +361,11 @@ def test_a_broken_configuration_raises_rather_than_degrading(
 # -- The builder reads only the loader's variables and evaluates nothing -----
 
 
+@pytest.mark.parametrize("mode", EVALUATION_MODES)
 def test_building_never_calls_evaluate_node(
-    live: LiveWorld, monkeypatch: pytest.MonkeyPatch
+    live: LiveWorld, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
+    _set_evaluation_mode(live, mode)
     _apply_environment(monkeypatch, live.environment)
 
     def _must_not_run(*args: Any, **kwargs: Any) -> Any:
@@ -338,12 +375,14 @@ def test_building_never_calls_evaluate_node(
 
     live_evaluator = orchestrator.build_live_evaluator()
 
-    assert isinstance(live_evaluator, LiveEvaluator)
+    assert isinstance(live_evaluator, _evaluator_class_for(mode))
 
 
+@pytest.mark.parametrize("mode", EVALUATION_MODES)
 def test_building_resolves_no_sibling_component(
-    live: LiveWorld, monkeypatch: pytest.MonkeyPatch
+    live: LiveWorld, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
+    _set_evaluation_mode(live, mode)
     _apply_environment(monkeypatch, live.environment)
 
     def _must_not_compose(*args: Any, **kwargs: Any) -> Any:
@@ -355,7 +394,7 @@ def test_building_resolves_no_sibling_component(
 
     live_evaluator = orchestrator.build_live_evaluator()
 
-    assert isinstance(live_evaluator, LiveEvaluator)
+    assert isinstance(live_evaluator, _evaluator_class_for(mode))
 
 
 # -- evaluate() wires the two siblings and forwards everything else ----------
