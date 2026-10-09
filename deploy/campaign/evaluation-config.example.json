@@ -9,5 +9,7 @@
   "gvisor_runtime_root": "/opt/nullius/gvisor-runtime",
   "gvisor_state_root": "/opt/nullius/gvisor-state",
   "lake_roots": ["/opt/nullius/lake"],
-  "max_history_days": 400
+  "max_history_days": 400,
+  "evaluation_workers": 4,
+  "evaluation_mode": "process"
 }

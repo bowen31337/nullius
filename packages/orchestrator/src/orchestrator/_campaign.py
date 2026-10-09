@@ -111,6 +111,16 @@ STOP_ROUND_CAP = "round_cap"
 #: same way ``discovery.workers.run_batch`` takes no default ``width``.
 _RETRIES = 2
 
+#: The floor every SQLite connection this module opens directly waits
+#: before giving up on a lock another writer holds — bug_spec_evaluation_throughput.xml
+#: / additions_spec_process_pool_evaluation: under "process" mode, several
+#: worker *processes* (not GIL-interleaved threads) can genuinely write the
+#: same database at once, so a connection that gives up after the
+#: ``sqlite3`` default (five seconds) is more likely to surface a
+#: transient lock as an ``OperationalError`` than it was when every writer
+#: shared one interpreter's GIL. Thirty seconds, the spec's own floor.
+_SQLITE_BUSY_TIMEOUT_SECONDS = 30.0
+
 _logger = logging.getLogger(__name__)
 
 #: The authoring role :func:`providers.record_campaign_cache_rate` measures —
@@ -295,6 +305,26 @@ def _dispatch_round(
 
 def _is_token_budget_error(error: BaseException | None) -> bool:
     return isinstance(error, providers.BudgetExhaustedError)
+
+
+def _shutdown_evaluator(evaluator: Any) -> None:
+    """Shut ``evaluator`` down at this campaign's own end, if it can be.
+
+    bug_spec_evaluation_throughput.xml / additions_spec_process_pool_evaluation:
+    an :class:`~orchestrator._process_pool.ProcessEvaluator` holds a
+    ``ProcessPoolExecutor`` that must shut down cleanly once a campaign's
+    root evaluation and round loop are done, so its worker processes never
+    outlive the campaign that started them. Read with ``getattr`` rather
+    than imported and checked by type: a duck-typed stub evaluator (every
+    test in this suite, and :class:`orchestrator.LiveEvaluator` itself,
+    which holds no pool and needs no shutdown) simply carries no
+    ``shutdown`` attribute, and this call is a no-op for it — the same
+    "evaluated, not inspected" stance this module already takes toward its
+    other collaborators.
+    """
+    shutdown = getattr(evaluator, "shutdown", None)
+    if callable(shutdown):
+        shutdown()
 
 
 # -- Root evaluation: concurrent dispatch, deterministic release ----------------
@@ -484,7 +514,7 @@ def _existing_nodes(database_url: str, campaign_id: str) -> tuple[_ExistingNode,
     ordinary "not evaluated" reading rather than an ``OperationalError``.
     """
     path = _resume_sqlite_path(database_url)
-    with closing(sqlite3.connect(path)) as connection:
+    with closing(sqlite3.connect(path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS)) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
         if connection.execute(_NODE_TABLE_EXISTS_SQL, (_NODE_TABLE,)).fetchone() is None:
             return ()
@@ -866,21 +896,24 @@ def run_campaign(
 
     sidecar_selection.persist(campaign_id)
 
-    return _continue_campaign(
-        campaign_id,
-        tuple(roots),
-        [(node_id, authored.code, authored.proposal) for node_id, authored in planted],
-        rounds=rounds,
-        width=width,
-        allowance=allowance,
-        author=author,
-        evaluator=evaluator,
-        policy=policy,
-        context=context,
-        history_store=history_store,
-        artifact_store=artifact_store,
-        emit=emit,
-    )
+    try:
+        return _continue_campaign(
+            campaign_id,
+            tuple(roots),
+            [(node_id, authored.code, authored.proposal) for node_id, authored in planted],
+            rounds=rounds,
+            width=width,
+            allowance=allowance,
+            author=author,
+            evaluator=evaluator,
+            policy=policy,
+            context=context,
+            history_store=history_store,
+            artifact_store=artifact_store,
+            emit=emit,
+        )
+    finally:
+        _shutdown_evaluator(evaluator)
 
 
 # -- Resuming an interrupted campaign --------------------------------------------
@@ -960,18 +993,21 @@ def resume_campaign(
         if node.is_root and not node.evaluated
     ]
 
-    return _continue_campaign(
-        campaign_id,
-        roots,
-        unevaluated_roots,
-        rounds=rounds,
-        width=width,
-        allowance=allowance,
-        author=author,
-        evaluator=evaluator,
-        policy=policy,
-        context=context,
-        history_store=history_store,
-        artifact_store=artifact_store,
-        emit=emit,
-    )
+    try:
+        return _continue_campaign(
+            campaign_id,
+            roots,
+            unevaluated_roots,
+            rounds=rounds,
+            width=width,
+            allowance=allowance,
+            author=author,
+            evaluator=evaluator,
+            policy=policy,
+            context=context,
+            history_store=history_store,
+            artifact_store=artifact_store,
+            emit=emit,
+        )
+    finally:
+        _shutdown_evaluator(evaluator)

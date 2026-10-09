@@ -275,16 +275,26 @@ def _sidecar_backed_endpoint(sidecar: Any, context: EvaluationContext) -> Any:
 
 
 @register(_COMPONENT_NAME)
-def build_live_evaluator() -> LiveEvaluator | None:
-    """Component builder: the live evaluator, or ``None`` when unconfigured.
+def build_live_evaluator() -> LiveEvaluator | Any | None:
+    """Component builder: the evaluator ``context.evaluation_mode`` names,
+    or ``None`` when unconfigured.
 
     Calls :func:`load_evaluation_context` exactly once — the only call
     this builder makes, and the only source of the environment variables
     it reads (``NULLIUS_EVALUATION_CONFIG`` and, behind it, feature 5's
     own ``DATABASE_URL``, ``NULLIUS_COST_MODEL_PATH``,
     ``NULLIUS_EVALUATOR_IMAGE``, ``NULLIUS_EVALUATOR_CONFIG`` and
-    ``PATH``) — and wraps whatever it answers in a :class:`LiveEvaluator`.
-    Takes no arguments, per the factory's registration protocol.
+    ``PATH``). ``context.evaluation_mode`` (bug_spec_evaluation_throughput.xml
+    / additions_spec_process_pool_evaluation) then names which evaluator
+    wraps it: ``"thread"`` answers a :class:`LiveEvaluator`, every
+    evaluation run on this process's own interpreter, exactly as before
+    this addition; ``"process"`` (the default) answers an
+    :class:`~orchestrator._process_pool.ProcessEvaluator`, which dispatches
+    each evaluation to a worker process instead. Both expose the identical
+    ``.context`` and ``.evaluate(node_id, campaign_id, depth, code) ->
+    NodeEvaluation`` shape, so neither ``orchestrator._campaign`` nor
+    ``orchestrator.campaign``'s CLI reads which one it was handed.  Takes
+    no arguments, per the factory's registration protocol.
 
     Answers ``None`` when the loader does: an unset or blank
     ``NULLIUS_EVALUATION_CONFIG`` means this deployment runs no live
@@ -296,12 +306,20 @@ def build_live_evaluator() -> LiveEvaluator | None:
     compose rather than composing with live evaluation silently missing.
 
     Evaluates nothing: no sandbox spawns, no signal runs, no node is
-    scored and no charge is booked while this function runs.  Resolves no
-    sibling component either — ``"nulloracle-target-route"`` and
-    ``"ledger"`` are :meth:`LiveEvaluator.evaluate`'s to resolve, at call
-    time, once a node is actually being evaluated.
+    scored and no charge is booked while this function runs — building a
+    :class:`~orchestrator._process_pool.ProcessEvaluator` constructs its
+    pool (no worker process starts until the first evaluation is
+    submitted) but never calls ``evaluate_node``. Resolves no sibling
+    component either — ``"nulloracle-target-route"`` and ``"ledger"`` are
+    each evaluator's own to resolve, at call time (or, for the process
+    pool, once per worker, at its own first call), once a node is
+    actually being evaluated.
     """
+    from ._process_pool import ProcessEvaluator
+
     context = load_evaluation_context()
     if context is None:
         return None
-    return LiveEvaluator(context)
+    if context.evaluation_mode == "thread":
+        return LiveEvaluator(context)
+    return ProcessEvaluator(context)

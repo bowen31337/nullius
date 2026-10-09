@@ -177,10 +177,13 @@ __all__ = [
     "ACKNOWLEDGE_UNISOLATED_KEY",
     "BARS_STREAM",
     "BWRAP_RUNTIME",
+    "DEFAULT_EVALUATION_MODE",
     "DEFAULT_EVALUATION_WORKERS",
     "DEFAULT_MAX_HISTORY_DAYS",
     "EVALUATION_CONFIG_CODE",
     "EVALUATION_CONFIG_ENV",
+    "EVALUATION_MODES",
+    "EVALUATION_MODE_KEY",
     "EVALUATION_WORKERS_KEY",
     "GVISOR_RUNTIME",
     "GVISOR_RUNTIME_ROOT_KEY",
@@ -192,6 +195,7 @@ __all__ = [
     "MIN_EVALUATION_WORKERS",
     "REQUIRED_KEYS",
     "SANDBOX_RUNTIMES",
+    "TEST_STUB_SANDBOX_ENV",
     "EvaluationConfigError",
     "EvaluationContext",
     "load_evaluation_context",
@@ -304,6 +308,49 @@ DEFAULT_EVALUATION_WORKERS: Final[int] = 4
 #: once, not a number a deployment is expected to reach for every host.
 MIN_EVALUATION_WORKERS: Final[int] = 1
 MAX_EVALUATION_WORKERS: Final[int] = 16
+
+#: The optional key choosing which evaluator ``build_live_evaluator``
+#: answers: ``"process"`` (the default) dispatches every node to a worker
+#: process in :class:`orchestrator._process_pool.ProcessEvaluator`'s pool,
+#: so a campaign's evaluation work spends as many cores as
+#: :data:`EVALUATION_WORKERS_KEY` names instead of one GIL; ``"thread"``
+#: keeps today's in-process :class:`~orchestrator.LiveEvaluator`, every
+#: evaluation run on the parent's own interpreter.
+#: bug_spec_evaluation_throughput.xml bug 2 already bounded a thread
+#: pool's slot count, but every slot still ran its window materialization,
+#: its metrics and its tripwire probes on that one interpreter's GIL — a
+#: pool of threads helps a sandboxed subprocess's own wall-clock wait, but
+#: not the CPU-bound Python either side of it. Optional, the same stance
+#: :data:`MAX_HISTORY_DAYS_KEY` and :data:`EVALUATION_WORKERS_KEY` already
+#: take for their own knobs: a document that omits it gets
+#: :data:`DEFAULT_EVALUATION_MODE` rather than a refusal.
+EVALUATION_MODE_KEY: Final[str] = "evaluation_mode"
+
+#: The two modes :data:`EVALUATION_MODE_KEY` accepts — closed, like
+#: :data:`SANDBOX_RUNTIMES`: a third spelling is refused by name rather
+#: than silently read as one of the two.
+EVALUATION_MODES: Final[tuple[str, str]] = ("process", "thread")
+
+#: :data:`EVALUATION_MODE_KEY`'s default when the document omits it — the
+#: spec's own words, ``evaluation_mode: "process" (the default)``.
+DEFAULT_EVALUATION_MODE: Final[str] = "process"
+
+#: Test-only environment variable naming a stub signal executor as
+#: ``"<path-to-.py-file>:<zero-arg-factory-name>"`` — read directly off
+#: the environment (never the JSON document's closed vocabulary, so it
+#: can never ride in as a deployment's own configured key) and consulted
+#: by :func:`signal_sandbox` before its two real branches. A worker
+#: process :class:`~orchestrator._process_pool.ProcessEvaluator` spawns
+#: under the ``spawn`` context is a fresh interpreter a parent's
+#: monkeypatch cannot reach — this is the one seam a test can use instead,
+#: threaded through :func:`load_evaluation_context`'s own explicit ``env``
+#: so the worker's :class:`EvaluationContext` carries it identically to
+#: the parent's.  Loaded by file path
+#: (:func:`importlib.util.spec_from_file_location`, the same by-path
+#: loading this workspace's own test suites already use for a migration
+#: module) rather than by dotted import, so the stub resolves regardless
+#: of the worker's own ``sys.path``.
+TEST_STUB_SANDBOX_ENV: Final[str] = "NULLIUS_TEST_STUB_SANDBOX"
 
 
 class EvaluationConfigError(Exception):
@@ -425,6 +472,17 @@ class EvaluationContext:
     #: reader: it bounds its root-evaluation and round-dispatch thread pools
     #: to this many slots, never more.
     evaluation_workers: int = DEFAULT_EVALUATION_WORKERS
+    #: Which evaluator ``build_live_evaluator`` answers for this process —
+    #: ``"process"`` (the default) or ``"thread"``.  Read from the
+    #: optional :data:`EVALUATION_MODE_KEY` (:data:`DEFAULT_EVALUATION_MODE`
+    #: when absent).
+    evaluation_mode: str = DEFAULT_EVALUATION_MODE
+    #: :data:`TEST_STUB_SANDBOX_ENV`'s value, or ``None`` — read once at
+    #: load time from the same environment every other variable in this
+    #: module reads from, never the JSON document.  :func:`signal_sandbox`'s
+    #: one hook for a process-pool test that cannot monkeypatch across a
+    #: spawned worker's own process boundary.
+    test_stub_sandbox: str | None = None
 
 
 def load_evaluation_context(
@@ -475,6 +533,8 @@ def load_evaluation_context(
     artifact_dir = _artifact_dir(values, named)
     max_history_days = _max_history_days(document, named)
     evaluation_workers = _evaluation_workers(document, named)
+    evaluation_mode = _evaluation_mode(document, named)
+    test_stub_sandbox = source.get(TEST_STUB_SANDBOX_ENV) or None
     database_url = _database_url(source)
 
     mount = _mounted_snapshot(values, named)
@@ -508,6 +568,8 @@ def load_evaluation_context(
         lake_roots=lake_roots,
         max_history_days=max_history_days,
         evaluation_workers=evaluation_workers,
+        evaluation_mode=evaluation_mode,
+        test_stub_sandbox=test_stub_sandbox,
     )
 
 
@@ -574,6 +636,7 @@ def _refuse_unknown_keys(document: Mapping[str, Any], named: str) -> None:
             LAKE_ROOTS_KEY,
             MAX_HISTORY_DAYS_KEY,
             EVALUATION_WORKERS_KEY,
+            EVALUATION_MODE_KEY,
         )
     )
     for key in document:
@@ -585,8 +648,8 @@ def _refuse_unknown_keys(document: Mapping[str, Any], named: str) -> None:
                 f"{ACKNOWLEDGE_UNISOLATED_KEY!r} when the runtime is "
                 f"unisolated, {GVISOR_RUNTIME_ROOT_KEY!r}, "
                 f"{GVISOR_STATE_ROOT_KEY!r} and {LAKE_ROOTS_KEY!r} when it "
-                f"is gvisor, and the always-optional {MAX_HISTORY_DAYS_KEY!r} "
-                f"and {EVALUATION_WORKERS_KEY!r}); "
+                f"is gvisor, and the always-optional {MAX_HISTORY_DAYS_KEY!r}, "
+                f"{EVALUATION_WORKERS_KEY!r} and {EVALUATION_MODE_KEY!r}); "
                 "the file never holds a credential — every "
                 "key is one the loader defines, and an unknown key is "
                 "refused rather than read past. Credentials live where "
@@ -803,6 +866,30 @@ def _evaluation_workers(document: Mapping[str, Any], named: str) -> int:
             "this bounds how many sandboxes a campaign runs at once, not "
             "an exploration width, and a value outside that range is "
             "refused rather than clamped"
+        )
+    return raw
+
+
+def _evaluation_mode(document: Mapping[str, Any], named: str) -> str:
+    """Which evaluator ``build_live_evaluator`` answers — optional, unlike
+    :data:`REQUIRED_KEYS`.
+
+    :data:`DEFAULT_EVALUATION_MODE` when :data:`EVALUATION_MODE_KEY` is
+    absent. A present value outside :data:`EVALUATION_MODES` is refused by
+    name: the vocabulary is closed, the same stance :func:`_sandbox_runtime`
+    holds for its own two-member set, and for the same reason — a third
+    spelling would be guessed rather than chosen.
+    """
+    if EVALUATION_MODE_KEY not in document:
+        return DEFAULT_EVALUATION_MODE
+    raw = document[EVALUATION_MODE_KEY]
+    if not isinstance(raw, str) or raw not in EVALUATION_MODES:
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {EVALUATION_MODE_KEY} must be one "
+            f"of {', '.join(repr(name) for name in EVALUATION_MODES)}, got "
+            f"{raw!r}; this chooses which evaluator build_live_evaluator "
+            "answers — a value outside that closed set is refused rather "
+            "than guessed"
         )
     return raw
 
@@ -1423,7 +1510,16 @@ def signal_sandbox(context: EvaluationContext) -> object:
     per call, built once per evaluated node and reused for every rebalance
     date within it, the same "construct once, run many" shape both
     executors' own docstrings already state.
+
+    **One test-only exception, checked first.**  When
+    ``context.test_stub_sandbox`` carries :data:`TEST_STUB_SANDBOX_ENV`'s
+    value, this answers that stub instead of either real branch — see
+    that constant's own docstring for why a process-pool test needs a
+    third seam here that a real deployment's closed ``sandbox_runtime``
+    vocabulary never offers.
     """
+    if context.test_stub_sandbox:
+        return _track_last_result(_load_stub_sandbox(context.test_stub_sandbox))
     if context.sandbox_runtime == "gvisor":
         sandbox_instance: object = GVisorSandbox(
             runsc=GVISOR_RUNTIME,
@@ -1434,6 +1530,58 @@ def signal_sandbox(context: EvaluationContext) -> object:
     else:
         sandbox_instance = HardenedSubprocessSandbox()
     return _track_last_result(sandbox_instance)
+
+
+#: One loaded module per distinct ``path_text``, kept for the life of this
+#: process. :func:`_load_stub_sandbox` runs once per *node* (``evaluate_node``
+#: calls :func:`signal_sandbox` fresh every time), and a test file loaded by
+#: path carries its own imports — re-executing it from scratch on every node
+#: would re-pay that cost every single call rather than once per worker
+#: process, the same "construct once, run many" shape every real executor
+#: this function stands in for already holds.
+_STUB_SANDBOX_MODULES: dict[str, Any] = {}
+
+
+def _load_stub_sandbox(spelling: str) -> Any:
+    """Build the test-only stub sandbox :data:`TEST_STUB_SANDBOX_ENV` names.
+
+    ``spelling`` is ``"<path-to-.py-file>:<zero-arg-factory-name>"``,
+    loaded by file path rather than by dotted import (the same by-path
+    loading this workspace's own test suites already use for a migration
+    module), so a worker process spawned fresh under
+    :class:`~orchestrator._process_pool.ProcessEvaluator`'s ``spawn``
+    context can build the identical stub regardless of its own
+    ``sys.path``.  Calls the named attribute with no arguments — a
+    zero-arg factory, the same shape a bare class name already is.  The
+    module itself is loaded once per ``path_text`` and cached
+    (:data:`_STUB_SANDBOX_MODULES`); only the zero-arg factory call runs
+    fresh every time, matching the real executors' own "construct once,
+    run many" shape at the instance level while never paying for the
+    file's own imports more than once per process.
+    """
+    import importlib.util
+
+    path_text, _, factory_name = spelling.rpartition(":")
+    if not path_text or not factory_name:
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {TEST_STUB_SANDBOX_ENV} must be "
+            f"'<path-to-.py-file>:<factory-name>', got {spelling!r}"
+        )
+    module = _STUB_SANDBOX_MODULES.get(path_text)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(
+            "_orchestrator_test_stub_sandbox", path_text
+        )
+        if spec is None or spec.loader is None:
+            raise EvaluationConfigError(
+                f"{EVALUATION_CONFIG_CODE}: {TEST_STUB_SANDBOX_ENV} names "
+                f"{path_text!r}, which cannot be loaded as a Python module"
+            )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _STUB_SANDBOX_MODULES[path_text] = module
+    factory = getattr(module, factory_name)
+    return factory()
 
 
 def _track_last_result(sandbox_instance: Any) -> Any:
