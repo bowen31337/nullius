@@ -58,8 +58,8 @@ own, on a database holding the registry and neither parent).  A decision
 store that ran the three-table set would be creating ``node`` and
 ``epoch_ledger`` for statements that name neither — the habit this module
 exists to keep distinguishable from a dependency.  Three orders, three
-bootstraps, one runner (:func:`_run_statements`) and one rule — *the set is
-the tables this act's own statements name*.
+bootstraps, one rule — *the set is the tables this act's own statements
+name*.
 
 Feature 294's charge takes the same end of the rule and adds a seam to it.
 Its two statements — the ledger read and the one-column ``UPDATE`` that
@@ -72,21 +72,26 @@ clause: the decision store's bootstrap brings ``promotion_registry`` up,
 never this one's.  The ``UPDATE`` writes through no child key either
 (``epoch_ledger`` references nothing; ``0110`` declares
 ``REQUIRES_TABLES = ()``), so no dialect resolves a parent for it.  Four
-orders, four bootstraps, one runner, one rule — and the fourth set is the
-rule's smallest illustration yet.
+orders, four bootstraps, one rule — and the fourth set is the rule's smallest
+illustration yet.
 
 **Why that is not a schema this member invents.**  Not one statement here is
-authored.  Every one comes from ``statements("sqlite")`` on a migration this
-member does not own, loaded **in-function** and by file path — ``migrations/``
-is not a package and a member never imports another member, but reading a
-migration by path is exactly how a migration's own runner loads it, the
-discipline ``packages/regime/tests/conftest.py`` states for ``0107``.  The
-migration is the sole author of its spelling; this module is the plumbing that
-runs it, so the two cannot drift — a change to those files changes this
-bootstrap, because this bootstrap *is* those files.  The one thing this module
-decides is the *order*, and the migrations decide that too: ``0118`` and
-``0110`` declare no ``REQUIRES_TABLES`` because each stands alone, and
-``0108``'s calls both of them its prerequisites.
+authored.  Every one comes from a migration this member does not own, loaded
+**in-function** and by file path — ``migrations/`` is not a package and a
+member never imports another member, but reading a migration by path is
+exactly how a migration's own runner loads it, the discipline
+``packages/regime/tests/conftest.py`` states for ``0107``.  The pre-
+registration's :func:`bootstrap_schema` (:data:`MIGRATION_ORDER`) reads those
+statements by calling each owner's own :func:`upgrade`, because a revision's
+``statements()`` text is not always its whole effect — see
+:func:`_run_upgrades`; the calibration, decision and charge bootstraps still
+run ``statements("sqlite")`` directly, which is equivalent for every owner
+they name.  Either way the migration is the sole author of its spelling; this
+module is the plumbing that runs it, so the two cannot drift — a change to
+those files changes this bootstrap, because this bootstrap *is* those files.
+The one thing this module decides is the *order*, and the migrations decide
+that too: ``0118`` and ``0110`` declare no ``REQUIRES_TABLES`` because each
+stands alone, and ``0108``'s calls both of them its prerequisites.
 
 **The dependency order is load-bearing, not tidy — and on SQLite the failure
 comes one statement later than it looks.**  ``0108`` and ``0110`` both state
@@ -126,12 +131,13 @@ scan pays nothing for this module and composition reads no file.
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import sqlite3
 import sys
 from pathlib import Path
 from types import ModuleType
 
-from .errors import PromotionError
+from .errors import PROMOTION_REGISTRY_ERROR_CODE, PromotionError, PromotionStoreError
 
 __all__ = [
     "CALIBRATION_MIGRATION_ORDER",
@@ -362,22 +368,69 @@ def _charge_statements(dialect: str = "sqlite") -> tuple[str, ...]:
     return _statements_for(CHARGE_MIGRATION_ORDER, dialect)
 
 
-def _run_statements(
-    connection: sqlite3.Connection, ddl: tuple[str, ...]
+def _call_upgrade(
+    module: ModuleType, connection: sqlite3.Connection, dialect: str
 ) -> tuple[str, ...]:
-    """Execute ``ddl`` on ``connection`` and return it — the one runner.
+    """Call a migration's own :func:`upgrade`, in whichever arity it takes.
 
-    Spelled once so both bootstraps execute a statement tuple the same way, and
-    so a caller that needs a *different* set of owners goes through the same
-    door rather than growing a second copy of this loop.
+    Every revision today declares ``upgrade(connection, dialect=None)``, but
+    this module does not get to assume that of a migration it does not own —
+    it reads the signature rather than calling positionally and letting a
+    narrower revision raise ``TypeError``, so a future one-argument
+    ``upgrade(connection)`` is run correctly rather than refused.
     """
-    cursor = connection.cursor()
     try:
-        for statement in ddl:
-            cursor.execute(statement)
-    finally:
-        cursor.close()
-    return ddl
+        arity = len(inspect.signature(module.upgrade).parameters)
+    except (TypeError, ValueError):  # pragma: no cover - no non-Python upgrade ships
+        arity = 1
+    if arity >= 2:
+        return module.upgrade(connection, dialect)
+    return module.upgrade(connection)
+
+
+def _run_upgrades(
+    connection: sqlite3.Connection,
+    order: tuple[tuple[str, str], ...],
+    dialect: str,
+) -> tuple[str, ...]:
+    """Bring ``connection`` up through every owner in ``order``; return the DDL run.
+
+    Calls each revision's own :func:`upgrade` rather than executing its
+    :func:`~object.statements` text — the distinction this fix exists for.
+    ``0118_node_table``'s own ``upgrade`` does more than its ``statements()``
+    list: it also re-runs ``0113_node_indexes``'s ``upgrade`` once every node
+    column it can index has landed, which is how the assembled migration chain
+    ends up carrying ``node_campaign_id_parent_id`` that a bootstrap built
+    from ``statements()`` alone never would.  Calling ``upgrade()`` instead
+    keeps this store's schema the one the chain actually produces, not a
+    second reading of a revision's text — the same "the migration is the
+    author" rule the module docstring states, carried to the migration's
+    whole effect rather than stopping at its returned strings.
+
+    An owner's ``upgrade`` is not expected to raise on a database this module
+    brings it, since every revision in the tree is idempotent; one that does
+    is surfaced as :class:`~promotion.errors.PromotionStoreError`, naming the
+    revision, rather than as whatever exception class the migration happened
+    to raise — the same vocabulary a caller's ``except PromotionStoreError``
+    already catches for every other way this bootstrap can fail.
+    """
+    collected: list[str] = []
+    for _table, revision in order:
+        module = _load_migration(revision)
+        try:
+            collected.extend(_call_upgrade(module, connection, dialect))
+        except PromotionError:
+            raise
+        except Exception as exc:
+            raise PromotionStoreError(
+                f"{PROMOTION_REGISTRY_ERROR_CODE}: migrations/versions/"
+                f"{revision}.py's own upgrade() raised bringing the database "
+                f"to the revision it owns: {exc!r}. The migration is the "
+                "schema's author and this module only runs it, never "
+                "editing, selecting or skipping one of its statements "
+                "(feature 291)"
+            ) from exc
+    return tuple(collected)
 
 
 def bootstrap_schema(
@@ -394,13 +447,19 @@ def bootstrap_schema(
     database every write fails on — and the order is the chain's, as the
     module docstring argues.
 
-    Idempotent by construction — every statement is ``IF NOT EXISTS`` — so
-    calling it on a fully migrated database changes nothing.  That is the
+    Runs each owner's own :func:`upgrade` (see :func:`_run_upgrades`) rather
+    than its ``statements()`` text, so this store's schema is the one the
+    assembled migration chain actually produces — including the index
+    ``0118_node_table``'s own ``upgrade`` backfills by re-running
+    ``0113_node_indexes``'s ``upgrade`` once every node column it needs
+    exists.  Idempotent by construction — every revision's ``upgrade`` is —
+    so calling it on a fully migrated database changes nothing.  That is the
     convergence the earlier bootstraps reach from the other direction: not
-    *"the statements agree because both were written from the spec's columns"*,
-    but *"there is only one set of statements, and this runs it"*.
+    *"the statements agree because both were written from the spec's
+    columns"*, but *"there is only one owner per table, and this runs it
+    whole"*.
     """
-    return _run_statements(connection, _statements(dialect))
+    return _run_upgrades(connection, MIGRATION_ORDER, dialect)
 
 
 def bootstrap_calibration_schema(
@@ -435,8 +494,14 @@ def bootstrap_calibration_schema(
     That is a shared *dependency*, stated twice, and not a shared statement — the
     two callers each name the file that owns it, so a rename cannot leave one of
     them probing a table nobody writes.
+
+    Runs each owner's own :func:`upgrade` (see :func:`_run_upgrades`), the
+    same discipline :func:`bootstrap_schema` uses: ``node`` is ``0118``'s
+    table here too, and its ``upgrade`` backfills the same
+    ``node_campaign_id_parent_id`` index into this gate's database as it
+    does into the registry's.
     """
-    return _run_statements(connection, _calibration_statements(dialect))
+    return _run_upgrades(connection, CALIBRATION_MIGRATION_ORDER, dialect)
 
 
 def bootstrap_decision_schema(
@@ -465,8 +530,14 @@ def bootstrap_decision_schema(
     calibration's bootstrap refuses the same offer: the set a store runs
     should be the set its own statements name, or a reader cannot tell a
     dependency from a habit.
+
+    Runs ``0108``'s own :func:`upgrade` (see :func:`_run_upgrades`) rather
+    than its ``statements()`` text, the same discipline :func:`bootstrap_schema`
+    uses — harmless here, since ``0108``'s ``upgrade`` does nothing beyond
+    executing its own statement tuple, but one rule for every owner in this
+    module rather than one for ``0118`` and another for the rest.
     """
-    return _run_statements(connection, _decision_statements(dialect))
+    return _run_upgrades(connection, DECISION_MIGRATION_ORDER, dialect)
 
 
 def bootstrap_charge_schema(
@@ -496,5 +567,11 @@ def bootstrap_charge_schema(
     the reason every other bootstrap here refuses the same offer: the set
     a store runs should be the set its own statements name, or a reader
     cannot tell a dependency from a habit.
+
+    Runs ``0110``'s own :func:`upgrade` (see :func:`_run_upgrades`) rather
+    than its ``statements()`` text, for the same reason
+    :func:`bootstrap_decision_schema` now does: one rule for every owner in
+    this module, harmless here since ``0110``'s ``upgrade`` does nothing
+    beyond executing its own statement tuple.
     """
-    return _run_statements(connection, _charge_statements(dialect))
+    return _run_upgrades(connection, CHARGE_MIGRATION_ORDER, dialect)

@@ -1075,19 +1075,41 @@ def test_the_two_bootstraps_share_one_rule_and_neither_is_the_other() -> None:
     # sets differ in size and in everything but that one shared statement.
     assert calibration[0] == registry[0]
 
+    # Both bootstraps run each owner's own upgrade() rather than its
+    # statements() text: 0118_node_table's own upgrade also re-runs
+    # 0113_node_indexes's upgrade, which is how the assembled chain ends up
+    # carrying node_campaign_id_parent_id that a statements()-only bootstrap
+    # never created (bug 3b9a19e2 — see promotion.schema._run_upgrades).
+    # ``node`` is ``0118``'s table in both orders, so both DDLs are driven
+    # independently here, the same way the two bootstraps are everywhere
+    # else in this test, rather than compared against the flat ``calibration``
+    # and ``registry`` text, which stay exactly the ``statements()`` tuples
+    # the assertions above pin them as.
+    def _expected_ddl(order: tuple[tuple[str, str], ...]) -> tuple[str, ...]:
+        expected: list[str] = []
+        driver = sqlite3.connect(":memory:")
+        try:
+            for _table, revision in order:
+                expected.extend(_load_migration(revision).upgrade(driver, "sqlite"))
+        finally:
+            driver.close()
+        return tuple(expected)
+
     connection = sqlite3.connect(":memory:")
     try:
         ran = bootstrap_calibration_schema(connection)
-        assert ran == calibration
+        assert ran == _expected_ddl(CALIBRATION_MIGRATION_ORDER)
         # ...and answering twice is not an error, which is what makes a fresh
         # database and a fully-migrated one take the same path.
-        assert bootstrap_calibration_schema(connection) == calibration
+        assert bootstrap_calibration_schema(connection) == _expected_ddl(
+            CALIBRATION_MIGRATION_ORDER
+        )
     finally:
         connection.close()
 
     connection = sqlite3.connect(":memory:")
     try:
-        assert bootstrap_schema(connection) == registry
+        assert bootstrap_schema(connection) == _expected_ddl(MIGRATION_ORDER)
     finally:
         connection.close()
 
