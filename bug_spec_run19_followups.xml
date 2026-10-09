@@ -1,0 +1,85 @@
+<bug_spec>
+  <!-- R19-1. Found 2026-10-09 verifying run19 (6 tasks; footprint conformance
+       66%). The orchestrator member suite has 10 failures: 561 passed, 5
+       skipped. The gate (1663) and the promotion, dreaming, replay, discovery
+       and nulloracle suites are green. Three causes; core shape, explicit
+       touches_files. -->
+
+  <bug index="1" shape="core" severity="critical"
+       touches_files="packages/orchestrator/src/orchestrator/closeout.py,packages/orchestrator/tests/test_closeout_cli.py,packages/orchestrator/tests/test_closeout_subtree.py,packages/orchestrator/tests/test_closeout_triage.py,packages/orchestrator/tests/test_closeout_ks_root_level.py">
+    <title>The root-level KS gate (622d88c) has no null sample in a Type-D campaign, whose nulls are descendants past the flip, so Type-D calibration is never computed</title>
+    <symptoms>
+      test_closeout_cli.py::test_type_d_campaign_voids_and_measures_type_b now fails with "assert 0 == 3". In Type-D every root is real, and a branch flips null at depth d (PRD §4.1.2). A gate that admits only roots therefore holds no null at all, and calibration is "insufficient" for every Type-D campaign.
+
+      Four other close-out tests fail because they pin the old all-node guard counts (null/real counts 3/3, where roots-only gives 3/2):
+      - test_closeout_subtree.py ×3
+      - test_closeout_triage.py::test_too_few_on_one_side_gives_null_auc_and_rest_unchanged
+    </symptoms>
+    <reproduction_steps>PYTHONPATH=src:packages/orchestrator/src uv run --no-sync pytest -q -p no:cacheprovider packages/orchestrator/tests/test_closeout_cli.py packages/orchestrator/tests/test_closeout_subtree.py packages/orchestrator/tests/test_closeout_triage.py</reproduction_steps>
+    <expected>
+      - The gate's sampling unit follows the campaign type, and the rule is stated in the module docstring.
+        - **Type-R:** one value per root, with |ic_tstat| &lt; DISCOVERY_TSTAT on both sides. Unchanged.
+        - **Type-D:** one value per evaluated node.
+          - Each node is labelled by the oracle's own depth resolution: null at or past its branch's flip, real otherwise. This uses the same TypeDOracle resolution the Type-B step already uses.
+          - The same non-significance truncation applies on both sides.
+          - Each branch contributes at most one null and one real value, its shallowest null and its deepest real, so correlated descendants are not pseudo-replicated.
+        ks_variant is "root-nonsig" or "branch-nonsig" accordingly.
+      - The Type-D test is restored to its original claim that a detectable Type-D null voids the campaign and Type-B is measured. Its fixture is extended only if the branch rule needs more nodes.
+      - The four stale tests are updated to the gate's documented counts. Each still asserts what it was written to assert (children labelled on the root's side, roots-only behaviour, NULL fail_class counted, too-few-on-one-side gives a null AUC).
+      - test_closeout_ks_root_level.py gains a Type-D case.
+      - The orchestrator member suite and root tests/ pass, including tests/e2e/test_planted_null_ks_guard.py.
+    </expected>
+    <actual>Root cause: the KS fix (bug_spec_ks_guard_root_level.xml) specified root-level sampling without the Type-D case, where nulls live below the roots.</actual>
+    <constraints>
+      nulloracle is unchanged
+      No file outside the five listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="medium"
+       touches_files="packages/orchestrator/tests/test_live_evaluator_component.py,packages/orchestrator/src/orchestrator/_process_pool.py">
+    <title>The live-evaluator component tests pin LiveEvaluator, but the default evaluation_mode "process" now builds a ProcessEvaluator</title>
+    <symptoms>
+      Four tests in test_live_evaluator_component.py fail on isinstance(…, LiveEvaluator) or the equivalent identity pin, against ProcessEvaluator(…, evaluation_mode='process'):
+      - test_the_member_alone_registers_the_component
+      - test_a_configured_environment_answers_a_live_evaluator
+      - test_building_never_calls_evaluate_node
+      - test_building_resolves_no_sibling_component
+    </symptoms>
+    <reproduction_steps>PYTHONPATH=src:packages/orchestrator/src uv run --no-sync pytest -q -p no:cacheprovider packages/orchestrator/tests/test_live_evaluator_component.py</reproduction_steps>
+    <expected>
+      - Each test asserts the component the configured mode names: ProcessEvaluator by default, and LiveEvaluator when evaluation_mode is "thread". Both modes are parametrized where the test's claim (registration, never calls evaluate_node at build, resolves no sibling at build) applies to both.
+      - ProcessEvaluator keeps its claim of resolving nothing and evaluating nothing at build. It starts no worker process until the first evaluate(). Change _process_pool.py only if a test shows it spawns workers at build time.
+      - The orchestrator member suite passes.
+    </expected>
+    <actual>Root cause: 457dbf7 changed the default component class, and the identity pins in this file were not updated (that task edited files outside its claim).</actual>
+    <constraints>
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="3" shape="core" severity="high"
+       touches_files="packages/orchestrator/src/orchestrator/dream.py,packages/orchestrator/tests/test_dream_financial_worlds.py">
+    <title>Admitting financial worlds changes the bootstrap arm's train/holdout split, so bootstrap results now vary run to run</title>
+    <symptoms>
+      test_dream_financial_worlds.py::test_no_evaluation_context_reports_thin_and_bootstrap_behaviour_is_unchanged passes on one serial run and fails on the next with "assert 297 == (11 * 28)". The bootstrap arm trained on 27 worlds, not round(40 × 0.7) = 28.
+
+      The test's financial campaigns get fresh uuid4 ids each run. Evidently those ids enter the same pool split as the bootstrap worlds: feature 278's sha256 rank, with ties going to holdout. So the bootstrap arm's train set, and every bootstrap score, depends on the financial worlds present. That breaks the bootstrap arm's determinism and the spec's requirement that existing bootstrap-only behaviour is unchanged.
+    </symptoms>
+    <reproduction_steps>Run that test three times serially; it fails on some runs.</reproduction_steps>
+    <expected>
+      - The bootstrap and financial worlds are split independently. The bootstrap arm's train/holdout membership is a function of the bootstrap worlds and the cycle's rotation only, exactly as before b1509f3. Financial worlds get their own split by the same feature-278 rule.
+      - A cycle over a pool with financial worlds and the same cycle without them give identical bootstrap train sets, scores and rows.
+      - The test uses fixed campaign ids. It asserts the bootstrap train count deterministically and asserts that membership is unchanged when financial worlds are added. It passes 5 out of 5 runs serially and under pytest-xdist.
+      - The dreaming member suite and the orchestrator member suite pass.
+    </expected>
+    <actual>Root cause: b1509f3 added financial worlds into the pool that one split ranks, instead of splitting them separately.</actual>
+    <constraints>
+      Feature 278's split rule itself is unchanged
+      No file outside the two listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
