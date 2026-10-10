@@ -891,7 +891,7 @@ Four rules. The first two are the ones that get skipped, and skipping either pro
 | Replay non-determinism | Nightly canary | Halt dreaming; bisect the image diff |
 | Nulls become detectable | KS guard `p < 0.05` | Void the campaign; vary block length; rotate the permutation scheme |
 | Sandbox escape attempt | seccomp violation | Kill, record `fail_class`, quarantine the node and its subtree |
-| Sequestered epochs exhausted | Ledger usage count ≥ 3 | **Stop.** This is a legitimate terminal state, not a bug to work around |
+| Sequestered epochs exhausted | Ledger usage count ≥ 3 | **Stop using them.** This is a legitimate terminal state for *that data*, not a bug to work around: never reuse or re-seal the epochs. Research resumes on fresh sequestered epochs as new market time accrues (PRD §2.3: a gate ends a method or a dataset, never the mission) |
 | Exchange schema change | Parquet schema validation | Halt ingest for that stream; alert; patch |
 | WS gap / reconnect | Sequence-number gap | REST backfill the gap before sealing the next snapshot |
 | Live/sim divergence | `β₄` monitor | Auto-demote; reconcile the cost model |

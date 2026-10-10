@@ -1,10 +1,14 @@
 # PRD — Agentic Alpha Discovery Engine
 
 **Codename:** NULLIUS — from *nullius in verba*, the Royal Society motto: "take nobody's word for it." Also names the mechanism: planted nulls.
-**Version:** 0.2 (draft for build)
+**Version:** 0.3 (draft for build)
 **Derived from:** Zheng et al., *Dream-RSI: Recursive Self-Improvement through Evolving Worlds* (Google, 2026)
 **Status:** Design complete, unbuilt
 **Owner:** _(you)_
+
+**Changed in 0.3 (2026-10-10):** adds §2.3, *mission persistence, method falsification*.
+A failed gate now ends the *method* it tests, never the mission, and every pivot is charged to the
+trial ledger. M3's "if M3 fails, stop" is restated in those terms.
 
 **Changed in 0.2 (2026-09-19):** synced to architecture 0.2. §4.5 and M1 now point at the
 recorded deferral for learned components (arch §11.2) · M1.5 admits ported ground-truth
@@ -58,6 +62,27 @@ Everything in this document follows from those two lines.
 - **NG2.** Not an execution-latency system. No HFT, no cross-venue latency arbitrage, no colocation.
 - **NG3.** Not a capital multiplier on its own. See §11 for the honest arithmetic.
 - **NG4.** Does not search the hypothesis *space*. Dream-RSI redistributes compute within a space; it cannot manufacture edge in a space that has none. Choosing the space is a human job (§9).
+
+### 2.3 Mission persistence, method falsification
+
+The **mission** is G1: real, cost-adjusted, out-of-sample edge, deployed with a measured FDR. It is never abandoned because a gate fails. Each **method** the mission uses can be falsified, and is dropped when its gate says so. That covers the dreaming loop, a data stream, a horizon, a universe and a cost assumption. The two must never be confused in either direction:
+
+- **A failed gate ends a method, not the mission.** "Dreaming does not beat fixed exploration" is a *result*. It sends effort to the next lever in the pivot table below.
+- **Persistence must not become p-hacking.** Retrying until something passes is the garden-of-forking-paths failure this design exists to prevent (§4, G4). So:
+  - Every attempt, re-test and pivot is charged to the trial ledger. The hypothesis count across pivots stays honest, and the deflation bars rise with it.
+  - A pivot's success criterion is **pre-registered before its data is seen**: hashed, as M4 does.
+  - A gate is never re-run on the same data with a softened criterion. A VOID verdict is sticky.
+  - A pivot that changes the *space* (new data, horizon, universe) is a human decision (NG4, §9), recorded with its reason.
+- **The stop rule binds capital, never research.** Capital moves only past M4's pre-registered shadow criteria. Research continues whatever the gates say.
+
+| Gate outcome | What is cut | Where effort goes next |
+|---|---|---|
+| M1: nulls detectable or leakage present | Nothing ships; the evaluator is fixed first | Fix the null construction or the evaluator. Re-measure the null's validity (null t-stat ~ N(0,1)) before any further campaign |
+| M1 triage AUC ≈ 0.85 | The dreaming apparatus | Hard-code the robustness filter. Spend the saved budget on hypothesis-space breadth (§9) |
+| M2: committed picks' OOS IR ≈ 0 under the fixed policy | Nothing yet; this is a diagnosis | **Inputs, not search.** Widen the data streams (funding, open interest, order book, on-chain), revisit horizons against the cost model (§10) and the universe. Re-run M2 before M3 is meaningful |
+| M3 fails | The dreaming loop, i.e. the meta-learned exploration policy | Keep the calibrated discovery engine (planted nulls, FDR, tripwires) with the fixed policy. Redirect compute to hypothesis-space breadth. The thesis "search policy can be meta-learned" is recorded as false *in this space* and may be re-opened only on a materially different space, pre-registered |
+| M4 shadow criteria not met | Promotion of those signals | They are demoted and their decay is recorded (β₄). Discovery continues; the cost model and fill model are recalibrated from the fidelity data |
+| M5 live edge decays | The decayed signals' capital | They are demoted by the IC-decay rule. The outer loop keeps feeding forward results back into calibration |
 
 ---
 
@@ -598,7 +623,7 @@ The paper's "Recursive Fixed Exploration" baseline. **Exit:** a measured baselin
 2. `FDR_deploy` improves at π₀ = 0.9.
 3. Leave-one-family-out transfer ΔIR > 0.
 
-**If M3 fails, stop.** The core thesis — that a search-and-select policy can be meta-learned to resist overfitting — is false in this domain, and you have learned it for the cost of compute, with zero capital at risk. This is the single most valuable property of the whole design. Do not skip it, do not soften the criterion, and do not proceed to M4 on a marginal result.
+**If M3 fails, stop dreaming, not the mission.** The core thesis — that a search-and-select policy can be meta-learned to resist overfitting — is then false in this space, and you have learned it for the cost of compute, with zero capital at risk. This is the single most valuable property of the whole design. Do not skip it, do not soften the criterion, and do not proceed to M4 on a dreamed policy after a marginal result. The calibrated discovery engine survives a failed M3, and effort moves as §2.3's pivot table says: to hypothesis-space breadth, under the same ledger and pre-registration discipline.
 
 ### 12.1 Minimum viable pool size, and meta-level overfitting
 
