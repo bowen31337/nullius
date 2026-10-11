@@ -445,3 +445,29 @@ These were re-closed-out with no LLM spend, after the round that added out-of-sa
 - All five committed picks keep a positive OOS IC; 4 of 5 also have a positive OOS IR. The window is thin, at 9 weeks.
 - The census is 45 bootstrap + **3 financial** = 48. VOID campaigns are excluded, as designed. A VOID verdict never clears on rerun, so the guard cannot be re-tested until it passes.
 - Future campaigns use `evaluation-config-archive-m3.json`: 183 in-sample weeks (2022-01 to 2025-06) and 60 OOS weeks (2025-08 to 2026-09).
+
+### Run 10, addendum 2 (2026-10-10 to 2026-10-11): the M2 baseline over 25 campaigns
+
+These are 25 Type-R campaigns (archM01–25) on `evaluation-config-archive-m3.json`: 183 in-sample weeks (2022-01 to 2025-06) and 60 OOS weeks (2025-08 to 2026-09). They used process-pool evaluation, about 37–41 min each. The batch cost $52.86, plus $1.69 lost to a memory reap that restarted archM19.
+
+| Measure | Result |
+|---|---|
+| Calibration | 0 VOID in 25 (root-nonsig KS). Sensitivity 0.39, specificity 0.98 |
+| Triage AUC (125 nulls, 700 reals) | **0.60 ± 0.04**, the learned-signature branch |
+| Replay pool | 45 bootstrap + **28 financial** = 73 |
+| Committed picks, in-sample | IC t median **+3.76**, turnover **0.66 per week**, cost-adjusted IR median −0.0001 |
+| Committed picks, OOS (60 weeks) | IC t positive **25/25** (mean +0.57), but cost-adjusted IR **negative 23/25** (mean −0.00046 per week) |
+
+**M2 diagnosis (PRD §2.3, M2 row):** the picks' ranks predict out of sample, but their weekly dollar-neutral books lose money after costs, even in-sample.
+
+- **Cause 1:** discovery and commit select on IC t-stat while G1 asks for cost-adjusted OOS IR. The selector therefore prefers high-turnover rank signals.
+- **Cause 2:** the winner's curse. A top-of-33 in-sample t of about 3.8 decays to about 0.6 OOS.
+
+The 25 picks share one dataset and one OOS window, so they are not independent evidence.
+
+**Next pivot (cost-aware, before new data):**
+- discover and commit on cost-adjusted IR, with turnover visible to the agent
+- horizons and rebalance cadence matched to the cost model
+- then re-measure M2
+
+M3 waits until the M2 baseline's committed picks have a non-negative cost-adjusted OOS IR. Dreaming over picks that all lose money after costs measures nothing useful.
