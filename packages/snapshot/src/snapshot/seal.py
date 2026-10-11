@@ -12,18 +12,19 @@ then hands the rest to the service.
 
 **Three decisions this module adds on top of the service it wraps:**
 
-* **Staging may hold nothing but ``bars/`` partitions.** ``bars/`` is the
-  only partition kind any producer in this workspace writes today (the
-  market-data ingest of this same category, feature 1/2); the further kinds
-  docs/nullius-tech-architecture.md §4.2 names for the lake's eventual shape
-  (``trades/``, ``bookfeat/``, ``borrow/``, ``exchangeinfo/``) have no
-  writer yet. :class:`~snapshot.SnapshotService` itself seals whatever a
-  staging tree holds -- that breadth is right for the library, which also
-  serves future partition kinds and hand-built test fixtures -- but *this*
-  command is the one an operator runs to turn today's market-data staging
-  into what the evaluator reads, so it refuses here, naming the first stray
-  path it finds, rather than silently sealing debris into an immutable
-  directory.
+* **Staging may hold nothing but the streams in** :data:`ALLOWED_STREAMS`.
+  ``bars/``, ``funding/``, ``futbars/`` and ``metrics/`` are the partition
+  kinds this workspace's producers write today (the spot market-data ingest
+  and the derivatives backfill of this same category, feature 1); the
+  further kinds docs/nullius-tech-architecture.md §4.2 names for the lake's
+  eventual shape (``trades/``, ``bookfeat/``, ``borrow/``,
+  ``exchangeinfo/``) have no writer yet. :class:`~snapshot.SnapshotService`
+  itself seals whatever a staging tree holds -- that breadth is right for
+  the library, which also serves future partition kinds and hand-built test
+  fixtures -- but *this* command is the one an operator runs to turn
+  today's market-data staging into what the evaluator reads, so it refuses
+  here, naming the first stray path it finds, rather than silently sealing
+  debris into an immutable directory.
 * **An existing target name is always refused, not replayed.** The service
   itself treats a re-seal of byte-identical content under an existing name
   as idempotent (a crashed schedule's retry). This command does not reach
@@ -52,9 +53,9 @@ must look like.
 
 **Exit codes**, this category's own: 0 once the snapshot is sealed and the
 line is printed, whether or not a ``snapshot_manifest`` row was recorded; 1
-for every refusal -- a stray path outside ``bars/``, a target name already
-sealed, or any other :class:`~snapshot.SnapshotError` the seal raises (a
-missing staging directory, an invalid ``universe.json``, a configured
+for every refusal -- a stray path outside :data:`ALLOWED_STREAMS`, a target
+name already sealed, or any other :class:`~snapshot.SnapshotError` the seal
+raises (a missing staging directory, an invalid ``universe.json``, a configured
 ``DATABASE_URL`` whose write fails) -- printed to stderr with no traceback,
 exactly as :func:`~snapshot.seal_snapshot` would raise it.
 """
@@ -77,6 +78,7 @@ from ._naming import snapshot_name
 from ._service import SnapshotService
 
 __all__ = [
+    "ALLOWED_STREAMS",
     "ALREADY_SEALED_CODE",
     "EXIT_OK",
     "EXIT_REFUSED",
@@ -87,9 +89,17 @@ __all__ = [
     "seal_lake",
 ]
 
-#: This module's own refusal when staging holds something other than a
-#: ``bars/`` partition -- never a collaborator's, which already names its
-#: own contract (``SnapshotAlreadySealedError`` and friends).
+#: The partition kinds this command seals a staging tree into: spot bars
+#: (market-data ingest) plus the three derivatives streams -- funding rates,
+#: futures daily klines (basis and taker flow) and open-interest/long-short
+#: metrics (derivs_backfill, this category's feature 1). The one place that
+#: states what today's staging tree may hold -- admitting a further stream
+#: is a one-line addition here, not a rewrite of the refusal below.
+ALLOWED_STREAMS = ("bars", "funding", "futbars", "metrics")
+
+#: This module's own refusal when staging holds something outside
+#: :data:`ALLOWED_STREAMS` -- never a collaborator's, which already names
+#: its own contract (``SnapshotAlreadySealedError`` and friends).
 STRAY_PATH_CODE = "snapshot_seal_stray_path"
 
 #: This module's own refusal when the candidate target name is already
@@ -101,8 +111,8 @@ UNIVERSE_FILENAME = "universe.json"
 
 #: Sealed, whether or not a ``snapshot_manifest`` row was recorded.
 EXIT_OK = 0
-#: A refusal: a stray path outside ``bars/``, a name already sealed, or any
-#: other :class:`~snapshot.SnapshotError` the seal raises.
+#: A refusal: a stray path outside :data:`ALLOWED_STREAMS`, a name already
+#: sealed, or any other :class:`~snapshot.SnapshotError` the seal raises.
 EXIT_REFUSED = 1
 
 
@@ -161,13 +171,16 @@ def _read_universe(lake_root: Path) -> object:
 
 
 def _first_stray_path(files: Mapping[str, str]) -> str | None:
-    """The first staged path outside ``bars/``, sorted -- or ``None``.
+    """The first staged path outside :data:`ALLOWED_STREAMS`, sorted -- or ``None``.
 
     Sorted so the same staged tree always names the same stray path, run to
-    run, rather than depending on dict iteration order.
+    run, rather than depending on dict iteration order. A path's stream is
+    its first POSIX segment, so ``"funding/symbol=.../date=.../part-0.parquet"``
+    belongs to stream ``"funding"``.
     """
     for candidate in sorted(files):
-        if not candidate.startswith("bars/"):
+        stream = candidate.split("/", 1)[0]
+        if stream not in ALLOWED_STREAMS:
             return candidate
     return None
 
@@ -206,8 +219,9 @@ def seal_lake(
     if stray is not None:
         raise SnapshotError(
             f"{STRAY_PATH_CODE}: staging at {staging_root} holds {stray!r}, "
-            "which is not a bars/ partition; a sealed snapshot holds only "
-            "what the evaluator reads -- move or remove it before sealing"
+            f"whose stream is not one of {ALLOWED_STREAMS}; a sealed snapshot "
+            "holds only what the evaluator reads -- move or remove it before "
+            "sealing"
         )
 
     full_hash = snapshot_digest(files, universe=universe)
