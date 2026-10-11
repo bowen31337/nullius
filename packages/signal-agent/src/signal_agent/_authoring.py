@@ -376,8 +376,197 @@ _WINDOW_HISTORY_NOTE_TEMPLATE: Final[str] = (
 )
 
 
+# -- additions_spec_derivatives_inputs.xml's served frames, declared --------
+#
+# orchestrator._evaluate._materialize_from_context turns three raw, sealed
+# derivative streams -- "funding", "futbars" and "metrics" -- into four
+# feature frames a signal reaches only through ``ctx.feature(name, version,
+# lookback)``: there is no ``ctx.funding(...)`` or ``ctx.futbars(...)``
+# accessor, so naming the raw stream in a declaration (as the pre-fix
+# ``available_streams`` did, reading literal top-level directory names off
+# the snapshot) told an agent about something it had no call to make.  The
+# three constants below are the inverse of the materializer's own
+# ``if stream in resolution.slices:`` gates, restated here rather than
+# imported -- the same stance :data:`_EVALUATOR_BARS_STREAM` already takes
+# for its one stream -- because the layout is fixed by the spec's own
+# feature 3, and a cross-member import for three literal strings and a
+# handful of column names would be a heavier dependency than the facts are
+# worth.
+
+#: additions_spec_derivatives_inputs.xml, feature 3's own version stamp for
+#: every served derivative frame (``orchestrator._evaluate``'s literal
+#: ``"v1"`` in each of its four ``feature_frame_name(..., "v1")`` calls).
+_DERIVS_FEATURE_VERSION: Final[str] = "v1"
+
+_FUNDING_1D: Final[str] = "funding_1d"
+_BASIS_1D: Final[str] = "basis_1d"
+_TAKER_FLOW_1D: Final[str] = "taker_flow_1d"
+_METRICS_1D: Final[str] = "metrics_1d"
+
+#: ``{raw sealed stream: (served feature frames it becomes,)}``.  A raw
+#: stream never appears in a declaration once this mapping has a name for
+#: it -- see :func:`_available_streams` -- because the only thing a signal
+#: can address it through is the frame(s) on the right.
+_DERIVS_SERVED_FRAMES: Final[Mapping[str, tuple[str, ...]]] = {
+    "funding": (_FUNDING_1D,),
+    "futbars": (_BASIS_1D, _TAKER_FLOW_1D),
+    "metrics": (_METRICS_1D,),
+}
+
+#: The point-in-time rule every served frame shares --
+#: ``orchestrator._evaluate._materialize_from_context``'s own words: each is
+#: "read through the identical per-(stream, symbol) panel and point-in-time
+#: cutoff as bars, so a signal reaching them through ``ctx.feature(name,
+#: version)`` gets the same no-look-ahead guarantee" -- restated here as the
+#: fact every served feature's own detail carries, not only bars'.
+_DERIVS_POINT_IN_TIME: Final[str] = (
+    "sliced to the window's decision time through the same per-symbol, "
+    "no-look-ahead panel as bars -- no row is ever dated after ctx.t "
+    "(the identical point-in-time cutoff, feature 3)"
+)
+
+#: Per served frame: its own columns beyond the ``symbol``/``open_time``
+#: pair every served frame carries first (the materializer's own
+#: convention), which of those arrive as venue-spelled strings an authored
+#: signal must cast to Float64 before arithmetic (bars' own ``close``/
+#: ``volume`` convention, restated here because these frames follow it
+#: too), one line naming what each column means, and the point-in-time rule
+#: the frame is built under.  ``funding_rate_sum``'s and ``basis``'s meaning
+#: lines are feature 3's own words, verbatim.  ``n_settlements`` is the one
+#: column of the four frames that is *not* a string
+#: (``orchestrator._evaluate``'s own ``_empty_feature_table(...,
+#: int_fields=("n_settlements",))``), so it is named in ``columns`` but
+#: left out of ``cast_to_float64``.
+_DERIVS_FEATURE_DETAIL: Final[Mapping[str, Mapping[str, Any]]] = {
+    _FUNDING_1D: {
+        "columns": ("funding_rate_sum", "funding_rate_last", "n_settlements"),
+        "cast_to_float64": ("funding_rate_sum", "funding_rate_last"),
+        "meaning": (
+            (
+                "funding_rate_sum: the day's summed 8-hourly perpetual "
+                "funding; positive means longs pay shorts"
+            ),
+            (
+                "funding_rate_last: the day's most recent 8-hourly "
+                "settlement's funding rate"
+            ),
+            (
+                "n_settlements: how many 8-hourly settlements landed that "
+                "day (already int64, not a string -- no cast needed)"
+            ),
+        ),
+        "point_in_time": _DERIVS_POINT_IN_TIME,
+    },
+    _BASIS_1D: {
+        "columns": ("basis",),
+        "cast_to_float64": ("basis",),
+        "meaning": ("basis: perpetual close over spot close minus 1",),
+        "point_in_time": (
+            f"{_DERIVS_POINT_IN_TIME}; a day's row exists only when that "
+            "day's spot close and futures close both exist"
+        ),
+    },
+    _TAKER_FLOW_1D: {
+        "columns": ("taker_buy_ratio",),
+        "cast_to_float64": ("taker_buy_ratio",),
+        "meaning": (
+            (
+                "taker_buy_ratio: the day's taker-buy share of futures "
+                "volume (taker_buy_volume / fut_volume)"
+            ),
+        ),
+        "point_in_time": _DERIVS_POINT_IN_TIME,
+    },
+    _METRICS_1D: {
+        "columns": (
+            "sum_open_interest",
+            "sum_open_interest_value",
+            "count_toptrader_long_short_ratio",
+            "sum_toptrader_long_short_ratio",
+            "count_long_short_ratio",
+            "sum_taker_long_short_vol_ratio",
+        ),
+        "cast_to_float64": (
+            "sum_open_interest",
+            "sum_open_interest_value",
+            "count_toptrader_long_short_ratio",
+            "sum_toptrader_long_short_ratio",
+            "count_long_short_ratio",
+            "sum_taker_long_short_vol_ratio",
+        ),
+        "meaning": (
+            (
+                "sum_open_interest: the day's summed open interest, in "
+                "contracts"
+            ),
+            (
+                "sum_open_interest_value: the day's summed open interest, "
+                "in quote value"
+            ),
+            (
+                "count_toptrader_long_short_ratio: top-trader accounts' "
+                "long/short count ratio"
+            ),
+            (
+                "sum_toptrader_long_short_ratio: top-trader positions' "
+                "long/short position-size ratio"
+            ),
+            (
+                "count_long_short_ratio: all accounts' long/short count "
+                "ratio"
+            ),
+            (
+                "sum_taker_long_short_vol_ratio: taker buy/sell volume "
+                "ratio"
+            ),
+        ),
+        "point_in_time": (
+            f"{_DERIVS_POINT_IN_TIME}; opt-in at backfill time, so this "
+            "frame may be entirely absent even when funding/basis/"
+            "taker_flow are served"
+        ),
+    },
+}
+
+#: Every served frame's full column tuple, ``symbol``/``open_time`` first --
+#: keyed by the frame name :func:`_available_streams` lists it under (never
+#: the raw stream), so :func:`_stream_columns` can answer ``stream_columns``
+#: for a served frame without sampling a Parquet file that holds a different
+#: schema under a different name (``basis`` and ``taker_buy_ratio`` are
+#: computed host-side; they are in no raw stream's file at all).
+_DERIVS_FRAME_COLUMNS: Final[Mapping[str, tuple[str, ...]]] = {
+    name: ("symbol", "open_time", *detail["columns"])
+    for name, detail in _DERIVS_FEATURE_DETAIL.items()
+}
+
+
+def _served_derivs_detail(
+    streams: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """``{served frame: {name, version, columns, cast_to_float64, meaning,
+    point_in_time}}``.
+
+    Filters :data:`_DERIVS_FEATURE_DETAIL` down to the frames
+    :func:`_available_streams` actually lists for this snapshot (a snapshot
+    with no ``metrics`` backfill lists no ``metrics_1d``, a snapshot with
+    none of the three derivative streams lists none at all), and stamps each
+    with its own ``name`` (restated as a value, not only as this mapping's
+    own key, so a reader of one entry in isolation still sees which feature
+    it names) and :data:`_DERIVS_FEATURE_VERSION` -- the version every served
+    frame the materializer builds carries today.
+    """
+    return {
+        name: {"name": name, "version": _DERIVS_FEATURE_VERSION, **detail}
+        for name, detail in _DERIVS_FEATURE_DETAIL.items()
+        if name in streams
+    }
+
+
 def _accessors_detail(
-    contract: Any, *, max_history_days: int | None = None
+    contract: Any,
+    *,
+    max_history_days: int | None = None,
+    derivs_served: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Per-accessor signature, parameter units and frame schema.
 
@@ -402,6 +591,16 @@ def _accessors_detail(
     ``None`` (the default, and what every caller that configures no
     evaluation context hands in) leaves that note out entirely, unchanged
     from before bug_spec_evaluation_throughput.xml.
+
+    ``derivs_served``, when given (:func:`_served_derivs_detail` over a
+    configured snapshot's own ``available_streams``), is attached to the
+    ``feature`` entry as ``served`` — exactly the frames the materializer
+    serves for that snapshot, each with its name, its version, its columns,
+    its meaning, which columns need a Float64 cast, and the point-in-time
+    rule it is built under (additions_spec_derivatives_inputs.xml, feature
+    3's own declaration).  ``None`` (the default, and what every caller that
+    configures no snapshot hands in) leaves the ``feature`` entry exactly as
+    it was before that feature.
     """
     window = contract.MarketWindow
     bars_notes = (
@@ -456,12 +655,23 @@ def _accessors_detail(
         },
         "feature": {
             "signature": _signature_text("feature", window.feature),
-            "lookback_unit": "rows, trailing; None reads every row",
+            "lookback_unit": (
+                "rows, trailing, taken across the WHOLE returned frame -- "
+                "every symbol's rows mixed together and sorted by "
+                "(symbol, open_time) -- never per symbol the way bars' "
+                "lookback is; lookback=N is N rows of the combined frame, "
+                "not N rows of one symbol's own history, so a signal must "
+                "filter to one symbol (or group by symbol) before trusting "
+                "any row's position. None reads every row the window "
+                "carries."
+            ),
             "returns_notes": (
                 "schema is whatever the named, versioned feature stored; a "
                 "name/version this window does not carry returns an empty, "
                 "columnless frame"
             ),
+            "example": EXAMPLE_FUNDING_SIGNAL_SOURCE,
+            **({"served": dict(derivs_served)} if derivs_served is not None else {}),
         },
     }
 
@@ -494,6 +704,36 @@ EXAMPLE_SIGNAL_SOURCE: Final[str] = '''def signal(ctx, seed):
         else:
             scores[symbol] = rows["close"][-1] / rows["close"][0] - 1.0
     return pl.Series([scores[s] for s in ctx.universe], dtype=pl.Float64)
+'''
+
+#: A second example, over ``feature:funding_1d:v1`` rather than bars --
+#: demonstrating the discipline ``accessors_detail["feature"]``'s
+#: ``lookback_unit`` states in words: ``ctx.feature(...)``'s rows are the
+#: whole frame's trailing rows, every symbol mixed together, so this signal
+#: reads the whole stored history (``lookback=None``) and groups by symbol
+#: itself rather than trusting a lookback to isolate one symbol's own rows.
+#: A symbol with no perpetual (absent from the frame entirely) scores the
+#: neutral 0.0, never a crash or a guessed value -- the same "missing is
+#: zero, not an error" stance the bars example's own guard takes.  The
+#: mechanism: funding is a payment, so the next day's expected payment is a
+#: cost (positive funding = longs pay shorts), and a signal betting against
+#: that cost favors shorting the symbol paying the most.
+EXAMPLE_FUNDING_SIGNAL_SOURCE: Final[str] = '''def signal(ctx, seed):
+    import polars as pl
+
+    funding = ctx.feature("funding_1d", "v1", lookback=None).with_columns(
+        pl.col("funding_rate_sum").cast(pl.Float64)
+    )
+    last_by_symbol = dict(
+        funding.sort("open_time")
+        .group_by("symbol", maintain_order=True)
+        .agg(pl.col("funding_rate_sum").last().alias("last_funding"))
+        .iter_rows()
+    )
+    return pl.Series(
+        [-last_by_symbol.get(symbol, 0.0) for symbol in ctx.universe],
+        dtype=pl.Float64,
+    )
 '''
 
 
@@ -624,9 +864,20 @@ def _stream_columns(
     scores. The prompt states the columns that are actually there. The
     partition columns ``symbol``/``date`` are not in the file schema, so
     ``symbol`` is added back when the stream's partitions are by symbol.
+
+    A served derivative frame (``funding_1d``, ``basis_1d``,
+    ``taker_flow_1d``, ``metrics_1d``) is answered from
+    :data:`_DERIVS_FRAME_COLUMNS` instead of sampled: its name is never a
+    directory under the mount (``basis`` and ``taker_buy_ratio`` are
+    computed host-side, not stored at all), so sampling by that name would
+    read nothing where a real schema exists.
     """
     out: dict[str, tuple[str, ...]] = {}
     for stream in streams:
+        fixed_columns = _DERIVS_FRAME_COLUMNS.get(stream)
+        if fixed_columns is not None:
+            out[stream] = fixed_columns
+            continue
         symbols = snapshot.partitions(stream)
         if not symbols:
             out[stream] = ()
@@ -665,6 +916,18 @@ def _available_streams(snapshot: Any) -> dict[str, tuple[str, ...]] | None:
     guess at which stream kinds exist), so a producer this workspace has not
     written yet (trades, bookfeat, borrow) is reported the moment something
     seals one.
+
+    **A raw derivative stream is translated to the frame(s) it is served
+    as, never reported by its own name.**  ``funding``, ``futbars`` and
+    ``metrics`` are sealed streams (:data:`_DERIVS_SERVED_FRAMES`'s keys),
+    not accessors -- a signal has no ``ctx.funding(...)`` to call -- so a
+    snapshot sealing them is reported under ``funding_1d``, ``basis_1d``/
+    ``taker_flow_1d`` and ``metrics_1d``, the frames
+    ``orchestrator._evaluate._materialize_from_context`` actually builds for
+    ``ctx.feature(...)`` to read.  Reported with no frequency (an empty
+    tuple, like ``trades``/``bookfeat``/``borrow``): a served frame's
+    cadence is already named in its own key (the ``_1d`` suffix), not a
+    second fact this mapping's value would otherwise have to carry.
     """
     if snapshot is None:
         return None
@@ -681,10 +944,15 @@ def _available_streams(snapshot: Any) -> dict[str, tuple[str, ...]] | None:
             "the evaluation context actually holds, never a guess"
         )
     stream_names = sorted({path.split("/", 1)[0] for path in files() if path})
-    return {
-        stream: _stream_frequencies(stream, partitions, dates, select)
-        for stream in stream_names
-    }
+    out: dict[str, tuple[str, ...]] = {}
+    for stream in stream_names:
+        served_frames = _DERIVS_SERVED_FRAMES.get(stream)
+        if served_frames is None:
+            out[stream] = _stream_frequencies(stream, partitions, dates, select)
+            continue
+        for frame_name in served_frames:
+            out[frame_name] = ()
+    return out
 
 
 class SignalContract:
@@ -911,9 +1179,32 @@ class SignalContract:
         entry by :func:`_accessors_detail` — the note that states the window's
         actual trailing-day ceiling rather than leaving an agent to discover
         it by writing a lookback the window silently cannot serve.
+
+        **additions_spec_derivatives_inputs.xml's additive detail.**
+        ``available_streams`` (and ``stream_columns``) name the derivative
+        *frames* a signal can actually reach through ``ctx.feature(...)`` --
+        ``funding_1d``, ``basis_1d``, ``taker_flow_1d`` and, when the
+        snapshot's own ``metrics`` stream is sealed, ``metrics_1d`` -- never
+        the raw ``funding``/``futbars``/``metrics`` stream names a signal has
+        no accessor to read (:func:`_available_streams`).
+        ``accessors_detail["feature"]`` gains two keys, both unconditioned on
+        ``snapshot`` (present whether or not a caller configures one, the
+        same stance ``accessors_detail`` itself already takes toward every
+        other accessor's detail): ``example`` --
+        :data:`EXAMPLE_FUNDING_SIGNAL_SOURCE`, a second worked example
+        reading ``funding_1d`` and grouping by symbol, the discipline
+        ``lookback_unit`` states in words -- and ``served``, present only
+        when a caller configures ``snapshot`` and names each derivative
+        frame it actually seals: its own ``name`` and ``version``, its
+        ``columns``, which of those columns (``cast_to_float64``) are
+        venue-spelled strings needing a Float64 cast, one line of
+        ``meaning`` per column, and the ``point_in_time`` rule the frame is
+        built under (:func:`_served_derivs_detail`).
         """
         contract = require_contract()
         sig = contract.describe_signal_signature()
+        streams = _available_streams(snapshot)
+        derivs_served = _served_derivs_detail(streams) if streams is not None else None
         declared: dict[str, Any] = {
             "entrypoint": sig.entrypoint,
             "window_arg": sig.window_arg,
@@ -933,13 +1224,14 @@ class SignalContract:
                 "filesystem, no network, no global state (§5.1, §12)"
             ),
             "accessors_detail": _accessors_detail(
-                contract, max_history_days=max_history_days
+                contract,
+                max_history_days=max_history_days,
+                derivs_served=derivs_served,
             ),
             "universe": _UNIVERSE_NOTE,
             "allowed_imports": _agent_imports_allowlist(),
             "example_signal": EXAMPLE_SIGNAL_SOURCE,
         }
-        streams = _available_streams(snapshot)
         if streams is not None:
             declared["available_streams"] = streams
             declared["stream_columns"] = _stream_columns(snapshot, streams)
