@@ -271,6 +271,7 @@ __all__ = [
     "HttpResponse",
     "SymbolResult",
     "backfill_bars",
+    "fetch_verified_archive_zip",
     "main",
     "select_top_symbols",
     "urllib_archive_fetch",
@@ -681,20 +682,29 @@ def _list_archive_keys(
 
 
 def _list_archive_months(
-    fetch: ArchiveFetch, *, sleep: Callable[[float], None]
+    fetch: ArchiveFetch,
+    *,
+    sleep: Callable[[float], None],
+    prefix: str = ARCHIVE_KLINES_PREFIX,
+    key_re: re.Pattern[str] = _ARCHIVE_KEY_RE,
 ) -> dict[str, tuple[str, ...]]:
-    """Every USDT symbol the archive has ever held monthly ``1d`` klines for.
+    """Every USDT symbol the archive has ever held a file for under ``prefix``.
 
-    One paginated crawl of :data:`ARCHIVE_KLINES_PREFIX` names every symbol
-    and month at once (:data:`_ARCHIVE_KEY_RE`); a symbol not ending in
-    ``USDT`` is dropped.  Months come back sorted, so the last element of a
-    symbol's tuple is the true, archive-wide last month it has ever held —
-    the fact a dead symbol is identified by.
+    One paginated crawl of ``prefix`` names every symbol and period at once,
+    matched against ``key_re`` (a pattern carrying named ``symbol`` and
+    ``month`` groups — :data:`_ARCHIVE_KEY_RE` by default, this module's own
+    spot klines shape); a symbol not ending in ``USDT`` is dropped. Periods
+    come back sorted, so the last element of a symbol's tuple is the true,
+    archive-wide last one it has ever held — the fact a dead symbol is
+    identified by. Parametrized by ``prefix`` and ``key_re`` so
+    :mod:`nullius_ingest.derivs_backfill` reuses this same crawl for its own
+    UM futures symbol discovery, over its own prefix and key shape, rather
+    than re-implementing the listing-to-regex walk.
     """
-    keys = _list_archive_keys(fetch, ARCHIVE_KLINES_PREFIX, sleep=sleep)
+    keys = _list_archive_keys(fetch, prefix, sleep=sleep)
     months_by_symbol: dict[str, set[str]] = {}
     for key in keys:
-        match = _ARCHIVE_KEY_RE.match(key)
+        match = key_re.match(key)
         if match is None:
             continue
         symbol = match["symbol"]
@@ -793,19 +803,55 @@ def _verify_checksum(zip_bytes: bytes, checksum_body: bytes, filename: str) -> N
         )
 
 
-def _month_zip_url(symbol: str, month: str) -> tuple[str, str]:
-    filename = f"{symbol}-1d-{month}.zip"
-    return f"{ARCHIVE_BASE_URL}/{ARCHIVE_KLINES_PREFIX}{symbol}/1d/{filename}", filename
+def _archive_zip_url(
+    symbol: str,
+    period: str,
+    *,
+    prefix: str = ARCHIVE_KLINES_PREFIX,
+    interval: str = _INTERVAL,
+    subdir: str | None = _INTERVAL,
+) -> tuple[str, str]:
+    """``(url, filename)`` for one period's zip under ``prefix``.
+
+    ``period`` is a ``"YYYY-MM"`` month for this module's own spot bars, but
+    the string is otherwise opaque here — :mod:`nullius_ingest.derivs_backfill`
+    passes a ``"YYYY-MM-DD"`` day for its own daily-keyed metrics stream.
+    ``interval`` is the filename's own middle token (``"1d"`` for a
+    kline-shaped archive; equally ``"fundingRate"`` or ``"metrics"`` for
+    that module's funding and metrics streams) and ``subdir`` is the path
+    segment a kline-shaped archive nests one of between the symbol and the
+    filename (``None`` when there is none, as funding and metrics have).
+    Defaults preserve this module's own spot bars URL exactly.
+    """
+    filename = f"{symbol}-{interval}-{period}.zip"
+    parts = [prefix.strip("/"), symbol]
+    if subdir:
+        parts.append(subdir)
+    parts.append(filename)
+    return f"{ARCHIVE_BASE_URL}/" + "/".join(parts), filename
 
 
 def _archive_cache_dir(lake_path: Path) -> Path:
     return lake_path / RANK_CACHE_DIRNAME / ARCHIVE_CACHE_DIRNAME
 
 
+def _cache_paths_for(lake_path: Path, cache_key: str, filename: str) -> tuple[Path, Path]:
+    """Where one archive file's verified cache copy lives, keyed by ``cache_key``.
+
+    ``cache_key`` isolates one caller's cache slot from another's — a bare
+    symbol for this module's own spot bars (preserving the exact path this
+    function has always returned), a ``"<stream>/<symbol>"`` pair for
+    :mod:`nullius_ingest.derivs_backfill`'s UM futures streams — so a spot
+    and a UM futures fetch for the same symbol, or two UM streams' own
+    fetches, never share a cache slot. :func:`_cached_month_paths` is this
+    module's own caller, unchanged.
+    """
+    directory = _archive_cache_dir(lake_path) / cache_key
+    return directory / filename, directory / f"{filename}.CHECKSUM"
+
+
 def _cached_month_paths(lake_path: Path, symbol: str, month: str) -> tuple[Path, Path]:
-    filename = f"{symbol}-1d-{month}.zip"
-    symbol_dir = _archive_cache_dir(lake_path) / symbol
-    return symbol_dir / filename, symbol_dir / f"{filename}.CHECKSUM"
+    return _cache_paths_for(lake_path, symbol, f"{symbol}-1d-{month}.zip")
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
@@ -821,29 +867,73 @@ def _write_atomic(path: Path, data: bytes) -> None:
     tmp_path.replace(path)
 
 
-def _read_cached_month(
-    lake_path: Path, symbol: str, month: str
-) -> tuple[bytes, bytes] | None:
+def _read_cache_pair(zip_path: Path, checksum_path: Path) -> tuple[bytes, bytes] | None:
     """``(zip_bytes, checksum_bytes)`` from the file cache, or ``None`` on a miss."""
-    zip_path, checksum_path = _cached_month_paths(lake_path, symbol, month)
     try:
         return zip_path.read_bytes(), checksum_path.read_bytes()
     except OSError:
         return None
 
 
-def _write_cached_month(
-    lake_path: Path, symbol: str, month: str, zip_bytes: bytes, checksum_bytes: bytes
-) -> None:
-    zip_path, checksum_path = _cached_month_paths(lake_path, symbol, month)
-    _write_atomic(zip_path, zip_bytes)
-    _write_atomic(checksum_path, checksum_bytes)
+def fetch_verified_archive_zip(
+    fetch: ArchiveFetch,
+    lake_path: Path,
+    cache_key: str,
+    url: str,
+    filename: str,
+    *,
+    sleep: Callable[[float], None],
+) -> bytes | None:
+    """Fetch one archive zip, verified against its sibling ``.CHECKSUM``.
 
+    The shared verified-file cache every archive-mode stream reads and
+    writes through — this module's own spot bars and
+    :mod:`nullius_ingest.derivs_backfill`'s UM futures streams alike — keyed
+    on ``cache_key`` (:func:`_cache_paths_for`) so two streams never share a
+    cache slot. Returns ``None`` when the archive has no file there at all
+    (HTTP 404: before a symbol listed, or after it was delisted, or a day a
+    stream simply never published) — not a failure, just nothing to add.
+    Raises :class:`BarsBackfillError`, naming ``filename``, for any other
+    HTTP failure or a checksum mismatch.
 
-def _delete_cached_month(lake_path: Path, symbol: str, month: str) -> None:
-    zip_path, checksum_path = _cached_month_paths(lake_path, symbol, month)
-    zip_path.unlink(missing_ok=True)
-    checksum_path.unlink(missing_ok=True)
+    A verified file is read from the cache with no network call; the
+    checksum is re-verified against the cached bytes regardless, so a cached
+    file that was corrupted on disk is caught, deleted, and refetched exactly
+    as a fresh mismatch would be. A file fetched fresh (cache miss or a
+    corrupt cache entry) is written back to the cache once it passes its own
+    checksum.
+    """
+    zip_path, checksum_path = _cache_paths_for(lake_path, cache_key, filename)
+    cached = _read_cache_pair(zip_path, checksum_path)
+    if cached is not None:
+        zip_bytes, checksum_bytes = cached
+        try:
+            _verify_checksum(zip_bytes, checksum_bytes, filename)
+        except BarsBackfillError:
+            zip_path.unlink(missing_ok=True)
+            checksum_path.unlink(missing_ok=True)
+            cached = None
+
+    if cached is None:
+        zip_response = _request_archive(fetch, url, sleep=sleep, what=filename)
+        if zip_response.status == 404:
+            return None
+        if zip_response.status != 200:
+            raise BarsBackfillError(f"{filename}: fetch failed: HTTP {zip_response.status}")
+
+        checksum_response = _request_archive(
+            fetch, f"{url}.CHECKSUM", sleep=sleep, what=f"{filename}.CHECKSUM"
+        )
+        if checksum_response.status != 200:
+            raise BarsBackfillError(
+                f"{filename}.CHECKSUM: fetch failed: HTTP {checksum_response.status}"
+            )
+        _verify_checksum(zip_response.body, checksum_response.body, filename)
+        _write_atomic(zip_path, zip_response.body)
+        _write_atomic(checksum_path, checksum_response.body)
+        zip_bytes = zip_response.body
+
+    return zip_bytes
 
 
 def _fetch_month(
@@ -859,43 +949,16 @@ def _fetch_month(
     Returns ``None`` when the archive has no zip for this month at all (HTTP
     404: before the symbol listed, or after it was delisted) — not a failure,
     just nothing to add.  Raises :class:`BarsBackfillError`, naming the zip
-    file, for any other HTTP failure or a checksum mismatch.
-
-    A verified month is read from the file cache with no network call; the
-    checksum is re-verified against the cached bytes regardless, so a cached
-    file that was corrupted on disk is caught, deleted, and refetched exactly
-    as a fresh checksum mismatch would be.  A month fetched fresh (cache miss
-    or a corrupt cache entry) is written back to the cache once it passes its
-    own checksum.
+    file, for any other HTTP failure or a checksum mismatch.  The fetch and
+    its verified-file cache are :func:`fetch_verified_archive_zip`, keyed on
+    the bare symbol — the same cache slot this function has always used.
     """
-    filename = f"{symbol}-1d-{month}.zip"
-    cached = _read_cached_month(lake_path, symbol, month)
-    if cached is not None:
-        zip_bytes, checksum_bytes = cached
-        try:
-            _verify_checksum(zip_bytes, checksum_bytes, filename)
-        except BarsBackfillError:
-            _delete_cached_month(lake_path, symbol, month)
-            cached = None
-
-    if cached is None:
-        zip_url, _filename = _month_zip_url(symbol, month)
-        zip_response = _request_archive(fetch, zip_url, sleep=sleep, what=filename)
-        if zip_response.status == 404:
-            return None
-        if zip_response.status != 200:
-            raise BarsBackfillError(f"{filename}: fetch failed: HTTP {zip_response.status}")
-
-        checksum_response = _request_archive(
-            fetch, f"{zip_url}.CHECKSUM", sleep=sleep, what=f"{filename}.CHECKSUM"
-        )
-        if checksum_response.status != 200:
-            raise BarsBackfillError(
-                f"{filename}.CHECKSUM: fetch failed: HTTP {checksum_response.status}"
-            )
-        _verify_checksum(zip_response.body, checksum_response.body, filename)
-        _write_cached_month(lake_path, symbol, month, zip_response.body, checksum_response.body)
-        zip_bytes, checksum_bytes = zip_response.body, checksum_response.body
+    zip_url, filename = _archive_zip_url(symbol, month)
+    zip_bytes = fetch_verified_archive_zip(
+        fetch, lake_path, symbol, zip_url, filename, sleep=sleep
+    )
+    if zip_bytes is None:
+        return None
 
     try:
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as bundle:

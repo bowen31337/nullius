@@ -42,6 +42,11 @@
 #                               migrations/versions/0*.py file in chain order
 #   ./run.sh lake-backfill [args]  python -m nullius_ingest.bars_backfill (LAKE
 #                               defaults to $HOME/.local/share/nullius/lake)
+#   ./run.sh lake-derivs-backfill [args]  python -m nullius_ingest.derivs_backfill
+#                               (same LAKE default): USD-M futures funding,
+#                               basis-input daily bars and (--streams metrics)
+#                               open-interest metrics for --symbols-from's
+#                               universe.json
 #   ./run.sh lake-seal     [args]  python -m snapshot.seal (same LAKE default)
 #   ./run.sh evaluator-image       deploy/evaluator/build_image.sh: build the
 #                               evaluator image and print its digest-pinned
@@ -283,7 +288,7 @@ case "${cmd}" in
     exec uv run --all-packages python -m router.vst_fidelity "$@"
     ;;
 
-  lake-backfill|lake-seal)
+  lake-backfill|lake-derivs-backfill|lake-seal)
     # Market-data staging and sealing, neither needing a secret. LAKE
     # defaults to a path outside the repo, like the research/vst stores
     # above; lake-seal also defaults DATABASE_URL the way `campaign` does,
@@ -295,6 +300,10 @@ case "${cmd}" in
     case "${cmd}" in
       lake-backfill)
         exec uv run --all-packages python -m nullius_ingest.bars_backfill \
+          --lake "${LAKE}" "$@"
+        ;;
+      lake-derivs-backfill)
+        exec uv run --all-packages python -m nullius_ingest.derivs_backfill \
           --lake "${LAKE}" "$@"
         ;;
       lake-seal)
