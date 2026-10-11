@@ -23,7 +23,7 @@ B, feature 6) calls this once per round, so a child a worker planted in round
 to notice it was written — the tree is a read, not a subscription.
 
 **The payload is the four fields the feature names, and nothing it does
-not.**  An evaluated node's payload is ``{ic_insample: ic_mean, r2_insample:
+not.**  An evaluated node's payload is ``{ic_insample: value, r2_insample:
 ic_mean ** 2, n_periods: evaluation_periods, n_features: 1}`` — exactly the
 four keys :meth:`~policy_runtime.PolicyObservation.from_node` reads by name,
 so a policy's :meth:`~policy_runtime.PolicyQuestion.observed` renders this
@@ -34,6 +34,21 @@ this module states that substitution once rather than leaving every caller to
 reinvent it.  ``n_features`` is the constant ``1``: spec A's live evaluator
 scores one authored signal per node, never a feature set, so every node this
 tree can hold names exactly one.
+
+**``ic_insample`` carries the post-cost value when the row has one
+(additions_spec_cost_aware_selection.xml, "Cost-Aware Selection", feature
+3).**  ``value`` above is ``ir_tstat`` when the row's ``ir_tstat`` is not
+``NULL``, and ``ic_mean`` otherwise — the fallback feature 3 names "as
+before".  :class:`~policy_runtime.PolicyObservation` carries exactly one
+numeric field a ranking policy reads (``ic_insample``;
+:mod:`orchestrator._policy`'s ``BaselinePolicy`` sorts by nothing else), so
+giving the policy post-cost evidence without a second field — one
+:mod:`policy_runtime` does not carry and this spec does not add — means
+reusing the one field the view already has.  This is the "one place" the
+feature's own sentence names: the rename happens here, in this payload, and
+nowhere downstream.  ``r2_insample`` is unaffected — it stays ``ic_mean``'s
+own square, the live evaluator's in-sample R² stand-in, never
+``ir_tstat``'s.
 
 **A node with no metrics freezes an empty payload, and is never revealed.**
 ``ic_mean IS NULL`` means the node failed or has not reached evaluation yet —
@@ -64,20 +79,29 @@ handed to :meth:`~policy_runtime.PolicyQuestion.reveal_many` in one call, so
 the batch is validated against the tree it was just built from and reveals in
 one ascending pass rather than one :meth:`reveal` per row.
 
-**The module reads four columns and nothing else.**  ``id``, ``parent_id``
-and ``depth`` are the tree's own structural skeleton (migration ``0118``,
-feature 97); ``ic_mean`` (migration ``0114``, feature 101) is read because it
-is both this payload's ``ic_insample`` and, by the tree writer's own
-all-or-nothing contract, a reliable witness that the row's other five core
-metrics landed too — a second column would read a fact this one already
-carries.  Nothing else on the row is read: not ``theme_root`` (the database
-column; this payload carries no ``theme_root`` key, so a policy that reaches
-for one through :func:`~policy_runtime.cell_meta` reads ``None`` for every
-cell this tree freezes), not the identity, provenance or authoring-model
-columns, and never the null sidecar or an ``is_null`` bit — the standing
-constraint this spec repeats at every seam that touches a node
-(:mod:`orchestrator._oracle`, :mod:`orchestrator._charge`): the sidecar is
-``nulloracle.TypeRSelection``'s alone to read.
+**The module reads four columns and nothing else, plus the one optional
+column feature 3 adds.**  ``id``, ``parent_id`` and ``depth`` are the tree's
+own structural skeleton (migration ``0118``, feature 97); ``ic_mean``
+(migration ``0114``, feature 101) is read because it is both the reveal
+witness (by the tree writer's own all-or-nothing contract, a non-``NULL``
+``ic_mean`` means the row's other five core metrics landed too — a second
+column would read a fact this one already carries) and the fallback half of
+``ic_insample``.  ``ir_tstat`` (additions_spec_cost_aware_selection.xml,
+feature 1) is read in the same query, *probed* rather than demanded: feature
+1 adds the column by probe-then-``ALTER`` in the tree writer rather than a
+migration, so a tree a live evaluation has not yet written through still
+carries ``0114``'s seven columns and no eighth, and :func:`_load_rows` reads
+``PRAGMA table_info`` first and selects ``ir_tstat`` only when the probe
+finds it — never a bare ``SELECT`` that would raise ``no such column`` on
+every tree feature 1 has not touched yet.  Nothing else on the row is read:
+not ``theme_root`` (the database column; this payload carries no
+``theme_root`` key, so a policy that reaches for one through
+:func:`~policy_runtime.cell_meta` reads ``None`` for every cell this tree
+freezes), not the identity, provenance or authoring-model columns, and never
+the null sidecar or an ``is_null`` bit — the standing constraint this spec
+repeats at every seam that touches a node (:mod:`orchestrator._oracle`,
+:mod:`orchestrator._charge`): the sidecar is ``nulloracle.TypeRSelection``'s
+alone to read.
 
 **One error, for the wiring; the question's own for everything else.**  A
 ``database_url`` this module cannot speak, a campaign with no node rows yet,
@@ -132,13 +156,23 @@ DEPTH_COLUMN = "depth"
 #: The column every node row is scoped by.
 CAMPAIGN_ID_COLUMN = "campaign_id"
 
-#: The one metric column this module reads — migration ``0114``'s
-#: ``ic_mean``.  It is both the payload's ``ic_insample`` and, because the
-#: tree writer lands its six core metrics in one transaction or none, the
-#: reliable witness that a row has been evaluated at all; see the module
-#: docstring for why a second metric column would read a fact this one
-#: already carries.
+#: The metric column that decides whether a row has been evaluated at all —
+#: migration ``0114``'s ``ic_mean``.  Because the tree writer lands its six
+#: core metrics in one transaction or none, a non-``NULL`` reading here is a
+#: reliable witness that the row's other five core metrics landed too; see
+#: the module docstring for why a second metric column would read a fact
+#: this one already carries.  It is also ``ic_insample``'s fallback value,
+#: used whenever :data:`IR_TSTAT_COLUMN` is absent or ``NULL`` on the row.
 METRIC_COLUMN = "ic_mean"
+
+#: The post-cost column feature 3 adds to ``ic_insample``
+#: (additions_spec_cost_aware_selection.xml, "Cost-Aware Selection", feature
+#: 3) — feature 1's ``ir_tstat``, added to the ``node`` table by
+#: probe-then-``ALTER`` in the tree writer rather than a migration, so it is
+#: read only when :func:`_load_rows`'s own probe finds it on the row's table.
+#: Preferred over :data:`METRIC_COLUMN` for ``ic_insample`` whenever the row
+#: carries a non-``NULL`` value, per the module docstring.
+IR_TSTAT_COLUMN = "ir_tstat"
 
 #: The constant every evaluated node's payload carries for ``n_features``:
 #: spec A's live evaluator scores one authored signal per node, never a
@@ -185,12 +219,15 @@ def live_question(
     """Build a fresh :class:`~policy_runtime.PolicyQuestion` over one campaign's rows.
 
     Reads every node the campaign has planted — ``id``, ``parent_id``,
-    ``depth`` and ``ic_mean`` — and freezes them into a
-    :class:`~policy_runtime.CampaignTree`.  A node whose ``ic_mean`` is
-    ``NULL`` (not yet evaluated, or failed before landing one) freezes an
-    empty payload and is left out of the reveal; every other node's payload
-    is ``{ic_insample: ic_mean, r2_insample: ic_mean ** 2, n_periods:
-    evaluation_periods, n_features: 1}`` and is revealed, in one
+    ``depth``, ``ic_mean`` and, when the row's table carries it, ``ir_tstat``
+    — and freezes them into a :class:`~policy_runtime.CampaignTree`.  A node
+    whose ``ic_mean`` is ``NULL`` (not yet evaluated, or failed before
+    landing one) freezes an empty payload and is left out of the reveal;
+    every other node's payload is ``{ic_insample: value, r2_insample:
+    ic_mean ** 2, n_periods: evaluation_periods, n_features: 1}``, where
+    ``value`` is the node's ``ir_tstat`` when it is not ``NULL`` and
+    ``ic_mean`` otherwise (additions_spec_cost_aware_selection.xml,
+    "Cost-Aware Selection", feature 3) — and is revealed, in one
     :meth:`~policy_runtime.PolicyQuestion.reveal_many` call, before this
     function returns — so the question a caller receives already answers
     :meth:`~policy_runtime.PolicyQuestion.observed` for every evaluated node
@@ -224,15 +261,16 @@ def live_question(
         )
     node_specs: dict[str, tuple[str | None, int, dict[str, Any]]] = {}
     evaluated: list[str] = []
-    for node_id, parent_id, depth, ic_mean in rows:
+    for node_id, parent_id, depth, ic_mean, ir_tstat in rows:
         if ic_mean is None:
             node_specs[node_id] = (parent_id, depth, {})
             continue
+        value = ir_tstat if ir_tstat is not None else ic_mean
         node_specs[node_id] = (
             parent_id,
             depth,
             {
-                "ic_insample": ic_mean,
+                "ic_insample": value,
                 "r2_insample": ic_mean**2,
                 "n_periods": periods,
                 "n_features": N_FEATURES,
@@ -321,20 +359,28 @@ def _resolve_path(database_url: Any) -> Path:
 
 def _load_rows(
     path: Path, campaign_id: str, *, database_url: str
-) -> list[tuple[str, str | None, int, float | None]]:
-    """The campaign's node rows — ``(id, parent_id, depth, ic_mean)``, ascending by id.
+) -> list[tuple[str, str | None, int, float | None, float | None]]:
+    """The campaign's node rows — ``(id, parent_id, depth, ic_mean, ir_tstat)``, ascending by id.
 
-    Reads exactly these four columns and nothing else on the row — see the
-    module docstring for why ``ic_mean`` alone stands in for "this node has
-    been evaluated".  A database the ``node`` migration has not reached
-    answers :class:`LiveTreeError` naming the migration; any other store
-    fault is the same class, naming the error SQLite gave.
+    Reads exactly these four columns, plus a fifth probed rather than
+    demanded — see the module docstring for why ``ic_mean`` alone stands in
+    for "this node has been evaluated" and why ``ir_tstat`` is read only when
+    :func:`_table_has_ir_tstat` finds it on the row's own table.  A table that
+    lacks the column answers ``ir_tstat`` as ``None`` for every row, the same
+    reading a ``NULL`` value there would give — a tree feature 1 has not
+    written through yet carries no post-cost evidence, which is exactly the
+    fallback case. A database the ``node`` migration has not reached answers
+    :class:`LiveTreeError` naming the migration; any other store fault is the
+    same class, naming the error SQLite gave.
     """
     try:
         with closing(sqlite3.connect(path)) as connection:
+            has_ir_tstat = _table_has_ir_tstat(connection)
+            select_columns = [NODE_ID_COLUMN, PARENT_ID_COLUMN, DEPTH_COLUMN, METRIC_COLUMN]
+            if has_ir_tstat:
+                select_columns.append(IR_TSTAT_COLUMN)
             cursor = connection.execute(
-                f"SELECT {NODE_ID_COLUMN}, {PARENT_ID_COLUMN}, {DEPTH_COLUMN}, "
-                f"{METRIC_COLUMN} FROM {NODE_TABLE} WHERE "
+                f"SELECT {', '.join(select_columns)} FROM {NODE_TABLE} WHERE "
                 f"{CAMPAIGN_ID_COLUMN} = ? ORDER BY {NODE_ID_COLUMN}",
                 (campaign_id,),
             )
@@ -355,12 +401,29 @@ def _load_rows(
             f"{LIVE_TREE_CODE}: could not read the node table at "
             f"{database_url!r}: {exc} (feature 3)"
         ) from exc
+    if not has_ir_tstat:
+        rows = [(*row, None) for row in rows]
     return [
         (
             str(node_id),
             (str(parent_id) if parent_id is not None else None),
             int(depth),
             (float(ic_mean) if ic_mean is not None else None),
+            (float(ir_tstat) if ir_tstat is not None else None),
         )
-        for node_id, parent_id, depth, ic_mean in rows
+        for node_id, parent_id, depth, ic_mean, ir_tstat in rows
     ]
+
+
+def _table_has_ir_tstat(connection: sqlite3.Connection) -> bool:
+    """Whether ``node`` already carries :data:`IR_TSTAT_COLUMN`.
+
+    ``PRAGMA table_info`` on a table that does not exist yet answers no rows
+    at all rather than raising, so a database the ``node`` migration has not
+    reached reads as "no, it does not carry the column" here and then fails
+    on the ``SELECT`` moments later with its own ``no such table`` —
+    :meth:`_load_rows`'s existing refusal, not a new one this probe would
+    have to race.  The probe itself never raises.
+    """
+    columns = connection.execute(f"PRAGMA table_info({NODE_TABLE})").fetchall()
+    return any(row[1] == IR_TSTAT_COLUMN for row in columns)
