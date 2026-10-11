@@ -1,0 +1,130 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — cost-aware discovery, commit and exploration (M2 pivot)</project_name>
+  <addition_summary>
+    The M2 baseline over 25 archive campaigns (docs/user-journeys/_run-log.md,
+    Run 10 addendum 2) shows a cost blind spot:
+    - Committed picks have in-sample IC t of about 3.8, but weekly turnover
+      of 0.66.
+    - Out of sample over 60 weeks, IC t is positive 25/25 (mean 0.57), while
+      the cost-adjusted IR is negative 23/25.
+    Selection is cost-blind everywhere:
+    - close-out discovers and commits on ic_tstat >= 2
+      (orchestrator/closeout.py ~:753, ~:994)
+    - the fixed exploration policy values live-tree nodes by ic_mean
+      (orchestrator/_live_tree.py, read by BaselinePolicy in _policy.py)
+    PRD G1 asks for positive cost-adjusted out-of-sample IR, and §2.3's M2
+    row says to revisit horizons against the cost model before M3. This spec
+    makes every selection point cost-aware and shows agents what costs do,
+    so M2 can be re-measured.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / SQLite / pytest.</stack>
+    <test_baseline>main at 1061e8e: gate 1663 passed; orchestrator 576 passed 5 skipped.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md.
+      - NodeMetrics carries ir_standalone (the mean over the population
+        standard deviation of per-date post-cost book returns), dates (its
+        count) and turnover.
+      - The node table has ic_mean, ic_tstat, ir_standalone, ir_marginal,
+        turnover, cost_adjusted_ir and perturb_stability (0114). Node columns
+        are added by probe-then-ALTER (see tripwires node_metric, F240's
+        fail_class).
+      - The live tree payload (_live_tree.py) reads id, parent_id, depth and
+        ic_mean.
+      - signal-agent's authoring prompt pairs each prior proposal with its
+        recorded ScoreRecord (_llm_author.py _pair_scores ~:636).
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Cost-Aware Selection">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/orchestrator/src/orchestrator/_evaluate.py,packages/orchestrator/src/orchestrator/_tree_writer.py,packages/orchestrator/tests/test_post_cost_tstat.py">
+        System persists every evaluated node's post-cost IR t-statistic, so that a node row returns ir_tstat = ir_standalone · √(dates) beside ic_tstat.
+        - The node table gains ir_tstat REAL NULL, added by probe-then-ALTER
+          in the tree writer. The live store upgrades in place.
+        - evaluate_node writes ir_tstat = metrics.ir_standalone ·
+          √(metrics.dates) on the node row, computed once from the metrics
+          the pipeline measured. The ScoreRecord and the node_evaluated event
+          carry it.
+        - A failed node writes NULL.
+        - test_post_cost_tstat.py covers:
+          - the value equals ir_standalone·√dates for a scored node
+          - a pre-existing node table upgrades in place
+          - a failed node has NULL
+          - the event carries the field
+          It passes under pytest-xdist.
+      </feature>
+      <feature index="2" shape="core" depends_on="1"
+               touches_files="packages/orchestrator/src/orchestrator/closeout.py,packages/orchestrator/tests/test_closeout_cost_aware.py">
+        System discovers and commits on post-cost IR at close-out, so that `./run.sh closeout` returns discoveries and a committed pick chosen by cost-adjusted evidence, not rank IC alone.
+        - A node is a discovery when ir_tstat >= DISCOVERY_TSTAT (2.0) and
+          ic_tstat > 0. The same rule feeds sensitivity, specificity and
+          FDR_deploy.
+        - The commit is the eligible node with the highest ir_tstat. Ties are
+          broken by node id. A miss is unchanged.
+        - A node row with no ir_tstat (a store from before feature 1) falls
+          back to the IC rule. The JSON line names which rule ran:
+          selection_rule "post-cost-ir" or "ic-fallback".
+        - The previous IC-based discovery count is kept as a diagnostic:
+          discoveries_ic.
+        - The KS gate's non-significance filter keeps using ic_tstat. It is
+          about detectability, not cost, and is unchanged.
+        - test_closeout_cost_aware.py covers:
+          - a high-IC, high-turnover node with negative ir_tstat is not a
+            discovery
+          - the commit picks the highest ir_tstat
+          - the fallback applies when ir_tstat is absent
+          - discoveries_ic is reported
+          - the Type-R and Type-D paths both use the new rule
+          It passes under pytest-xdist. The orchestrator member suite passes.
+      </feature>
+      <feature index="3" shape="core" depends_on="1"
+               touches_files="packages/orchestrator/src/orchestrator/_live_tree.py,packages/orchestrator/tests/test_live_tree_cost_value.py">
+        System gives the exploration policy each node's post-cost evidence, so that the fixed baseline's select() returns a batch ranked by post-cost IR t-statistic.
+        - The live tree payload carries ir_tstat beside ic_mean, read by the
+          same query.
+        - The value the baseline policy ranks by is ir_tstat when present.
+          Otherwise it is ic_mean, as before. The value field is renamed in
+          one place only if the policy-runtime view requires a single
+          `value`; it is documented.
+        - The prefix view and determinism contracts are unchanged.
+        - test_live_tree_cost_value.py covers:
+          - a node with a higher ic_mean but lower ir_tstat ranks below its
+            sibling
+          - the absent ir_tstat fallback
+          - determinism of the batch
+          It passes under pytest-xdist.
+      </feature>
+      <feature index="4" shape="core" depends_on="1"
+               touches_files="packages/signal-agent/src/signal_agent/_llm_author.py,packages/signal-agent/src/signal_agent/_authoring_prompt.py,packages/signal-agent/tests/test_prompt_cost_awareness.py">
+        System tells the authoring agent how costs judge its signal, so that the model returns signals designed for a post-cost book rather than for rank IC.
+        - The rendered authoring prompt displays:
+          - the node is scored and selected on the post-cost IR t-statistic
+            of a dollar-neutral book rebalanced on the evaluation grid
+          - the grid's cadence, read from the evaluation context (weekly
+            for the archive configs)
+          - the cost model's per-rebalance cost (fees plus spread
+            assumption, as bps of traded notional) and how turnover
+            multiplies it
+        - Each prior proposal in the context shows ic_tstat, ir_tstat,
+          turnover and cost_adjusted_ir from its recorded score, where
+          present.
+        - The rendered prompt displays one line of guidance: high turnover
+          erodes the post-cost book, and persistent or smoothed signals with
+          lower turnover are preferred when their IC survives. It judges
+          nothing and is information only.
+        - Every other rendered prompt section is byte-identical to before
+          (a test compares the sections outside the new ones). Prompt-keyed
+          recorded fixtures are regenerated only if they pin the changed
+          sections, and the commit message says so.
+        - test_prompt_cost_awareness.py covers:
+          - the rendered prompt contains the cadence and the per-rebalance
+            cost from a fixture context
+          - prior proposals show the four figures
+          - the absent-figure path renders "unmeasured"
+          It passes under pytest-xdist. The signal-agent member suite passes.
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>
