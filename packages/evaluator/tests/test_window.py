@@ -332,10 +332,20 @@ def test_the_roster_stream_constant_is_bars() -> None:
     assert ROSTER_STREAM == "bars"
 
 
-def test_the_sliced_streams_are_the_four_symbol_partitioned_streams() -> None:
+def test_the_sliced_streams_are_the_seven_symbol_partitioned_streams() -> None:
     # exchangeinfo is deliberately absent: it is versioned daily, not
     # partitioned by symbol, so there is no symbol= layer to slice.
-    assert SLICED_STREAMS == ("bars", "trades", "bookfeat", "borrow")
+    # additions_spec_derivatives_inputs.xml, "Snapshot and Window" feature 3,
+    # adds funding, futbars and metrics beside the original four.
+    assert SLICED_STREAMS == (
+        "bars",
+        "trades",
+        "bookfeat",
+        "borrow",
+        "funding",
+        "futbars",
+        "metrics",
+    )
 
 
 # -- The resolution record is pure data --------------------------------------

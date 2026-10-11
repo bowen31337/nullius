@@ -140,6 +140,7 @@ import threading
 from collections.abc import Sequence
 from contextlib import closing
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Final
 from urllib.parse import unquote, urlparse
@@ -406,34 +407,71 @@ class NodeEvaluation:
 # -- The materialize seam: reading the sealed mount for execute_signal ----------
 
 
-#: One bars panel per (mount, symbol, admitted set), shared by every node and
-#: every rebalance date of a process. The window used to be rebuilt per date
-#: by looping over every partition of every symbol and concatenating one-row
-#: tables: about 37M Python iterations per node on the 2019-2026 archive
-#: (about 50 min per node, GIL-bound, so threads did not help). A panel now
-#: grows only up to the decision date being materialized: each partition is
-#: read once, never ahead of the day it serves (the no-look-ahead read
-#: invariant), and each date takes a bisect slice of one contiguous table.
-#: The entry holds the mount itself, so a recycled id() can never serve
-#: another mount's rows.
-_PANELS: dict[tuple[int, str, int, str], dict[str, Any]] = {}
+#: One panel per (mount, stream, symbol, admitted set), shared by every node
+#: and every rebalance date of a process. The window used to be rebuilt per
+#: date by looping over every partition of every symbol and concatenating
+#: one-row tables: about 37M Python iterations per node on the 2019-2026
+#: archive (about 50 min per node, GIL-bound, so threads did not help). A
+#: panel now grows only up to the decision date being materialized: each
+#: partition is read once, never ahead of the day it serves (the
+#: no-look-ahead read invariant), and each date takes a bisect slice of one
+#: contiguous table. The entry holds the mount itself, so a recycled id()
+#: can never serve another mount's rows. Generalized beyond bars
+#: (additions_spec_derivatives_inputs.xml, feature 3) so the funding,
+#: futbars and metrics streams share the identical cache rather than a
+#: second one keyed only by symbol.
+_PANELS: dict[tuple[int, str, str, int, str], dict[str, Any]] = {}
 _PANELS_LOCK = threading.Lock()
+
+#: The three derivative streams sliced beside bars (:data:`evaluator.SLICED_STREAMS`),
+#: named locally because this is the one module that reads each by name to
+#: build its own feature frame — not a shared constant another member needs.
+FUNDING_STREAM: Final[str] = "funding"
+FUTBARS_STREAM: Final[str] = "futbars"
+METRICS_STREAM: Final[str] = "metrics"
+
+#: ``feature:funding_1d:v1``'s own columns beyond ``symbol``/``open_time``,
+#: in the order :mod:`nullius_ingest.derivs_backfill` writes them to the
+#: ``funding`` stream — the order the spec's own sentence names them in.
+_FUNDING_FIELDS: Final[tuple[str, ...]] = (
+    "funding_rate_sum",
+    "funding_rate_last",
+    "n_settlements",
+)
+
+#: ``feature:metrics_1d:v1``'s own columns beyond ``symbol``/``open_time``,
+#: in the order :mod:`nullius_ingest.derivs_backfill` writes them to the
+#: ``metrics`` stream — every one a verbatim string, like every other
+#: observed-stream column this evaluator serves.
+_METRICS_FIELDS: Final[tuple[str, ...]] = (
+    "sum_open_interest",
+    "sum_open_interest_value",
+    "count_toptrader_long_short_ratio",
+    "sum_toptrader_long_short_ratio",
+    "count_long_short_ratio",
+    "sum_taker_long_short_vol_ratio",
+)
 
 
 def _symbol_panel(
-    mount: Any, resolution: Any, symbol: str, decision_date: dt.date
+    mount: Any, resolution: Any, stream: str, symbol: str, decision_date: dt.date
 ) -> tuple[list[dt.date], Any]:
-    """``(row dates, table)`` for one symbol's bars, read up to ``decision_date``.
+    """``(row dates, table)`` for one symbol's ``stream``, read up to ``decision_date``.
 
-    Covers every partition ``resolution`` admits for the symbol that is dated
-    at or before ``decision_date``, oldest first. The table is ``None`` when
-    none is. Partitions are read on demand, so a later date extends the panel
-    rather than rereading it.
+    Covers every partition ``resolution`` admits for the symbol under
+    ``stream`` that is dated at or before ``decision_date``, oldest first.
+    The table is ``None`` when none is. Partitions are read on demand, so a
+    later date extends the panel rather than rereading it. Generalized from
+    bars alone (additions_spec_derivatives_inputs.xml, feature 3), so the
+    funding, futbars and metrics panels a window's derivative feature frames
+    are built from share this exact cache and no-look-ahead discipline.
     """
-    admitted = tuple(resolution.dates(BARS_STREAM, symbol))
+    admitted = tuple(resolution.dates(stream, symbol))
     # The admitted set is part of the key: a resolution at a later decision
-    # time admits more partitions and must not reuse a shorter panel.
-    key = (id(mount), symbol, len(admitted), max(admitted) if admitted else "")
+    # time admits more partitions and must not reuse a shorter panel. The
+    # stream is part of the key too: one symbol's bars and its funding rows
+    # are different panels and must never share a cache entry.
+    key = (id(mount), stream, symbol, len(admitted), max(admitted) if admitted else "")
     with _PANELS_LOCK:
         entry = _PANELS.get(key)
         if entry is None or entry["mount"] is not mount:
@@ -454,7 +492,7 @@ def _symbol_panel(
 
             fresh: list[Any] = []
             for iso in pending[:due]:
-                paths = list(mount.select(BARS_STREAM, symbol, iso))
+                paths = list(mount.select(stream, symbol, iso))
                 if not paths:
                     continue
                 table = pq.read_table(str(paths[0]))
@@ -500,6 +538,24 @@ def _materialize_from_context(context: EvaluationContext) -> Any:
     (or already delisted, or truncated out of range) on a given date is
     never read for it.  A small per-partition cache keeps one evaluation
     from re-reading the same compressed bytes twice across rebalance dates.
+
+    **Beside bars, the derivative streams become four feature frames**
+    (additions_spec_derivatives_inputs.xml, "Snapshot and Window" feature
+    3): ``feature:funding_1d:v1``, ``feature:basis_1d:v1`` (perp close over
+    spot close minus one, computed host-side as a string, present only on a
+    day both closes exist), ``feature:taker_flow_1d:v1`` (the day's
+    taker-buy share of futures volume) and ``feature:metrics_1d:v1`` (the
+    open-interest and long/short columns, opt-in at backfill time) — read
+    through the identical per-(stream, symbol) panel and point-in-time
+    cutoff as bars, so a signal reaching them through
+    ``ctx.feature(name, version)`` gets the same no-look-ahead guarantee.
+    Each is built only when its own stream is sealed at all — read off
+    ``resolution.slices`` (the resolution already answered that question
+    once, host-side; bug_spec_evaluation_throughput.xml's own "never asks
+    the mount for a fresh partition listing" bar applies here exactly as it
+    does to bars) — and only from universe symbols that actually carry a
+    row under it: a symbol with no perpetual contributes none, never a
+    zero-filled one.
     """
     mount = context.snapshot
     # getattr, not context.max_history_days: a few tests hand this function a
@@ -513,35 +569,173 @@ def _materialize_from_context(context: EvaluationContext) -> Any:
         import pyarrow as pa
         import pyarrow.compute as pc
         from contract.bars import bars_frame_name
+        from contract.features import feature_frame_name
         from contract.window import MarketWindow
 
         decision_date = decision_time.date()
         earliest_date = decision_date - dt.timedelta(days=max_history_days)
         universe = pit_universe(resolution, decision_date)
-        tables: list[Any] = []
-        for symbol in universe:
-            days, table = _symbol_panel(mount, resolution, symbol, decision_date)
+        decision_scalar = pa.scalar(decision_time, type=pa.timestamp("us", tz="UTC"))
+
+        def _window_slice(stream: str, symbol: str) -> Any:
+            days, table = _symbol_panel(mount, resolution, stream, symbol, decision_date)
             if table is None:
-                continue
+                return None
             # Rows dated in (earliest_date, decision_date], the same
             # partitions the per-partition loop used to select.
             lo = bisect.bisect_right(days, earliest_date)
             hi = bisect.bisect_right(days, decision_date)
-            if hi > lo:
-                tables.append(table.slice(lo, hi - lo))
-        frame = pa.concat_tables(tables) if tables else pa.table({})
-        if frame.num_rows:
-            frame = frame.filter(
-                pc.less_equal(
-                    frame["open_time"],
-                    pa.scalar(decision_time, type=pa.timestamp("us", tz="UTC")),
-                )
-            )
-        return MarketWindow(
-            decision_time,
-            universe=universe,
-            frames={bars_frame_name("1d"): frame},
+            return table.slice(lo, hi - lo) if hi > lo else None
+
+        def _truncate(table: Any) -> Any:
+            if table.num_rows == 0:
+                return table
+            return table.filter(pc.less_equal(table["open_time"], decision_scalar))
+
+        bars_by_symbol: dict[str, Any] = {}
+        for symbol in universe:
+            sliced = _window_slice(BARS_STREAM, symbol)
+            if sliced is not None:
+                bars_by_symbol[symbol] = _truncate(sliced)
+        bars_frame = (
+            pa.concat_tables(list(bars_by_symbol.values()))
+            if bars_by_symbol
+            else pa.table({})
         )
+        frames: dict[str, Any] = {bars_frame_name("1d"): bars_frame}
+
+        def _renamed(table: Any) -> Any:
+            # The sealed derivative streams stamp their day as ``date``
+            # (ingest.derivs_backfill's own column, matching bars'
+            # partitioning); a served feature frame names it ``open_time``,
+            # the spelling every accessor and every other frame shares.
+            names = [
+                "open_time" if name == "date" else name for name in table.column_names
+            ]
+            return table.rename_columns(names)
+
+        def _empty_feature_table(
+            fields: tuple[str, ...], *, int_fields: tuple[str, ...] = ()
+        ) -> Any:
+            columns: dict[str, Any] = {
+                "symbol": pa.array([], type=pa.string()),
+                "open_time": pa.array([], type=pa.timestamp("us", tz="UTC")),
+            }
+            for field in fields:
+                columns[field] = pa.array(
+                    [], type=pa.int64() if field in int_fields else pa.string()
+                )
+            return pa.table(columns)
+
+        def _sorted_feature_table(table: Any) -> Any:
+            return table.sort_by([("symbol", "ascending"), ("open_time", "ascending")])
+
+        if FUNDING_STREAM in resolution.slices:
+            funding_tables = []
+            for symbol in universe:
+                sliced = _window_slice(FUNDING_STREAM, symbol)
+                if sliced is not None:
+                    funding_tables.append(_truncate(_renamed(sliced)))
+            funding_frame = (
+                pa.concat_tables(funding_tables)
+                if funding_tables
+                else _empty_feature_table(_FUNDING_FIELDS, int_fields=("n_settlements",))
+            )
+            frames[feature_frame_name("funding_1d", "v1")] = _sorted_feature_table(
+                funding_frame
+            )
+
+        if FUTBARS_STREAM in resolution.slices:
+            spot_closes_by_symbol = {
+                symbol: {row["open_time"]: row["close"] for row in table.to_pylist()}
+                for symbol, table in bars_by_symbol.items()
+            }
+            taker_symbols: list[str] = []
+            taker_times: list[Any] = []
+            taker_ratios: list[str] = []
+            basis_symbols: list[str] = []
+            basis_times: list[Any] = []
+            basis_values: list[str] = []
+            for symbol in universe:
+                sliced = _window_slice(FUTBARS_STREAM, symbol)
+                if sliced is None:
+                    continue
+                fut_table = _truncate(_renamed(sliced))
+                spot_closes = spot_closes_by_symbol.get(symbol, {})
+                for row in fut_table.to_pylist():
+                    open_time = row["open_time"]
+                    try:
+                        ratio = Decimal(row["taker_buy_volume"]) / Decimal(
+                            row["fut_volume"]
+                        )
+                    except (InvalidOperation, ZeroDivisionError):
+                        pass
+                    else:
+                        taker_symbols.append(symbol)
+                        taker_times.append(open_time)
+                        taker_ratios.append(format(ratio, "f"))
+
+                    spot_close = spot_closes.get(open_time)
+                    if spot_close is None:
+                        continue
+                    try:
+                        basis = Decimal(row["fut_close"]) / Decimal(spot_close) - Decimal(1)
+                    except (InvalidOperation, ZeroDivisionError):
+                        continue
+                    basis_symbols.append(symbol)
+                    basis_times.append(open_time)
+                    basis_values.append(format(basis, "f"))
+
+            taker_frame = (
+                pa.table(
+                    {
+                        "symbol": taker_symbols,
+                        "open_time": pa.array(
+                            taker_times, type=pa.timestamp("us", tz="UTC")
+                        ),
+                        "taker_buy_ratio": taker_ratios,
+                    }
+                )
+                if taker_symbols
+                else _empty_feature_table(("taker_buy_ratio",))
+            )
+            frames[feature_frame_name("taker_flow_1d", "v1")] = _sorted_feature_table(
+                taker_frame
+            )
+
+            basis_frame = (
+                pa.table(
+                    {
+                        "symbol": basis_symbols,
+                        "open_time": pa.array(
+                            basis_times, type=pa.timestamp("us", tz="UTC")
+                        ),
+                        "basis": basis_values,
+                    }
+                )
+                if basis_symbols
+                else _empty_feature_table(("basis",))
+            )
+            frames[feature_frame_name("basis_1d", "v1")] = _sorted_feature_table(
+                basis_frame
+            )
+
+        if METRICS_STREAM in resolution.slices:
+            metrics_tables = []
+            for symbol in universe:
+                sliced = _window_slice(METRICS_STREAM, symbol)
+                if sliced is not None:
+                    metrics_tables.append(_truncate(_renamed(sliced)))
+            metrics_frame = (
+                pa.concat_tables(metrics_tables)
+                if metrics_tables
+                else _empty_feature_table(_METRICS_FIELDS)
+            )
+            frames[feature_frame_name("metrics_1d", "v1")] = _sorted_feature_table(
+                metrics_frame
+            )
+
+        return MarketWindow(decision_time, universe=universe, frames=frames)
 
     return materialize
 

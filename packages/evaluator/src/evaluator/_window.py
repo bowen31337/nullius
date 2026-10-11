@@ -126,8 +126,21 @@ ROSTER_STREAM = "bars"
 #: is deliberately absent — it is versioned daily, not partitioned by
 #: symbol, so there is no ``symbol=`` layer for a symbol slice to act on;
 #: it becomes the host's concern at materialization (feature 73's step),
-#: not the resolution's.
-SLICED_STREAMS: Tuple[str, ...] = ("bars", "trades", "bookfeat", "borrow")
+#: not the resolution's.  ``funding``, ``futbars`` and ``metrics`` are the
+#: derivatives streams additions_spec_derivatives_inputs.xml backfills and
+#: seals beside bars — sliced on the identical rule, so the materializer
+#: that turns them into the ``feature:funding_1d:v1``/``basis_1d:v1``/
+#: ``taker_flow_1d:v1``/``metrics_1d:v1`` frames (orchestrator._evaluate)
+#: never has to special-case their point-in-time cutoff.
+SLICED_STREAMS: Tuple[str, ...] = (
+    "bars",
+    "trades",
+    "bookfeat",
+    "borrow",
+    "funding",
+    "futbars",
+    "metrics",
+)
 
 
 # -- The decision time -------------------------------------------------------
