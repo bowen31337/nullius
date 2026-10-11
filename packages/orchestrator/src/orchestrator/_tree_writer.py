@@ -76,16 +76,25 @@ connection that wrote it.  Construction performs no I/O — the path is
 resolved on first use — so composing a run that carries this writer touches
 no disk until a node is actually evaluated.
 
-**No schema is created here.**  The ``node`` table and its seven metric
-columns belong to the migrations (``0118`` creates the table, ``0114`` adds
-the metrics), and a writer that issued ``CREATE TABLE`` or ``ALTER TABLE``
+**No table is created here, and the one column this writer does add follows
+the same precedent as its siblings'.**  The ``node`` table and its seven
+``0114`` metric columns belong to the migrations (``0118`` creates the
+table, ``0114`` adds the metrics), and a writer that issued ``CREATE TABLE``
 would be inventing a tree the schema owns — the same stance discovery's
 ``AttemptLog`` takes toward the table it writes into.  A database the chain
 has not reached has no table to ``UPDATE``, and that is refused by name
 rather than papered over: :meth:`write_node` reports it as a missing node, in
 the migration's own terms, because from the caller's view the difference
 between "no table" and "no row" is only which side of the same refusal it is
-looking at.
+looking at.  ``ir_tstat`` (additions_spec_cost_aware_selection.xml, feature
+1) is the one column this module *does* bring for itself, by the same
+probe-then-``ALTER`` :mod:`tripwires.node_metric` uses for
+``perturb_stability`` and discovery's own ``persist`` uses for
+``fail_class``: :func:`_ensure_ir_tstat_column` probes ``PRAGMA
+table_info(node)`` and issues ``ALTER TABLE node ADD COLUMN ir_tstat REAL``
+only when a table already exists and the column is missing from it — never
+against a database the ``node`` migration has not reached, which is left for
+:meth:`write_node`'s own "missing node" refusal to report.
 
 **The protocol is structural, so nothing is imported from the evaluator.**
 The module holds no ``import evaluator``: ``TreeNodeWriter`` is a ``Protocol``
@@ -112,7 +121,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import closing
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 from urllib.parse import unquote, urlparse
 
 __all__ = [
@@ -151,17 +160,26 @@ _CORE_COLUMNS: tuple[str, ...] = (
     "cost_adjusted_ir",
 )
 
-#: The one metric column whose incoming value may be ``None`` — step 10's
+#: The metric columns whose incoming value may be ``None`` — step 10's
 #: tripwire figure, which feature 85's ``NodeRow`` carries as ``None`` because
-#: it is not that step's input.  A ``None`` here is *not measured by this
-#: step*, so the column is left exactly as the tree holds it; a number is a
-#: measurement and is written.
-_OPTIONAL_COLUMN = "perturb_stability"
+#: it is not that step's input, and the post-cost IR t-statistic
+#: (``ir_tstat``), which a caller satisfying the evaluator's structural
+#: ``NodeRow`` protocol simply has no attribute for at all (``getattr``'s own
+#: default reads that the same way).  A ``None`` — or an absent attribute —
+#: here is *not measured by this step*, so the column is left exactly as the
+#: tree holds it; a number is a measurement and is written.
+_OPTIONAL_COLUMNS: tuple[str, ...] = ("perturb_stability", "ir_tstat")
 
-#: All seven feature-101 columns, in the order the migration adds them — the
+#: ``ir_tstat`` alone, named for :func:`_ensure_ir_tstat_column` — the one
+#: column among :data:`_OPTIONAL_COLUMNS` this module itself brings to the
+#: table rather than reading one the migrations already created (see that
+#: function's own docstring).
+IR_TSTAT_COLUMN: Final[str] = "ir_tstat"
+
+#: All feature-101 columns plus ``ir_tstat``, in the order each arrived — the
 #: ``SET`` list of the ``UPDATE`` and the ``SELECT`` list of the read, one
 #: spelling so the two cannot drift.
-_TARGET_COLUMNS: tuple[str, ...] = _CORE_COLUMNS + (_OPTIONAL_COLUMN,)
+_TARGET_COLUMNS: tuple[str, ...] = _CORE_COLUMNS + _OPTIONAL_COLUMNS
 
 #: The greppable word that opens every :class:`NodeMetricsConflictError`
 #: message — the spec's own spelling, so an operator greps one word for *the
@@ -302,19 +320,23 @@ class NodeMetricsWriter:
         Raises :class:`NodeMetricsConflictError` when the tree does not hold
         the node (the write is never answered by an ``INSERT``) and when the
         row already holds metrics whose values differ from the ones offered —
-        see the class for both faces.  ``perturb_stability`` is written and
-        compared only when the record states a number; a ``None`` leaves the
-        column exactly as the tree holds it, so this step cannot clobber a
-        tripwire's figure and does not conflict with one.
+        see the class for both faces.  ``perturb_stability`` and ``ir_tstat``
+        are written and compared only when the record states a number; a
+        ``None`` — or a missing attribute — leaves the column exactly as the
+        tree holds it, so this step cannot clobber a tripwire's figure and
+        does not conflict with one.
 
         A ``database_url`` this writer cannot speak or a ``node_row`` that
         names no node is refused with :class:`NodeMetricsWriterError`, before
-        the database is touched.
+        the database is touched.  A pre-existing ``node`` table that lacks
+        ``ir_tstat`` is upgraded in place first, inside the same transaction
+        (see :func:`_ensure_ir_tstat_column`).
         """
         node_id = _node_id_of(node_row)
         incoming = _incoming_values(node_row)
         path = self._resolve_path()
         with closing(sqlite3.connect(path)) as connection, connection:
+            _ensure_ir_tstat_column(connection)
             stored = _read_row(connection, node_id)
             if stored is None:
                 raise NodeMetricsConflictError(
@@ -347,6 +369,42 @@ class NodeMetricsWriter:
         return f"{type(self).__name__}(database_url={self._database_url!r})"
 
 
+# -- The one column this module upgrades a pre-existing tree with --------------
+
+
+def _ensure_ir_tstat_column(connection: sqlite3.Connection) -> None:
+    """Add ``ir_tstat`` to ``node`` if a pre-existing tree lacks it.
+
+    additions_spec_cost_aware_selection.xml, feature 1: ``node`` gains
+    ``ir_tstat REAL NULL``, added by probe-then-``ALTER`` in this module
+    rather than by a migration — ``0114`` already shipped its seven columns
+    before this feature existed, so a database migrated through it has no
+    ``ir_tstat`` until this call lands one.  ``PRAGMA table_info`` rather than
+    a try/except around the ``ALTER``, for the reason :mod:`tripwires.node_metric`'s
+    own probe states: a read cannot half-apply, and its refusal carries no
+    risk of masking a *different* error in the statement it stands in for.
+
+    Run first, inside :meth:`NodeMetricsWriter.write_node`'s own transaction,
+    so a pre-existing table is upgraded in place before the row underneath it
+    is read.  A no-op when the table already carries the column (every write
+    after the first on one database) and when the table does not exist at
+    all — that absence is left for :meth:`NodeMetricsWriter.write_node`'s own
+    "missing node" refusal to name, by the migration it points to, rather
+    than this function racing it with a bare ``no such table`` from an
+    ``ALTER`` against a table nobody has created yet.
+    """
+    exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (NODE_TABLE,),
+    ).fetchone()
+    if exists is None:
+        return
+    columns = connection.execute(f"PRAGMA table_info({NODE_TABLE})").fetchall()
+    if any(row[1] == IR_TSTAT_COLUMN for row in columns):
+        return
+    connection.execute(f"ALTER TABLE {NODE_TABLE} ADD COLUMN {IR_TSTAT_COLUMN} REAL")
+
+
 # -- Reading the row, as the table holds it ------------------------------------
 
 
@@ -369,13 +427,15 @@ def _node_id_of(node_row: Any) -> str:
 
 
 def _incoming_values(node_row: Any) -> dict[str, float | None]:
-    """The seven values the record offers, as numbers or an honest ``None``.
+    """The values the record offers, as numbers or an honest ``None``.
 
     Read by attribute — the ``NodeRow`` the evaluator hands across its seam is
     duck-typed, not imported.  The six core metrics must each be a finite
     number (a ``None`` there would be a record that measured nothing, and
-    ``NULL`` is where *unmeasured* already lives); ``perturb_stability`` may be
-    ``None``, which means *not measured by this step* rather than zero.
+    ``NULL`` is where *unmeasured* already lives); each of
+    :data:`_OPTIONAL_COLUMNS` (``perturb_stability``, ``ir_tstat``) may be
+    ``None`` or simply absent from ``node_row`` altogether, both of which mean
+    *not measured by this step* rather than zero.
     """
     values: dict[str, float | None] = {}
     for column in _CORE_COLUMNS:
@@ -388,17 +448,18 @@ def _incoming_values(node_row: Any) -> dict[str, float | None]:
                 "record that measured nothing has no row to write (feature 3)"
             )
         values[column] = float(value)
-    perturb = getattr(node_row, _OPTIONAL_COLUMN, None)
-    if perturb is not None:
-        if isinstance(perturb, bool) or not isinstance(perturb, (int, float)):
-            raise NodeMetricsWriterError(
-                f"the record offers {_OPTIONAL_COLUMN!r} as {perturb!r}; it "
-                "is a measured figure or an honest None — *not measured by "
-                "this step* — and anything else is neither (feature 3)"
-            )
-        values[_OPTIONAL_COLUMN] = float(perturb)
-    else:
-        values[_OPTIONAL_COLUMN] = None
+    for column in _OPTIONAL_COLUMNS:
+        value = getattr(node_row, column, None)
+        if value is not None:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise NodeMetricsWriterError(
+                    f"the record offers {column!r} as {value!r}; it is a "
+                    "measured figure or an honest None — *not measured by "
+                    "this step* — and anything else is neither (feature 3)"
+                )
+            values[column] = float(value)
+        else:
+            values[column] = None
     return values
 
 
@@ -465,9 +526,9 @@ def _differences(
     """The columns whose offered value differs from the one the row holds.
 
     Empty means the write is a no-op and the answer is ``False``.  The six
-    core columns are always compared; ``perturb_stability`` only when the
-    record offers a number, because a ``None`` there means *this step did not
-    measure it* and absence is not a differing measurement.
+    core columns are always compared; each of :data:`_OPTIONAL_COLUMNS` only
+    when the record offers a number, because a ``None`` there means *this
+    step did not measure it* and absence is not a differing measurement.
     """
     differing: list[str] = []
     for column in _CORE_COLUMNS:
@@ -476,13 +537,12 @@ def _differences(
                 f"{column} holds {stored[column]!r}, the record offers "
                 f"{incoming[column]!r}"
             )
-    if incoming[_OPTIONAL_COLUMN] is not None and (
-        stored[_OPTIONAL_COLUMN] != incoming[_OPTIONAL_COLUMN]
-    ):
-        differing.append(
-            f"{_OPTIONAL_COLUMN} holds {stored[_OPTIONAL_COLUMN]!r}, the "
-            f"record offers {incoming[_OPTIONAL_COLUMN]!r}"
-        )
+    for column in _OPTIONAL_COLUMNS:
+        if incoming[column] is not None and stored[column] != incoming[column]:
+            differing.append(
+                f"{column} holds {stored[column]!r}, the record offers "
+                f"{incoming[column]!r}"
+            )
     return differing
 
 
@@ -493,18 +553,20 @@ def _update(
 ) -> None:
     """Set the metric columns on the node's row — one ``UPDATE``, one statement.
 
-    The six core columns are always set; ``perturb_stability`` is set only
-    when the record offers a number, so a bare live run never clobbers a
-    tripwire's figure.  The row was read moments before in this same
-    transaction, so a ``rowcount`` other than one means the write did not land
-    — and reporting success there would be the "looks done, is not" failure
-    the write's whole contract exists to prevent.
+    The six core columns are always set; each of :data:`_OPTIONAL_COLUMNS` is
+    set only when the record offers a number, so a bare live run never
+    clobbers a tripwire's figure (or leaves ``ir_tstat`` on a row a caller's
+    ``NodeRow`` never measured).  The row was read moments before in this
+    same transaction, so a ``rowcount`` other than one means the write did
+    not land — and reporting success there would be the "looks done, is not"
+    failure the write's whole contract exists to prevent.
     """
     assignments = [f"{column} = ?" for column in _CORE_COLUMNS]
     values: list[float | None] = [incoming[column] for column in _CORE_COLUMNS]
-    if incoming[_OPTIONAL_COLUMN] is not None:
-        assignments.append(f"{_OPTIONAL_COLUMN} = ?")
-        values.append(incoming[_OPTIONAL_COLUMN])
+    for column in _OPTIONAL_COLUMNS:
+        if incoming[column] is not None:
+            assignments.append(f"{column} = ?")
+            values.append(incoming[column])
     values.append(node_id)
     cursor = connection.execute(
         f"UPDATE {NODE_TABLE} SET {', '.join(assignments)} "

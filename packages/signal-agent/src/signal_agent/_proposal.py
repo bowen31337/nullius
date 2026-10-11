@@ -166,15 +166,21 @@ DATABASE_URL_ENV: Final[str] = "DATABASE_URL"
 #: are in, and for the same reason.
 NODE_TABLE: Final[str] = "node"
 
-#: 0114's seven metric columns (feature 101), in the migration's own order.
-#: Spelled as data rather than read off the migration because this module must
-#: *probe* for them: the store speaks to whatever database ``DATABASE_URL``
-#: names, and that database may not have reached 0114 — so the tuple below is
-#: what the score record would carry on the fully-assembled tree, and
-#: :func:`_scored_columns` intersects it with what the live table actually has.
+#: 0114's seven metric columns (feature 101), plus ``ir_tstat`` — the
+#: post-cost IR t-statistic additions_spec_cost_aware_selection.xml's feature
+#: 1 adds to ``node`` by probe-then-``ALTER`` in
+#: :mod:`orchestrator._tree_writer` rather than by a migration — in the
+#: order each arrived.  Spelled as data rather than read off the migration
+#: because this module must *probe* for them: the store speaks to whatever
+#: database ``DATABASE_URL`` names, and that database may not have reached
+#: 0114, or evaluated a node since the tree writer started adding
+#: ``ir_tstat`` — so the tuple below is what the score record would carry on
+#: the fully-assembled tree, and :func:`_scored_columns` intersects it with
+#: what the live table actually has.
 METRIC_COLUMNS: Final[tuple[str, ...]] = (
     "ic_mean",
     "ic_tstat",
+    "ir_tstat",
     "ir_standalone",
     "ir_marginal",
     "turnover",
@@ -343,6 +349,7 @@ class ScoreRecord:
         *,
         ic_mean: float | None = None,
         ic_tstat: float | None = None,
+        ir_tstat: float | None = None,
         ir_standalone: float | None = None,
         ir_marginal: float | None = None,
         turnover: float | None = None,
@@ -352,6 +359,7 @@ class ScoreRecord:
     ) -> None:
         self.ic_mean = ic_mean
         self.ic_tstat = ic_tstat
+        self.ir_tstat = ir_tstat
         self.ir_standalone = ir_standalone
         self.ir_marginal = ir_marginal
         self.turnover = turnover

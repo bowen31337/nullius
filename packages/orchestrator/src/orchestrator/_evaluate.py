@@ -94,6 +94,19 @@ so building them per call costs nothing a live run was not already paying.
 Decay and capacity stay unwritten in spec A; a later spec that measures them
 calls ``evaluator.persist_node`` once those inputs exist.
 
+**``ir_tstat`` is the post-cost IR t-statistic, computed once beside
+``cost_adjusted_ir``.**  additions_spec_cost_aware_selection.xml, "Cost-Aware
+Selection", feature 1: ``ir_standalone · √dates`` — the same standardization
+``ic_tstat`` already applies to ``ic_mean``, taken over the node's own
+post-cost book instead of the per-date IC series.  Computed from exactly the
+``metrics`` this module already measured (never a second pass over the
+panel), carried on :class:`NodeEvaluation.score` and the node row beside
+``ic_tstat`` (:mod:`orchestrator._tree_writer` upgrades a pre-existing
+``node`` table with the column by probe-then-``ALTER``, since ``0114``
+shipped before this feature existed), and left ``None`` on every failure
+path the same way every other metric is — never written, because
+:func:`_persist` is never reached before ``metrics`` exists.
+
 **``charges_budget`` is the oracle's bit, nothing else, and it defaults
 conservatively until the oracle has spoken.**  Before ``gate_targets`` asks
 the oracle, a failure (a bad import screen, a broken window, a crashed
@@ -605,17 +618,21 @@ def _cost_adjusted_ir(returns: PostCostReturns, metrics: NodeMetrics) -> float:
 @dataclass(frozen=True)
 class _TreeNodeRow:
     """The duck-typed row :class:`~orchestrator._tree_writer.NodeMetricsWriter`
-    wants — exactly the identity and the seven metric columns it reads by
+    wants — exactly the identity and the eight metric columns it reads by
     attribute, and nothing of :class:`evaluator.NodeRow`'s wider shape (the
     tree writer never reads ``campaign_id``, ``snapshot_name``,
     ``evaluator_hash`` or ``cost_model`` — those are the tree member's own
     columns, already on the row the discovery loop or the root planter
-    wrote first).
+    wrote first).  ``ir_tstat`` (additions_spec_cost_aware_selection.xml,
+    feature 1) is the post-cost IR t-statistic — never ``None`` here, since
+    this row is only ever built once :func:`evaluate_node` has already
+    measured it from the same metrics as every other field.
     """
 
     node_id: str
     ic_mean: float
     ic_tstat: float
+    ir_tstat: float
     ir_standalone: float
     ir_marginal: float
     turnover: float
@@ -632,6 +649,7 @@ def _persist(
     returns: PostCostReturns,
     metrics: NodeMetrics,
     ir_marginal: float,
+    ir_tstat: float,
     cost_adjusted_ir: float,
     perturb_stability: float | None = None,
 ) -> NodePersistence:
@@ -665,6 +683,7 @@ def _persist(
             node_id=node_id,
             ic_mean=metrics.ic_mean,
             ic_tstat=metrics.ic_tstat,
+            ir_tstat=ir_tstat,
             ir_standalone=metrics.ir_standalone,
             ir_marginal=ir_marginal,
             turnover=metrics.turnover,
@@ -1225,6 +1244,7 @@ def evaluate_node(
         )
 
     cost_adjusted_ir = _cost_adjusted_ir(priced, metrics)
+    ir_tstat = metrics.ir_standalone * math.sqrt(metrics.dates)
 
     _persist_tripwire_verdicts(
         tripwire_outcome, node_id=node_id, database_url=context.database_url
@@ -1260,6 +1280,7 @@ def evaluate_node(
         returns=priced,
         metrics=metrics,
         ir_marginal=ir_marginal,
+        ir_tstat=ir_tstat,
         cost_adjusted_ir=cost_adjusted_ir,
         perturb_stability=perturb_stability,
     )
@@ -1281,6 +1302,7 @@ def evaluate_node(
     score = ScoreRecord(
         ic_mean=metrics.ic_mean,
         ic_tstat=metrics.ic_tstat,
+        ir_tstat=ir_tstat,
         ir_standalone=metrics.ir_standalone,
         ir_marginal=ir_marginal,
         turnover=metrics.turnover,
