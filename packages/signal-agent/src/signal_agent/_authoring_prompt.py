@@ -84,12 +84,48 @@ the same reason :func:`signal_agent._authoring.require_contract` defers
 a module-scope import of a sibling *member* would still make this file
 unimportable in an environment that has not put that member's ``src/`` on
 ``sys.path`` yet.
+
+**Cost awareness (additions_spec_cost_aware_selection.xml, feature 4).**
+PRD §2.3's M2 pivot found selection cost-blind: a committed pick's in-sample
+IC survives but its post-cost book loses money out of sample, because
+nothing told the agent that cost, not rank IC, is what it is judged on. Two
+small additions carry that fact into the prompt, and neither computes a cost
+of its own:
+
+* ``task`` gains a ``cost_awareness`` key (:func:`_cost_awareness_part`) —
+  the fixed statement that the node is scored and selected on the post-cost
+  IR t-statistic of a dollar-neutral book, the evaluation grid's cadence
+  (:func:`_cadence_statement`, derived from the grid's own dates — "weekly"
+  for the archive configs), the cost model's per-rebalance cost in bps of
+  traded notional, and the one line of turnover guidance feature 4 names —
+  information only, judging nothing. The cadence and the per-rebalance cost
+  are read, duck-typed, off an ``evaluation`` context a caller hands in
+  (:func:`_field`, the same reader ``workspace`` is read through); neither
+  is computed from a raw fee schedule here, because applying a fee schedule
+  is :mod:`cost_model`'s own arithmetic and feature 69 forbids a second
+  implementation of it. ``evaluation=None`` — what every caller that has not
+  wired a context in hands in, unchanged from before this feature —
+  renders both facts as the honest ``"unmeasured"``, the same word a prior
+  proposal's own absent metric renders as.
+* Each history block gains a ``cost figures`` line (:func:`_cost_figures`)
+  naming ``ic_tstat``, ``ir_tstat``, ``turnover`` and ``cost_adjusted_ir``
+  off the prior's recorded :class:`~signal_agent.ScoreRecord` explicitly,
+  beside the ``score.json`` blob those same figures already sit inside —
+  so the four figures a cost-aware author must weigh are not something it
+  has to find by re-parsing JSON. A ``None`` score, or a ``None`` metric
+  within one, renders ``"unmeasured"`` rather than ``null``.
+
+Both additions are appended after what :func:`build_authoring_prompt` and
+:func:`to_request` already rendered — every existing key, every existing
+line, is unchanged in content and position.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 from collections.abc import Iterable, Mapping
+from itertools import pairwise
 from typing import Any, Final
 
 from ._authoring import signal_contract
@@ -230,6 +266,143 @@ _ANSWER_FORMAT: Final[Mapping[str, str]] = {
 }
 
 
+# ── Cost awareness: feature 4 of additions_spec_cost_aware_selection.xml ────
+
+#: The literal this module renders for a cost-awareness fact it was not
+#: handed, or a prior proposal's metric a ScoreRecord carries as ``None`` —
+#: one word for "not measured" wherever either appears, rather than
+#: ``null`` in one place and a bare absence in another.
+_UNMEASURED: Final[str] = "unmeasured"
+
+#: The fixed statement naming what a node is scored and selected on — the
+#: addition's own words (feature 4's first bullet), restated as prose an
+#: agent reads rather than a flag some gate checks: the actual rule (the
+#: eligible node with the highest ``ir_tstat`` is the commit) is feature 2's
+#: law over ``orchestrator.closeout``, not this module's to enforce or vary.
+_SELECTION_STATEMENT: Final[str] = (
+    "This node is scored and selected on the post-cost IR t-statistic "
+    "(ir_tstat) of a dollar-neutral book, rebalanced on the evaluation "
+    "grid -- not on rank IC (ic_tstat) alone."
+)
+
+#: What ``per_rebalance_cost_bps`` means, spelled once beside the figure so
+#: the number and its definition cannot separate — feature 4's own words
+#: ("fees plus spread assumption, as bps of traded notional") plus the one
+#: relationship it names between that figure and turnover.
+_COST_BASIS_STATEMENT: Final[str] = (
+    "per_rebalance_cost_bps is the cost model's fees plus its spread "
+    "assumption, as bps of traded notional charged once per rebalance on "
+    "the grid above; turnover multiplies this cost -- a book that turns "
+    "over more often pays it more often."
+)
+
+#: Feature 4's one line of guidance, verbatim in substance: information
+#: only, read by a model deciding what to try next, never checked by any
+#: gate the way feature 210's clause is — the addition's own words say so
+#: ("It judges nothing and is information only"), restated here as the
+#: last sentence so a reader cannot mistake prose for a rule.
+_TURNOVER_GUIDANCE: Final[str] = (
+    "High turnover erodes the post-cost book: persistent or smoothed "
+    "signals with lower turnover are preferred when their IC survives. "
+    "This is information only and judges nothing."
+)
+
+
+def _cadence_statement(dates: object) -> str:
+    """A one-word description of the evaluation grid's spacing, or "unmeasured".
+
+    Reads the grid's own dates (parsed as ``datetime.date``/``datetime``, or
+    ISO-8601 strings) -- nothing is assumed about a deployment's rebalance
+    cadence beyond what the dates themselves show. Fewer than two dates, or
+    a value this function cannot parse as a date, names no spacing and
+    answers the honest absence rather than a guess. A grid spaced evenly at
+    7 days (the archive configs' 235 dates) answers "weekly"; one spaced
+    unevenly answers "irregular" rather than silently naming the first gap
+    it saw.
+    """
+    if not isinstance(dates, (list, tuple)) or len(dates) < 2:
+        return _UNMEASURED
+    parsed: list[dt.date] = []
+    for value in dates:
+        if isinstance(value, dt.datetime):
+            parsed.append(value.date())
+        elif isinstance(value, dt.date):
+            parsed.append(value)
+        elif isinstance(value, str):
+            try:
+                parsed.append(dt.date.fromisoformat(value))
+            except ValueError:
+                return _UNMEASURED
+        else:
+            return _UNMEASURED
+    steps = {(later - earlier).days for earlier, later in pairwise(parsed)}
+    if len(steps) != 1:
+        return "irregular"
+    (step,) = steps
+    return {1: "daily", 7: "weekly", 30: "monthly"}.get(step, f"every {step} days")
+
+
+def _cost_awareness_part(evaluation: object) -> dict[str, Any]:
+    """The cost-awareness facts feature 4 asks the rendered prompt to carry.
+
+    ``evaluation`` is duck-typed, read the same way ``workspace`` is (by
+    mapping key or by attribute, through :func:`_field`): ``evaluation_dates``
+    (the rebalance grid, read only to name its cadence — see
+    :func:`_cadence_statement`) and ``per_rebalance_cost_bps`` (the cost
+    model's own figure). Neither is computed here: this function describes
+    the shape of what it is handed, never applies a fee schedule of its own
+    (:mod:`cost_model` owns that arithmetic; feature 69 forbids a second
+    implementation of it).
+
+    ``evaluation=None`` — the default, and what every caller that has not
+    wired an evaluation context in hands in — answers both facts as
+    :data:`_UNMEASURED`, not a reason to omit the section: feature 4 asks
+    for the section to *display*, always, so a prompt built before a
+    deployment wires the context in reads the same keys a later one does,
+    carrying the honest absence rather than a missing key a reader would
+    have to guess the meaning of.
+    """
+    cadence = _cadence_statement(_field(evaluation, "evaluation_dates"))
+    cost_bps = _field(evaluation, "per_rebalance_cost_bps")
+    if isinstance(cost_bps, bool) or not isinstance(cost_bps, (int, float)):
+        cost_bps = _UNMEASURED
+    return {
+        "selection_statement": _SELECTION_STATEMENT,
+        "cadence": cadence,
+        "per_rebalance_cost_bps": cost_bps,
+        "cost_basis": _COST_BASIS_STATEMENT,
+        "guidance": _TURNOVER_GUIDANCE,
+    }
+
+
+#: The four figures each prior proposal's history block names explicitly —
+#: feature 4's own list — beside the full ``score.json`` already rendered,
+#: so the figures a cost-aware author must weigh are not buried inside one
+#: JSON blob it would otherwise have to re-parse.
+_COST_FIGURE_NAMES: Final[tuple[str, ...]] = (
+    "ic_tstat",
+    "ir_tstat",
+    "turnover",
+    "cost_adjusted_ir",
+)
+
+
+def _cost_figures(score: ScoreRecord | None) -> dict[str, Any]:
+    """The four named figures off ``score``, :data:`_UNMEASURED` for each absence.
+
+    A ``None`` score (a node with no recorded pair yet) answers
+    :data:`_UNMEASURED` for all four, the same way a ``None`` metric within
+    a present score does — one word for "not measured", whether nothing was
+    recorded or one figure among several was not.
+    """
+    if score is None:
+        return {name: _UNMEASURED for name in _COST_FIGURE_NAMES}
+    return {
+        name: (value if (value := getattr(score, name, None)) is not None else _UNMEASURED)
+        for name in _COST_FIGURE_NAMES
+    }
+
+
 def _available_streams_statement(streams: Mapping[str, tuple[str, ...]]) -> str:
     """The plain statement ``available_streams`` earns its place in the prompt with.
 
@@ -256,7 +429,9 @@ def _available_streams_statement(streams: Mapping[str, tuple[str, ...]]) -> str:
     )
 
 
-def _task_part(workspace: object, snapshot: Any | None = None) -> dict[str, Any]:
+def _task_part(
+    workspace: object, snapshot: Any | None = None, evaluation: Any | None = None
+) -> dict[str, Any]:
     """The task section: the signal ABI, the node's place, and the format.
 
     A mapping of facts, assembled from feature 205's own
@@ -278,6 +453,15 @@ def _task_part(workspace: object, snapshot: Any | None = None) -> dict[str, Any]
     dict returned here (never a second, sibling fact at the task level, and
     never hard-coded to one snapshot's own cadence), so the two cannot
     disagree about what the snapshot holds.
+
+    ``evaluation`` is threaded into :func:`_cost_awareness_part`, which folds
+    a ``cost_awareness`` key into the returned mapping
+    (additions_spec_cost_aware_selection.xml feature 4): ``None`` (the
+    default) answers it with the honest ``"unmeasured"`` for the facts it
+    did not carry, same as an unconfigured ``snapshot`` leaves
+    ``available_streams`` out — except the ``cost_awareness`` key itself is
+    always present, because feature 4 asks for the section to display
+    regardless of whether a deployment has wired an evaluation context in.
     """
     contract = signal_contract().declaration(snapshot=snapshot)
     streams = contract.get("available_streams")
@@ -289,6 +473,7 @@ def _task_part(workspace: object, snapshot: Any | None = None) -> dict[str, Any]
         "depth": _validated_depth(workspace),
         "contract": contract,
         "answer_format": dict(_ANSWER_FORMAT),
+        "cost_awareness": _cost_awareness_part(evaluation),
     }
 
 
@@ -462,6 +647,7 @@ def build_authoring_prompt(
     *,
     clause: object,
     snapshot: Any | None = None,
+    evaluation: Any | None = None,
 ) -> AuthoringPrompt:
     """Build the C3 authoring prompt's three named parts.
 
@@ -475,7 +661,12 @@ def build_authoring_prompt(
     from ``NULLIUS_EVALUATION_CONFIG`` (bug_spec_prompt_available_streams.xml)
     — passed straight through to :meth:`~signal_agent.SignalContract.
     declaration`, so the task's ``contract`` carries ``available_streams``
-    exactly when a caller configured one.
+    exactly when a caller configured one.  ``evaluation``, when given, is a
+    duck-typed evaluation context read for ``evaluation_dates`` and
+    ``per_rebalance_cost_bps`` (additions_spec_cost_aware_selection.xml
+    feature 4) — folded into the task's ``cost_awareness`` key by
+    :func:`_cost_awareness_part`, which answers ``"unmeasured"`` for either
+    fact ``evaluation`` does not carry (``None`` included).
 
     The returned :class:`AuthoringPrompt` is the value
     :meth:`~signal_agent.PromptGuidanceGate.admit` screens and
@@ -484,7 +675,7 @@ def build_authoring_prompt(
     it cannot name the parts of, and never summarises, samples or truncates
     anything it is handed.
     """
-    task = _task_part(workspace, snapshot)
+    task = _task_part(workspace, snapshot, evaluation)
     anti_convergence = _clause_text(clause)
     entries = _validated_history(history)
     return AuthoringPrompt(
@@ -554,12 +745,17 @@ def _render_history(history: object) -> str:
     """The user message: every prior node, in order, whole.
 
     One block per entry — its ``node_id``, its ``code_hash``, its complete
-    ``proposal.md`` text, and its ``score.json`` (or the literal ``null`` for
-    a node not yet scored) — and nothing else: no entry is skipped, no
-    proposal is cut, and no run is sampled.  An empty history renders as the
-    honest statement that there is none yet, which is the correct state for
-    a campaign's first node and not a reason to refuse (feature 206's own
-    stance toward an empty history, restated here for its rendering).
+    ``proposal.md`` text, its ``score.json`` (or the literal ``null`` for
+    a node not yet scored), and a ``cost figures`` line naming
+    ``ic_tstat``, ``ir_tstat``, ``turnover`` and ``cost_adjusted_ir``
+    explicitly (:func:`_cost_figures`, additions_spec_cost_aware_selection.xml
+    feature 4) — and nothing else: no entry is skipped, no proposal is cut,
+    and no run is sampled.  The cost figures line is appended after
+    ``score.json``, never in place of it: the full recorded score still
+    renders exactly as it did before feature 4. An empty history renders as
+    the honest statement that there is none yet, which is the correct state
+    for a campaign's first node and not a reason to refuse (feature 206's
+    own stance toward an empty history, restated here for its rendering).
     """
     if not isinstance(history, Iterable) or isinstance(history, (str, bytes, Mapping)):
         raise AuthoringPromptError(
@@ -577,11 +773,13 @@ def _render_history(history: object) -> str:
     blocks: list[str] = []
     for prior, score in entries:
         score_json = score.to_json() if score is not None else "null"
+        cost_figures = json.dumps(_cost_figures(score), sort_keys=True)
         blocks.append(
             f"### node {_field(prior, 'node_id')} "
             f"(code_hash {_field(prior, 'code_hash')})\n"
             f"proposal.md:\n{_field(prior, 'proposal')}\n\n"
-            f"score.json:\n{score_json}"
+            f"score.json:\n{score_json}\n\n"
+            f"cost figures: {cost_figures}"
         )
     return "## History\n\n" + "\n\n".join(blocks)
 

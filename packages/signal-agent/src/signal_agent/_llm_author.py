@@ -125,6 +125,22 @@ two callers build their own workspace-shaped value and their own prompt
 inline, rather than share a third method, so ``__call__``'s own body and its
 existing tests are exactly what they were before this method existed.
 
+Cost awareness (additions_spec_cost_aware_selection.xml feature 4)
+--------------------------------------------------------------------
+
+Every prompt this author builds also carries the evaluation grid's cadence,
+resolved once at construction exactly as ``available_streams`` already is
+(:func:`_resolve_evaluation_grid`, beside :func:`_resolve_available_streams_
+snapshot`): both read the same ``NULLIUS_EVALUATION_CONFIG`` document
+(:func:`_read_evaluation_document`), each its own one key. The per-rebalance
+cost figure feature 4 also asks for has no resolution here — the cost model's
+own arithmetic (``cost_model``) is not a dependency of this member, and
+computing it from a raw fee schedule would be the second implementation
+feature 69 forbids — so it renders as the honest ``"unmeasured"`` until a
+caller wires it in. Neither fact gates anything: a campaign with no grid
+configured authors exactly as it did before this feature, with the new
+section's facts reading "unmeasured".
+
 Stdlib only, plus this member's own submodules at module scope
 (:mod:`signal_agent._authored` and :mod:`signal_agent._authoring_prompt`) and
 ``providers``/``discovery`` deferred to first use.  The deferral is the same
@@ -157,11 +173,13 @@ __all__ = ["AUTHORING_REFUSED_CODE", "AuthoredSignal", "AuthoringRefusedError", 
 #: The environment variable naming the live evaluation's configuration file —
 #: the same ``NULLIUS_EVALUATION_CONFIG`` ``orchestrator._context`` loads the
 #: evaluator's sealed snapshot from (bug_spec_prompt_available_streams.xml).
-#: This member reads only its ``snapshot_mount`` key, never the other six —
-#: the sandbox gate, the cost model and ``DATABASE_URL`` that loader also
-#: demands are no business of a prompt builder, and importing orchestrator to
-#: reach them would invert the workspace's one-way dependency (orchestrator
-#: depends on signal-agent, never the reverse).
+#: This member reads only two of its seven keys — ``snapshot_mount`` and,
+#: since additions_spec_cost_aware_selection.xml feature 4,
+#: ``evaluation_dates`` (for the rendered prompt's cadence) — never the
+#: other five: the sandbox gate, the cost model and ``DATABASE_URL`` that
+#: loader also demands are no business of a prompt builder, and importing
+#: orchestrator to reach them would invert the workspace's one-way
+#: dependency (orchestrator depends on signal-agent, never the reverse).
 EVALUATION_CONFIG_ENV: Final[str] = "NULLIUS_EVALUATION_CONFIG"
 
 #: The greppable code word every resolution refusal below opens with — the
@@ -330,6 +348,89 @@ def _require_max_retries(value: object) -> int:
     return value
 
 
+def _read_evaluation_document(
+    env: Mapping[str, str] | None,
+) -> tuple[Mapping[str, Any] | None, str | None]:
+    """Parse ``NULLIUS_EVALUATION_CONFIG`` once, or answer ``(None, None)``.
+
+    The file-read-and-parse half of :func:`_resolve_available_streams_snapshot`
+    and :func:`_resolve_evaluation_grid`, factored out so the one document
+    both read from is read and parsed exactly once per resolution rather
+    than twice with two chances to disagree about what counts as "unreadable"
+    or "not JSON". An unset or blank variable is the unconfigured state —
+    ``(None, None)``, quietly — and every other broken shape (an unreadable
+    file, invalid JSON, a document that is not a JSON object) raises
+    :class:`~signal_agent._authoring_prompt.AuthoringPromptError`, unchanged
+    from what :func:`_resolve_available_streams_snapshot` raised before this
+    function existed.
+    """
+    source = os.environ if env is None else env
+    named = source.get(EVALUATION_CONFIG_ENV)
+    if named is None or not named.strip():
+        return None, None
+
+    try:
+        text = Path(named).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise AuthoringPromptError(
+            f"{EVALUATION_CONFIG_CODE}: {EVALUATION_CONFIG_ENV} names the "
+            f"file {named!r}, which cannot be read: {exc}; the authoring "
+            "prompt's available_streams is read from the same evaluation "
+            "configuration the evaluator mounts, and a file that cannot be "
+            "read is refused rather than silently leaving the field out "
+            "(feature 5)."
+        ) from exc
+    try:
+        document = json.loads(text)
+    except ValueError as exc:
+        raise AuthoringPromptError(
+            f"{EVALUATION_CONFIG_CODE}: {EVALUATION_CONFIG_ENV} names the "
+            f"file {named!r}, which is not valid JSON: {exc}"
+        ) from exc
+    if not isinstance(document, dict):
+        raise AuthoringPromptError(
+            f"{EVALUATION_CONFIG_CODE}: {EVALUATION_CONFIG_ENV} names the "
+            f"file {named!r}, which holds {type(document).__name__} and not "
+            "a JSON object"
+        )
+    return document, named
+
+
+def _resolve_evaluation_grid(env: Mapping[str, str] | None) -> Any | None:
+    """The evaluation grid's dates, duck-typed for the cost-awareness section.
+
+    additions_spec_cost_aware_selection.xml feature 4: the rendered prompt
+    names the evaluation grid's cadence, and the grid is
+    ``evaluation_dates`` on the same document ``NULLIUS_EVALUATION_CONFIG``
+    names (:func:`_read_evaluation_document`) — the archive configs' own
+    235 weekly dates among them. Reads only that one key of the document's
+    seven, for the reason :func:`_resolve_available_streams_snapshot`
+    already states for ``snapshot_mount``: the other six are no business of
+    a prompt builder.
+
+    Unlike ``snapshot_mount``, a missing or malformed ``evaluation_dates``
+    is tolerated as ``None`` rather than refused: the grid's cadence is
+    information only (feature 4's own words — "It judges nothing"), so a
+    value this function cannot read answers the honest ``"unmeasured"``
+    cadence :func:`~signal_agent._authoring_prompt._cadence_statement`
+    renders for it, rather than stopping composition over a fact nothing
+    downstream depends on. Answers a :class:`~types.SimpleNamespace`
+    carrying ``evaluation_dates`` — the shape
+    :func:`~signal_agent._authoring_prompt._cost_awareness_part` reads via
+    its own duck-typed ``_field`` — or ``None`` when the document carries no
+    usable grid at all, which :func:`~signal_agent._authoring_prompt.
+    build_authoring_prompt` reads identically to an ``evaluation`` that was
+    never configured.
+    """
+    document, _ = _read_evaluation_document(env)
+    if document is None:
+        return None
+    raw = document.get("evaluation_dates")
+    if not isinstance(raw, (list, tuple)) or not raw:
+        return None
+    return SimpleNamespace(evaluation_dates=tuple(raw))
+
+
 def _resolve_available_streams_snapshot(
     env: Mapping[str, str] | None,
 ) -> Any | None:
@@ -369,35 +470,9 @@ def _resolve_available_streams_snapshot(
     this member already states: the factory's workspace scan puts one
     member's ``src/`` on ``sys.path`` at a time.
     """
-    source = os.environ if env is None else env
-    named = source.get(EVALUATION_CONFIG_ENV)
-    if named is None or not named.strip():
+    document, named = _read_evaluation_document(env)
+    if document is None:
         return None
-
-    try:
-        text = Path(named).read_text(encoding="utf-8")
-    except OSError as exc:
-        raise AuthoringPromptError(
-            f"{EVALUATION_CONFIG_CODE}: {EVALUATION_CONFIG_ENV} names the "
-            f"file {named!r}, which cannot be read: {exc}; the authoring "
-            "prompt's available_streams is read from the same evaluation "
-            "configuration the evaluator mounts, and a file that cannot be "
-            "read is refused rather than silently leaving the field out "
-            "(feature 5)."
-        ) from exc
-    try:
-        document = json.loads(text)
-    except ValueError as exc:
-        raise AuthoringPromptError(
-            f"{EVALUATION_CONFIG_CODE}: {EVALUATION_CONFIG_ENV} names the "
-            f"file {named!r}, which is not valid JSON: {exc}"
-        ) from exc
-    if not isinstance(document, dict):
-        raise AuthoringPromptError(
-            f"{EVALUATION_CONFIG_CODE}: {EVALUATION_CONFIG_ENV} names the "
-            f"file {named!r}, which holds {type(document).__name__} and not "
-            "a JSON object"
-        )
 
     raw = document.get("snapshot_mount")
     if not isinstance(raw, str) or not raw.strip():
@@ -485,6 +560,13 @@ class LLMSignalAuthor:
         # live), so every prompt this author builds — root, child and retry
         # alike — carries the same snapshot the evaluator mounts.
         self._snapshot = _resolve_available_streams_snapshot(env)
+        # additions_spec_cost_aware_selection.xml feature 4: resolved once,
+        # the same moment and from the same document, so every prompt this
+        # author builds also names the evaluation grid's own cadence.  See
+        # _resolve_evaluation_grid for why a malformed or absent grid is
+        # tolerated as None rather than refused the way a broken
+        # snapshot_mount is above -- the cadence is information only.
+        self._evaluation = _resolve_evaluation_grid(env)
 
     # -- The callable discovery's seam invokes -------------------------------
 
@@ -516,7 +598,11 @@ class LLMSignalAuthor:
         held = self._held_code(history)
 
         parts = build_authoring_prompt(
-            workspace, entries, clause=self._anti_convergence, snapshot=self._snapshot
+            workspace,
+            entries,
+            clause=self._anti_convergence,
+            snapshot=self._snapshot,
+            evaluation=self._evaluation,
         )
         # Feature 208 first, on the named parts — the gate reads the prompt's
         # structure, which is what feature 5 built.  It never raises on
@@ -592,7 +678,11 @@ class LLMSignalAuthor:
             campaign_id=campaign_id, theme_root=theme_root, depth=child_depth
         )
         parts = build_authoring_prompt(
-            workspace, entries, clause=self._anti_convergence, snapshot=self._snapshot
+            workspace,
+            entries,
+            clause=self._anti_convergence,
+            snapshot=self._snapshot,
+            evaluation=self._evaluation,
         )
         # Feature 208 first, on the named parts — the gate reads the prompt's
         # structure, which is what feature 5 built.  It never raises on
