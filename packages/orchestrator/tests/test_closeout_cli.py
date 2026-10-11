@@ -59,7 +59,7 @@ from orchestrator.closeout import (
     EXIT_OK,
     EXIT_REFUSED,
     EXIT_VOID,
-    KS_VARIANT_BRANCH_NONSIG,
+    KS_VARIANT_NULL_CALIBRATION,
     main,
 )
 
@@ -318,7 +318,9 @@ def test_type_r_campaign_closes_out_calibrated(database_url: str, tmp_path: Path
     assert payload["ledger_trials"] == 6
     assert 0.0 <= payload["sensitivity"] <= 1.0
     assert 0.0 <= payload["specificity"] <= 1.0
-    assert isinstance(payload["ks_pvalue"], float)
+    assert payload["ks_variant"] == KS_VARIANT_NULL_CALIBRATION
+    assert isinstance(payload["ks_pvalue"], float)  # Gate A's own p-value
+    assert payload["gate_a_p"] == payload["ks_pvalue"]
     assert isinstance(payload["fdr_deploy"], float)
 
     # All five stores hold the campaign's row.
@@ -339,9 +341,12 @@ def test_type_r_campaign_closes_out_calibrated(database_url: str, tmp_path: Path
     assert nulloracle.load_verdict(campaign_id, database_url=database_url) == (
         nulloracle.CALIBRATION_STATUS_OK
     )
+    # nulloracle.KsGuard still persists the demoted, null-vs-real diagnostic
+    # -- the one ops.instrument_status's KS lamp reads -- which is now
+    # ks_pvalue_root_nonsig, not the gate's own figure.
     guard = nulloracle.load_ks_guard(campaign_id, database_url=database_url)
     assert guard is not None
-    assert guard.pvalue == payload["ks_pvalue"]
+    assert guard.pvalue == payload["ks_pvalue_root_nonsig"]
 
 
 # -- Type-D: VOID, with Type-B depth ---------------------------------------------
@@ -356,7 +361,12 @@ def test_type_d_campaign_voids_and_measures_type_b(database_url: str, tmp_path: 
     assert exit_code == EXIT_VOID
     payload = json.loads(lines[0])
     assert payload["calibration_status"] == nulloracle.CALIBRATION_STATUS_VOID
-    assert payload["ks_variant"] == KS_VARIANT_BRANCH_NONSIG
+    assert payload["ks_variant"] == KS_VARIANT_NULL_CALIBRATION
+    # Gate A: the four branches' shallowest-null tstats ([-1.9, -1.7, -1.5,
+    # -1.3]) are far from N(0,1) on their own -- this is what actually voids
+    # the campaign now, never a comparison against the real side.
+    assert payload["gate_a_p"] < nulloracle.VOID_THRESHOLD
+    assert payload["ks_pvalue"] == payload["gate_a_p"]
     assert payload["type_b"] == 4  # the four grandchildren past their flip
     assert payload["discoveries"] == 4  # all four roots clear ic_tstat 2.0
     assert payload["budget_charging_trials"] == 12
@@ -384,7 +394,7 @@ def test_type_d_campaign_voids_and_measures_type_b(database_url: str, tmp_path: 
     )
     guard = nulloracle.load_ks_guard(campaign_id, database_url=database_url)
     assert guard is not None
-    assert guard.pvalue == payload["ks_pvalue"]
+    assert guard.pvalue == payload["ks_pvalue_root_nonsig"]
     assert guard.pvalue < nulloracle.VOID_THRESHOLD
 
 

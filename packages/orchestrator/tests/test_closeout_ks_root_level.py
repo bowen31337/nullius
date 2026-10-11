@@ -1,46 +1,54 @@
-"""bug_spec_ks_guard_root_level.xml -- the KS guard's gate is root-level and
-truncated to the non-significant band, not every evaluated node's realised
-ic_mean.
+"""bug_spec_ks_guard_root_level.xml and bug_spec_ks_null_calibration_gate.xml
+-- the root/branch-level, non-significance-truncated null-vs-real comparison
+this suite was written for is no longer the gate (it is now
+``ks_pvalue_root_nonsig``, a diagnostic -- see the latter spec and
+:mod:`orchestrator.closeout`'s own "Gate A and Gate B" docstring section),
+but every scenario this suite plants still exercises its own, still-relevant
+claim about that diagnostic's sample construction, and (now) about Gate A's
+one-sample test over the same campaigns.
 
-Before this fix, :func:`orchestrator.closeout.close_out` fed
-:class:`nulloracle.KsGuard` every evaluated node's own ``ic_mean`` -- root
-and child alike, split only by the root's sidecar label.  Two problems
-followed (PRD §4.3; archT2 voided at ``p=0.013`` while its four sibling
-campaigns, drawn from the same mechanism, gave 0.08-0.42): on a window
-where real signals have power, the real side became a mixture of genuine
-edge and noise while the null side stayed noise alone, so the two-sample
-test rejected "real roots have edge" and reported it as "the null is
-detectable"; and a child inherits its root's label, so a policy that
-refined one root several times counted its correlated children as
-independent samples, inflating whichever side that root sat on.
+Before bug_spec_ks_guard_root_level.xml, :func:`orchestrator.closeout.
+close_out` fed :class:`nulloracle.KsGuard` every evaluated node's own
+``ic_mean`` -- root and child alike, split only by the root's sidecar label.
+Two problems followed (PRD §4.3; archT2 voided at ``p=0.013`` while its four
+sibling campaigns, drawn from the same mechanism, gave 0.08-0.42): on a
+window where real signals have power, the real side became a mixture of
+genuine edge and noise while the null side stayed noise alone, so the
+two-sample test rejected "real roots have edge" and reported it as "the
+null is detectable"; and a child inherits its root's label, so a policy
+that refined one root several times counted its correlated children as
+independent samples, inflating whichever side that root sat on.  That fix
+-- one ``ic_mean`` per root, truncated to roots whose own ``|ic_tstat|`` has
+not cleared :data:`~orchestrator.closeout.DISCOVERY_TSTAT` on either side --
+narrowed the same defect without removing it: it was still a comparison of
+null scores against real ones, and bug_spec_ks_null_calibration_gate.xml's
+own archC/archM campaigns (a weaker, still genuine real edge) show it still
+voids on a real root's own edge rather than the null's construction.  So
+that comparison is demoted to a diagnostic (:attr:`CloseoutResult.
+ks_pvalue_root_nonsig`, computed and persisted exactly as before, never
+gating), and Gate A -- a one-sample KS test of the campaign's own null
+values against N(0,1) -- decides ``calibration_status`` instead.
 
-The fix: the gate's sample is one ``ic_mean`` per root -- never a child's --
-truncated to roots whose own ``|ic_tstat|`` has not already cleared
-:data:`~orchestrator.closeout.DISCOVERY_TSTAT` on either side, so the
-comparison is "no edge vs no edge".  The previous, all-node statistic is
-still computed and reported as a diagnostic
-(``ks_pvalue_all_nodes``), never as the figure the verdict is pronounced on.
-A gate whose non-significant roots number fewer than
-:data:`nulloracle.KS_MIN_SAMPLE` on either side is not computed at all:
-:data:`~orchestrator.closeout.CALIBRATION_STATUS_INSUFFICIENT` names that
-state.
+One test per claim the bugs' expected behaviour makes:
 
-One test per claim the bug's expected behaviour makes:
-
-* **the bug's own reproduction (25 null roots, 140 real roots 40% carrying
-  true edge, plus children copied from the top roots) closes out ok, not
-  VOID, while the diagnostic still rejects.**
-* **a leaking null -- null roots systematically offset, every one of them
-  individually inside the non-significant band -- is still VOID.**
-* **children are excluded from the gate**, even when, if leaked in, they
-  would flip the verdict.
-* **the "insufficient" path**: too few non-significant roots on one side
-  after truncation leaves the campaign neither ok nor VOID.
-* **the truncation is applied to both sides**, not only the one a bug might
-  remember to filter.
-* **a Type-D campaign's gate samples branches, not roots** -- every Type-D
-  root is real (PRD §4.1.2), so the root-level rule above would find zero
-  nulls in any Type-D campaign; the gate's unit for this type is one value
+* **the root-level bug's own reproduction (25 null roots, 140 real roots
+  40% carrying true edge, plus children copied from the top roots) closes
+  out ok under Gate A, not VOID, while both diagnostics still reject.**
+* **a leaking null -- every null root strictly positive -- is still VOID,
+  now because Gate A reads the null side alone and finds it implausible as
+  a draw from N(0,1), not because of a two-sample difference.**
+* **children are excluded from Gate A's own sample and from the
+  diagnostic**, even when, if leaked into the diagnostic, they would flip
+  it.
+* **the "insufficient" path**: fewer than :data:`~orchestrator.closeout.
+  GATE_A_MIN_NULL_COUNT` null roots leaves the campaign neither ok nor
+  VOID, whether or not the (now unrelated) diagnostic can be computed.
+* **the diagnostic's truncation is still applied to both sides**, not only
+  the one a bug might remember to filter -- Gate A itself needs no
+  truncation at all, and this test shows both facts side by side.
+* **a Type-D campaign's Gate A samples branches, not roots** -- every
+  Type-D root is real (PRD §4.1.2), so a root-level reading would find zero
+  nulls in any Type-D campaign; Gate A's unit for this type is one value
   per branch (bug_spec_closeout_type_d_ks_branch.xml), and a branch
   refined past its own flip still contributes only its shallowest null.
 
@@ -72,8 +80,7 @@ from orchestrator.closeout import (
     CALIBRATION_STATUS_INSUFFICIENT,
     EXIT_OK,
     EXIT_VOID,
-    KS_VARIANT_BRANCH_NONSIG,
-    KS_VARIANT_ROOT_NONSIG,
+    KS_VARIANT_NULL_CALIBRATION,
     main,
 )
 
@@ -305,24 +312,30 @@ def test_reproduction_is_ok_not_void_while_diagnostic_still_rejects(
     exit_code = main(["--campaign-id", campaign_id], env=env, emit=lines.append)
 
     payload = json.loads(lines[0])
-    # The gate: roots without individually detectable edge on both sides are
-    # "no edge vs no edge", exactly what the null branch's construction is
-    # -- the campaign is not VOID, although 40% of its real roots carry
-    # genuine edge.
+    # Gate A: the 25 null roots' own ic_tstat still look like N(0,1) on
+    # their own -- the campaign is not VOID, although 40% of its real roots
+    # carry genuine edge, because that edge never enters Gate A's sample at
+    # all (bug_spec_ks_null_calibration_gate.xml).
     assert exit_code == EXIT_OK
     assert payload["calibration_status"] == nulloracle.CALIBRATION_STATUS_OK
-    assert payload["ks_variant"] == KS_VARIANT_ROOT_NONSIG
-    assert payload["ks_pvalue"] >= 0.05
-    # The diagnostic -- every node's realised ic_mean, root and child alike,
-    # the sample this module gated on before the fix -- still rejects: the
-    # genuine edge on 40% of the real roots, amplified by their copied
-    # children, is exactly what makes the two populations distinguishable,
-    # which is not a fact about the null branch's own construction.
+    assert payload["ks_variant"] == KS_VARIANT_NULL_CALIBRATION
+    assert payload["gate_a_p"] >= 0.05
+    assert payload["ks_pvalue"] == payload["gate_a_p"]
+    # The diagnostics -- never gating -- still show what each previous
+    # design would have found: every node's realised ic_mean (root and
+    # child alike) rejects outright, the original bug this module's
+    # bug_spec_ks_guard_root_level.xml fix solved; that fix's own
+    # root-level, non-significance-truncated comparison does *not* reject
+    # here (its whole reason for existing), which is exactly why this
+    # reproduction used to stay calibrated under that design -- until a
+    # weaker, still-genuine real edge (archC/archM) showed the same
+    # null-vs-real comparison, at any truncation, is still the wrong test.
     assert payload["ks_pvalue_all_nodes"] < 0.05
+    assert payload["ks_pvalue_root_nonsig"] >= 0.05
 
     guard = nulloracle.load_ks_guard(campaign_id, database_url=database_url)
     assert guard is not None
-    assert guard.pvalue == payload["ks_pvalue"]
+    assert guard.pvalue == payload["ks_pvalue_root_nonsig"]
     assert (guard.null_count, guard.real_count) == tuple(payload["ks_root_counts"])
     assert (
         nulloracle.load_verdict(campaign_id, database_url=database_url)
@@ -338,13 +351,15 @@ def test_reproduction_is_ok_not_void_while_diagnostic_still_rejects(
 def test_leaking_null_inside_the_nonsignificant_band_is_still_void(
     database_url: str, tmp_path: Path
 ) -> None:
-    """Thirty null roots systematically offset from thirty real roots --
-    every single root's own ``|ic_tstat|`` stays well under
-    ``DISCOVERY_TSTAT`` (max 1.95), so none would individually clear the
-    discovery bar -- yet the two populations differ enough in aggregate
-    that the gate must still detect it.  This is the leak §7.4's guard
-    exists to catch, and the fix must not filter it away along with
-    genuine edge."""
+    """Thirty null roots, every one strictly positive (``ic_tstat`` from 0.2
+    to 1.95, well under ``DISCOVERY_TSTAT`` so none would individually clear
+    the discovery bar) against thirty real roots spanning both signs.  Gate A
+    reads the null side alone and finds it is never negative at all --
+    nothing like a draw from N(0,1) -- and VOIDs on that basis; the previous
+    design's reasoning (the two populations differ enough in aggregate for a
+    two-sample test to detect it) no longer applies, but the same leak §7.4's
+    guard exists to catch is still caught, now by testing the nulls against
+    their own known distribution instead of against the real side."""
     campaign_id = str(uuid.uuid4())
     discovery.create_campaign(
         discovery.TYPE_R_CAMPAIGN_TYPE, 8, campaign_id=campaign_id, database_url=database_url,
@@ -378,7 +393,8 @@ def test_leaking_null_inside_the_nonsignificant_band_is_still_void(
     assert exit_code == EXIT_VOID
     payload = json.loads(lines[0])
     assert payload["calibration_status"] == nulloracle.CALIBRATION_STATUS_VOID
-    assert payload["ks_pvalue"] < nulloracle.VOID_THRESHOLD
+    assert payload["gate_a_p"] < nulloracle.VOID_THRESHOLD
+    assert payload["ks_pvalue"] == payload["gate_a_p"]
     assert tuple(payload["ks_root_counts"]) == (count, count)
 
 
@@ -390,14 +406,15 @@ def test_leaking_null_inside_the_nonsignificant_band_is_still_void(
 def test_children_are_excluded_from_the_gate(
     database_url: str, tmp_path: Path
 ) -> None:
-    """Three null roots and three real roots, individually and jointly
-    indistinguishable (the roots-only gate's own p-value is 1.0) -- plus ten
-    children planted under one real root with an extreme, non-significant
-    ``ic_mean`` of 5.0 each.  If those children leaked into the gate's
-    population the campaign would VOID (the same ten-point population
-    computed directly against nulloracle's own test rejects at p<0.05); with
-    children correctly excluded, the gate never sees them and the campaign
-    stays calibrated."""
+    """Three null roots, well-calibrated on their own (Gate A clears them),
+    and three real roots -- plus ten children planted under one real root
+    with an extreme, non-significant ``ic_mean`` of 5.0 each (also giving
+    that root ten children, so Gate B has one expanded root to read, too
+    few to reject on).  If those children's ``ic_mean`` leaked into the
+    diagnostic's population it would reject (the same ten-point population
+    computed directly against nulloracle's own test rejects at p<0.05);
+    with children correctly excluded from both the diagnostic and Gate A's
+    own null sample, the campaign stays calibrated."""
     campaign_id = str(uuid.uuid4())
     discovery.create_campaign(
         discovery.TYPE_R_CAMPAIGN_TYPE, 8, campaign_id=campaign_id, database_url=database_url,
@@ -432,6 +449,7 @@ def test_children_are_excluded_from_the_gate(
     assert exit_code == EXIT_OK
     payload = json.loads(lines[0])
     assert payload["calibration_status"] == nulloracle.CALIBRATION_STATUS_OK
+    assert payload["gate_a_p"] >= nulloracle.VOID_THRESHOLD
     assert tuple(payload["ks_root_counts"]) == (3, 3)
     # The diagnostic sees the children (and their extreme ic_mean) and
     # rejects, confirming they were planted the way the test claims and
@@ -451,13 +469,18 @@ def test_children_are_excluded_from_the_gate(
 def test_insufficient_when_too_few_nonsignificant_roots_remain(
     database_url: str, tmp_path: Path
 ) -> None:
-    """Two null roots (one individually significant, excluded by the
-    truncation, leaving only one -- below ``nulloracle.KS_MIN_SAMPLE``) and
-    three non-significant real roots.  The all-node diagnostic has enough
-    points on each side to compute (two null, three real), so it is not
-    this scenario's refusal; the gate's own, root-level, truncated sample
-    is what falls short, and the campaign is marked ``insufficient`` rather
-    than refused, voided or cleared."""
+    """Two null roots and three real roots.  Gate A's own floor
+    (:data:`~orchestrator.closeout.GATE_A_MIN_NULL_COUNT`, three) is not
+    met -- only two null roots exist at all, one of them individually
+    significant, so Gate A never runs -- and Gate B has no expansion
+    evidence either (a roots-only campaign): the campaign is marked
+    ``insufficient`` rather than refused, voided or cleared.  The all-node
+    diagnostic still has enough points on each side to compute (two null,
+    three real), so it is not this scenario's refusal; the
+    root-level-truncated diagnostic (now purely reported, never gating) is
+    what falls short on the null side (one of its two null roots clears
+    ``DISCOVERY_TSTAT`` and is truncated away, leaving one -- below
+    ``nulloracle.KS_MIN_SAMPLE``)."""
     campaign_id = str(uuid.uuid4())
     discovery.create_campaign(
         discovery.TYPE_R_CAMPAIGN_TYPE, 4, campaign_id=campaign_id, database_url=database_url,
@@ -486,11 +509,15 @@ def test_insufficient_when_too_few_nonsignificant_roots_remain(
     assert payload["calibration_status"] != nulloracle.CALIBRATION_STATUS_VOID
     assert payload["calibration_status"] != nulloracle.CALIBRATION_STATUS_OK
     assert payload["ks_pvalue"] is None
+    assert payload["gate_a_p"] is None
+    assert payload["gate_b_p"] is None
+    assert payload["ks_pvalue_root_nonsig"] is None
     assert tuple(payload["ks_root_counts"]) == (1, 3)
     assert isinstance(payload["ks_pvalue_all_nodes"], float)
 
-    # The gate never ran: no guard row, no verdict pronounced -- the
-    # campaign row is exactly as an un-read campaign's would be.
+    # Gate A never ran, so the diagnostic's own store never wrote either --
+    # no guard row, no verdict pronounced -- the campaign row is exactly as
+    # an un-read campaign's would be.
     assert nulloracle.load_ks_guard(campaign_id, database_url=database_url) is None
     assert (
         nulloracle.load_verdict(campaign_id, database_url=database_url)
@@ -507,10 +534,17 @@ def test_truncation_is_applied_to_both_sides(
     database_url: str, tmp_path: Path
 ) -> None:
     """Five null roots (three non-significant, two individually
-    significant) and five real roots (the same shape).  The gate's sample
-    must drop the significant pair from *both* labels, leaving three a
-    side -- never five, and never an asymmetric three-versus-five that a
-    truncation applied to only one label would produce."""
+    significant, at opposite extremes) and five real roots (the same
+    shape).  Gate A reads every null's own ic_tstat untruncated -- it needs
+    no truncation at all, since it never compares against the real side a
+    truncation would have to keep symmetric -- and still clears here
+    (0.1, 0.2, 0.3, 5.0, -5.0 is not implausible for a 5-point draw from
+    N(0,1)): the campaign stays calibrated on Gate A's own merits.  The
+    diagnostic this bug fix demoted (bug_spec_ks_guard_root_level.xml's own
+    fix) still truncates both labels: it must drop the significant pair
+    from *both*, leaving three a side -- never five, and never an
+    asymmetric three-versus-five a truncation applied to only one label
+    would produce -- which is the property this test still pins."""
     campaign_id = str(uuid.uuid4())
     discovery.create_campaign(
         discovery.TYPE_R_CAMPAIGN_TYPE, 8, campaign_id=campaign_id, database_url=database_url,
@@ -536,11 +570,13 @@ def test_truncation_is_applied_to_both_sides(
     assert exit_code == EXIT_OK
     payload = json.loads(lines[0])
     assert payload["calibration_status"] == nulloracle.CALIBRATION_STATUS_OK
+    assert payload["gate_a_p"] >= 0.05
     assert tuple(payload["ks_root_counts"]) == (3, 3)
 
     guard = nulloracle.load_ks_guard(campaign_id, database_url=database_url)
     assert guard is not None
     assert (guard.null_count, guard.real_count) == (3, 3)
+    assert guard.pvalue == payload["ks_pvalue_root_nonsig"]
 
 
 # -----------------------------------------------------------------------
@@ -631,11 +667,16 @@ def test_type_d_gate_samples_branches_not_roots_and_excludes_pseudo_replication(
     assert exit_code == EXIT_VOID
     payload = json.loads(lines[0])
     assert payload["calibration_status"] == nulloracle.CALIBRATION_STATUS_VOID
-    assert payload["ks_variant"] == KS_VARIANT_BRANCH_NONSIG
+    assert payload["ks_variant"] == KS_VARIANT_NULL_CALIBRATION
+    # Gate A: the five branches' shallowest-null tstats are far from N(0,1)
+    # on their own -- this is what voids the campaign now, never a
+    # comparison against the real side.
+    assert payload["gate_a_p"] < nulloracle.VOID_THRESHOLD
+    assert payload["ks_pvalue"] == payload["gate_a_p"]
     # Five branches, five null values and five real values -- never the
     # root-level zero a Type-D campaign (every root real) would give, and
     # never six on the null side, which the leaked great-grandchild would
-    # have produced.
+    # have produced.  This is the diagnostic's own count, unchanged.
     assert tuple(payload["ks_root_counts"]) == (5, 5)
 
     guard = nulloracle.load_ks_guard(campaign_id, database_url=database_url)

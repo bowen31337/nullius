@@ -35,77 +35,119 @@ repeated node.  A node whose walk cannot reach a root, or reaches one this
 campaign did not plant, or reaches a root the sidecar holds no entry for,
 is refused by this module rather than read as unlabelled.
 
-**Why the KS guard's sample is one value per root, truncated to the
-non-significant band, rather than every evaluated node's own ic_mean
-(bug_spec_ks_guard_root_level.xml).**  PRD §4.3 states the guard's whole
-premise: *"the nulls are detectable, the agent may be learning to identify
-them"* -- a statement about whether the null branches' construction (the
-block permutation and its length) leaks, not about whether a real root
-carries genuine edge.  Feeding the guard every evaluated node's realised
-``ic_mean`` conflated the two: on a window where real signals have power,
-the real side is a mixture of edge and noise while the null side is noise
-alone, so the two-sample test rejected "real roots have edge" and reported
-it as "the null is detectable" -- archT2 voided at ``p=0.013`` this way
-while its four sibling campaigns, drawn from the same mechanism, cleared
-0.08-0.42.  A child inherits its root's label, so a policy that refined one
-root several times also counted its correlated children as independent
-samples, inflating whichever side that root sat on.  Neither failure is
-about the null branch's construction, which is the only thing §7.4's alert
-(*"investigate block length and permutation scheme"*) can act on.
+**Gate A and Gate B (bug_spec_ks_null_calibration_gate.xml): the verdict
+tests whether the nulls still look like nulls, never whether a real root
+carries edge.**  PRD §4.3 states the guard's whole premise: *"the nulls are
+detectable, the agent may be learning to identify them"* -- a statement
+about whether the null branches' own construction (the block permutation
+and its length) leaks, not about whether a real root carries genuine edge.
+Every design this module carried before this fix -- feeding the guard every
+evaluated node's ``ic_mean`` (the original shape), then root-only and
+non-significance-truncated samples (bug_spec_ks_guard_root_level.xml,
+bug_spec_closeout_type_d_ks_branch.xml) -- was still a **comparison of null
+scores against real ones**, and a two-sample comparison rejects exactly
+when the two sides differ, for *any* reason: a window where real signals
+have power makes the real side a mixture of edge and noise while the null
+side stays noise alone, so the test rejected "real roots have edge" and
+reported it as "the nulls are detectable".  Ten synthetic archC campaigns
+with a planted, genuine, weak real edge (every real root's own ``ic_tstat``
+below the discovery bar, so none would be flagged a discovery on its own)
+voided 6 of 10 while the nulls were, by construction, perfectly calibrated;
+twenty-five archM campaigns with *weaker* real edge voided 0 of 25 --
+rewarding weaker research with a cleaner bill of calibration health, the
+exact inversion §7.4's guard exists to prevent.  No non-significance
+truncation closes this gap, because the real side's own non-significant
+members still carry the window's genuine (if individually sub-threshold)
+edge; the comparison itself is the defect.
 
-So this module's sample for the gate is **one ic_mean per root** -- never a
-child's -- and only from roots whose own ``|ic_tstat|`` has not already
-cleared :data:`DISCOVERY_TSTAT` on either side: that is the comparison the
-permutation scheme governs, "no edge vs no edge" on both sides, and it is
-what §7.4's ``p < 0.05`` decides a campaign's ``calibration_status`` on --
-:class:`nulloracle.KsGuard` and :class:`nulloracle.CampaignVerdict`
-themselves are unchanged, and never see a child or a significant root.  The
-previous, all-node statistic is still computed -- :attr:`CloseoutResult.
-ks_pvalue_all_nodes` -- and still printed, as a diagnostic an operator can
-compare the gate against, but it never decides the verdict; which variant
-produced the persisted ``ks_pvalue`` is named by :attr:`CloseoutResult.
-ks_variant` (:data:`KS_VARIANT_ROOT_NONSIG` for this, the Type-R rule --
-see below for Type-D's).  A campaign whose non-significant roots number
-fewer than :data:`nulloracle.
-KS_MIN_SAMPLE` on either side after this truncation cannot be tested at
-all -- the gate is not computed, and :data:`CALIBRATION_STATUS_INSUFFICIENT`
-names that state rather than reporting the ``'ok'`` an un-read campaign
-already carries by default; :attr:`CloseoutResult.ks_root_counts` is the
-``(n_null, n_real)`` the gate saw after filtering, so the reading is
-checkable the same way a guard's own stored sample sizes already are.
+So this module no longer compares null scores against real ones to decide
+``calibration_status`` at all.  Two gates, each a test the nulls alone (or
+the campaign's own choices alone) can fail, replace it:
 
-**The gate's sampling unit follows the campaign type
-(bug_spec_closeout_type_d_ks_branch.xml).**  Root-only sampling is a Type-R
-reading of PRD §4.1.2's rule *"null status inherited by the whole
-subtree"*: every node under a null root is null, every node under a real
-root is real, so the root's own score is a value every other node of its
-subtree would answer the same label for, and the gate loses nothing by
-reading one.  A Type-D campaign is built by the opposite rule -- *"all
-roots real; a branch flips null at depth d ... every descendant is null
-thereafter"* -- so a Type-D root is never anything but real, and a gate
-that still read only roots would find no null to compare at all, which is
-this bug: the KS gate was never computed for a single Type-D campaign.  So
-for a Type-D campaign the gate's unit is **one value per branch, picked by
-depth**: each evaluated node is labelled by :class:`nulloracle.TypeDOracle`
-resolution -- null at or past its branch's flip, real otherwise, the same
-resolution the Type-B step below already reads -- and each branch (a root
-and its subtree, the same grouping :func:`_resolve_root` already answers)
-contributes at most one null value (its **shallowest** null node) and one
-real value (its **deepest** real node).  Shallowest and deepest, rather
-than every node past or before the flip, for the same pseudo-replication
-reason root-only sampling excludes a Type-R child: a branch that was
-refined several times past its flip would otherwise count its correlated
-descendants as independent samples on the null side, and a branch refined
-several times before it would do the same on the real side.  The same
-non-significance truncation (``|ic_tstat| < DISCOVERY_TSTAT``) and the same
-:data:`nulloracle.KS_MIN_SAMPLE` floor apply to this sample exactly as they
-do to the Type-R one; only the unit and the label differ.  Which rule
-produced the sample is named by :attr:`CloseoutResult.ks_variant` --
-:data:`KS_VARIANT_ROOT_NONSIG` for Type-R, :data:`KS_VARIANT_BRANCH_NONSIG`
-for Type-D -- and :attr:`CloseoutResult.ks_root_counts` is the ``(n_null,
-n_real)`` either rule saw, the name kept rather than renamed per campaign
-type because it is still "how many values landed on each side of the
-gate," whichever unit produced them.
+* **Gate A, null calibration.**  Every null's own ``ic_tstat`` -- one per
+  root for a Type-R campaign (PRD §4.1.2's *"null status inherited by the
+  whole subtree"* makes a child's reading the same label's, so the gate
+  loses nothing reading one per root and nothing by never reading a child);
+  one per branch for a Type-D campaign, its **shallowest** null node
+  (:class:`nulloracle.TypeDOracle`'s own depth resolution, the same one the
+  Type-B step below reads -- every Type-D root is real, PRD §4.1.2, so a
+  root-only reading would find no null to test at all, which is
+  bug_spec_closeout_type_d_ks_branch.xml's own bug; shallowest rather than
+  every past-flip node for the same pseudo-replication reason Type-R excludes
+  a child -- a branch refined several times past its flip would otherwise
+  count correlated descendants as independent samples) -- is tested with a
+  **one-sample, two-sided Kolmogorov-Smirnov test against N(0,1)**
+  (:func:`_one_sample_ks_against_standard_normal`; nulloracle's own ``ks``
+  module carries no one-sample estimator to call, so this module restates
+  the asymptotic Kolmogorov series it already documents, with the Stephens
+  (1970) small-sample correction).  This is the test PRD §4.3's own sentence
+  actually describes: *do the nulls look like the no-edge distribution their
+  construction promises*, asked of the nulls alone, with no real-root value
+  anywhere in the sample a genuine edge could move.  VOID at
+  ``pvalue < nulloracle.VOID_THRESHOLD`` (the same 0.05 the previous, removed
+  gate used -- what changed is the comparison, not the level); fewer than
+  :data:`GATE_A_MIN_NULL_COUNT` null values leaves the gate
+  :data:`CALIBRATION_STATUS_INSUFFICIENT`, neither VOID nor ok, the same
+  "untested, too little evidence" reading :data:`CALIBRATION_STATUS_
+  INSUFFICIENT` has always named.  ``gate_a_p`` (and its persisted alias
+  ``ks_pvalue``) is this figure; ``null_tstat_mean``/``null_tstat_sd`` are
+  the sample's own two aggregate numbers, reported because an operator
+  investigating a VOID needs to see which way the nulls drifted without PRD
+  §4.2 ever handing back a single root's own label.
+
+* **Gate B, agent behaviour.**  A campaign's nulls can also be calibrated
+  while the *exploration policy itself* leaks -- learning, in effect, to
+  avoid expanding a null root even though it cannot read ``is_null``, by
+  whatever surface correlates with it.  This gate asks exactly that: of
+  every planted root the sidecar holds an entry for, was it ever **selected
+  for expansion** -- does its subtree carry any node beside itself at all
+  (:func:`_read_campaign_node_parents`; a node counts whether or not its own
+  evaluation succeeded, because an attempt the sandbox or a tripwire failed
+  still used the policy's own pick) -- and does that bit depend on the
+  root's null status?  A **two-sided Fisher exact test**
+  (:func:`_fisher_exact_two_sided`, exact over the hypergeometric
+  distribution the 2x2 table's margins imply) over (null, real) x (expanded,
+  never expanded).  VOID at ``pvalue < GATE_B_VOID_THRESHOLD`` -- 0.01,
+  stricter than Gate A's 0.05 because it is a *second* gate on the same
+  campaign, and running two tests at one level would compound their
+  combined false-positive rate past what either is calibrated for.
+  :data:`CALIBRATION_STATUS_INSUFFICIENT` when either label class is empty
+  or no root was ever expanded at all -- the spec's own "insufficient when
+  no root was expanded".  ``gate_b_p`` is this figure.
+
+**calibration_status** is VOID if either gate rejects (sticky: once a prior
+run or this one has voided the campaign, :func:`_force_void` never clears
+it, the same one-way rule :class:`nulloracle.CampaignVerdict` itself states
+for its own write); ok unless Gate A is itself
+:data:`CALIBRATION_STATUS_INSUFFICIENT`.  Gate B's own insufficiency does
+not, by itself, downgrade an otherwise-clean Gate A reading to
+``insufficient``: a campaign that never expanded a single root (a short
+run, a tiny synthetic one) has no agent-behaviour evidence either way, which
+is not itself a finding, unlike Gate A's own floor -- PRD §4.1.1's own
+floor keeps a live campaign's planted null count at two or more, so Gate
+A's insufficiency is a genuine, rare structural state, while Gate B's is the
+common shape of a campaign nothing has been asked to explore yet.
+
+**The previous comparison survives, demoted to a diagnostic, never
+gating.**  :attr:`CloseoutResult.ks_pvalue_root_nonsig` is exactly
+bug_spec_ks_guard_root_level.xml's and bug_spec_closeout_type_d_ks_branch.
+xml's own sample and test -- one ``ic_mean`` per root (Type-R) or per
+branch (Type-D), truncated to values whose own ``|ic_tstat|`` has not
+cleared :data:`DISCOVERY_TSTAT`, null side against real side -- computed and
+persisted exactly as before (:class:`nulloracle.KsGuard` still writes
+``campaign.ks_pvalue`` and ``campaign_ks_guard`` with it, the one column
+``ops.instrument_status``'s KS lamp and this store's own read-back
+invariant both depend on), but no longer read by
+:class:`nulloracle.CampaignVerdict` to decide anything: that call is
+removed from this module entirely, because it is precisely the comparison
+this bug fix found guilty.  :attr:`CloseoutResult.ks_root_counts` is that
+diagnostic sample's ``(n_null, n_real)``, unchanged.
+:attr:`CloseoutResult.ks_pvalue_all_nodes` is the older, pre-root-level
+diagnostic (every evaluated node's own ``ic_mean``), also unchanged and also
+never gating.  :attr:`CloseoutResult.ks_variant` now names the one rule this
+module gates on, :data:`KS_VARIANT_NULL_CALIBRATION`, for both campaign
+types -- which unit Gate A's own sample used (root or branch) is no longer a
+fact about the verdict, only about where its sample came from.
 
 **Why this module reads ``node`` with raw SQL rather than a shared
 reader.**  No member in this workspace exposes "every evaluated node of a
@@ -122,10 +164,11 @@ workspace is probed for, reading its absence as "nothing has failed yet"
 rather than refusing a tree no attempt has ever touched.
 
 **The five stores, in the sentence's own order.**  1) :class:`nulloracle.
-KsGuard` writes the campaign's detectability p-value; 2)
-:class:`nulloracle.CampaignVerdict` reads that stored p-value back and
-pronounces ``VOID`` or leaves the campaign ``ok``; 3)
-:meth:`scoring.NullPickScorer.calibration_figures` answers sensitivity and
+KsGuard` writes the campaign's *diagnostic* p-value (the demoted, null-vs-
+real comparison above) -- 2) :class:`nulloracle.CampaignVerdict` is no
+longer called from this module: Gate A and Gate B (above) decide and write
+``calibration_status`` directly, themselves and via :func:`_force_void`;
+3) :meth:`scoring.NullPickScorer.calibration_figures` answers sensitivity and
 specificity over the campaign's planted population and its discoveries;
 4) :class:`scoring.FdrDeployStore` reweights that pair to ``FDR_deploy`` and
 persists it; 5) :class:`ops.NullCalibrations` persists the pair itself. For
@@ -152,8 +195,10 @@ import argparse
 import datetime as dt
 import json
 import logging
+import math
 import os
 import sqlite3
+import statistics
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
@@ -187,8 +232,9 @@ __all__ = [
     "EXIT_OK",
     "EXIT_REFUSED",
     "EXIT_VOID",
-    "KS_VARIANT_BRANCH_NONSIG",
-    "KS_VARIANT_ROOT_NONSIG",
+    "GATE_A_MIN_NULL_COUNT",
+    "GATE_B_VOID_THRESHOLD",
+    "KS_VARIANT_NULL_CALIBRATION",
     "M2_FIXED_BETA",
     "M2_FIXED_POLICY_VERSION",
     "SELECTION_RULE_IC_FALLBACK",
@@ -239,32 +285,44 @@ SELECTION_RULE_POST_COST_IR = "post-cost-ir"
 SELECTION_RULE_IC_FALLBACK = "ic-fallback"
 
 #: Close-out's own third calibration reading, alongside nulloracle's ``'ok'``
-#: and ``'VOID'``: the gate's root-level sample was too thin, on at least
-#: one side, to compute a KS p-value at all after truncating to roots whose
-#: own ``|ic_tstat|`` stays below :data:`DISCOVERY_TSTAT` (PRD §4.3;
-#: bug_spec_ks_guard_root_level.xml).  Never written to the campaign row --
-#: :mod:`nulloracle`'s own ``calibration_status`` column carries only the
-#: two values its own verdict pronounces -- but reported here so a reader
-#: of the printed line can tell "untested, too little evidence" from "tested
-#: and cleared".
+#: and ``'VOID'``: Gate A had fewer than :data:`GATE_A_MIN_NULL_COUNT` null
+#: values to test at all (PRD §4.3; bug_spec_ks_null_calibration_gate.xml).
+#: Never written to the campaign row -- :mod:`nulloracle`'s own
+#: ``calibration_status`` column carries only the two values its own verdict
+#: pronounces -- but reported here so a reader of the printed line can tell
+#: "untested, too little evidence" from "tested and cleared".  Gate B's own
+#: insufficiency (no root ever expanded, or an empty label class) never by
+#: itself produces this combined reading -- see "Gate A and Gate B" in the
+#: module docstring for why.
 CALIBRATION_STATUS_INSUFFICIENT = "insufficient"
 
-#: The one gate variant this module computes: one ``ic_mean`` per root,
-#: excluding every child, truncated to roots whose own ``ic_tstat`` has not
-#: already cleared :data:`DISCOVERY_TSTAT` on either side.  Named so a
-#: reader of :attr:`CloseoutResult.ks_pvalue` knows which sample produced it
-#: without re-deriving the rule from this module's source, and so a future
-#: second variant would have a name to be told apart from.
-KS_VARIANT_ROOT_NONSIG = "root-nonsig"
+#: The gate variant this module computes (bug_spec_ks_null_calibration_
+#: gate.xml): a campaign's calibration no longer turns on any comparison of
+#: null scores against real ones -- see "Gate A and Gate B" in the module
+#: docstring for the rule and the evidence that replaced the previous
+#: null-vs-real design (:data:`DISCOVERY_TSTAT`-truncated two-sample KS,
+#: kept below only as a diagnostic).  One name, for both campaign types: the
+#: unit Gate A samples still follows the type (one value per root for
+#: Type-R, one per branch for Type-D), but that distinction is no longer a
+#: fact about the *verdict*, only about where its sample came from, so it is
+#: no longer named on :attr:`CloseoutResult.ks_variant`.
+KS_VARIANT_NULL_CALIBRATION = "null-calibration"
 
-#: The Type-D gate variant: one ``ic_mean`` per branch -- the branch's
-#: shallowest null node and deepest real node, each labelled by
-#: :class:`nulloracle.TypeDOracle`'s own depth resolution rather than the
-#: sidecar (a Type-D root is never null, so the root-only rule above would
-#: find no null to compare -- bug_spec_closeout_type_d_ks_branch.xml) --
-#: truncated to the same non-significant band :data:`KS_VARIANT_ROOT_NONSIG`
-#: applies.
-KS_VARIANT_BRANCH_NONSIG = "branch-nonsig"
+#: Gate A's floor: fewer than this many null values (one per root for
+#: Type-R, one per branch's shallowest null node for Type-D) leaves a
+#: one-sample test with nothing to resolve a shape from -- the same
+#: structural reasoning :data:`nulloracle.KS_MIN_SAMPLE` states for a
+#: two-sample comparison, specialised to the single sample Gate A reads.
+#: Below it, Gate A is :data:`CALIBRATION_STATUS_INSUFFICIENT`, never VOID
+#: or ok.
+GATE_A_MIN_NULL_COUNT = 3
+
+#: Gate B's void level -- stricter than Gate A's :data:`nulloracle.
+#: VOID_THRESHOLD` because Gate B is a *second* gate: a campaign already has
+#: one chance to be voided on Gate A's 0.05, and a second test run at the
+#: same level would raise the whole procedure's false-positive rate above
+#: what either gate alone is calibrated for.
+GATE_B_VOID_THRESHOLD = 0.01
 
 #: The policy version every close-out world score is persisted under — a
 #: single, fixed baseline (additions_spec_m2_baseline_financial_worlds.xml,
@@ -335,14 +393,28 @@ class CloseoutResult:
     own, prd §4.1.2) and the measured count -- possibly ``0`` -- for a
     Type-D one.
 
-    ``ks_pvalue`` is the root-level gate's p-value (:data:`KS_VARIANT_ROOT_
-    NONSIG`, the sample :mod:`nulloracle.ksguard`'s store actually persisted
-    and :mod:`nulloracle.verdict` actually voided on) -- ``None`` when
-    ``calibration_status`` is :data:`CALIBRATION_STATUS_INSUFFICIENT`, the
-    gate was never computed.  ``ks_pvalue_all_nodes`` is the diagnostic --
-    every evaluated node's own ``ic_mean``, root and child alike, the sample
-    this module gated on before bug_spec_ks_guard_root_level.xml -- always
-    present, and never the figure the verdict is pronounced on.
+    ``ks_pvalue`` (and its alias ``gate_a_p``) is Gate A's one-sample p-value
+    -- the figure :attr:`calibration_status` is actually voided on, alongside
+    ``gate_b_p`` -- ``None`` when Gate A itself is
+    :data:`CALIBRATION_STATUS_INSUFFICIENT` (fewer than
+    :data:`GATE_A_MIN_NULL_COUNT` null values).  See "Gate A and Gate B" in
+    the module docstring for the rule.  ``null_tstat_mean``/``null_tstat_sd``
+    are Gate A's own sample, reported as the two aggregate numbers prd §4.2
+    allows past the barrier -- never the per-root values themselves --
+    ``None`` when Gate A has no null value to summarise at all.
+
+    ``ks_pvalue_all_nodes`` and ``ks_pvalue_root_nonsig`` are diagnostics,
+    never gating: the former is every evaluated node's own ``ic_mean``, root
+    and child alike, the sample this module gated on before
+    bug_spec_ks_guard_root_level.xml, always present; the latter is that
+    fix's own root/branch-level, :data:`DISCOVERY_TSTAT`-truncated two-sample
+    comparison of null roots against real ones, the sample
+    :mod:`nulloracle.ksguard`'s store still persists (``None`` when its own
+    sample is too thin to compute at all) -- the comparison this bug fix
+    removed from the verdict because a real root's genuine edge moved it, not
+    because the nulls themselves looked any different from their own known
+    distribution.  ``ks_root_counts`` is that diagnostic sample's
+    ``(n_null, n_real)``, unchanged from before this fix.
 
     ``discoveries`` is additions_spec_cost_aware_selection.xml feature 2's
     cost-aware count -- ``ir_tstat >= DISCOVERY_TSTAT and ic_tstat > 0``,
@@ -360,8 +432,13 @@ class CloseoutResult:
     campaign_id: str
     ks_pvalue: float | None
     ks_pvalue_all_nodes: float
+    ks_pvalue_root_nonsig: float | None
     ks_variant: str
     ks_root_counts: tuple[int, int]
+    gate_a_p: float | None
+    gate_b_p: float | None
+    null_tstat_mean: float | None
+    null_tstat_sd: float | None
     calibration_status: str
     sensitivity: float
     specificity: float
@@ -404,8 +481,13 @@ class CloseoutResult:
             "campaign_id": self.campaign_id,
             "ks_pvalue": self.ks_pvalue,
             "ks_pvalue_all_nodes": self.ks_pvalue_all_nodes,
+            "ks_pvalue_root_nonsig": self.ks_pvalue_root_nonsig,
             "ks_variant": self.ks_variant,
             "ks_root_counts": list(self.ks_root_counts),
+            "gate_a_p": self.gate_a_p,
+            "gate_b_p": self.gate_b_p,
+            "null_tstat_mean": self.null_tstat_mean,
+            "null_tstat_sd": self.null_tstat_sd,
             "calibration_status": self.calibration_status,
             "sensitivity": self.sensitivity,
             "specificity": self.specificity,
@@ -741,6 +823,266 @@ def _persist_triage(
             f"{CLOSEOUT_CODE}: could not persist campaign {campaign_id!r}'s "
             f"triage figure into {database_url!r}: {exc}"
         ) from exc
+
+
+# -- Gate A: does the campaign's own null sample still look like N(0,1)? -----
+#
+# nulloracle's ks module carries no one-sample test (its own two-sample
+# ``ks_two_sample`` is the only estimator it offers -- see the module
+# docstring's "Gate A and Gate B" section for why this bug fix does not add
+# one there), so the statistic and its asymptotic p-value are restated here,
+# mirroring the shape nulloracle.ks itself already documents for its own
+# two-sample series rather than inventing a different numerical recipe.
+
+#: sqrt(2), used once per CDF evaluation; named rather than recomputed so the
+#: one spelling is unmistakably the same constant everywhere it appears.
+_SQRT_TWO = math.sqrt(2.0)
+
+
+def _standard_normal_cdf(x: float) -> float:
+    """Phi(x) -- the standard normal CDF, forward only, never inverted.
+
+    ``math.erf`` is the one libm call Gate A needs; nulloracle's own
+    asymptotic two-sample branch already accepts the same platform-dependent
+    -but-documented trade for ``math.exp``, and there is no exact,
+    libm-free estimator available here the way there is for two empirical
+    samples (nulloracle.ks's lattice count has no one-sample counterpart).
+    """
+    return 0.5 * (1.0 + math.erf(x / _SQRT_TWO))
+
+
+def _one_sample_ks_statistic(ordered: Sequence[float]) -> float:
+    """The one-sample two-sided KS statistic ``D`` of ``ordered`` against
+    N(0,1).  ``ordered`` must already be sorted ascending.
+
+    The textbook definition, mirroring the two-sided, tie-stepped shape
+    nulloracle.ks states for its own two-sample statistic: ``D+`` is the
+    largest amount the empirical CDF leads Phi by, ``D-`` the largest amount
+    it trails, and ``D`` is the larger of the two.
+    """
+    n = len(ordered)
+    d_plus = max(i / n - _standard_normal_cdf(x) for i, x in enumerate(ordered, start=1))
+    d_minus = max(_standard_normal_cdf(x) - (i - 1) / n for i, x in enumerate(ordered, start=1))
+    return max(d_plus, d_minus)
+
+
+def _kolmogorov_q(lam: float) -> float:
+    """``Q(lambda)``, the Kolmogorov distribution.
+
+    Restated term for term from the same published series (Numerical
+    Recipes' ``probks``) nulloracle.ks's own, private ``_kolmogorov_series``
+    mirrors for its two-sample asymptotic branch -- that function is not
+    exported (nulloracle's two-sample test has no one-sample counterpart to
+    call it from), so this is this module's own copy, kept in step with the
+    published algorithm rather than a "cleaner" rearrangement, for the same
+    reason nulloracle.ks gives: a stored p-value's last digits should not
+    drift with how the series is written.
+    """
+    if lam <= 0.0:
+        return 1.0
+    a2 = -2.0 * lam * lam
+    factor = 2.0
+    total = 0.0
+    previous = 0.0
+    for j in range(1, KS_SERIES_TERMS + 1):
+        term = factor * math.exp(a2 * j * j)
+        total += term
+        if abs(term) <= _KS_SERIES_EPS1 * previous or abs(term) <= _KS_SERIES_EPS2 * total:
+            return min(1.0, max(0.0, total))
+        factor = -factor
+        previous = abs(term)
+    return 1.0
+
+
+#: Numerical Recipes' own cap on the Kolmogorov series' term count -- the
+#: same figure nulloracle.ks pins for its own copy of this series.
+KS_SERIES_TERMS = 100
+
+#: The series' two convergence tolerances -- nulloracle.ks's own ``EPS1``
+#: and ``EPS2``, restated so this copy converges on the same term nulloracle's
+#: two-sample asymptotic branch would.
+_KS_SERIES_EPS1 = 1e-6
+_KS_SERIES_EPS2 = 1e-16
+
+
+def _one_sample_ks_against_standard_normal(values: Sequence[float]) -> tuple[float, float]:
+    """Gate A's test: the ``(statistic, pvalue)`` of a one-sample two-sided
+    KS test of ``values`` against N(0,1).
+
+    The asymptotic Kolmogorov approximation, with the small-sample
+    correction Stephens (1970) publishes for the one-sample case --
+    ``lambda = (sqrt(n) + 0.12 + 0.11/sqrt(n)) * D`` in place of the raw
+    ``sqrt(n)*D`` the large-``n`` limit alone would use -- because Gate A's
+    own floor (:data:`GATE_A_MIN_NULL_COUNT`) admits samples far smaller than
+    an uncorrected asymptotic series is accurate for.
+    """
+    ordered = sorted(values)
+    n = len(ordered)
+    d = _one_sample_ks_statistic(ordered)
+    lam = (math.sqrt(n) + 0.12 + 0.11 / math.sqrt(n)) * d
+    return d, _kolmogorov_q(lam)
+
+
+def _gate_a(null_values: Sequence[float]) -> tuple[str, float | None, float | None]:
+    """Gate A: one-sample KS test of ``null_values`` (one ``ic_tstat`` per
+    null root for Type-R, per branch's shallowest null node for Type-D)
+    against N(0,1) -- see "Gate A and Gate B" in the module docstring.
+
+    Returns ``(status, pvalue, statistic)``.  ``status`` is
+    :data:`CALIBRATION_STATUS_INSUFFICIENT` below :data:`GATE_A_MIN_NULL_
+    COUNT`, :data:`nulloracle.CALIBRATION_STATUS_VOID` at
+    ``pvalue < nulloracle.VOID_THRESHOLD`` and :data:`nulloracle.
+    CALIBRATION_STATUS_OK` otherwise -- Gate A's own level is deliberately
+    the same 0.05 the previous, removed gate voided on (PRD §7.4's own
+    figure), because what changed is the *comparison*, not the bar a
+    detectable null must clear.
+    """
+    if len(null_values) < GATE_A_MIN_NULL_COUNT:
+        return CALIBRATION_STATUS_INSUFFICIENT, None, None
+    statistic, pvalue = _one_sample_ks_against_standard_normal(null_values)
+    status = (
+        nulloracle.CALIBRATION_STATUS_VOID
+        if pvalue < nulloracle.VOID_THRESHOLD
+        else nulloracle.CALIBRATION_STATUS_OK
+    )
+    return status, pvalue, statistic
+
+
+# -- Gate B: does the agent's own behaviour predict a root's null status? ----
+
+
+def _fisher_exact_two_sided(a: int, b: int, c: int, d: int) -> float:
+    """The two-sided Fisher exact p-value of the 2x2 table ``[[a, b], [c, d]]``.
+
+    Exact over the hypergeometric distribution the table's fixed margins
+    imply: sums the probability of every table at least as extreme as the
+    observed one -- the standard definition of a two-sided exact test --
+    using ``math.comb`` the same way nulloracle.ks's own exact two-sample
+    branch uses arbitrary-precision integers, so the only floating-point
+    operations are the final ratios.
+    """
+    n_null = a + b
+    n_real = c + d
+    total = n_null + n_real
+    k = a + c
+    total_ways = math.comb(total, k)
+
+    def _probability(x: int) -> float:
+        return (math.comb(n_null, x) * math.comb(n_real, k - x)) / total_ways
+
+    low = max(0, k - n_real)
+    high = min(n_null, k)
+    probabilities = {x: _probability(x) for x in range(low, high + 1)}
+    observed = probabilities[a]
+    # A relative tolerance keeps the observed table counted as "at least as
+    # extreme as itself" despite floating-point rounding of the ratio.
+    cutoff = observed * (1 + 1e-9)
+    return min(1.0, sum(p for p in probabilities.values() if p <= cutoff))
+
+
+def _gate_b(
+    root_labels: Mapping[str, bool], expanded_roots: frozenset[str]
+) -> tuple[str, float | None]:
+    """Gate B: whether a root's sidecar label predicts whether the policy
+    ever selected it for expansion -- a two-sided Fisher exact test over the
+    2x2 table of (null, real) x (expanded at least once, never expanded).
+
+    ``root_labels`` maps every planted root this campaign's sidecar holds an
+    entry for to its ``is_null`` bit (not only an evaluated root's -- a root
+    nobody ever expanded still answers "never expanded", which is exactly
+    the fact this gate reads).  ``expanded_roots`` is the set of roots whose
+    subtree carries at least one other node (see
+    :func:`_read_campaign_node_parents`).
+
+    Returns ``(status, pvalue)``.  ``status`` is :data:`CALIBRATION_STATUS_
+    INSUFFICIENT` when either label class is empty or no root was ever
+    expanded -- the spec's own "insufficient when no root was expanded",
+    widened to the symmetric case of no null (or no real) root to compare at
+    all -- :data:`nulloracle.CALIBRATION_STATUS_VOID` at
+    ``pvalue < GATE_B_VOID_THRESHOLD`` and :data:`nulloracle.
+    CALIBRATION_STATUS_OK` otherwise.
+    """
+    expanded_null = not_expanded_null = expanded_real = not_expanded_real = 0
+    for root_id, is_null in root_labels.items():
+        expanded = root_id in expanded_roots
+        if is_null:
+            if expanded:
+                expanded_null += 1
+            else:
+                not_expanded_null += 1
+        elif expanded:
+            expanded_real += 1
+        else:
+            not_expanded_real += 1
+    n_null = expanded_null + not_expanded_null
+    n_real = expanded_real + not_expanded_real
+    if n_null == 0 or n_real == 0 or (expanded_null + expanded_real) == 0:
+        return CALIBRATION_STATUS_INSUFFICIENT, None
+    pvalue = _fisher_exact_two_sided(
+        expanded_null, not_expanded_null, expanded_real, not_expanded_real
+    )
+    status = (
+        nulloracle.CALIBRATION_STATUS_VOID
+        if pvalue < GATE_B_VOID_THRESHOLD
+        else nulloracle.CALIBRATION_STATUS_OK
+    )
+    return status, pvalue
+
+
+def _read_campaign_node_parents(
+    database_url: str, campaign_id: str
+) -> tuple[tuple[str, str | None], ...]:
+    """Every node id and its ``parent_id`` for the campaign -- root and
+    child alike, evaluated or not.
+
+    Gate B's "was a root ever selected for expansion" reads every attempted
+    expansion that left a row, not only a scored one: a sandbox failure or a
+    tripwire halt still persists its child
+    (:class:`discovery.persist.AttemptLog`'s own law -- see the module
+    docstring's note on why this module reads ``node`` by raw SQL), and
+    excluding those rows would undercount a root the policy genuinely
+    selected but whose attempt never finished.
+    """
+    path = _sqlite_path(database_url)
+    with closing(sqlite3.connect(path)) as connection:
+        try:
+            rows = connection.execute(
+                f"SELECT id, parent_id FROM {NODE_TABLE} WHERE campaign_id = ?",
+                (campaign_id,),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise CloseoutError(
+                f"{CLOSEOUT_CODE}: could not read campaign {campaign_id!r}'s "
+                f"node parentage from {database_url!r}: {exc}"
+            ) from exc
+    return tuple((row[0], row[1]) for row in rows)
+
+
+def _force_void(database_url: str, campaign_id: str) -> None:
+    """Set ``calibration_status`` to VOID directly, idempotently, and
+    stickily -- never clearing an existing VOID.
+
+    Gate B's own voiding path: :class:`nulloracle.CampaignVerdict` only ever
+    compares ``campaign.ks_pvalue`` (the diagnostic this bug fix demotes,
+    :attr:`CloseoutResult.ks_pvalue_root_nonsig`) against its own 0.05, so a
+    campaign Gate B alone rejects -- at a different threshold, over a
+    different statistic -- cannot be voided through that seam.  This is the
+    same ``UPDATE ... WHERE calibration_status != 'VOID'`` sticky shape
+    :mod:`nulloracle.verdict` itself states for the same reason: once
+    measured detectable, a campaign only ever moves toward VOID, never away
+    from it.
+    """
+    path = _sqlite_path(database_url)
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(
+            f"UPDATE {nulloracle.CAMPAIGN_TABLE} SET calibration_status = ? "
+            "WHERE id = ? AND calibration_status != ?",
+            (
+                nulloracle.CALIBRATION_STATUS_VOID,
+                campaign_id,
+                nulloracle.CALIBRATION_STATUS_VOID,
+            ),
+        )
 
 
 # -- The commit: policy-runtime's EpisodeCommit, over this module's own tree --
@@ -1101,14 +1443,20 @@ def close_out(
     diagnostic = nulloracle.ks_two_sample(null_scores, real_scores)
     ks_pvalue_all_nodes = diagnostic.pvalue
 
-    # The gate's own sample, its unit following the campaign type: one
+    # The diagnostic's own sample, its unit following the campaign type: one
     # ic_mean per root for Type-R (never a child's), one per branch for
     # Type-D (its shallowest null and deepest real, never a pseudo-
     # replicated descendant in between) -- truncated, either way, to values
-    # whose own |ic_tstat| has not already cleared DISCOVERY_TSTAT on
-    # either side, so the comparison is "no edge vs no edge" on both labels
-    # (PRD §4.3) rather than a test genuine edge or a correlated descendant
-    # can fail on their own.
+    # whose own |ic_tstat| has not already cleared DISCOVERY_TSTAT on either
+    # side.  This is bug_spec_ks_guard_root_level.xml's fix, kept exactly as
+    # it was computed, but demoted to a diagnostic by this bug fix: it is a
+    # comparison of null roots against *real* ones, and "no edge vs no edge"
+    # on both labels is still a comparison genuine real edge can fail on its
+    # own (the defect this fix removes from the verdict -- see "Gate A and
+    # Gate B" in the module docstring).  Also collects each null's own
+    # ic_tstat, untruncated: Gate A below reads every one of them, including
+    # an individually "significant" one, because a leaking null is exactly
+    # what an outlier in the null population would look like.
     if is_type_d:
         null_gate_scores = [
             ic_mean
@@ -1120,7 +1468,9 @@ def close_out(
             for _depth, ic_mean, ic_tstat in branch_real.values()
             if abs(ic_tstat) < DISCOVERY_TSTAT
         ]
-        ks_variant = KS_VARIANT_BRANCH_NONSIG
+        gate_a_null_tstats = [
+            ic_tstat for _depth, _ic_mean, ic_tstat in branch_null.values()
+        ]
     else:
         null_gate_scores = [
             ic_mean
@@ -1132,31 +1482,87 @@ def close_out(
             for ic_mean, ic_tstat, is_null in root_level.values()
             if not is_null and abs(ic_tstat) < DISCOVERY_TSTAT
         ]
-        ks_variant = KS_VARIANT_ROOT_NONSIG
+        gate_a_null_tstats = [
+            ic_tstat for ic_mean, ic_tstat, is_null in root_level.values() if is_null
+        ]
     ks_root_counts = (len(null_gate_scores), len(real_gate_scores))
     if (
         len(null_gate_scores) < nulloracle.KS_MIN_SAMPLE
         or len(real_gate_scores) < nulloracle.KS_MIN_SAMPLE
     ):
-        # Too few non-significant values on one side to compare at all: the
-        # gate is not computed, and the campaign is neither cleared nor
-        # voided on a p-value no test produced.  campaign.ks_pvalue and
-        # calibration_status are left exactly as they already were -- the
-        # guard did not run, the same state an un-read campaign is in.
-        calibration_status = CALIBRATION_STATUS_INSUFFICIENT
-        ks_pvalue: float | None = None
+        # Too few non-significant values on one side for the diagnostic
+        # itself to be computed at all -- reported as None, never raised:
+        # unlike before this fix, nothing downstream is gated on it.
+        ks_pvalue_root_nonsig: float | None = None
     else:
-        # 1. The KS guard, over the gate's sample above -- only the two
-        #    lists reach it, never a node id.
+        # nulloracle.KsGuard is still the writer of campaign.ks_pvalue and
+        # campaign_ks_guard -- ops.instrument_status's KS lamp and this
+        # store's own read-back invariant both depend on that column holding
+        # whatever this call persists, and this diagnostic is what it has
+        # always persisted.  What changed is that calibration_status is no
+        # longer read off this write (see Gate A below, and the module
+        # docstring).
         ks_record = nulloracle.KsGuard(database_url).guard(
             campaign, null_gate_scores, real_gate_scores
         )
-        # 2. The verdict, read back off the p-value the guard just persisted.
-        verdict = nulloracle.CampaignVerdict(database_url).void_if_detectable(
-            campaign
+        ks_pvalue_root_nonsig = ks_record.pvalue
+
+    if gate_a_null_tstats:
+        null_tstat_mean: float | None = statistics.fmean(gate_a_null_tstats)
+        null_tstat_sd: float | None = (
+            statistics.stdev(gate_a_null_tstats)
+            if len(gate_a_null_tstats) >= 2
+            else None
         )
-        calibration_status = verdict.status
-        ks_pvalue = ks_record.pvalue
+    else:
+        null_tstat_mean = None
+        null_tstat_sd = None
+
+    # Gate A: does the campaign's own null sample still look like N(0,1)?
+    # The one-sample test this bug fix adds -- see the module docstring.
+    gate_a_status, gate_a_p, _gate_a_statistic = _gate_a(gate_a_null_tstats)
+
+    # Gate B: does the agent's own behaviour -- which roots it chose to
+    # expand -- predict a root's null status?  Every planted root the
+    # sidecar holds an entry for (not only an evaluated one: a root nobody
+    # ever expanded still answers "never expanded"), labelled by the
+    # sidecar and by whether its subtree carries any node beside itself.
+    root_labels: dict[str, bool] = {}
+    for a_root_id in root_ids:
+        root_entry = sidecar.assignment(a_root_id)
+        if root_entry is not None:
+            root_labels[a_root_id] = root_entry.is_null
+    expanded_roots: set[str] = set()
+    for node_id, parent_id in _read_campaign_node_parents(database_url, campaign):
+        if parent_id is None:
+            continue
+        expanded_roots.add(
+            _resolve_root(root_oracle, node_id, campaign=campaign, roots=roots)
+        )
+    gate_b_status, gate_b_p = _gate_b(root_labels, frozenset(expanded_roots))
+
+    # calibration_status: VOID if either gate rejects; otherwise ok unless
+    # Gate A itself has nothing to test (fewer than GATE_A_MIN_NULL_COUNT
+    # null values) -- Gate B's own "insufficient" (no root ever expanded, or
+    # no root of one label) is common in a short or synthetic campaign and
+    # is not itself evidence of a problem, so it never alone downgrades an
+    # otherwise-clean Gate A reading.  VOID is sticky: once a prior run (or
+    # this one) has voided the campaign, it never clears.
+    already_void = record.calibration_status == nulloracle.CALIBRATION_STATUS_VOID
+    if (
+        already_void
+        or gate_a_status == nulloracle.CALIBRATION_STATUS_VOID
+        or gate_b_status == nulloracle.CALIBRATION_STATUS_VOID
+    ):
+        calibration_status = nulloracle.CALIBRATION_STATUS_VOID
+        _force_void(database_url, campaign)
+    elif gate_a_status == CALIBRATION_STATUS_INSUFFICIENT:
+        calibration_status = CALIBRATION_STATUS_INSUFFICIENT
+    else:
+        calibration_status = nulloracle.CALIBRATION_STATUS_OK
+
+    ks_pvalue = gate_a_p
+    ks_variant = KS_VARIANT_NULL_CALIBRATION
 
     # 3. The calibration figures, over the planted roots and the
     #    campaign's discoveries, each mapped to its root -- the scorer's
@@ -1294,8 +1700,13 @@ def close_out(
         campaign_id=campaign,
         ks_pvalue=ks_pvalue,
         ks_pvalue_all_nodes=ks_pvalue_all_nodes,
+        ks_pvalue_root_nonsig=ks_pvalue_root_nonsig,
         ks_variant=ks_variant,
         ks_root_counts=ks_root_counts,
+        gate_a_p=gate_a_p,
+        gate_b_p=gate_b_p,
+        null_tstat_mean=null_tstat_mean,
+        null_tstat_sd=null_tstat_sd,
         calibration_status=calibration_status,
         sensitivity=figures.sensitivity,
         specificity=figures.specificity,
