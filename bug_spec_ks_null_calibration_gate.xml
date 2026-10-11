@@ -1,0 +1,73 @@
+<bug_spec>
+  <!-- KS-2. Found 2026-10-12 in the pre-registered cost-aware M2 batch
+       (archC01–10, docs/preregistration/2026-10-11-m2-cost-aware.md).
+       Six of ten campaigns were VOID, against 0 of 25 in the IC-rule batch
+       (archM). Root-gate p-values ran 0.005–0.21; the all-node diagnostic
+       was below 0.05 in all ten.
+
+       Aggregate-only comparison (no labels printed): null roots are
+       unchanged between the batches (IC mean −0.0005 → −0.0000, sd
+       0.0098 → 0.0095), while real roots improved (IC mean +0.020 →
+       +0.030). The root-nonsig gate from 622d88c/2dd55a4 compares null
+       roots with real roots below |t|=2. Weakly real roots still sit above
+       zero, so the gate rejects genuine weak edge: the better the real
+       signals, the more campaigns are voided.
+
+       PRD §4.3's threat is "nulls detectable — the agent may be learning to
+       identify them", and its remedy is the null construction (block
+       length, permutation). Neither needs real nodes in the comparison.
+       Decision (author; PRD §2.3): gate on null self-calibration and on
+       agent behaviour, and keep the null-vs-real comparison as a
+       diagnostic. This applies to campaigns closed out after the change.
+       VOID stays sticky. Core shape, explicit touches_files. -->
+
+  <bug index="1" shape="core" severity="critical"
+       touches_files="packages/orchestrator/src/orchestrator/closeout.py,packages/orchestrator/tests/test_closeout_ks_null_calibration.py,packages/orchestrator/tests/test_closeout_ks_root_level.py,packages/orchestrator/tests/test_closeout_cli.py,packages/orchestrator/tests/test_closeout_subtree.py">
+    <title>The KS gate compares null roots with real roots, so genuine weak real edge voids campaigns; the gate must test whether nulls still behave like nulls</title>
+    <symptoms>
+      archC01–10 went VOID in 6 of 10 with nulls unchanged and real roots improved. archM01–25 (weaker reals) went VOID in 0 of 25. The gate rewards weaker research.
+    </symptoms>
+    <reproduction_steps>
+      Close out a synthetic Type-R campaign:
+      - 5 null roots with IC t ~ N(0,1)
+      - 25 real roots, each with a small true IC (t around 1, all below 2)
+      The current gate voids it; the nulls are perfectly calibrated.
+    </reproduction_steps>
+    <expected>
+      - **Gate A, null calibration (Type-R):**
+        - Each null root contributes its ic_tstat.
+        - A one-sample two-sided KS test against N(0,1) at α = 0.05 (an exact or asymptotic p, as nulloracle's ks module offers, or a documented one-sample implementation in closeout) decides VOID.
+        - With fewer than 3 null roots, the gate is "insufficient", which is neither VOID nor ok.
+      - **Gate A, Type-D:** the same test over the null-labelled nodes, one per branch (its shallowest null), labelled by the oracle's depth resolution.
+      - **Gate B, agent behaviour:** a two-sided exact test (Fisher or permutation) comparing null and real roots on whether a root was selected for expansion in any round. It VOIDs only at p &lt; 0.01, a stricter level, because it is a second gate. It is "insufficient" when no root was expanded.
+      - **calibration_status:**
+        - VOID if either gate rejects
+        - ok if both are ok
+        - otherwise insufficient
+        VOID stays sticky, as CampaignVerdict already enforces.
+      - **Diagnostics, never gating:** the previous root-nonsig null-vs-real KS p and the all-node KS p are still computed and reported. The JSON line carries:
+        - ks_variant "null-calibration"
+        - gate_a_p, gate_b_p
+        - ks_pvalue_root_nonsig, ks_pvalue_all_nodes
+        - the null t mean and sd, as aggregate numbers only
+      - The persisted campaign_ks_guard p is gate A's. The rule and this spec's evidence are stated in the module docstring.
+      - test_closeout_ks_null_calibration.py covers:
+        - the reproduction above is ok
+        - nulls with leaked edge (null t ~ N(1.5,1)) are VOID by gate A
+        - nulls expanded far more often than reals are VOID by gate B
+        - fewer than 3 null roots gives insufficient
+        - a Type-D campaign
+        - the diagnostics are reported
+        It passes under pytest-xdist.
+      - Existing close-out tests are updated only where they pin the old gate's sample; each keeps its intent.
+      - The orchestrator member suite and root tests/ pass, including tests/e2e/test_planted_null_ks_guard.py. Its detectable-null case must still VOID under gate A.
+    </expected>
+    <actual>Root cause: the gate's comparison includes real nodes, whose distribution moves with genuine edge, instead of testing the nulls against their own known distribution.</actual>
+    <constraints>
+      nulloracle's KS functions are unchanged (call them or add the one-sample variant inside closeout)
+      Null labels never leave the close-out process; only aggregate figures are printed
+      No file outside the five listed is edited
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
