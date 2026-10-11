@@ -191,6 +191,8 @@ __all__ = [
     "KS_VARIANT_ROOT_NONSIG",
     "M2_FIXED_BETA",
     "M2_FIXED_POLICY_VERSION",
+    "SELECTION_RULE_IC_FALLBACK",
+    "SELECTION_RULE_POST_COST_IR",
     "TRIAGE_MIN_SIDE",
     "CloseoutError",
     "CloseoutResult",
@@ -219,6 +221,22 @@ DATABASE_URL_ENV = "DATABASE_URL"
 #: module constant, documented here, rather than a number repeated at each
 #: call site.
 DISCOVERY_TSTAT = 2.0
+
+#: The discovery, commit and ranking rule a node carrying ``ir_tstat`` is
+#: read by (additions_spec_cost_aware_selection.xml, "Cost-Aware Selection",
+#: feature 2): discovery is ``ir_tstat >= DISCOVERY_TSTAT and ic_tstat > 0``,
+#: and the commit ranks eligible nodes by ``ir_tstat``.  Named here so
+#: :attr:`CloseoutResult.selection_rule` can report which rule a close-out
+#: actually ran without a reader re-deriving it from the source.
+SELECTION_RULE_POST_COST_IR = "post-cost-ir"
+
+#: The rule a node whose ``ir_tstat`` was never written falls back to -- the
+#: in-sample IC bar feature 2 replaces, kept alive for a tree evaluated by an
+#: orchestrator that predates feature 1 (the column is added by the tree
+#: writer's own probe-then-``ALTER``, never backfilled onto a row a past
+#: evaluation already wrote).  ``ic_tstat >= DISCOVERY_TSTAT`` already implies
+#: a positive value at this bar, so the fallback needs no separate sign test.
+SELECTION_RULE_IC_FALLBACK = "ic-fallback"
 
 #: Close-out's own third calibration reading, alongside nulloracle's ``'ok'``
 #: and ``'VOID'``: the gate's root-level sample was too thin, on at least
@@ -325,6 +343,18 @@ class CloseoutResult:
     every evaluated node's own ``ic_mean``, root and child alike, the sample
     this module gated on before bug_spec_ks_guard_root_level.xml -- always
     present, and never the figure the verdict is pronounced on.
+
+    ``discoveries`` is additions_spec_cost_aware_selection.xml feature 2's
+    cost-aware count -- ``ir_tstat >= DISCOVERY_TSTAT and ic_tstat > 0``,
+    falling back per node to the plain ``ic_tstat >= DISCOVERY_TSTAT`` rule
+    where a node carries no ``ir_tstat`` -- the count :meth:`scoring.
+    NullPickScorer.calibration_figures` and :class:`scoring.FdrDeployStore`
+    are both measured against. ``discoveries_ic`` is the previous rule's own
+    count over every evaluated node, kept as a diagnostic and never fed to
+    either store. ``selection_rule`` names which rule this close-out actually
+    ran: :data:`SELECTION_RULE_POST_COST_IR` when at least one evaluated node
+    carried ``ir_tstat``, :data:`SELECTION_RULE_IC_FALLBACK` when none did (a
+    tree evaluated before that feature landed).
     """
 
     campaign_id: str
@@ -338,6 +368,8 @@ class CloseoutResult:
     fdr_deploy: float | None
     type_b: int | None
     discoveries: int
+    discoveries_ic: int
+    selection_rule: str
     budget_charging_trials: int
     ledger_trials: int
     triage_auc: float | None
@@ -379,6 +411,8 @@ class CloseoutResult:
             "specificity": self.specificity,
             "fdr_deploy": self.fdr_deploy,
             "type_b": self.type_b,
+            "selection_rule": self.selection_rule,
+            "discoveries_ic": self.discoveries_ic,
             "discoveries": self.discoveries,
             "budget_charging_trials": self.budget_charging_trials,
             "ledger_trials": self.ledger_trials,
@@ -402,12 +436,19 @@ class _EvaluatedNode:
     step and read here as ``None`` when that one probe never measured --
     "not measured" is excluded from the triage AUC's sample, never treated
     as a reading of zero stability.
+
+    ``ir_tstat`` is the post-cost IR t-statistic :mod:`orchestrator._evaluate`
+    writes beside ``ic_tstat`` (additions_spec_cost_aware_selection.xml
+    feature 1) -- ``None`` for a node a pre-feature-1 tree writer evaluated,
+    read here as the signal to fall back to :data:`SELECTION_RULE_IC_
+    FALLBACK` for that node (:func:`_is_discovery`, :func:`_selection_value`).
     """
 
     node_id: str
     ic_mean: float
     ic_tstat: float
     perturb_stability: float | None
+    ir_tstat: float | None
 
 
 def _sqlite_path(database_url: str) -> Path:
@@ -543,6 +584,12 @@ def _read_evaluated_nodes(
     with :data:`CLOSEOUT_UNEVALUATED_CODE` before the column is ever named
     in a query, rather than let as a raw ``sqlite3.OperationalError`` reach
     the CLI's generic refusal printer.
+
+    ``ir_tstat`` is probed for the same way: a tree no evaluation has
+    touched since additions_spec_cost_aware_selection.xml feature 1 landed
+    carries no such column, read here as ``NULL`` on every row rather than
+    refused -- the column's whole absence is feature 2's own documented
+    fallback trigger, not an unevaluated tree.
     """
     path = _sqlite_path(database_url)
     with closing(sqlite3.connect(path)) as connection:
@@ -556,16 +603,17 @@ def _read_evaluated_nodes(
                 "ic_mean/ic_tstat columns, so no evaluation has written "
                 "metrics for it, and there is nothing to calibrate"
             )
-        if _has_column(connection, NODE_TABLE, "fail_class"):
-            query = (
-                f"SELECT id, fail_class, ic_mean, ic_tstat, perturb_stability "
-                f"FROM {NODE_TABLE} WHERE campaign_id = ?"
-            )
-        else:
-            query = (
-                f"SELECT id, 'ok', ic_mean, ic_tstat, perturb_stability "
-                f"FROM {NODE_TABLE} WHERE campaign_id = ?"
-            )
+        fail_class_column = (
+            "fail_class" if _has_column(connection, NODE_TABLE, "fail_class") else "'ok'"
+        )
+        ir_tstat_column = (
+            "ir_tstat" if _has_column(connection, NODE_TABLE, "ir_tstat") else "NULL"
+        )
+        query = (
+            f"SELECT id, {fail_class_column}, ic_mean, ic_tstat, "
+            f"perturb_stability, {ir_tstat_column} "
+            f"FROM {NODE_TABLE} WHERE campaign_id = ?"
+        )
         try:
             rows = connection.execute(query, (campaign_id,)).fetchall()
         except sqlite3.Error as exc:
@@ -574,7 +622,7 @@ def _read_evaluated_nodes(
                 f"evaluated nodes from {database_url!r}: {exc}"
             ) from exc
     evaluated: list[_EvaluatedNode] = []
-    for node_id, fail_class, ic_mean, ic_tstat, perturb_stability in rows:
+    for node_id, fail_class, ic_mean, ic_tstat, perturb_stability, ir_tstat in rows:
         # A NULL fail_class on a row with metrics is an evaluated node: the
         # root evaluation path writes metrics but no fail_class, and a row
         # with no recorded failure is one where nothing has failed. Dropping
@@ -587,6 +635,7 @@ def _read_evaluated_nodes(
                 ic_mean=ic_mean,
                 ic_tstat=ic_tstat,
                 perturb_stability=perturb_stability,
+                ir_tstat=ir_tstat,
             )
         )
     return tuple(evaluated)
@@ -697,6 +746,26 @@ def _persist_triage(
 # -- The commit: policy-runtime's EpisodeCommit, over this module's own tree --
 
 
+def _is_discovery(node: _EvaluatedNode) -> bool:
+    """additions_spec_cost_aware_selection.xml feature 2's discovery rule.
+
+    ``ir_tstat >= DISCOVERY_TSTAT and ic_tstat > 0`` for a node that carries
+    ``ir_tstat``; :data:`SELECTION_RULE_IC_FALLBACK`'s plain ``ic_tstat >=
+    DISCOVERY_TSTAT`` for one that does not (a tree a pre-feature-1
+    evaluator wrote).  ``DISCOVERY_TSTAT`` is positive, so the fallback
+    needs no separate sign test to match the primary rule's ``> 0`` leg.
+    """
+    if node.ir_tstat is not None:
+        return node.ir_tstat >= DISCOVERY_TSTAT and node.ic_tstat > 0
+    return node.ic_tstat >= DISCOVERY_TSTAT
+
+
+def _selection_value(node: _EvaluatedNode) -> float:
+    """The figure the commit ranks an eligible node by -- ``ir_tstat`` where
+    the node carries one, ``ic_tstat`` under the fallback rule."""
+    return node.ir_tstat if node.ir_tstat is not None else node.ic_tstat
+
+
 class _ClosingTree:
     """The address seam :class:`policy_runtime.EpisodeCommit` needs -- the
     campaign's evaluated node ids, and nothing posted.
@@ -733,26 +802,28 @@ class _ClosingQuestion:
 
 
 def _commit_top_node(evaluated: Sequence[_EvaluatedNode]) -> policy_runtime.Termination:
-    """Commit to the evaluated node with the highest in-sample ``ic_tstat``,
-    if any clears :data:`DISCOVERY_TSTAT` -- feature 2's commit rule, run
+    """Commit to the eligible evaluated node with the highest ``ir_tstat``
+    (additions_spec_cost_aware_selection.xml feature 2's commit rule --
+    ``ic_tstat`` under :data:`SELECTION_RULE_IC_FALLBACK` for a node with no
+    ``ir_tstat``, :func:`_is_discovery` and :func:`_selection_value`), run
     through :func:`policy_runtime.episode_commit` so the one-way-door and
     one-node cardinality it already enforces are not restated here.
 
     Ties are broken by node id, ascending: a deterministic total order over
-    ``(-ic_tstat, node_id)`` picks the same winner on every call over the
-    same rows, which a direct ``max()`` without a tie-break key would not
-    guarantee.  With no eligible node (every ``ic_tstat`` below the bar, or
-    no evaluated node at all), nothing is committed and the returned
-    :class:`~policy_runtime.Termination` carries no pick -- the campaign is
-    a miss, scored :data:`policy_runtime.NON_COMMITTING_SCORE` by the caller
-    that reads it, never refused.
+    ``(-_selection_value(node), node_id)`` picks the same winner on every
+    call over the same rows, which a direct ``max()`` without a tie-break key
+    would not guarantee.  With no eligible node (every node below its own
+    rule's bar, or no evaluated node at all), nothing is committed and the
+    returned :class:`~policy_runtime.Termination` carries no pick -- the
+    campaign is a miss, scored :data:`policy_runtime.NON_COMMITTING_SCORE` by
+    the caller that reads it, never refused.
     """
     record = policy_runtime.episode_commit(
         _ClosingQuestion(frozenset(node.node_id for node in evaluated))
     )
-    eligible = [node for node in evaluated if node.ic_tstat >= DISCOVERY_TSTAT]
+    eligible = [node for node in evaluated if _is_discovery(node)]
     if eligible:
-        winner = min(eligible, key=lambda node: (-node.ic_tstat, node.node_id))
+        winner = min(eligible, key=lambda node: (-_selection_value(node), node.node_id))
         record.commit(winner.node_id)
     return record.terminate()
 
@@ -947,6 +1018,7 @@ def close_out(
     real_scores: list[float] = []
     discoveries: list[str] = []
     discovery_roots: list[str] = []
+    discoveries_ic = 0
     triage_null: list[float] = []
     triage_real: list[float] = []
     # root_id -> (ic_mean, ic_tstat, is_null) of the root's *own* evaluation
@@ -992,6 +1064,8 @@ def close_out(
                         resolution.depth, node.ic_mean, node.ic_tstat,
                     )
         if node.ic_tstat >= DISCOVERY_TSTAT:
+            discoveries_ic += 1
+        if _is_discovery(node):
             discoveries.append(node.node_id)
             discovery_roots.append(root_id)
         # The M1 triage sample -- every evaluated node whose lookback-jitter
@@ -1004,6 +1078,15 @@ def close_out(
             (triage_null if entry.is_null else triage_real).append(
                 node.perturb_stability
             )
+
+    # Which rule produced the discoveries, discovery_roots and (below) the
+    # commit: post-cost-ir once any evaluated node carries ir_tstat, the
+    # ic-fallback only when the whole tree predates feature 1 and none do.
+    selection_rule = (
+        SELECTION_RULE_POST_COST_IR
+        if any(node.ir_tstat is not None for node in evaluated)
+        else SELECTION_RULE_IC_FALLBACK
+    )
 
     # The diagnostic: §7.4's test over every evaluated node's realised
     # ic_mean, root and child alike -- the sample this module gated on
@@ -1219,6 +1302,8 @@ def close_out(
         fdr_deploy=fdr_value,
         type_b=type_b,
         discoveries=len(discoveries),
+        discoveries_ic=discoveries_ic,
+        selection_rule=selection_rule,
         budget_charging_trials=budget_charging_trials,
         ledger_trials=ledger_trials,
         triage_auc=triage_auc,
