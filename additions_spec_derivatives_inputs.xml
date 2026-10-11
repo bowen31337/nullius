@@ -1,0 +1,186 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — derivatives inputs: funding, perp–spot basis, taker flow and open interest as point-in-time features (the M2 inputs pivot)</project_name>
+  <addition_summary>
+    Two pre-registered M2 tests failed (docs/preregistration/*RESULT.md):
+    - Weekly cost-aware selection: almost no node survived costs.
+    - 2-weekly cadence: 2 of 10 campaigns found a cost-surviving node. Both
+      were positive out of sample, but the rule needs breadth.
+    PRD §2.3's next pivot is inputs. Signals today see only daily spot
+    close/volume. Binance's free public archive (data.binance.vision,
+    USD-M futures) holds full history for:
+    - funding rates
+    - futures klines, giving perp–spot basis and taker-buy volume
+    - daily open-interest and long/short "metrics"
+    This spec brings them into the lake, the sealed snapshot and the agent's
+    window as point-in-time daily features through the existing
+    contract.MarketWindow.feature(name, version) accessor. The contract is
+    unchanged, so the gVisor runtime root needs no re-provisioning.
+    Trading stays spot-only; these are signals, not instruments, so the cost
+    model is unchanged.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / Parquet lake / SQLite / pytest.</stack>
+    <test_baseline>main at 577ec32: gate 1663 passed; orchestrator 601 passed 5 skipped.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md. Existing pieces, per a code map on 2026-10-12:
+      - ingest bars_backfill.py:
+        - archive helpers: ARCHIVE_BASE_URL/LISTING_URL ~:337, _request_archive
+          ~:610, _list_archive_keys ~:652, _verify_checksum ~:775, the zip
+          cache ~:801-897, listing and rank caches, --workers, --restart
+        - hard-coded to spot 1d: ARCHIVE_KLINES_PREFIX ~:345, _ARCHIVE_KEY_RE
+          ~:606, _month_zip_url ~:796, _INTERVAL ~:350
+        - bars partitions: staging/bars/symbol=S/date=D/part-0.parquet,
+          timestamp us UTC, values as venue strings
+      - snapshot seal.py ~:163/:205 refuses any staging path outside bars/.
+        The mount (partitions/select) is stream-generic.
+      - evaluator _window.py ~:130: SLICED_STREAMS = (bars, trades,
+        bookfeat, borrow).
+      - orchestrator _evaluate.py: the materializer ~:512-547 builds only the
+        bars:1d frame. _symbol_panel ~:423 is hard-coded to BARS_STREAM, the
+        panel cache is _PANELS, and the max_history_days cap applies.
+      - contract window.py: feature(name, version) reads frame
+        feature:&lt;name&gt;:&lt;version&gt; and takes trailing rows across the whole
+        frame. It does not truncate at t, so the host must cut point-in-time
+        first.
+      - signal-agent _authoring.py: _available_streams ~:648,
+        _stream_columns ~:615, _accessors_detail ~:379.
+      - The point-in-time cutoff: decision time is the end of day D, and the
+        daily bar for D is included. Forward returns are close[i+h]/close[i].
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Ingest">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/ingest/src/nullius_ingest/bars_backfill.py,packages/ingest/src/nullius_ingest/derivs_backfill.py,run.sh,packages/ingest/tests/test_derivs_backfill.py">
+        System backfills USD-M futures funding rates, futures daily klines and daily open-interest metrics from the free archive into point-in-time daily lake streams, so that `./run.sh lake-derivs-backfill --lake L --first A --last B --symbols-from L/universe.json` returns funding, basis-input and metrics partitions for the spot universe.
+        - bars_backfill's archive helpers are parametrised by archive prefix,
+          key pattern and interval, with no behaviour change for spot bars;
+          the existing bars tests still pass. derivs_backfill.py reuses them:
+          the S3 listing, checksum verification, zip cache, rank-free symbol
+          list from universe.json, --workers, resumable months and days, and
+          --restart.
+        - Symbol mapping: a spot symbol S maps to the UM perpetual S, or to
+          "1000"+S when only the scaled contract exists (e.g. PEPEUSDT to
+          1000PEPEUSDT). The scale factor is recorded. A symbol with no
+          perpetual has no rows. The mapping is written to
+          staging-meta/um-symbol-map.json.
+        - Stream funding/, from data/futures/um/monthly/fundingRate: one row
+          per symbol per day D with
+          - funding_rate_sum: the sum of the settlements with calcTime in
+            (D 00:00, D+1 00:00]; a settlement at D+1 00:00 belongs to D
+          - funding_rate_last: the last settlement in that window
+          - n_settlements
+          Rows exist only on days with at least one settlement.
+        - Stream futbars/, from data/futures/um/monthly/klines/S/1d: one row
+          per day with fut_close, fut_volume, taker_buy_volume and
+          quote_volume, rescaled for 1000-contracts so fut_close is on the
+          spot price scale.
+        - Stream metrics/, from data/futures/um/daily/metrics: one row per
+          day built from the last 5-minute snapshot strictly before
+          D+1 00:00, with sum_open_interest, sum_open_interest_value,
+          count_toptrader_long_short_ratio,
+          sum_toptrader_long_short_ratio, count_long_short_ratio and
+          sum_taker_long_short_vol_ratio. A trailing row stamped D+1 00:00
+          is dropped. It is opt-in with --streams metrics, because it is
+          about 30x more files than the other two.
+        - Timestamps are normalised from ms or µs (by magnitude, as
+          klines.py does) to timestamp("us","UTC"). Values are written as
+          strings, matching the bars convention. Nothing is ever
+          forward-filled past a symbol's last archive day.
+        - Layout: staging/&lt;stream&gt;/symbol=S/date=D/part-0.parquet, with S
+          the spot symbol.
+        - run.sh gains a lake-derivs-backfill verb, like lake-backfill.
+        - test_derivs_backfill.py, with pinned small zips and their
+          CHECKSUM files in tests/fixtures/binance_archive_um/ (provenance in
+          the test module's docstring), covers:
+          - the funding day-boundary rule, including the D+1 00:00
+            settlement
+          - the 1000-scale mapping and price rescale
+          - the metrics last-snapshot rule and the dropped trailing row
+          - ms and µs inputs
+          - resume without refetch
+          - a checksum mismatch that skips the month, reports it and exits 1
+          - spot bars backfill unchanged
+          No network, and it passes under pytest-xdist.
+      </feature>
+    </category>
+    <category name="Snapshot and Window">
+      <feature index="2" shape="core" depends_on=""
+               touches_files="packages/snapshot/src/snapshot/seal.py,packages/snapshot/tests/test_seal_derivs_streams.py">
+        System seals the derivative streams beside bars, so that `./run.sh lake-seal` returns a snapshot whose mount lists funding, futbars and metrics partitions.
+        - seal.py's allow-list admits bars, funding, futbars and metrics, in
+          one documented constant. Every other stray path is still refused.
+          The manifest and hash cover the new files.
+        - test_seal_derivs_streams.py covers:
+          - a staging tree with all four streams seals, and mount.partitions
+            and select answer for each
+          - an unknown stream is still refused
+          It passes under pytest-xdist.
+      </feature>
+      <feature index="3" shape="core" depends_on="2"
+               touches_files="packages/evaluator/src/evaluator/_window.py,packages/orchestrator/src/orchestrator/_evaluate.py,packages/orchestrator/tests/test_window_derivs_features.py">
+        System serves the derivative streams in every node's window as point-in-time feature frames, so that a signal returns funding, basis, taker-flow and open-interest features through ctx.feature(name, version).
+        - evaluator._window.SLICED_STREAMS adds funding, futbars and
+          metrics. The tradable roster stays bars-derived.
+        - The materializer adds, for the per-date PIT universe, frames drawn
+          from per-(stream, symbol) panels (the _symbol_panel cache, extended
+          with a stream key). The rows are partition date ≤ D (the end-of-D
+          cutoff, identical to bars) and within max_history_days:
+          - feature:funding_1d:v1 with symbol, open_time (D 00:00 UTC),
+            funding_rate_sum, funding_rate_last and n_settlements
+          - feature:basis_1d:v1 with symbol, open_time and basis =
+            fut_close/spot_close − 1, computed host-side as a string. It is
+            only present when both bars exist for D.
+          - feature:taker_flow_1d:v1 with symbol, open_time and
+            taker_buy_ratio = taker_buy_volume/fut_volume
+          - feature:metrics_1d:v1 with the metrics columns, only when the
+            metrics stream is sealed
+          Each frame is sorted by (symbol, open_time). A symbol absent from
+          a stream has no rows: it is never zero-filled.
+        - The windows served are point-in-time. No row dated after D ever
+          reaches the sandbox. A test asserts this for every frame over a
+          grid of dates.
+        - Bars windows are unchanged, row for row; the existing panel
+          equivalence tests still pass.
+        - test_window_derivs_features.py, over a tmp sealed snapshot with all
+          streams, covers:
+          - each frame's columns, the per-date PIT cut and the history cap
+          - basis is computed only where both closes exist
+          - a symbol with no perpetual is absent
+          - frames are absent when their stream is not sealed
+          - a stub signal reading ctx.feature("funding_1d","v1") gets the
+            rows
+          It passes under pytest-xdist.
+      </feature>
+    </category>
+    <category name="Agent Contract">
+      <feature index="4" shape="core" depends_on="3"
+               touches_files="packages/signal-agent/src/signal_agent/_authoring.py,packages/signal-agent/tests/test_prompt_derivs_features.py">
+        System declares the served derivative features to the authoring agent, so that the rendered prompt displays each feature's name, version, columns, meaning and point-in-time rule.
+        - accessors_detail and the available-streams statement name exactly
+          the feature frames the materializer serves for the configured
+          snapshot (funding_1d, basis_1d, taker_flow_1d, and metrics_1d when
+          sealed). Raw stream names that are not served as frames are not
+          advertised as readable.
+        - Each feature lists:
+          - its columns, as strings that must be cast to Float64
+          - one line of meaning, e.g. "funding_rate_sum: the day's summed
+            8-hourly perpetual funding; positive means longs pay shorts" or
+            "basis: perpetual close over spot close minus 1"
+          - that ctx.feature(name, version, lookback=N) takes the trailing N
+            rows across the whole frame, not per symbol, so a signal must
+            filter and group by symbol
+        - A second example signal uses funding_1d with a per-symbol
+          group-by. It is tested to run over a sealed fixture and to give
+          non-constant scores.
+        - test_prompt_derivs_features.py covers:
+          - the declaration lists exactly the served frames for a snapshot
+            with and without metrics
+          - the example runs and normalises
+          - every other rendered section is unchanged
+          It passes under pytest-xdist. The signal-agent member suite passes.
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>
