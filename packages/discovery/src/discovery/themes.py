@@ -183,6 +183,17 @@ _THEME_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 #: ``9.`` *30–90-day momentum that skips the last week; the control* →
 #: ``intermediate-momentum``.
 #:
+#: A tenth root, ``multi-theme-composite``, is appended after the nine above,
+#: owner-approved 2026-10-13 on ``docs/preregistration/2026-10-13-m2-guided-
+#: themes.RESULT.md`` (M2 guided themes v2: FAIL) — that result found IC in
+#: the stated direction in seven of nine themes, too small to survive costs
+#: standalone, and proposed one cheaper step before the paid-data trial: a
+#: composite node combining the five in-direction themes (attention-volume,
+#: funding-crowding, low-volatility, oi-price-divergence,
+#: intermediate-momentum) by equal-weighted rank.  Appended rather than
+#: replacing any of the nine, and :func:`signal_agent.committed_legal_themes`
+#: ships the same ten slugs in the same order.
+#:
 #: v1's six — ``cross-sectional-momentum``, ``order-flow-imbalance``,
 #: ``borrow-rate-conditioning``, ``volatility-dispersion``, ``calendar-events``
 #: and ``cross-asset-divergence`` — named themes without saying what the agent
@@ -212,6 +223,7 @@ DEFAULT_LEGAL_THEMES: tuple[str, ...] = (
     "beta-to-btc",
     "attention-volume",
     "intermediate-momentum",
+    "multi-theme-composite",
 )
 
 
@@ -490,8 +502,9 @@ def legal_themes_from_env(env: Mapping[str, str] | None = None) -> ThemeSet:
 
     Three deployments, three answers, and each is a stance rather than a gap:
 
-    * **unset** → :data:`DEFAULT_THEME_SET`, PRD §9.3 v2's nine guided roots.
-      A deployment that declared nothing still has a space; "nothing
+    * **unset** → :data:`DEFAULT_THEME_SET`, PRD §9.3 v2's nine guided roots
+      plus the owner-approved ``multi-theme-composite``.  A deployment that
+      declared nothing still has a space; "nothing
       configured" must not silently read as "anything is legal", which would
       turn a missing variable into an off switch for feature 241's whole
       sentence.

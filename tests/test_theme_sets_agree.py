@@ -38,12 +38,12 @@ import signal_agent
 
 
 def test_discovery_default_matches_signal_agents_committed_set() -> None:
-    # Same nine slugs, same order — the order a planner cycles through
+    # Same ten slugs, same order — the order a planner cycles through
     # (orchestrator._campaign._themes_for) and the order an authoring
     # prompt lists are the same document's, not two that happen to agree.
     committed = signal_agent.committed_legal_themes()
     assert discovery.DEFAULT_LEGAL_THEMES == committed.slugs()
-    assert len(discovery.DEFAULT_LEGAL_THEMES) == 9
+    assert len(discovery.DEFAULT_LEGAL_THEMES) == 10
 
 
 def test_every_committed_theme_has_a_brief() -> None:

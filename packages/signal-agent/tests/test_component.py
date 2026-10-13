@@ -624,10 +624,11 @@ def test_building_the_theme_gate_carries_the_committed_set() -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
     gate = app.get(member.THEMES_COMPONENT_NAME)
     assert gate is not None
-    # A non-None component carrying nine slugs is proof the committed artifact
+    # A non-None component carrying ten slugs (the nine v2 roots plus the
+    # owner-approved multi-theme-composite) is proof the committed artifact
     # loaded — the member's builder compiles it, so there is no unconfigured
     # state a caller could confuse with a set that admits nothing.
-    assert len(gate.themes) == 9
+    assert len(gate.themes) == 10
     assert gate.covers(_LEGAL_THEME) and not gate.covers(_ILLEGAL_THEME)
 
 

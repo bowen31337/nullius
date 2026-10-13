@@ -43,7 +43,21 @@
     "rendered into the authoring prompt so the agent is told what to test",
     "rather than only where.  Widening this list is widening the hypothesis",
     "space, which PRD 9 makes the human's own decision - the widen happens",
-    "here, in review, or not at all."
+    "here, in review, or not at all.",
+    "A tenth root, multi-theme-composite, is appended after the nine above,",
+    "owner-approved 2026-10-13 - the same review that approved the nine -",
+    "on docs/preregistration/2026-10-13-m2-guided-themes.RESULT.md (M2",
+    "guided themes v2: FAIL).  That result found IC in the stated direction",
+    "in seven of nine themes, too small to survive costs as a standalone",
+    "signal, and proposed, per its own section 2.3 ('method falsified, not",
+    "mission'), one cheaper step before the paid-data trial: a composite",
+    "node combining the five themes whose IC came in-direction -",
+    "attention-volume, funding-crowding, low-volatility, oi-price-divergence",
+    "and intermediate-momentum - by equal-weighted rank, for breadth",
+    "(IR = IC x sqrt(breadth)) rather than a sixth standalone mechanism.",
+    "It is appended rather than replacing any of the nine, because its own",
+    "inputs are each component's inputs, read through that component's own",
+    "brief."
   ],
   "construction_rules": [
     "Score cross-sectionally. Rank or z-score within the date's universe; never raw levels.",
@@ -141,6 +155,16 @@
         "inputs": "bars: return from t-90 to t-7 (or t-30 to t-7)",
         "expected_sign": "Positive",
         "notes": "Historically weak and crash-prone in crypto. Keep it as the control the others must beat"
+      }
+    },
+    {
+      "slug": "multi-theme-composite",
+      "title": "Equal-weight composite of the five in-direction v2 themes",
+      "brief": {
+        "mechanism": "Each of attention-volume, funding-crowding, low-volatility, oi-price-divergence and intermediate-momentum showed in-sample IC in its stated direction, too small to survive costs alone. They are only partly correlated, so an equal-weight combination raises breadth (IR ~ IC * sqrt(breadth)) and averages out the turnover of each component.",
+        "inputs": "Build each component as its own brief describes (bars, funding_1d and metrics_1d), oriented to its stated sign. Cross-sectionally z-score each on the date, average the five with equal weights, then rank. Symbols missing a component's input take the average of the components they have.",
+        "expected_sign": "Positive on the composite (each component already oriented to its own stated sign)",
+        "notes": "Weights are pre-registered as equal. Never fit them to returns. A child may change windows or smoothing, or use a longer EMA on the composite to cut turnover. Dropping or reweighting a component is a different hypothesis and must say so. basis-premium, taker-flow-persistence, beta-to-btc and positioning-contrarian are excluded (wrong sign or weak in the v2 test)."
       }
     }
   ]

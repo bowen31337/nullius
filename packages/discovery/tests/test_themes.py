@@ -53,8 +53,9 @@ from discovery import (
     legal_themes_from_env,
 )
 
-#: PRD §9.3 v2's nine guided theme roots (owner-approved 2026-10-13),
-#: transcribed **from the PRD's own numbering** rather than from
+#: PRD §9.3 v2's nine guided theme roots (owner-approved 2026-10-13), plus the
+#: owner-approved tenth, transcribed **from the PRD's own numbering** (and,
+#: for the tenth, the v2 RESULT file) rather than from
 #: :data:`DEFAULT_LEGAL_THEMES`.  Written out here as the independent
 #: statement the constant is checked against: a test that iterated the
 #: constant would agree with itself whatever the constant said, which is
@@ -78,6 +79,9 @@ PRD_9_3_THEME_ROOTS = (
     "attention-volume",
     # 9. 30-90-day momentum that skips the last week; the control
     "intermediate-momentum",
+    # 10. Owner-approved 2026-10-13 (v2 RESULT file): equal-weight composite
+    # of the five in-direction v2 themes
+    "multi-theme-composite",
 )
 
 #: Spellings that are *one keystroke* from a legal theme and must be refused
@@ -109,7 +113,7 @@ def test_the_default_set_is_prd_9_3s_initial_roots() -> None:
     # documentation as well as data (see the constant's docstring), so a
     # reordering is an edit to what an operator reads and deserves to be seen.
     assert tuple(DEFAULT_LEGAL_THEMES) == PRD_9_3_THEME_ROOTS
-    assert len(PRD_9_3_THEME_ROOTS) == 9
+    assert len(PRD_9_3_THEME_ROOTS) == 10
 
 
 def test_the_default_set_carries_every_root_the_prd_names() -> None:
@@ -147,7 +151,7 @@ def test_the_default_set_is_repr_able_and_iterable() -> None:
     # ``len`` its size.  Asserted together because a set that answered ``in``
     # but iterated nothing would be the shape a caller building a report off
     # it would trip over.
-    assert len(DEFAULT_THEME_SET) == 9
+    assert len(DEFAULT_THEME_SET) == 10
     assert set(iter(DEFAULT_THEME_SET)) == set(PRD_9_3_THEME_ROOTS)
     assert "ThemeSet(themes=" in repr(DEFAULT_THEME_SET)
 

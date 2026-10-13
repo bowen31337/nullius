@@ -45,10 +45,10 @@ def _system(parts) -> str:
 
 def test_nine_committed_slugs_are_the_fixture_this_suite_sweeps() -> None:
     # A sanity check on the fixture itself, not a restatement of
-    # test_themes.py's own law: if the committed set ever shrinks below nine,
-    # this suite's "for each of the nine slugs" sweep below should say so
-    # rather than silently sweep fewer.
-    assert len(_THEMES.slugs()) == 9
+    # test_themes.py's own law: if the committed set ever shrinks below ten,
+    # this suite's "for each of the slugs" sweep below should say so rather
+    # than silently sweep fewer.
+    assert len(_THEMES.slugs()) == 10
 
 
 def test_each_committed_slugs_mechanism_and_expected_sign_render_in_the_system_message() -> None:
@@ -85,6 +85,34 @@ def test_each_committed_slugs_brief_states_expected_sign_is_pre_registered() -> 
         assert "pre-registered" in statement
         assert "different hypothesis" in statement
         assert statement in _system(parts)
+
+
+# -- the tenth root, multi-theme-composite, names its five components --------
+
+
+def test_multi_theme_composite_brief_names_its_five_components_and_is_equal_weight() -> None:
+    # The owner-approved tenth root (2026-10-13, the v2 RESULT file): a
+    # workspace opened in it must see which five v2 roots it composites and
+    # that the weighting is equal, not fitted — the two facts a child
+    # refining this root needs before it may touch windows or smoothing.
+    parts = build_authoring_prompt(
+        _workspace("multi-theme-composite"), (), clause="clause text"
+    )
+    brief = parts.task["theme_brief"]
+    assert brief is not None
+
+    system = _system(parts)
+    for component in (
+        "attention-volume",
+        "funding-crowding",
+        "low-volatility",
+        "oi-price-divergence",
+        "intermediate-momentum",
+    ):
+        assert component in brief["mechanism"], component
+        assert component in system, component
+    assert "equal" in brief["mechanism"].lower()
+    assert "equal" in system.lower()
 
 
 # -- an unknown slug: theme_brief is null, never a refusal --------------------

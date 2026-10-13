@@ -90,17 +90,20 @@ ILLEGAL_THEME = "sub-30-minute-liquidity-taking"
 def test_the_committed_set_is_the_document_the_feature_names() -> None:
     themes = load_legal_themes(COMMITTED_LEGAL_THEMES)
     assert themes.kind == LEGAL_THEMES_POLICY_KIND == "signal-agent-legal-themes"
-    # PRD §9.3 v2's guided set is nine themes; the number is asserted because a
-    # tenth arriving unnoticed is a widened hypothesis space, which is the
-    # one edit PRD §9 says must be deliberate.
-    assert len(themes) == 9
+    # PRD §9.3 v2's guided set is nine themes, plus the tenth,
+    # multi-theme-composite, the owner approved 2026-10-13 on the v2 RESULT
+    # file; the number is asserted because an eleventh arriving unnoticed is
+    # a widened hypothesis space, which is the one edit PRD §9 says must be
+    # deliberate.
+    assert len(themes) == 10
 
 
 def test_the_committed_set_holds_prds_nine_three_nine() -> None:
-    # Each slug is the machine spelling of one of §9.3 v2's nine entries, and
-    # each title is that section's own wording.  Asserted as a set of pairs
-    # rather than by index so a reordering of the document is not a failure —
-    # the order is asserted separately, where it is the claim.
+    # Each slug is the machine spelling of one of §9.3 v2's nine entries, plus
+    # the owner-approved tenth, and each title is that section's own wording.
+    # Asserted as a set of pairs rather than by index so a reordering of the
+    # document is not a failure — the order is asserted separately, where it
+    # is the claim.
     themes = load_legal_themes(COMMITTED_LEGAL_THEMES)
     listed = {(slug, themes.title(slug)) for slug in themes}
     assert listed == {
@@ -140,16 +143,23 @@ def test_the_committed_set_holds_prds_nine_three_nine() -> None:
             "intermediate-momentum",
             "30-90-day momentum that skips the last week; the control",
         ),
+        (
+            "multi-theme-composite",
+            "Equal-weight composite of the five in-direction v2 themes",
+        ),
     }
 
 
 def test_the_slugs_are_in_the_documents_own_order() -> None:
     # Document order, not sorted: the artifact is reviewed as it is written,
     # and a refusal that listed the set alphabetically would read differently
-    # from the file an operator opens to widen it.
+    # from the file an operator opens to widen it.  The nine v2 slugs keep
+    # their order, with the owner-approved tenth, multi-theme-composite,
+    # last.
     themes = load_legal_themes(COMMITTED_LEGAL_THEMES)
     assert themes.slugs()[0] == "funding-crowding"
-    assert themes.slugs()[-1] == "intermediate-momentum"
+    assert themes.slugs()[-2] == "intermediate-momentum"
+    assert themes.slugs()[-1] == "multi-theme-composite"
     assert themes.slugs() != tuple(sorted(themes.slugs()))
 
 
