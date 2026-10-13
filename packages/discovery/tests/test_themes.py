@@ -625,6 +625,17 @@ def test_assign_theme_reads_the_mapping_it_is_handed() -> None:
         assign_theme("attention-volume", env={LEGAL_THEMES_ENV: "momentum"})
 
 
+def test_the_tenth_root_resolves_and_is_admitted_from_the_environment() -> None:
+    # multi-theme-composite is the tenth PRD root, not a special case: a
+    # deployment that narrows NULLIUS_LEGAL_THEMES to just it gets exactly
+    # that one-theme space, and the module-level verb admits an assignment
+    # into it the same way it admits any other configured theme.
+    env = {LEGAL_THEMES_ENV: "multi-theme-composite"}
+    resolved = legal_themes_from_env(env)
+    assert resolved.themes == ("multi-theme-composite",)
+    assert assign_theme("multi-theme-composite", env=env) == "multi-theme-composite"
+
+
 def test_assign_theme_honours_an_explicit_set_over_the_environment(monkeypatch) -> None:
     # ``legal`` wins over the variable — the same precedence
     # :func:`discovery.create_campaign` gives its ``database_url`` argument
