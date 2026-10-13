@@ -189,6 +189,7 @@ def test_task_carries_exactly_the_prior_keys_plus_cost_awareness() -> None:
         "contract",
         "answer_format",
         "cost_awareness",
+        "theme_brief",
     }
     assert parts.task["campaign_id"] == WORKSPACE.campaign_id
     assert parts.task["theme_root"] == "momentum"

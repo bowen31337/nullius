@@ -118,6 +118,26 @@ of its own:
 Both additions are appended after what :func:`build_authoring_prompt` and
 :func:`to_request` already rendered — every existing key, every existing
 line, is unchanged in content and position.
+
+**The theme brief (additions_spec_guided_themes.xml, feature 3).**  PRD
+§9.3 v2 found the hypothesis space itself too open-ended: a prompt that named
+only a theme's slug left the agent to guess a mechanism, and three
+pre-registered M2 pivots failed on that set.  v2 commits a brief — mechanism,
+inputs, expected sign, notes — for each of its nine guided roots
+(:mod:`signal_agent._themes`'s own documents), and this feature is the one
+place that brief reaches the prompt: ``task`` gains a ``theme_brief`` key
+(:func:`_theme_brief_part`), the committed brief for the node's own
+``theme_root``, read once through :func:`~signal_agent.committed_legal_themes`
+so the brief and the shared construction rules it carries alongside can never
+be two different reads of the committed artifact disagreeing with each
+other. A theme root the committed document carries no brief for — a v1 slug
+on a resumed campaign, or a deployment's own ``NULLIUS_LEGAL_THEMES`` slug —
+renders ``theme_brief`` as ``None`` rather than a refusal: nothing here
+judges whether a root is legal (that is :mod:`signal_agent._themes`'s own
+law), only whether this builder has extra material to show the agent for it.
+Appended after what :func:`build_authoring_prompt` already rendered, the same
+way the cost-awareness addition above is: every existing key, every existing
+line, unchanged in content and position.
 """
 
 from __future__ import annotations
@@ -130,6 +150,7 @@ from typing import Any, Final
 
 from ._authoring import signal_contract
 from ._proposal import ScoreRecord
+from ._themes import committed_legal_themes
 from .errors import SignalAgentError
 
 __all__ = [
@@ -403,6 +424,50 @@ def _cost_figures(score: ScoreRecord | None) -> dict[str, Any]:
     }
 
 
+# ── The theme brief: feature 3 of additions_spec_guided_themes.xml ─────────
+
+#: The one line every rendered brief adds beside its own ``expected_sign`` —
+#: PRD §9.3 v2's and docs/hypothesis-space/themes-v2.md's shared discipline
+#: ("Do not flip the sign after seeing results; a flipped hypothesis is a new
+#: node"), restated here next to the theme's own stated sign rather than left
+#: only in the shared construction rules, so the two sentences cannot be read
+#: apart: a signal that flips the stated sign is a different hypothesis, and
+#: the agent's own mechanism line must say so.
+_PRE_REGISTRATION_STATEMENT: Final[str] = (
+    "expected_sign is pre-registered: a signal that flips it is a different "
+    "hypothesis and must say so in its stated mechanism."
+)
+
+
+def _theme_brief_part(theme_root: str) -> dict[str, Any] | None:
+    """PRD §9.3 v2's brief for the node's own theme root, or ``None``.
+
+    Read once through :func:`~signal_agent.committed_legal_themes`: both the
+    brief and the shared construction rules folded in beside it come off the
+    one compiled :class:`~signal_agent.LegalThemes` this call returns, so a
+    caller can never see a brief and a rules list read from two different
+    moments of the committed artifact.
+
+    ``None`` for a theme root the committed document carries no brief for —
+    a v1 slug on a resumed campaign, or a deployment's own
+    ``NULLIUS_LEGAL_THEMES`` slug — never a refusal: whether a root is legal
+    at all is :mod:`signal_agent._themes`'s own law, not this builder's, and
+    an unbriefed-but-legal root is still one a proposal may open in; it is
+    only this section that has nothing extra to show the agent for it (the
+    same stance :meth:`~signal_agent.LegalThemes.brief` documents for its own
+    absence).
+    """
+    themes = committed_legal_themes()
+    brief = themes.brief(theme_root)
+    if brief is None:
+        return None
+    return {
+        **brief,
+        "construction_rules": list(themes.construction_rules()),
+        "pre_registration": _PRE_REGISTRATION_STATEMENT,
+    }
+
+
 def _available_streams_statement(streams: Mapping[str, tuple[str, ...]]) -> str:
     """The plain statement ``available_streams`` earns its place in the prompt with.
 
@@ -462,12 +527,17 @@ def _task_part(
     ``available_streams`` out — except the ``cost_awareness`` key itself is
     always present, because feature 4 asks for the section to display
     regardless of whether a deployment has wired an evaluation context in.
+
+    A ``theme_brief`` key is folded in last (additions_spec_guided_themes.xml
+    feature 3), built by :func:`_theme_brief_part` off this task's own
+    ``theme_root`` — the committed PRD §9.3 v2 brief for that root, or
+    ``None`` when the committed document carries no brief for it.
     """
     contract = signal_contract().declaration(snapshot=snapshot)
     streams = contract.get("available_streams")
     if streams is not None:
         contract["available_streams_note"] = _available_streams_statement(streams)
-    return {
+    task = {
         "campaign_id": _validated_campaign_id(workspace),
         "theme_root": _validated_theme_root(workspace),
         "depth": _validated_depth(workspace),
@@ -475,6 +545,8 @@ def _task_part(
         "answer_format": dict(_ANSWER_FORMAT),
         "cost_awareness": _cost_awareness_part(evaluation),
     }
+    task["theme_brief"] = _theme_brief_part(task["theme_root"])
+    return task
 
 
 # ── The anti-convergence half: the committed clause, verbatim ────────────────
