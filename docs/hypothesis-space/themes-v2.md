@@ -37,6 +37,7 @@
 | 7 | `beta-to-btc` | Betting against beta: high-BTC-beta coins underperform after adjusting for risk | bars: 60–90d rolling beta of each coin's daily return on BTC's | **Negative** on beta | Needs BTCUSDT in the window, which it always is |
 | 8 | `attention-volume` | Abnormal volume or trade-count spikes mark attention-driven overpricing, which unwinds over the next weeks | bars: volume and trade_count over 7d against 90d (log ratio); optionally conditioned on the return over the spike | **Negative** on the abnormal-volume rank | Liquidity proxy; keep only the persistent part (7d) |
 | 9 | `intermediate-momentum` | 30–90d momentum that skips the most recent 7 days, avoiding short-term reversal | bars: return from t−90 to t−7 (or t−30 to t−7) | **Positive** | Historically weak and crash-prone in crypto. Keep it as the control the others must beat |
+| 10 | `multi-theme-composite` | *(Added 2026-10-13 after the v2 test, owner-approved.)* Themes 1, 3, 6, 8 and 9 each had IC in their stated direction but did not survive costs alone. Being only partly correlated, they gain breadth when combined | Each component built per its own brief, z-scored on the date, averaged with equal weights, then ranked | **Positive** on the composite | Weights pre-registered as equal, never fitted. Excludes 2, 5 (wrong sign) and 4, 7 (weak) |
 
 ## Dropped from v1, with reasons
 - `order-flow-imbalance` (as L2 microstructure): there is no order-book data. The free-data version is theme 5.

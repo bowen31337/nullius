@@ -1,0 +1,90 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — tenth theme root: multi-theme-composite (owner-approved 2026-10-13)</project_name>
+  <addition_summary>
+    The v2 guided-themes test failed
+    (docs/preregistration/2026-10-13-m2-guided-themes.RESULT.md). Five themes
+    had in-sample IC in their stated direction:
+    - attention-volume
+    - funding-crowding
+    - low-volatility
+    - oi-price-divergence
+    - intermediate-momentum
+    None survived costs as a standalone signal. On 2026-10-13 the owner
+    approved a tenth root, multi-theme-composite: one signal that
+    equal-weights those five, each in its stated direction. The aim is
+    breadth (IR ≈ IC·√breadth). This spec adds the root to both committed
+    legal sets, with its brief, so the prompt renders it and a campaign can
+    plant it.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / pytest.</stack>
+    <test_baseline>main at the commit carrying this spec: gate 1666 passed; signal-agent 845; discovery 678.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md.
+      - packages/signal-agent/src/signal_agent/legal_themes.json holds the
+        nine v2 entries (slug, title, and a brief with mechanism, inputs,
+        expected_sign and notes) plus construction_rules. It was compiled by
+        _themes.py (additions_spec_guided_themes.xml, 7555c12).
+      - _authoring_prompt.py renders the node's brief as task.theme_brief.
+      - discovery/themes.py DEFAULT_LEGAL_THEMES mirrors the committed slugs,
+        in order. tests/test_theme_sets_agree.py checks they agree.
+      - Tests pin the count nine in:
+        - signal-agent test_themes.py and test_prompt_theme_brief.py
+        - discovery test_themes.py
+        - tests/test_theme_sets_agree.py
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Hypothesis Space">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/signal-agent/src/signal_agent/legal_themes.json,packages/signal-agent/tests/test_themes.py,packages/signal-agent/tests/test_prompt_theme_brief.py">
+        System commits multi-theme-composite as the tenth legal theme with its brief, so that the committed set returns ten slugs and a multi-theme-composite node's prompt displays the composite brief.
+        - legal_themes.json appends a tenth entry after intermediate-momentum:
+          - slug: multi-theme-composite
+          - title: "Equal-weight composite of the five in-direction v2 themes"
+          - brief.mechanism: "Each of attention-volume, funding-crowding,
+            low-volatility, oi-price-divergence and intermediate-momentum
+            showed in-sample IC in its stated direction, too small to survive
+            costs alone. They are only partly correlated, so an equal-weight
+            combination raises breadth (IR ≈ IC·√breadth) and averages out
+            the turnover of each component."
+          - brief.inputs: "Build each component as its own brief describes
+            (bars, funding_1d and metrics_1d), oriented to its stated sign.
+            Cross-sectionally z-score each on the date, average the five with
+            equal weights, then rank. Symbols missing a component's input
+            take the average of the components they have."
+          - brief.expected_sign: "Positive on the composite (each component
+            already oriented to its own stated sign)"
+          - brief.notes: "Weights are pre-registered as equal. Never fit
+            them to returns. A child may change windows or smoothing, or use
+            a longer EMA on the composite to cut turnover. Dropping or
+            reweighting a component is a different hypothesis and must say
+            so. basis-premium, taker-flow-persistence, beta-to-btc and
+            positioning-contrarian are excluded (wrong sign or weak in the
+            v2 test)."
+        - The _comment notes the owner's approval of the tenth root
+          (2026-10-13) and cites the v2 RESULT file.
+        - Count pins become ten. Order pins keep the nine v2 slugs in order,
+          with multi-theme-composite last. A test in test_prompt_theme_brief.py
+          asserts that the rendered prompt for a multi-theme-composite
+          workspace contains the five component slugs and "equal".
+        - The signal-agent member suite passes under pytest-xdist.
+      </feature>
+      <feature index="2" shape="core" depends_on="1"
+               touches_files="packages/discovery/src/discovery/themes.py,packages/discovery/tests/test_themes.py,tests/test_theme_sets_agree.py">
+        System plants multi-theme-composite roots, so that `NULLIUS_LEGAL_THEMES=multi-theme-composite ./run.sh campaign` returns roots whose theme_root is multi-theme-composite, and the default set returns all ten slugs.
+        - DEFAULT_LEGAL_THEMES appends multi-theme-composite, matching the
+          committed order. The docstring notes the tenth root.
+        - Count pins become ten, in discovery's test_themes.py and
+          tests/test_theme_sets_agree.py. The agreement test still checks
+          that the two sets are equal in order, and that every slug has a
+          brief.
+        - discovery's test_themes.py adds a case: with NULLIUS_LEGAL_THEMES
+          set to multi-theme-composite, legal_themes_from_env() gives exactly
+          that slug, and assign_theme admits it.
+        - The discovery member suite and root tests/ pass under pytest-xdist.
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>

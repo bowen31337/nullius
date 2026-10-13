@@ -537,6 +537,7 @@ The initial six (v1) named themes without saying what the agent could read for t
 7. `beta-to-btc`: betting against BTC beta
 8. `attention-volume`: abnormal-volume spikes unwind
 9. `intermediate-momentum`: 30–90-day momentum that skips the last week; the control
+10. `multi-theme-composite` (added 2026-10-13, owner-approved): an equal-weight composite of the five themes whose IC came out in the stated direction in the v2 test (1, 3, 6, 8, 9); the aim is breadth
 
 v1, for the record: momentum/reversal, L2 order-flow imbalance, borrow/funding conditioning, volatility/dispersion, calendar events, cross-venue divergence.
 
