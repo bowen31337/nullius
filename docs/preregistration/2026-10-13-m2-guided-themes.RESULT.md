@@ -32,3 +32,9 @@ Pre-registration: `2026-10-13-m2-guided-themes.md` (sha256 `e1f1d5822021a7c3529b
 
 ## Next, per §2.3 (method falsified, not mission)
 The pre-registered order is the perp instrument (funding and basis as carry), then a paid-data trial, then the forward VST shadow. The data here suggests one cheaper step to pre-register first. It is a **composite**: one node that combines the in-direction themes (attention-volume, funding-crowding, low-volatility, oi-price-divergence, intermediate-momentum) by equal-weighted ranks. The point is breadth: IR ≈ IC·√breadth, and these themes are only partly correlated. It would run with real refinement depth, and the expectation is set before the run.
+
+## Correction, 2026-10-13 (after scoring): the "post-cost" figures were gross
+`bug_spec_turnover_cost_charge.xml` (COST-1) found that the evaluator never charged turnover. The per-symbol taker fee cancels in a centered dollar-neutral book (Σw = 0). So `ir_tstat`, `cost_adjusted_ir` and `oos_ir` in this test, and in all three earlier M2 RESULTs, are **gross** book figures.
+- **The verdict stands.** The rule's figures were gross, and costs can only lower them, so a FAIL on gross is a FAIL on net.
+- **The reading "costs erase standalone signals" above is wrong.** The gap between IC t and IR t is a gap between rank IC and the z-weighted book return, measured before any cost. The likely causes are fat-tailed single-coin moves dominating the book, and rank correlation not translating into return. Costs have not yet been measured at all.
+- The next test (the multi-theme composite) is held until COST-1 lands, so that its pre-registered figure is net.
