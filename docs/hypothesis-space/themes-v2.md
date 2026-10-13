@@ -1,6 +1,6 @@
-# Hypothesis space v2: guided themes (DRAFT, for owner review)
+# Hypothesis space v2: guided themes
 
-**Status:** draft, 2026-10-13. Under PRD §9 and NG4, choosing the space is the owner's decision. Nothing here is live until it is approved.
+**Status:** approved by the owner, 2026-10-13. Under PRD §9 and NG4, the hypothesis space is the owner's decision; this is that decision.
 
 **Why:** three pre-registered M2 pivots failed (`docs/preregistration/*RESULT.md`). The binding constraint is breadth: open-ended themes, of which the prompt shows only the slug, rarely yield cost-surviving signals. The agent's own derivative signals had median IC t −0.20, often with the wrong sign. v2 tells the agent the mechanism, the inputs, the expected sign and how to build a slow, cost-surviving version. Refinement then explores around a known effect instead of guessing one.
 

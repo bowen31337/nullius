@@ -6,7 +6,7 @@
 **Status:** Design complete, unbuilt
 **Owner:** _(you)_
 
-**Changed in 0.3 (2026-10-10):** adds §2.3, *mission persistence, method falsification*.
+**Changed in 0.3 (2026-10-10):** adds §2.3, *mission persistence, method falsification*. **2026-10-13:** §9.3 theme roots v2 (guided briefs).
 A failed gate now ends the *method* it tests, never the mission, and every pivot is charged to the
 trial ledger. M3's "if M3 fails, stop" is restated in those terms.
 
@@ -524,14 +524,21 @@ An IC of 0.03 is unimpressive in isolation. Across 100 names × 250 days with an
 
 **Point the search at the cross-section.** Breadth is free there and nowhere else.
 
-### 9.3 Theme roots (initial set)
+### 9.3 Theme roots (v2, owner-approved 2026-10-13)
 
-1. Cross-sectional momentum and short-term reversal, small/mid-cap universe
-2. Order-flow imbalance and microstructure features from the free L2 feed
-3. Borrow-rate and funding-state conditioning
-4. Volatility-state and dispersion regimes
-5. Mechanical calendar and event effects
-6. Cross-asset and cross-venue state divergence (state, not price)
+The initial six (v1) named themes without saying what the agent could read for them, and three of them had no data in the lake at all (no L2 feed, no borrow rates, no event calendar). Three pre-registered M2 pivots failed on that set (`docs/preregistration/*RESULT.md`). v2 replaces it with nine *guided* roots. Each carries a mechanism, the inputs to use, a pre-stated expected sign and its risks. The brief is rendered into the authoring prompt, and `docs/hypothesis-space/themes-v2.md` holds the full table.
+
+1. `funding-crowding`: persistent high funding means crowded longs, which underperform
+2. `basis-premium`: a wide perpetual premium over spot mean-reverts
+3. `oi-price-divergence`: open interest against price; squeezes and fragile leverage
+4. `positioning-contrarian`: retail long/short extremes, and top traders against the crowd
+5. `taker-flow-persistence`: sustained aggressive buying continues
+6. `low-volatility`: low-volatility coins outperform
+7. `beta-to-btc`: betting against BTC beta
+8. `attention-volume`: abnormal-volume spikes unwind
+9. `intermediate-momentum`: 30–90-day momentum that skips the last week; the control
+
+v1, for the record: momentum/reversal, L2 order-flow imbalance, borrow/funding conditioning, volatility/dispersion, calendar events, cross-venue divergence.
 
 ### 9.4 What is structurally dead at retail scale
 

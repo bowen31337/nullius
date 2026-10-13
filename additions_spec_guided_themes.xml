@@ -1,0 +1,107 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — guided theme roots v2: nine owner-approved themes with mechanism briefs in the authoring prompt</project_name>
+  <addition_summary>
+    The owner approved hypothesis space v2 on 2026-10-13
+    (docs/hypothesis-space/themes-v2.md; PRD 9.3 updated). Three
+    pre-registered M2 pivots failed on the v1 set. Two reasons:
+    - The prompt shows the agent only a theme slug.
+    - Three v1 themes have no data in the lake.
+    v2 has nine themes. Each carries a brief (mechanism, inputs, expected
+    sign, notes), and five construction rules apply to every theme. This spec:
+    - commits v2 as the legal set in both places that hold one today, and
+      tests that the two agree (features 1 and 2)
+    - renders the node's brief and the shared rules into the authoring prompt
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / pytest.</stack>
+    <test_baseline>main at the commit carrying this spec: gate 1663 passed.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md. Existing pieces, per a code map on 2026-10-13:
+      - packages/signal-agent/src/signal_agent/legal_themes.json is the
+        committed legal set: a policy marker plus slug/title entries.
+        _themes.py compile_legal_themes (~:293) validates it; LegalThemes
+        exposes slugs() and title(). The six v1 slugs differ from
+        discovery's.
+      - packages/discovery/src/discovery/themes.py has DEFAULT_LEGAL_THEMES
+        (~:177), overridable by NULLIUS_LEGAL_THEMES.
+        orchestrator/_campaign.py _themes_for plants roots round-robin over
+        discovery.legal_themes_from_env(), so a campaign's theme_root values
+        are discovery's slugs.
+      - signal-agent _authoring_prompt.py: _task_part (~:432) builds the task
+        mapping (campaign_id, theme_root, depth, contract, answer_format,
+        cost_awareness). _render_system renders it as sorted JSON.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Hypothesis Space">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/signal-agent/src/signal_agent/legal_themes.json,packages/signal-agent/src/signal_agent/_themes.py,packages/signal-agent/tests/test_themes.py,packages/signal-agent/tests/test_component.py">
+        System commits the owner-approved v2 theme roots with their briefs as the signal agent's legal set, so that the committed set returns the nine v2 slugs and each theme's brief.
+        - legal_themes.json holds the nine v2 entries, in the order and with
+          the slugs of docs/hypothesis-space/themes-v2.md's Themes table:
+          funding-crowding, basis-premium, oi-price-divergence,
+          positioning-contrarian, taker-flow-persistence, low-volatility,
+          beta-to-btc, attention-volume, intermediate-momentum.
+          - Each entry has a title and a brief object with four non-empty
+            strings: mechanism, inputs, expected_sign and notes. They are
+            transcribed from that table's columns.
+          - A top-level construction_rules list holds the doc's five shared
+            rules, verbatim in substance.
+          - The _comment is updated to cite PRD 9.3 v2 and the doc.
+        - compile_legal_themes:
+          - accepts the brief and construction_rules
+          - refuses a malformed brief (missing key, or a non-string or blank
+            value), or construction_rules that are not a list of non-empty
+            strings, with ThemeSetError
+          - treats an entry with no brief and a document with no
+            construction_rules as legal
+        - LegalThemes gains:
+          - brief(slug): a mapping, or None for no brief or an unknown slug
+          - construction_rules(): a tuple, empty when absent
+          Existing API is unchanged.
+        - Tests that pin a v1 slug as legal are updated to a v2 slug; each
+          keeps its intent. Tests that pin "six" pin nine.
+        - The signal-agent member suite passes under pytest-xdist.
+      </feature>
+      <feature index="2" shape="core" depends_on="1"
+               touches_files="packages/discovery/src/discovery/themes.py,packages/discovery/tests/test_themes.py,tests/test_theme_sets_agree.py">
+        System plants campaign roots in the v2 theme roots by default, so that `./run.sh campaign` returns roots whose theme_root values are the nine v2 slugs, matching the signal agent's committed set.
+        - discovery DEFAULT_LEGAL_THEMES becomes the nine v2 slugs, in the
+          committed order, and its docstring cites PRD 9.3 v2.
+          NULLIUS_LEGAL_THEMES behaviour is unchanged.
+        - discovery's test_themes.py pins the nine slugs, in the same
+          transcribed-from-the-doc style it uses for the six today.
+        - tests/test_theme_sets_agree.py asserts:
+          - discovery.DEFAULT_LEGAL_THEMES equals
+            signal_agent.committed_legal_themes().slugs(), in the same order
+          - every committed theme has a brief
+          It passes under pytest-xdist.
+        - The discovery member suite and root tests/ pass.
+      </feature>
+      <feature index="3" shape="core" depends_on="1"
+               touches_files="packages/signal-agent/src/signal_agent/_authoring_prompt.py,packages/signal-agent/tests/test_authoring_prompt.py,packages/signal-agent/tests/test_prompt_theme_brief.py">
+        System renders the node's theme brief and the shared construction rules in the authoring prompt, so that the model returns a signal built on the stated mechanism, inputs and expected sign of its theme.
+        - _task_part adds a theme_brief key: the committed brief for the
+          workspace's theme_root, read once through committed_legal_themes().
+          It contains mechanism, inputs, expected_sign and notes, plus
+          construction_rules.
+        - A theme_root with no committed brief renders theme_brief as null.
+          This covers a v1 slug on a resumed campaign and a deployment's own
+          NULLIUS_LEGAL_THEMES slug. It is never a refusal.
+        - The brief also states, as one line, that expected_sign is
+          pre-registered: a signal that flips it is a different hypothesis
+          and must say so in its stated mechanism.
+        - Every other rendered key and section is byte-identical to before.
+          Existing prompt tests are updated only where they pin the task
+          mapping's exact key set.
+        - test_prompt_theme_brief.py covers:
+          - for each of the nine slugs, the rendered system message contains
+            that theme's mechanism and expected_sign, and the five rules
+          - an unknown slug renders theme_brief null and the prompt builds
+          - the other task keys are unchanged against a pinned rendering
+          It passes under pytest-xdist. The signal-agent member suite passes.
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>
