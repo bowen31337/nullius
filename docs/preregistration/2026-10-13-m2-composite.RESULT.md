@@ -27,3 +27,30 @@ Correlation of IC t with gross IR t across nodes: 0.63.
 ## Next (author's decision, per the standing order and §2.3)
 1. An **IC→book diagnostic**, in-sample only: leg decomposition and tail attribution for the archetype signals, comparing the current z/Σ|z| book with inverse-volatility-scaled and winsorized-return books. Note that the live book member already volatility-targets (F303), while the research book does not.
 2. The **perp book** spec (perp returns plus funding carry, perp fees of 2/5 bps), which also aligns research with the BingX venue. Its weighting is informed by step 1.
+
+## Appendix: IC→book diagnostic (in-sample dates only, no OOS look, no LLM)
+`deploy/campaign/ic_book_diagnostic.py` rebuilds five archetype signals host-side over the 92 in-sample dates (horizon 10) and scores them under several book constructions.
+
+| Signal | IC t | z-book IR t (today's) | winsorized | beta-neutral | vol-target 60d | vol-target 10d | BTC-residual | net (10 bps) | book β |
+|---|---|---|---|---|---|---|---|---|---|
+| low_vol60 | **3.72** | 0.69 | 1.11 | **1.11** | 0.28 | 0.28 | 1.36 | 0.62 | −0.38 |
+| funding14 | **2.62** | 0.63 | 0.57 | 0.54 | 0.61 | **1.34** | 0.65 | 0.39 | −0.05 |
+| mom90_7 | 0.48 | 0.02 | 0.08 | −0.11 | 0.41 | 0.36 | −0.36 | −0.13 | −0.01 |
+| attention_vol | −1.14 | −0.90 | −0.74 | −0.70 | −0.81 | −0.51 | −1.06 | −1.18 | 0.05 |
+| rev5 | −1.08 | −1.79 | −1.64 | −1.85 | −1.65 | −1.59 | −1.97 | −2.11 | 0.02 |
+
+**Why IC does not become IR:**
+
+| Signal | corr(IC, realised forward dispersion) | IC, calm half | IC, wild half | Share of \|P&L\| from the wild half |
+|---|---|---|---|---|
+| low_vol60 | −0.28 | 0.211 | 0.044 | 63% |
+| funding14 | −0.19 | 0.064 | 0.037 | 70% |
+| mom90_7 | −0.31 | 0.058 | −0.033 | 66% |
+
+**Reading:**
+- The signals work in calm periods and fade in high-dispersion ones, yet the wild half carries about two-thirds of the book's P&L variance. So rank IC, which weights every date equally, overstates what a book earns.
+- Two standard constructions recover part of the gap:
+  - **beta-neutral legs:** low-vol's −0.38 book beta is a market bet, and neutralising it lifts IR t from 0.69 to 1.11
+  - **a short-window (10-day) volatility target**, for funding (0.61 to 1.34)
+- Neither result is a discovery. It is in-sample, it comes from five signals and several constructions, and no fold or OOS check backs it.
+- **The case for the research book:** it should be beta-neutral and risk-targeted, as the live book member already is (volatility target, F303). The rank-z dollar-neutral book is the wrong yardstick for these signals.
