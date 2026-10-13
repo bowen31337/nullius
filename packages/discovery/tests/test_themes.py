@@ -17,13 +17,13 @@ part of the contract (app_spec.xml feature 212 names ``illegal_theme`` as the
 message this refusal returns, and an operator greps a log for it), so it is
 pinned as data rather than left to a message's opening words.
 
-**The default is tested as PRD §9.3's list, not as a length.**  A test that
-asserted "six themes" would pass against any six strings, so the default set
-is asserted **element for element** against the PRD's numbered list — the one
-thing that catches a transcription that dropped a theme or substituted one.
-The rest of the default's behaviour (unset means it, blank does not) is the
-resolver's, and it is pinned separately because those are different facts:
-*what the space is* and *when the space is used*.
+**The default is tested as PRD §9.3 v2's list, not as a length.**  A test
+that asserted "nine themes" would pass against any nine strings, so the
+default set is asserted **element for element** against the PRD's numbered
+list — the one thing that catches a transcription that dropped a theme or
+substituted one.  The rest of the default's behaviour (unset means it, blank
+does not) is the resolver's, and it is pinned separately because those are
+different facts: *what the space is* and *when the space is used*.
 
 **Case and whitespace are insignificant; everything else is not.**  This is
 the module's one normalisation decision and it cuts both ways, so it is
@@ -53,24 +53,31 @@ from discovery import (
     legal_themes_from_env,
 )
 
-#: PRD §9.3's initial six theme roots, transcribed **from the PRD's own
-#: numbering** rather than from :data:`DEFAULT_LEGAL_THEMES`.  Written out
-#: here as the independent statement the constant is checked against: a test
-#: that iterated the constant would agree with itself whatever the constant
-#: said, which is precisely the failure this list exists to catch.
+#: PRD §9.3 v2's nine guided theme roots (owner-approved 2026-10-13),
+#: transcribed **from the PRD's own numbering** rather than from
+#: :data:`DEFAULT_LEGAL_THEMES`.  Written out here as the independent
+#: statement the constant is checked against: a test that iterated the
+#: constant would agree with itself whatever the constant said, which is
+#: precisely the failure this list exists to catch.
 PRD_9_3_THEME_ROOTS = (
-    # 1. Cross-sectional momentum and short-term reversal, small/mid-cap universe
-    "cross-sectional-momentum",
-    # 2. Order-flow imbalance and microstructure features from the free L2 feed
-    "order-flow-imbalance",
-    # 3. Borrow-rate and funding-state conditioning
-    "borrow-rate-conditioning",
-    # 4. Volatility-state and dispersion regimes
-    "volatility-dispersion",
-    # 5. Mechanical calendar and event effects
-    "calendar-events",
-    # 6. Cross-asset and cross-venue state divergence (state, not price)
-    "cross-asset-divergence",
+    # 1. Persistent high funding means crowded longs, which underperform
+    "funding-crowding",
+    # 2. A wide perpetual premium over spot mean-reverts
+    "basis-premium",
+    # 3. Open interest against price; squeezes and fragile leverage
+    "oi-price-divergence",
+    # 4. Retail long/short extremes, and top traders against the crowd
+    "positioning-contrarian",
+    # 5. Sustained aggressive buying continues
+    "taker-flow-persistence",
+    # 6. Low-volatility coins outperform
+    "low-volatility",
+    # 7. Betting against BTC beta
+    "beta-to-btc",
+    # 8. Abnormal-volume spikes unwind
+    "attention-volume",
+    # 9. 30-90-day momentum that skips the last week; the control
+    "intermediate-momentum",
 )
 
 #: Spellings that are *one keystroke* from a legal theme and must be refused
@@ -80,14 +87,14 @@ PRD_9_3_THEME_ROOTS = (
 #: refuse-don't-normalise line feature 232's ``_validated_campaign_type``
 #: draws for ``"Type R"``.
 NEAR_MISSES = (
-    "order_flow_imbalance",
-    "order flow imbalance",
-    "order.flow.imbalance",
-    "order-flow-imbalance-",
-    "-order-flow-imbalance",
-    "order--flow-imbalance",
-    "2-order-flow-imbalance",
-    "order-flow-imbalance "[:-1] + "!",
+    "funding_crowding",
+    "funding crowding",
+    "funding.crowding",
+    "funding-crowding-",
+    "-funding-crowding",
+    "funding--crowding",
+    "2-funding-crowding",
+    "funding-crowding "[:-1] + "!",
 )
 
 
@@ -95,19 +102,19 @@ NEAR_MISSES = (
 
 
 def test_the_default_set_is_prd_9_3s_initial_roots() -> None:
-    # The transcription itself.  §9.3 lists the six research themes the
-    # programme starts from, and this constant is this member's spelling of
-    # them: same themes, same order, nothing added and nothing dropped.  An
-    # *order-sensitive* comparison on purpose — the tuple is documentation as
-    # well as data (see the constant's docstring), so a reordering is an edit
-    # to what an operator reads and deserves to be seen.
+    # The transcription itself.  §9.3 v2 lists the nine guided research
+    # themes the programme starts from, and this constant is this member's
+    # spelling of them: same themes, same order, nothing added and nothing
+    # dropped.  An *order-sensitive* comparison on purpose — the tuple is
+    # documentation as well as data (see the constant's docstring), so a
+    # reordering is an edit to what an operator reads and deserves to be seen.
     assert tuple(DEFAULT_LEGAL_THEMES) == PRD_9_3_THEME_ROOTS
-    assert len(PRD_9_3_THEME_ROOTS) == 6
+    assert len(PRD_9_3_THEME_ROOTS) == 9
 
 
 def test_the_default_set_carries_every_root_the_prd_names() -> None:
     # The same fact through the resolved value, which is what a planner
-    # actually holds: every one of §9.3's themes is assignable with no
+    # actually holds: every one of §9.3 v2's themes is assignable with no
     # configuration at all — a deployment that declared nothing still has
     # PRD §9's space rather than an unconstrained one.
     for theme in PRD_9_3_THEME_ROOTS:
@@ -140,7 +147,7 @@ def test_the_default_set_is_repr_able_and_iterable() -> None:
     # ``len`` its size.  Asserted together because a set that answered ``in``
     # but iterated nothing would be the shape a caller building a report off
     # it would trip over.
-    assert len(DEFAULT_THEME_SET) == 6
+    assert len(DEFAULT_THEME_SET) == 9
     assert set(iter(DEFAULT_THEME_SET)) == set(PRD_9_3_THEME_ROOTS)
     assert "ThemeSet(themes=" in repr(DEFAULT_THEME_SET)
 
@@ -288,7 +295,7 @@ def test_a_near_miss_is_not_the_theme(near_miss: str) -> None:
     # *different string*.  Refused rather than repaired — a silent repair
     # would store a theme the planner never declared, and the row's
     # ``theme_root`` is what every later grouping reads.
-    configured = ThemeSet(("order-flow-imbalance",))
+    configured = ThemeSet(("funding-crowding",))
     assert not configured.is_legal(near_miss)
     assert near_miss not in configured
     with pytest.raises(IllegalThemeError):
@@ -306,13 +313,12 @@ def test_a_value_that_is_not_a_string_is_never_legal(not_a_theme) -> None:
 
 def test_membership_is_exact_and_the_set_is_not_a_prefix_match() -> None:
     # ``momentum`` is not in the PRD set (the theme is
-    # ``cross-sectional-momentum``) and neither is a prefix of one.  Pinned
+    # ``intermediate-momentum``) and neither is a prefix of one.  Pinned
     # because the tempting implementation — a startswith/`in` string search —
     # would admit both, and the space would quietly be wider than configured.
     assert "momentum" not in DEFAULT_THEME_SET
-    assert "cross" not in DEFAULT_THEME_SET
-    assert "cross-sectional" not in DEFAULT_THEME_SET
-    assert "cross-sectional-momentum" in DEFAULT_THEME_SET
+    assert "intermediate" not in DEFAULT_THEME_SET
+    assert "intermediate-momentum" in DEFAULT_THEME_SET
 
 
 # -- The refusal ---------------------------------------------------------------------
@@ -321,7 +327,7 @@ def test_membership_is_exact_and_the_set_is_not_a_prefix_match() -> None:
 def test_an_assignable_theme_comes_back_canonical() -> None:
     # The verb's happy path: the theme in, its canonical form out — the value
     # the caller banks and the row carries.
-    assert DEFAULT_THEME_SET.assign(" ORDER-FLOW-IMBALANCE ") == "order-flow-imbalance"
+    assert DEFAULT_THEME_SET.assign(" FUNDING-CROWDING ") == "funding-crowding"
 
 
 def test_a_theme_outside_the_set_is_refused_before_anything_is_planted() -> None:
@@ -335,7 +341,7 @@ def test_a_theme_outside_the_set_is_refused_before_anything_is_planted() -> None
     message = str(raised.value)
     assert message.startswith(ILLEGAL_THEME)
     assert "momentum" in message
-    assert "cross-sectional-momentum" in message  # names the space
+    assert "funding-crowding" in message  # names the space
     assert LEGAL_THEMES_ENV in message  # and how to widen it
 
 
@@ -345,13 +351,13 @@ def test_a_refusal_is_a_property_of_the_configured_set_not_of_the_theme_alone() 
     # list.  PRD §9: the space is the human's highest-value input, so a
     # deployment that declared ``momentum`` as its space assigns it, and the
     # unconfigured one does not.
-    assert DEFAULT_THEME_SET.assign("cross-sectional-momentum")
+    assert DEFAULT_THEME_SET.assign("funding-crowding")
     with pytest.raises(IllegalThemeError):
         DEFAULT_THEME_SET.assign("momentum")
     narrow = ThemeSet(("momentum",))
     assert narrow.assign("momentum") == "momentum"
     with pytest.raises(IllegalThemeError):
-        narrow.assign("cross-sectional-momentum")
+        narrow.assign("funding-crowding")
 
 
 def test_the_refusal_names_the_column_the_theme_belongs_to() -> None:
@@ -413,8 +419,8 @@ def test_a_batch_comes_back_canonical_in_the_callers_order() -> None:
     # canonicalised — the planner's own arrangement is not this helper's to
     # change.
     assert DEFAULT_THEME_SET.assign_all(
-        ["Volatility-Dispersion", "calendar-events"]
-    ) == ("volatility-dispersion", "calendar-events")
+        ["Low-Volatility", "attention-volume"]
+    ) == ("low-volatility", "attention-volume")
 
 
 def test_a_batch_keeps_duplicates() -> None:
@@ -423,8 +429,8 @@ def test_a_batch_keeps_duplicates() -> None:
     # helper that quietly deduplicated would be pre-empting a decision this
     # feature was not asked to make, and would hide a plan that fails it.
     assert DEFAULT_THEME_SET.assign_all(
-        ["calendar-events", "calendar-events"]
-    ) == ("calendar-events", "calendar-events")
+        ["attention-volume", "attention-volume"]
+    ) == ("attention-volume", "attention-volume")
 
 
 def test_a_batch_refuses_collectively_naming_every_offender() -> None:
@@ -439,19 +445,19 @@ def test_a_batch_refuses_collectively_naming_every_offender() -> None:
     # the message too, and only the clause distinguishes "this theme was
     # refused" from "this theme is in the set".
     with pytest.raises(IllegalThemeError) as raised:
-        DEFAULT_THEME_SET.assign_all(["calendar-events", "nope", "also-not-a-space"])
+        DEFAULT_THEME_SET.assign_all(["attention-volume", "nope", "also-not-a-space"])
     message = str(raised.value)
     assert "2 of 3" in message
     offenders = re.findall(r"the research theme '([^']+)' is outside", message)
     assert sorted(offenders) == ["also-not-a-space", "nope"]
-    assert "calendar-events" not in offenders  # the legal root is not refused
+    assert "attention-volume" not in offenders  # the legal root is not refused
 
 
 def test_a_batch_is_all_or_nothing() -> None:
     # The refusal is raised before any theme is returned, so a caller cannot
     # act on a half-validated batch — the reveal-set discipline feature 217's
     # ``reveal_many`` states for its own batch, applied to a grid's roots.
-    good = ["calendar-events", "volatility-dispersion"]
+    good = ["attention-volume", "low-volatility"]
     with pytest.raises(IllegalThemeError):
         DEFAULT_THEME_SET.assign_all([*good, "nope"])
     # No partial value escapes: the call raised, and the same batch without
@@ -464,7 +470,7 @@ def test_an_empty_batch_is_an_empty_assignment() -> None:
     # planning path's law (feature 234), and this helper validates the themes
     # it is handed rather than the composition of the grid.
     assert DEFAULT_THEME_SET.assign_all([]) == ()
-    assert DEFAULT_THEME_SET.assign_all(iter(["calendar-events"])) == ("calendar-events",)
+    assert DEFAULT_THEME_SET.assign_all(iter(["attention-volume"])) == ("attention-volume",)
 
 
 def test_a_bare_string_is_not_a_batch_of_themes() -> None:
@@ -492,10 +498,10 @@ def test_a_bare_string_is_not_a_batch_of_themes() -> None:
         None,
         42,
         3.5,
-        {"calendar-events": 1},  # a mapping: iterable, hands over its keys
-        {"calendar-events", "volatility-dispersion"},  # unordered, hash-seeded
-        frozenset({"calendar-events"}),
-        b"calendar-events",
+        {"attention-volume": 1},  # a mapping: iterable, hands over its keys
+        {"attention-volume", "low-volatility"},  # unordered, hash-seeded
+        frozenset({"attention-volume"}),
+        b"attention-volume",
     ],
 )
 def test_a_batch_that_is_not_an_ordered_sequence_is_refused(not_a_batch) -> None:
@@ -536,7 +542,7 @@ def test_a_blank_variable_is_the_strictest_space() -> None:
         assert resolved.themes == ()
         assert resolved is not DEFAULT_THEME_SET
         with pytest.raises(IllegalThemeError):
-            resolved.assign("calendar-events")
+            resolved.assign("attention-volume")
 
 
 def test_a_configured_variable_is_the_space() -> None:
@@ -550,7 +556,7 @@ def test_a_configured_variable_is_the_space() -> None:
     assert resolved.themes == ("carry", "momentum")
     assert resolved.assign("Momentum") == "momentum"
     with pytest.raises(IllegalThemeError):
-        resolved.assign("calendar-events")
+        resolved.assign("attention-volume")
 
 
 def test_a_configured_term_that_is_not_a_theme_identifier_names_the_variable() -> None:
@@ -600,7 +606,7 @@ def test_assign_theme_uses_the_default_when_nothing_is_given() -> None:
     # The verb without a set, over a process that configured nothing: the
     # default space applies, so the module-level spelling and a composed
     # process reach the same configuration.
-    assert assign_theme("Calendar-Events") == "calendar-events"
+    assert assign_theme("Attention-Volume") == "attention-volume"
     with pytest.raises(IllegalThemeError):
         assign_theme("momentum")
 
@@ -612,7 +618,7 @@ def test_assign_theme_reads_the_mapping_it_is_handed() -> None:
     # configuration that does nothing).
     assert assign_theme("momentum", env={LEGAL_THEMES_ENV: "momentum"}) == "momentum"
     with pytest.raises(IllegalThemeError):
-        assign_theme("calendar-events", env={LEGAL_THEMES_ENV: "momentum"})
+        assign_theme("attention-volume", env={LEGAL_THEMES_ENV: "momentum"})
 
 
 def test_assign_theme_honours_an_explicit_set_over_the_environment(monkeypatch) -> None:

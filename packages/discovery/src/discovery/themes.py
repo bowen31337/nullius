@@ -18,12 +18,20 @@ of legal ``theme_root`` values."*  So the refusal lives in the orchestrator's
 assignment path, where a planner's declaration meets the space the deployment
 declared, and not in the tree's DDL.
 
-**The initial set is PRD §9.3's, and it is the default.**  §9.3 lists the six
-research themes the programme starts from, and they are transcribed here as
-canonical slugs — :data:`DEFAULT_LEGAL_THEMES` — with the mapping from each
-PRD sentence to its slug written out in that constant's docstring, so a reader
-can check the transcription rather than trust it.  An **unset**
-:data:`LEGAL_THEMES_ENV` resolves to that set, which is the same stance
+**The initial set is PRD §9.3 v2's, and it is the default.**  §9.3 v2
+(owner-approved 2026-10-13) replaced v1's six themes — named without saying
+what the agent could read for them, three of them with no data in the lake at
+all — with nine *guided* roots, each carrying a mechanism, its inputs, a
+pre-stated expected sign and its risks; ``docs/hypothesis-space/themes-v2.md``
+holds the full table.  The nine are transcribed here as canonical slugs —
+:data:`DEFAULT_LEGAL_THEMES` — with the mapping from each PRD sentence to its
+slug written out in that constant's docstring, so a reader can check the
+transcription rather than trust it, and in the same committed order
+:func:`signal_agent.committed_legal_themes` ships its set: the campaign roots
+this constant plants and the proposals the hypothesis-authoring agent may
+open are drawn from one space, not two that happen to agree today.  An
+**unset** :data:`LEGAL_THEMES_ENV` resolves to that set, which is the same
+stance
 :func:`canary.allowlist_from_env` takes for §12's import ceiling: a deployment
 that declared nothing still has a space, because "nothing configured" must not
 silently mean "anything is legal" — that reading would turn a missing
@@ -127,10 +135,10 @@ ILLEGAL_THEME = "illegal_theme"
 
 #: The environment variable naming the deployment's legal theme set — the
 #: space the research programme declared, comma-separated theme identifiers.
-#: Unset means :data:`DEFAULT_LEGAL_THEMES` (PRD §9.3's initial six); set and
-#: blank means the strictest space (nothing legal); set to a term that is not
-#: a theme identifier is a refusal naming this variable, because a legal set
-#: is how the space is enforced and not a way around it.
+#: Unset means :data:`DEFAULT_LEGAL_THEMES` (PRD §9.3 v2's nine guided
+#: roots); set and blank means the strictest space (nothing legal); set to a
+#: term that is not a theme identifier is a refusal naming this variable,
+#: because a legal set is how the space is enforced and not a way around it.
 LEGAL_THEMES_ENV = "NULLIUS_LEGAL_THEMES"
 
 #: The column a legal theme is planted in — feature 97's, declared
@@ -150,40 +158,60 @@ THEME_ROOT_COLUMN = "theme_root"
 #: spelling itself is not.
 _THEME_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 
-#: PRD §9.3's initial six theme roots, in the order §9.3 numbers them, as
-#: canonical slugs.  Each line of §9.3 is transcribed rather than
+#: PRD §9.3 v2's nine guided theme roots (owner-approved 2026-10-13), in the
+#: order §9.3 v2 numbers them, as canonical slugs — the same nine, in the same
+#: order, :func:`signal_agent.committed_legal_themes` ships
+#: (``.slugs()``), so the campaign roots this constant plants agree with the
+#: proposals the hypothesis-authoring agent may open rather than merely
+#: resembling them.  Each line of §9.3 v2 is transcribed rather than
 #: paraphrased, so a reader can check the mapping against the PRD's own
 #: numbering:
 #:
-#: ``1.`` *Cross-sectional momentum and short-term reversal, small/mid-cap
-#: universe* → ``cross-sectional-momentum``;
-#: ``2.`` *Order-flow imbalance and microstructure features from the free L2
-#: feed* → ``order-flow-imbalance``;
-#: ``3.`` *Borrow-rate and funding-state conditioning* →
-#: ``borrow-rate-conditioning``;
-#: ``4.`` *Volatility-state and dispersion regimes* → ``volatility-dispersion``;
-#: ``5.`` *Mechanical calendar and event effects* → ``calendar-events``;
-#: ``6.`` *Cross-asset and cross-venue state divergence (state, not price)* →
-#: ``cross-asset-divergence``.
+#: ``1.`` *Persistent high funding means crowded longs, which underperform* →
+#: ``funding-crowding``;
+#: ``2.`` *A wide perpetual premium over spot mean-reverts* →
+#: ``basis-premium``;
+#: ``3.`` *Open interest against price; squeezes and fragile leverage* →
+#: ``oi-price-divergence``;
+#: ``4.`` *Retail long/short extremes, and top traders against the crowd* →
+#: ``positioning-contrarian``;
+#: ``5.`` *Sustained aggressive buying continues* →
+#: ``taker-flow-persistence``;
+#: ``6.`` *Low-volatility coins outperform* → ``low-volatility``;
+#: ``7.`` *Betting against BTC beta* → ``beta-to-btc``;
+#: ``8.`` *Abnormal-volume spikes unwind* → ``attention-volume``;
+#: ``9.`` *30–90-day momentum that skips the last week; the control* →
+#: ``intermediate-momentum``.
+#:
+#: v1's six — ``cross-sectional-momentum``, ``order-flow-imbalance``,
+#: ``borrow-rate-conditioning``, ``volatility-dispersion``, ``calendar-events``
+#: and ``cross-asset-divergence`` — named themes without saying what the agent
+#: could read for them, three of them had no data in the lake at all, and
+#: three pre-registered M2 pivots failed on that set
+#: (``docs/preregistration/*RESULT.md``).  v2 *replaces* v1 rather than
+#: widening it, so none of v1's six slugs appear below.
 #:
 #: The slugs are this member's spelling of the PRD's themes and not the PRD's
 #: own words, which is deliberate: the set is *the human's input* and a
 #: deployment widens or narrows it through :data:`LEGAL_THEMES_ENV` with
 #: whatever spelling it prefers (casing and spacing are insignificant).  What
 #: the constant fixes is the *default*, so that a deployment which configured
-#: nothing still has PRD §9's space rather than an unconstrained one.
+#: nothing still has PRD §9.3 v2's space rather than an unconstrained one.
 #:
 #: The tuple is the PRD's order because a default set is documentation as
-#: well as data — it is what an operator reads to learn what §9.3 said — while
-#: :class:`ThemeSet` sorts its own terms, so the *resolved* set is canonical
-#: and this constant's order reaches nothing but a reader.
+#: well as data — it is what an operator reads to learn what §9.3 v2 said —
+#: while :class:`ThemeSet` sorts its own terms, so the *resolved* set is
+#: canonical and this constant's order reaches nothing but a reader.
 DEFAULT_LEGAL_THEMES: tuple[str, ...] = (
-    "cross-sectional-momentum",
-    "order-flow-imbalance",
-    "borrow-rate-conditioning",
-    "volatility-dispersion",
-    "calendar-events",
-    "cross-asset-divergence",
+    "funding-crowding",
+    "basis-premium",
+    "oi-price-divergence",
+    "positioning-contrarian",
+    "taker-flow-persistence",
+    "low-volatility",
+    "beta-to-btc",
+    "attention-volume",
+    "intermediate-momentum",
 )
 
 
@@ -400,7 +428,7 @@ class ThemeSet:
 
         Every message begins with :data:`ILLEGAL_THEME` and names the
         deployment's whole legal set, because the answer to "why was this
-        refused?" is "because the space is these six and not that one" —
+        refused?" is "because the space is these nine and not that one" —
         a message that named neither would leave an operator re-reading the
         configuration to find out what the set was.  The two forms are split
         because the repairs differ: a well-formed theme outside the set means
@@ -462,10 +490,11 @@ def legal_themes_from_env(env: Mapping[str, str] | None = None) -> ThemeSet:
 
     Three deployments, three answers, and each is a stance rather than a gap:
 
-    * **unset** → :data:`DEFAULT_THEME_SET`, PRD §9.3's initial six.  A
-      deployment that declared nothing still has a space; "nothing configured"
-      must not silently read as "anything is legal", which would turn a
-      missing variable into an off switch for feature 241's whole sentence.
+    * **unset** → :data:`DEFAULT_THEME_SET`, PRD §9.3 v2's nine guided roots.
+      A deployment that declared nothing still has a space; "nothing
+      configured" must not silently read as "anything is legal", which would
+      turn a missing variable into an off switch for feature 241's whole
+      sentence.
     * **set and blank** → the empty set, the strictest space: no theme is
       legal.  An operator between research spaces can hold that on purpose,
       and every assignment is then refused by name rather than waved through.
