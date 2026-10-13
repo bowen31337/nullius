@@ -119,6 +119,45 @@ Both additions are appended after what :func:`build_authoring_prompt` and
 :func:`to_request` already rendered — every existing key, every existing
 line, is unchanged in content and position.
 
+**Book and instrument (additions_spec_research_book_v2.xml, feature 4).**
+The in-sample IC→book diagnostic behind that spec found the research book
+itself under-specified to the agent: a node can be scored on a plain
+dollar-neutral spot book, a BTC-beta-neutral book (features 1-2 of that same
+spec), or a USD-M perpetual book with funding carry (feature 3) — and
+nothing told the agent which. :func:`_cost_awareness_part` gains three more
+facts, read duck-typed off the same ``evaluation`` context the cadence and
+per-rebalance cost already come from, so a caller wires one context and
+every fact in the section follows from it:
+
+* ``instrument`` — :data:`_INSTRUMENT_SPOT` unless ``evaluation.instrument``
+  reads exactly ``"perp"``, in which case :data:`_INSTRUMENT_PERP`. Any
+  other value, including an absent attribute, is the spot default: whether
+  ``"perp"`` is a legal value at all is :mod:`orchestrator`'s own config
+  law, not this builder's to check.
+* ``book`` — :data:`_BOOK_DOLLAR_NEUTRAL` unless ``evaluation.book``'s own
+  ``beta_neutral`` reads exactly ``True``, in which case
+  :data:`_BOOK_BETA_NEUTRAL`. The nested read goes through :func:`_field`
+  twice, once for ``book`` and once for its ``beta_neutral``, so a
+  ``evaluation`` with no ``book`` at all and a ``book`` with no
+  ``beta_neutral`` both fall back the same way.
+* ``cost_per_unit_traded_bps`` — the fee per unit of traded notional, the
+  same figure :func:`evaluator.compute_node_metrics`'s own
+  ``cost_per_unit_traded`` keyword charges against Σ|Δw| (the sum of
+  absolute weight changes since the prior rebalance), read the same way
+  ``per_rebalance_cost_bps`` is: a number, or the honest
+  :data:`_UNMEASURED` for anything else, ``None`` included.
+
+A fifth key, ``instrument_book_guidance``, carries one fixed,
+information-only line (:data:`_INSTRUMENT_BOOK_GUIDANCE`): a perp book's
+persistent funding differences are part of the return, and a beta-neutral
+book removes market direction, so the signal must earn from cross-sectional
+differences alone. Present regardless of what ``evaluation`` carries — the
+same stance :data:`_TURNOVER_GUIDANCE` takes toward actual turnover —
+because the point is the general discipline, not today's config.
+
+Appended after every key :func:`_cost_awareness_part` already rendered;
+every existing key, every existing value, is unchanged.
+
 **The theme brief (additions_spec_guided_themes.xml, feature 3).**  PRD
 §9.3 v2 found the hypothesis space itself too open-ended: a prompt that named
 only a theme's slug left the agent to guess a mechanism, and three
@@ -329,6 +368,81 @@ _TURNOVER_GUIDANCE: Final[str] = (
 )
 
 
+#: additions_spec_research_book_v2.xml feature 4 — the two ``instrument``
+#: facts, spelled once so the choice between them lives in one place beside
+#: the words themselves.
+_INSTRUMENT_SPOT: Final[str] = "spot"
+_INSTRUMENT_PERP: Final[str] = (
+    "USD-M perpetual; longs pay and shorts receive funding over the "
+    "holding period"
+)
+
+#: The two ``book`` facts, the same way — "60-day" and "BTC" name feature
+#: 2's own defaults (``beta_window_days=60``, ``beta_benchmark="BTCUSDT"``),
+#: restated here as the fixed prose a reader sees rather than a sentence
+#: this builder assembles from whichever window or benchmark a deployment
+#: configured: the prompt names what the committed default book is, not a
+#: second rendering of an evaluation config it does not read in full.
+_BOOK_DOLLAR_NEUTRAL: Final[str] = "dollar-neutral"
+_BOOK_BETA_NEUTRAL: Final[str] = (
+    "dollar- and BTC-beta-neutral (legs rescaled to equal 60-day beta)"
+)
+
+#: What ``cost_per_unit_traded_bps`` means, spelled once beside the figure —
+#: the same discipline :data:`_COST_BASIS_STATEMENT` follows for
+#: ``per_rebalance_cost_bps`` beside it, and the same figure
+#: :func:`evaluator.compute_node_metrics`'s own ``cost_per_unit_traded``
+#: keyword charges, named here as the fee per unit of traded notional so the
+#: agent reads the one relationship that matters: multiplied by the book's
+#: own turnover, it is what the book pays.
+_COST_PER_UNIT_BASIS_STATEMENT: Final[str] = (
+    "cost_per_unit_traded_bps is the fee per unit of traded notional, in "
+    "bps -- multiplied by Σ|Δw| (the sum of absolute weight "
+    "changes since the prior rebalance) it gives the fee this node's book "
+    "pays that date."
+)
+
+#: Feature 4's one information-only line about the book and instrument
+#: facts above — present regardless of what a deployment configured, the
+#: same stance :data:`_TURNOVER_GUIDANCE` takes toward actual turnover,
+#: because the discipline it states holds whether or not this node's own
+#: book is perp or beta-neutral.
+_INSTRUMENT_BOOK_GUIDANCE: Final[str] = (
+    "For a perp book, persistent funding differences are part of the "
+    "return; for a beta-neutral book, market direction is removed -- the "
+    "signal must earn from cross-sectional differences alone. This is "
+    "information only and judges nothing."
+)
+
+
+def _instrument_statement(evaluation: object) -> str:
+    """:data:`_INSTRUMENT_PERP` iff ``evaluation.instrument`` reads ``"perp"``.
+
+    Any other value — ``"spot"`` itself, an unrecognized string, or an
+    absent attribute (``None``) — answers :data:`_INSTRUMENT_SPOT`: whether
+    ``"perp"`` is the only other legal value is :mod:`orchestrator`'s own
+    config law (additions_spec_research_book_v2.xml feature 3), not
+    something this builder checks.
+    """
+    return _INSTRUMENT_PERP if _field(evaluation, "instrument") == "perp" else _INSTRUMENT_SPOT
+
+
+def _book_statement(evaluation: object) -> str:
+    """:data:`_BOOK_BETA_NEUTRAL` iff ``evaluation.book.beta_neutral`` is ``True``.
+
+    Read through :func:`_field` twice — once for ``evaluation``'s own
+    ``book``, once for that value's ``beta_neutral`` — so an ``evaluation``
+    with no ``book`` at all and a ``book`` whose ``beta_neutral`` is
+    ``False`` or absent both answer the same plain-book default,
+    :data:`_BOOK_DOLLAR_NEUTRAL`. The comparison is ``is True`` rather than
+    truthy, the same strictness :func:`_cost_awareness_part` already applies
+    to its own numeric facts, so a stray non-boolean cannot silently flip
+    the rendered book.
+    """
+    book = _field(evaluation, "book")
+    return _BOOK_BETA_NEUTRAL if _field(book, "beta_neutral") is True else _BOOK_DOLLAR_NEUTRAL
+
+
 def _cadence_statement(dates: object) -> str:
     """A one-word description of the evaluation grid's spacing, or "unmeasured".
 
@@ -364,35 +478,47 @@ def _cadence_statement(dates: object) -> str:
 
 
 def _cost_awareness_part(evaluation: object) -> dict[str, Any]:
-    """The cost-awareness facts feature 4 asks the rendered prompt to carry.
+    """The cost-awareness facts the two cost-aware-selection specs ask the prompt to carry.
 
     ``evaluation`` is duck-typed, read the same way ``workspace`` is (by
     mapping key or by attribute, through :func:`_field`): ``evaluation_dates``
     (the rebalance grid, read only to name its cadence — see
-    :func:`_cadence_statement`) and ``per_rebalance_cost_bps`` (the cost
-    model's own figure). Neither is computed here: this function describes
-    the shape of what it is handed, never applies a fee schedule of its own
-    (:mod:`cost_model` owns that arithmetic; feature 69 forbids a second
-    implementation of it).
+    :func:`_cadence_statement`), ``per_rebalance_cost_bps`` and
+    ``cost_per_unit_traded_bps`` (the cost model's own figures),
+    ``instrument`` and ``book`` (additions_spec_research_book_v2.xml feature
+    4 — see :func:`_instrument_statement` and :func:`_book_statement`).
+    Nothing here is computed: this function describes the shape of what it
+    is handed, never applies a fee schedule or a book construction of its
+    own (:mod:`cost_model` and :mod:`evaluator` own that arithmetic; feature
+    69 forbids a second implementation of it).
 
     ``evaluation=None`` — the default, and what every caller that has not
-    wired an evaluation context in hands in — answers both facts as
-    :data:`_UNMEASURED`, not a reason to omit the section: feature 4 asks
-    for the section to *display*, always, so a prompt built before a
-    deployment wires the context in reads the same keys a later one does,
-    carrying the honest absence rather than a missing key a reader would
-    have to guess the meaning of.
+    wired an evaluation context in hands in — answers every numeric fact as
+    :data:`_UNMEASURED` and every book/instrument fact as its plain default,
+    not a reason to omit the section: both specs ask for the section to
+    *display*, always, so a prompt built before a deployment wires the
+    context in reads the same keys a later one does, carrying the honest
+    absence rather than a missing key a reader would have to guess the
+    meaning of.
     """
     cadence = _cadence_statement(_field(evaluation, "evaluation_dates"))
     cost_bps = _field(evaluation, "per_rebalance_cost_bps")
     if isinstance(cost_bps, bool) or not isinstance(cost_bps, (int, float)):
         cost_bps = _UNMEASURED
+    cost_per_unit_bps = _field(evaluation, "cost_per_unit_traded_bps")
+    if isinstance(cost_per_unit_bps, bool) or not isinstance(cost_per_unit_bps, (int, float)):
+        cost_per_unit_bps = _UNMEASURED
     return {
         "selection_statement": _SELECTION_STATEMENT,
         "cadence": cadence,
         "per_rebalance_cost_bps": cost_bps,
         "cost_basis": _COST_BASIS_STATEMENT,
         "guidance": _TURNOVER_GUIDANCE,
+        "instrument": _instrument_statement(evaluation),
+        "book": _book_statement(evaluation),
+        "cost_per_unit_traded_bps": cost_per_unit_bps,
+        "cost_per_unit_traded_basis": _COST_PER_UNIT_BASIS_STATEMENT,
+        "instrument_book_guidance": _INSTRUMENT_BOOK_GUIDANCE,
     }
 
 
