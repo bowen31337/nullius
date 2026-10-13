@@ -133,6 +133,31 @@ choice.*
     four arrive together, in one record, and the store persists them in one
     row and one transaction.
 
+**Turnover cost is charged here, not where the returns were priced.**  Step 7
+(:func:`apply_costs`) charges one taker fee per symbol, uniformly, against
+every return it prices, and a uniform fee charged against a dollar-neutral
+book *cancels*: the book return is ``Σ w_i (r_i − f) = Σ w_i r_i − f · Σ w_i``,
+and ``Σ w_i = 0`` by construction (``w_i = z_i / Σ|z_j|`` over centered
+scores), so the fee term vanishes regardless of how much the book actually
+traded — a signal that reshuffles its whole book every bar and one that never
+changes its ranks would report the identical ``ir_standalone``. Turnover cost
+belongs where the weights exist instead, so :func:`compute_node_metrics`
+accepts an optional, keyword-only ``cost_per_unit_traded`` (a fraction of
+traded notional — ``0.001`` is 10 bps; a negative or non-finite value is
+refused) and charges it against the *book* return, not the per-symbol return:
+on each book date ``d`` the net return is the gross book return minus
+``cost_per_unit_traded × traded_d``, where ``traded_d = Σ|w_d − w_{d-1}|``
+over the union of symbols either side holds a weight for (a symbol absent
+from one side holds weight 0 there, the same absence convention
+:attr:`NodeMetrics.turnover` uses) and, on the first book date — no
+predecessor — ``traded_d = Σ|w_d|``, the full cost of putting the book on.
+:attr:`NodeMetrics.book_returns`, :attr:`NodeMetrics.ir_standalone` and
+everything reduced from them are therefore net of this charge;
+:attr:`NodeMetrics.turnover` keeps its own definition (``½ · Σ|Δw|``)
+unchanged, since turnover is a fraction of the book, not a cost. The
+default, ``cost_per_unit_traded=0.0``, charges nothing and reproduces every
+figure this module computed before the parameter existed.
+
 **Absence is not zero**, three times over.  A horizon the priced panel does not
 cover carries no metric — a panel that covers no horizon at all is refused
 outright (nothing measured, no metrics to store), and a horizon with fewer than
@@ -497,6 +522,8 @@ class NodeMetrics:
 def compute_node_metrics(
     returns: PostCostReturns,
     scores: Mapping[dt.date | str, Mapping[str, float]],
+    *,
+    cost_per_unit_traded: float = 0.0,
 ) -> NodeMetrics:
     """Compute the four node scalars — ic_mean, ic_tstat, ir_standalone, turnover.
 
@@ -519,14 +546,43 @@ def compute_node_metrics(
     one side carries and the other does not is simply not in that date's joined
     cross-section — feature 75's absence rule, applied to both sides at once.
 
+    ``cost_per_unit_traded`` (keyword-only, default ``0.0``) is a fraction of
+    traded notional charged against the book's own return on each date — see
+    the module docstring for the formula and why the per-symbol fee step 7
+    already charged cancels in this dollar-neutral book. The default charges
+    nothing, so :attr:`NodeMetrics.book_returns` and
+    :attr:`NodeMetrics.ir_standalone` are unchanged from before the parameter
+    existed.
+
     Raises :class:`~evaluator.EvaluatorMetricsError`, each with its reason (see
     ``_errors``): a ``returns`` that is not step 7's own result; a ``scores``
-    mapping that is malformed, empty, or carries a non-finite value; a panel
-    that covers no horizon at all (nothing measured); a horizon with fewer than
+    mapping that is malformed, empty, or carries a non-finite value; a
+    ``cost_per_unit_traded`` that is negative or not finite; a panel that
+    covers no horizon at all (nothing measured); a horizon with fewer than
     two dates (a t-statistic over one date names a zero standard error and a
     fabricated infinity); and — via the record — a hand-built metrics whose
     scalars do not reduce from their own terms.
     """
+    if isinstance(cost_per_unit_traded, bool) or not isinstance(
+        cost_per_unit_traded, (int, float)
+    ):
+        raise EvaluatorMetricsError(
+            "cost_per_unit_traded must be a number (a fraction of traded "
+            f"notional, e.g. 0.001 for 10 bps), got {cost_per_unit_traded!r}"
+        )
+    cost_per_unit_traded = float(cost_per_unit_traded)
+    if not math.isfinite(cost_per_unit_traded):
+        raise EvaluatorMetricsError(
+            "cost_per_unit_traded must be finite, got "
+            f"{cost_per_unit_traded!r}; a NaN or ±inf would reach every book "
+            "return dressed as a measurement"
+        )
+    if cost_per_unit_traded < 0.0:
+        raise EvaluatorMetricsError(
+            "cost_per_unit_traded must be non-negative, got "
+            f"{cost_per_unit_traded!r}; it charges the book for trading, and "
+            "a negative charge would pay the book for trading instead"
+        )
     if not isinstance(returns, PostCostReturns):
         raise EvaluatorMetricsError(
             "compute_node_metrics reduces step 7's own result — a "
@@ -647,6 +703,29 @@ def compute_node_metrics(
             "measured and there are no node metrics to store — score and price "
             "an alignment with coverage first (features 75 through 79)"
         )
+
+    # Turnover cost is charged against the book return itself, here, rather
+    # than per symbol where step 7 charges it: a uniform per-symbol fee
+    # charged against a dollar-neutral book cancels (Σ w_i f = f Σ w_i = 0),
+    # so the only place a trading cost can actually bite is the traded
+    # notional of the book's own weights (see the module docstring). On the
+    # first book date there is no predecessor, so the whole book is entry
+    # cost; on every later date, traded_d is the weight that moved between
+    # this book and the previous one, absent symbols holding weight 0.
+    if cost_per_unit_traded != 0.0:
+        prev_weights: Mapping[str, float] | None = None
+        for day in sorted(per_date_weights):
+            weights = per_date_weights[day]
+            if prev_weights is None:
+                traded = math.fsum(abs(value) for value in weights.values())
+            else:
+                symbols = set(prev_weights) | set(weights)
+                traded = math.fsum(
+                    abs(weights.get(symbol, 0.0) - prev_weights.get(symbol, 0.0))
+                    for symbol in symbols
+                )
+            per_date_return[day] -= cost_per_unit_traded * traded
+            prev_weights = weights
 
     count = len(per_date_ic)
     ic_mean = math.fsum(per_date_ic[day] for day in sorted(per_date_ic)) / count
