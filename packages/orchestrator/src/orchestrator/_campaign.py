@@ -184,7 +184,14 @@ def _evaluated_event(
     charges_budget: bool,
     fail_detail: str | None = None,
     tripwires_failed: tuple[str, ...] = (),
+    ir_tstat_gross: float | None = None,
 ) -> dict[str, Any]:
+    rendered = _json_score(score)
+    # The gross (pre-turnover-charge) ir_tstat is a diagnostic the evaluation
+    # carries beside its score (bug_spec_turnover_cost_charge.xml); it rides in
+    # the event's score so a reader sees net and gross side by side.
+    if isinstance(rendered, dict) and ir_tstat_gross is not None:
+        rendered = {**rendered, "ir_tstat_gross": ir_tstat_gross}
     return {
         "event": "node_evaluated",
         "campaign_id": campaign_id,
@@ -193,7 +200,7 @@ def _evaluated_event(
         "fail_class": fail_class,
         "fail_detail": fail_detail,
         "charges_budget": charges_budget,
-        "score": _json_score(score),
+        "score": rendered,
         "tripwires_failed": list(tripwires_failed),
     }
 
@@ -408,6 +415,7 @@ def _evaluate_roots_concurrently(
                     charges_budget=evaluation.charges_budget,
                     fail_detail=getattr(evaluation, "fail_detail", None),
                     tripwires_failed=getattr(evaluation, "tripwires_failed", ()),
+                    ir_tstat_gross=getattr(evaluation, "ir_tstat_gross", None),
                 )
             )
 
@@ -769,6 +777,7 @@ def _continue_campaign(
                     # frozen dataclass's missing attribute.
                     fail_detail=getattr(outcome, "fail_detail", None),
                     tripwires_failed=getattr(outcome, "tripwires_failed", ()),
+                    ir_tstat_gross=getattr(outcome, "ir_tstat_gross", None),
                 )
             )
 

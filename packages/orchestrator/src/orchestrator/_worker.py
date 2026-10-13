@@ -144,6 +144,10 @@ class ChildOutcome:
     #: The author's ``providers.AuthoringRecord``, or ``None`` when the
     #: authoring was refused and produced no record to file.
     record: Any
+    #: Diagnostic only: the evaluation's ir_tstat before the turnover charge
+    #: (bug_spec_turnover_cost_charge.xml), or ``None`` when nothing was
+    #: evaluated. Rides to the node_evaluated event, never persisted.
+    ir_tstat_gross: float | None = None
 
 
 def _capturing(
@@ -257,6 +261,7 @@ class NodeWorker:
             score=evaluation.score,
             charges_budget=evaluation.charges_budget,
             record=authored.record,
+            ir_tstat_gross=getattr(evaluation, "ir_tstat_gross", None),
         )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid only
