@@ -79,17 +79,39 @@ killed campaign process does not orphan its workers — and
 root evaluation are done (see ``_continue_campaign``), so a long-lived
 process that runs several campaigns never accumulates one pool per
 campaign.
+
+**None of that runs a driver's workers down after a ``SIGKILL``.**
+``atexit`` and the ``SIGTERM`` handler are both cooperative — neither fires
+when the driver is killed with a signal that cannot be caught, and neither
+fires in a worker, which never runs this class's own shutdown at all.
+(bug_spec_orphaned_pool_workers.xml, POOL-1).  :func:`_start_parent_watchdog`
+is each worker's own, unilateral link to its parent's lifetime instead:
+called from :func:`_init_worker`, it records the parent's pid and starts a
+daemon thread (:func:`_watch_parent`) that wakes every
+:data:`_PARENT_WATCHDOG_INTERVAL_SECONDS` and checks whether that pid is
+still this worker's own parent and still alive; the instant it is not, the
+worker ends itself with :func:`os._exit` under
+:data:`_ORPHANED_WORKER_EXIT_CODE`, even mid-evaluation — a sandbox
+subprocess already running is orphaned no further than its own timeout
+already allowed.  On Linux the same function also asks the kernel for
+``PR_SET_PDEATHSIG`` (``SIGTERM``) through ``prctl``, the fast path when it
+is available; the watchdog thread is what still holds when it is not, or
+on any other platform.  A worker whose parent is alive is never touched by
+either mechanism.
 """
 
 from __future__ import annotations
 
 import atexit
+import ctypes
 import dataclasses
 import logging
 import os
 import signal
 import sqlite3
+import sys
 import threading
+import time
 from collections.abc import Mapping
 from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import get_context
@@ -233,6 +255,104 @@ def _enforce_minimum_busy_timeout() -> None:
     _BUSY_TIMEOUT_ENFORCED = True
 
 
+#: How often :func:`_watch_parent` wakes to check whether its recorded
+#: parent is still there — the spec's own figure (bug_spec_orphaned_pool_workers.xml,
+#: POOL-1): short enough that a killed driver's workers do not keep running
+#: sandboxes for long, long enough that the check costs nothing worth
+#: measuring against a worker's actual evaluation work.
+_PARENT_WATCHDOG_INTERVAL_SECONDS: Final[float] = 2.0
+
+#: The exit code :func:`_watch_parent` names when it ends a worker because
+#: its parent is gone — distinguishable from any other way a worker
+#: process ends (a normal return, an uncaught exception, a signal).
+_ORPHANED_WORKER_EXIT_CODE: Final[int] = 70
+
+#: ``prctl``'s own constant for "signal me when my parent dies" — stable
+#: across every Linux kernel version; not a value this module invents.
+_PR_SET_PDEATHSIG: Final[int] = 1
+
+
+def _parent_pid_alive(pid: int) -> bool:
+    """Whether ``pid`` plausibly still names a live process.
+
+    ``os.kill(pid, 0)`` sends no signal; it only asks the kernel whether
+    this process could signal that pid. ``ProcessLookupError`` means no
+    such process exists. A ``PermissionError`` (the pid exists but is
+    owned by someone this process cannot signal) still means the process
+    is there, so that case reads as alive rather than gone.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _set_parent_death_signal() -> None:
+    """Best-effort ``prctl(PR_SET_PDEATHSIG, SIGTERM)`` — Linux only.
+
+    Asks the kernel to deliver ``SIGTERM`` to this worker the instant its
+    parent process dies — the fast path, when the platform and libc
+    support it. Any failure (a non-Linux platform, a ``ctypes`` lookup
+    that cannot find ``prctl``, a kernel that refuses the call) is
+    swallowed: :func:`_watch_parent`'s polling thread is the portable
+    guarantee this falls back to, not this call, so a worker's survival
+    past its parent never depends on this succeeding.
+    """
+    if sys.platform != "linux":
+        return
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.prctl(_PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
+    except (OSError, AttributeError):
+        pass
+
+
+def _watch_parent(expected_parent_pid: int) -> None:
+    """Poll every :data:`_PARENT_WATCHDOG_INTERVAL_SECONDS`; end this
+    process the instant ``expected_parent_pid`` is no longer this
+    worker's parent, or is no longer alive at all.
+
+    Either sign is sufficient on its own: a killed parent is reparented
+    away from immediately (``os.getppid()`` then answers init's pid or a
+    subreaper's), and checking liveness too catches the rarer case where a
+    pid is reused before this worker's next wake. Ends the process with
+    :func:`os._exit` — never ``sys.exit`` or a raised exception, neither
+    of which would interrupt a call already blocked in this same thread —
+    under :data:`_ORPHANED_WORKER_EXIT_CODE`, so this holds even mid-
+    evaluation: a sandbox subprocess already running is orphaned no
+    further than its own timeout already allowed.
+    """
+    while True:
+        time.sleep(_PARENT_WATCHDOG_INTERVAL_SECONDS)
+        if os.getppid() != expected_parent_pid or not _parent_pid_alive(expected_parent_pid):
+            os._exit(_ORPHANED_WORKER_EXIT_CODE)
+
+
+def _start_parent_watchdog() -> None:
+    """One worker's entire link to its parent's lifetime: record the
+    parent's pid, ask the kernel for a death signal, start the daemon
+    watchdog thread.
+
+    Called from :func:`_init_worker`, and directly — as a
+    ``ProcessPoolExecutor`` initializer in its own right, with no
+    :class:`~orchestrator._context.EvaluationContext`, no composed
+    application and no sandbox — by ``test_process_pool_orphan_exit.py``,
+    which needs only this function and a pid to prove a worker outlives or
+    outdies its parent.
+    """
+    _set_parent_death_signal()
+    thread = threading.Thread(
+        target=_watch_parent,
+        args=(os.getppid(),),
+        daemon=True,
+        name="orchestrator-pool-parent-watchdog",
+    )
+    thread.start()
+
+
 def _init_worker(env: Mapping[str, str]) -> None:
     """One worker's own setup: load the context, compose the app, resolve
     the two siblings — exactly once, before this worker answers its first
@@ -265,6 +385,7 @@ def _init_worker(env: Mapping[str, str]) -> None:
     """
     global _WORKER_CONTEXT, _WORKER_ENDPOINT, _WORKER_LEDGER
 
+    _start_parent_watchdog()
     _enforce_minimum_busy_timeout()
 
     import orchestrator
