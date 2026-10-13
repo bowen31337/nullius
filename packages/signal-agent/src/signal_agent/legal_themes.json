@@ -10,9 +10,17 @@
     "'Dream-RSI improves search efficiency within a space. It cannot create",
     "edge in a space that has none. Choosing the space is the highest-value",
     "human input in the system, and it should be encoded as the set of legal",
-    "theme_root values.'  Section 9.3 lists the initial six; each entry",
-    "below carries that section's name for it verbatim as its title, so the",
-    "document and the PRD can be diffed against each other by eye.",
+    "theme_root values.'  Section 9.3 v2 (owner-approved 2026-10-13) lists",
+    "the nine guided roots below; docs/hypothesis-space/themes-v2.md carries",
+    "the full table each entry's title, brief and the shared",
+    "construction_rules are transcribed from, so the document and this file",
+    "can be diffed against each other by eye.  v1's six (momentum/reversal,",
+    "order-flow imbalance, borrow/funding conditioning, volatility/",
+    "dispersion, calendar events, cross-venue divergence) named themes",
+    "without saying what the agent could read for them, three of them had no",
+    "data in the lake at all, and three pre-registered M2 pivots failed on",
+    "that set (docs/preregistration/*RESULT.md) - v2 replaces it rather than",
+    "widening it, so none of v1's six slugs appear below.",
     "Section 9.4 is the neighbouring refusal and NOT this one: 'structurally",
     "dead at retail scale' - triangular arbitrage, sub-30-minute",
     "liquidity-taking - is feature 213's subject, and it is a different",
@@ -22,41 +30,118 @@
     "second unfixable without widening the first.",
     "The compile in packages/signal-agent/src/signal_agent/_themes.py",
     "refuses this file and any change to it that is not a marker plus a",
-    "list of well-formed slug/title entries - so the set below is not a",
-    "convention the next edit can forget: it is the configuration, checked,",
-    "and a proposal opening in a theme it does not name is refused with the",
-    "code illegal_theme.",
+    "list of well-formed slug/title/brief entries and a well-formed",
+    "construction_rules list - so the set below is not a convention the",
+    "next edit can forget: it is the configuration, checked, and a proposal",
+    "opening in a theme it does not name is refused with the code",
+    "illegal_theme.",
     "The slugs are the machine spelling the node table's theme_root column",
     "holds (docs/nullius-tech-architecture.md 9.1: 'theme_root TEXT NOT",
-    "NULL'); the titles are for the human reading a rejection.  Widening",
-    "this list is widening the hypothesis space, which PRD 9 makes the",
-    "human's own decision - the widen happens here, in review, or not at",
-    "all."
+    "NULL'); the titles are PRD 9.3 v2's own wording for each root, for the",
+    "human reading a rejection.  Each brief states the mechanism, the inputs",
+    "to read, the pre-registered expected sign and the notes and risks -",
+    "rendered into the authoring prompt so the agent is told what to test",
+    "rather than only where.  Widening this list is widening the hypothesis",
+    "space, which PRD 9 makes the human's own decision - the widen happens",
+    "here, in review, or not at all."
+  ],
+  "construction_rules": [
+    "Score cross-sectionally. Rank or z-score within the date's universe; never raw levels.",
+    "Slow down. Use lookback windows of 7 days or more, smooth inputs (rolling means or EMAs), and aim for turnover below about 0.3 per rebalance. Weekly turnover of 0.66 erased the IC in the M2 baseline.",
+    "Missing inputs: symbols without a perpetual (15 of 100) or without enough history get the cross-sectional median score (neutral), never 0 by accident and never NaN.",
+    "State the expected sign in the mechanism, and test the stated sign. Do not flip the sign after seeing results; a flipped hypothesis is a new node.",
+    "Cast every string column to Float64. ctx.feature(..., lookback=None) and filter by symbol."
   ],
   "themes": [
     {
-      "slug": "cross-sectional-momentum-reversal",
-      "title": "Cross-sectional momentum and short-term reversal, small/mid-cap universe"
+      "slug": "funding-crowding",
+      "title": "Persistent high funding means crowded longs, which underperform",
+      "brief": {
+        "mechanism": "Persistently high positive funding means crowded leveraged longs paying to hold. Crowded coins underperform over the next 1-4 weeks",
+        "inputs": "`funding_1d` 7-30d sum or mean; its rank",
+        "expected_sign": "Negative (short high funding)",
+        "notes": "The best-documented crypto derivatives effect. Low turnover if smoothed. Spot-only book: we exploit the information, not the carry"
+      }
     },
     {
-      "slug": "order-flow-imbalance",
-      "title": "Order-flow imbalance and microstructure features from the free L2 feed"
+      "slug": "basis-premium",
+      "title": "A wide perpetual premium over spot mean-reverts",
+      "brief": {
+        "mechanism": "A wide perpetual premium over spot signals speculative excess, and the premium and price mean-revert. A falling basis signals unwinding",
+        "inputs": "`basis_1d` level (7d mean) and 7-14d change",
+        "expected_sign": "Negative on level",
+        "notes": "Correlated with theme 1; let the tree discover which carries more"
+      }
     },
     {
-      "slug": "borrow-rate-funding-state",
-      "title": "Borrow-rate and funding-state conditioning"
+      "slug": "oi-price-divergence",
+      "title": "Open interest against price; squeezes and fragile leverage",
+      "brief": {
+        "mechanism": "Rising open interest into a falling price means shorts are piling in, so a squeeze or reversal follows. Rising OI with a rising price is late leverage, which is fragile",
+        "inputs": "`metrics_1d` sum_open_interest_value 7-14d % change against the 7-14d price return; OI scaled by quote volume",
+        "expected_sign": "Long OI-up/price-down; short OI-up/price-up",
+        "notes": "Normalise OI by the coin's traded value, so large caps do not dominate"
+      }
     },
     {
-      "slug": "volatility-state-dispersion",
-      "title": "Volatility-state and dispersion regimes"
+      "slug": "positioning-contrarian",
+      "title": "Retail long/short extremes, and top traders against the crowd",
+      "brief": {
+        "mechanism": "Retail long/short ratio extremes are contrarian. Divergence between top traders and the global ratio means smart money disagrees with the crowd",
+        "inputs": "`metrics_1d` count_long_short_ratio, sum_toptrader_long_short_ratio; 7d means; top-trader minus global",
+        "expected_sign": "Negative on the retail ratio; positive on the top-trader-minus-retail gap",
+        "notes": "Ratios are venue-specific (Binance only)"
+      }
     },
     {
-      "slug": "mechanical-calendar-events",
-      "title": "Mechanical calendar and event effects"
+      "slug": "taker-flow-persistence",
+      "title": "Sustained aggressive buying continues",
+      "brief": {
+        "mechanism": "Sustained aggressive buying (the taker-buy share) reflects informed demand that keeps moving price",
+        "inputs": "`taker_flow_1d` taker_buy_ratio 7-14d mean, against its own 60d baseline",
+        "expected_sign": "Positive",
+        "notes": "At short windows this is order-flow reversal; keep windows long for continuation"
+      }
     },
     {
-      "slug": "cross-venue-state-divergence",
-      "title": "Cross-asset and cross-venue state divergence (state, not price)"
+      "slug": "low-volatility",
+      "title": "Low-volatility coins outperform",
+      "brief": {
+        "mechanism": "Low-volatility coins outperform on a risk-adjusted basis: lottery-seeking investors overpay for volatile ones",
+        "inputs": "bars: 30-90d realised volatility of daily returns; optionally idiosyncratic vol after removing a BTC beta",
+        "expected_sign": "Negative on volatility",
+        "notes": "The slowest theme, so naturally low turnover. An honest 20d vol signal passed all tripwire probes on the archive snapshot 540e93 (it failed only on the short 92-day window)"
+      }
+    },
+    {
+      "slug": "beta-to-btc",
+      "title": "Betting against BTC beta",
+      "brief": {
+        "mechanism": "Betting against beta: high-BTC-beta coins underperform after adjusting for risk",
+        "inputs": "bars: 60-90d rolling beta of each coin's daily return on BTC's",
+        "expected_sign": "Negative on beta",
+        "notes": "Needs BTCUSDT in the window, which it always is"
+      }
+    },
+    {
+      "slug": "attention-volume",
+      "title": "Abnormal-volume spikes unwind",
+      "brief": {
+        "mechanism": "Abnormal volume or trade-count spikes mark attention-driven overpricing, which unwinds over the next weeks",
+        "inputs": "bars: volume and trade_count over 7d against 90d (log ratio); optionally conditioned on the return over the spike",
+        "expected_sign": "Negative on the abnormal-volume rank",
+        "notes": "Liquidity proxy; keep only the persistent part (7d)"
+      }
+    },
+    {
+      "slug": "intermediate-momentum",
+      "title": "30-90-day momentum that skips the last week; the control",
+      "brief": {
+        "mechanism": "30-90d momentum that skips the most recent 7 days, avoiding short-term reversal",
+        "inputs": "bars: return from t-90 to t-7 (or t-30 to t-7)",
+        "expected_sign": "Positive",
+        "notes": "Historically weak and crash-prone in crypto. Keep it as the control the others must beat"
+      }
     }
   ]
 }

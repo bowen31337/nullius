@@ -10,8 +10,9 @@ the set comes from and why it is *configured* rather than derived —
     human input in the system, and it should be encoded as the set of legal
     ``theme_root`` values.
 
-— and §9.3 lists the initial six.  The sentence decomposes into four claims,
-and each of them is a seam here rather than a comment:
+— and §9.3 v2 (owner-approved 2026-10-13) lists the nine guided roots.  The
+sentence decomposes into four claims, and each of them is a seam here rather
+than a comment:
 
 * **a proposal whose theme root** — the subject is the *root* of a proposal's
   branch, not its source.  Feature 205's law judges the text an agent wrote;
@@ -27,7 +28,9 @@ and each of them is a seam here rather than a comment:
   not fitted: it is the committed artifact
   (:data:`COMMITTED_LEGAL_THEMES`) that ships beside this law, and
   :func:`compile_legal_themes` refuses any change to it that is not a marker
-  plus well-formed slug/title entries.  Widening the hypothesis space is
+  plus well-formed slug/title entries, each with an optional PRD §9.3 v2
+  brief, and an optional shared ``construction_rules`` list.  Widening the
+  hypothesis space is
   PRD §9's *"highest-value human input"*, so it happens in review, in the
   document — never as a side effect of a run.
 
@@ -177,6 +180,18 @@ THEMES_COMPONENT_NAME: Final[str] = "signal-agent-themes"
 #: value lands, this is what the set is allowed to say.
 _SLUG_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
+#: The four fields PRD §9.3 v2 states for each guided theme root, in the
+#: order the table's own columns carry them.  A brief is this set of keys or
+#: it is not a brief — a document missing one of the four would render a
+#: hole into the authoring prompt as silence about territory nobody stated,
+#: which is the failure v2 exists to close.
+_BRIEF_KEYS: Final[tuple[str, ...]] = (
+    "mechanism",
+    "inputs",
+    "expected_sign",
+    "notes",
+)
+
 
 def _require_mapping(value: Any, what: str) -> Mapping:
     """Return ``value`` as a mapping, refusing anything else.
@@ -211,6 +226,60 @@ def _require_str(value: Any, what: str) -> str:
     return value
 
 
+def _compile_brief(raw: Any, what: str) -> dict[str, str] | None:
+    """Return one theme's brief as a validated mapping, or ``None`` if absent.
+
+    An entry carrying no ``'brief'`` key is legal — a theme root the document
+    names but has not yet been given PRD §9.3 v2's guided mechanism for is
+    still a root a proposal may open in, it is only the prompt that renders
+    nothing extra for it.  A ``'brief'`` that *is* present is held to v2's own
+    shape: all four of :data:`_BRIEF_KEYS`, each a non-blank string — a brief
+    missing one of the four would render a hole into the authoring prompt as
+    silence about territory nobody stated, which is the failure v2 exists to
+    close.
+    """
+    if raw is None:
+        return None
+    mapping = _require_mapping(raw, what)
+    brief: dict[str, str] = {}
+    for key in _BRIEF_KEYS:
+        if key not in mapping:
+            raise ThemeSetError(
+                f"{what} is missing {key!r}. A brief states the mechanism, "
+                f"the inputs, the pre-registered expected sign and the notes "
+                f"together or not at all, so a document that states three of "
+                f"the four cannot be compiled (feature 212, refused fail "
+                f"closed)."
+            )
+        brief[key] = _require_str(mapping[key], f"{what} {key!r}")
+    return brief
+
+
+def _compile_construction_rules(raw: Any) -> tuple[str, ...]:
+    """Return the document's shared construction rules, or ``()`` if absent.
+
+    A document naming none is legal — every gate compiled before v2 read
+    this way, and a deployment need not have written PRD §9.3 v2's shared
+    rules to have a legal theme set at all.  A ``'construction_rules'`` key
+    that *is* present must be a list of non-blank strings: the rules apply to
+    every theme a proposal can open in, so a malformed entry here is a hole
+    that would render as silence for every theme at once, not one.
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ThemeSetError(
+            f"a legal theme set's 'construction_rules' must be a list of "
+            f"strings, got {type(raw).__name__}: {raw!r}. The shared rules "
+            f"apply to every theme a proposal can open in, and a document "
+            f"that cannot enumerate them cannot be compiled (feature 212)."
+        )
+    return tuple(
+        _require_str(rule, f"construction_rules #{index + 1}")
+        for index, rule in enumerate(raw)
+    )
+
+
 class LegalThemes:
     """A compiled legal theme set: the space a proposal's root is judged in.
 
@@ -230,10 +299,23 @@ class LegalThemes:
     PRD §9 reserves to the human.
     """
 
-    __slots__ = ("_slug_set", "_slugs", "_themes", "_titles", "kind")
+    __slots__ = (
+        "_briefs",
+        "_construction_rules",
+        "_slug_set",
+        "_slugs",
+        "_themes",
+        "_titles",
+        "kind",
+    )
 
     def __init__(
-        self, *, kind: str, themes: tuple[tuple[str, str], ...]
+        self,
+        *,
+        kind: str,
+        themes: tuple[tuple[str, str], ...],
+        briefs: Mapping[str, Mapping[str, str]] | None = None,
+        construction_rules: tuple[str, ...] = (),
     ) -> None:
         self.kind = kind
         self._themes = themes
@@ -245,6 +327,12 @@ class LegalThemes:
         self._slugs = tuple(slug for slug, _ in themes)
         self._titles = dict(themes)
         self._slug_set = frozenset(self._slugs)
+        # Optional, both of them: a caller building an empty or hand-rolled
+        # set (the builder's fail-closed fallback, a test's bare document)
+        # carries neither, and ``brief``/``construction_rules`` below read
+        # that absence as "none", not as a document to guess at.
+        self._briefs = dict(briefs) if briefs else {}
+        self._construction_rules = tuple(construction_rules)
 
     def slugs(self) -> tuple[str, ...]:
         """Every legal slug, in document order.
@@ -265,6 +353,30 @@ class LegalThemes:
         §9.3 wording rather than a second description someone wrote here.
         """
         return self._titles.get(slug) if isinstance(slug, str) else None
+
+    def brief(self, slug: object) -> Mapping[str, str] | None:
+        """PRD §9.3 v2's brief for a legal slug, or ``None``.
+
+        ``None`` for two different reasons, deliberately conflated the way
+        :meth:`title` already conflates them: the slug names no theme at all
+        (including a non-string probe), or it names one the document carries
+        no brief for — a v1 slug on a resumed campaign, or a deployment's own
+        ``NULLIUS_LEGAL_THEMES`` entry.  A caller rendering an authoring
+        prompt reads the absence as "nothing extra to render", never as a
+        refusal: the theme itself may still be legal.
+        """
+        return self._briefs.get(slug) if isinstance(slug, str) else None
+
+    def construction_rules(self) -> tuple[str, ...]:
+        """The shared construction rules every theme renders, or ``()``.
+
+        Document order, for the same reason :meth:`slugs` is: the rules are
+        reviewed as PRD §9.3 v2's own document writes them.  Empty when the
+        document names none — a deployment that has not written v2's shared
+        rules still has a legal theme set, just one with nothing shared to
+        render.
+        """
+        return self._construction_rules
 
     def covers(self, slug: object) -> bool:
         """Whether the configured set admits a theme root.
@@ -346,6 +458,7 @@ def compile_legal_themes(document: Any) -> LegalThemes:
         )
 
     themes: list[tuple[str, str]] = []
+    briefs: dict[str, Mapping[str, str]] = {}
     seen: set[str] = set()
     for index, raw in enumerate(raw_themes):
         entry = _require_mapping(raw, f"legal theme entry #{index + 1}")
@@ -374,8 +487,20 @@ def compile_legal_themes(document: Any) -> LegalThemes:
             )
         seen.add(slug)
         themes.append((slug, title))
+        brief = _compile_brief(
+            entry.get("brief"), f"legal theme entry #{index + 1} 'brief'"
+        )
+        if brief is not None:
+            briefs[slug] = brief
 
-    return LegalThemes(kind=LEGAL_THEMES_POLICY_KIND, themes=tuple(themes))
+    construction_rules = _compile_construction_rules(doc.get("construction_rules"))
+
+    return LegalThemes(
+        kind=LEGAL_THEMES_POLICY_KIND,
+        themes=tuple(themes),
+        briefs=briefs,
+        construction_rules=construction_rules,
+    )
 
 
 def load_legal_themes(path: Path = COMMITTED_LEGAL_THEMES) -> LegalThemes:

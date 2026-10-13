@@ -67,7 +67,7 @@ _CONFORMING = (
 #: A root the committed set names, and one it does not.  Taken from the
 #: artifact's own vocabulary rather than invented, so a claim about the
 #: *composed* gate is a claim about the deployment's set.
-_LEGAL_THEME = "order-flow-imbalance"
+_LEGAL_THEME = "basis-premium"
 _ILLEGAL_THEME = "sub-30-minute-liquidity-taking"
 
 #: A mechanism the committed denylist names as dead.  Taken from the artifact's
@@ -624,10 +624,10 @@ def test_building_the_theme_gate_carries_the_committed_set() -> None:
     app = create_app(MEMBER_SRC, registry=Registration())
     gate = app.get(member.THEMES_COMPONENT_NAME)
     assert gate is not None
-    # A non-None component carrying six slugs is proof the committed artifact
+    # A non-None component carrying nine slugs is proof the committed artifact
     # loaded — the member's builder compiles it, so there is no unconfigured
     # state a caller could confuse with a set that admits nothing.
-    assert len(gate.themes) == 6
+    assert len(gate.themes) == 9
     assert gate.covers(_LEGAL_THEME) and not gate.covers(_ILLEGAL_THEME)
 
 

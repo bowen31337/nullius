@@ -4,9 +4,10 @@ app_spec.xml: *"System rejects a proposal whose theme root falls outside the
 configured legal set, which returns an illegal_theme error message."*
 docs/alpha-engine-prd.md §9 supplies the set and why it is *configured* —
 *"Choosing the space is the highest-value human input in the system, and it
-should be encoded as the set of legal ``theme_root`` values"* — with §9.3
-listing the initial six.  The node table carries the value it protects
-(docs/nullius-tech-architecture.md §9.1: ``theme_root TEXT NOT NULL``).
+should be encoded as the set of legal ``theme_root`` values"* — with §9.3 v2
+(owner-approved 2026-10-13) listing the nine guided roots.  The node table
+carries the value it protects (docs/nullius-tech-architecture.md §9.1:
+``theme_root TEXT NOT NULL``).
 
 Each claim in that sentence is tested separately, because a law that satisfied
 any three of them would be a different and worse feature:
@@ -34,7 +35,7 @@ implementation would be wrong:
 
 * **exact membership, not prefix** — the sandbox's import allowlist admits a
   term and everything under it, and a theme set copied from that shape would
-  admit ``order-flow-imbalance-v2`` on the ``order-flow-imbalance`` entry,
+  admit ``basis-premium-v2`` on the ``basis-premium`` entry,
   letting a submission widen the hypothesis space PRD §9 reserves to the
   human;
 * **this is not §9.4** — feature 213's "structurally dead at retail scale" is
@@ -69,8 +70,11 @@ from signal_agent import (
 #: A legal root, taken from the committed artifact rather than written as a
 #: literal here: several claims below are about *the document's own* set, and a
 #: constant that happened to name a slug the document later dropped would make
-#: "the set admits it" a claim about this file instead.
-LEGAL_THEME = "order-flow-imbalance"
+#: "the set admits it" a claim about this file instead.  PRD §9.3 v2's second
+#: theme (``basis-premium``) rather than its first, deliberately: a near-miss
+#: test below wants a slug that is neither the document's first nor its last
+#: entry.
+LEGAL_THEME = "basis-premium"
 
 #: An illegal root of the shape §9.4 describes — *"anything with a holding
 #: period under ~30 minutes taking liquidity"*.  Deliberately a plausible
@@ -86,43 +90,55 @@ ILLEGAL_THEME = "sub-30-minute-liquidity-taking"
 def test_the_committed_set_is_the_document_the_feature_names() -> None:
     themes = load_legal_themes(COMMITTED_LEGAL_THEMES)
     assert themes.kind == LEGAL_THEMES_POLICY_KIND == "signal-agent-legal-themes"
-    # PRD §9.3's initial set is six themes; the number is asserted because a
-    # seventh arriving unnoticed is a widened hypothesis space, which is the
+    # PRD §9.3 v2's guided set is nine themes; the number is asserted because a
+    # tenth arriving unnoticed is a widened hypothesis space, which is the
     # one edit PRD §9 says must be deliberate.
-    assert len(themes) == 6
+    assert len(themes) == 9
 
 
-def test_the_committed_set_holds_prds_nine_three_six() -> None:
-    # Each slug is the machine spelling of one of §9.3's six entries, and each
-    # title is that section's own wording.  Asserted as a set of pairs rather
-    # than by index so a reordering of the document is not a failure — the
-    # order is asserted separately, where it is the claim.
+def test_the_committed_set_holds_prds_nine_three_nine() -> None:
+    # Each slug is the machine spelling of one of §9.3 v2's nine entries, and
+    # each title is that section's own wording.  Asserted as a set of pairs
+    # rather than by index so a reordering of the document is not a failure —
+    # the order is asserted separately, where it is the claim.
     themes = load_legal_themes(COMMITTED_LEGAL_THEMES)
     listed = {(slug, themes.title(slug)) for slug in themes}
     assert listed == {
         (
-            "cross-sectional-momentum-reversal",
-            "Cross-sectional momentum and short-term reversal, small/mid-cap universe",
+            "funding-crowding",
+            "Persistent high funding means crowded longs, which underperform",
         ),
         (
-            "order-flow-imbalance",
-            "Order-flow imbalance and microstructure features from the free L2 feed",
+            "basis-premium",
+            "A wide perpetual premium over spot mean-reverts",
         ),
         (
-            "borrow-rate-funding-state",
-            "Borrow-rate and funding-state conditioning",
+            "oi-price-divergence",
+            "Open interest against price; squeezes and fragile leverage",
         ),
         (
-            "volatility-state-dispersion",
-            "Volatility-state and dispersion regimes",
+            "positioning-contrarian",
+            "Retail long/short extremes, and top traders against the crowd",
         ),
         (
-            "mechanical-calendar-events",
-            "Mechanical calendar and event effects",
+            "taker-flow-persistence",
+            "Sustained aggressive buying continues",
         ),
         (
-            "cross-venue-state-divergence",
-            "Cross-asset and cross-venue state divergence (state, not price)",
+            "low-volatility",
+            "Low-volatility coins outperform",
+        ),
+        (
+            "beta-to-btc",
+            "Betting against BTC beta",
+        ),
+        (
+            "attention-volume",
+            "Abnormal-volume spikes unwind",
+        ),
+        (
+            "intermediate-momentum",
+            "30-90-day momentum that skips the last week; the control",
         ),
     }
 
@@ -132,8 +148,8 @@ def test_the_slugs_are_in_the_documents_own_order() -> None:
     # and a refusal that listed the set alphabetically would read differently
     # from the file an operator opens to widen it.
     themes = load_legal_themes(COMMITTED_LEGAL_THEMES)
-    assert themes.slugs()[0] == "cross-sectional-momentum-reversal"
-    assert themes.slugs()[-1] == "cross-venue-state-divergence"
+    assert themes.slugs()[0] == "funding-crowding"
+    assert themes.slugs()[-1] == "intermediate-momentum"
     assert themes.slugs() != tuple(sorted(themes.slugs()))
 
 
@@ -143,7 +159,7 @@ def test_the_titles_are_the_prds_wording_not_this_members_prose() -> None:
     # diffed against each other by eye.
     themes = load_legal_themes(COMMITTED_LEGAL_THEMES)
     assert themes.title(LEGAL_THEME) == (
-        "Order-flow imbalance and microstructure features from the free L2 feed"
+        "A wide perpetual premium over spot mean-reverts"
     )
     assert themes.title(ILLEGAL_THEME) is None
     assert themes.title(None) is None
@@ -269,6 +285,173 @@ def test_the_committed_artifact_is_the_json_file_beside_the_law() -> None:
     )
 
 
+# -- the brief and the construction rules (v2) -------------------------------
+
+
+def test_every_committed_theme_carries_a_well_formed_brief() -> None:
+    # PRD §9.3 v2's whole point: every guided root states what to test, not
+    # only where it may be opened.  Each of the four fields is asserted
+    # non-blank because a brief with a hole in one of them would render that
+    # hole into the authoring prompt as silence about territory nobody
+    # stated.
+    themes = load_legal_themes(COMMITTED_LEGAL_THEMES)
+    for slug in themes:
+        brief = themes.brief(slug)
+        assert brief is not None, slug
+        assert set(brief) == {"mechanism", "inputs", "expected_sign", "notes"}, slug
+        for key, value in brief.items():
+            assert isinstance(value, str) and value.strip(), (slug, key)
+
+
+def test_the_brief_is_none_for_no_brief_or_an_unknown_slug() -> None:
+    themes = load_legal_themes(COMMITTED_LEGAL_THEMES)
+    assert themes.brief(ILLEGAL_THEME) is None
+    assert themes.brief(None) is None
+    assert themes.brief(7) is None
+
+
+def test_the_committed_construction_rules_are_the_docs_five() -> None:
+    # Five shared rules, transcribed in substance from
+    # docs/hypothesis-space/themes-v2.md's "Shared construction rules"
+    # section — asserted by count and by a fragment of each so a sixth
+    # arriving unnoticed, or one silently dropped, both fail here.
+    themes = load_legal_themes(COMMITTED_LEGAL_THEMES)
+    rules = themes.construction_rules()
+    assert isinstance(rules, tuple)
+    assert len(rules) == 5
+    assert all(isinstance(rule, str) and rule.strip() for rule in rules)
+    assert "cross-sectionally" in rules[0]
+    assert "Float64" in rules[-1]
+
+
+def test_an_entry_with_no_brief_is_legal_and_reads_as_none() -> None:
+    # The document's decision to guide a theme and the document's decision to
+    # admit it are separate: a slug the human admitted but has not (yet)
+    # been given a brief for is still inside the legal set — the state a v1
+    # slug or a deployment's own ``NULLIUS_LEGAL_THEMES`` entry is in.
+    themes = compile_legal_themes(
+        {
+            "policy": LEGAL_THEMES_POLICY_KIND,
+            "themes": [{"slug": "order-flow", "title": "Order flow"}],
+        }
+    )
+    assert themes.covers("order-flow")
+    assert themes.brief("order-flow") is None
+
+
+def test_a_document_with_no_construction_rules_is_legal_and_reads_as_empty() -> None:
+    themes = compile_legal_themes(
+        {
+            "policy": LEGAL_THEMES_POLICY_KIND,
+            "themes": [{"slug": "order-flow", "title": "Order flow"}],
+        }
+    )
+    assert themes.construction_rules() == ()
+
+
+def test_a_brief_missing_one_of_the_four_keys_is_refused() -> None:
+    for missing in ("mechanism", "inputs", "expected_sign", "notes"):
+        brief = {
+            "mechanism": "m",
+            "inputs": "i",
+            "expected_sign": "s",
+            "notes": "n",
+        }
+        del brief[missing]
+        with pytest.raises(ThemeSetError) as raised:
+            compile_legal_themes(
+                {
+                    "policy": LEGAL_THEMES_POLICY_KIND,
+                    "themes": [
+                        {
+                            "slug": "order-flow",
+                            "title": "Order flow",
+                            "brief": brief,
+                        }
+                    ],
+                }
+            )
+        assert "missing" in str(raised.value)
+        assert missing in str(raised.value)
+
+
+def test_a_brief_field_that_is_not_a_string_is_refused() -> None:
+    brief = {
+        "mechanism": "m",
+        "inputs": "i",
+        "expected_sign": "s",
+        "notes": 7,
+    }
+    with pytest.raises(ThemeSetError) as raised:
+        compile_legal_themes(
+            {
+                "policy": LEGAL_THEMES_POLICY_KIND,
+                "themes": [
+                    {"slug": "order-flow", "title": "Order flow", "brief": brief}
+                ],
+            }
+        )
+    assert "must be a non-empty string" in str(raised.value)
+
+
+def test_a_brief_field_that_is_blank_is_refused() -> None:
+    brief = {
+        "mechanism": "m",
+        "inputs": "i",
+        "expected_sign": "   ",
+        "notes": "n",
+    }
+    with pytest.raises(ThemeSetError):
+        compile_legal_themes(
+            {
+                "policy": LEGAL_THEMES_POLICY_KIND,
+                "themes": [
+                    {"slug": "order-flow", "title": "Order flow", "brief": brief}
+                ],
+            }
+        )
+
+
+def test_a_brief_that_is_not_a_mapping_is_refused() -> None:
+    with pytest.raises(ThemeSetError):
+        compile_legal_themes(
+            {
+                "policy": LEGAL_THEMES_POLICY_KIND,
+                "themes": [
+                    {
+                        "slug": "order-flow",
+                        "title": "Order flow",
+                        "brief": "not a mapping",
+                    }
+                ],
+            }
+        )
+
+
+def test_construction_rules_that_is_not_a_list_is_refused() -> None:
+    with pytest.raises(ThemeSetError) as raised:
+        compile_legal_themes(
+            {
+                "policy": LEGAL_THEMES_POLICY_KIND,
+                "construction_rules": "not a list",
+                "themes": [{"slug": "order-flow", "title": "Order flow"}],
+            }
+        )
+    assert "construction_rules" in str(raised.value)
+
+
+def test_a_construction_rule_that_is_not_a_non_empty_string_is_refused() -> None:
+    for bad_rules in ([7], [""], ["   "], [None]):
+        with pytest.raises(ThemeSetError):
+            compile_legal_themes(
+                {
+                    "policy": LEGAL_THEMES_POLICY_KIND,
+                    "construction_rules": bad_rules,
+                    "themes": [{"slug": "order-flow", "title": "Order flow"}],
+                }
+            )
+
+
 # -- rejecting a root outside the set ----------------------------------------
 
 
@@ -321,7 +504,7 @@ def test_the_admitted_root_is_returned_unmodified(gate: SignalThemeGate) -> None
     # theme_root is the value §9.1's node row persists, so a gate that
     # lowercased or stripped a root "into conformance" would produce a row
     # whose stored theme disagrees with the one the set was consulted about.
-    exact = "order-flow-imbalance"
+    exact = "basis-premium"
     assert gate.admit(exact).theme == exact
 
 
@@ -329,14 +512,16 @@ def test_a_near_miss_spelling_is_a_different_theme(gate: SignalThemeGate) -> Non
     # Membership is exact, not prefix and not case-folded.  A set copied from
     # the sandbox import allowlist's prefix coverage would admit everything
     # below an entry, which is how a submission would widen the hypothesis
-    # space PRD §9 reserves to the human.
+    # space PRD §9 reserves to the human.  ``oi-price-divergence`` is a legal
+    # three-segment slug, so both a shorter prefix and a two-segment prefix
+    # are near-misses to check.
     for near_miss in (
-        "order-flow-imbalance-v2",
-        "Order-Flow-Imbalance",
-        " order-flow-imbalance",
-        "order-flow-imbalance ",
-        "order-flow",
-        "order",
+        "oi-price-divergence-v2",
+        "Oi-Price-Divergence",
+        " oi-price-divergence",
+        "oi-price-divergence ",
+        "oi-price",
+        "oi",
     ):
         admission = gate.admit(near_miss)
         assert not admission.admitted, near_miss
@@ -353,7 +538,7 @@ def test_a_value_that_is_not_a_theme_reports_its_own_reason(
     # the discipline feature 205's `not-source` and `not-conforming` sentences
     # keep — the two verdicts differ both to a caller branching on the returned
     # value and to an operator grepping the log.
-    for not_a_theme in (None, 7, b"order-flow-imbalance", "", "   "):
+    for not_a_theme in (None, 7, b"basis-premium", "", "   "):
         admission = gate.admit(not_a_theme)
         assert not admission.admitted, not_a_theme
         assert admission.reason is ThemeReason.NOT_A_THEME, not_a_theme
@@ -488,7 +673,7 @@ def test_covers_answers_the_same_question_admit_answers(
     # The read side and the judgement must not disagree: a deployment that
     # asked `covers` before submitting would otherwise be told a theme was
     # legal and then have its proposal refused.
-    for theme in (LEGAL_THEME, ILLEGAL_THEME, "order-flow-imbalance-v2", None, 7):
+    for theme in (LEGAL_THEME, ILLEGAL_THEME, "basis-premium-v2", None, 7):
         assert gate.covers(theme) == gate.admit(theme).admitted, theme
 
 
