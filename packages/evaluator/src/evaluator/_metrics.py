@@ -158,6 +158,37 @@ unchanged, since turnover is a fraction of the book, not a cost. The
 default, ``cost_per_unit_traded=0.0``, charges nothing and reproduces every
 figure this module computed before the parameter existed.
 
+**Beta-neutral legs are an optional rescale of the same weights.**  The
+dollar-neutral book (``w_i = z_i / Σ|z_j|``) is net-zero but not benchmark
+beta-neutral: a book tilted toward low-beta names on the long side and
+high-beta names on the short side (or the reverse) carries a residual
+market-beta exposure that is not the signal's edge.  :func:`compute_node_metrics`
+accepts an optional, keyword-only ``betas`` (``{date: {symbol: beta}}``); when
+given, each date's book is split into its long leg (``w > 0``) and short leg
+(``w < 0``), and the symbols either leg has a beta for are weight-averaged
+into ``β_L`` and ``β_S`` (``Σ w·β / Σ w`` over the rated symbols of that leg —
+well-defined for the short leg too, since a negative numerator over a negative
+denominator is the ordinary positive weighted mean of the shorted names'
+betas). The rated symbols of each leg are then rescaled so the *whole* leg
+(rated weight plus whatever unrated weight it already carries, which is left
+untouched) reaches gross ``gl`` for the long leg and ``1 − gl`` for the short,
+with ``gl = β_S / (β_L + β_S)`` — the split that makes ``gl·β_L = (1 − gl)·β_S``,
+so the book's net beta (``Σ w·β`` over the rated symbols) is exactly zero
+when every symbol in the book is rated, and total gross exposure is still 1
+either way, because the two legs' targets still sum to 1 and the unrated
+weight moved from nowhere. A date falls back to the plain weights — no
+rescale — whenever the split cannot be done: either leg has no rated
+symbols (``β_L`` or ``β_S`` would be a division by zero), ``β_L + β_S ≤ 0``
+(the split ``gl`` would be undefined or outside ``[0, 1]``), or the unrated
+weight already parked in a leg exceeds that leg's target gross (the rated
+symbols would have to carry negative gross to compensate, which would flip
+their sign). The rescaled weights feed the book return, the turnover and the
+COST-1 turnover charge exactly as the plain weights did — cost reflects what
+the beta-neutral book actually trades — while ``ic_mean`` and ``ic_tstat`` are
+unchanged, since the coefficient is rank-based on the scores, not the
+weights. The default, ``betas=None``, never attempts a rescale and reproduces
+every figure this module computed before the parameter existed.
+
 **Absence is not zero**, three times over.  A horizon the priced panel does not
 cover carries no metric — a panel that covers no horizon at all is refused
 outright (nothing measured, no metrics to store), and a horizon with fewer than
@@ -519,11 +550,66 @@ class NodeMetrics:
         )
 
 
+def _beta_neutral_weights(
+    weights: Mapping[str, float], beta_row: Mapping[str, float]
+) -> Mapping[str, float]:
+    """Rescale one date's book so its long and short legs carry equal beta.
+
+    ``weights`` is the date's plain dollar-neutral book (``w_i = z_i / Σ|z_j|``,
+    gross 1); ``beta_row`` is whatever subset of its symbols a beta was
+    supplied for that date (possibly empty). See the module docstring for the
+    ``β_L``, ``β_S`` and ``gl`` derivation. Returns ``weights`` unchanged —
+    the fallback — whenever either leg has no rated symbol, ``β_L + β_S`` is
+    not strictly positive, or the unrated weight already parked in a leg
+    would leave that leg's rated symbols a non-positive gross to carry;
+    otherwise returns a new mapping with the rated symbols of each leg scaled
+    and every other symbol (unrated, or already exactly 0) carried over as-is.
+    """
+    long_syms = [symbol for symbol, w in weights.items() if w > 0.0]
+    short_syms = [symbol for symbol, w in weights.items() if w < 0.0]
+    rated_long = [symbol for symbol in long_syms if symbol in beta_row]
+    rated_short = [symbol for symbol in short_syms if symbol in beta_row]
+    if not rated_long or not rated_short:
+        return weights
+    long_weight_sum = math.fsum(weights[symbol] for symbol in rated_long)
+    short_weight_sum = math.fsum(weights[symbol] for symbol in rated_short)
+    beta_l = (
+        math.fsum(weights[symbol] * beta_row[symbol] for symbol in rated_long)
+        / long_weight_sum
+    )
+    beta_s = (
+        math.fsum(weights[symbol] * beta_row[symbol] for symbol in rated_short)
+        / short_weight_sum
+    )
+    if beta_l + beta_s <= 0.0:
+        return weights
+    gl = beta_s / (beta_l + beta_s)
+    long_unrated = math.fsum(
+        weights[symbol] for symbol in long_syms if symbol not in beta_row
+    )
+    short_unrated = -math.fsum(
+        weights[symbol] for symbol in short_syms if symbol not in beta_row
+    )
+    long_target = gl - long_unrated
+    short_target = (1.0 - gl) - short_unrated
+    if long_target <= 0.0 or short_target <= 0.0:
+        return weights
+    scale_long = long_target / long_weight_sum
+    scale_short = short_target / (-short_weight_sum)
+    rescaled = dict(weights)
+    for symbol in rated_long:
+        rescaled[symbol] = weights[symbol] * scale_long
+    for symbol in rated_short:
+        rescaled[symbol] = weights[symbol] * scale_short
+    return rescaled
+
+
 def compute_node_metrics(
     returns: PostCostReturns,
     scores: Mapping[dt.date | str, Mapping[str, float]],
     *,
     cost_per_unit_traded: float = 0.0,
+    betas: Mapping[dt.date, Mapping[str, float]] | None = None,
 ) -> NodeMetrics:
     """Compute the four node scalars — ic_mean, ic_tstat, ir_standalone, turnover.
 
@@ -554,10 +640,22 @@ def compute_node_metrics(
     :attr:`NodeMetrics.ir_standalone` are unchanged from before the parameter
     existed.
 
+    ``betas`` (keyword-only, default ``None``) is ``{date: {symbol: beta}}``;
+    when given, each date's book is rescaled so its long and short legs carry
+    equal benchmark beta — see the module docstring and
+    :func:`_beta_neutral_weights` for the ``β_L``, ``β_S`` and ``gl``
+    derivation and the fallback to the plain weights on a degenerate split.
+    The rescaled weights are what feed the book return, the turnover and the
+    turnover cost charge; ``ic_mean`` and ``ic_tstat`` are unaffected, since
+    the coefficient is rank-based on the scores. The default, ``None``, never
+    attempts a rescale and reproduces every figure this module computed
+    before the parameter existed.
+
     Raises :class:`~evaluator.EvaluatorMetricsError`, each with its reason (see
     ``_errors``): a ``returns`` that is not step 7's own result; a ``scores``
     mapping that is malformed, empty, or carries a non-finite value; a
-    ``cost_per_unit_traded`` that is negative or not finite; a panel that
+    ``cost_per_unit_traded`` that is negative or not finite; a ``betas``
+    mapping that is malformed or carries a non-finite value; a panel that
     covers no horizon at all (nothing measured); a horizon with fewer than
     two dates (a t-statistic over one date names a zero standard error and a
     fabricated infinity); and — via the record — a hand-built metrics whose
@@ -654,6 +752,45 @@ def compute_node_metrics(
         if inner:
             validated[day] = MappingProxyType(inner)
 
+    validated_betas: dict[dt.date, Mapping[str, float]] = {}
+    if betas is not None:
+        if not isinstance(betas, Mapping):
+            raise EvaluatorMetricsError(
+                "betas must map rebalance date to {symbol: beta}, got "
+                f"{type(betas).__name__}"
+            )
+        for day, beta_row in betas.items():
+            if not isinstance(day, dt.date) or isinstance(day, dt.datetime):
+                raise EvaluatorMetricsError(
+                    f"betas must be keyed by calendar dates, got {day!r}"
+                )
+            if not isinstance(beta_row, Mapping):
+                raise EvaluatorMetricsError(
+                    f"betas for {day.isoformat()} must map symbol to a beta, "
+                    f"got {type(beta_row).__name__}"
+                )
+            inner_betas: dict[str, float] = {}
+            for symbol, value in beta_row.items():
+                if not isinstance(symbol, str) or not symbol:
+                    raise EvaluatorMetricsError(
+                        f"betas for {day.isoformat()} must be keyed by "
+                        f"non-empty symbol names, got {symbol!r}"
+                    )
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise EvaluatorMetricsError(
+                        f"the beta for {symbol!r} on {day.isoformat()} must "
+                        f"be a number, got {value!r}"
+                    )
+                number = float(value)
+                if not math.isfinite(number):
+                    raise EvaluatorMetricsError(
+                        f"the beta for {symbol!r} on {day.isoformat()} is not "
+                        f"finite ({value!r}); a NaN or ±inf would reach the "
+                        "book's weights dressed as a measurement"
+                    )
+                inner_betas[symbol] = number
+            validated_betas[day] = MappingProxyType(inner_betas)
+
     horizon = _metrics_horizon(returns)
     series = returns.series[horizon]
     per_date_ic: dict[dt.date, float] = {}
@@ -692,6 +829,8 @@ def compute_node_metrics(
                 "rather than dividing by zero"
             )
         weights = {symbol: score_row[symbol] / gross for symbol in book_symbols}
+        if betas is not None:
+            weights = _beta_neutral_weights(weights, validated_betas.get(day, {}))
         per_date_weights[day] = weights
         per_date_return[day] = math.fsum(
             weights[symbol] * returns_row[symbol] for symbol in book_symbols
