@@ -1,0 +1,98 @@
+<bug_spec>
+  <!-- COST-1. Found 2026-10-13 while scoping the perp instrument.
+
+       _cost_schedule_from_context (orchestrator/_evaluate.py ~:746) quotes
+       the same taker fee for every (date, symbol), and apply_costs subtracts
+       it from each symbol's return. The book in compute_node_metrics
+       (evaluator/_metrics.py ~:620-640) weights by w_i = z_i / Σ|z_j|, and
+       the rank z-scores are centered (_normalize.py ~:255), so Σw = 0 and the
+       charge cancels: Σ w(r − f) = Σ w r. Turnover is measured
+       (~:700-715) but never multiplied by a fee.
+
+       So every "post-cost" figure since the cost-aware spec has been gross:
+       ir_standalone, cost_adjusted_ir, ir_tstat and the close-out oos_ir.
+       The four M2 pivots' RESULT files say "costs erase" without that ever
+       having been measured. PRD G1 asks for cost-adjusted out-of-sample IR.
+
+       Decision (author; PRD §2.3): charge fee × traded notional on each
+       date's book. Traded notional is Σ|w_d − w_{d−1}|, plus Σ|w_d| on the
+       first date (entry). Keep a gross figure as a diagnostic. Applies to
+       evaluations after the change; stored rows are not rewritten. -->
+
+  <bug index="1" shape="core" severity="critical"
+       touches_files="packages/evaluator/src/evaluator/_metrics.py,packages/evaluator/tests/test_metrics_turnover_cost.py">
+    <title>The dollar-neutral book's returns are never charged for turnover, so the uniform per-symbol fee cancels and every IR is gross</title>
+    <symptoms>A signal with turnover 0.9 per rebalance and one with 0.1 get the same ir_standalone when their gross books match. Changing the fee rate changes nothing in the node metrics.</symptoms>
+    <reproduction_steps>
+      Call compute_node_metrics on a priced panel where apply_costs charged 10 bps uniformly. Use two score paths with identical gross books: one constant ranks, one alternating ranks. ir_standalone and the book returns are identical.
+    </reproduction_steps>
+    <expected>
+      - compute_node_metrics gains a keyword-only argument,
+        cost_per_unit_traded: float = 0.0, a fraction of traded notional
+        (0.001 is 10 bps). A negative or non-finite value raises
+        EvaluatorMetricsError.
+      - Each date's book return is the gross book return minus
+        cost_per_unit_traded × traded_d. traded_d is Σ|w_d − w_prev|, where
+        w_prev is the previous date's weights (absent symbols are 0). On the
+        first book date, traded_d is Σ|w_d|.
+      - book_returns, ir_standalone and everything derived from them are
+        net. turnover keeps its definition (0.5·Σ|Δw|).
+      - The default 0.0 reproduces today's figures exactly, so existing
+        evaluator tests pass unchanged.
+      - The module docstring states the formula and this spec's evidence: the
+        uniform charge cancels in a centered book.
+      - test_metrics_turnover_cost.py covers:
+        - the reproduction above: with a cost, the high-turnover path's IR is
+          lower by the expected amount
+        - a hand-computed three-date example, including the entry charge
+        - cost 0 equals the old figures
+        - negative and NaN costs are refused
+        It passes under pytest-xdist.
+    </expected>
+    <actual>Root cause: the cost is charged per symbol, but in a dollar-neutral book it cancels. The traded-notional charge belongs where the weights exist, and that is in compute_node_metrics.</actual>
+    <constraints>
+      Only the two listed files change
+      NodeMetrics' fields and their validation are unchanged
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="critical" depends_on="1"
+       touches_files="packages/orchestrator/src/orchestrator/_evaluate.py,packages/orchestrator/tests/test_evaluate_turnover_cost.py,packages/orchestrator/tests/test_evaluate.py,packages/orchestrator/tests/test_post_cost_tstat.py">
+    <title>evaluate_node and evaluate_on_dates never pass the venue fee to the book, so ir_tstat, cost_adjusted_ir and the close-out oos_ir are gross</title>
+    <symptoms>A campaign's post-cost selection and close-out oos_ir are blind to turnover. The four M2 pivots' "post-cost" verdicts were gross.</symptoms>
+    <reproduction_steps>
+      Evaluate one node twice over the same context, once with the fee schedule as configured and once with taker 0 bps. ir_tstat and cost_adjusted_ir are identical.
+    </reproduction_steps>
+    <expected>
+      - Both compute_node_metrics call sites in _evaluate.py (evaluate_node
+        ~:1397 and evaluate_on_dates ~:1644) pass
+        cost_per_unit_traded = context.cost_schedule.fee_fraction(TAKER),
+        the same rate _cost_schedule_from_context quotes.
+      - ir_tstat, cost_adjusted_ir, the ScoreRecord and the node row are
+        therefore net of turnover. Close-out oos_ir, which goes through
+        evaluate_on_dates, is net as well.
+      - Diagnostics: the node_evaluated event's score and the
+        evaluate_on_dates result also carry ir_tstat_gross, computed with
+        cost_per_unit_traded=0.0 over the same inputs.
+      - The per-symbol apply_costs charge is unchanged. A comment at the
+        schedule says it cancels in a centered book and that the turnover
+        charge is the binding cost.
+      - test_evaluate_turnover_cost.py covers:
+        - the reproduction: with 10 bps, ir_tstat is below ir_tstat_gross
+          for a turnover-bearing signal
+        - a 0 bps schedule gives equal figures
+        - evaluate_on_dates' result is net and carries the gross figure
+        It passes under pytest-xdist.
+      - Existing orchestrator tests are updated only where they pin a figure
+        the charge changes; each keeps its intent. The orchestrator member
+        suite (run at -n 2) and root tests/ pass.
+    </expected>
+    <actual>Root cause: the evaluation pipeline hands compute_node_metrics no cost. The fee is applied only as a uniform per-symbol charge, and that cancels.</actual>
+    <constraints>
+      closeout.py, _financial_eval.py and _process_pool.py are not edited; they reach the fix through evaluate_on_dates and evaluate_node
+      No migration; stored rows are not rewritten
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
