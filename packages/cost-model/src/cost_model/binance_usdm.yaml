@@ -1,0 +1,32 @@
+# The USD-M perpetual fee schedule: additions_spec_research_book_v2.xml.
+# A research book of USDT-margined perpetuals (instrument: "perp" in the
+# evaluation config) points NULLIUS_COST_MODEL_PATH here. The spot default
+# (cost_model.yaml) is unchanged.
+#
+# Rates: Binance USD-M futures VIP0, taker 0.05% and maker 0.02%. These match
+# the live venue's own contract fixture
+# (packages/router/tests/fixtures/bingx_vst/contracts.json: takerFeeRate
+# 0.0005, makerFeeRate 0.0002). There is no discount token. Funding is carry,
+# not a fee: the evaluator charges it per symbol from the funding stream.
+cost_model:
+  version: "2026.10.1"
+  venue: binance_usdm
+
+  fees:
+    taker_bps: 5.0
+    maker_bps: 2.0
+
+  fill_model:
+    passive:
+      require_trade_through: true
+      queue_position_penalty_bps: 1.5
+      fill_probability_model: exp_decay_vs_queue_depth
+    aggressive:
+      walk_book: true
+
+  latency:
+    source: measured_from_shadow
+    distribution: empirical_p50_p95_p99
+
+  borrow:
+    source: exchange_api

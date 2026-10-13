@@ -1,0 +1,200 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — research book v2: beta-neutral legs and the USD-M perpetual instrument (funding carry, perp fees)</project_name>
+  <addition_summary>
+    Five pre-registered M2 tests failed. COST-1 made the book net of
+    turnover. The in-sample IC→book diagnostic (appendix of
+    docs/preregistration/2026-10-13-m2-composite.RESULT.md) found two things
+    holding the book back:
+    - The research book is dollar-neutral but not beta-neutral. Low-vol's
+      book carries a −0.38 BTC beta, and neutralising it lifts its IR t from
+      0.69 to 1.11.
+    - The book is a spot book with no funding. The live venue (router, BingX
+      VST) trades USDT-M perpetual swaps, so research scores a different
+      instrument from the one the bot trades. PRD §2.3 names the perp
+      instrument, with funding as carry, as the next lever.
+    This spec adds two evaluation-config options, both defaulting to today's
+    behaviour:
+    - book.beta_neutral
+    - instrument: "perp" (perp closes from the futbars stream, funding
+      accrual charged per symbol, and a binance_usdm fee schedule)
+    It also shows the authoring agent what book and instrument it is scored
+    on.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / Polars / SQLite / pytest.</stack>
+    <test_baseline>main at fdc7662: gate 1666 passed; evaluator 577; orchestrator 628 passed 5 skipped; signal-agent 846.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md. A code map from 2026-10-14:
+      - evaluator/_metrics.py compute_node_metrics(returns, scores, *,
+        cost_per_unit_traded=0.0):
+        - weights w = z/Σ|z| (~:620-640), per-date book return, turnover
+          charge (COST-1)
+        - NodeMetrics' fields are fixed
+      - orchestrator/_context.py load_evaluation_context:
+        - parses the evaluation config, refusing unknown keys
+          (_refuse_unknown_keys ~:640) and adding keys with their own
+          validators (see _max_history_days, _evaluation_mode)
+        - context.closes is a lazy {symbol: {date: close}} over the bars
+          stream (_read_close ~:1447)
+        - context.cost_schedule comes from NULLIUS_COST_MODEL_PATH
+          (cost_model.config COST_MODEL_PATH_ENV)
+      - Everything downstream reads context.closes:
+        - snapshot_forward_returns / grid_forward_returns (_targets.py)
+        - align_targets
+        - closeout's _oos_target_endpoint, through evaluate_on_dates
+        - _financial_eval
+      - orchestrator/_evaluate.py:
+        - _cost_schedule_from_context (~:746) quotes a uniform taker fee per
+          (date, symbol). It cancels in a centered book (COST-1). A
+          non-uniform per-symbol charge does not cancel: Σ w(r − c) charges
+          a long w > 0 by c and pays a short by c, which is exactly perp
+          funding (longs pay positive funding).
+        - evaluate_node ~:1397 and evaluate_on_dates ~:1644 call
+          compute_node_metrics.
+      - The futbars stream: staging/futbars/symbol=S/date=D with fut_close
+        (rescaled to the spot price scale for 1000-contracts), keyed by the
+        spot symbol S. The funding stream: rows per day D with
+        funding_rate_sum over settlements in (D 00:00, D+1 00:00]
+        (ingest/derivs_backfill.py). A symbol with no perpetual has no rows.
+      - signal-agent _authoring_prompt.py _cost_awareness_part (~:345) reads
+        the evaluation context duck-typed.
+      - packages/cost-model/src/cost_model/binance_usdm.yaml (committed with
+        this spec) is the USD-M fee schedule: venue binance_usdm, taker 5 bps.
+      - The router's live venue: /openApi/swap/v2 perpetuals; the
+        contracts.json fixture has takerFeeRate 0.0005 and makerFeeRate
+        0.0002.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Book Construction">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/evaluator/src/evaluator/_metrics.py,packages/evaluator/tests/test_metrics_beta_neutral.py">
+        System scores a beta-neutral dollar-neutral book when per-symbol betas are supplied, so that compute_node_metrics returns a book whose long and short legs carry equal benchmark beta.
+        - compute_node_metrics gains a keyword-only argument, betas, of type
+          Mapping[date, Mapping[str, float]] | None, defaulting to None.
+          None reproduces today's figures exactly.
+        - With betas, each date's z-weights are split into a long leg
+          (w > 0) and a short leg (w &lt; 0). β_L is the weight-averaged beta of
+          the long leg and β_S that of the short leg, over the symbols with
+          a beta. The legs are rescaled to gross gl and 1 − gl, with
+          gl = β_S/(β_L + β_S), so gl·β_L = (1 − gl)·β_S and gross exposure
+          stays 1. Symbols without a beta that date keep their weight
+          unscaled. If β_L + β_S ≤ 0, or a leg is empty, the date falls back
+          to the plain weights, and NodeMetrics' existing fields do not
+          change shape.
+        - The rescaled weights feed the book return, the turnover and the
+          COST-1 turnover charge, so cost reflects what the book trades.
+          The IC is unchanged, because it is rank-based on scores.
+        - test_metrics_beta_neutral.py covers:
+          - a hand-computed two-date example
+          - the book beta (Σ w·β) is 0 within 1e-12 when every symbol has a
+            beta
+          - None equals today's figures
+          - the fallback on degenerate legs
+          - non-finite betas are refused with EvaluatorMetricsError
+          It passes under pytest-xdist. The evaluator member suite passes.
+      </feature>
+      <feature index="2" shape="core" depends_on="1"
+               touches_files="packages/orchestrator/src/orchestrator/_context.py,packages/orchestrator/src/orchestrator/_evaluate.py,packages/orchestrator/tests/test_book_beta_neutral.py">
+        System applies the configured beta-neutral book in every evaluation, so that a campaign with `"book": {"beta_neutral": true}` in its evaluation config returns node and close-out figures from the beta-neutral book.
+        - The evaluation config gains an optional book object:
+          {"beta_neutral": bool, "beta_window_days": int (default 60),
+          "beta_benchmark": str (default "BTCUSDT")}. Unknown keys inside it
+          are refused. When it is absent, book.beta_neutral is false and
+          behaviour is unchanged. The EvaluationContext carries it.
+        - When beta_neutral is on, the context provides point-in-time betas
+          for each evaluation date D. Each is the OLS slope of a symbol's
+          daily close-to-close returns on the benchmark's, over the
+          beta_window_days daily returns ending at D. They are read from
+          context.closes, so the instrument in force is used. No row after D
+          is read. A symbol needs at least 80% of the window's returns,
+          otherwise it has no beta for D. If the benchmark is absent, there
+          are no betas for D.
+        - evaluate_node and evaluate_on_dates pass betas to
+          compute_node_metrics, for both the net figures and the gross
+          diagnostic. Close-out oos_ir follows through evaluate_on_dates;
+          closeout.py is not edited.
+        - test_book_beta_neutral.py, over a tmp sealed snapshot, covers:
+          - a config with beta_neutral gives a node whose book beta is 0
+          - the betas are point-in-time (a planted future shock does not
+            change the beta at D)
+          - the absent block is unchanged
+          - an unknown key inside book is refused
+          It passes under pytest-xdist. The orchestrator member suite passes
+          (run at -n 2).
+      </feature>
+    </category>
+    <category name="Perpetual Instrument">
+      <feature index="3" shape="core" depends_on="2"
+               touches_files="packages/orchestrator/src/orchestrator/_context.py,packages/orchestrator/src/orchestrator/_evaluate.py,packages/orchestrator/tests/test_perp_instrument.py">
+        System evaluates signals as a book of USD-M perpetuals when the evaluation config says `"instrument": "perp"`, so that node and close-out figures return perp price returns net of funding carry and perp fees.
+        - The evaluation config gains an optional key, instrument, with
+          values "spot" (the default, unchanged behaviour) or "perp". Any
+          other value is refused.
+        - With "perp":
+          - context.closes is served from the futbars stream's fut_close,
+            keyed by the spot symbol, with the same lazy, point-in-time and
+            validation rules as the bars closes. The bars closes are not
+            read for returns.
+          - Forward returns, alignment, betas and close-out all follow,
+            because they read context.closes.
+        - Scoring universe: on each date, a scored symbol with no perp close
+          at D is dropped from the score vector before alignment. Dropped
+          symbols are counted in the evaluation's fail_detail-free
+          diagnostics, and never zero-filled. This replaces _align's refusal
+          for that case only.
+        - Funding carry: _cost_schedule_from_context adds, for each
+          (D, symbol), the sum of funding_rate_sum over the horizon's
+          holding days, D+1 to D+h. Under the ingest day rule, the
+          settlement at D+1 00:00 belongs to row D, so the window that
+          starts after the D-close entry begins at row D+1. A missing funding
+          row in the window counts 0 and is counted. With Σ w(r − c), longs
+          pay positive funding and shorts receive it. The uniform taker fee
+          stays as well, so COST-1's turnover charge remains the binding fee
+          cost.
+        - The deployment selects perp fees by pointing
+          NULLIUS_COST_MODEL_PATH at packages/cost-model/src/cost_model/binance_usdm.yaml (venue binance_usdm, taker 5 bps, maker 2 bps; committed with this spec, with its tests). If
+          "perp" is configured with a schedule whose venue does not end in
+          _usdm, the context refuses it, naming both.
+        - test_perp_instrument.py, over a tmp sealed snapshot with bars,
+          futbars and funding, covers:
+          - perp returns come from fut_close
+          - funding is charged with the right sign and window (a long in a
+            positive-funding coin earns less than its price return, and a
+            short earns more)
+          - a no-perp symbol is dropped, not refused
+          - the spot default is unchanged
+          - a mismatched venue is refused
+          It passes under pytest-xdist. The orchestrator member suite passes
+          (run at -n 2).
+      </feature>
+    </category>
+    <category name="Agent Contract">
+      <feature index="4" shape="core" depends_on=""
+               touches_files="packages/signal-agent/src/signal_agent/_authoring_prompt.py,packages/signal-agent/tests/test_prompt_book_instrument.py">
+        System tells the authoring agent which book and instrument it is scored on, so that the rendered prompt displays beta-neutral legs, perp funding carry and the per-unit-traded fee when they are configured.
+        - The cost_awareness section renders three new facts, read
+          duck-typed from the evaluation context (an absent attribute means
+          the spot and plain-book defaults):
+          - instrument: spot, or "USD-M perpetual; longs pay and shorts
+            receive funding over the holding period"
+          - book: "dollar-neutral", or "dollar- and BTC-beta-neutral (legs
+            rescaled to equal 60-day beta)"
+          - the fee per unit of traded notional, multiplied by Σ|Δw|
+          It adds one information-only line: for a perp book, persistent
+          funding differences are part of the return, and a beta-neutral
+          book removes market direction, so the signal must earn from
+          cross-sectional differences alone.
+        - Every other rendered section is byte-identical (a test compares
+          them).
+        - test_prompt_book_instrument.py covers:
+          - the perp plus beta-neutral rendering
+          - the default rendering
+          - the byte-identical other sections
+          It passes under pytest-xdist. The signal-agent member suite
+          passes.
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>
