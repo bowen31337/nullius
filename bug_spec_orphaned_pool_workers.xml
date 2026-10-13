@@ -1,0 +1,46 @@
+<bug_spec>
+  <!-- POOL-1. Found 2026-10-14 when the author stopped archK01's second launch
+       (campaign f61be0d7). Killing the campaign driver (SIGTERM to python -m
+       orchestrator.campaign and its op/uv parents) left the four
+       multiprocessing spawn workers of ProcessEvaluator (_process_pool.py) and
+       the resource tracker alive. They kept starting runsc sandboxes for queued
+       evaluations, with nobody to receive the results, until killed by PID.
+       Any operator stop, timeout(1) expiry or OOM kill of the driver leaks
+       sandboxes and CPU in the same way. Core shape, explicit touches_files. -->
+
+  <bug index="1" shape="core" severity="major"
+       touches_files="packages/orchestrator/src/orchestrator/_process_pool.py,packages/orchestrator/tests/test_process_pool_orphan_exit.py">
+    <title>ProcessEvaluator workers outlive a killed campaign driver and keep starting sandboxes</title>
+    <symptoms>After the campaign driver is killed, its spawn workers continue evaluating queued nodes, which start runsc sandboxes, until they are killed by hand.</symptoms>
+    <reproduction_steps>
+      Start a ProcessEvaluator with 2 workers from a child process. Submit evaluations that each run for several seconds. SIGKILL the child (the driver). Its workers stay alive and keep running.
+    </reproduction_steps>
+    <expected>
+      - _init_worker records the parent's pid when the worker starts, and
+        starts a daemon watchdog thread. Every 2 seconds the thread checks
+        whether the parent is gone: os.getppid() no longer equals the
+        recorded pid, or the parent's pid is not alive. If it is gone, the
+        worker ends at once with os._exit(..), with a nonzero code named in
+        a constant. This holds even mid-evaluation, so a sandbox subprocess
+        in progress is orphaned no further than the existing timeout allows.
+        On Linux the worker also sets PR_SET_PDEATHSIG (SIGTERM) through
+        prctl via ctypes. If that call is unavailable, it is skipped, and the
+        watchdog is the portable guarantee.
+      - Normal shutdown (the executor's shutdown) is unchanged. A worker
+        whose parent is alive is never stopped by the watchdog.
+      - test_process_pool_orphan_exit.py covers:
+        - the reproduction: a driver subprocess is SIGKILLed while its
+          workers run a sleep task, and every worker pid has gone within 10
+          seconds
+        - a live parent: the workers survive 5 seconds of idle time
+        It uses only a stub task (no sandbox and no snapshot) and passes
+        under pytest-xdist. The orchestrator member suite passes (run at
+        -n 2).
+    </expected>
+    <actual>Root cause: spawn workers have no link to the driver's lifetime. The executor cleans them up only through an orderly shutdown, which a signal or SIGKILL never runs.</actual>
+    <constraints>
+      Only the two listed files change
+      Do not edit docs/user-journeys/
+    </constraints>
+  </bug>
+</bug_spec>
