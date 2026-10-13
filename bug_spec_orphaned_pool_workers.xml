@@ -8,7 +8,7 @@
        Any operator stop, timeout(1) expiry or OOM kill of the driver leaks
        sandboxes and CPU in the same way. Core shape, explicit touches_files. -->
 
-  <bug index="1" shape="core" severity="major"
+  <bug index="1" shape="core" severity="high"
        touches_files="packages/orchestrator/src/orchestrator/_process_pool.py,packages/orchestrator/tests/test_process_pool_orphan_exit.py">
     <title>ProcessEvaluator workers outlive a killed campaign driver and keep starting sandboxes</title>
     <symptoms>After the campaign driver is killed, its spawn workers continue evaluating queued nodes, which start runsc sandboxes, until they are killed by hand.</symptoms>
