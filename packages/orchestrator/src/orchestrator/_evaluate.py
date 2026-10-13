@@ -137,7 +137,7 @@ import logging
 import math
 import sqlite3
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -402,6 +402,12 @@ class NodeEvaluation:
     #: is the common case at :data:`TRIPWIRES_GATE_DISCOVERY`'s default —
     #: a rejection recorded and flagged, not a node failure.
     tripwires_failed: tuple[str, ...] = ()
+    #: Diagnostic only, never persisted: ir_tstat recomputed with
+    #: cost_per_unit_traded=0.0 over the same priced panel and scores --
+    #: what score's own ir_tstat would have read before the venue fee was
+    #: wired into the book.  None on every failure path, since there is no
+    #: panel to recompute a gross figure from.
+    ir_tstat_gross: float | None = None
 
 
 # -- The materialize seam: reading the sealed mount for execute_signal ----------
@@ -760,6 +766,15 @@ def _cost_schedule_from_context(context: EvaluationContext) -> Any:
     listing or a delisting inside the horizon's span), and a quote naming a
     symbol a date never scored is exactly what
     :func:`evaluator._costs._check_charge_support` refuses.
+
+    This uniform per-symbol charge cancels in the node's own dollar-neutral
+    book (bug_spec_turnover_cost_charge, bug 1): the book weights sum to
+    zero, so ``Σ w_i f = f Σ w_i = 0`` regardless of ``f``. It is kept
+    anyway because :func:`evaluator.apply_costs` still prices the resident
+    book this node's own book is measured *marginal to*, where it is not
+    centered. The charge that actually prices this node's own book is the
+    turnover charge :func:`_turnover_fee_from_context` hands
+    ``compute_node_metrics`` at both call sites below.
     """
     from cost_model import TAKER
     from evaluator import CostQuote
@@ -777,6 +792,37 @@ def _cost_schedule_from_context(context: EvaluationContext) -> Any:
         )
 
     return charges
+
+
+def _turnover_fee_from_context(context: EvaluationContext) -> float:
+    """The taker fee charged on this node's own book's traded notional.
+
+    The same rate :func:`_cost_schedule_from_context` quotes to
+    ``apply_costs`` per symbol — read off the context's own resolved
+    :class:`~cost_model.FeeSchedule` rather than re-derived, so the two
+    seams can never quote two different numbers for the one fee the venue
+    configured — but handed to :func:`evaluator.compute_node_metrics`
+    instead, as ``cost_per_unit_traded``: that is the charge which actually
+    prices a dollar-neutral book, where the per-symbol charge above cancels.
+    """
+    from cost_model import TAKER
+
+    return context.cost_schedule.fee_fraction(TAKER)
+
+
+def _gross_ir_tstat(
+    priced: PostCostReturns, scores: Mapping[Any, Any]
+) -> float:
+    """``ir_tstat`` recomputed over the same panel with no turnover charge.
+
+    The diagnostic bug_spec_turnover_cost_charge's bug 2 asks for beside
+    every net figure: the same ``compute_node_metrics`` call the net figure
+    came from, with ``cost_per_unit_traded=0.0`` — the pre-fix reading —
+    so a caller comparing the two sees exactly what the venue fee cost this
+    node's own book.
+    """
+    gross = compute_node_metrics(priced, scores, cost_per_unit_traded=0.0)
+    return gross.ir_standalone * math.sqrt(gross.dates)
 
 
 # -- The cost-adjusted axis: the panel's own mean, restated from the horizon ----
@@ -1394,7 +1440,9 @@ def evaluate_node(
             node_id=node_id,
             cost_model=context.cost_model,
         )
-        metrics = compute_node_metrics(priced, scores)
+        metrics = compute_node_metrics(
+            priced, scores, cost_per_unit_traded=_turnover_fee_from_context(context)
+        )
         tripwire_outcome = run_tripwires(
             scores,
             {metrics.horizon: priced.series[metrics.horizon].values},
@@ -1439,6 +1487,7 @@ def evaluate_node(
 
     cost_adjusted_ir = _cost_adjusted_ir(priced, metrics)
     ir_tstat = metrics.ir_standalone * math.sqrt(metrics.dates)
+    ir_tstat_gross = _gross_ir_tstat(priced, scores)
 
     _persist_tripwire_verdicts(
         tripwire_outcome, node_id=node_id, database_url=context.database_url
@@ -1515,6 +1564,7 @@ def evaluate_node(
         fail_detail=fail_detail,
         flat_dates=flat_dates,
         tripwires_failed=tripwire_outcome.failed,
+        ir_tstat_gross=ir_tstat_gross,
     )
 
 
@@ -1558,6 +1608,30 @@ def _node_identity(database_url: str, node_id: str) -> tuple[str, int]:
     return campaign_id, depth
 
 
+class _OutOfSampleEvaluation(tuple):
+    """``(metrics, cost_adjusted_ir)``, with ``ir_tstat_gross`` riding along.
+
+    :func:`closeout.commit_oos` and :func:`_financial_eval`'s dream reader
+    both destructure this function's answer as
+    ``metrics, cost_adjusted_ir = evaluate_on_dates(...)`` — a contract this
+    class keeps by being, at heart, a plain two-element tuple (``__new__``
+    stores only ``metrics`` and ``cost_adjusted_ir`` as its two items, so
+    unpacking and ``len()`` see exactly two). ``ir_tstat_gross`` is an
+    instance attribute beside that tuple, never a third item, for a caller
+    that wants the diagnostic without either of those two files widening
+    what they unpack. (``tuple`` itself allows no non-empty ``__slots__``
+    on a subclass, so this one carries the ordinary instance ``__dict__``
+    a bare ``class Foo(tuple): pass`` already would.)
+    """
+
+    def __new__(
+        cls, metrics: NodeMetrics, cost_adjusted_ir: float, ir_tstat_gross: float
+    ) -> "_OutOfSampleEvaluation":
+        self = super().__new__(cls, (metrics, cost_adjusted_ir))
+        self.ir_tstat_gross = ir_tstat_gross
+        return self
+
+
 def evaluate_on_dates(
     node_id: str,
     code: str,
@@ -1596,9 +1670,12 @@ def evaluate_on_dates(
     function is handed only the node id.
 
     Answers ``(metrics, cost_adjusted_ir)`` — the measured
-    :class:`~evaluator.NodeMetrics` and the same cost-adjusted axis
-    :func:`_cost_adjusted_ir` restates onto a live node's row, computed here
-    and handed back rather than written anywhere.
+    :class:`~evaluator.NodeMetrics`, net of the venue's turnover charge, and
+    the same cost-adjusted axis :func:`_cost_adjusted_ir` restates onto a
+    live node's row, computed here and handed back rather than written
+    anywhere. The answer also carries ``ir_tstat_gross`` (see
+    :class:`_OutOfSampleEvaluation`) — the same figure with no turnover
+    charge, for a caller that wants to see what the fee cost this read.
 
     Every exception the chain raises — a window, a non-conforming score
     vector (:class:`SandboxExecutionError`), a gate or cost or metrics
@@ -1641,5 +1718,11 @@ def evaluate_on_dates(
         node_id=node_id,
         cost_model=context.cost_model,
     )
-    metrics = compute_node_metrics(priced, scores)
-    return metrics, _cost_adjusted_ir(priced, metrics)
+    metrics = compute_node_metrics(
+        priced, scores, cost_per_unit_traded=_turnover_fee_from_context(context)
+    )
+    return _OutOfSampleEvaluation(
+        metrics,
+        _cost_adjusted_ir(priced, metrics),
+        _gross_ir_tstat(priced, scores),
+    )
