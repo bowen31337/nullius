@@ -220,6 +220,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import http.client
 import io
 import json
 import math
@@ -295,6 +296,18 @@ DEFAULT_DELAY_SECONDS = 0.2
 #: How many times a 418/429 is retried (after its own Retry-After delay)
 #: before the symbol is refused.
 MAX_RETRIES = 5
+
+#: Socket timeout for one request. Without it a stalled connection blocks
+#: a worker thread forever.
+FETCH_TIMEOUT_SECONDS = 60.0
+
+#: Transport failures (a dropped connection, a reset, a timeout, a short
+#: read) are retried up to :data:`MAX_RETRIES` times with this doubling
+#: base delay, then refused as a :class:`BarsBackfillError` for that one
+#: request, so the caller records a failed period instead of the whole run
+#: dying on one bad socket.
+TRANSPORT_RETRY_BASE_SECONDS = 1.0
+_TRANSPORT_ERRORS = (OSError, http.client.HTTPException)
 
 #: Stablecoin bases excluded from ``--top N``: a stablecoin-to-USDT pair
 #: carries no price signal a momentum or mean-reversion study would want.
@@ -410,7 +423,7 @@ def urllib_fetch(
         url, headers={"User-Agent": "nullius-ingest/bars_backfill"}
     )
     try:
-        with urllib.request.urlopen(request) as response:
+        with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
             return HttpResponse(
                 status=response.status,
                 headers=dict(response.headers),
@@ -442,7 +455,7 @@ def urllib_archive_fetch(url: str) -> HttpResponse:
         url, headers={"User-Agent": "nullius-ingest/bars_backfill"}
     )
     try:
-        with urllib.request.urlopen(request) as response:
+        with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
             return HttpResponse(
                 status=response.status,
                 headers=dict(response.headers),
@@ -473,6 +486,27 @@ def _retry_after_seconds(headers: Mapping[str, str]) -> float:
     return 1.0
 
 
+def _fetch_with_transport_retry(
+    call: Callable[[], HttpResponse], *, sleep: Callable[[float], None], what: str
+) -> HttpResponse:
+    """Run ``call``, retrying a transport failure up to :data:`MAX_RETRIES` times.
+
+    An HTTP status is never a transport failure: the fetch seams return it
+    as an :class:`HttpResponse`, and the callers' status rules decide it.
+    """
+    attempt = 0
+    while True:
+        try:
+            return call()
+        except _TRANSPORT_ERRORS as exc:
+            attempt += 1
+            if attempt > MAX_RETRIES:
+                raise BarsBackfillError(
+                    f"{what}: transport failure persisted past {MAX_RETRIES} retries: {exc!r}"
+                ) from exc
+            sleep(TRANSPORT_RETRY_BASE_SECONDS * 2 ** (attempt - 1))
+
+
 def _request_json(
     fetch: BinanceFetch,
     path: str,
@@ -490,7 +524,7 @@ def _request_json(
     """
     attempt = 0
     while True:
-        response = fetch(path, params)
+        response = _fetch_with_transport_retry(lambda: fetch(path, params), sleep=sleep, what=what)
         sleep(DEFAULT_DELAY_SECONDS)
         if response.status == 200:
             try:
@@ -622,7 +656,7 @@ def _request_archive(
     """
     attempt = 0
     while True:
-        response = fetch(url)
+        response = _fetch_with_transport_retry(lambda: fetch(url), sleep=sleep, what=what)
         sleep(DEFAULT_DELAY_SECONDS)
         if response.status in (418, 429):
             attempt += 1
