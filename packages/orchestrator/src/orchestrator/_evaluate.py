@@ -152,7 +152,7 @@ import sqlite3
 import threading
 from collections.abc import Mapping, Sequence
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Final
@@ -173,6 +173,8 @@ from evaluator import (
     NodeMetrics,
     Oracle,
     PostCostReturns,
+    RawScoreVector,
+    SignalExecution,
     align_targets,
     apply_costs,
     compute_marginal_ir,
@@ -200,6 +202,7 @@ from ._charge import charge_failed_node, charge_node
 from ._context import (
     BARS_STREAM,
     DEFAULT_MAX_HISTORY_DAYS,
+    PERP_INSTRUMENT,
     EvaluationContext,
     compute_betas,
     signal_sandbox,
@@ -422,6 +425,14 @@ class NodeEvaluation:
     #: wired into the book.  None on every failure path, since there is no
     #: panel to recompute a gross figure from.
     ir_tstat_gross: float | None = None
+    #: How many ``(date, symbol)`` pairs :func:`_drop_unpriced_symbols`
+    #: dropped from the score vector before alignment, because the symbol
+    #: had no perp close at that date — ``context.instrument == "perp"``
+    #: only; always ``0`` for the spot default and on every failure path.
+    #: A fail_detail-free diagnostic, the same shape :attr:`flat_dates`
+    #: already takes: dropped, never zero-filled, and never itself a node
+    #: failure.
+    dropped_perp_symbols: int = 0
 
 
 # -- The materialize seam: reading the sealed mount for execute_signal ----------
@@ -789,23 +800,74 @@ def _cost_schedule_from_context(context: EvaluationContext) -> Any:
     centered. The charge that actually prices this node's own book is the
     turnover charge :func:`_turnover_fee_from_context` hands
     ``compute_node_metrics`` at both call sites below.
+
+    **With ``context.instrument == "perp"``, a funding carry is added beside
+    the uniform fee, per ``(date, symbol)``.**
+    additions_spec_research_book_v2.xml, the perp instrument feature: for a
+    rebalance date ``D`` and a horizon ``h`` (``request.horizon``, one
+    request per horizon — see :func:`evaluator.apply_costs`), the carry is
+    the sum of ``funding_rate_sum`` over the holding days ``D+1`` through
+    ``D+h`` (:func:`_funding_carry`). Unlike the uniform taker fee, this
+    term is *not* uniform across symbols, so it does not cancel in the
+    node's dollar-neutral book: ``Σ w_i (r_i − fee − carry_i)`` is what
+    :mod:`evaluator._metrics`'s ``compute_node_metrics`` actually reduces
+    (it reads :attr:`~evaluator.PostCostReturns` straight off this
+    schedule's quote), so a long in a positive-funding coin earns less than
+    its price return and a short earns more, exactly as a funded perpetual
+    position would. The uniform fee stays exactly as before — COST-1's
+    turnover charge remains the binding *fee* cost; this only adds the
+    carry a perpetual position was never subject to on the spot default.
     """
     from cost_model import TAKER
     from evaluator import CostQuote
 
     fee = context.cost_schedule.fee_fraction(TAKER)
+    # getattr, not context.instrument: a test may hand this function a bare
+    # duck-typed context carrying only cost_schedule (the same courtesy
+    # _materialize_from_context extends max_history_days), and those callers
+    # mean "today's spot default", which a missing attribute already is.
+    perp = getattr(context, "instrument", None) == PERP_INSTRUMENT
 
     def charges(request: Any) -> Any:
-        return CostQuote(
-            venue=request.venue,
-            version=request.version,
-            costs={
+        if not perp:
+            costs = {
                 day: dict.fromkeys(row, fee)
                 for day, row in request.gross_returns.items()
-            },
-        )
+            }
+        else:
+            costs = {
+                day: {
+                    symbol: fee + _funding_carry(context, symbol, day, request.horizon)
+                    for symbol in row
+                }
+                for day, row in request.gross_returns.items()
+            }
+        return CostQuote(venue=request.venue, version=request.version, costs=costs)
 
     return charges
+
+
+def _funding_carry(
+    context: EvaluationContext, symbol: str, day: dt.date, horizon: int
+) -> float:
+    """The funding settled over one holding window — ``D+1`` through ``D+h``.
+
+    additions_spec_research_book_v2.xml, the perp instrument feature: under
+    the ingest day rule (:mod:`nullius_ingest.derivs_backfill`), the
+    settlement at ``D+1`` 00:00 belongs to row ``D`` — the row a position
+    entered at the ``D``-close is already past the instant it was entered,
+    not after it — so the window that starts strictly after the entry
+    begins at row ``D+1``, not row ``D``. A missing funding row anywhere in
+    the window (no settlement sealed for that symbol on that day) counts
+    zero rather than refusing or shrinking the window — the same absence
+    convention :attr:`EvaluationContext.funding`'s own docstring states.
+    """
+    funding = getattr(context, "funding", None)
+    symbol_funding = funding.get(symbol, {}) if funding else {}
+    return math.fsum(
+        symbol_funding.get(day + dt.timedelta(days=offset), 0.0)
+        for offset in range(1, horizon + 1)
+    )
 
 
 def _turnover_fee_from_context(context: EvaluationContext) -> float:
@@ -1068,6 +1130,79 @@ def _fail_class(exc: Exception, executor: object) -> str:
         ):
             return last.fail_class
     return type(exc).__name__
+
+
+# -- The perp scoring universe: a no-perp-close symbol is dropped, not refused -
+
+
+def _drop_unpriced_symbols(
+    execution: SignalExecution, context: EvaluationContext
+) -> tuple[SignalExecution, int]:
+    """Drop, per rebalance date, any scored symbol with no perp close at it.
+
+    additions_spec_research_book_v2.xml, the perp instrument feature:
+    *"on each date, a scored symbol with no perp close at D is dropped
+    from the score vector before alignment ... This replaces _align's
+    refusal for that case only."*  With the spot default,
+    ``context.instrument != "perp"`` and this is the identity transform —
+    feature 72's universe rule already guarantees every symbol
+    ``execute_signal`` scored has a bars close on its own rebalance date, so
+    there is nothing to drop and :func:`evaluator.align_targets` keeps its
+    existing refusal for every case it already covered.
+
+    With the perp instrument, not every symbol the bars-derived universe
+    scored has a perpetual contract (or has one sealed on this particular
+    date), so this is where that gap is resolved — *before*
+    ``normalize_scores`` or ``align_targets`` ever see the symbol, by
+    removing it from the raw execution's own universe and (positionally)
+    its scores.  The containment check (``day in context.closes.get(symbol,
+    {})``) reads only the lazy directory listing :class:`_LazySymbolCloses`
+    already cached for that symbol, never a partition's content — so
+    deciding to drop costs nothing beyond what :attr:`EvaluationContext.closes`
+    was going to pay anyway, and a genuinely poisoned (as opposed to absent)
+    perp close is still read and still refused, at :func:`evaluator.align_targets`'s
+    own entry-close lookup, exactly as a poisoned bars close already is.
+
+    Answers the filtered execution (unchanged, by identity, when nothing
+    was dropped) and the total count of ``(date, symbol)`` drops — the
+    evaluation's own fail_detail-free diagnostic
+    (:attr:`NodeEvaluation.dropped_perp_symbols`), never a zero-filled
+    target.
+    """
+    if context.instrument != PERP_INSTRUMENT:
+        return execution, 0
+
+    import polars as pl
+
+    dropped = 0
+    changed = False
+    vectors: dict[dt.date, RawScoreVector] = {}
+    for day, vector in execution.vectors.items():
+        keep_mask = [
+            day in context.closes.get(symbol, {}) for symbol in vector.universe
+        ]
+        if all(keep_mask):
+            vectors[day] = vector
+            continue
+        changed = True
+        dropped += keep_mask.count(False)
+        kept_universe = tuple(
+            symbol for symbol, keep in zip(vector.universe, keep_mask) if keep
+        )
+        kept_scores = vector.scores.filter(pl.Series(keep_mask, dtype=pl.Boolean))
+        vectors[day] = replace(vector, universe=kept_universe, scores=kept_scores)
+
+    if not changed:
+        return execution, 0
+    return (
+        SignalExecution(
+            snapshot_name=execution.snapshot_name,
+            code_hash=execution.code_hash,
+            seed=execution.seed,
+            vectors=vectors,
+        ),
+        dropped,
+    )
 
 
 # -- Per-date scoring: a flat or thin date is absent, never a node failure -----
@@ -1450,6 +1585,7 @@ def evaluate_node(
                     f"{vector.problems or _executor_failure(executor)}"
                 )
 
+        execution, dropped_perp_symbols = _drop_unpriced_symbols(execution, context)
         scores, flat_dates = _score_rebalance_dates(execution, node_id)
         betas = compute_betas(context, scores) if context.book.beta_neutral else None
         alignment = align_targets(execution, context.closes)
@@ -1591,6 +1727,7 @@ def evaluate_node(
         flat_dates=flat_dates,
         tripwires_failed=tripwire_outcome.failed,
         ir_tstat_gross=ir_tstat_gross,
+        dropped_perp_symbols=dropped_perp_symbols,
     )
 
 
@@ -1733,6 +1870,7 @@ def evaluate_on_dates(
                 f"{vector.problems or _executor_failure(executor)}"
             )
 
+    execution, _dropped_perp_symbols = _drop_unpriced_symbols(execution, context)
     scores, _flat_dates = _score_rebalance_dates(execution, node_id)
     betas = compute_betas(context, scores) if context.book.beta_neutral else None
     alignment = align_targets(execution, context.closes)

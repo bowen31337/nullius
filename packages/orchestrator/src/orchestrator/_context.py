@@ -183,23 +183,30 @@ __all__ = [
     "DEFAULT_BETA_WINDOW_DAYS",
     "DEFAULT_EVALUATION_MODE",
     "DEFAULT_EVALUATION_WORKERS",
+    "DEFAULT_INSTRUMENT",
     "DEFAULT_MAX_HISTORY_DAYS",
     "EVALUATION_CONFIG_CODE",
     "EVALUATION_CONFIG_ENV",
     "EVALUATION_MODES",
     "EVALUATION_MODE_KEY",
     "EVALUATION_WORKERS_KEY",
+    "FUNDING_STREAM",
+    "FUTBARS_STREAM",
     "GVISOR_RUNTIME",
     "GVISOR_RUNTIME_ROOT_KEY",
     "GVISOR_STATE_ROOT_KEY",
+    "INSTRUMENTS",
+    "INSTRUMENT_KEY",
     "ISOLATION_REQUIRED",
     "LAKE_ROOTS_KEY",
     "MAX_EVALUATION_WORKERS",
     "MAX_HISTORY_DAYS_KEY",
     "MIN_EVALUATION_WORKERS",
     "OOS_DATES_KEY",
+    "PERP_INSTRUMENT",
     "REQUIRED_KEYS",
     "SANDBOX_RUNTIMES",
+    "SPOT_INSTRUMENT",
     "TEST_STUB_SANDBOX_ENV",
     "BookConfig",
     "EvaluationConfigError",
@@ -277,6 +284,47 @@ ISOLATION_REQUIRED: Final[str] = "isolation_required"
 #: ``ROSTER_STREAM``), spelled here because the snapshot layout names it
 #: and this module walks it directly.
 BARS_STREAM: Final[str] = "bars"
+
+#: The USD-M futures daily-kline stream — additions_spec_research_book_v2.xml,
+#: the perp instrument feature: with ``instrument: "perp"``,
+#: :func:`load_evaluation_context` serves :attr:`EvaluationContext.closes`
+#: from this stream's ``fut_close`` instead of :data:`BARS_STREAM`'s
+#: ``close``, keyed by the same spot symbol the partitions already carry
+#: (:mod:`nullius_ingest.derivs_backfill` writes every row under the spot
+#: symbol, never the UM one).  The same local spelling
+#: :mod:`orchestrator._evaluate`'s own ``FUTBARS_STREAM`` carries, for the
+#: reason that module's docstring already states: this is the one module on
+#: this side that reads the stream by name.
+FUTBARS_STREAM: Final[str] = "futbars"
+
+#: The funding-settlement stream the perp instrument's carry is summed
+#: from — ``funding_rate_sum``, one row per symbol per ingest day.
+FUNDING_STREAM: Final[str] = "funding"
+
+#: The optional key choosing which book this evaluation prices —
+#: additions_spec_research_book_v2.xml, the perp instrument feature: a
+#: context evaluates signals as a book of USD-M perpetuals when the document
+#: names ``"perp"``; absent (or ``"spot"``) is today's unchanged behaviour.
+INSTRUMENT_KEY: Final[str] = "instrument"
+
+#: :data:`INSTRUMENT_KEY`'s two values — closed, the same stance
+#: :data:`SANDBOX_RUNTIMES` and :data:`EVALUATION_MODES` already take: a
+#: third spelling is refused by name rather than guessed.
+SPOT_INSTRUMENT: Final[str] = "spot"
+PERP_INSTRUMENT: Final[str] = "perp"
+INSTRUMENTS: Final[tuple[str, str]] = (SPOT_INSTRUMENT, PERP_INSTRUMENT)
+
+#: :data:`INSTRUMENT_KEY`'s default when the document omits it — today's
+#: book, unchanged.
+DEFAULT_INSTRUMENT: Final[str] = SPOT_INSTRUMENT
+
+#: The venue-name suffix a perp book's cost model must carry.  A "perp"
+#: instrument prices funding carry and futures fees, and a schedule whose
+#: venue does not end this way (the shipped ``binance_spot`` default, say)
+#: is pricing a different market's fees against this book — refused at
+#: load, naming both the instrument and the venue, rather than silently
+#: netting a spot fee schedule against a perpetual's returns.
+_USDM_VENUE_SUFFIX: Final[str] = "_usdm"
 
 #: The optional key bounding how many trailing days of sealed bars one
 #: rebalance date's window carries, per symbol.  bug_spec_evaluation_throughput.xml:
@@ -560,6 +608,26 @@ class EvaluationContext:
     #: :func:`orchestrator._evaluate.evaluate_node` and
     #: :func:`~orchestrator._evaluate.evaluate_on_dates` are the readers.
     book: BookConfig = field(default_factory=BookConfig)
+    #: Which book this evaluation prices — :data:`SPOT_INSTRUMENT` (the
+    #: default) or :data:`PERP_INSTRUMENT` — read from the optional
+    #: :data:`INSTRUMENT_KEY`.  With ``"perp"``, :attr:`closes` is served
+    #: from :data:`FUTBARS_STREAM`'s ``fut_close`` rather than
+    #: :data:`BARS_STREAM`'s ``close``, so every forward return, alignment,
+    #: beta and close-out figure that reads :attr:`closes` follows — the
+    #: bars closes are not read for returns at all.  ``"spot"`` reproduces
+    #: every figure exactly as this module measured them before the
+    #: instrument existed.
+    instrument: str = DEFAULT_INSTRUMENT
+    #: The funding-settlement carry :func:`orchestrator._evaluate._cost_schedule_from_context`
+    #: sums over a horizon's holding days — ``{symbol: {ingest day:
+    #: funding_rate_sum}}``, the same lazy, memoized shape :attr:`closes`
+    #: takes, read from :data:`FUNDING_STREAM`.  ``None`` for
+    #: :data:`SPOT_INSTRUMENT`, which charges no funding at all; always a
+    #: (possibly empty) mapping for :data:`PERP_INSTRUMENT`, so a snapshot
+    #: with no sealed funding rows charges a carry of zero rather than
+    #: refusing — a missing row is absence, not an error, the same stance
+    #: every other optional derivative stream in this package takes.
+    funding: Mapping[str, Mapping[dt.date, float]] | None = None
 
 
 def load_evaluation_context(
@@ -613,6 +681,7 @@ def load_evaluation_context(
     evaluation_mode = _evaluation_mode(document, named)
     oos_dates = _oos_dates(document, named, dates, horizon)
     book = _book_config(document, named)
+    instrument = _instrument(document, named)
     test_stub_sandbox = source.get(TEST_STUB_SANDBOX_ENV) or None
     database_url = _database_url(source)
 
@@ -621,10 +690,36 @@ def load_evaluation_context(
     manifest = _read_manifest(mount, named)
     _refuse_duplicate_bars(manifest, named)
     snapshot_hash = manifest.snapshot_hash
-    closes = _LazyCloses(mount, snapshot_hash, symbols)
+    if instrument == PERP_INSTRUMENT:
+        perp_symbols = _futbars_symbols(mount, named)
+        _refuse_duplicate_futbars(manifest, named)
+        closes = _LazyCloses(
+            mount,
+            snapshot_hash,
+            perp_symbols,
+            stream=FUTBARS_STREAM,
+            day_column="date",
+            close_column="fut_close",
+        )
+        funding = _LazyFunding(mount, snapshot_hash, mount.partitions(FUNDING_STREAM))
+    else:
+        closes = _LazyCloses(mount, snapshot_hash, symbols)
+        funding = None
     cost_model, cost_schedule, cost_model_hash = _cost_inputs(
         source, database_url
     )
+    if instrument == PERP_INSTRUMENT and not cost_model.venue.endswith(
+        _USDM_VENUE_SUFFIX
+    ):
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {INSTRUMENT_KEY} is {PERP_INSTRUMENT!r}, "
+            "which prices USD-M perpetual funding and fees, but the cost "
+            f"model's venue is {cost_model.venue!r}, which does not end in "
+            f"{_USDM_VENUE_SUFFIX!r}; point NULLIUS_COST_MODEL_PATH at a "
+            "USD-M schedule (cost_model/binance_usdm.yaml) before "
+            f"configuring a {PERP_INSTRUMENT!r} book, or set {INSTRUMENT_KEY} "
+            f"to {SPOT_INSTRUMENT!r}"
+        )
     evaluator_hash = _evaluator_hash(source)
 
     return EvaluationContext(
@@ -651,6 +746,8 @@ def load_evaluation_context(
         test_stub_sandbox=test_stub_sandbox,
         oos_dates=oos_dates,
         book=book,
+        instrument=instrument,
+        funding=funding,
     )
 
 
@@ -720,6 +817,7 @@ def _refuse_unknown_keys(document: Mapping[str, Any], named: str) -> None:
             EVALUATION_MODE_KEY,
             OOS_DATES_KEY,
             BOOK_KEY,
+            INSTRUMENT_KEY,
         )
     )
     for key in document:
@@ -733,7 +831,7 @@ def _refuse_unknown_keys(document: Mapping[str, Any], named: str) -> None:
                 f"{GVISOR_STATE_ROOT_KEY!r} and {LAKE_ROOTS_KEY!r} when it "
                 f"is gvisor, and the always-optional {MAX_HISTORY_DAYS_KEY!r}, "
                 f"{EVALUATION_WORKERS_KEY!r}, {EVALUATION_MODE_KEY!r}, "
-                f"{OOS_DATES_KEY!r} and {BOOK_KEY!r}); "
+                f"{OOS_DATES_KEY!r}, {BOOK_KEY!r} and {INSTRUMENT_KEY!r}); "
                 "the file never holds a credential — every "
                 "key is one the loader defines, and an unknown key is "
                 "refused rather than read past. Credentials live where "
@@ -989,6 +1087,31 @@ def _book_config(document: Mapping[str, Any], named: str) -> BookConfig:
         beta_window_days=window_raw,
         beta_benchmark=benchmark_raw,
     )
+
+
+def _instrument(document: Mapping[str, Any], named: str) -> str:
+    """Which book this evaluation prices — :data:`DEFAULT_INSTRUMENT` when
+    :data:`INSTRUMENT_KEY` is absent.
+
+    additions_spec_research_book_v2.xml, the perp instrument feature: *"the
+    evaluation config gains an optional key, instrument, with values 'spot'
+    (the default, unchanged behaviour) or 'perp'. Any other value is
+    refused."*  A present value outside :data:`INSTRUMENTS` is refused by
+    name, the same closed-vocabulary stance :func:`_sandbox_runtime` and
+    :func:`_evaluation_mode` already take toward their own two-member sets.
+    """
+    if INSTRUMENT_KEY not in document:
+        return DEFAULT_INSTRUMENT
+    raw = document[INSTRUMENT_KEY]
+    if not isinstance(raw, str) or raw not in INSTRUMENTS:
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {INSTRUMENT_KEY} must be one of "
+            f"{', '.join(repr(name) for name in INSTRUMENTS)}, got {raw!r}; "
+            "this evaluation prices either the spot default or a USD-M "
+            "perpetual book, and a third spelling is refused rather than "
+            "guessed"
+        )
+    return raw
 
 
 def _horizon(values: Mapping[str, Any], named: str) -> int:
@@ -1434,16 +1557,48 @@ def _bars_symbols(mount: SnapshotMount, named: str) -> tuple[str, ...]:
     return symbols
 
 
-#: One bars partition's relative path, as the manifest's own ``files``
-#: keys spell it (``"bars/symbol=SYM00/date=2026-09-01/part-0.parquet"``)
-#: — group 1 is the symbol, group 2 the ``date=`` directory's own string.
-_BARS_PARTITION_RE = re.compile(
-    rf"^{re.escape(BARS_STREAM)}/symbol=([^/]+)/date=([^/]+)/[^/]+$"
-)
+def _futbars_symbols(mount: SnapshotMount, named: str) -> tuple[str, ...]:
+    """The symbols the snapshot carries USD-M futures bars for — the
+    perp instrument's own roster, the same directory-listing shape
+    :func:`_bars_symbols` already takes for the spot default.  Refused when
+    the stream is empty: a "perp" instrument with no sealed futbars has no
+    perp closes to align targets over at all.
+    """
+    symbols = mount.partitions(FUTBARS_STREAM)
+    if not symbols:
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: snapshot_mount names a snapshot "
+            f"carrying no {FUTBARS_STREAM!r} partitions, so there are no "
+            f"perp closes to align targets over — {INSTRUMENT_KEY} is "
+            f"{PERP_INSTRUMENT!r}, which measures returns off "
+            f"{FUTBARS_STREAM!r}'s own ``fut_close`` (never the sealed "
+            "bars), and a snapshot without them cannot serve one"
+        )
+    return symbols
 
 
-def _refuse_duplicate_bars(manifest: SnapshotManifest, named: str) -> None:
-    """Refuse a symbol-day the manifest's own row counts already show twice.
+#: One partition's relative path, as the manifest's own ``files`` keys
+#: spell it (``"bars/symbol=SYM00/date=2026-09-01/part-0.parquet"``) —
+#: group 1 is the symbol, group 2 the ``date=`` directory's own string.
+#: Parametrized by stream so the free, manifest-only duplicate check holds
+#: for :data:`FUTBARS_STREAM` on exactly the terms it already holds for
+#: :data:`BARS_STREAM`.
+def _partition_pattern(stream: str) -> re.Pattern[str]:
+    return re.compile(rf"^{re.escape(stream)}/symbol=([^/]+)/date=([^/]+)/[^/]+$")
+
+
+_BARS_PARTITION_RE = _partition_pattern(BARS_STREAM)
+_FUTBARS_PARTITION_RE = _partition_pattern(FUTBARS_STREAM)
+
+
+def _refuse_duplicate_partition_rows(
+    manifest: SnapshotManifest,
+    named: str,
+    *,
+    stream: str,
+    pattern: re.Pattern[str],
+) -> None:
+    """Refuse a symbol-day ``stream``'s own manifest row counts show twice.
 
     The manifest records a row count per file at seal time (feature 31,
     read from the Parquet footer when the seal ran) — reading it back
@@ -1456,7 +1611,7 @@ def _refuse_duplicate_bars(manifest: SnapshotManifest, named: str) -> None:
     """
     totals: dict[tuple[str, str], int] = {}
     for path, entry in manifest.files.items():
-        match = _BARS_PARTITION_RE.match(path)
+        match = pattern.match(path)
         if match is None or entry.row_count is None:
             continue
         key = (match.group(1), match.group(2))
@@ -1470,19 +1625,41 @@ def _refuse_duplicate_bars(manifest: SnapshotManifest, named: str) -> None:
             continue
         raise EvaluationConfigError(
             f"{EVALUATION_CONFIG_CODE}: snapshot_mount names a snapshot "
-            f"whose bars carry {symbol!r} on {day.isoformat()} twice; one "
-            "bar, one close — the aligner's grain, and a snapshot that "
-            "carries two has a staging defect a silent merge would hide"
+            f"whose {stream} carry {symbol!r} on {day.isoformat()} twice; "
+            "one bar, one close — the aligner's grain, and a snapshot "
+            "that carries two has a staging defect a silent merge would "
+            "hide"
         )
 
 
-#: Prices already read, keyed by the exact snapshot, symbol and bar day
-#: they belong to.  Module-level and never cleared: a second evaluation
-#: over the same snapshot in the same process — even through a freshly
-#: loaded context, since feature 8 composes one per ``create_app()`` —
-#: finds every close it already paid to read, and reads no partition
-#: twice.
-_CLOSE_CACHE: dict[tuple[str, str, dt.date], float] = {}
+def _refuse_duplicate_bars(manifest: SnapshotManifest, named: str) -> None:
+    """Refuse a symbol-day the sealed bars carry twice — see
+    :func:`_refuse_duplicate_partition_rows`.
+    """
+    _refuse_duplicate_partition_rows(
+        manifest, named, stream=BARS_STREAM, pattern=_BARS_PARTITION_RE
+    )
+
+
+def _refuse_duplicate_futbars(manifest: SnapshotManifest, named: str) -> None:
+    """Refuse a symbol-day the sealed futbars carry twice — the perp
+    instrument's own counterpart to :func:`_refuse_duplicate_bars`, over
+    :data:`FUTBARS_STREAM` instead of :data:`BARS_STREAM`.
+    """
+    _refuse_duplicate_partition_rows(
+        manifest, named, stream=FUTBARS_STREAM, pattern=_FUTBARS_PARTITION_RE
+    )
+
+
+#: Prices already read, keyed by the exact stream, snapshot, symbol and bar
+#: day they belong to — the stream is part of the key because a bars close
+#: and a futbars ``fut_close`` for the same symbol-day are different prices
+#: and must never share a cache entry.  Module-level and never cleared: a
+#: second evaluation over the same snapshot in the same process — even
+#: through a freshly loaded context, since feature 8 composes one per
+#: ``create_app()`` — finds every close it already paid to read, and reads
+#: no partition twice.
+_CLOSE_CACHE: dict[tuple[str, str, str, dt.date], float] = {}
 #: Serializes cache misses, so concurrent node evaluations never read the same
 #: close twice (with 8 workers every node missed at once and the archive's
 #: 139k closes were read about 8 times over).
@@ -1498,23 +1675,48 @@ class _LazySymbolCloses(Mapping[dt.date, float]):
     up, through :func:`_read_close` — which is where the poisoned-close
     and duplicate-bar refusals a symbol's own partitions can still raise
     now fire: at first use, not at load.
+
+    Parametrized by ``stream``/``day_column``/``close_column`` so the perp
+    instrument's ``fut_close`` (read from :data:`FUTBARS_STREAM`'s own
+    ``date`` column) takes the identical lazy, point-in-time and
+    validation rules the spot default's ``close`` (read from
+    :data:`BARS_STREAM`'s ``open_time``) already takes — the defaults
+    reproduce the spot behaviour exactly.
     """
 
-    __slots__ = ("_dates", "_mount", "_snapshot_hash", "_symbol")
+    __slots__ = (
+        "_close_column",
+        "_dates",
+        "_day_column",
+        "_mount",
+        "_snapshot_hash",
+        "_stream",
+        "_symbol",
+    )
 
     def __init__(
-        self, mount: SnapshotMount, snapshot_hash: str, symbol: str
+        self,
+        mount: SnapshotMount,
+        snapshot_hash: str,
+        symbol: str,
+        *,
+        stream: str = BARS_STREAM,
+        day_column: str = "open_time",
+        close_column: str = "close",
     ) -> None:
         self._mount = mount
         self._snapshot_hash = snapshot_hash
         self._symbol = symbol
+        self._stream = stream
+        self._day_column = day_column
+        self._close_column = close_column
         self._dates: tuple[dt.date, ...] | None = None
 
     def _available(self) -> tuple[dt.date, ...]:
         if self._dates is None:
             self._dates = tuple(
                 dt.date.fromisoformat(iso)
-                for iso in self._mount.dates(BARS_STREAM, self._symbol)
+                for iso in self._mount.dates(self._stream, self._symbol)
             )
         return self._dates
 
@@ -1524,7 +1726,7 @@ class _LazySymbolCloses(Mapping[dt.date, float]):
     def __getitem__(self, day: dt.date) -> float:
         if day not in self._available():
             raise KeyError(day)
-        cache_key = (self._snapshot_hash, self._symbol, day)
+        cache_key = (self._stream, self._snapshot_hash, self._symbol, day)
         try:
             return _CLOSE_CACHE[cache_key]
         except KeyError:
@@ -1533,7 +1735,14 @@ class _LazySymbolCloses(Mapping[dt.date, float]):
             cached = _CLOSE_CACHE.get(cache_key)
             if cached is not None:
                 return cached
-            price = _read_close(self._mount, self._symbol, day)
+            price = _read_close(
+                self._mount,
+                self._symbol,
+                day,
+                stream=self._stream,
+                day_column=self._day_column,
+                close_column=self._close_column,
+            )
             _CLOSE_CACHE[cache_key] = price
             return price
 
@@ -1546,11 +1755,205 @@ class _LazySymbolCloses(Mapping[dt.date, float]):
 
 class _LazyCloses(Mapping[str, Mapping[dt.date, float]]):
     """Step 4's ``closes`` — one :class:`_LazySymbolCloses` per symbol,
-    built from the roster :func:`_bars_symbols` already paid a directory
+    built from the roster :func:`_bars_symbols` (or, for the perp
+    instrument, :func:`_futbars_symbols`) already paid a directory
     listing for at load.  Nothing past that listing is read until a
     caller indexes a specific symbol and date, so a context answers the
     same full mapping :func:`_closes` used to build eagerly, but reads
     only the partitions whoever consumes ``closes`` actually touches.
+    """
+
+    __slots__ = (
+        "_close_column",
+        "_day_column",
+        "_mount",
+        "_snapshot_hash",
+        "_stream",
+        "_symbols",
+    )
+
+    def __init__(
+        self,
+        mount: SnapshotMount,
+        snapshot_hash: str,
+        symbols: tuple[str, ...],
+        *,
+        stream: str = BARS_STREAM,
+        day_column: str = "open_time",
+        close_column: str = "close",
+    ) -> None:
+        self._mount = mount
+        self._snapshot_hash = snapshot_hash
+        self._symbols = symbols
+        self._stream = stream
+        self._day_column = day_column
+        self._close_column = close_column
+
+    def __contains__(self, symbol: object) -> bool:
+        return symbol in self._symbols
+
+    def __getitem__(self, symbol: str) -> Mapping[dt.date, float]:
+        if symbol not in self._symbols:
+            raise KeyError(symbol)
+        return _LazySymbolCloses(
+            self._mount,
+            self._snapshot_hash,
+            symbol,
+            stream=self._stream,
+            day_column=self._day_column,
+            close_column=self._close_column,
+        )
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._symbols)
+
+    def __len__(self) -> int:
+        return len(self._symbols)
+
+
+def _read_close(
+    mount: SnapshotMount,
+    symbol: str,
+    day: dt.date,
+    *,
+    stream: str = BARS_STREAM,
+    day_column: str = "open_time",
+    close_column: str = "close",
+) -> float:
+    """One symbol-day's close, read from its own partition.
+
+    The content half of the original eager read, scoped to the single
+    ``(symbol, day)`` a lazy lookup asked for: the venue's string
+    spelling of a close is parsed to the finite positive float step 4
+    validates (a price that is not a positive finite number poisons every
+    forward return measured off it), keyed by the row's own ``day_column``
+    date — the candle's day, not the partition's name, so a partition
+    holding a row of another day still lands where the bar says it
+    belongs.  A second row for this ``(symbol, day)`` is refused rather
+    than merged, the same "one bar, one close" law
+    :func:`_refuse_duplicate_partition_rows` already checked for free
+    across the whole snapshot — held here too, for the partitions that
+    check could not see into (an unknown row count).  ``day`` absent from
+    this partition's own rows answers :class:`KeyError`, like any other
+    missing mapping key.
+
+    ``stream``/``day_column``/``close_column`` default to the spot bars'
+    own spelling; the perp instrument calls this with
+    :data:`FUTBARS_STREAM`, ``"date"`` and ``"fut_close"`` instead — the
+    same function, the same rules, a different column spelling.
+    """
+    iso = day.isoformat()
+    series: dict[dt.date, float] = {}
+    for part in mount.select(stream, symbol, iso):
+        table = _read_part(part, symbol)
+        if day_column not in table.column_names:
+            raise EvaluationConfigError(
+                f"{EVALUATION_CONFIG_CODE}: snapshot_mount names "
+                f"a snapshot whose {part!s} carries no "
+                f"{day_column!r} column; a close whose bar day cannot be "
+                "read is a close that cannot be keyed"
+            )
+        if close_column not in table.column_names:
+            raise EvaluationConfigError(
+                f"{EVALUATION_CONFIG_CODE}: snapshot_mount names "
+                f"a snapshot whose {part!s} carries no {close_column!r} "
+                "column; the alignment's market grid is the closes of "
+                "the scored symbols, and a bar without one is a bar no "
+                "target can be measured from"
+            )
+        for row in table.select([day_column, close_column]).to_pylist():
+            moment = row[day_column]
+            row_day = (
+                moment.date() if isinstance(moment, dt.datetime) else moment
+            )
+            price = _close_price(row[close_column], symbol, row_day)
+            if row_day in series:
+                raise EvaluationConfigError(
+                    f"{EVALUATION_CONFIG_CODE}: snapshot_mount "
+                    f"names a snapshot whose {stream} carry "
+                    f"{symbol!r} on {row_day.isoformat()} twice; one "
+                    "bar, one close — the aligner's grain, and "
+                    "a snapshot that carries two has a staging "
+                    "defect a silent merge would hide"
+                )
+            series[row_day] = price
+    if day not in series:
+        raise KeyError(day)
+    return series[day]
+
+
+# -- The funding carry: a lazy, memoized read beside the closes -----------------
+
+
+#: Funding values already read, keyed by snapshot, symbol and ingest day —
+#: the same memoization shape :data:`_CLOSE_CACHE` takes for closes, so a
+#: funding carry summed over several horizons (and several nodes) never
+#: re-reads one partition.
+_FUNDING_CACHE: dict[tuple[str, str, dt.date], float] = {}
+_FUNDING_LOCK = threading.Lock()
+
+
+class _LazySymbolFunding(Mapping[dt.date, float]):
+    """One symbol's ``funding_rate_sum``, read and memoized one row at a time.
+
+    The funding counterpart to :class:`_LazySymbolCloses`: the dates this
+    maps are a directory listing (free), and the values are read only when
+    a date is actually looked up.  Unlike a close, a funding rate may
+    legitimately be negative (a short-pays-long settlement), so the
+    validator only demands a finite number — see :func:`_funding_value`.
+    """
+
+    __slots__ = ("_dates", "_mount", "_snapshot_hash", "_symbol")
+
+    def __init__(self, mount: SnapshotMount, snapshot_hash: str, symbol: str) -> None:
+        self._mount = mount
+        self._snapshot_hash = snapshot_hash
+        self._symbol = symbol
+        self._dates: tuple[dt.date, ...] | None = None
+
+    def _available(self) -> tuple[dt.date, ...]:
+        if self._dates is None:
+            self._dates = tuple(
+                dt.date.fromisoformat(iso)
+                for iso in self._mount.dates(FUNDING_STREAM, self._symbol)
+            )
+        return self._dates
+
+    def __contains__(self, day: object) -> bool:
+        return isinstance(day, dt.date) and day in self._available()
+
+    def __getitem__(self, day: dt.date) -> float:
+        if day not in self._available():
+            raise KeyError(day)
+        cache_key = (self._snapshot_hash, self._symbol, day)
+        try:
+            return _FUNDING_CACHE[cache_key]
+        except KeyError:
+            pass
+        with _FUNDING_LOCK:
+            cached = _FUNDING_CACHE.get(cache_key)
+            if cached is not None:
+                return cached
+            value = _read_funding_rate_sum(self._mount, self._symbol, day)
+            _FUNDING_CACHE[cache_key] = value
+            return value
+
+    def __iter__(self) -> Iterator[dt.date]:
+        return iter(self._available())
+
+    def __len__(self) -> int:
+        return len(self._available())
+
+
+class _LazyFunding(Mapping[str, Mapping[dt.date, float]]):
+    """``{symbol: {ingest day: funding_rate_sum}}`` — one
+    :class:`_LazySymbolFunding` per symbol in :data:`FUNDING_STREAM`'s
+    roster, the same lazy shape :class:`_LazyCloses` already takes.  A
+    symbol with no sealed funding row at all (no perpetual, or a snapshot
+    that never backfilled the stream) is simply absent — every reader of
+    this mapping treats a missing symbol or a missing day as a zero carry,
+    never a refusal (see :mod:`orchestrator._evaluate`'s
+    ``_cost_schedule_from_context``).
     """
 
     __slots__ = ("_mount", "_snapshot_hash", "_symbols")
@@ -1568,7 +1971,7 @@ class _LazyCloses(Mapping[str, Mapping[dt.date, float]]):
     def __getitem__(self, symbol: str) -> Mapping[dt.date, float]:
         if symbol not in self._symbols:
             raise KeyError(symbol)
-        return _LazySymbolCloses(self._mount, self._snapshot_hash, symbol)
+        return _LazySymbolFunding(self._mount, self._snapshot_hash, symbol)
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._symbols)
@@ -1577,63 +1980,78 @@ class _LazyCloses(Mapping[str, Mapping[dt.date, float]]):
         return len(self._symbols)
 
 
-def _read_close(mount: SnapshotMount, symbol: str, day: dt.date) -> float:
-    """One symbol-day's close, read from its own partition.
+def _funding_value(raw: Any, symbol: str, day: dt.date) -> float:
+    """One ``funding_rate_sum``, as a finite float — any sign.
 
-    The content half of the original eager read, scoped to the single
-    ``(symbol, day)`` a lazy lookup asked for: the venue's string
-    spelling of a close is parsed to the finite positive float step 4
-    validates (a price that is not a positive finite number poisons every
-    forward return measured off it), keyed by the row's own
-    ``open_time`` date — the candle's day, not the partition's name, so
-    a partition holding a row of another day still lands where the bar
-    says it belongs.  A second row for this ``(symbol, day)`` is refused
-    rather than merged, the same "one bar, one close" law
-    :func:`_refuse_duplicate_bars` already checked for free across the
-    whole snapshot — held here too, for the partitions that check could
-    not see into (an unknown row count).  ``day`` absent from this
-    partition's own rows answers :class:`KeyError`, like any other
-    missing mapping key.
+    Unlike a close (:func:`_close_price`), a funding settlement is
+    legitimately negative (shorts pay longs when the rate is negative), so
+    this validator demands only that the value is a finite number, parsed
+    from the venue's own string spelling the same way a close is.
+    """
+    if isinstance(raw, bool):
+        value: float | None = None
+    elif isinstance(raw, str):
+        try:
+            value = float(raw.strip())
+        except ValueError:
+            value = None
+    elif isinstance(raw, (int, float)):
+        value = float(raw)
+    else:
+        value = None
+    if value is None or not math.isfinite(value):
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: snapshot_mount names a snapshot "
+            f"whose funding_rate_sum for {symbol!r} on {day.isoformat()} "
+            f"is not a finite number, got {raw!r}; the funding carry sums "
+            "this value over the horizon's holding days, and a NaN or "
+            "±inf would poison every node's charge measured off it"
+        )
+    return value
+
+
+def _read_funding_rate_sum(mount: SnapshotMount, symbol: str, day: dt.date) -> float:
+    """One symbol-day's ``funding_rate_sum``, read from its own partition.
+
+    The funding counterpart to :func:`_read_close`: keyed by the row's own
+    ``date`` column (the ingest day :mod:`nullius_ingest.derivs_backfill`
+    already buckets settlements into), with the same "one row, one value"
+    duplicate refusal.
     """
     iso = day.isoformat()
     series: dict[dt.date, float] = {}
-    for part in mount.select(BARS_STREAM, symbol, iso):
+    for part in mount.select(FUNDING_STREAM, symbol, iso):
         table = _read_part(part, symbol)
-        if "open_time" not in table.column_names:
+        if "date" not in table.column_names:
             raise EvaluationConfigError(
-                f"{EVALUATION_CONFIG_CODE}: snapshot_mount names "
-                f"a snapshot whose {part!s} carries no "
-                "'open_time' column; bars are candles (the "
-                "contract's two required columns name the book "
-                "and the candle-open instant), and a close "
-                "whose bar day cannot be read is a close that "
-                "cannot be keyed"
+                f"{EVALUATION_CONFIG_CODE}: snapshot_mount names a "
+                f"snapshot whose {part!s} carries no 'date' column; a "
+                "funding row whose own ingest day cannot be read is a "
+                "settlement that cannot be keyed"
             )
-        if "close" not in table.column_names:
+        if "funding_rate_sum" not in table.column_names:
             raise EvaluationConfigError(
-                f"{EVALUATION_CONFIG_CODE}: snapshot_mount names "
-                f"a snapshot whose {part!s} carries no 'close' "
-                "column; the alignment's market grid is the "
-                "closes of the scored symbols, and a bar "
-                "without one is a bar no target can be "
-                "measured from"
+                f"{EVALUATION_CONFIG_CODE}: snapshot_mount names a "
+                f"snapshot whose {part!s} carries no 'funding_rate_sum' "
+                "column; the funding carry sums this value over the "
+                "holding window, and a row without one is a row no carry "
+                "can be measured from"
             )
-        for row in table.select(["open_time", "close"]).to_pylist():
-            moment = row["open_time"]
+        for row in table.select(["date", "funding_rate_sum"]).to_pylist():
+            moment = row["date"]
             row_day = (
                 moment.date() if isinstance(moment, dt.datetime) else moment
             )
-            price = _close_price(row["close"], symbol, row_day)
+            value = _funding_value(row["funding_rate_sum"], symbol, row_day)
             if row_day in series:
                 raise EvaluationConfigError(
-                    f"{EVALUATION_CONFIG_CODE}: snapshot_mount "
-                    f"names a snapshot whose bars carry "
-                    f"{symbol!r} on {row_day.isoformat()} twice; one "
-                    "bar, one close — the aligner's grain, and "
-                    "a snapshot that carries two has a staging "
-                    "defect a silent merge would hide"
+                    f"{EVALUATION_CONFIG_CODE}: snapshot_mount names a "
+                    f"snapshot whose funding carries {symbol!r} on "
+                    f"{row_day.isoformat()} twice; one settlement window, "
+                    "one funding_rate_sum — a snapshot that carries two "
+                    "has a staging defect a silent merge would hide"
                 )
-            series[row_day] = price
+            series[row_day] = value
     if day not in series:
         raise KeyError(day)
     return series[day]
@@ -1852,9 +2270,10 @@ def compute_betas(
     ``scores``, a symbol's beta is the OLS slope of its own daily
     close-to-close returns on ``context.book.beta_benchmark``'s, over the
     trailing ``context.book.beta_window_days`` daily returns ending at
-    ``D`` — read from ``context.closes``, so the instrument in force (bars
-    today, a later spec's perp fut_close) is what every beta is measured
-    against, and never a row after ``D`` (see :func:`_beta_window_dates`).
+    ``D`` — read from ``context.closes``, so the instrument in force
+    (:data:`SPOT_INSTRUMENT`'s bars close, or :data:`PERP_INSTRUMENT`'s
+    ``fut_close``) is what every beta is measured against, and never a row
+    after ``D`` (see :func:`_beta_window_dates`).
     A date with no scored symbol (``scores[day]`` empty — a thin or
     no-preference rebalance date) is skipped: there is no book on it for a
     beta to rescale.
