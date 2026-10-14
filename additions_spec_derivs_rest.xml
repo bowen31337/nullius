@@ -1,0 +1,94 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — derivatives backfill from Binance USD-M REST (funding and futbars through yesterday)</project_name>
+  <addition_summary>
+    The forward shadow (additions_spec_forward_shadow.xml) needs perp closes
+    and funding through yesterday. derivs_backfill reads only Binance's
+    public data archive, which publishes UM klines and fundingRate as
+    monthly files. On 2026-10-14 the shadow lake's futbars and funding
+    stopped at 2026-09-30, so the shadow book's decision date fell back to
+    2026-09-21.
+    This spec adds a REST source for the funding and futbars streams. It
+    uses the public, keyless USD-M endpoints and writes rows identical to
+    the archive's, so the shadow job can stage every day through yesterday.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / pytest.</stack>
+    <test_baseline>main at 4e5b4a5: gate 1666 passed.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md. A code map from 2026-10-14 of
+      packages/ingest/src/nullius_ingest/derivs_backfill.py:
+      - Spot-to-UM symbol mapping: _map_symbol / _resolve_symbol_map, with
+        the SCALE_PREFIX "1000" contracts and their scale, cached in
+        staging-meta/um-symbol-map.json.
+      - _parse_funding_rows(raw_rows, filename) reads the archive CSV
+        (calc_time, funding_interval_hours, last_funding_rate). Each day it
+        writes funding_rate_sum, funding_rate_last and n_settlements, keyed
+        by _day_bucket(instant), the (D 00:00, D+1 00:00] rule.
+      - _parse_futbars_rows(raw_rows, filename, *, symbol, scale) reads the
+        archive's kline CSV rows (Binance kline column order) and rescales
+        fut_close, fut_volume and taker_buy_volume by the contract scale.
+      - _day_already_written / _month_already_written skip work already
+        done.
+      - main(argv, *, fetch=...) takes the archive fetch as an injected
+        callable. Tests stub it.
+      The live REST shapes were verified on 2026-10-14:
+      - GET https://fapi.binance.com/fapi/v1/fundingRate?symbol=S&amp;startTime=ms&amp;endTime=ms&amp;limit=1000
+        answers [{"symbol","fundingTime" (ms; sometimes +1 ms past the
+        settlement, e.g. 1791936000001),"fundingRate" (decimal string),
+        "markPrice","rateType"}], ascending.
+      - GET https://fapi.binance.com/fapi/v1/klines?symbol=S&amp;interval=1d&amp;startTime=ms&amp;endTime=ms&amp;limit=1500
+        answers arrays in the archive kline column order.
+      - Neither needs a key.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Ingest">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/ingest/src/nullius_ingest/derivs_backfill.py,packages/ingest/tests/test_derivs_rest.py,packages/ingest/tests/fixtures/derivs_rest/rest_responses.json,deploy/shadow/shadow_daily.sh">
+        System backfills the funding and futbars streams from Binance's public USD-M REST API, so that a lake can be staged through yesterday instead of through the last published monthly archive file.
+        - derivs_backfill gains `--source {archive,rest}`. The default is
+          archive, which is unchanged. With rest:
+          - only the funding and futbars streams are allowed; metrics is
+            refused with a clear error
+          - the spot-to-UM symbol mapping uses the same SCALE_PREFIX rule
+            against GET /fapi/v1/exchangeInfo's symbols, not the archive
+            crawl
+        - Funding comes from GET /fapi/v1/fundingRate, paginated by
+          startTime and endTime with limit 1000, over [--first 00:00,
+          --last+1 00:00].
+          - Each fundingTime is floored to the whole second before
+            _day_bucket, so a settlement 1 ms past midnight lands on the
+            day whose window it closes, as the archive's calc_time does.
+          - The rows then go through the same per-day aggregation
+            (funding_rate_sum, funding_rate_last, n_settlements).
+        - Futbars come from GET /fapi/v1/klines with interval 1d,
+          paginated, through the same parsing and scale rescaling as
+          _parse_futbars_rows.
+          - A candle whose close time is in the future (today's open
+            candle) is never written.
+        - The written partitions are byte-for-byte what the archive path
+          writes for the same days, apart from source provenance if that is
+          recorded. The skip rules are respected per day.
+        - HTTP is injected the way the archive fetch already is. Requests
+          are polite (a sleep between pages). A 429 or 418 response is
+          retried with backoff, and other HTTP errors fail that symbol's job
+          (counted in the summary line's failed).
+        - deploy/shadow/shadow_daily.sh step 2 passes --source rest for
+          funding,futbars. Metrics, when SHADOW_METRICS=1, stays on the
+          archive. Nothing else in the script changes.
+        - test_derivs_rest.py, with recorded responses in
+          fixtures/derivs_rest/rest_responses.json, covers:
+          - pagination
+          - the +1 ms fundingTime bucketing
+          - one day built both ways equals the archive parse of the same
+            settlements and candles, field by field
+          - 1000-contract rescaling
+          - the open candle is skipped
+          - metrics is refused under rest
+          - 429 backoff
+          It passes under pytest-xdist. The ingest member suite passes.
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>
