@@ -69,7 +69,17 @@ snapshot in the source archive simply has no row.
   *previous* day's window, and a settlement at ``D+1 00:00`` belongs to
   ``D`` — both corollaries of the same ``(D 00:00, D+1 00:00]`` rule, applied
   by subtracting one microsecond before taking the calendar date
-  (:func:`_day_bucket`). A day with no settlement in it has no row.
+  (:func:`_day_bucket`), after flooring the instant to the whole second (a
+  settlement occasionally reported a millisecond late). A day with no
+  settlement in it has no row. Because a day's closing settlement often
+  lives in the *next* month's zip, every month the window touches —
+  including the one holding ``last + 1 day`` 00:00 — is fetched and pooled
+  into one flat settlement list before any day is aggregated
+  (:func:`_backfill_funding_symbol`); a day is written only once the month
+  holding its own closing instant has been read, so an unpublished or failed
+  month leaves that one day unwritten rather than written partial. Resume is
+  per day here, not per month: an already-written day is never rewritten
+  unless ``--restart``.
 * ``futbars/``, from ``data/futures/um/monthly/klines/<symbol>/1d``: one row
   per day with ``fut_close``, ``fut_volume``, ``taker_buy_volume`` and
   ``quote_volume``. The first three are rescaled by the symbol's own scale
@@ -203,6 +213,15 @@ _FAPI_BASE_URL = "https://fapi.binance.com/fapi/v1"
 FUNDING_REST_PAGE_LIMIT = 1000
 FUTBARS_REST_PAGE_LIMIT = 1500
 
+#: The REST path closes the last day the same way the archive's own
+#: cross-month pooling does -- by reading past ``last + 1 day`` 00:00 --
+#: except there is no next month's zip to read, only more of the live venue's
+#: own paginated history, so the window is padded by a flat hour rather than
+#: by a whole calendar period. The same pad gates writing: a day whose
+#: closing instant plus this pad is still later than "now" has not
+#: necessarily had its closing settlement posted yet, and is left unwritten.
+FUNDING_REST_CLOSING_PAD = timedelta(hours=1)
+
 #: The file this module writes beside ``staging/``, never inside it — a
 #: sibling of bars_backfill's own ``universe.json`` and rank cache.
 SYMBOL_MAP_FILENAME = "um-symbol-map.json"
@@ -309,6 +328,10 @@ def _day_bucket(instant: datetime) -> date:
     the *next* day's midnight stays on the day whose window it closes.
     """
     return (instant - timedelta(microseconds=1)).date()
+
+
+def _month_key(day: date) -> str:
+    return f"{day.year:04d}-{day.month:02d}"
 
 
 def _coerce_date(value: str | date) -> date:
@@ -538,10 +561,15 @@ def _aggregate_funding_settlements(
 
     Shared by the archive's own ``calc_time`` rows and the REST
     ``fundingRate`` pages (:func:`_fetch_funding_rest_settlements`): both
-    reduce to ``(instant, rate)`` pairs, bucketed by :func:`_day_bucket`, so
-    a day built either way aggregates identically.
+    reduce to ``(instant, rate)`` pairs, each floored to the whole second
+    before :func:`_day_bucket` -- the live venue sometimes reports a
+    settlement a millisecond past its true instant (e.g. an exact UTC
+    midnight reported as ``...:00.001``), and flooring here, once, gives the
+    archive's own (already whole-second) ``calc_time`` rows the identical
+    treatment, so a day built either way aggregates identically.
     """
-    ordered = sorted(settlements, key=lambda item: item[0])
+    floored = [(instant.replace(microsecond=0), rate) for instant, rate in settlements]
+    ordered = sorted(floored, key=lambda item: item[0])
     by_day: dict[date, list[tuple[datetime, str]]] = {}
     for instant, rate in ordered:
         by_day.setdefault(_day_bucket(instant), []).append((instant, rate))
@@ -564,7 +592,14 @@ def _aggregate_funding_settlements(
     return result
 
 
-def _parse_funding_rows(raw_rows: Sequence[list[str]], filename: str) -> dict[date, dict[str, object]]:
+def _parse_funding_settlements(raw_rows: Sequence[list[str]], filename: str) -> list[tuple[datetime, str]]:
+    """Every ``(calc_time, last_funding_rate)`` settlement in one month's rows.
+
+    Unaggregated, on purpose: :func:`_backfill_funding_symbol` pools every
+    month the window needs before handing the whole lot to
+    :func:`_aggregate_funding_settlements` at once, so a day never
+    aggregates from only one month's own rows.
+    """
     settlements: list[tuple[datetime, str]] = []
     for row in raw_rows:
         if row[0].strip().lower() == "calc_time":
@@ -576,7 +611,7 @@ def _parse_funding_rows(raw_rows: Sequence[list[str]], filename: str) -> dict[da
             )
         instant = _epoch_to_utc(row[0], f"{filename}: calc_time")
         settlements.append((instant, row[2]))
-    return _aggregate_funding_settlements(settlements, what=filename)
+    return settlements
 
 
 # -- futbars/ -------------------------------------------------------------
@@ -786,12 +821,100 @@ def _backfill_funding_symbol(
     lake_path: Path, spot_symbol: str, um_symbol: str, first: date, last: date,
     *, fetch: ArchiveFetch, sleep: Callable[[float], None], emit: Callable[[str], object], restart: bool,
 ) -> StreamSymbolResult:
+    """Fetch and write ``spot_symbol``'s funding window, pooled across months.
+
+    Unlike :func:`_backfill_monthly_stream` (still used by futbars), every
+    month the window touches -- :func:`_months_between` plus the month
+    holding ``last + 1 day`` 00:00, which supplies the *last* day's own
+    closing settlement -- is fetched and parsed into one flat settlement
+    list before :func:`_aggregate_funding_settlements` buckets any of it by
+    day. A day aggregated from only one month's own rows would be wrong
+    whenever its closing settlement (``D+1 00:00``) lives in the next
+    month's zip; pooling first means every day's row is built from its
+    whole window exactly once, never written partial and then overwritten.
+
+    Resume is per day (:func:`_day_already_written`), not per month: a day
+    already on disk is left alone unless ``restart``. A day is written only
+    when the month holding its own closing instant was itself read -- from
+    the cache or a fresh fetch. A 404 (that month not yet published) or a
+    failed fetch leaves every day whose closing month is that one unwritten
+    this run, so a later run, once the month is available, writes it whole.
+    """
+    days = [first + timedelta(days=n) for n in range((last - first).days + 1)]
+    pending_days = days if restart else [
+        day for day in days if not _day_already_written(lake_path, FUNDING_STREAM, spot_symbol, day)
+    ]
+    if not pending_days:
+        return StreamSymbolResult(stream=FUNDING_STREAM, symbol=spot_symbol, status="ok", rows_written=0)
+
     layout = _MONTHLY_LAYOUT[FUNDING_STREAM]
-    return _backfill_monthly_stream(
-        lake_path, FUNDING_STREAM, spot_symbol, um_symbol, first, last,
-        prefix=layout["prefix"], interval=layout["interval"], subdir=layout["subdir"],
-        parse_rows=_parse_funding_rows,
-        fetch=fetch, sleep=sleep, emit=emit, restart=restart,
+    cache_key = f"{FUNDING_STREAM}/{um_symbol}"
+    months = list(_months_between(first, last))
+    closing_month = _month_key(last + timedelta(days=1))
+    if closing_month not in months:
+        months.append(closing_month)
+
+    settlements: list[tuple[datetime, str]] = []
+    month_ok: dict[str, bool] = {}
+    failed_periods: list[str] = []
+    failure_messages: list[str] = []
+
+    for month in months:
+        url, filename = _archive_zip_url(
+            um_symbol, month, prefix=layout["prefix"], interval=layout["interval"], subdir=layout["subdir"]
+        )
+        try:
+            zip_bytes = fetch_verified_archive_zip(fetch, lake_path, cache_key, url, filename, sleep=sleep)
+        except BarsBackfillError as exc:
+            emit(json.dumps(
+                {"phase": "error", "stream": FUNDING_STREAM, "symbol": spot_symbol, "period": month, "error": str(exc)}
+            ))
+            failed_periods.append(month)
+            failure_messages.append(str(exc))
+            month_ok[month] = False
+            continue
+        if zip_bytes is None:
+            month_ok[month] = False  # not yet published -- quietly, not an error
+            continue
+        try:
+            raw_rows = _unzip_csv_rows(zip_bytes, filename)
+            settlements.extend(_parse_funding_settlements(raw_rows, filename))
+        except DerivsBackfillError as exc:
+            emit(json.dumps(
+                {"phase": "error", "stream": FUNDING_STREAM, "symbol": spot_symbol, "period": month, "error": str(exc)}
+            ))
+            failed_periods.append(month)
+            failure_messages.append(str(exc))
+            month_ok[month] = False
+            continue
+        month_ok[month] = True
+
+    by_day = _aggregate_funding_settlements(settlements, what=f"fundingRate for {um_symbol}")
+
+    written = 0
+    for day in pending_days:
+        if not month_ok.get(_month_key(day + timedelta(days=1)), False):
+            continue  # the month holding this day's closing instant wasn't read
+        fields = by_day.get(day)
+        if fields is None:
+            continue
+        _write_row(lake_path, FUNDING_STREAM, spot_symbol, day, fields)
+        written += 1
+
+    if written == 0 and failed_periods:
+        return StreamSymbolResult(
+            stream=FUNDING_STREAM,
+            symbol=spot_symbol,
+            status="error",
+            failed_periods=tuple(failed_periods),
+            error="; ".join(failure_messages),
+        )
+    return StreamSymbolResult(
+        stream=FUNDING_STREAM,
+        symbol=spot_symbol,
+        status="ok",
+        rows_written=written,
+        failed_periods=tuple(failed_periods),
     )
 
 
@@ -816,31 +939,44 @@ def _backfill_futbars_symbol(
 # -- live rather than crawled from the archive's monthly zips ----------------
 
 
-def _floor_funding_instant(funding_time_ms: int) -> datetime:
-    """``fundingTime`` (epoch ms), floored to the whole second.
+def _funding_time_to_utc(funding_time_ms: int) -> datetime:
+    """``fundingTime`` (epoch ms) as a UTC instant, unfloored.
 
-    The live ``fundingRate`` endpoint sometimes reports a settlement 1 ms
-    past its true instant (e.g. ``1791936000001`` for an exact UTC
-    midnight) -- a processing-delay artifact, not a different settlement
-    time. Flooring before :func:`_day_bucket` removes that artifact so a
-    settlement at ``D+1 00:00:00.001`` still closes ``D``'s window, exactly
-    as the archive's own (already whole-second) ``calc_time`` would.
+    Flooring to the whole second happens once, centrally, in
+    :func:`_aggregate_funding_settlements` -- applied identically to this
+    instant and to the archive's own ``calc_time`` -- rather than here.
     """
-    return (_EPOCH + timedelta(milliseconds=funding_time_ms)).replace(microsecond=0)
+    return _EPOCH + timedelta(milliseconds=funding_time_ms)
+
+
+def _funding_day_is_closed(day: date, now: datetime) -> bool:
+    """Whether ``day``'s own closing instant (``day + 1`` 00:00) is far
+    enough in the past that its closing settlement has had time to post.
+
+    A day whose closing instant plus :data:`FUNDING_REST_CLOSING_PAD` is
+    still later than ``now`` is not necessarily complete yet and must not be
+    written -- the REST counterpart of the archive path's "the month holding
+    the closing instant was read" completeness check.
+    """
+    closing_instant = datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
+    return closing_instant + FUNDING_REST_CLOSING_PAD <= now
 
 
 def _fetch_funding_rest_settlements(
     fetch: BinanceFetch, um_symbol: str, first: date, last: date, *, sleep: Callable[[float], None]
 ) -> list[tuple[datetime, str]]:
-    """Every settlement over ``[first 00:00, last+1 00:00)``, paginated.
+    """Every settlement over ``[first 00:00, last+1 00:00 + 1h)``, paginated.
 
     Pages ``GET /fapi/v1/fundingRate`` by ``startTime``/``endTime`` at
     :data:`FUNDING_REST_PAGE_LIMIT`, advancing ``startTime`` to the last page's
     final ``fundingTime + 1`` until a short page (fewer rows than the limit)
-    confirms the window is exhausted.
+    confirms the window is exhausted. The window closes one hour past
+    ``last + 1 day`` 00:00, not exactly at it, so ``last``'s own closing
+    settlement -- often reported a few milliseconds (or, rarely, longer)
+    past that exact instant -- is still requested and included.
     """
     start_ms = _date_to_ms(first)
-    end_ms = _date_to_ms(last + timedelta(days=1))
+    end_ms = _date_to_ms(last + timedelta(days=1)) + int(FUNDING_REST_CLOSING_PAD.total_seconds() * 1000)
     what = f"fundingRate for {um_symbol}"
     settlements: list[tuple[datetime, str]] = []
     cursor = start_ms
@@ -868,7 +1004,7 @@ def _fetch_funding_rest_settlements(
                     f"{what}: a settlement needs an integer fundingTime and a "
                     f"string fundingRate, got {entry!r}"
                 )
-            settlements.append((_floor_funding_instant(funding_time), funding_rate))
+            settlements.append((_funding_time_to_utc(funding_time), funding_rate))
         if len(document) < FUNDING_REST_PAGE_LIMIT:
             break
         cursor = document[-1]["fundingTime"] + 1
@@ -956,13 +1092,14 @@ def _write_stream_days(
 
 def _backfill_funding_symbol_rest(
     lake_path: Path, spot_symbol: str, um_symbol: str, first: date, last: date,
-    *, fetch: BinanceFetch, sleep: Callable[[float], None], restart: bool,
+    *, fetch: BinanceFetch, sleep: Callable[[float], None], now: datetime, restart: bool,
 ) -> StreamSymbolResult:
     try:
         settlements = _fetch_funding_rest_settlements(fetch, um_symbol, first, last, sleep=sleep)
         by_day = _aggregate_funding_settlements(settlements, what=f"fundingRate for {um_symbol}")
     except (BarsBackfillError, DerivsBackfillError) as exc:
         return StreamSymbolResult(stream=FUNDING_STREAM, symbol=spot_symbol, status="error", error=str(exc))
+    by_day = {day: fields for day, fields in by_day.items() if _funding_day_is_closed(day, now)}
     written = _write_stream_days(lake_path, FUNDING_STREAM, spot_symbol, by_day, first, last, restart=restart)
     return StreamSymbolResult(stream=FUNDING_STREAM, symbol=spot_symbol, status="ok", rows_written=written)
 
@@ -1252,7 +1389,7 @@ def backfill_derivs(
             if stream == FUNDING_STREAM:
                 return _backfill_funding_symbol_rest(
                     lake_path, spot_symbol, um_symbol, first_date, last_date,
-                    fetch=resolved_fetch, sleep=resolved_sleep, restart=restart,
+                    fetch=resolved_fetch, sleep=resolved_sleep, now=rest_now, restart=restart,
                 )
             return _backfill_futbars_symbol_rest(
                 lake_path, spot_symbol, um_symbol, scale, first_date, last_date,

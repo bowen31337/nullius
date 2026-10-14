@@ -227,19 +227,25 @@ def test_funding_day_boundary_rule_including_the_d_plus_one_midnight_settlement(
     assert result.rows_written == 3
 
     # 2020-01-01's own settlement at exactly 00:00:00 rolls back to
-    # 2019-12-31 (outside the window) -- only the 08:00 and 16:00
-    # settlements are its own.
+    # 2019-12-31 (outside the window). Its own 08:00 and 16:00 settlements
+    # are joined by a third: the real archive reports 2020-01-02's own
+    # midnight settlement 2 ms late (``...200002``, not ``...200000``) --
+    # flooring to the whole second before bucketing (this feature) rolls
+    # that one back to 2020-01-01 too, exactly like the exact-midnight case,
+    # rather than leaving it on 2020-01-02 where the pre-flooring code used
+    # to count it.
     day1 = _read_parquet(lake, "funding", "BTCUSDT", date(2020, 1, 1))
-    assert day1["n_settlements"] == 2
-    assert day1["funding_rate_sum"] == "-0.00022047"
-    assert day1["funding_rate_last"] == "-0.00009664"
+    assert day1["n_settlements"] == 3
+    assert day1["funding_rate_sum"] == "-0.00018385"
+    assert day1["funding_rate_last"] == "0.00003662"
 
-    # 2020-01-02 picks up its own 00:00:00.002, 08:00 and 16:00 settlements
-    # *plus* 2020-01-03's settlement at exactly 00:00:00 -- the explicit
-    # "a settlement at D+1 00:00 belongs to D" rule -- for four, not three.
+    # 2020-01-02 loses its own ms-late midnight settlement to 2020-01-01
+    # above, keeping its own 08:00 and 16:00 settlements plus 2020-01-03's
+    # settlement at exactly 00:00:00 -- the explicit "a settlement at D+1
+    # 00:00 belongs to D" rule -- for three, not four.
     day2 = _read_parquet(lake, "funding", "BTCUSDT", date(2020, 1, 2))
-    assert day2["n_settlements"] == 4
-    assert day2["funding_rate_sum"] == "0.00012102"
+    assert day2["n_settlements"] == 3
+    assert day2["funding_rate_sum"] == "0.00008440"
     assert day2["funding_rate_last"] == "-0.00001664"
 
     # 2020-01-03 lost its own midnight settlement to 2020-01-02 above, but
@@ -512,7 +518,7 @@ def test_resume_does_not_refetch_an_already_written_month(tmp_path: Path) -> Non
         "a resumed run must not refetch the symbol map crawl or an "
         "already-written month"
     )
-    assert _read_parquet(lake, "funding", "BTCUSDT", date(2020, 1, 1))["n_settlements"] == 2
+    assert _read_parquet(lake, "funding", "BTCUSDT", date(2020, 1, 1))["n_settlements"] == 3
 
 
 # -- 6. a checksum mismatch skips the month, reports it and exits 1 ---------
