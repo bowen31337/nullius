@@ -757,6 +757,17 @@ def _continue_campaign(
             if result.error is not None:
                 if _is_token_budget_error(result.error):
                     token_budget_hit = True
+                else:
+                    # A child that raised leaves no event and no metrics, so
+                    # without this line the failure is invisible (archP01/02:
+                    # every refined child dropped here unseen).
+                    _logger.warning(
+                        "campaign %s round %d: a child raised and was dropped: %r",
+                        campaign_id,
+                        round_index,
+                        result.error,
+                        exc_info=result.error,
+                    )
                 continue
             outcome = result.value
             nodes.append(outcome.node_id)
