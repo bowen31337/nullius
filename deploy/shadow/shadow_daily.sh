@@ -197,7 +197,12 @@ with open(sys.argv[2], "w", encoding="utf-8") as fh:
   if [[ "${SHADOW_METRICS}" == "1" ]]; then
     log "step 2/6: lake-derivs-backfill --streams metrics --source archive, over ${FIRST}..${LAST}"
     set +e
-    LAKE="${SHADOW_LAKE}" "${RUN_SH}" lake-derivs-backfill --first "${FIRST}" --last "${LAST}" \
+    METRICS_FIRST="${FIRST}"
+    LATEST_METRICS="$(find "${SHADOW_LAKE}/staging/metrics/symbol=${FIRST_SYMBOL:-}" -mindepth 1 -maxdepth 1 -type d -name 'date=*' -printf '%f\n' 2>/dev/null | sed 's/^date=//' | sort | tail -n1)"
+    if [[ -n "${LATEST_METRICS}" ]]; then
+      METRICS_FIRST="$(date -u -d "${LATEST_METRICS} +1 day" +%Y-%m-%d)"
+    fi
+    LAKE="${SHADOW_LAKE}" "${RUN_SH}" lake-derivs-backfill --first "${METRICS_FIRST}" --last "${LAST}" \
       --symbols-from "${UNIVERSE_JSON}" --streams metrics
     metrics_status=$?
     set -e
@@ -261,9 +266,27 @@ if [[ "${#NODE_ARGS[@]}" -eq 0 ]]; then
   exit 1
 fi
 
-exec "${RUN_SH}" shadow-book \
+BOOK_LINE="$("${RUN_SH}" shadow-book \
   --snapshot "${SNAPSHOT_PATH}" \
   --out "${SHADOW_OUT}" \
   --contracts "${CONTRACTS_PATH}" \
   --ticker "${TICKER_PATH}" \
-  "${NODE_ARGS[@]}"
+  "${NODE_ARGS[@]}")"
+echo "${BOOK_LINE}"
+
+# Keep every book as written (book_id = shadow-<decision date>-<nodes hash>),
+# so the forward evaluation can rebuild exactly what was traded.
+HISTORY_DIR="$(dirname "${SHADOW_OUT}")/history"
+mkdir -p "${HISTORY_DIR}"
+BOOK_ID="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["book_id"])' "${SHADOW_OUT}")"
+if [[ ! -f "${HISTORY_DIR}/${BOOK_ID}.json" ]]; then
+  cp -- "${SHADOW_OUT}" "${HISTORY_DIR}/${BOOK_ID}.json"
+fi
+printf '%s\n' "${BOOK_LINE}" >> "${HISTORY_DIR}/shadow-book.jsonl"
+
+# -- the one-time switchover (docs/preregistration/2026-10-15-shadow-v1.md) ------
+# With SHADOW_START set, hand the VST rebalance bot over from the fixture book
+# once the first book on or after SHADOW_START exists (a no-op afterwards).
+if [[ -n "${SHADOW_START:-}" ]]; then
+  SHADOW_OUT="${SHADOW_OUT}" "$(dirname "${BASH_SOURCE[0]}")/shadow_switch.sh"
+fi

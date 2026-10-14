@@ -50,6 +50,13 @@ WorkingDirectory=%h/projects/nullius
 # copy; the system directories follow for `op`, `curl`, `/bin/sh` and the
 # ordinary tools shadow_daily.sh calls.
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# The shadow trades the research book: perp fees, the metrics stream four of the
+# registered nodes read, and the pre-registered start (2026-10-15-shadow-v1.md).
+# runsc's rootless sandbox needs the user's runtime directory.
+Environment=NULLIUS_COST_MODEL_PATH=%h/projects/nullius/packages/cost-model/src/cost_model/binance_usdm.yaml
+Environment=SHADOW_METRICS=1
+Environment=SHADOW_START=2026-10-19
+Environment=XDG_RUNTIME_DIR=/run/user/%U
 # The token is read from the operator's own file (mode 0600) at start,
 # inside the shell, and never written into this unit. `$$` is systemd's
 # escape for a literal dollar — a bare `$(cat …)` would be consumed by

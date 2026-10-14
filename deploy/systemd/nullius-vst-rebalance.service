@@ -54,8 +54,10 @@ WorkingDirectory=%h/projects/nullius
 # It goes first so the pinned interpreter wins over any system copy; the
 # system directories follow for `op`, `/bin/sh` and the ordinary tools.
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-# One slot.  `run.sh` already injects the VST key and the store URL; the
-# book is the synthetic Stage 0 book this feature ships with.
+# One slot.  `run.sh` already injects the VST key and the store URL.  The
+# book is ~/.local/share/nullius/shadow/active_book.json: a symlink to the
+# synthetic Stage 0 fixture until deploy/shadow/shadow_switch.sh repoints it
+# at the forward-shadow book (docs/preregistration/2026-10-15-shadow-v1.md).
 #
 # The token is read from the operator's own file (mode 0600) at start, inside
 # the shell, and never written into this unit.  `$$` is systemd's escape for a
@@ -66,7 +68,7 @@ Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # *failure* (exit 2, outside SuccessExitStatus below) with a message naming
 # the file, rather than a run of `op` with no credentials.  `%h` stays a
 # systemd specifier because it must resolve here; only the dollar is doubled.
-ExecStart=/bin/sh -c 'OP_SERVICE_ACCOUNT_TOKEN="$$(cat %h/.config/op/service-token)"; export OP_SERVICE_ACCOUNT_TOKEN; : "$${OP_SERVICE_ACCOUNT_TOKEN:?1Password service token unreadable — see %h/.config/op/service-token}"; exec %h/projects/nullius/run.sh vst-rebalance --book packages/router/tests/fixtures/bingx_vst/synthetic_book.json'
+ExecStart=/bin/sh -c 'OP_SERVICE_ACCOUNT_TOKEN="$$(cat %h/.config/op/service-token)"; export OP_SERVICE_ACCOUNT_TOKEN; : "$${OP_SERVICE_ACCOUNT_TOKEN:?1Password service token unreadable — see %h/.config/op/service-token}"; exec %h/projects/nullius/run.sh vst-rebalance --book %h/.local/share/nullius/shadow/active_book.json'
 # A slot that fails (exit 1: a refused leg, exit 3: a daily-loss halt) is
 # recorded by systemd and by the JSON line the command prints to the
 # journal; it is not restarted here, because the timer's next slot handles
