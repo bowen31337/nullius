@@ -1665,13 +1665,45 @@ _CLOSE_CACHE: dict[tuple[str, str, str, dt.date], float] = {}
 #: 139k closes were read about 8 times over).
 _CLOSE_LOCK = threading.Lock()
 
+#: ``{(stream, snapshot_hash, symbol): (dates, date set)}`` — each symbol's
+#: partition listing, read once per process.  A listing is not free: on the
+#: archive snapshot :meth:`SnapshotMount.dates` costs about 77 ms, and
+#: :class:`_LazyCloses`/:class:`_LazyFunding` hand out a fresh per-symbol
+#: mapping on every index, so the beta window and the funding carry (one
+#: lookup per date x symbol x day) re-listed the same directory hundreds of
+#: thousands of times — a single archP00 root ran for 15+ minutes on
+#: listings alone.  The set makes ``day in closes`` O(1) instead of a scan
+#: over a 2000-date tuple.  A sealed snapshot's listing never changes.
+_DATES_CACHE: dict[tuple[str, str, str], tuple[tuple[dt.date, ...], frozenset[dt.date]]] = {}
+_DATES_LOCK = threading.Lock()
+
+
+def _listed_dates(
+    mount: SnapshotMount, stream: str, snapshot_hash: str, symbol: str
+) -> tuple[tuple[dt.date, ...], frozenset[dt.date]]:
+    """``symbol``'s partition dates in ``stream``, listed once per process."""
+    key = (stream, snapshot_hash, symbol)
+    try:
+        return _DATES_CACHE[key]
+    except KeyError:
+        pass
+    with _DATES_LOCK:
+        cached = _DATES_CACHE.get(key)
+        if cached is None:
+            dates = tuple(
+                dt.date.fromisoformat(iso) for iso in mount.dates(stream, symbol)
+            )
+            cached = (dates, frozenset(dates))
+            _DATES_CACHE[key] = cached
+        return cached
+
 
 class _LazySymbolCloses(Mapping[dt.date, float]):
     """One symbol's closes — read and memoized one bar at a time.
 
     The dates this maps are a directory listing
-    (:meth:`SnapshotMount.dates`, free), fetched once and cached on the
-    instance; the *prices* are read only when a date is actually looked
+    (:meth:`SnapshotMount.dates`, about 77 ms on the archive), fetched once
+    per process through :func:`_listed_dates`; the *prices* are read only when a date is actually looked
     up, through :func:`_read_close` — which is where the poisoned-close
     and duplicate-bar refusals a symbol's own partitions can still raise
     now fire: at first use, not at load.
@@ -1686,7 +1718,6 @@ class _LazySymbolCloses(Mapping[dt.date, float]):
 
     __slots__ = (
         "_close_column",
-        "_dates",
         "_day_column",
         "_mount",
         "_snapshot_hash",
@@ -1710,21 +1741,20 @@ class _LazySymbolCloses(Mapping[dt.date, float]):
         self._stream = stream
         self._day_column = day_column
         self._close_column = close_column
-        self._dates: tuple[dt.date, ...] | None = None
+
+    def _listing(self) -> tuple[tuple[dt.date, ...], frozenset[dt.date]]:
+        return _listed_dates(
+            self._mount, self._stream, self._snapshot_hash, self._symbol
+        )
 
     def _available(self) -> tuple[dt.date, ...]:
-        if self._dates is None:
-            self._dates = tuple(
-                dt.date.fromisoformat(iso)
-                for iso in self._mount.dates(self._stream, self._symbol)
-            )
-        return self._dates
+        return self._listing()[0]
 
     def __contains__(self, day: object) -> bool:
-        return isinstance(day, dt.date) and day in self._available()
+        return isinstance(day, dt.date) and day in self._listing()[1]
 
     def __getitem__(self, day: dt.date) -> float:
-        if day not in self._available():
+        if day not in self._listing()[1]:
             raise KeyError(day)
         cache_key = (self._stream, self._snapshot_hash, self._symbol, day)
         try:
@@ -1897,33 +1927,33 @@ class _LazySymbolFunding(Mapping[dt.date, float]):
     """One symbol's ``funding_rate_sum``, read and memoized one row at a time.
 
     The funding counterpart to :class:`_LazySymbolCloses`: the dates this
-    maps are a directory listing (free), and the values are read only when
+    maps are a directory listing (cached per process by
+    :func:`_listed_dates`), and the values are read only when
     a date is actually looked up.  Unlike a close, a funding rate may
     legitimately be negative (a short-pays-long settlement), so the
     validator only demands a finite number — see :func:`_funding_value`.
     """
 
-    __slots__ = ("_dates", "_mount", "_snapshot_hash", "_symbol")
+    __slots__ = ("_mount", "_snapshot_hash", "_symbol")
 
     def __init__(self, mount: SnapshotMount, snapshot_hash: str, symbol: str) -> None:
         self._mount = mount
         self._snapshot_hash = snapshot_hash
         self._symbol = symbol
-        self._dates: tuple[dt.date, ...] | None = None
+
+    def _listing(self) -> tuple[tuple[dt.date, ...], frozenset[dt.date]]:
+        return _listed_dates(
+            self._mount, FUNDING_STREAM, self._snapshot_hash, self._symbol
+        )
 
     def _available(self) -> tuple[dt.date, ...]:
-        if self._dates is None:
-            self._dates = tuple(
-                dt.date.fromisoformat(iso)
-                for iso in self._mount.dates(FUNDING_STREAM, self._symbol)
-            )
-        return self._dates
+        return self._listing()[0]
 
     def __contains__(self, day: object) -> bool:
-        return isinstance(day, dt.date) and day in self._available()
+        return isinstance(day, dt.date) and day in self._listing()[1]
 
     def __getitem__(self, day: dt.date) -> float:
-        if day not in self._available():
+        if day not in self._listing()[1]:
             raise KeyError(day)
         cache_key = (self._snapshot_hash, self._symbol, day)
         try:
