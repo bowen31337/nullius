@@ -1,0 +1,261 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — forward shadow: run research nodes daily on fresh data and write the BingX VST book</project_name>
+  <addition_summary>
+    M2 has failed six pre-registered tests, all on one archive OOS window,
+    which is now reused seven times. The PRD's next lever is a forward
+    shadow on the perp venue. Forward data cannot be contaminated by that
+    reuse, and VST is simulated funds, so no capital is at risk.
+
+    Today the VST bot (router, bingx_rebalance) trades only the
+    hand-written fixture book (packages/router/tests/fixtures/bingx_vst/synthetic_book.json),
+    and nothing writes a book file. This spec builds the path:
+    - the book weights research scores, as a public function
+    - a stored research node's signal run on the latest sealed snapshot
+    - a book file in the router's schema, from one or more nodes
+    - a daily refresh, seal, prune and book job, with run.sh verbs and a
+      systemd timer
+    Pointing the rebalance unit at the produced book is an operator step,
+    and it is not in this spec.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / Polars / SQLite / pytest.</stack>
+    <test_baseline>main at c3d9f50: gate 1666 passed; evaluator 591; orchestrator 661 passed 5 skipped.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md. A code map from 2026-10-14:
+      - evaluator/_metrics.py compute_node_metrics:
+        - per date, weights = {s: z_s / Σ|z|} over the date's book symbols
+          (~:831)
+        - with betas, _beta_neutral_weights(weights, beta_row) (~:553)
+          rescales the legs to gl = β_S/(β_L+β_S), falling back to the
+          plain weights on a degenerate split
+      - orchestrator/_evaluate.py evaluate_node (~:1438). Its execution
+        chain, which the shadow must reproduce for one date:
+        - signal_sandbox(context)
+        - resolve_window(context.snapshot, datetime.combine(D, _END_OF_DAY))
+        - execute_signal(resolution, code, seed=context.seed,
+          rebalance_dates=[D], sandbox=..., materialize=_materialize_from_context(context))
+        - conforming check per vector
+        - _drop_unpriced_symbols(execution, context)
+        - _score_rebalance_dates(execution, node_id), the z-scores
+        - compute_betas(context, scores) when context.book.beta_neutral
+      - SignalExecution.code_hash is sha256(code) (evaluator/_execute.py
+        ~:383). The node table row carries code_hash, and the artifact is
+        artifact_dir/CAMPAIGN_ID/NODE_ID/code.py.
+      - load_evaluation_context() reads NULLIUS_EVALUATION_CONFIG (JSON):
+        snapshot_mount, evaluation_dates, horizon, seed, instrument, book,
+        sandbox keys and so on. It needs NULLIUS_EVALUATOR_IMAGE and
+        NULLIUS_COST_MODEL_PATH (perp: binance_usdm.yaml) in the
+        environment. It is used read-only here: no ledger debit, no null
+        oracle, no tree write.
+      - The research rebalance grid is every 14 days from 2022-01-03
+        (Mondays), with horizon 10 days.
+      - The router book JSON (synthetic_book.json; bingx_dry_run.py
+        ~:316-408; bingx_mirror.py ~:1064-1155, 1410-1447) has these keys:
+        - book_id: str
+        - rebalance_ts: ISO UTC, overwritten per slot
+        - account "bingx-vst"
+        - margin_mode "isolated"
+        - equity_usdt: decimal string
+        - weights {"BASE-USDT": signed fraction of equity}, non-empty
+        - decay_horizon_seconds {symbol: int}
+        - expected_fill_seconds: int
+        - positions {}: replaced by live positions
+        - optional originating_signal_ids: non-empty list of str, which
+          makes book.RebalanceTargetWeightsStore record the slot
+      - Lake symbols are Binance-style "BTCUSDT"; BingX contracts are
+        "BTC-USDT". The BingX contracts document (public
+        /openApi/swap/v2/quote/contracts, the shape bingx_dry_run
+        --contracts reads; fixture packages/router/tests/fixtures/bingx_vst/)
+        lists each contract's "symbol".
+      - run.sh verbs lake-backfill (nullius_ingest.bars_backfill --lake
+        --first --last --source rest|archive --symbols|--top),
+        lake-derivs-backfill (nullius_ingest.derivs_backfill --lake --first
+        --last --symbols-from universe.json --streams funding,futbars[,metrics])
+        and lake-seal (snapshot.seal --lake) exist and honour LAKE. A sealed
+        snapshot is LAKE/snapshots/TS_HASH/ with bars, funding, futbars,
+        metrics and MANIFEST.json.
+      - The deploy/systemd units follow nullius-vst-rebalance.service's
+        pattern: oneshot, PATH, the token read from
+        ~/.config/op/service-token, OnFailure=nullius-vst-alert@%n.service,
+        and never installed by the repo.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Forward Shadow">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/evaluator/src/evaluator/_metrics.py,packages/evaluator/src/evaluator/__init__.py,packages/evaluator/tests/test_book_weights.py">
+        System exposes the research book's per-date weights as one public function, so that a forward shadow trades exactly the book an evaluation scored.
+        - evaluator.book_weights(scores: Mapping[str, float], betas:
+          Mapping[str, float] | None = None) -> dict[str, float] returns
+          the dollar-neutral, gross-1 weights z_s/Σ|z| for one date. With
+          betas, they are rescaled by the existing beta-neutral leg rule,
+          including its fallback.
+          - Empty scores, or scores whose Σ|z| is 0, are refused with
+            EvaluatorMetricsError.
+          - Non-finite values are refused the same way.
+        - compute_node_metrics uses book_weights for its own per-date
+          weights, so the two cannot drift. Every existing evaluator test
+          passes unchanged, and its figures are byte-identical.
+        - book_weights is exported from evaluator/__init__.py.
+        - test_book_weights.py covers:
+          - hand-computed plain and beta-neutral examples
+          - net weight 0 and gross 1 within 1e-12
+          - book beta 0 within 1e-12 when every symbol has a beta
+          - the degenerate-leg fallback
+          - the refusals
+          - for one evaluation date of a small synthetic panel, the weights
+            compute_node_metrics trades (its turnover on a one-date panel
+            is Σ|w|) agree with book_weights
+          It passes under pytest-xdist. The evaluator member suite passes.
+      </feature>
+      <feature index="2" shape="core" depends_on="1"
+               touches_files="packages/orchestrator/src/orchestrator/_shadow.py,packages/orchestrator/tests/test_shadow_weights.py">
+        System computes a research node's current target weights from the latest sealed data, so that a stored signal can be traded forward on the venue it was scored for.
+        - orchestrator._shadow.shadow_weights(context, code, *, as_of:
+          date, allowed_symbols: Collection[str] | None = None) ->
+          ShadowWeights. ShadowWeights is a frozen dataclass with:
+          - as_of
+          - weights: dict[str, float], keyed by lake symbol
+          - code_hash
+          - n_scored, n_dropped_unpriced, n_dropped_unmapped
+          - book_beta: float | None, Σ w·β over symbols with a beta
+        - It reproduces evaluate_node's execution chain for one date
+          (see conventions) with rebalance_dates=[as_of], and the same seed
+          and sandbox. Then:
+          - drop unpriced symbols
+          - drop symbols not in allowed_symbols, before z-scoring, so the
+            traded book stays dollar- and beta-neutral
+          - z-score as _score_rebalance_dates does
+          - compute_betas when context.book.beta_neutral
+          - evaluator.book_weights
+        - It never debits the trial ledger, never calls the null oracle and
+          never writes the tree. A forward shadow is not a trial.
+        - It refuses with a ShadowError (new, in _shadow.py, subclassing
+          the orchestrator's error base) naming the cause:
+          - a non-conforming score vector, or the sandbox's failure
+          - fewer than two scored symbols in either leg
+          - an as_of with no perp close for the beta benchmark when the
+            book is beta-neutral
+        - Point-in-time: no row after as_of is read.
+        - test_shadow_weights.py covers, over a tmp sealed snapshot with
+          bars, futbars and funding, and the hardened-subprocess sandbox
+          the existing evaluate tests use:
+          - weights for a simple momentum code at the snapshot's last date
+            equal book_weights applied to the evaluation's own z-scores and
+            betas for that date
+          - net weight 0, gross 1, and book_beta about 0 when beta-neutral
+          - allowed_symbols filtering
+          - no ledger, node or trial row is written
+          - a planted future row does not change the answer
+          - the refusals
+          It passes under pytest-xdist. The orchestrator member suite
+          passes (run at -n 2).
+      </feature>
+      <feature index="3" shape="core" depends_on="2"
+               touches_files="packages/orchestrator/src/orchestrator/shadow.py,packages/orchestrator/tests/test_shadow_cli.py">
+        System writes the BingX VST book file from one or more research nodes, so that the rebalance bot trades a research book instead of the synthetic fixture.
+        - `python -m orchestrator.shadow --snapshot PATH --node CAMPAIGN_ID/NODE_ID [--node ...] --out PATH --contracts PATH [--equity-usdt 10000] [--gross 1.0] [--grid-anchor 2022-01-03] [--grid-days 14]`.
+        - It loads the evaluation context through load_evaluation_context.
+          The deployment's NULLIUS_EVALUATION_CONFIG supplies instrument,
+          book, horizon, seed and sandbox. Its snapshot_mount is replaced by
+          --snapshot, and its evaluation_dates by [D] (a temp config file
+          and env override; the original file is never edited).
+        - The decision date D is the latest date on the grid
+          (anchor + k·grid-days) that is at most the snapshot's last date
+          carrying both a bars close and a perp close for BTCUSDT.
+        - Hold rule: if --out already holds a book whose book_id is
+          "shadow-D-HASH", where HASH is the first 12 hex digits of the
+          sha256 of the sorted node ids, nothing is recomputed. It prints
+          held=true and exits 0. The research book holds its weights
+          between rebalance dates.
+        - Each node's code is read from artifact_dir/CAMPAIGN_ID/NODE_ID/code.py.
+          The sha256 must equal the node row's code_hash in the store at
+          DATABASE_URL; a mismatch or a missing node is refused (exit 1).
+        - Symbols are mapped from lake to BingX. "XUSDT" becomes "X-USDT"
+          when the contracts document lists it. "1000XUSDT" becomes
+          "1000X-USDT" (or "X-USDT") when listed. Unmapped symbols are
+          passed as excluded through allowed_symbols, so each node's book
+          is formed over tradable symbols only.
+        - Books are combined as the equal-weight mean of the nodes'
+          ShadowWeights.weights. The mean is renormalised to gross --gross,
+          and weights below 1e-6 of equity are dropped.
+        - The book JSON is written atomically (temp file in the same
+          directory, then os.replace) with:
+          - book_id "shadow-D-HASH"
+          - rebalance_ts D at 00:00 UTC
+          - account "bingx-vst"
+          - margin_mode "isolated"
+          - equity_usdt from --equity-usdt
+          - weights keyed by BingX symbol
+          - decay_horizon_seconds = horizon × 86400 for every symbol
+          - expected_fill_seconds 120
+          - positions {}
+          - originating_signal_ids = the node ids
+        - It prints one JSON line: as_of, decision_date, held, book_path,
+          nodes, n_long, n_short, gross, book_beta (mean of the nodes'),
+          n_dropped_unmapped. Exit 0 means written or held, 1 means
+          refused, and 2 means a missing DATABASE_URL or evaluation config.
+        - test_shadow_cli.py covers, with a stubbed shadow_weights (no
+          sandbox):
+          - the decision-date grid
+          - the hold rule
+          - the code_hash refusal
+          - symbol mapping, including the 1000-prefix
+          - equal-weight combination and gross
+          - the atomic write
+          - the exact key set of the book
+          - one round-trip: the written book is accepted by the router's
+            own book loader in bingx_dry_run, run as a subprocess with
+            --contracts on the router's fixture, so no router file is
+            edited
+          It passes under pytest-xdist.
+      </feature>
+      <feature index="4" shape="core" depends_on=""
+               touches_files="run.sh,deploy/shadow/shadow_daily.sh,deploy/systemd/nullius-shadow.service,deploy/systemd/nullius-shadow.timer">
+        System runs the forward shadow daily from one script and one timer, so that the book the VST bot trades is rebuilt from fresh data without manual steps.
+        - Two new run.sh verbs:
+          - `shadow-book`: python -m orchestrator.shadow under
+            `op run --env-file=.env.campaign.tpl` (as closeout does; never
+            .env.tpl), defaulting DATABASE_URL to research.db.
+          - `shadow-daily`: deploy/shadow/shadow_daily.sh.
+        - deploy/shadow/shadow_daily.sh (bash, set -euo pipefail) reads:
+          - SHADOW_LAKE, default ~/.local/share/nullius/lake-shadow
+          - SHADOW_NODES, default ~/.config/nullius/shadow/nodes.txt, one
+            CAMPAIGN_ID/NODE_ID per line
+          - SHADOW_OUT, default ~/.local/share/nullius/shadow/book.json
+          - SHADOW_KEEP, default 3
+        - Its steps:
+          1. `--bootstrap DAYS` on an empty lake stages the last DAYS days
+             of bars, with `--source rest --top 100`, and writes
+             universe.json from the staged symbols if absent. Otherwise
+             --first is the day after the latest staged bars date of the
+             universe's first symbol, and --last is yesterday UTC.
+          2. lake-backfill, then lake-derivs-backfill with --streams
+             funding,futbars, plus metrics when SHADOW_METRICS=1, over the
+             same window. A day the archive has not published yet is
+             tolerated: the script continues, and the book step picks the
+             latest complete date.
+          3. lake-seal. The newest snapshot path is taken from its JSON
+             line.
+          4. Delete all but the newest SHADOW_KEEP snapshots, under
+             SHADOW_LAKE/snapshots only, matched by the TS_HASH name
+             pattern.
+          5. Fetch the public BingX contracts document with curl (no key)
+             to SHADOW_LAKE/contracts.json.
+          6. `run.sh shadow-book --snapshot ... --out ... --contracts ...`,
+             with one --node per nodes.txt line.
+          Each step logs one line, and the script exits with the first
+          failing step's code.
+        - deploy/systemd/nullius-shadow.service and .timer follow
+          nullius-vst-rebalance.service's pattern (oneshot, PATH, token
+          file, OnFailure alert). The timer runs daily at 02:30 UTC with
+          Persistent=true, before the 04:05 rebalance slot. Comments state
+          that the repo installs nothing and that switching the rebalance
+          unit's --book is an operator step.
+        - A bash -n syntax check of shadow_daily.sh passes. The script runs
+          with --help and prints its variables.
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>
