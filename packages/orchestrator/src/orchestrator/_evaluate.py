@@ -107,6 +107,19 @@ shipped before this feature existed), and left ``None`` on every failure
 path the same way every other metric is — never written, because
 :func:`_persist` is never reached before ``metrics`` exists.
 
+**The configured book construction is what both ``compute_node_metrics``
+calls measure against.**  additions_spec_research_book_v2.xml feature 2:
+when ``context.book.beta_neutral`` is set, :func:`orchestrator._context.compute_betas`
+answers this evaluation's point-in-time per-date betas from
+``context.closes`` — never a row after the date being scored — and both
+``evaluate_node`` and ``evaluate_on_dates`` hand them to every
+``compute_node_metrics`` call they make, the net figure and
+:func:`_gross_ir_tstat`'s gross diagnostic alike, so neither figure is
+silently measured against a different book from the other.  ``None`` when
+the block is absent or ``beta_neutral`` is false, which reproduces every
+figure exactly as this module measured them before the book carried an
+opinion.
+
 **``charges_budget`` is the oracle's bit, nothing else, and it defaults
 conservatively until the oracle has spoken.**  Before ``gate_targets`` asks
 the oracle, a failure (a bad import screen, a broken window, a crashed
@@ -188,6 +201,7 @@ from ._context import (
     BARS_STREAM,
     DEFAULT_MAX_HISTORY_DAYS,
     EvaluationContext,
+    compute_betas,
     signal_sandbox,
 )
 from ._tree_writer import NodeMetricsWriter
@@ -811,7 +825,10 @@ def _turnover_fee_from_context(context: EvaluationContext) -> float:
 
 
 def _gross_ir_tstat(
-    priced: PostCostReturns, scores: Mapping[Any, Any]
+    priced: PostCostReturns,
+    scores: Mapping[Any, Any],
+    *,
+    betas: Mapping[dt.date, Mapping[str, float]] | None = None,
 ) -> float:
     """``ir_tstat`` recomputed over the same panel with no turnover charge.
 
@@ -819,9 +836,14 @@ def _gross_ir_tstat(
     every net figure: the same ``compute_node_metrics`` call the net figure
     came from, with ``cost_per_unit_traded=0.0`` — the pre-fix reading —
     so a caller comparing the two sees exactly what the venue fee cost this
-    node's own book.
+    node's own book.  ``betas`` (additions_spec_research_book_v2.xml feature
+    2) is handed through unchanged, so the gross diagnostic is measured
+    over the same beta-neutral book as the net figure — never the plain
+    dollar-neutral one the net figure no longer is.
     """
-    gross = compute_node_metrics(priced, scores, cost_per_unit_traded=0.0)
+    gross = compute_node_metrics(
+        priced, scores, cost_per_unit_traded=0.0, betas=betas
+    )
     return gross.ir_standalone * math.sqrt(gross.dates)
 
 
@@ -1429,6 +1451,7 @@ def evaluate_node(
                 )
 
         scores, flat_dates = _score_rebalance_dates(execution, node_id)
+        betas = compute_betas(context, scores) if context.book.beta_neutral else None
         alignment = align_targets(execution, context.closes)
         gated = gate_targets(
             alignment, oracle, node_id=node_id, campaign_id=campaign_id, depth=depth
@@ -1441,7 +1464,10 @@ def evaluate_node(
             cost_model=context.cost_model,
         )
         metrics = compute_node_metrics(
-            priced, scores, cost_per_unit_traded=_turnover_fee_from_context(context)
+            priced,
+            scores,
+            cost_per_unit_traded=_turnover_fee_from_context(context),
+            betas=betas,
         )
         tripwire_outcome = run_tripwires(
             scores,
@@ -1487,7 +1513,7 @@ def evaluate_node(
 
     cost_adjusted_ir = _cost_adjusted_ir(priced, metrics)
     ir_tstat = metrics.ir_standalone * math.sqrt(metrics.dates)
-    ir_tstat_gross = _gross_ir_tstat(priced, scores)
+    ir_tstat_gross = _gross_ir_tstat(priced, scores, betas=betas)
 
     _persist_tripwire_verdicts(
         tripwire_outcome, node_id=node_id, database_url=context.database_url
@@ -1708,6 +1734,7 @@ def evaluate_on_dates(
             )
 
     scores, _flat_dates = _score_rebalance_dates(execution, node_id)
+    betas = compute_betas(context, scores) if context.book.beta_neutral else None
     alignment = align_targets(execution, context.closes)
     gated = gate_targets(
         alignment, oracle, node_id=node_id, campaign_id=campaign_id, depth=depth
@@ -1719,10 +1746,13 @@ def evaluate_on_dates(
         cost_model=context.cost_model,
     )
     metrics = compute_node_metrics(
-        priced, scores, cost_per_unit_traded=_turnover_fee_from_context(context)
+        priced,
+        scores,
+        cost_per_unit_traded=_turnover_fee_from_context(context),
+        betas=betas,
     )
     return _OutOfSampleEvaluation(
         metrics,
         _cost_adjusted_ir(priced, metrics),
-        _gross_ir_tstat(priced, scores),
+        _gross_ir_tstat(priced, scores, betas=betas),
     )

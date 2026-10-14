@@ -146,8 +146,8 @@ import os
 import re
 import shutil
 import threading
-from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
@@ -177,7 +177,10 @@ from ._hardened_sandbox import HardenedSubprocessSandbox
 __all__ = [
     "ACKNOWLEDGE_UNISOLATED_KEY",
     "BARS_STREAM",
+    "BOOK_KEY",
     "BWRAP_RUNTIME",
+    "DEFAULT_BETA_BENCHMARK",
+    "DEFAULT_BETA_WINDOW_DAYS",
     "DEFAULT_EVALUATION_MODE",
     "DEFAULT_EVALUATION_WORKERS",
     "DEFAULT_MAX_HISTORY_DAYS",
@@ -198,8 +201,10 @@ __all__ = [
     "REQUIRED_KEYS",
     "SANDBOX_RUNTIMES",
     "TEST_STUB_SANDBOX_ENV",
+    "BookConfig",
     "EvaluationConfigError",
     "EvaluationContext",
+    "compute_betas",
     "load_evaluation_context",
     "signal_sandbox",
 ]
@@ -349,6 +354,29 @@ DEFAULT_EVALUATION_MODE: Final[str] = "process"
 #: in-sample window's forward returns already covered.
 OOS_DATES_KEY: Final[str] = "oos_dates"
 
+#: The optional key naming the research book construction —
+#: additions_spec_research_book_v2.xml feature 2.  Absent means
+#: :data:`BookConfig`'s own defaults (``beta_neutral=False``), the same
+#: unchanged-behaviour stance :data:`MAX_HISTORY_DAYS_KEY` takes toward its
+#: own optional knob.  Present, its value is a JSON object validated by
+#: :func:`_book_config`: a closed vocabulary of its own
+#: (``beta_neutral``, ``beta_window_days``, ``beta_benchmark``), so a
+#: typo'd inner key is refused rather than silently ignored.
+BOOK_KEY: Final[str] = "book"
+
+#: :data:`BOOK_KEY`'s three inner keys.
+_BOOK_BETA_NEUTRAL_KEY: Final[str] = "beta_neutral"
+_BOOK_BETA_WINDOW_DAYS_KEY: Final[str] = "beta_window_days"
+_BOOK_BETA_BENCHMARK_KEY: Final[str] = "beta_benchmark"
+
+#: ``beta_window_days``' default — the trailing daily returns a point-in-time
+#: beta is regressed over, when the document omits the key.
+DEFAULT_BETA_WINDOW_DAYS: Final[int] = 60
+
+#: ``beta_benchmark``'s default — the symbol :func:`compute_betas` regresses
+#: every other symbol's returns on, when the document omits the key.
+DEFAULT_BETA_BENCHMARK: Final[str] = "BTCUSDT"
+
 #: Test-only environment variable naming a stub signal executor as
 #: ``"<path-to-.py-file>:<zero-arg-factory-name>"`` — read directly off
 #: the environment (never the JSON document's closed vocabulary, so it
@@ -384,6 +412,31 @@ class EvaluationConfigError(Exception):
     and names the key or variable at fault, so an operator's next action
     is the message's last noun.
     """
+
+
+@dataclass(frozen=True)
+class BookConfig:
+    """The research book's construction — :data:`BOOK_KEY`'s parsed value.
+
+    ``beta_neutral=False`` (with the other two fields at their own
+    defaults) is what every context carries when the document omits
+    :data:`BOOK_KEY` entirely — today's plain dollar-neutral book,
+    unchanged.  With ``beta_neutral=True``,
+    :func:`orchestrator._evaluate.evaluate_node` and
+    :func:`~orchestrator._evaluate.evaluate_on_dates` ask :func:`compute_betas`
+    for this evaluation's point-in-time betas and hand them to
+    :func:`evaluator.compute_node_metrics`, which rescales each date's book so
+    its long and short legs carry equal benchmark beta.
+    """
+
+    #: Whether the book is rescaled to be benchmark-beta-neutral.
+    beta_neutral: bool = False
+    #: How many trailing daily returns a point-in-time beta is regressed
+    #: over — :data:`DEFAULT_BETA_WINDOW_DAYS` when the document omits it.
+    beta_window_days: int = DEFAULT_BETA_WINDOW_DAYS
+    #: The symbol every beta is regressed against —
+    #: :data:`DEFAULT_BETA_BENCHMARK` when the document omits it.
+    beta_benchmark: str = DEFAULT_BETA_BENCHMARK
 
 
 @dataclass(frozen=True)
@@ -502,6 +555,11 @@ class EvaluationContext:
     #: window* rather than an invented one.
     #: :func:`orchestrator._evaluate.evaluate_on_dates` is the one reader.
     oos_dates: tuple[dt.date, ...] = ()
+    #: The research book's construction, read from the optional
+    #: :data:`BOOK_KEY` (:class:`BookConfig`'s own defaults when absent).
+    #: :func:`orchestrator._evaluate.evaluate_node` and
+    #: :func:`~orchestrator._evaluate.evaluate_on_dates` are the readers.
+    book: BookConfig = field(default_factory=BookConfig)
 
 
 def load_evaluation_context(
@@ -554,6 +612,7 @@ def load_evaluation_context(
     evaluation_workers = _evaluation_workers(document, named)
     evaluation_mode = _evaluation_mode(document, named)
     oos_dates = _oos_dates(document, named, dates, horizon)
+    book = _book_config(document, named)
     test_stub_sandbox = source.get(TEST_STUB_SANDBOX_ENV) or None
     database_url = _database_url(source)
 
@@ -591,6 +650,7 @@ def load_evaluation_context(
         evaluation_mode=evaluation_mode,
         test_stub_sandbox=test_stub_sandbox,
         oos_dates=oos_dates,
+        book=book,
     )
 
 
@@ -659,6 +719,7 @@ def _refuse_unknown_keys(document: Mapping[str, Any], named: str) -> None:
             EVALUATION_WORKERS_KEY,
             EVALUATION_MODE_KEY,
             OOS_DATES_KEY,
+            BOOK_KEY,
         )
     )
     for key in document:
@@ -671,8 +732,8 @@ def _refuse_unknown_keys(document: Mapping[str, Any], named: str) -> None:
                 f"unisolated, {GVISOR_RUNTIME_ROOT_KEY!r}, "
                 f"{GVISOR_STATE_ROOT_KEY!r} and {LAKE_ROOTS_KEY!r} when it "
                 f"is gvisor, and the always-optional {MAX_HISTORY_DAYS_KEY!r}, "
-                f"{EVALUATION_WORKERS_KEY!r}, {EVALUATION_MODE_KEY!r} and "
-                f"{OOS_DATES_KEY!r}); "
+                f"{EVALUATION_WORKERS_KEY!r}, {EVALUATION_MODE_KEY!r}, "
+                f"{OOS_DATES_KEY!r} and {BOOK_KEY!r}); "
                 "the file never holds a credential — every "
                 "key is one the loader defines, and an unknown key is "
                 "refused rather than read past. Credentials live where "
@@ -856,6 +917,78 @@ def _oos_dates(
                 "forward return that overlaps the in-sample window"
             )
     return tuple(dates)
+
+
+def _book_config(document: Mapping[str, Any], named: str) -> BookConfig:
+    """:data:`BOOK_KEY`'s parsed value — :class:`BookConfig`'s own defaults
+    when the document omits it, so an absent block leaves
+    ``book.beta_neutral`` false and every figure unchanged.
+
+    Present, the value must be a JSON object holding only
+    ``beta_neutral`` (required — there is no default for the field that
+    decides whether the book is rescaled at all), ``beta_window_days``
+    (a positive integer, :data:`DEFAULT_BETA_WINDOW_DAYS` when absent)
+    and ``beta_benchmark`` (a non-blank string, :data:`DEFAULT_BETA_BENCHMARK`
+    when absent); any other inner key is refused by name, the same closed
+    vocabulary discipline :func:`_refuse_unknown_keys` holds for the
+    outer document.
+    """
+    if BOOK_KEY not in document:
+        return BookConfig()
+    raw = document[BOOK_KEY]
+    if not isinstance(raw, Mapping):
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {BOOK_KEY!r} must be a JSON "
+            f"object, got {type(raw).__name__}"
+        )
+    allowed = frozenset(
+        (_BOOK_BETA_NEUTRAL_KEY, _BOOK_BETA_WINDOW_DAYS_KEY, _BOOK_BETA_BENCHMARK_KEY)
+    )
+    for key in raw:
+        if key not in allowed:
+            raise EvaluationConfigError(
+                f"{EVALUATION_CONFIG_CODE}: {key!r} is not a key of "
+                f"{BOOK_KEY!r} (the keys are {', '.join(sorted(allowed))}); "
+                f"an unknown key inside {BOOK_KEY!r} is refused rather "
+                "than read past"
+            )
+    if _BOOK_BETA_NEUTRAL_KEY not in raw:
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {_BOOK_BETA_NEUTRAL_KEY!r} is "
+            f"missing from {BOOK_KEY!r} at {named!r}; there is no default "
+            "— a book block without it does not say whether the book is "
+            "rescaled"
+        )
+    beta_neutral = raw[_BOOK_BETA_NEUTRAL_KEY]
+    if not isinstance(beta_neutral, bool):
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {BOOK_KEY}.{_BOOK_BETA_NEUTRAL_KEY} "
+            f"must be a boolean, got {beta_neutral!r} "
+            f"({type(beta_neutral).__name__})"
+        )
+    window_raw = raw.get(_BOOK_BETA_WINDOW_DAYS_KEY, DEFAULT_BETA_WINDOW_DAYS)
+    if (
+        isinstance(window_raw, bool)
+        or not isinstance(window_raw, int)
+        or window_raw < 1
+    ):
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {BOOK_KEY}.{_BOOK_BETA_WINDOW_DAYS_KEY} "
+            f"must be a positive integer (a count of daily returns), got "
+            f"{window_raw!r} ({type(window_raw).__name__})"
+        )
+    benchmark_raw = raw.get(_BOOK_BETA_BENCHMARK_KEY, DEFAULT_BETA_BENCHMARK)
+    if not isinstance(benchmark_raw, str) or not benchmark_raw.strip():
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {BOOK_KEY}.{_BOOK_BETA_BENCHMARK_KEY} "
+            f"must be a non-blank symbol string, got {benchmark_raw!r} "
+            f"({type(benchmark_raw).__name__})"
+        )
+    return BookConfig(
+        beta_neutral=beta_neutral,
+        beta_window_days=window_raw,
+        beta_benchmark=benchmark_raw,
+    )
 
 
 def _horizon(values: Mapping[str, Any], named: str) -> int:
@@ -1602,6 +1735,139 @@ def _cost_inputs(
             "refuses is a configuration this loader refuses"
         ) from exc
     return cost_model, cost_schedule, cost_model_hash
+
+
+# -- The beta-neutral book: point-in-time betas, read from context.closes ------
+
+
+def _beta_window_dates(end: dt.date, window_days: int) -> tuple[dt.date, ...]:
+    """The ``window_days`` calendar dates ending at and including ``end``.
+
+    Never a date after ``end`` — the point-in-time discipline
+    :func:`compute_betas` holds throughout: a beta for ``end`` is regressed
+    only over returns whose own entry and exit dates are both at or before it.
+    """
+    return tuple(
+        end - dt.timedelta(days=offset) for offset in range(window_days - 1, -1, -1)
+    )
+
+
+def _close_to_close_returns(
+    closes: Mapping[dt.date, float], window: Sequence[dt.date]
+) -> dict[dt.date, float]:
+    """One symbol's daily close-to-close returns over ``window``.
+
+    A date contributes a return only when both it and the prior calendar
+    day are present in ``closes``; a gap (a delisting, a not-yet-listed
+    symbol, a missing partition) simply contributes nothing, rather than
+    an interpolated or fabricated value.
+    """
+    returns: dict[dt.date, float] = {}
+    for day in window:
+        prior = day - dt.timedelta(days=1)
+        if day in closes and prior in closes:
+            returns[day] = closes[day] / closes[prior] - 1.0
+    return returns
+
+
+def _ols_slope(
+    x_returns: Mapping[dt.date, float], y_returns: Mapping[dt.date, float]
+) -> float | None:
+    """The OLS slope of ``y`` on ``x``, over the dates both carry a return for.
+
+    ``None`` when fewer than two dates pair (a slope needs at least two
+    points) or ``x``'s paired returns carry no variance (a flat benchmark
+    window divides by zero) — both read as "no beta", never a fabricated
+    number.
+    """
+    paired = [day for day in y_returns if day in x_returns]
+    if len(paired) < 2:
+        return None
+    xs = [x_returns[day] for day in paired]
+    ys = [y_returns[day] for day in paired]
+    mean_x = math.fsum(xs) / len(xs)
+    mean_y = math.fsum(ys) / len(ys)
+    covariance = math.fsum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    variance = math.fsum((x - mean_x) ** 2 for x in xs)
+    if variance == 0.0:
+        return None
+    return covariance / variance
+
+
+#: The fraction of a beta window's returns a symbol must carry to be rated
+#: at all — additions_spec_research_book_v2.xml feature 2: "a symbol needs
+#: at least 80% of the window's returns, otherwise it has no beta for D."
+#: Compared as ``count * _BETA_COVERAGE_DENOMINATOR >=
+#: window_days * _BETA_COVERAGE_NUMERATOR`` (4/5), rather than a float
+#: ratio, so the threshold is exact for every integer window length.
+_BETA_COVERAGE_NUMERATOR: Final[int] = 4
+_BETA_COVERAGE_DENOMINATOR: Final[int] = 5
+
+
+def _betas_for_date(
+    context: EvaluationContext, day: dt.date, symbols: Iterable[str]
+) -> Mapping[str, float]:
+    """``{symbol: beta}`` for ``day``, among ``symbols`` — point-in-time.
+
+    ``{}`` when the configured benchmark carries no entry in
+    ``context.closes`` at all (feature 2: "If the benchmark is absent, there
+    are no betas for D"), or when it carries no close-to-close return in the
+    window.  Otherwise each symbol with at least
+    :data:`_BETA_COVERAGE_NUMERATOR`/:data:`_BETA_COVERAGE_DENOMINATOR` of the
+    window's returns gets the OLS slope of its own returns on the
+    benchmark's (:func:`_ols_slope`); every other symbol — thin coverage, or
+    a degenerate (flat-benchmark) regression — is simply absent from the
+    answer, never a fabricated value.
+    """
+    book = context.book
+    benchmark = book.beta_benchmark
+    if benchmark not in context.closes:
+        return {}
+    window = _beta_window_dates(day, book.beta_window_days)
+    benchmark_returns = _close_to_close_returns(context.closes[benchmark], window)
+    if not benchmark_returns:
+        return {}
+    betas: dict[str, float] = {}
+    for symbol in symbols:
+        if symbol not in context.closes:
+            continue
+        symbol_returns = _close_to_close_returns(context.closes[symbol], window)
+        if (
+            len(symbol_returns) * _BETA_COVERAGE_DENOMINATOR
+            < book.beta_window_days * _BETA_COVERAGE_NUMERATOR
+        ):
+            continue
+        beta = _ols_slope(benchmark_returns, symbol_returns)
+        if beta is not None:
+            betas[symbol] = beta
+    return betas
+
+
+def compute_betas(
+    context: EvaluationContext, scores: Mapping[dt.date, Mapping[str, float]]
+) -> Mapping[dt.date, Mapping[str, float]]:
+    """Point-in-time betas for every date ``scores`` names a symbol for.
+
+    additions_spec_research_book_v2.xml feature 2: for each date ``D`` in
+    ``scores``, a symbol's beta is the OLS slope of its own daily
+    close-to-close returns on ``context.book.beta_benchmark``'s, over the
+    trailing ``context.book.beta_window_days`` daily returns ending at
+    ``D`` — read from ``context.closes``, so the instrument in force (bars
+    today, a later spec's perp fut_close) is what every beta is measured
+    against, and never a row after ``D`` (see :func:`_beta_window_dates`).
+    A date with no scored symbol (``scores[day]`` empty — a thin or
+    no-preference rebalance date) is skipped: there is no book on it for a
+    beta to rescale.
+
+    This is a pure read of ``context`` and ``scores``; it does not consult
+    ``context.book.beta_neutral`` — :func:`orchestrator._evaluate.evaluate_node`
+    and :func:`~orchestrator._evaluate.evaluate_on_dates` are what decide
+    whether to call it at all, so a context whose book is not beta-neutral
+    never pays for this computation.
+    """
+    return {
+        day: _betas_for_date(context, day, row) for day, row in scores.items() if row
+    }
 
 
 # -- The executor ---------------------------------------------------------------
