@@ -281,6 +281,65 @@ def _symbol_map(
     return mapped, len(lake_symbols) - len(mapped)
 
 
+def _ticker_prices(ticker_document: Any) -> dict[str, float]:
+    """``{BingX symbol: lastPrice}`` from the public swap ticker document."""
+    if not isinstance(ticker_document, Mapping) or not isinstance(
+        ticker_document.get("data"), list
+    ):
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: the ticker document is a JSON object with a "
+            "data list"
+        )
+    prices: dict[str, float] = {}
+    for row in ticker_document["data"]:
+        if not isinstance(row, Mapping):
+            continue
+        try:
+            price = float(row.get("lastPrice"))
+        except (TypeError, ValueError):
+            continue
+        if isinstance(row.get("symbol"), str) and price > 0.0:
+            prices[row["symbol"]] = price
+    return prices
+
+
+#: A mapped symbol whose BingX price is further than this factor from the
+#: lake's latest perp close names a different asset under the same ticker
+#: (a venue name collision), not a day's move.
+_PRICE_MISMATCH_FACTOR = 2.0
+
+
+def _price_mismatches(
+    symbol_map: Mapping[str, str],
+    prices: Mapping[str, float],
+    closes: Mapping[str, Mapping[dt.date, float]],
+) -> set[str]:
+    """Lake symbols whose BingX contract does not price like the lake's perp.
+
+    The lake's fut_close is on the spot scale; a "1000X-USDT" contract
+    mapped from a lake symbol without the prefix quotes 1000x that scale.
+    A symbol with no ticker price or no lake close is left alone.
+    """
+    mismatched: set[str] = set()
+    for lake_symbol, bingx_symbol in symbol_map.items():
+        price = prices.get(bingx_symbol)
+        if price is None or lake_symbol not in closes:
+            continue
+        symbol_closes = closes[lake_symbol]
+        days = list(symbol_closes)
+        if not days:
+            continue
+        close = symbol_closes[max(days)]
+        if bingx_symbol.startswith(_THOUSAND_PREFIX) and not lake_symbol.startswith(
+            _THOUSAND_PREFIX
+        ):
+            price /= 1000.0
+        ratio = price / close
+        if not (1.0 / _PRICE_MISMATCH_FACTOR <= ratio <= _PRICE_MISMATCH_FACTOR):
+            mismatched.add(lake_symbol)
+    return mismatched
+
+
 # -- the decision date ---------------------------------------------------------
 
 
@@ -441,6 +500,13 @@ def _shadow_context(
         "snapshot_mount": str(snapshot),
         "evaluation_dates": [decision_date.isoformat()],
     }
+    # The shadow never evaluates out of sample, and the research config's
+    # oos_dates precede a forward decision date, so they would fail the
+    # embargo check. lake_roots must name the shadow snapshot's own lake,
+    # not the research archive's.
+    overridden.pop("oos_dates", None)
+    if "lake_roots" in overridden:
+        overridden["lake_roots"] = [str(Path(snapshot).parent.parent)]
     config_path = Path(tmp_dir) / "shadow-evaluation-config.json"
     config_path.write_text(json.dumps(overridden), encoding="utf-8")
     context = load_evaluation_context(
@@ -471,6 +537,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--out", required=True, type=Path, metavar="PATH")
     parser.add_argument("--contracts", required=True, type=Path, metavar="PATH")
+    parser.add_argument(
+        "--ticker",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="the public BingX swap ticker document; drops a mapped symbol "
+        "whose price is more than 2x from the lake's latest perp close",
+    )
     parser.add_argument(
         "--equity-usdt", type=float, default=_DEFAULT_EQUITY_USDT
     )
@@ -518,6 +592,17 @@ def _run(arguments: argparse.Namespace, source: Mapping[str, str], database_url:
         context = _shadow_context(
             source, named, arguments.snapshot, decision_date, tmp_dir
         )
+        n_dropped_price_mismatch = 0
+        if arguments.ticker is not None:
+            mismatched = _price_mismatches(
+                symbol_map,
+                _ticker_prices(_read_json(arguments.ticker, "the ticker document")),
+                context.closes,
+            )
+            for lake_symbol in mismatched:
+                del symbol_map[lake_symbol]
+            n_dropped_price_mismatch = len(mismatched)
+            allowed_lake_symbols = set(symbol_map)
         node_weights = []
         node_betas = []
         for campaign_id, node_id in parsed_nodes:
@@ -570,6 +655,7 @@ def _run(arguments: argparse.Namespace, source: Mapping[str, str], database_url:
         "gross": gross,
         "book_beta": book_beta,
         "n_dropped_unmapped": n_dropped_unmapped,
+        "n_dropped_price_mismatch": n_dropped_price_mismatch,
     }
 
 

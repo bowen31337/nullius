@@ -755,3 +755,69 @@ def test_round_trip_the_written_book_is_accepted_by_bingx_dry_run(
     lines = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
     assert lines  # at least one leg answered
     assert all("refusal" not in line for line in lines)  # every leg sized, none refused
+
+
+# -- the ticker price guard (direct follow-up, 2026-10-15) ----------------------
+
+
+def test_ticker_prices_reads_last_price_per_symbol_and_skips_junk_rows() -> None:
+    document = {
+        "data": [
+            {"symbol": "BTC-USDT", "lastPrice": "83000.5"},
+            {"symbol": "ETH-USDT", "lastPrice": "not-a-number"},
+            {"symbol": "ZERO-USDT", "lastPrice": "0"},
+            "junk",
+        ]
+    }
+    assert shadow_cli._ticker_prices(document) == {"BTC-USDT": 83000.5}
+
+
+def test_ticker_prices_refuses_a_document_with_no_data_list() -> None:
+    with pytest.raises(shadow_cli.ShadowCliError):
+        shadow_cli._ticker_prices({"code": 0})
+
+
+def test_price_mismatch_drops_a_same_name_different_coin_and_keeps_a_days_move() -> None:
+    d1, d2 = dt.date(2026, 10, 12), dt.date(2026, 10, 13)
+    closes = {
+        "AAAUSDT": {d1: 1.0, d2: 1.30},  # a 30% move: kept
+        "BBBUSDT": {d1: 0.01, d2: 0.01},  # BingX quotes 5.0: another coin
+        "PEPEUSDT": {d2: 0.00001},  # mapped to the 1000-contract
+        "CCCUSDT": {d2: 2.0},  # no ticker price: left alone
+    }
+    symbol_map = {
+        "AAAUSDT": "AAA-USDT",
+        "BBBUSDT": "BBB-USDT",
+        "PEPEUSDT": "1000PEPE-USDT",
+        "CCCUSDT": "CCC-USDT",
+    }
+    prices = {"AAA-USDT": 1.0, "BBB-USDT": 5.0, "1000PEPE-USDT": 0.0105}
+    assert shadow_cli._price_mismatches(symbol_map, prices, closes) == {"BBBUSDT"}
+
+
+def test_shadow_context_drops_oos_dates_and_points_lake_roots_at_the_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    research = {
+        "snapshot_mount": "/archive/snapshots/X",
+        "evaluation_dates": ["2025-06-30"],
+        "oos_dates": ["2025-08-04"],
+        "lake_roots": ["/archive"],
+        "horizon": 10,
+    }
+    named = tmp_path / "research.json"
+    named.write_text(json.dumps(research), encoding="utf-8")
+    snapshot = tmp_path / "lake-shadow" / "snapshots" / "2026-10-14T13:06:42Z_74b7de"
+    seen: dict[str, Any] = {}
+
+    def fake_load(env: Any) -> object:
+        path = env[shadow_cli.EVALUATION_CONFIG_ENV]
+        seen.update(json.loads(Path(path).read_text(encoding="utf-8")))
+        return object()
+
+    monkeypatch.setattr(shadow_cli, "load_evaluation_context", fake_load)
+    shadow_cli._shadow_context({}, str(named), snapshot, dt.date(2026, 10, 5), tmp_path)
+    assert "oos_dates" not in seen
+    assert seen["lake_roots"] == [str(tmp_path / "lake-shadow")]
+    assert seen["evaluation_dates"] == ["2026-10-05"]
+    assert json.loads(named.read_text(encoding="utf-8")) == research

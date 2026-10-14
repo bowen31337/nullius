@@ -145,12 +145,25 @@ fi
 
 # -- step 2: lake-backfill, lake-derivs-backfill --------------------------------
 
-if [[ "${FIRST}" > "${LAST}" ]]; then
+# Derivs catch up on their own window: the day after the latest staged futbars
+# date (the monthly archive used to leave them weeks behind the bars), or the
+# bars window when nothing is staged yet.
+DERIVS_FIRST="${FIRST}"
+if [[ -n "${FIRST_SYMBOL:-}" ]]; then
+  LATEST_FUT="$(find "${SHADOW_LAKE}/staging/futbars/symbol=${FIRST_SYMBOL}" -mindepth 1 -maxdepth 1 -type d -name 'date=*' -printf '%f\n' 2>/dev/null | sed 's/^date=//' | sort | tail -n1)"
+  if [[ -n "${LATEST_FUT}" ]]; then
+    DERIVS_FIRST="$(date -u -d "${LATEST_FUT} +1 day" +%Y-%m-%d)"
+  fi
+fi
+
+if [[ "${FIRST}" > "${LAST}" && "${DERIVS_FIRST}" > "${LAST}" ]]; then
   log "step 2/6: already staged through ${LAST}; nothing to backfill"
 else
-  log "step 2/6: lake-backfill, then lake-derivs-backfill --streams funding,futbars --source rest, over ${FIRST}..${LAST}"
+  log "step 2/6: lake-backfill over ${FIRST}..${LAST}, then lake-derivs-backfill --streams funding,futbars --source rest over ${DERIVS_FIRST}..${LAST}"
 
-  LAKE="${SHADOW_LAKE}" "${RUN_SH}" lake-backfill --first "${FIRST}" --last "${LAST}" "${BARS_SOURCE_ARGS[@]}"
+  if [[ ! "${FIRST}" > "${LAST}" ]]; then
+    LAKE="${SHADOW_LAKE}" "${RUN_SH}" lake-backfill --first "${FIRST}" --last "${LAST}" "${BARS_SOURCE_ARGS[@]}"
+  fi
 
   if [[ ! -f "${UNIVERSE_JSON}" ]]; then
     echo "${UNIVERSE_JSON} absent after staging; writing it from the staged symbols" >&2
@@ -173,7 +186,7 @@ with open(sys.argv[2], "w", encoding="utf-8") as fh:
   fi
 
   set +e
-  LAKE="${SHADOW_LAKE}" "${RUN_SH}" lake-derivs-backfill --first "${FIRST}" --last "${LAST}" \
+  LAKE="${SHADOW_LAKE}" "${RUN_SH}" lake-derivs-backfill --first "${DERIVS_FIRST}" --last "${LAST}" \
     --symbols-from "${UNIVERSE_JSON}" --streams funding,futbars --source rest
   derivs_status=$?
   set -e
@@ -226,6 +239,10 @@ fi
 log "step 5/6: fetch the BingX contracts document"
 CONTRACTS_PATH="${SHADOW_LAKE}/contracts.json"
 curl -fsSL "https://open-api-vst.bingx.com/openApi/swap/v2/quote/contracts" -o "${CONTRACTS_PATH}"
+# The ticker lets shadow-book drop a symbol whose BingX price is more than 2x
+# from the lake's perp close: a different coin under the same ticker name.
+TICKER_PATH="${SHADOW_LAKE}/ticker.json"
+curl -fsSL "https://open-api-vst.bingx.com/openApi/swap/v2/quote/ticker" -o "${TICKER_PATH}"
 
 # -- step 6: rebuild the book -----------------------------------------------------
 
@@ -248,4 +265,5 @@ exec "${RUN_SH}" shadow-book \
   --snapshot "${SNAPSHOT_PATH}" \
   --out "${SHADOW_OUT}" \
   --contracts "${CONTRACTS_PATH}" \
+  --ticker "${TICKER_PATH}" \
   "${NODE_ARGS[@]}"
