@@ -1,0 +1,631 @@
+"""``python -m orchestrator.shadow`` — write the BingX VST book from nodes.
+
+additions_spec_forward_shadow.xml, "Forward Shadow" feature 3: *System
+writes the BingX VST book file from one or more research nodes, so that the
+rebalance bot trades a research book instead of the synthetic fixture.*
+Today the VST bot (``router.bingx_rebalance``) trades only the hand-written
+fixture at ``packages/router/tests/fixtures/bingx_vst/synthetic_book.json``;
+this command is the first thing that writes a book a stored signal actually
+produced.
+
+**The decision date is found on the snapshot, before the context is even
+built.** :func:`orchestrator._context.load_evaluation_context` needs
+``evaluation_dates`` up front, so the command cannot ask it for the date to
+evaluate. Instead it mounts ``--snapshot`` directly
+(:meth:`snapshot.SnapshotMount.for_directory`, the same call
+``load_evaluation_context`` makes internally) purely to list ``BTCUSDT``'s
+own ``bars``/``futbars`` partition dates, walks the research grid
+(``--grid-anchor`` every ``--grid-days``) to the latest grid date at or
+before the last one both streams carry, and only then builds the real
+:class:`~orchestrator._context.EvaluationContext` — over a *new* temp
+config file copied from the deployment's own ``NULLIUS_EVALUATION_CONFIG``
+document with ``snapshot_mount`` and ``evaluation_dates`` replaced. The
+original file is never opened for writing.
+
+**The hold rule is cheap on purpose.** ``book_id`` is ``shadow-D-HASH``,
+where ``D`` is the decision date and ``HASH`` is the sorted node ids'
+sha256, truncated — both answerable from the command line and a directory
+listing alone, with no node's code read, no store queried and no sandbox
+started. So the hold check runs first: when ``--out`` already holds that
+exact ``book_id``, the command answers ``held: true`` and returns, "the
+research book holds its weights between rebalance dates" made literal.
+
+**Every node is re-keyed through the venue before it is scored.** A node's
+``ShadowWeights.weights`` is keyed by lake symbol
+(:mod:`orchestrator._shadow`'s own choice); the book this command writes is
+keyed by BingX's hyphenated spelling, and a lake symbol the ``--contracts``
+document does not list under either candidate hyphenation is excluded
+*before* scoring (through ``allowed_symbols``), not dropped after — the
+same ordering :mod:`orchestrator._shadow` itself holds for its own
+``allowed_symbols`` restriction, and for the identical reason: a book that
+is dollar- and beta-neutral over symbols it cannot trade is not the book
+that gets traded.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+import sqlite3
+import sys
+import tempfile
+from collections.abc import Collection, Mapping, Sequence
+from contextlib import closing
+from pathlib import Path
+from typing import Any
+from urllib.parse import unquote, urlparse
+
+from artifacts import (
+    SOURCE_FILENAME,
+    ArtifactNotFoundError,
+    ArtifactStore,
+    ArtifactStoreError,
+    source_code_hash,
+)
+from snapshot import SnapshotError, SnapshotMount
+
+from ._context import (
+    BARS_STREAM,
+    EVALUATION_CONFIG_ENV,
+    FUTBARS_STREAM,
+    EvaluationConfigError,
+    EvaluationContext,
+    load_evaluation_context,
+)
+from ._shadow import ShadowError, shadow_weights
+
+__all__ = ["ShadowCliError", "main"]
+
+#: The greppable code word every :class:`ShadowCliError` opens with.
+SHADOW_CLI_CODE = "shadow_cli"
+
+DATABASE_URL_ENV = "DATABASE_URL"
+
+#: Restated locally rather than imported — the same "every store restates
+#: its own URL translation and table name" idiom ``closeout.py`` and
+#: ``_evaluate.py`` already take for the ``node`` table.
+_NODE_TABLE = "node"
+
+_ACCOUNT = "bingx-vst"
+_MARGIN_MODE = "isolated"
+_EXPECTED_FILL_SECONDS = 120
+#: "weights below 1e-6 of equity are dropped" — a book's weights are
+#: already signed fractions of equity (the router's own schema), so this
+#: threshold applies to the weight fraction directly.
+_MIN_WEIGHT_FRACTION = 1e-6
+_DEFAULT_GRID_ANCHOR = dt.date(2022, 1, 3)
+_DEFAULT_GRID_DAYS = 14
+_DEFAULT_EQUITY_USDT = 10000.0
+_DEFAULT_GROSS = 1.0
+#: The grid's own benchmark — fixed, independent of whatever symbol a
+#: beta-neutral book's own ``beta_benchmark`` names.
+_GRID_BENCHMARK_SYMBOL = "BTCUSDT"
+#: The lake symbols' own trailing spelling every BingX USDT-margined
+#: contract shares.
+_LAKE_QUOTE_SUFFIX = "USDT"
+_THOUSAND_PREFIX = "1000"
+
+EXIT_OK = 0
+EXIT_REFUSED = 1
+EXIT_CONFIG = 2
+
+
+class ShadowCliError(Exception):
+    """This command's own refusal — the ask's fault, not a collaborator's.
+
+    Raised, and only raised, by this module: a malformed ``--node``, a
+    document that will not read or parse, a missing or mismatched node,
+    a snapshot with no decision date on the grid, or a combined book with
+    nothing left to trade. Every message opens with
+    :data:`SHADOW_CLI_CODE`. A collaborator's own refusal
+    (:class:`~orchestrator._shadow.ShadowError`,
+    :class:`~orchestrator._context.EvaluationConfigError`, an
+    :mod:`artifacts` or :mod:`snapshot` error) is never wrapped in this
+    class — it already opens with its own code word, and :func:`main`
+    prints it unchanged.
+    """
+
+
+# -- sqlite: the node table's own code_hash ----------------------------------
+
+
+def _sqlite_path(database_url: str) -> Path:
+    """Translate a ``sqlite:///`` URL into a filesystem path."""
+    parsed = urlparse(database_url)
+    if parsed.scheme != "sqlite":
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: unsupported {DATABASE_URL_ENV} scheme "
+            f"{parsed.scheme!r}: the shadow book reads the node table "
+            "through sqlite:///"
+        )
+    path = unquote(parsed.path).removeprefix("/")
+    if not path:
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: {DATABASE_URL_ENV} carries no database path"
+        )
+    return Path(path)
+
+
+def _stored_code_hash(database_url: str, campaign_id: str, node_id: str) -> str:
+    """The node row's own ``code_hash`` — refused when the row is missing."""
+    path = _sqlite_path(database_url)
+    try:
+        with closing(sqlite3.connect(path)) as connection:
+            row = connection.execute(
+                f"SELECT code_hash FROM {_NODE_TABLE} WHERE id = ? "
+                "AND campaign_id = ?",
+                (node_id, campaign_id),
+            ).fetchone()
+    except sqlite3.Error as exc:
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: could not read node {node_id!r} of "
+            f"campaign {campaign_id!r} from {database_url!r}: {exc}"
+        ) from exc
+    if row is None:
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: no node {node_id!r} of campaign "
+            f"{campaign_id!r} in {database_url!r}"
+        )
+    return row[0]
+
+
+def _node_code(context: EvaluationContext, campaign_id: str, node_id: str) -> str:
+    """The node's own persisted source, decoded — refused when absent."""
+    try:
+        raw = ArtifactStore(context.artifact_dir).read(
+            campaign_id, node_id, SOURCE_FILENAME
+        )
+    except (ArtifactNotFoundError, ArtifactStoreError) as exc:
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: could not read node {node_id!r} of "
+            f"campaign {campaign_id!r}'s artifact: {exc}"
+        ) from exc
+    return raw.decode("utf-8")
+
+
+def _verified_node_code(
+    context: EvaluationContext, database_url: str, campaign_id: str, node_id: str
+) -> str:
+    """The node's code, refused unless its sha256 matches the store's row."""
+    code = _node_code(context, campaign_id, node_id)
+    computed = source_code_hash(code)
+    stored = _stored_code_hash(database_url, campaign_id, node_id)
+    if computed != stored:
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: node {node_id!r} of campaign "
+            f"{campaign_id!r} carries code_hash {stored!r} in the store, "
+            f"but its artifact hashes to {computed!r}"
+        )
+    return code
+
+
+# -- --node CAMPAIGN_ID/NODE_ID -----------------------------------------------
+
+
+def _split_node_arg(raw: str) -> tuple[str, str]:
+    campaign_id, separator, node_id = raw.partition("/")
+    if not separator or not campaign_id or not node_id:
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: --node {raw!r} must be CAMPAIGN_ID/NODE_ID"
+        )
+    return campaign_id, node_id
+
+
+# -- lake symbol -> BingX symbol ----------------------------------------------
+
+
+def _read_json(path: Path, what: str) -> Any:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: {what} at {str(path)!r} cannot be read: {exc}"
+        ) from exc
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: {what} at {str(path)!r} is not JSON: {exc}"
+        ) from exc
+
+
+def _listed_bingx_symbols(contracts_document: Any) -> frozenset[str]:
+    """Every symbol the contracts document names, tradable or not."""
+    if not isinstance(contracts_document, Mapping):
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: the contracts document is a JSON object"
+        )
+    data = contracts_document.get("data")
+    if not isinstance(data, list):
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: the contracts document states no data list"
+        )
+    return frozenset(
+        row["symbol"]
+        for row in data
+        if isinstance(row, Mapping) and isinstance(row.get("symbol"), str)
+    )
+
+
+def _map_to_bingx(symbol: str, listed: Collection[str]) -> str | None:
+    """One lake symbol's BingX spelling, or ``None`` when unlisted.
+
+    ``"XUSDT"`` -> ``"X-USDT"``. A ``"1000"``-prefixed symbol tries
+    ``"1000X-USDT"`` first and falls back to ``"X-USDT"`` — either is
+    accepted, whichever the contracts document actually lists.
+    """
+    if not symbol.endswith(_LAKE_QUOTE_SUFFIX):
+        return None
+    base = symbol[: -len(_LAKE_QUOTE_SUFFIX)]
+    candidates = [f"{base}-{_LAKE_QUOTE_SUFFIX}"]
+    if base.startswith(_THOUSAND_PREFIX) and len(base) > len(_THOUSAND_PREFIX):
+        candidates.append(f"{base[len(_THOUSAND_PREFIX):]}-{_LAKE_QUOTE_SUFFIX}")
+    for candidate in candidates:
+        if candidate in listed:
+            return candidate
+    return None
+
+
+def _symbol_map(
+    lake_symbols: Collection[str], listed: Collection[str]
+) -> tuple[dict[str, str], int]:
+    """Every lake symbol's BingX mapping, and how many symbols had none."""
+    mapped = {
+        symbol: bingx
+        for symbol in lake_symbols
+        if (bingx := _map_to_bingx(symbol, listed)) is not None
+    }
+    return mapped, len(lake_symbols) - len(mapped)
+
+
+# -- the decision date ---------------------------------------------------------
+
+
+def _decision_date(mount: SnapshotMount, anchor: dt.date, grid_days: int) -> dt.date:
+    """The latest grid date at or before the snapshot's last common date.
+
+    "The snapshot's last date carrying both a bars close and a perp close
+    for BTCUSDT" — the grid is walked from ``anchor`` every ``grid_days``,
+    and this answers the latest step that does not run past it.
+    """
+    bars_dates = {
+        dt.date.fromisoformat(iso)
+        for iso in mount.dates(BARS_STREAM, _GRID_BENCHMARK_SYMBOL)
+    }
+    futbars_dates = {
+        dt.date.fromisoformat(iso)
+        for iso in mount.dates(FUTBARS_STREAM, _GRID_BENCHMARK_SYMBOL)
+    }
+    common = bars_dates & futbars_dates
+    if not common:
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: the snapshot carries no date with both a "
+            f"bars and a perp close for {_GRID_BENCHMARK_SYMBOL}"
+        )
+    last = max(common)
+    if last < anchor:
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: the grid anchored at {anchor.isoformat()} "
+            f"starts after the snapshot's last {_GRID_BENCHMARK_SYMBOL} "
+            f"date {last.isoformat()}"
+        )
+    steps = (last - anchor).days // grid_days
+    return anchor + dt.timedelta(days=steps * grid_days)
+
+
+# -- book_id ---------------------------------------------------------------
+
+
+def _nodes_hash(node_ids: Sequence[str]) -> str:
+    joined = "\n".join(sorted(node_ids))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:12]
+
+
+def _book_id(decision_date: dt.date, node_ids: Sequence[str]) -> str:
+    return f"shadow-{decision_date.isoformat()}-{_nodes_hash(node_ids)}"
+
+
+# -- the held book, read without recomputing anything ------------------------
+
+
+def _book_stats(weights: Mapping[str, Any]) -> tuple[int, int, float]:
+    numeric = [
+        value
+        for value in weights.values()
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    ]
+    n_long = sum(1 for value in numeric if value > 0)
+    n_short = sum(1 for value in numeric if value < 0)
+    gross = sum(abs(value) for value in numeric)
+    return n_long, n_short, gross
+
+
+def _held_book(out: Path, book_id: str) -> Mapping[str, Any] | None:
+    """``--out``'s current document, when its ``book_id`` already matches."""
+    if not out.is_file():
+        return None
+    try:
+        document = json.loads(out.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(document, Mapping) or document.get("book_id") != book_id:
+        return None
+    return document
+
+
+# -- combining the nodes' books -----------------------------------------------
+
+
+def _combine(
+    weights_by_node: Sequence[Mapping[str, float]], *, gross: float
+) -> dict[str, float]:
+    """The equal-weight mean of the nodes' weights, renormalised to ``gross``.
+
+    Symbols any node did not score stand in at 0 for that node, so a
+    symbol only one node scores is not punished for the others' silence.
+    Refuses a mean with nothing to renormalise (every node answered flat).
+    """
+    symbols: set[str] = set()
+    for weights in weights_by_node:
+        symbols.update(weights)
+    node_count = len(weights_by_node)
+    combined = {
+        symbol: sum(weights.get(symbol, 0.0) for weights in weights_by_node)
+        / node_count
+        for symbol in symbols
+    }
+    total = sum(abs(value) for value in combined.values())
+    if total <= 0.0:
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: the combined book is flat across every "
+            "node — there is nothing to renormalise to gross"
+        )
+    scale = gross / total
+    return {
+        symbol: value * scale
+        for symbol, value in combined.items()
+        if abs(value * scale) >= _MIN_WEIGHT_FRACTION
+    }
+
+
+# -- writing the book ----------------------------------------------------------
+
+
+def _atomic_write(path: Path, document: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(document, handle, indent=2)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+# -- building the context over a temp, overridden config ---------------------
+
+
+def _shadow_context(
+    source: Mapping[str, str],
+    named: str,
+    snapshot: Path,
+    decision_date: dt.date,
+    tmp_dir: str,
+) -> EvaluationContext:
+    """The real deployment's context, read-only over ``snapshot``/``decision_date``.
+
+    Reads the deployment's own ``NULLIUS_EVALUATION_CONFIG`` document (for
+    ``instrument``, ``book``, ``horizon``, ``seed``, ``sandbox_runtime``
+    and the rest) and writes a *new* document, in ``tmp_dir``, that is
+    that same document with ``snapshot_mount`` replaced by ``snapshot``
+    and ``evaluation_dates`` replaced by ``[decision_date]`` — the
+    original file is opened only for reading.
+    """
+    document = _read_json(Path(named), "the evaluation config")
+    if not isinstance(document, Mapping):
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: the evaluation config at {named!r} is a "
+            "JSON object"
+        )
+    overridden = {
+        **document,
+        "snapshot_mount": str(snapshot),
+        "evaluation_dates": [decision_date.isoformat()],
+    }
+    config_path = Path(tmp_dir) / "shadow-evaluation-config.json"
+    config_path.write_text(json.dumps(overridden), encoding="utf-8")
+    context = load_evaluation_context(
+        {**source, EVALUATION_CONFIG_ENV: str(config_path)}
+    )
+    assert context is not None  # EVALUATION_CONFIG_ENV is set in the override
+    return context
+
+
+# -- the command ---------------------------------------------------------------
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m orchestrator.shadow",
+        description=(
+            "Write the BingX VST book one or more research nodes would "
+            "trade forward, from the latest sealed data."
+        ),
+    )
+    parser.add_argument("--snapshot", required=True, type=Path, metavar="PATH")
+    parser.add_argument(
+        "--node",
+        dest="nodes",
+        action="append",
+        required=True,
+        metavar="CAMPAIGN_ID/NODE_ID",
+    )
+    parser.add_argument("--out", required=True, type=Path, metavar="PATH")
+    parser.add_argument("--contracts", required=True, type=Path, metavar="PATH")
+    parser.add_argument(
+        "--equity-usdt", type=float, default=_DEFAULT_EQUITY_USDT
+    )
+    parser.add_argument("--gross", type=float, default=_DEFAULT_GROSS)
+    parser.add_argument(
+        "--grid-anchor",
+        type=dt.date.fromisoformat,
+        default=_DEFAULT_GRID_ANCHOR,
+    )
+    parser.add_argument("--grid-days", type=int, default=_DEFAULT_GRID_DAYS)
+    return parser
+
+
+def _run(arguments: argparse.Namespace, source: Mapping[str, str], database_url: str, named: str) -> dict[str, Any]:
+    parsed_nodes = [_split_node_arg(raw) for raw in arguments.nodes]
+    node_ids = [node_id for _campaign_id, node_id in parsed_nodes]
+
+    mount = SnapshotMount.for_directory(arguments.snapshot)
+    decision_date = _decision_date(mount, arguments.grid_anchor, arguments.grid_days)
+    book_id = _book_id(decision_date, node_ids)
+
+    contracts_document = _read_json(arguments.contracts, "the contracts document")
+    listed = _listed_bingx_symbols(contracts_document)
+    lake_symbols = mount.partitions(BARS_STREAM)
+    symbol_map, n_dropped_unmapped = _symbol_map(lake_symbols, listed)
+
+    held = _held_book(arguments.out, book_id)
+    if held is not None:
+        n_long, n_short, gross = _book_stats(held.get("weights", {}))
+        return {
+            "as_of": decision_date.isoformat(),
+            "decision_date": decision_date.isoformat(),
+            "held": True,
+            "book_path": str(arguments.out),
+            "nodes": node_ids,
+            "n_long": n_long,
+            "n_short": n_short,
+            "gross": gross,
+            "book_beta": None,
+            "n_dropped_unmapped": n_dropped_unmapped,
+        }
+
+    allowed_lake_symbols = set(symbol_map)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        context = _shadow_context(
+            source, named, arguments.snapshot, decision_date, tmp_dir
+        )
+        node_weights = []
+        node_betas = []
+        for campaign_id, node_id in parsed_nodes:
+            code = _verified_node_code(context, database_url, campaign_id, node_id)
+            result = shadow_weights(
+                context,
+                code,
+                as_of=decision_date,
+                allowed_symbols=allowed_lake_symbols,
+            )
+            node_weights.append(result.weights)
+            node_betas.append(result.book_beta)
+
+        combined = _combine(node_weights, gross=arguments.gross)
+        bingx_weights = {symbol_map[symbol]: weight for symbol, weight in combined.items()}
+
+        book_document = {
+            "book_id": book_id,
+            "rebalance_ts": dt.datetime.combine(
+                decision_date, dt.time(0), tzinfo=dt.UTC
+            ).isoformat(),
+            "account": _ACCOUNT,
+            "margin_mode": _MARGIN_MODE,
+            # The router's own sizer refuses a float equity by name (an
+            # exact Decimal or its string spelling only) — see
+            # router.sizing.size_contract_deltas's own docstring.
+            "equity_usdt": str(arguments.equity_usdt),
+            "weights": bingx_weights,
+            "decay_horizon_seconds": {
+                symbol: context.horizon * 86400 for symbol in bingx_weights
+            },
+            "expected_fill_seconds": _EXPECTED_FILL_SECONDS,
+            "positions": {},
+            "originating_signal_ids": node_ids,
+        }
+        _atomic_write(arguments.out, book_document)
+
+    n_long, n_short, gross = _book_stats(bingx_weights)
+    measured_betas = [beta for beta in node_betas if beta is not None]
+    book_beta = sum(measured_betas) / len(measured_betas) if measured_betas else None
+
+    return {
+        "as_of": decision_date.isoformat(),
+        "decision_date": decision_date.isoformat(),
+        "held": False,
+        "book_path": str(arguments.out),
+        "nodes": node_ids,
+        "n_long": n_long,
+        "n_short": n_short,
+        "gross": gross,
+        "book_beta": book_beta,
+        "n_dropped_unmapped": n_dropped_unmapped,
+    }
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+    emit: Any = print,
+) -> int:
+    """``python -m orchestrator.shadow`` — see the module docstring.
+
+    Checks ``DATABASE_URL`` and ``NULLIUS_EVALUATION_CONFIG`` before
+    anything is read — each absence exits :data:`EXIT_CONFIG`. Every other
+    refusal (a malformed ``--node``, a code_hash mismatch, a document that
+    will not parse, a collaborator's own error) is printed to stderr and
+    answered :data:`EXIT_REFUSED`. Prints one JSON line and exits
+    :data:`EXIT_OK` when the book was written or already held.
+    """
+    parser = _build_parser()
+    arguments = parser.parse_args(argv)
+    source = os.environ if env is None else env
+
+    database_url = source.get(DATABASE_URL_ENV, "").strip()
+    if not database_url:
+        print(
+            f"{SHADOW_CLI_CODE}: {DATABASE_URL_ENV} must name the research "
+            "database the shadow book reads node identity from",
+            file=sys.stderr,
+        )
+        return EXIT_CONFIG
+
+    named = source.get(EVALUATION_CONFIG_ENV, "").strip()
+    if not named:
+        print(
+            f"{SHADOW_CLI_CODE}: {EVALUATION_CONFIG_ENV} must name the "
+            "deployment's evaluation config",
+            file=sys.stderr,
+        )
+        return EXIT_CONFIG
+
+    try:
+        result = _run(arguments, source, database_url, named)
+    except (
+        ShadowCliError,
+        ShadowError,
+        EvaluationConfigError,
+        SnapshotError,
+        ArtifactNotFoundError,
+        ArtifactStoreError,
+    ) as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_REFUSED
+
+    emit(json.dumps(result))
+    return EXIT_OK
+
+
+if __name__ == "__main__":  # pragma: no cover - the module's own door
+    raise SystemExit(main())
