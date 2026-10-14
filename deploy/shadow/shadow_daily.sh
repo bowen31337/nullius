@@ -254,6 +254,12 @@ curl -fsSL "https://open-api-vst.bingx.com/openApi/swap/v2/quote/ticker" -o "${T
 log "step 6/6: shadow-book --snapshot ${SNAPSHOT_PATH} --out ${SHADOW_OUT}"
 
 NODE_ARGS=()
+# Metrics land a few hours after the bars; without this the decision date
+# could run ahead of them and the hold rule would freeze a book scored on a
+# missing metrics day.
+if [[ "${SHADOW_METRICS}" == "1" ]]; then
+  NODE_ARGS+=(--require-stream metrics)
+fi
 while IFS= read -r line || [[ -n "${line}" ]]; do
   line="${line%$'\r'}"
   [[ -z "${line}" ]] && continue

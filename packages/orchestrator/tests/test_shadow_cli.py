@@ -380,6 +380,36 @@ def test_decision_date_refuses_when_the_last_common_date_precedes_the_anchor() -
         shadow_cli._decision_date(mount, ANCHOR, GRID_DAYS)
 
 
+class _MetricsMount(_FakeMount):
+    def __init__(self, bars: tuple[str, ...], metrics: tuple[str, ...]) -> None:
+        super().__init__(bars, bars)
+        self._metrics = metrics
+
+    def dates(self, stream: str, symbol: str) -> tuple[str, ...]:
+        if stream == "metrics":
+            return self._metrics
+        return super().dates(stream, symbol)
+
+
+def test_a_required_stream_one_day_late_holds_the_previous_grid_date() -> None:
+    # bars/futbars reach a grid date, metrics stop the day before it
+    grid_day = 2 * GRID_DAYS
+    bars = tuple((ANCHOR + dt.timedelta(days=offset)).isoformat() for offset in range(grid_day + 1))
+    mount = _MetricsMount(bars, bars[:-1])
+
+    assert shadow_cli._decision_date(mount, ANCHOR, GRID_DAYS) == ANCHOR + dt.timedelta(days=grid_day)
+    assert shadow_cli._decision_date(mount, ANCHOR, GRID_DAYS, ("metrics",)) == ANCHOR + dt.timedelta(
+        days=GRID_DAYS
+    )
+
+
+def test_the_require_stream_flag_is_repeatable_and_defaults_empty() -> None:
+    parser = shadow_cli._build_parser()
+    base = ["--snapshot", "s", "--node", "c/n", "--out", "o", "--contracts", "k"]
+    assert parser.parse_args(base).require_streams == []
+    assert parser.parse_args([*base, "--require-stream", "metrics"]).require_streams == ["metrics"]
+
+
 # -- lake -> BingX symbol mapping ----------------------------------------------
 
 

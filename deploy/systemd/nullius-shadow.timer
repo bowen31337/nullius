@@ -4,20 +4,23 @@
 # (`systemctl --user enable --now nullius-shadow.timer`). Nothing in this
 # repository installs or enables it.
 #
-# Once a day, at 02:30 UTC — ahead of the 04:05 UTC rebalance slot
-# (nullius-vst-rebalance.timer), so a freshly rebuilt book is already on
-# disk by the time that slot reads it, were an operator to point its
-# `--book` flag at SHADOW_OUT (a separate operator step; see this unit's
-# nullius-shadow.service comment). Scheduled in UTC with the offset spelled
-# on the line, the same convention the VST and canary timers use, so the
-# schedule is UTC whatever the host's clock is set to.
+# Once a day, at 09:30 UTC. Binance publishes the daily open-interest
+# metrics file for day D around 07:30 UTC on D+1 (observed 07:24-07:56), and
+# four of the shadow's five nodes read it, so the refresh waits for it; the
+# next rebalance slot that reads the book is 12:05 UTC
+# (nullius-vst-rebalance.timer). `shadow-book --require-stream metrics`
+# holds the previous book if the file is late even so. See
+# docs/preregistration/2026-10-15-shadow-v1.ADDENDUM.md. Scheduled in UTC
+# with the offset spelled on the line, the same convention the VST and
+# canary timers use, so the schedule is UTC whatever the host's clock is
+# set to.
 
 [Unit]
 Description=nullius daily forward-shadow refresh timer
 Documentation=file:/%h/projects/nullius/deploy/systemd/nullius-shadow.service
 
 [Timer]
-OnCalendar=*-*-* 02:30:00 UTC
+OnCalendar=*-*-* 09:30:00 UTC
 # A firing missed because the machine was off (a laptop, a reboot) is run on
 # the next boot: the refresh is idempotent (the hold rule in `shadow-book`,
 # plus the incremental backfill window), so catching up is safe.

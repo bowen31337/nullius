@@ -343,12 +343,23 @@ def _price_mismatches(
 # -- the decision date ---------------------------------------------------------
 
 
-def _decision_date(mount: SnapshotMount, anchor: dt.date, grid_days: int) -> dt.date:
+def _decision_date(
+    mount: SnapshotMount,
+    anchor: dt.date,
+    grid_days: int,
+    required_streams: Sequence[str] = (),
+) -> dt.date:
     """The latest grid date at or before the snapshot's last common date.
 
     "The snapshot's last date carrying both a bars close and a perp close
     for BTCUSDT" — the grid is walked from ``anchor`` every ``grid_days``,
     and this answers the latest step that does not run past it.
+
+    Each of ``required_streams`` (``--require-stream``) must also carry the
+    date for BTCUSDT. A stream published later than the others (Binance's
+    daily metrics land around 07:30 UTC the next day) then holds the
+    previous decision date instead of freezing a book scored on a missing
+    day: the hold rule never rebuilds a book once written.
     """
     bars_dates = {
         dt.date.fromisoformat(iso)
@@ -359,10 +370,16 @@ def _decision_date(mount: SnapshotMount, anchor: dt.date, grid_days: int) -> dt.
         for iso in mount.dates(FUTBARS_STREAM, _GRID_BENCHMARK_SYMBOL)
     }
     common = bars_dates & futbars_dates
+    for stream in required_streams:
+        common &= {
+            dt.date.fromisoformat(iso)
+            for iso in mount.dates(stream, _GRID_BENCHMARK_SYMBOL)
+        }
     if not common:
         raise ShadowCliError(
             f"{SHADOW_CLI_CODE}: the snapshot carries no date with both a "
             f"bars and a perp close for {_GRID_BENCHMARK_SYMBOL}"
+            + (f" (and {', '.join(required_streams)})" if required_streams else "")
         )
     last = max(common)
     if last < anchor:
@@ -555,6 +572,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default=_DEFAULT_GRID_ANCHOR,
     )
     parser.add_argument("--grid-days", type=int, default=_DEFAULT_GRID_DAYS)
+    parser.add_argument(
+        "--require-stream",
+        dest="require_streams",
+        action="append",
+        default=[],
+        metavar="STREAM",
+        help="a stream (e.g. metrics) that must also carry the decision "
+        "date for BTCUSDT; repeatable",
+    )
     return parser
 
 
@@ -563,7 +589,9 @@ def _run(arguments: argparse.Namespace, source: Mapping[str, str], database_url:
     node_ids = [node_id for _campaign_id, node_id in parsed_nodes]
 
     mount = SnapshotMount.for_directory(arguments.snapshot)
-    decision_date = _decision_date(mount, arguments.grid_anchor, arguments.grid_days)
+    decision_date = _decision_date(
+        mount, arguments.grid_anchor, arguments.grid_days, arguments.require_streams
+    )
     book_id = _book_id(decision_date, node_ids)
 
     contracts_document = _read_json(arguments.contracts, "the contracts document")
