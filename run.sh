@@ -24,6 +24,12 @@
 #   ./run.sh closeout [args]    python -m orchestrator.closeout, with ONLY the
 #                               NULLIUS_ research keys (.env.campaign.tpl),
 #                               because it needs the sidecar key reference
+#   ./run.sh shadow-book [args] python -m orchestrator.shadow, with ONLY the
+#                               NULLIUS_ research keys (.env.campaign.tpl),
+#                               never .env.tpl, as closeout does; defaults
+#                               DATABASE_URL to research.db. Writes the
+#                               forward-shadow BingX VST book file from one
+#                               or more research nodes.
 #
 # No-secret commands (run with a CLEAN env — package managers and linters
 # must never see runtime credentials; this is the main supply-chain
@@ -48,6 +54,9 @@
 #                               open-interest metrics for --symbols-from's
 #                               universe.json
 #   ./run.sh lake-seal     [args]  python -m snapshot.seal (same LAKE default)
+#   ./run.sh shadow-daily  [args]  deploy/shadow/shadow_daily.sh: the daily
+#                               forward-shadow lake refresh, seal, prune and
+#                               book rebuild (nullius-shadow.timer)
 #   ./run.sh evaluator-image       deploy/evaluator/build_image.sh: build the
 #                               evaluator image and print its digest-pinned
 #                               reference, for NULLIUS_EVALUATOR_IMAGE
@@ -245,6 +254,23 @@ case "${cmd}" in
       uv run --all-packages python -m orchestrator.closeout "$@"
     ;;
 
+  shadow-book)
+    # The forward-shadow book writer reads a stored node's code and the
+    # evaluation config, so it gets the same NULLIUS_ research keys as
+    # `campaign`/`closeout`, from the same env file, never .env.tpl.
+    if [[ ! -f "${ENV_CAMPAIGN_TPL}" ]]; then
+      echo "error: ${ENV_CAMPAIGN_TPL} not found. Copy .env.campaign.tpl.example to" >&2
+      echo "       .env.campaign.tpl, set your 1Password references, and fill in" >&2
+      echo "       deploy/campaign/{authoring,evaluation}-config.json." >&2
+      exit 1
+    fi
+    mkdir -p "$HOME/.local/share/nullius"
+    export DATABASE_URL="${DATABASE_URL:-sqlite:///$HOME/.local/share/nullius/research.db}"
+    cd "${SCRIPT_DIR}"
+    exec op run --env-file="${ENV_CAMPAIGN_TPL}" -- \
+      uv run --all-packages python -m orchestrator.shadow "$@"
+    ;;
+
   # ── No-secret commands ──────────────────────────────────────────────────────
   # NEVER wrap these in `op run`. A compromised npm/pypi dep running during
   # install or lint must not see Stripe/Anthropic/OpenAI/AWS credentials.
@@ -311,6 +337,13 @@ case "${cmd}" in
         exec uv run --all-packages python -m snapshot.seal --lake "${LAKE}" "$@"
         ;;
     esac
+    ;;
+
+  shadow-daily)
+    # The daily forward-shadow refresh needs no secret of its own: it shells
+    # out to `run.sh shadow-book` for the one step that does, the same way
+    # this block's other commands never see `op run`.
+    exec "${SCRIPT_DIR}/deploy/shadow/shadow_daily.sh" "$@"
     ;;
 
   evaluator-image)

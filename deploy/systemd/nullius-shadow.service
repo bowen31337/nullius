@@ -1,0 +1,70 @@
+# additions_spec_forward_shadow.xml, "Forward Shadow" category, feature 4 —
+# the daily forward-shadow lake refresh, seal, prune and book rebuild, as a
+# user service. This file is written by the feature; installing and enabling
+# it (linking it into ~/.config/systemd/user/ and starting the timer) is an
+# operator step. Nothing in this repository installs or enables it.
+#
+# The unit carries its **own environment**, for the same reason
+# nullius-vst-rebalance.service does: a systemd user service runs neither
+# `~/.zshrc` (which exports `OP_SERVICE_ACCOUNT_TOKEN` from
+# `~/.config/op/service-token`) nor the login PATH that puts `~/.local/bin`
+# — where `uv` lives — ahead of the system's. Both are needed here too:
+# `run.sh shadow-daily` calls `run.sh shadow-book`, which runs `op run`
+# (needing the service account) and then `uv run` (needing `uv` on PATH).
+# The token's *value* never appears here; ExecStart reads it from the
+# operator's own file, mode 0600, outside the repository.
+#
+# The unit is a **oneshot**: one refresh, then done. systemd never runs two
+# instances of one service unit at a time, so a timer firing while a refresh
+# is still running cannot start a second one.
+#
+# This unit only *writes a book file* (SHADOW_OUT, default
+# ~/.local/share/nullius/shadow/book.json) — it never touches the VST bot's
+# own book. Pointing nullius-vst-rebalance.service's `--book` flag at that
+# file, so the rebalance unit actually trades the forward-shadow book
+# instead of the synthetic fixture, is a separate operator step: edit that
+# unit's ExecStart, `systemctl --user daemon-reload`, and restart its timer.
+# This repository installs neither unit and switches neither flag.
+
+[Unit]
+Description=nullius daily forward-shadow lake refresh and book rebuild
+Documentation=file:/%h/projects/nullius/deploy/systemd/nullius-shadow.timer
+# A run that cannot start at all — this unit enters the "failed" state —
+# produces no step output, so nothing inside the run can raise the alarm.
+# systemd then starts one instance of the alert template, passing this
+# unit's own full name (`%n`, i.e. nullius-shadow.service) as the instance
+# the template runs with.
+OnFailure=nullius-vst-alert@%n.service
+# The lake refresh and the contracts fetch are both remote reads; wait for
+# the network before a run starts.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# The repository root. `%h` is the operator's home; edit this line (and the
+# matching one in the timer's unit) if the checkout lives elsewhere.
+WorkingDirectory=%h/projects/nullius
+# `uv` lives in the operator's ~/.local/bin, which a service does not
+# inherit. It goes first so the pinned interpreter wins over any system
+# copy; the system directories follow for `op`, `curl`, `/bin/sh` and the
+# ordinary tools shadow_daily.sh calls.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# The token is read from the operator's own file (mode 0600) at start,
+# inside the shell, and never written into this unit. `$$` is systemd's
+# escape for a literal dollar — a bare `$(cat …)` would be consumed by
+# systemd's own substitution and reach the shell empty. The assignment is a
+# separate statement — so it needs its own `export`, unlike the `VAR=… cmd`
+# prefix form — and the `": ${VAR:?…}"` guard makes a missing or unreadable
+# token file a *failure* (outside SuccessExitStatus below) with a message
+# naming the file, rather than a run of `op` (inside `shadow-book`) with no
+# credentials. `%h` stays a systemd specifier because it must resolve here;
+# only the dollar is doubled.
+#
+# No `--bootstrap` flag: an empty SHADOW_LAKE refuses rather than guessing a
+# window (shadow_daily.sh's own feature-4 contract), so staging the initial
+# universe — `run.sh shadow-daily --bootstrap DAYS`, once, by hand — is part
+# of the same operator install step as enabling this timer, not something
+# the unit does on its own.
+ExecStart=/bin/sh -c 'OP_SERVICE_ACCOUNT_TOKEN="$$(cat %h/.config/op/service-token)"; export OP_SERVICE_ACCOUNT_TOKEN; : "$${OP_SERVICE_ACCOUNT_TOKEN:?1Password service token unreadable — see %h/.config/op/service-token}"; exec %h/projects/nullius/run.sh shadow-daily'
+Restart=no
