@@ -57,6 +57,10 @@
 #   ./run.sh shadow-daily  [args]  deploy/shadow/shadow_daily.sh: the daily
 #                               forward-shadow lake refresh, seal, prune and
 #                               book rebuild (nullius-shadow.timer)
+#   ./run.sh shadow-eval   [args]  python -m orchestrator.shadow_eval: scores
+#                               the forward VST shadow against its
+#                               pre-registered primary outcome, from the book
+#                               history, the shadow lake and (optionally) vst.db
 #   ./run.sh evaluator-image       deploy/evaluator/build_image.sh: build the
 #                               evaluator image and print its digest-pinned
 #                               reference, for NULLIUS_EVALUATOR_IMAGE
@@ -344,6 +348,13 @@ case "${cmd}" in
     # out to `run.sh shadow-book` for the one step that does, the same way
     # this block's other commands never see `op run`.
     exec "${SCRIPT_DIR}/deploy/shadow/shadow_daily.sh" "$@"
+    ;;
+
+  shadow-eval)
+    # Scores the forward shadow from the book history, the shadow lake and
+    # (optionally) vst.db — all read-only, so this needs no secret either.
+    cd "${SCRIPT_DIR}"
+    exec uv run --all-packages python -m orchestrator.shadow_eval "$@"
     ;;
 
   evaluator-image)
