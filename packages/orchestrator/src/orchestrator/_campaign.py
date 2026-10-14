@@ -74,7 +74,7 @@ import ledger
 import providers
 import signal_agent
 from artifacts import ArtifactStore, executed_source
-from policy_runtime import budget_account, prefix_view
+from policy_runtime import PrefixView, budget_account, prefix_view
 
 from ._context import DEFAULT_EVALUATION_WORKERS
 from ._live_tree import live_question
@@ -635,6 +635,25 @@ def _record_cache_rate(
 # -- Root evaluation, the round loop and the finish: one helper, shared whole ----
 
 
+def _unexpanded_view(question: Any) -> PrefixView:
+    """The question's prefix view, minus every node that already has a child.
+
+    A parent expands to exactly one child (``discovery.refined_node_id`` is a
+    uuid5 of the parent), so selecting an expanded parent again re-authors
+    the same child id. The tree then refuses its differing metrics
+    (``NodeMetricsConflictError``), the authoring tokens are spent, and the
+    batch slot is lost. ``BaselinePolicy`` ranks every revealed node, so a
+    parent whose child scored worse was re-picked every round: archP02's
+    rounds 2 and 3 added no node. ``question.legal_actions(node)`` is the
+    node's recorded children, so an empty answer means it is still
+    expandable.
+    """
+    view = prefix_view(question)
+    return PrefixView(
+        cell for cell in view.cells if not question.legal_actions(cell.node_id)
+    )
+
+
 def _continue_campaign(
     campaign_id: str,
     roots: tuple[str, ...],
@@ -730,7 +749,7 @@ def _continue_campaign(
             evaluation_periods=evaluation_periods,
             budget=account,
         )
-        batch = policy.select(prefix_view(question))[:width]
+        batch = policy.select(_unexpanded_view(question))[:width]
 
         if not batch:
             stop_reason = STOP_NO_BATCH
