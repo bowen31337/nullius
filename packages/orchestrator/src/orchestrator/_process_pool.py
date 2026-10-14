@@ -93,23 +93,26 @@ still this worker's own parent and still alive; the instant it is not, the
 worker ends itself with :func:`os._exit` under
 :data:`_ORPHANED_WORKER_EXIT_CODE`, even mid-evaluation — a sandbox
 subprocess already running is orphaned no further than its own timeout
-already allowed.  On Linux the same function also asks the kernel for
-``PR_SET_PDEATHSIG`` (``SIGTERM``) through ``prctl``, the fast path when it
-is available; the watchdog thread is what still holds when it is not, or
-on any other platform.  A worker whose parent is alive is never touched by
-either mechanism.
+already allowed.  A worker whose parent is alive is never touched.
+
+**No ``PR_SET_PDEATHSIG``.**  The kernel delivers that signal when the
+parent *thread* that forked the worker exits, not when the parent process
+does, and ``ProcessPoolExecutor`` spawns its workers lazily from whichever
+thread first calls ``submit`` — here a thread of the root-evaluation
+thread pool.  Those threads end with the root phase, so every worker was
+SIGTERMed and each round-loop child raised ``BrokenProcessPool`` (archP01
+and archP02 evaluated roots only).  The polling watchdog alone ended every
+worker within 2 s of a live ``SIGKILL`` of the driver.
 """
 
 from __future__ import annotations
 
 import atexit
-import ctypes
 import dataclasses
 import logging
 import os
 import signal
 import sqlite3
-import sys
 import threading
 import time
 from collections.abc import Mapping
@@ -267,11 +270,6 @@ _PARENT_WATCHDOG_INTERVAL_SECONDS: Final[float] = 2.0
 #: process ends (a normal return, an uncaught exception, a signal).
 _ORPHANED_WORKER_EXIT_CODE: Final[int] = 70
 
-#: ``prctl``'s own constant for "signal me when my parent dies" — stable
-#: across every Linux kernel version; not a value this module invents.
-_PR_SET_PDEATHSIG: Final[int] = 1
-
-
 def _parent_pid_alive(pid: int) -> bool:
     """Whether ``pid`` plausibly still names a live process.
 
@@ -288,26 +286,6 @@ def _parent_pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
-
-
-def _set_parent_death_signal() -> None:
-    """Best-effort ``prctl(PR_SET_PDEATHSIG, SIGTERM)`` — Linux only.
-
-    Asks the kernel to deliver ``SIGTERM`` to this worker the instant its
-    parent process dies — the fast path, when the platform and libc
-    support it. Any failure (a non-Linux platform, a ``ctypes`` lookup
-    that cannot find ``prctl``, a kernel that refuses the call) is
-    swallowed: :func:`_watch_parent`'s polling thread is the portable
-    guarantee this falls back to, not this call, so a worker's survival
-    past its parent never depends on this succeeding.
-    """
-    if sys.platform != "linux":
-        return
-    try:
-        libc = ctypes.CDLL(None, use_errno=True)
-        libc.prctl(_PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
-    except (OSError, AttributeError):
-        pass
 
 
 def _watch_parent(expected_parent_pid: int) -> None:
@@ -333,8 +311,7 @@ def _watch_parent(expected_parent_pid: int) -> None:
 
 def _start_parent_watchdog() -> None:
     """One worker's entire link to its parent's lifetime: record the
-    parent's pid, ask the kernel for a death signal, start the daemon
-    watchdog thread.
+    parent's pid and start the daemon watchdog thread.
 
     Called from :func:`_init_worker`, and directly — as a
     ``ProcessPoolExecutor`` initializer in its own right, with no
@@ -343,7 +320,6 @@ def _start_parent_watchdog() -> None:
     which needs only this function and a pid to prove a worker outlives or
     outdies its parent.
     """
-    _set_parent_death_signal()
     thread = threading.Thread(
         target=_watch_parent,
         args=(os.getppid(),),
