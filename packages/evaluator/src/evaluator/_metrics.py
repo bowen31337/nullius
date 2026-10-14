@@ -238,6 +238,7 @@ __all__ = [
     "METRICS_HORIZON",
     "METRICS_STEP",
     "NodeMetrics",
+    "book_weights",
     "compute_node_metrics",
 ]
 
@@ -604,6 +605,98 @@ def _beta_neutral_weights(
     return rescaled
 
 
+def book_weights(
+    scores: Mapping[str, float],
+    betas: Mapping[str, float] | None = None,
+) -> dict[str, float]:
+    """The research book's weights for one date — the public spelling of step 8's book.
+
+    ``scores`` is one rebalance date's cross-section (``{symbol: normalized
+    score}``); the return is the dollar-neutral, gross-1 book
+    :func:`compute_node_metrics` trades that date, ``w_i = z_i / Σ|z_j|``.
+    ``betas`` (keyword-only, default ``None``), when given, is that date's
+    ``{symbol: beta}`` and rescales the plain weights by the same beta-neutral
+    leg rule :func:`compute_node_metrics` applies — see
+    :func:`_beta_neutral_weights` for the ``β_L``, ``β_S`` and ``gl``
+    derivation and the fallback to the plain weights on a degenerate split.
+    This is the one place that rule is spelled out; :func:`compute_node_metrics`
+    calls this function for its own per-date weights, so the two cannot drift,
+    and a forward shadow that calls this function with the same scores and
+    betas an evaluation scored trades exactly the book the evaluation did.
+
+    Raises :class:`~evaluator.EvaluatorMetricsError` when ``scores`` is empty,
+    carries a non-finite value, or sums to zero gross exposure (``Σ|z| = 0``,
+    the weights would be a division by zero); and when ``betas`` is supplied
+    but is malformed or carries a non-finite value.
+    """
+    if not isinstance(scores, Mapping):
+        raise EvaluatorMetricsError(
+            f"book_weights' scores must map symbol to a score, got "
+            f"{type(scores).__name__}"
+        )
+    validated_scores: dict[str, float] = {}
+    for symbol, value in scores.items():
+        if not isinstance(symbol, str) or not symbol:
+            raise EvaluatorMetricsError(
+                "book_weights' scores must be keyed by non-empty symbol "
+                f"names, got {symbol!r}"
+            )
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise EvaluatorMetricsError(
+                f"the score for {symbol!r} must be a number, got {value!r}"
+            )
+        number = float(value)
+        if not math.isfinite(number):
+            raise EvaluatorMetricsError(
+                f"the score for {symbol!r} is not finite ({value!r}); a NaN "
+                "or ±inf would reach the book's weights dressed as a "
+                "measurement"
+            )
+        validated_scores[symbol] = number
+    if not validated_scores:
+        raise EvaluatorMetricsError(
+            "book_weights needs at least one scored symbol; an empty date "
+            "has no dollar-neutral book to weight"
+        )
+    gross = math.fsum(abs(value) for value in validated_scores.values())
+    if gross == 0.0:
+        raise EvaluatorMetricsError(
+            "book_weights' scores sum to zero gross exposure (every score is "
+            "exactly 0), so the dollar-neutral weights z_s / Σ|z| are "
+            "undefined; refusing rather than dividing by zero"
+        )
+    weights = {
+        symbol: value / gross for symbol, value in validated_scores.items()
+    }
+    if betas is None:
+        return weights
+    if not isinstance(betas, Mapping):
+        raise EvaluatorMetricsError(
+            f"book_weights' betas must map symbol to a beta, got "
+            f"{type(betas).__name__}"
+        )
+    validated_betas: dict[str, float] = {}
+    for symbol, value in betas.items():
+        if not isinstance(symbol, str) or not symbol:
+            raise EvaluatorMetricsError(
+                "book_weights' betas must be keyed by non-empty symbol "
+                f"names, got {symbol!r}"
+            )
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise EvaluatorMetricsError(
+                f"the beta for {symbol!r} must be a number, got {value!r}"
+            )
+        number = float(value)
+        if not math.isfinite(number):
+            raise EvaluatorMetricsError(
+                f"the beta for {symbol!r} is not finite ({value!r}); a NaN "
+                "or ±inf would reach the book's weights dressed as a "
+                "measurement"
+            )
+        validated_betas[symbol] = number
+    return _beta_neutral_weights(weights, validated_betas)
+
+
 def compute_node_metrics(
     returns: PostCostReturns,
     scores: Mapping[dt.date | str, Mapping[str, float]],
@@ -811,13 +904,16 @@ def compute_node_metrics(
         # portfolio its own normalized scores define, over the same joined
         # cross-section the coefficient above was just measured on (a symbol
         # with no forward return has nothing a weight could be multiplied
-        # against). Weight w_i = z_i / Σ|z_j|, so gross exposure is 1 and net
-        # is 0 whenever the scores were cross-sectionally centered over this
-        # cross-section — this signal's own book, not the equal-weight market
-        # every node scored on the same snapshot would otherwise share.
+        # against) — :func:`book_weights`, the one spelling of the
+        # ``w_i = z_i / Σ|z_j|`` book and its beta-neutral rescale, so this
+        # function's own book cannot drift from the one that function hands a
+        # forward shadow.
         book_symbols = sorted(set(score_row) & set(returns_row))
-        gross = math.fsum(abs(score_row[symbol]) for symbol in book_symbols)
-        if gross == 0.0:
+        row_scores = {symbol: score_row[symbol] for symbol in book_symbols}
+        row_betas = validated_betas.get(day) if betas is not None else None
+        try:
+            weights = book_weights(row_scores, row_betas)
+        except EvaluatorMetricsError as exc:
             # _rank_correlation above already required these same symbols'
             # scores to have nonzero rank spread, so they cannot all be
             # exactly zero; unreachable in practice, refused rather than
@@ -827,10 +923,7 @@ def compute_node_metrics(
                 "normalized score across its joined cross-section, so the "
                 "dollar-neutral book's weights are undefined; refusing "
                 "rather than dividing by zero"
-            )
-        weights = {symbol: score_row[symbol] / gross for symbol in book_symbols}
-        if betas is not None:
-            weights = _beta_neutral_weights(weights, validated_betas.get(day, {}))
+            ) from exc
         per_date_weights[day] = weights
         per_date_return[day] = math.fsum(
             weights[symbol] * returns_row[symbol] for symbol in book_symbols

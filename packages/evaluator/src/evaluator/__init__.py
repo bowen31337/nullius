@@ -334,6 +334,7 @@ from ._metrics import (
     METRICS_HORIZON,
     METRICS_STEP,
     NodeMetrics,
+    book_weights,
     compute_node_metrics,
 )
 from ._metrics_store import (
@@ -456,6 +457,7 @@ __all__ = [
     "METRICS_HORIZON",
     "METRICS_STEP",
     "NodeMetrics",
+    "book_weights",
     "compute_node_metrics",
     # Feature 80 — persisting the four scalars
     "NODE_METRICS_TABLE",
