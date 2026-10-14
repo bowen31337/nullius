@@ -1,0 +1,273 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — forward shadow evaluation, and funding settlements bucketed into the right day</project_name>
+  <addition_summary>
+    The forward VST shadow (docs/preregistration/2026-10-15-shadow-v1.md and
+    its .ADDENDUM.md) trades a research book on BingX VST from 2026-10-20.
+    Its primary outcome P is defined in the pre-registration, but no code
+    computes it.
+    This spec adds `python -m orchestrator.shadow_eval`. It reads the book
+    history and the shadow lake (and, optionally, vst.db), and reports P,
+    the pass rule, execution validity and the secondary statistics.
+    It also fixes how funding settlements are filed into ingest days. On
+    2026-10-15 the shadow lake's funding showed days in 2/4 pairs and days
+    with 1 settlement, where BTCUSDT settles 3 times a day. Three causes:
+    - the archive's calc_time is a few ms past the settlement
+      (1777680000006 = 2026-05-02 00:00:00.006), so a midnight settlement
+      lands on the next day under the (D 00:00, D+1 00:00] rule
+    - each monthly zip is bucketed alone, so the next month's first
+      midnight settlement makes a 1-settlement row for this month's last day
+      and overwrites the real row
+    - the REST window ends exactly at last+1 00:00:00.000, which excludes the
+      closing settlement at 00:00:00.001. Every daily run loses its last
+      day's closing settlement for good, about a third of forward funding.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / pytest.</stack>
+    <test_baseline>main at 6f7c544: ingest 886 passed, orchestrator test_shadow_cli 32 passed, gate 1666 passed.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md. A code map from 2026-10-15.
+
+      **Ingest:** packages/ingest/src/nullius_ingest/derivs_backfill.py
+      - _day_bucket(instant) applies the (D 00:00, D+1 00:00] rule.
+      - _aggregate_funding_settlements(settlements, what) builds
+        funding_rate_sum (a decimal string), funding_rate_last and
+        n_settlements per day, from (instant, rate) pairs. The archive and
+        REST paths share it.
+      - The archive path for funding is _backfill_funding_symbol, which
+        calls _backfill_monthly_stream (shared with futbars). It parses each
+        month's zip with _parse_funding_rows (calc_time ms,
+        funding_interval_hours, last_funding_rate) and writes that month's
+        by_day for first &lt;= day &lt;= last. Resume uses
+        _month_already_written, which is per month.
+      - The REST path is _fetch_funding_rest_settlements(fetch, um_symbol,
+        first, last, sleep). Its window is [first 00:00, last+1 00:00), and
+        _floor_funding_instant floors to the second. _write_stream_days
+        applies the per-day skip.
+      - Verified archive zips are cached under
+        staging-meta/archive-cache/funding/UMSYMBOL/, so refetching is
+        cheap.
+      - Futbars are keyed by candle open_time and have no edge issue. Do not
+        change them.
+
+      **Orchestrator:** packages/orchestrator/src/orchestrator/
+      - _context.py has _read_close(mount, symbol, day, stream=FUTBARS_STREAM,
+        day_column="date", close_column="fut_close") and
+        _read_funding_rate_sum(mount, symbol, day). Both raise KeyError when
+        the day is absent.
+      - snapshot.SnapshotMount.for_directory(path) mounts a sealed snapshot.
+        .dates(stream, symbol) lists the ISO dates, and
+        .partitions(stream) lists the symbols.
+      - shadow.py has _map_to_bingx(lake_symbol, listed), which maps
+        "XUSDT" to "X-USDT", or a "1000X…" symbol to "1000X-USDT" first and
+        "X-USDT" second, and _book_id(decision_date, node_ids), which is
+        "shadow-YYYY-MM-DD-&lt;12 hex&gt;".
+      - test_shadow_cli.py has the sealed-snapshot fixture pattern:
+        _write_bars and _write_futbars into staging, then
+        SnapshotService(lake_root).seal(sealed_at=...).
+
+      **The book file**, under ~/.local/share/nullius/shadow/:
+      - book.json, with history/&lt;book_id&gt;.json for each book written,
+        and history/shadow-book.jsonl, which holds one JSON line per daily
+        run.
+      - A book has book_id, rebalance_ts (the decision date's 00:00 UTC),
+        equity_usdt (a string) and weights: {BingX symbol "X-USDT":
+        signed fraction of equity, gross about 1}, plus
+        decay_horizon_seconds, positions, originating_signal_ids,
+        margin_mode and account.
+
+      **vst.db** (sqlite, DATABASE_URL of the vst verbs, default
+      ~/.local/share/nullius/vst.db). Its tables:
+      - router_bingx_slot_completion(book_id, slot ISO, finished_at ISO,
+        exit_code 0|1|3)
+      - router_order_record(client_order_id, book_id, rebalance_ts, symbol,
+        side, quantity, placed_at, ...)
+      - router_daily_opening_equity(day, opening_equity text, recorded_at)
+      - risk_daily_loss_halt(breached_at, reset_at, ...)
+
+      **The pre-registered P** (shadow-v1.md "Primary outcome" plus
+      Addendum 1). For each window day d:
+      r_d = Σ_i w_{i,d}·(fut_close_{i,d}/fut_close_{i,d−1} − 1) − Σ_i
+      w_{i,d}·funding_rate_sum_{i,d} − 0.0005·Σ_i |w_{i,d} − w_{i,d−1}|
+      - Pass needs Σ r_d &gt; 0 AND mean(r)/sd(r)·√n ≥ 1.0.
+      - Validity needs every decision date in the window to have produced a
+        book that the bot traded, at least 90% of target legs placed, and no
+        two consecutive failed slots.
+      - The window is 2026-10-20 12:05 UTC to 2027-01-18 12:05 UTC. Its
+        first decision date is 2026-10-19, on the 14-day grid anchored at
+        2022-01-03.
+    </conventions>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Ingest">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/ingest/src/nullius_ingest/derivs_backfill.py,packages/ingest/tests/test_funding_bucketing.py">
+        System files every funding settlement under the ingest day whose (D 00:00, D+1 00:00] window it closes, on both the archive and the REST source, so that a day's funding_rate_sum holds exactly that day's settlements and no rerun overwrites a complete day with a partial one.
+        - **Floor the instant.** _aggregate_funding_settlements floors
+          every instant to the whole second before _day_bucket, so the
+          archive's calc_time gets the same flooring REST already has.
+        - **Archive funding is bucketed across months.**
+          - For one symbol, the settlements of every month zip the window
+            needs are pooled before aggregating. That includes the month
+            holding last+1 00:00, which supplies the last day's closing
+            settlement.
+          - Only then are days written.
+          - A day is written only when it is complete: the zip holding its
+            closing instant D+1 00:00 was read, from the cache or a fetch.
+            A 404 because that month is not published yet, or a failed
+            fetch, leaves the day unwritten, so a later run writes it whole.
+          - Resume becomes per day for funding: a day already on disk is
+            not rewritten unless --restart is given.
+          - _backfill_monthly_stream's behaviour for futbars is unchanged.
+          - You may give funding its own function rather than parameterise
+            the shared one.
+        - **The REST window closes the last day.**
+          _fetch_funding_rest_settlements requests through last+1 00:00
+          plus one hour, so the closing settlement (fundingTime often
+          00:00:00.001) is included. Days outside [first, last] are still
+          never written.
+          - A day whose closing instant plus one hour is later than the
+            injected clock's now is not written.
+          - Extract the clock the way the futbars REST path already takes
+            `now`.
+        - test_funding_bucketing.py covers:
+          - a ms-late midnight calc_time, which lands on the earlier day
+          - a month edge: the June zip's first settlement completes May 31,
+            and May 31 is never overwritten by a 1-settlement row
+          - an unpublished next month (404), which leaves the month's last
+            day unwritten, then a later run with that month present, which
+            writes it with 3 settlements
+          - REST through last+1 00:00:00.001, which gives the last day 3
+            settlements
+          - the REST clock guard
+          - for synthetic 8-hourly settlements over two months, built either
+            way, every day has n_settlements == 3, and the total of the
+            rates is preserved
+          The existing derivs tests (test_derivs_backfill.py,
+          test_derivs_rest.py) must still pass; update their expectations
+          only where they encoded the old edge behaviour, and say so in the
+          commit. The ingest member suite passes under pytest-xdist.
+      </feature>
+    </category>
+    <category name="Forward Shadow">
+      <feature index="2" shape="core" depends_on=""
+               touches_files="packages/orchestrator/src/orchestrator/shadow_eval.py,packages/orchestrator/tests/test_shadow_eval.py,run.sh">
+        System scores the forward VST shadow against its pre-registered primary outcome from the book history and the shadow lake, so that the test's verdict is computed by fixed code rather than by hand.
+        - **Command and verb.** Add `python -m orchestrator.shadow_eval`,
+          with the run.sh verb `shadow-eval`. It needs no secret: put it in
+          the no-secret block beside shadow-daily, with a clean env, and add
+          a usage comment line.
+        - **Arguments:**
+          - --history DIR (default ~/.local/share/nullius/shadow/history)
+          - --snapshot PATH (default: the newest snapshot directory under
+            ~/.local/share/nullius/lake-shadow/snapshots, by name)
+          - --vst-db PATH (optional; also read from a sqlite:/// DATABASE_URL
+            when set)
+          - --window-start (default 2026-10-20T12:05:00Z)
+          - --window-end (default 2027-01-18T12:05:00Z)
+          - --first-decision (default 2026-10-19)
+          - --grid-anchor (default 2022-01-03)
+          - --grid-days (default 14)
+          - --cost-bps (default 5, so 0.0005 per unit turnover)
+          - --daily-out PATH (optional CSV)
+        - **Books.**
+          - Read every history/shadow-*.json with a decision date ≥
+            --first-decision. The decision date comes from rebalance_ts,
+            and must agree with the book_id.
+          - Refuse (exit 1) when two books share a decision date with
+            different book_ids, or when their node hashes (the book_id
+            suffix) differ. Changing the nodes is a deviation, not an
+            input.
+          - Weights are keyed by BingX symbol. Map each to the lake symbol
+            by inverting shadow._map_to_bingx against the snapshot's
+            futbars partitions: "X-USDT" goes to "XUSDT"; "1000X-USDT" goes
+            to "1000XUSDT" when that partition exists, else "XUSDT". Refuse
+            on an ambiguous or missing inverse, naming the symbol.
+        - **When a book is in force.** A book is in force from day F
+          through the day before the next book's F.
+          - With vst.db, F = the UTC date after the earliest
+            router_bingx_slot_completion.finished_at for that book_id, so
+            the first full UTC day it was traded.
+          - Without vst.db, or when the book has no completion row,
+            F = decision date + 2. The report then states
+            in_force_rule: "nominal" for that book instead of "traded".
+        - **Window days.** The scored days are every whole UTC day d
+          with window-start &lt; d 00:00 and d+1 00:00 &lt;=
+          window-end. With the defaults that is 2026-10-21 through
+          2027-01-17, 89 days.
+          - A day is scorable when BTCUSDT has both a futbars fut_close and
+            a funding row for d. Scoring stops at the first unscorable day,
+            which gives a status of "interim" before the window's last day
+            and "final" when every window day is scored.
+          - Days before the first book's F are not window days that can
+            fail. The window starts at the switch.
+        - **Daily r_d**, exactly the pre-registered formula, with w_{i,d}
+          the book in force on d:
+          - price: Σ w·(fut_close_d/fut_close_{d−1} − 1)
+          - funding: −Σ w·funding_rate_sum_d. A long pays positive funding.
+          - cost: cost_bps/1e4·Σ|w_d − w_{d−1}|, with w before the first
+            book being all zero, so entry turnover is charged.
+          - A held symbol missing either close or the funding row on d
+            contributes 0 to that term. It is counted in n_missing_legdays,
+            and the first 20 are listed.
+        - **Output.** One JSON line on stdout, with:
+          - status: interim | final
+          - verdict: pass | fail | pending. Pending while interim. A final
+            pass needs cum_return &gt; 0 and ir_t ≥ 1.0.
+          - n_days, cum_return (Σ r_d), mean, sd, ir_t
+          - price_return, funding_return, cost_return, as sums
+          - funding_share (funding_return / cum_return, or null when
+            cum_return is 0)
+          - realised_beta: the OLS slope of r_d on BTCUSDT's daily
+            fut_close return, or null when n &lt; 10
+          - mean_daily_turnover
+          - max_drawdown, from the running Σ r
+          - books: one row per book, with book_id, decision_date,
+            in_force_from, in_force_rule, n_legs, gross, and
+            forward_ic_10d. That is the Spearman rank correlation of the
+            book's weights with each leg's fut_close return from F−1 to
+            F+9, or null when those closes are not all present.
+          - n_missing_legdays
+          - validity, plus validity_reasons
+        - **Validity**, only when vst.db is given, else "unchecked":
+          - every grid decision date from --first-decision whose book would
+            be in force inside the scored days has a history book and at
+            least one completion with exit_code 0
+          - leg coverage ≥ 0.9. Coverage is the fraction of (book, target
+            symbol) pairs for which router_order_record holds a row with
+            that symbol under that book_id, or under an earlier shadow
+            book_id (a position carried from that book).
+          - no two consecutive 4-hour slots, inside the scored period, with
+            a missing completion or a nonzero exit_code
+          It answers valid | invalid | unchecked. Also report the number of
+          daily-loss halts whose breached_at falls in the window, and the
+          VST equity return from router_daily_opening_equity over the scored
+          days (first to last+1 opening equity), or null.
+        - **Daily CSV.** --daily-out writes: date, book_id, price, funding,
+          cost, r, cum.
+        - **Exit codes:**
+          - 0: a report was produced (any verdict)
+          - 1: refused (conflicting books, an unmappable symbol, or no book
+            in the window yet). One stderr line, no traceback.
+          - 2: the snapshot or history directory is missing
+        - test_shadow_eval.py builds a sealed snapshot in tmp. It follows
+          test_shadow_cli.py's pattern and adds a funding writer: symbol,
+          date timestamp at 00:00 UTC, funding_rate_sum string,
+          funding_rate_last string, n_settlements int64. The tests cover:
+          - a hand-computed 3-day r_d series, with price, funding sign and
+            entry turnover, to 1e-12
+          - the switch of books on F, with the turnover charged once
+          - the "1000" inverse mapping
+          - the conflicting-node-hash refusal
+          - interim vs final status, with the verdict pending while interim
+          - a missing leg close, counted rather than crashing
+          - F from a sqlite vst.db fixture vs the nominal D+2
+          - leg coverage, including the carried-position rule
+          - two consecutive failed slots making the result invalid
+          - --daily-out columns
+          It passes under pytest-xdist. Run the orchestrator member suite
+          (serially or -n 2) once at the end.
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>
