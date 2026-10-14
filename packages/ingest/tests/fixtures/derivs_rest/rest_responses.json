@@ -1,1 +1,17 @@
-{}
+{
+  "exchange_info": {
+    "symbols": [
+      {"symbol": "BTCUSDT", "pair": "BTCUSDT", "contractType": "PERPETUAL", "status": "TRADING"},
+      {"symbol": "1000PEPEUSDT", "pair": "1000PEPEUSDT", "contractType": "PERPETUAL", "status": "TRADING"},
+      {"symbol": "BTCUSDT_250627", "pair": "BTCUSDT", "contractType": "CURRENT_QUARTER", "status": "TRADING"}
+    ]
+  },
+  "funding_btcusdt_sample": [
+    {"symbol": "BTCUSDT", "fundingTime": 1791878400000, "fundingRate": "0.00006190", "markPrice": "121453.20000000", "rateType": ""},
+    {"symbol": "BTCUSDT", "fundingTime": 1791907200000, "fundingRate": "0.00004381", "markPrice": "121732.50000000", "rateType": ""},
+    {"symbol": "BTCUSDT", "fundingTime": 1791936000001, "fundingRate": "0.00001025", "markPrice": "121310.90000000", "rateType": ""}
+  ],
+  "klines_1000pepeusdt_sample": [
+    [1715126400000, "0.00001234", "0.00001300", "0.00001190", "0.00001256", "123456789012", 1715212799999, "1543210987.6543210", 54321, "61728394506", "771605493.8271600", "0"]
+  ]
+}

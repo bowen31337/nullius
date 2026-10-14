@@ -126,11 +126,16 @@ from .bars_backfill import (  # shared, generic primitives reused here
     RANK_CACHE_DIRNAME,
     ArchiveFetch,
     BarsBackfillError,
+    BinanceFetch,
+    HttpResponse,
     _archive_zip_url,
+    _date_to_ms,
     _list_archive_months,
     _months_between,
+    _request_json,
     fetch_verified_archive_zip,
     urllib_archive_fetch,
+    urllib_fetch,
 )
 from .klines import KlineParseError, parse_klines
 
@@ -142,12 +147,17 @@ __all__ = [
     "FUNDING_STREAM",
     "FUTBARS_STREAM",
     "METRICS_STREAM",
+    "REST_STREAMS",
     "SCALE_PREFIX",
+    "SOURCES",
+    "SOURCE_ARCHIVE",
+    "SOURCE_REST",
     "SYMBOL_MAP_FILENAME",
     "DerivsBackfillError",
     "StreamSymbolResult",
     "backfill_derivs",
     "main",
+    "urllib_fapi_fetch",
 ]
 
 #: The three streams this module writes.
@@ -168,6 +178,30 @@ _UM_METRICS_PREFIX = "data/futures/um/daily/metrics/"
 #: Where a spot symbol maps to a scaled contract (``PEPEUSDT`` ->
 #: ``1000PEPEUSDT``) when only that contract trades.
 SCALE_PREFIX = "1000"
+
+#: ``--source``: the public data archive (monthly zips, every symbol's whole
+#: history) or Binance's live USD-M REST API (today's symbols, through
+#: yesterday). Archive is the default and is unchanged by this module's REST
+#: addition.
+SOURCE_ARCHIVE = "archive"
+SOURCE_REST = "rest"
+SOURCES: tuple[str, ...] = (SOURCE_ARCHIVE, SOURCE_REST)
+
+#: ``--source rest`` only ever backfills these two streams -- metrics has no
+#: REST counterpart this module implements, and is refused with a clear
+#: error rather than silently doing nothing.
+REST_STREAMS: tuple[str, ...] = (FUNDING_STREAM, FUTBARS_STREAM)
+
+#: Binance's public USD-M futures REST API -- public, keyless, the REST
+#: counterpart of the archive this module otherwise reads.
+_FAPI_BASE_URL = "https://fapi.binance.com/fapi/v1"
+
+#: Binance's own per-request caps for the two REST endpoints
+#: :data:`SOURCE_REST` pages -- fundingRate's is 1000, klines' is 1500 (wider
+#: than the spot klines endpoint's 1000) -- verified against the live venue
+#: on 2026-10-14.
+FUNDING_REST_PAGE_LIMIT = 1000
+FUTBARS_REST_PAGE_LIMIT = 1500
 
 #: The file this module writes beside ``staging/``, never inside it — a
 #: sibling of bars_backfill's own ``universe.json`` and rank cache.
@@ -297,6 +331,22 @@ def _default_sleep(seconds: float) -> None:
         time.sleep(seconds)
 
 
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def urllib_fapi_fetch(path: str, params: Mapping[str, str]) -> HttpResponse:
+    """The default ``--source rest`` fetch: ``urllib`` against Binance's
+    public USD-M futures API, no API key -- every endpoint this module calls
+    (``/exchangeInfo``, ``/fundingRate``, ``/klines``) is public market data.
+    Reuses :func:`nullius_ingest.bars_backfill.urllib_fetch`'s own
+    request/response plumbing (and its 418/429 retry contract, via
+    :func:`nullius_ingest.bars_backfill._request_json`), pointed at the
+    futures base URL rather than the spot one.
+    """
+    return urllib_fetch(path, params, base_url=_FAPI_BASE_URL)
+
+
 # -- Symbol mapping ------------------------------------------------------------
 
 
@@ -315,6 +365,31 @@ def _discover_um_symbols(fetch: ArchiveFetch, *, sleep: Callable[[float], None])
         fetch, sleep=sleep, prefix=_UM_KLINES_PREFIX, key_re=_UM_KLINES_SYMBOL_RE
     )
     return frozenset(months_by_symbol)
+
+
+def _discover_um_symbols_rest(fetch: BinanceFetch, *, sleep: Callable[[float], None]) -> frozenset[str]:
+    """Every UM symbol Binance lists today, per ``GET /fapi/v1/exchangeInfo``.
+
+    The REST counterpart of :func:`_discover_um_symbols`: today's listing
+    rather than the archive's whole history, which is exactly why
+    ``--source rest`` is not the survivorship-free path. The same
+    :func:`_map_symbol` ``SCALE_PREFIX`` rule is applied against this set.
+    """
+    document = _request_json(fetch, "/exchangeInfo", {}, sleep=sleep, what="exchangeInfo")
+    symbols_info = document.get("symbols") if isinstance(document, Mapping) else None
+    if not isinstance(symbols_info, list):
+        raise DerivsBackfillError(
+            "exchangeInfo response carries no 'symbols' list; the document is "
+            "not an exchangeInfo response"
+        )
+    symbols: dict[str, None] = {}
+    for entry in symbols_info:
+        if not isinstance(entry, Mapping):
+            continue
+        symbol = entry.get("symbol")
+        if isinstance(symbol, str) and symbol:
+            symbols.setdefault(symbol, None)
+    return frozenset(symbols)
 
 
 def _map_symbol(spot_symbol: str, um_symbols: frozenset[str]) -> tuple[str, int] | None:
@@ -362,9 +437,10 @@ def _resolve_symbol_map(
     lake_path: Path,
     spot_symbols: Sequence[str],
     *,
-    fetch: ArchiveFetch,
+    fetch: ArchiveFetch | BinanceFetch,
     sleep: Callable[[float], None],
     restart: bool,
+    discover_um_symbols: Callable[..., frozenset[str]] = _discover_um_symbols,
 ) -> dict[str, dict[str, object]]:
     """The UM symbol map covering every one of ``spot_symbols``.
 
@@ -374,13 +450,19 @@ def _resolve_symbol_map(
     S3 listing crawl resolves every symbol at once and the file is
     rewritten, merging into — never dropping — whatever the cache already
     recorded for symbols outside this run's request.
+
+    ``discover_um_symbols`` is :func:`_discover_um_symbols` (the archive
+    crawl) by default; ``--source rest`` passes :func:`_discover_um_symbols_rest`
+    (today's ``exchangeInfo`` listing) instead -- the one difference between
+    the two sources' symbol mapping, both resolved through this same
+    ``SCALE_PREFIX`` rule and the same on-disk cache.
     """
     path = _symbol_map_path(lake_path)
     existing = None if restart else _load_symbol_map(path)
     if existing is not None and all(symbol in existing for symbol in spot_symbols):
         return existing
 
-    um_symbols = _discover_um_symbols(fetch, sleep=sleep)
+    um_symbols = discover_um_symbols(fetch, sleep=sleep)
     mapping: dict[str, dict[str, object]] = dict(existing) if existing else {}
     for symbol in spot_symbols:
         if symbol in mapping:
@@ -449,6 +531,39 @@ def _unzip_csv_rows(zip_bytes: bytes, filename: str) -> list[list[str]]:
 # -- funding/ -------------------------------------------------------------
 
 
+def _aggregate_funding_settlements(
+    settlements: Sequence[tuple[datetime, str]], *, what: str
+) -> dict[date, dict[str, object]]:
+    """``funding_rate_sum``/``funding_rate_last``/``n_settlements`` per day.
+
+    Shared by the archive's own ``calc_time`` rows and the REST
+    ``fundingRate`` pages (:func:`_fetch_funding_rest_settlements`): both
+    reduce to ``(instant, rate)`` pairs, bucketed by :func:`_day_bucket`, so
+    a day built either way aggregates identically.
+    """
+    ordered = sorted(settlements, key=lambda item: item[0])
+    by_day: dict[date, list[tuple[datetime, str]]] = {}
+    for instant, rate in ordered:
+        by_day.setdefault(_day_bucket(instant), []).append((instant, rate))
+
+    result: dict[date, dict[str, object]] = {}
+    for day, entries in by_day.items():
+        total = Decimal(0)
+        for _instant, rate in entries:
+            try:
+                total += Decimal(rate)
+            except InvalidOperation as exc:
+                raise DerivsBackfillError(
+                    f"{what}: last_funding_rate {rate!r} is not a decimal"
+                ) from exc
+        result[day] = {
+            "funding_rate_sum": format(total, "f"),
+            "funding_rate_last": entries[-1][1],  # entries are in ascending instant order
+            "n_settlements": len(entries),
+        }
+    return result
+
+
 def _parse_funding_rows(raw_rows: Sequence[list[str]], filename: str) -> dict[date, dict[str, object]]:
     settlements: list[tuple[datetime, str]] = []
     for row in raw_rows:
@@ -461,28 +576,7 @@ def _parse_funding_rows(raw_rows: Sequence[list[str]], filename: str) -> dict[da
             )
         instant = _epoch_to_utc(row[0], f"{filename}: calc_time")
         settlements.append((instant, row[2]))
-    settlements.sort(key=lambda item: item[0])
-
-    by_day: dict[date, list[tuple[datetime, str]]] = {}
-    for instant, rate in settlements:
-        by_day.setdefault(_day_bucket(instant), []).append((instant, rate))
-
-    result: dict[date, dict[str, object]] = {}
-    for day, entries in by_day.items():
-        total = Decimal(0)
-        for _instant, rate in entries:
-            try:
-                total += Decimal(rate)
-            except InvalidOperation as exc:
-                raise DerivsBackfillError(
-                    f"{filename}: last_funding_rate {rate!r} is not a decimal"
-                ) from exc
-        result[day] = {
-            "funding_rate_sum": format(total, "f"),
-            "funding_rate_last": entries[-1][1],  # entries are in ascending calc_time order
-            "n_settlements": len(entries),
-        }
-    return result
+    return _aggregate_funding_settlements(settlements, what=filename)
 
 
 # -- futbars/ -------------------------------------------------------------
@@ -718,6 +812,174 @@ def _backfill_futbars_symbol(
     )
 
 
+# -- The REST source (funding, futbars): the same per-day shape, fetched ------
+# -- live rather than crawled from the archive's monthly zips ----------------
+
+
+def _floor_funding_instant(funding_time_ms: int) -> datetime:
+    """``fundingTime`` (epoch ms), floored to the whole second.
+
+    The live ``fundingRate`` endpoint sometimes reports a settlement 1 ms
+    past its true instant (e.g. ``1791936000001`` for an exact UTC
+    midnight) -- a processing-delay artifact, not a different settlement
+    time. Flooring before :func:`_day_bucket` removes that artifact so a
+    settlement at ``D+1 00:00:00.001`` still closes ``D``'s window, exactly
+    as the archive's own (already whole-second) ``calc_time`` would.
+    """
+    return (_EPOCH + timedelta(milliseconds=funding_time_ms)).replace(microsecond=0)
+
+
+def _fetch_funding_rest_settlements(
+    fetch: BinanceFetch, um_symbol: str, first: date, last: date, *, sleep: Callable[[float], None]
+) -> list[tuple[datetime, str]]:
+    """Every settlement over ``[first 00:00, last+1 00:00)``, paginated.
+
+    Pages ``GET /fapi/v1/fundingRate`` by ``startTime``/``endTime`` at
+    :data:`FUNDING_REST_PAGE_LIMIT`, advancing ``startTime`` to the last page's
+    final ``fundingTime + 1`` until a short page (fewer rows than the limit)
+    confirms the window is exhausted.
+    """
+    start_ms = _date_to_ms(first)
+    end_ms = _date_to_ms(last + timedelta(days=1))
+    what = f"fundingRate for {um_symbol}"
+    settlements: list[tuple[datetime, str]] = []
+    cursor = start_ms
+    while cursor < end_ms:
+        params = {
+            "symbol": um_symbol,
+            "startTime": str(cursor),
+            "endTime": str(end_ms),
+            "limit": str(FUNDING_REST_PAGE_LIMIT),
+        }
+        document = _request_json(fetch, "/fundingRate", params, sleep=sleep, what=what)
+        if not isinstance(document, list):
+            raise DerivsBackfillError(f"{what}: response is not a list")
+        if not document:
+            break
+        for entry in document:
+            if not isinstance(entry, Mapping):
+                raise DerivsBackfillError(f"{what}: a settlement must be an object, got {entry!r}")
+            funding_time = entry.get("fundingTime")
+            funding_rate = entry.get("fundingRate")
+            if not isinstance(funding_time, int) or isinstance(funding_time, bool) or not isinstance(
+                funding_rate, str
+            ):
+                raise DerivsBackfillError(
+                    f"{what}: a settlement needs an integer fundingTime and a "
+                    f"string fundingRate, got {entry!r}"
+                )
+            settlements.append((_floor_funding_instant(funding_time), funding_rate))
+        if len(document) < FUNDING_REST_PAGE_LIMIT:
+            break
+        cursor = document[-1]["fundingTime"] + 1
+    return settlements
+
+
+def _fetch_futbars_rest_rows(
+    fetch: BinanceFetch,
+    um_symbol: str,
+    first: date,
+    last: date,
+    *,
+    sleep: Callable[[float], None],
+    now: datetime,
+) -> list[list[str]]:
+    """``[first, last]``'s daily candles as :func:`_parse_futbars_rows`' own
+    row shape -- a list of stringified fields, the archive CSV's own
+    convention -- paginated over ``GET /fapi/v1/klines``.
+
+    A candle whose close time is not yet in the past (today's still-open
+    candle) is dropped before it ever reaches :func:`_parse_futbars_rows`:
+    it is not a closed day and must never be written.
+    """
+    start_ms = _date_to_ms(first)
+    end_ms = _date_to_ms(last + timedelta(days=1)) - 1
+    now_ms = int(now.timestamp() * 1000)
+    what = f"klines for {um_symbol}"
+    rows: list[list[str]] = []
+    cursor = start_ms
+    while cursor <= end_ms:
+        params = {
+            "symbol": um_symbol,
+            "interval": "1d",
+            "startTime": str(cursor),
+            "endTime": str(end_ms),
+            "limit": str(FUTBARS_REST_PAGE_LIMIT),
+        }
+        document = _request_json(fetch, "/klines", params, sleep=sleep, what=what)
+        if not isinstance(document, list):
+            raise DerivsBackfillError(f"{what}: response is not a list")
+        if not document:
+            break
+        for entry in document:
+            if not isinstance(entry, Sequence) or isinstance(entry, (str, bytes)) or len(entry) < 10:
+                raise DerivsBackfillError(
+                    f"{what}: a candle needs at least open_time, OHLCV, close_time, "
+                    f"quote_volume, trade count and taker_buy_volume, got {entry!r}"
+                )
+            try:
+                close_time_ms = int(entry[6])
+            except (TypeError, ValueError) as exc:
+                raise DerivsBackfillError(f"{what}: close time {entry[6]!r} is not an integer") from exc
+            if close_time_ms > now_ms:
+                continue  # today's still-open candle -- never written
+            rows.append([str(value) for value in entry])
+        if len(document) < FUTBARS_REST_PAGE_LIMIT:
+            break
+        cursor = int(document[-1][0]) + 86_400_000  # the next day's open, in ms
+    return rows
+
+
+def _write_stream_days(
+    lake_path: Path,
+    stream: str,
+    spot_symbol: str,
+    by_day: Mapping[date, dict[str, object]],
+    first: date,
+    last: date,
+    *,
+    restart: bool,
+) -> int:
+    """Write every day in ``by_day`` that falls in ``[first, last]`` and is
+    not already on disk (unless ``restart``) -- the REST source's per-day
+    skip rule, the counterpart of the archive path's per-month one."""
+    written = 0
+    for day in sorted(by_day):
+        if not (first <= day <= last):
+            continue
+        if not restart and _day_already_written(lake_path, stream, spot_symbol, day):
+            continue
+        _write_row(lake_path, stream, spot_symbol, day, by_day[day])
+        written += 1
+    return written
+
+
+def _backfill_funding_symbol_rest(
+    lake_path: Path, spot_symbol: str, um_symbol: str, first: date, last: date,
+    *, fetch: BinanceFetch, sleep: Callable[[float], None], restart: bool,
+) -> StreamSymbolResult:
+    try:
+        settlements = _fetch_funding_rest_settlements(fetch, um_symbol, first, last, sleep=sleep)
+        by_day = _aggregate_funding_settlements(settlements, what=f"fundingRate for {um_symbol}")
+    except (BarsBackfillError, DerivsBackfillError) as exc:
+        return StreamSymbolResult(stream=FUNDING_STREAM, symbol=spot_symbol, status="error", error=str(exc))
+    written = _write_stream_days(lake_path, FUNDING_STREAM, spot_symbol, by_day, first, last, restart=restart)
+    return StreamSymbolResult(stream=FUNDING_STREAM, symbol=spot_symbol, status="ok", rows_written=written)
+
+
+def _backfill_futbars_symbol_rest(
+    lake_path: Path, spot_symbol: str, um_symbol: str, scale: int, first: date, last: date,
+    *, fetch: BinanceFetch, sleep: Callable[[float], None], now: datetime, restart: bool,
+) -> StreamSymbolResult:
+    try:
+        raw_rows = _fetch_futbars_rest_rows(fetch, um_symbol, first, last, sleep=sleep, now=now)
+        by_day = _parse_futbars_rows(raw_rows, f"klines for {um_symbol}", symbol=um_symbol, scale=scale)
+    except (BarsBackfillError, DerivsBackfillError) as exc:
+        return StreamSymbolResult(stream=FUTBARS_STREAM, symbol=spot_symbol, status="error", error=str(exc))
+    written = _write_stream_days(lake_path, FUTBARS_STREAM, spot_symbol, by_day, first, last, restart=restart)
+    return StreamSymbolResult(stream=FUTBARS_STREAM, symbol=spot_symbol, status="ok", rows_written=written)
+
+
 # -- metrics/ (opt-in, daily-keyed) -------------------------------------------
 
 
@@ -881,8 +1143,10 @@ def backfill_derivs(
     *,
     symbols_from: str | Path,
     streams: Sequence[str] = DEFAULT_STREAMS,
-    fetch: ArchiveFetch | None = None,
+    source: str = SOURCE_ARCHIVE,
+    fetch: ArchiveFetch | BinanceFetch | None = None,
     sleep: Callable[[float], None] | None = None,
+    clock: Callable[[], datetime] | None = None,
     emit: Callable[[str], object] | None = None,
     restart: bool = False,
     workers: int = DEFAULT_WORKERS,
@@ -895,6 +1159,17 @@ def backfill_derivs(
     mapped to a UM perpetual once (:func:`_resolve_symbol_map`, cached at
     ``<lake>/staging-meta/um-symbol-map.json``); a symbol with none produces
     one ``"skipped"`` result and no rows in any stream.
+
+    ``source="archive"`` (the default, unchanged) reads Binance's public
+    data archive, as above. ``source="rest"`` instead asks Binance's live
+    USD-M REST API for :data:`FUNDING_STREAM` and :data:`FUTBARS_STREAM`
+    only — ``metrics`` is refused with a clear error — so a lake can be
+    staged through yesterday rather than through the last published monthly
+    archive file. ``fetch``, when given under ``source="rest"``, must then be
+    a :data:`BinanceFetch` (a ``(path, params)`` callable) rather than an
+    :data:`ArchiveFetch`. ``clock``, REST only, is when "now" is for deciding
+    whether a candle's close time is still in the future (today's open
+    candle, never written); it defaults to the system UTC clock.
 
     ``emit``, when given, is called with one JSON line per (stream, symbol,
     period) failure as the run makes progress, ahead of the per-result lines
@@ -915,7 +1190,16 @@ def backfill_derivs(
         raise DerivsBackfillError(
             f"--first {first_date.isoformat()} is after --last {last_date.isoformat()}"
         )
+    if source not in SOURCES:
+        raise DerivsBackfillError(f"--source must be 'archive' or 'rest', got {source!r}")
     stream_list = _dedupe_streams(streams)
+    if source == SOURCE_REST:
+        disallowed = [stream for stream in stream_list if stream not in REST_STREAMS]
+        if disallowed:
+            raise DerivsBackfillError(
+                f"--source rest only backfills {', '.join(REST_STREAMS)}; "
+                f"{', '.join(disallowed)} needs --source archive"
+            )
     if not isinstance(workers, int) or isinstance(workers, bool) or not (
         MIN_WORKERS <= workers <= MAX_WORKERS
     ):
@@ -924,9 +1208,14 @@ def backfill_derivs(
             f"got {workers!r}"
         )
 
-    resolved_fetch = fetch if fetch is not None else urllib_archive_fetch
     resolved_sleep = sleep if sleep is not None else _default_sleep
+    resolved_clock = clock if clock is not None else _utc_now
     resolved_emit: Callable[[str], object] = emit if emit is not None else (lambda _line: None)
+
+    if source == SOURCE_REST:
+        resolved_fetch: ArchiveFetch | BinanceFetch = fetch if fetch is not None else urllib_fapi_fetch
+    else:
+        resolved_fetch = fetch if fetch is not None else urllib_archive_fetch
 
     spot_symbols = _read_symbols_from(symbols_from)
 
@@ -934,7 +1223,8 @@ def backfill_derivs(
         _clear_derivs_caches(lake_path)
 
     symbol_map = _resolve_symbol_map(
-        lake_path, spot_symbols, fetch=resolved_fetch, sleep=resolved_sleep, restart=restart
+        lake_path, spot_symbols, fetch=resolved_fetch, sleep=resolved_sleep, restart=restart,
+        discover_um_symbols=_discover_um_symbols_rest if source == SOURCE_REST else _discover_um_symbols,
     )
 
     results: list[StreamSymbolResult] = []
@@ -954,8 +1244,20 @@ def backfill_derivs(
         if symbol_map.get(symbol, {}).get("um_symbol") is not None
     ]
 
+    rest_now = resolved_clock() if source == SOURCE_REST else None
+
     def _run_job(job: tuple[str, str, str, int]) -> StreamSymbolResult:
         stream, spot_symbol, um_symbol, scale = job
+        if source == SOURCE_REST:
+            if stream == FUNDING_STREAM:
+                return _backfill_funding_symbol_rest(
+                    lake_path, spot_symbol, um_symbol, first_date, last_date,
+                    fetch=resolved_fetch, sleep=resolved_sleep, restart=restart,
+                )
+            return _backfill_futbars_symbol_rest(
+                lake_path, spot_symbol, um_symbol, scale, first_date, last_date,
+                fetch=resolved_fetch, sleep=resolved_sleep, now=rest_now, restart=restart,
+            )
         if stream == FUNDING_STREAM:
             return _backfill_funding_symbol(
                 lake_path, spot_symbol, um_symbol, first_date, last_date,
@@ -1027,6 +1329,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--source",
+        choices=SOURCES,
+        default=SOURCE_ARCHIVE,
+        help=(
+            "'archive' (default) reads Binance's public data archive, staged "
+            "through its last published monthly file; 'rest' instead asks "
+            "Binance's live USD-M REST API, staged through yesterday, for "
+            f"{' and '.join(REST_STREAMS)} only ('metrics' is refused)"
+        ),
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=DEFAULT_WORKERS,
@@ -1050,10 +1363,11 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     emit: Callable[[str], object] = _print_line,
-    fetch: ArchiveFetch | None = None,
+    fetch: ArchiveFetch | BinanceFetch | None = None,
     sleep: Callable[[float], None] | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> int:
-    """``python -m nullius_ingest.derivs_backfill --lake LAKE --first D --last D --symbols-from PATH [--streams S,S,...] [--workers N] [--restart]``.
+    """``python -m nullius_ingest.derivs_backfill --lake LAKE --first D --last D --symbols-from PATH [--streams S,S,...] [--source archive|rest] [--workers N] [--restart]``.
 
     Prints an ``"error"`` line naming any (stream, symbol, period) that
     failed as the run makes progress, then one JSON line per (stream,
@@ -1075,8 +1389,10 @@ def main(
             arguments.last,
             symbols_from=arguments.symbols_from,
             streams=streams,
+            source=arguments.source,
             fetch=fetch,
             sleep=sleep,
+            clock=clock,
             emit=emit,
             restart=arguments.restart,
             workers=arguments.workers,

@@ -9,8 +9,10 @@
 #
 # Steps, each logging one line, in order:
 #   1. decide the backfill window (an empty lake needs --bootstrap DAYS)
-#   2. lake-backfill (bars), then lake-derivs-backfill (funding, futbars,
-#      optionally metrics) over that window
+#   2. lake-backfill (bars), then lake-derivs-backfill --source rest for
+#      funding and futbars (staged through yesterday), plus, when
+#      SHADOW_METRICS=1, a second lake-derivs-backfill --streams metrics on
+#      the archive source (metrics has no REST source), over that window
 #   3. lake-seal
 #   4. prune every snapshot but the newest SHADOW_KEEP
 #   5. fetch the public BingX contracts document (no key)
@@ -146,11 +148,7 @@ fi
 if [[ "${FIRST}" > "${LAST}" ]]; then
   log "step 2/6: already staged through ${LAST}; nothing to backfill"
 else
-  DERIVS_STREAMS="funding,futbars"
-  if [[ "${SHADOW_METRICS}" == "1" ]]; then
-    DERIVS_STREAMS="${DERIVS_STREAMS},metrics"
-  fi
-  log "step 2/6: lake-backfill, then lake-derivs-backfill --streams ${DERIVS_STREAMS}, over ${FIRST}..${LAST}"
+  log "step 2/6: lake-backfill, then lake-derivs-backfill --streams funding,futbars --source rest, over ${FIRST}..${LAST}"
 
   LAKE="${SHADOW_LAKE}" "${RUN_SH}" lake-backfill --first "${FIRST}" --last "${LAST}" "${BARS_SOURCE_ARGS[@]}"
 
@@ -176,11 +174,23 @@ with open(sys.argv[2], "w", encoding="utf-8") as fh:
 
   set +e
   LAKE="${SHADOW_LAKE}" "${RUN_SH}" lake-derivs-backfill --first "${FIRST}" --last "${LAST}" \
-    --symbols-from "${UNIVERSE_JSON}" --streams "${DERIVS_STREAMS}"
+    --symbols-from "${UNIVERSE_JSON}" --streams funding,futbars --source rest
   derivs_status=$?
   set -e
   if [[ "${derivs_status}" -ne 0 ]]; then
-    echo "lake-derivs-backfill exited ${derivs_status}: a day the archive has not published yet is tolerated — continuing" >&2
+    echo "lake-derivs-backfill exited ${derivs_status}: a day Binance has not published yet is tolerated — continuing" >&2
+  fi
+
+  if [[ "${SHADOW_METRICS}" == "1" ]]; then
+    log "step 2/6: lake-derivs-backfill --streams metrics --source archive, over ${FIRST}..${LAST}"
+    set +e
+    LAKE="${SHADOW_LAKE}" "${RUN_SH}" lake-derivs-backfill --first "${FIRST}" --last "${LAST}" \
+      --symbols-from "${UNIVERSE_JSON}" --streams metrics
+    metrics_status=$?
+    set -e
+    if [[ "${metrics_status}" -ne 0 ]]; then
+      echo "lake-derivs-backfill (metrics) exited ${metrics_status}: a day the archive has not published yet is tolerated — continuing" >&2
+    fi
   fi
 fi
 
