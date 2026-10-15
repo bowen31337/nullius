@@ -82,6 +82,7 @@ without it.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -151,10 +152,24 @@ QUOTE_ASSETS: tuple[str, ...] = (
 # and the base may itself contain digits — ``1INCHUSDT``), then a quote asset.
 # Anchored with \A/\Z rather than ^/$ so a trailing newline cannot smuggle a
 # non-symbol past the test — the same reasoning ``universe.keys`` uses for its
-# hash pattern.
+# hash pattern. A non-ASCII base character is matched here and then held to
+# :func:`_is_caseless_letter` in :func:`is_symbol_label`, since ``re`` has no
+# Unicode-category classes.
 _SYMBOL_LABEL = re.compile(
-    r"\A[A-Z0-9]+(?:" + "|".join(QUOTE_ASSETS) + r")\Z"
+    r"\A(?P<base>(?:[A-Z0-9]|[^\x00-\x7F])+)(?:" + "|".join(QUOTE_ASSETS) + r")\Z"
 )
+
+
+def _is_caseless_letter(char: str) -> bool:
+    """Whether ``char`` is a letter of a script with no case (category ``Lo``).
+
+    Binance lists symbols named in Chinese (``牛来USDT``), whose ideographs are
+    ``Lo``, as are kana and hangul. A cased letter (``Δ``, ``É``, ``Ж``), a
+    symbol (``∆``) or an invisible format character is not: such a name is
+    far more likely a column name than a ticker, and a false claim would
+    reject a correct signal.
+    """
+    return unicodedata.category(char) == "Lo"
 
 
 def is_symbol_label(label: object) -> bool:
@@ -163,16 +178,23 @@ def is_symbol_label(label: object) -> bool:
     The rule :func:`return_index` applies to a bare series' name, exposed so a
     caller can see and test the boundary rather than infer it from behavior.
     True for an upper-case alphanumeric token ending in a known quote asset
-    (:data:`QUOTE_ASSETS`): ``BTCUSDT``, ``ETHBTC``, ``1INCHUSDT``.  False for
-    anything that is not a string, and for every name a score series would
-    plausibly carry — ``score``, ``VOL``, ``S1``, ``momentum``, ``signal_1``.
+    (:data:`QUOTE_ASSETS`): ``BTCUSDT``, ``ETHBTC``, ``1INCHUSDT``, and for
+    one whose base also holds letters of a caseless script: ``牛来USDT``.
+    False for anything that is not a string, and for every name a score
+    series would plausibly carry — ``score``, ``VOL``, ``S1``, ``momentum``,
+    ``signal_1``, ``ΔBTC``.
 
     Nothing about case is folded: the universe's own canonical casing is
     authoritative (the same stance ``universe.keys`` takes toward symbol
     casing), so a lower-cased ``btcusdt`` is not silently accepted as the
     symbol ``BTCUSDT`` — it is not read as a symbol *claim* at all.
     """
-    return isinstance(label, str) and _SYMBOL_LABEL.match(label) is not None
+    if not isinstance(label, str):
+        return False
+    match = _SYMBOL_LABEL.match(label)
+    if match is None:
+        return False
+    return all(char.isascii() or _is_caseless_letter(char) for char in match["base"])
 
 
 def _require_polars() -> Any:

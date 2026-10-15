@@ -570,3 +570,21 @@ def test_importing_the_package_does_not_import_polars():
     )
     assert result.returncode == 0, result.stderr
     assert "deferred" in result.stdout
+
+
+def test_a_caseless_script_symbol_is_recognised():
+    # Binance lists USDT symbols named in Chinese; the universe carries them
+    # as-is, so a series named after one is the same claim as "DOGEUSDT".
+    for label in ("牛来USDT", "币安人生USDT", "我踏马来了USDT", "龙虾USDT", "哈基米USDT"):
+        assert is_symbol_label(label), label
+    outcome = check_signal_return(pl.Series("牛来USDT", [0.3]), ("BTCUSDT",))
+    assert outcome.outcome == CONTRACT_VIOLATION
+
+
+def test_cased_or_symbolic_non_ascii_names_are_not_symbol_claims():
+    # Only caseless letters (CJK, kana, hangul) widen the shape: a Greek delta,
+    # a math symbol, accented Latin or Cyrillic in a name keeps it a name, and
+    # an invisible format character never passes as part of a symbol.
+    for label in ("ΔBTC", "∆USDT", "ÉTHUSDT", "ЖUSDT", "BTC\u200bUSDT", "牛来usdt"):
+        assert not is_symbol_label(label), label
+        assert check_signal_return(pl.Series(label, [0.3]), ("BTCUSDT",)).ok, label
