@@ -234,6 +234,9 @@ if [[ -d "${SNAPSHOTS_DIR}" ]]; then
   if [[ "${#ALL_SNAPSHOTS[@]}" -gt "${SHADOW_KEEP}" ]]; then
     for name in "${ALL_SNAPSHOTS[@]:${SHADOW_KEEP}}"; do
       echo "  removing old snapshot ${name}" >&2
+      # lake-seal leaves every directory r-x, and unlinking needs write on
+      # the parent, so a sealed snapshot must be made writable to be removed.
+      chmod -R u+w -- "${SNAPSHOTS_DIR:?}/${name}"
       rm -rf -- "${SNAPSHOTS_DIR:?}/${name}"
     done
   fi

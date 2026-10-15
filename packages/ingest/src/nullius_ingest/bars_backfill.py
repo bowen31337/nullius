@@ -227,6 +227,7 @@ import math
 import re
 import shutil
 import statistics
+import string
 import sys
 import threading
 import time
@@ -450,9 +451,18 @@ def urllib_archive_fetch(url: str) -> HttpResponse:
     Every URL this module builds — a listing query, a monthly zip, or a
     ``.CHECKSUM`` sibling — is public; this is the same no-socket-in-tests
     seam :func:`urllib_fetch` is for the REST source.
+
+    The URL is percent-encoded here, at the transport: Binance lists symbols
+    with non-ASCII names (``牛来USDT``), and ``http.client`` sends the request
+    line as ASCII, so an unencoded path raises ``UnicodeEncodeError`` — not a
+    transport error, so nothing per-request catches it. Every ASCII character
+    is in ``safe``, so an ASCII URL (query and existing escapes included) is
+    sent unchanged; the callers keep the readable symbol for filenames and
+    cache keys.
     """
     request = urllib.request.Request(
-        url, headers={"User-Agent": "nullius-ingest/bars_backfill"}
+        urllib.parse.quote(url, safe=string.punctuation),
+        headers={"User-Agent": "nullius-ingest/bars_backfill"},
     )
     try:
         with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
