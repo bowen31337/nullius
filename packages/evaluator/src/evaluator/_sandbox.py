@@ -63,8 +63,9 @@ Five claims sit in that one call, and this module is each of them:
   function named :data:`contract.signal.SIGNAL_ENTRYPOINT`, calls it
   ``signal(window, seed)`` positionally (a third required parameter would
   break that call — see ``contract.signal``), validates the return against the
-  universe with :func:`contract.signal.validate_signal_return`, and reports
-  the result.  The runner that does this is *fixed and embedded* — the sandbox
+  universe with :func:`contract.violation.check_signal_return` (feature 11's
+  value checks plus feature 12's index check: a series named after a symbol
+  the window does not hold is a violation), and reports the result.  The runner that does this is *fixed and embedded* — the sandbox
   owns it, the signal author never sees it — so the entrypoint name and the
   validation step are pinned in one place, exactly as ``contract.signal``
   intends, and a signal cannot redefine how it is invoked.
@@ -312,7 +313,8 @@ _CHILD_SOURCE = textwrap.dedent(
             import polars as pl
             import contract
             from contract import MarketWindowPayload
-            from contract.signal import SIGNAL_ENTRYPOINT, validate_signal_return
+            from contract.signal import SIGNAL_ENTRYPOINT
+            from contract.violation import check_signal_return
         except Exception as exc:  # noqa: BLE001 - reported as the envelope below
             _fail("crash", f"child import failed: {exc}")
             return
@@ -367,7 +369,9 @@ _CHILD_SOURCE = textwrap.dedent(
             return
 
         try:
-            problems = validate_signal_return(result, window.universe)
+            # Value checks (feature 11) and the index check (feature 12) in
+            # one call, the same composition the gVisor child runs.
+            problems = check_signal_return(result, window.universe).problems
         except Exception as exc:  # noqa: BLE001 - validation must not escape
             _fail("crash", f"return validation failed: {exc}")
             return

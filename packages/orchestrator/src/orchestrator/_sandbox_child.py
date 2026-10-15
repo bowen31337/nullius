@@ -103,9 +103,11 @@ gets to write anything at all (hung, or killed outright); a dead child cannot
 report its own silence.  The six words are the same vocabulary the evaluator's
 own sandbox already uses (``evaluator._sandbox.SandboxResult``), repeated here
 by spelling rather than by import — this bootstrap depends on nothing but the
-standard library, ``polars``, ``pyarrow`` and ``contract``'s ``payload`` and
-``signal`` modules, so the orchestrator's own ``pyproject.toml`` gains no new
-dependency for it.
+standard library, ``polars``, ``pyarrow`` and ``contract``'s ``payload``,
+``signal`` and ``violation`` modules (the last for
+:func:`~contract.violation.check_signal_return`, which adds feature 12's index
+check to feature 11's value checks), so the orchestrator's own
+``pyproject.toml`` gains no new dependency for it.
 
 **Honest limits.**  This is the admission layer, not the enforcement layer —
 a defense this thorough still cannot stop a compiled extension loaded before
@@ -139,7 +141,8 @@ import contract
 import polars
 import pyarrow  # noqa: F401  (ditto)
 from contract.payload import MarketWindowPayload
-from contract.signal import SIGNAL_ENTRYPOINT, validate_signal_return
+from contract.signal import SIGNAL_ENTRYPOINT
+from contract.violation import check_signal_return
 
 __all__ = [
     "AGENT_IMPORTS_ALLOWLIST",
@@ -619,8 +622,11 @@ def run_signal(source: str, seed: int, window_payload: bytes) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - a signal that raises is a crash
         return _fail("crash", f"signal raised: {exc}")
 
+    # check_signal_return composes feature 11's value checks with feature
+    # 12's index check: a series whose name claims a symbol the window does
+    # not hold is a violation, not a score attributed to the wrong symbols.
     try:
-        problems = validate_signal_return(result, window.universe)
+        problems = check_signal_return(result, window.universe).problems
     except Exception as exc:  # noqa: BLE001 - validation must not escape
         return _fail("crash", f"return validation failed: {exc}")
 

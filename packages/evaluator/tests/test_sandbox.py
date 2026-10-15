@@ -137,6 +137,28 @@ def test_a_non_series_return_is_a_violation() -> None:
     assert result.problems
 
 
+def test_a_series_named_after_an_absent_symbol_is_a_violation() -> None:
+    # Feature 12's index check runs in the child too: a length-conforming
+    # float series named after a symbol the window does not hold attributes
+    # its values to the wrong symbols, and is rejected naming that symbol.
+    window = _window(("BTCUSDT", "ETHUSDT", "SOLUSDT"))
+    result = _run(
+        "def signal(ctx, seed):\n    return pl.Series('DOGEUSDT', [1.0, 2.0, 3.0])", window
+    )
+    assert result.fail_class == "violation"
+    assert result.scores is None
+    assert [(p.kind, p.symbol) for p in result.problems] == [("absent_symbol", "DOGEUSDT")]
+
+
+def test_a_series_named_after_a_present_symbol_or_a_plain_name_is_ok() -> None:
+    window = _window(("BTCUSDT", "ETHUSDT", "SOLUSDT"))
+    for name in ("BTCUSDT", "score", "ΔBTC"):
+        result = _run(
+            f"def signal(ctx, seed):\n    return pl.Series({name!r}, [1.0, 2.0, 3.0])", window
+        )
+        assert result.ok, (name, result.fail_class, result.detail)
+
+
 # -- resource failures are values, not exceptions -----------------------------
 
 
