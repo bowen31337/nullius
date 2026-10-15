@@ -18,11 +18,10 @@
 #   5. fetch the public BingX contracts document (no key)
 #   6. run.sh shadow-book, one --node per SHADOW_NODES line
 #
-# The script exits with the first failing step's code — except the
-# funding/futbars lake-derivs-backfill (REST), whose non-zero exit is
-# tolerated: the run continues, and the book step (feature 3) picks the
-# latest complete date on its own. The metrics backfill is not tolerated: an
-# unpublished day already exits 0 there, so a non-zero exit is a real error.
+# The script exits with the first failing step's code. An incomplete or
+# unpublished day is not a failure (the backfills exit 0 on it, and the book
+# step picks the latest complete date on its own), so every non-zero exit
+# stops the run.
 
 set -euo pipefail
 
@@ -146,89 +145,88 @@ fi
 
 # -- step 2: lake-backfill, lake-derivs-backfill --------------------------------
 
-# Derivs catch up on their own window: the day after the latest staged futbars
-# date (the monthly archive used to leave them weeks behind the bars), or the
-# bars window when nothing is staged yet.
-DERIVS_FIRST="${FIRST}"
-if [[ -n "${FIRST_SYMBOL:-}" ]]; then
-  LATEST_FUT="$(find "${SHADOW_LAKE}/staging/futbars/symbol=${FIRST_SYMBOL}" -mindepth 1 -maxdepth 1 -type d -name 'date=*' -printf '%f\n' 2>/dev/null | sed 's/^date=//' | sort | tail -n1)"
-  if [[ -n "${LATEST_FUT}" ]]; then
-    DERIVS_FIRST="$(date -u -d "${LATEST_FUT} +1 day" +%Y-%m-%d)"
-  fi
+if [[ "${FIRST}" > "${LAST}" ]]; then
+  log "step 2/6: bars already staged through ${LAST}"
+else
+  log "step 2/6: lake-backfill over ${FIRST}..${LAST}"
+  LAKE="${SHADOW_LAKE}" "${RUN_SH}" lake-backfill --first "${FIRST}" --last "${LAST}" "${BARS_SOURCE_ARGS[@]}"
 fi
 
-if [[ "${FIRST}" > "${LAST}" && "${DERIVS_FIRST}" > "${LAST}" ]]; then
-  log "step 2/6: already staged through ${LAST}; nothing to backfill"
-else
-  log "step 2/6: lake-backfill over ${FIRST}..${LAST}, then lake-derivs-backfill --streams funding,futbars --source rest over ${DERIVS_FIRST}..${LAST}"
-
-  if [[ ! "${FIRST}" > "${LAST}" ]]; then
-    LAKE="${SHADOW_LAKE}" "${RUN_SH}" lake-backfill --first "${FIRST}" --last "${LAST}" "${BARS_SOURCE_ARGS[@]}"
+if [[ ! -f "${UNIVERSE_JSON}" ]]; then
+  echo "${UNIVERSE_JSON} absent after staging; writing it from the staged symbols" >&2
+  if [[ ! -d "${STAGED_BARS_DIR}" ]]; then
+    echo "error: ${STAGED_BARS_DIR} has no staged bars; lake-backfill wrote nothing" >&2
+    exit 1
   fi
-
-  if [[ ! -f "${UNIVERSE_JSON}" ]]; then
-    echo "${UNIVERSE_JSON} absent after staging; writing it from the staged symbols" >&2
-    if [[ ! -d "${STAGED_BARS_DIR}" ]]; then
-      echo "error: ${STAGED_BARS_DIR} has no staged bars; lake-backfill wrote nothing" >&2
-      exit 1
-    fi
-    STAGED_SYMBOLS="$(find "${STAGED_BARS_DIR}" -mindepth 1 -maxdepth 1 -type d -name 'symbol=*' -printf '%f\n' | sed 's/^symbol=//' | sort)"
-    if [[ -z "${STAGED_SYMBOLS}" ]]; then
-      echo "error: ${STAGED_BARS_DIR} has no symbol directories; lake-backfill wrote nothing" >&2
-      exit 1
-    fi
-    python3 -I -c '
+  STAGED_SYMBOLS="$(find "${STAGED_BARS_DIR}" -mindepth 1 -maxdepth 1 -type d -name 'symbol=*' -printf '%f\n' | sed 's/^symbol=//' | sort)"
+  if [[ -z "${STAGED_SYMBOLS}" ]]; then
+    echo "error: ${STAGED_BARS_DIR} has no symbol directories; lake-backfill wrote nothing" >&2
+    exit 1
+  fi
+  python3 -I -c '
 import json, sys
 symbols = [line for line in sys.argv[1].splitlines() if line]
 with open(sys.argv[2], "w", encoding="utf-8") as fh:
     json.dump({"symbols": symbols}, fh, indent=2, sort_keys=True)
     fh.write("\n")
 ' "${STAGED_SYMBOLS}" "${UNIVERSE_JSON}"
-  fi
-
-  set +e
-  LAKE="${SHADOW_LAKE}" "${RUN_SH}" lake-derivs-backfill --first "${DERIVS_FIRST}" --last "${LAST}" \
-    --symbols-from "${UNIVERSE_JSON}" --streams funding,futbars --source rest
-  derivs_status=$?
-  set -e
-  if [[ "${derivs_status}" -ne 0 ]]; then
-    echo "lake-derivs-backfill exited ${derivs_status}: a day Binance has not published yet is tolerated — continuing" >&2
-  fi
 fi
 
-# Metrics run on their own catch-up window, outside the bars check above: a
-# run stopped by a metrics failure is retried after the bars are staged, and
-# the retry must still fetch the metrics. A day the archive has not published
-# yet is an HTTP 404, which lake-derivs-backfill counts as nothing to add and
-# exits 0 on; any non-zero exit is a real failure (a refused argument, an
-# unexpected error, or a day that failed its fetch, checksum or parse), so it
-# stops the run before a book is scored with metrics missing.
+# Each derivs backfill runs on its own catch-up window, outside the bars
+# check above, so a run stopped by a derivs failure is retried after the bars
+# are staged and the retry still fetches the derivs. The window starts the
+# day after the first symbol's latest staged day for that stream (the bars
+# window when nothing is staged), but never later than DERIVS_RECHECK_DAYS
+# before yesterday: one symbol can fail on a day the first symbol succeeded
+# on, and a retry keyed on the first symbol alone would call that day staged.
+# Already-written days are never rewritten.
 #
-# The window starts at the first symbol's latest metrics day, but never later
-# than METRICS_RECHECK_DAYS before yesterday: one symbol can fail on a day the
-# first symbol succeeded on, and a retry keyed on the first symbol alone would
-# call that day staged. Days already written are skipped without a request.
-METRICS_RECHECK_DAYS=3
-if [[ "${SHADOW_METRICS}" == "1" ]]; then
-  METRICS_FIRST="${FIRST}"
-  LATEST_METRICS="$(find "${SHADOW_LAKE}/staging/metrics/symbol=${FIRST_SYMBOL:-}" -mindepth 1 -maxdepth 1 -type d -name 'date=*' -printf '%f\n' 2>/dev/null | sed 's/^date=//' | sort | tail -n1)"
-  if [[ -n "${LATEST_METRICS}" ]]; then
-    METRICS_FIRST="$(date -u -d "${LATEST_METRICS} +1 day" +%Y-%m-%d)"
+# A day that is not complete yet is not a failure in either source: REST
+# writes only closed days and answers an empty page for a delisted perp, and
+# the archive answers HTTP 404 for an unpublished file; both exit 0. So a
+# non-zero exit is a real failure (a refused argument, an unexpected error, or
+# a request that failed its retries, status, checksum or parse), and it stops
+# the run before a book is scored on incomplete data.
+DERIVS_RECHECK_DAYS=3
+RECHECK_FIRST="$(date -u -d "${LAST} -$((DERIVS_RECHECK_DAYS - 1)) days" +%Y-%m-%d)"
+
+derivs_first() {
+  local stream="$1" first="${FIRST}" latest=""
+  if [[ -n "${FIRST_SYMBOL:-}" ]]; then
+    latest="$(find "${SHADOW_LAKE}/staging/${stream}/symbol=${FIRST_SYMBOL}" -mindepth 1 -maxdepth 1 -type d -name 'date=*' -printf '%f\n' 2>/dev/null | sed 's/^date=//' | sort | tail -n1)"
   fi
-  RECHECK_FIRST="$(date -u -d "${LAST} -$((METRICS_RECHECK_DAYS - 1)) days" +%Y-%m-%d)"
-  if [[ "${METRICS_FIRST}" > "${RECHECK_FIRST}" ]]; then
-    METRICS_FIRST="${RECHECK_FIRST}"
+  if [[ -n "${latest}" ]]; then
+    first="$(date -u -d "${latest} +1 day" +%Y-%m-%d)"
   fi
-  log "step 2/6: lake-derivs-backfill --streams metrics --source archive, over ${METRICS_FIRST}..${LAST}"
+  if [[ "${first}" > "${RECHECK_FIRST}" ]]; then
+    first="${RECHECK_FIRST}"
+  fi
+  printf '%s\n' "${first}"
+}
+
+run_derivs() {
+  local label="$1"; shift
+  local status
   set +e
-  LAKE="${SHADOW_LAKE}" "${RUN_SH}" lake-derivs-backfill --first "${METRICS_FIRST}" --last "${LAST}" \
-    --symbols-from "${UNIVERSE_JSON}" --streams metrics
-  metrics_status=$?
+  LAKE="${SHADOW_LAKE}" "${RUN_SH}" lake-derivs-backfill "$@"
+  status=$?
   set -e
-  if [[ "${metrics_status}" -ne 0 ]]; then
-    echo "error: lake-derivs-backfill (metrics) exited ${metrics_status}; stopping before the book step" >&2
-    exit "${metrics_status}"
+  if [[ "${status}" -ne 0 ]]; then
+    echo "error: lake-derivs-backfill (${label}) exited ${status}; stopping before the book step" >&2
+    exit "${status}"
   fi
+}
+
+DERIVS_FIRST="$(derivs_first futbars)"
+log "step 2/6: lake-derivs-backfill --streams funding,futbars --source rest, over ${DERIVS_FIRST}..${LAST}"
+run_derivs "funding,futbars" --first "${DERIVS_FIRST}" --last "${LAST}" \
+  --symbols-from "${UNIVERSE_JSON}" --streams funding,futbars --source rest
+
+if [[ "${SHADOW_METRICS}" == "1" ]]; then
+  METRICS_FIRST="$(derivs_first metrics)"
+  log "step 2/6: lake-derivs-backfill --streams metrics --source archive, over ${METRICS_FIRST}..${LAST}"
+  run_derivs "metrics" --first "${METRICS_FIRST}" --last "${LAST}" \
+    --symbols-from "${UNIVERSE_JSON}" --streams metrics
 fi
 
 # -- step 3: lake-seal -----------------------------------------------------------
