@@ -24,6 +24,10 @@ Before a byte of agent-authored source is compiled, the bootstrap, in order:
    ``breakpoint`` (:func:`_agent_builtins`);
 4. materializes the :class:`~contract.window.MarketWindow` from the payload.
 
+Before the guard goes up it also pins the output row order of polars'
+hash-based operations (:func:`_pin_polars_order`), so the same source and
+window give the same scores in every process (PRD P3).
+
 Only then does it compile the source into a fresh module namespace, call
 ``signal(window, seed)``, and validate the return.
 
@@ -669,6 +673,64 @@ def _preload_allowlist() -> None:
         importlib.import_module(name)
 
 
+#: The polars methods whose output row order follows the process's hash seed,
+#: with the ``maintain_order`` each is pinned to. Polars seeds that hasher from
+#: the OS random source in every process, and neither POLARS_MAX_THREADS=1,
+#: PYTHONHASHSEED nor any polars setting fixes it, so without the pin each
+#: sandbox process emits these rows in its own order. Row order reaches a
+#: score through any order-dependent float sum: a group's mean differed in the
+#: last bit between processes, an agent's exact ``==`` tie test split
+#: ETCUSDT/XLMUSDT on one date and not another, and one node's ic_mean moved
+#: by about 0.1% between re-evaluations (PRD P3). Each pin changes only the
+#: order of the rows, never which rows or what they hold.
+_POLARS_ORDER_PINS: Final[tuple[tuple[str, str, object], ...]] = (
+    ("DataFrame", "unique", True),
+    ("DataFrame", "group_by", True),
+    ("DataFrame", "join", "left_right"),
+    ("DataFrame", "partition_by", True),
+    ("DataFrame", "pivot", True),
+    ("LazyFrame", "unique", True),
+    ("LazyFrame", "group_by", True),
+    ("LazyFrame", "join", "left_right"),
+    ("Series", "unique", True),
+    ("Series", "mode", True),
+    ("Expr", "unique", True),
+    ("Expr", "mode", True),
+)
+
+# The wrapper is compiled into a namespace with no builtins and no module
+# globals, so an agent reading ``pl.DataFrame.unique.__globals__`` finds
+# nothing of this bootstrap's (``os``, ``sys``) there.
+_PIN_SOURCE: Final[str] = """
+def pin(method, value):
+    def pinned(*args, **kwargs):
+        if kwargs.get("maintain_order") in (None, False, "none"):
+            kwargs["maintain_order"] = value
+        return method(*args, **kwargs)
+    pinned.__name__ = method.__name__
+    pinned.__qualname__ = method.__qualname__
+    pinned.__doc__ = method.__doc__
+    return pinned
+"""
+
+
+def _pin_polars_order() -> None:
+    """Pin every :data:`_POLARS_ORDER_PINS` method to its ``maintain_order``.
+
+    Run once in :func:`main`, before the import guard goes up and before any
+    agent source is compiled. An agent's own ``maintain_order=False`` (or a
+    join's ``None``/``"none"``) is overridden too, because the order it would
+    get back is the per-process random one. A deterministic order the agent
+    asked for (``"left"``, ``"right"``, ...) is kept.
+    """
+    namespace: dict[str, Any] = {"__builtins__": {}}
+    exec(compile(_PIN_SOURCE, "<polars-order-pin>", "exec"), namespace)  # noqa: S102
+    pin = namespace["pin"]
+    for owner_name, method_name, value in _POLARS_ORDER_PINS:
+        owner = getattr(polars, owner_name)
+        setattr(owner, method_name, pin(getattr(owner, method_name), value))
+
+
 def main() -> None:
     """The bootstrap's entry point — one request in, one result out."""
     result_fd = _redirect_stdio()
@@ -680,6 +742,7 @@ def main() -> None:
             result = _fail("payload", f"the request could not be read: {exc}")
         else:
             _preload_allowlist()
+            _pin_polars_order()
             _install_import_guard()
             result = run_signal(request.source, request.seed, request.window_payload)
 
