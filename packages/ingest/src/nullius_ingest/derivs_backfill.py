@@ -129,6 +129,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from .bars_backfill import (  # shared, generic primitives reused here
+    _ARCHIVE_SYMBOL_PATTERN,
     ARCHIVE_CACHE_DIRNAME,
     DEFAULT_WORKERS,
     MAX_WORKERS,
@@ -233,9 +234,12 @@ SYMBOL_MAP_FILENAME = "um-symbol-map.json"
 #: ``symbol`` and ``month`` groups, exactly as that function's own default
 #: pattern carries) to discover which UM symbols exist at all; a
 #: klines-backed perpetual is assumed to also carry funding, which every
-#: perpetual contract does by construction.
+#: perpetual contract does by construction. The symbol is
+#: :data:`~nullius_ingest.bars_backfill._ARCHIVE_SYMBOL_PATTERN`, which keeps
+#: non-ASCII perpetuals (``牛来USDT``) and excludes the dated delivery
+#: contracts (``BTCUSDT_250926``) and ``ICPUSDT_SETTLED`` the same prefix holds.
 _UM_KLINES_SYMBOL_RE = re.compile(
-    r"^data/futures/um/monthly/klines/(?P<symbol>[A-Z0-9]+)/1d/"
+    rf"^data/futures/um/monthly/klines/(?P<symbol>{_ARCHIVE_SYMBOL_PATTERN})/1d/"
     r"(?P=symbol)-1d-(?P<month>\d{4}-\d{2})\.zip$"
 )
 

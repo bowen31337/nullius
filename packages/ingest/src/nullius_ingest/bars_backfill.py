@@ -642,12 +642,20 @@ def select_top_symbols(
 #: (``Contents``, ``Key``, ``IsTruncated``, ``NextMarker``) is namespaced.
 _S3_NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 
+#: One archive symbol name: upper-case ASCII letters and digits, or any
+#: non-ASCII character. Binance lists symbols named in Chinese (``牛来USDT``),
+#: and the S3 listing returns their keys as raw UTF-8, so an ASCII-only
+#: pattern silently dropped them. No underscore or lower case: a dated
+#: delivery contract (``BTCUSDT_250926``) or a settled one
+#: (``ICPUSDT_SETTLED``) is not a perpetual and stays excluded here.
+_ARCHIVE_SYMBOL_PATTERN = r"(?:[A-Z0-9]|[^\x00-\x7F])+"
+
 #: A monthly kline key, e.g. ``data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2026-01.zip``.
 #: The backreference requires the folder's symbol and the filename's symbol to
 #: agree — Binance's own convention — and the ``.zip`` anchor excludes every
 #: ``.zip.CHECKSUM`` sibling the same listing carries.
 _ARCHIVE_KEY_RE = re.compile(
-    r"^data/spot/monthly/klines/(?P<symbol>[A-Z0-9]+)/1d/"
+    rf"^data/spot/monthly/klines/(?P<symbol>{_ARCHIVE_SYMBOL_PATTERN})/1d/"
     r"(?P=symbol)-1d-(?P<month>\d{4}-\d{2})\.zip$"
 )
 
