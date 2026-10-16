@@ -499,6 +499,48 @@ def test_combine_refuses_a_book_that_is_flat_across_every_node() -> None:
         shadow_cli._combine([{"AAA": 0.0}], gross=1.0)
 
 
+_COMBINE_IN_A_CHILD = """
+import json
+from orchestrator import shadow
+node_a = {f"S{i:03d}USDT": (i % 7 - 3) / 3.0 + i * 1e-3 for i in range(80)}
+node_b = {f"S{i:03d}USDT": (i % 5 - 2) / 7.0 - i * 1e-4 for i in range(40, 120)}
+print(json.dumps(shadow._combine([node_a, node_b], gross=1.0)))
+"""
+
+
+def test_combine_is_byte_identical_under_every_hash_seed() -> None:
+    # A set of symbols iterates in the process's own string-hash order, so
+    # the book's key order (and an order-dependent float sum) would differ
+    # between two builds of the same book. A child per seed is the only
+    # way to vary PYTHONHASHSEED.
+    outputs = set()
+    for seed in ("1", "2", "3"):
+        completed = subprocess.run(
+            [sys.executable, "-c", _COMBINE_IN_A_CHILD],
+            capture_output=True,
+            text=True,
+            env={
+                "PATH": os.environ.get("PATH", ""),
+                "PYTHONPATH": os.pathsep.join(sys.path),
+                "PYTHONHASHSEED": seed,
+            },
+            timeout=120,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        outputs.add(completed.stdout)
+    assert len(outputs) == 1
+    symbols = list(json.loads(outputs.pop()))
+    assert symbols == sorted(symbols)
+
+
+def test_combine_lists_its_symbols_in_sorted_order() -> None:
+    combined = shadow_cli._combine(
+        [{"ZZZUSDT": 1.0, "AAAUSDT": -1.0}, {"MMMUSDT": 0.5}], gross=1.0
+    )
+    assert list(combined) == ["AAAUSDT", "MMMUSDT", "ZZZUSDT"]
+
+
 # -- exit codes for a missing DATABASE_URL / evaluation config ---------------
 
 
@@ -586,6 +628,10 @@ def test_writes_a_book_combining_two_nodes_with_the_exact_key_set(
         {"BTC-USDT": 0.375, "ETH-USDT": -0.25, "SOL-USDT": 0.1875, "DOGE-USDT": -0.1875},
         abs=1e-9,
     )
+    # The file lists symbols in sorted BingX spelling, so a rebuild of the
+    # same book is byte-identical.
+    assert list(document["weights"]) == sorted(document["weights"])
+    assert list(document["decay_horizon_seconds"]) == list(document["weights"])
     assert document["decay_horizon_seconds"] == {
         symbol: 10 * 86400 for symbol in document["weights"]
     }

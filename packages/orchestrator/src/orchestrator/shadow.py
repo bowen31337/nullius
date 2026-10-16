@@ -48,6 +48,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import sqlite3
 import sys
@@ -443,6 +444,10 @@ def _combine(
     Symbols any node did not score stand in at 0 for that node, so a
     symbol only one node scores is not punished for the others' silence.
     Refuses a mean with nothing to renormalise (every node answered flat).
+
+    Symbols come out sorted and the gross is an exact ``fsum``, so the same
+    nodes' weights give a byte-identical book in every process: a plain
+    ``set`` iterates in the process's own string-hash order.
     """
     symbols: set[str] = set()
     for weights in weights_by_node:
@@ -451,9 +456,9 @@ def _combine(
     combined = {
         symbol: sum(weights.get(symbol, 0.0) for weights in weights_by_node)
         / node_count
-        for symbol in symbols
+        for symbol in sorted(symbols)
     }
-    total = sum(abs(value) for value in combined.values())
+    total = math.fsum(abs(value) for value in combined.values())
     if total <= 0.0:
         raise ShadowCliError(
             f"{SHADOW_CLI_CODE}: the combined book is flat across every "
@@ -645,7 +650,11 @@ def _run(arguments: argparse.Namespace, source: Mapping[str, str], database_url:
             node_betas.append(result.book_beta)
 
         combined = _combine(node_weights, gross=arguments.gross)
-        bingx_weights = {symbol_map[symbol]: weight for symbol, weight in combined.items()}
+        # Sorted by the BingX spelling the file carries, so the same book is
+        # the same bytes (``_combine`` sorts by the lake spelling).
+        bingx_weights = dict(
+            sorted((symbol_map[symbol], weight) for symbol, weight in combined.items())
+        )
 
         book_document = {
             "book_id": book_id,
