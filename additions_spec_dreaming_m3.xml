@@ -1,0 +1,181 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — dreaming loop audit fixes: a computable, pre-registered M3 gate over a closed self-improvement loop</project_name>
+  <addition_summary>
+    An audit of the dreaming loop (2026-10-17) found that no dreaming cycle has
+    ever run (policy_revision holds 0 rows), and that running one today would
+    not produce a usable M3 verdict:
+    - 49 of the 84 stored m2-fixed baseline rows are -inf (NON_COMMITTING_SCORE,
+      the fixed rule committed nothing). dreaming.paired_ir_difference refuses
+      any non-finite reading, so dreaming.paired_pool_difference raises
+      PairedComparisonError on the real store, and orchestrator/dream.py
+      _financial_arm reports that as "thin" -- a computation that can never
+      succeed is reported as a data shortage.
+    - A dreamed policy (select(question), calling question.commit /
+      legal_roots / legal_actions) cannot drive a campaign: _campaign.py:752
+      calls policy.select(PrefixView); loading deploy/dreaming/incumbent.example.py
+      through NULLIUS_EXPLORATION_POLICY fails with AttributeError:
+      'PrefixView' object has no attribute 'legal_roots'.
+    - The M3 exit criteria (PRD M3: paired dIR > 0.3 with p &lt; 0.05,
+      FDR_deploy improves, LOFO transfer > 0; precondition 50+ worlds) are not
+      computed anywhere. run_cycle takes a raw train argmax; dreaming.bar.cycle_bar,
+      dreaming.transfer.pooled_family_transfer and the FDR comparison have no
+      caller in the cycle; the incumbent is never swept on holdout.
+    - The example incumbent commits on every call and never abstains, while the
+      baseline abstains on 58% of campaigns, so a paired comparison would
+      measure abstention, not dreaming.
+    - The canary replays a toy JSON policy over a 3-node tree, never exercises
+      the sandbox evaluation path (it passed on 2026-10-06 while a real ~0.1%
+      Polars hash-order nondeterminism was live, fixed later in c431753), its
+      timer is not installed, and require_dreaming_allowed has no freshness
+      requirement.
+    - The bootstrap pool is 45 worlds of one domain (hpo), so leave-one-family-out
+      transfer is undefined and the 50-world precondition cannot be met.
+    The exact M3 computation these features implement is fixed in
+    docs/preregistration/2026-10-17-m3-dreaming.md (immutable; sha256 in the
+    .sha256 beside it). Every feature below must match that document; where
+    this spec and the document disagree, the document wins.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / SQLite at DATABASE_URL (~/.local/share/nullius/research.db; PostgreSQL also supported via DATABASE_URL) / pytest.</stack>
+    <test_baseline>main at f3c7bf3 plus this spec's commit: root tests/ 1668 passed; evaluator 618 passed; orchestrator 733 passed 5 skipped.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md. Null status never leaves the scorer process: only
+      close-out (and the new M3 verdict, which runs under the same
+      .env.campaign.tpl with the null sidecar) may join planted-null labels.
+
+      Existing pieces:
+      - orchestrator/dream.py: run_cycle (~:330), _financial_arm (~:250, catches
+        PairedComparisonError and returns "thin"), _existing_winner (~:215, raw
+        sqlite3), the train/holdout mean read (~:445, raw sqlite3, filtered by
+        policy_version and beta only).
+      - dreaming paired.py: _validated_figure (~:243) refuses non-finite
+        readings; _pool_arm (~:390-400); paired_ir_difference (~:594);
+        paired_pool_difference (~:1070).
+      - dreaming bar.py: selection_bar (~:349), rejects_unbarred_winner (~:389),
+        cycle_bar (~:516, reads the cycle's recorded M from cycle_cap).
+      - dreaming transfer.py: leave_one_family_out (~:539), family_transfer
+        (~:709), pooled_family_transfer (~:839).
+      - dreaming select.py commit_selection; sweep.py sweep_candidates;
+        reviser.py default_reviser (jitters numeric literals only; string
+        literals such as a module-level CONTRACT marker survive revision).
+      - replay pick.py NON_COMMITTING_SCORE (-inf); policy-runtime commit.py
+        episode_commit / Termination.
+      - orchestrator closeout.py: _commit_top_node (~:1146, the M2 commit rule:
+        highest _selection_value among _is_discovery nodes, ties by node id,
+        else a miss), step 9 (~:1640) persists the m2-fixed replay_score row;
+        M2_FIXED_POLICY_VERSION = "m2-fixed".
+      - orchestrator _financial_eval.py score_on_financial_world (~:244):
+        screens and imports a candidate, replays it over a campaign's stored
+        tree via live_question + replay.run_replay, reads the commit, scores it
+        by OOS IR.
+      - orchestrator _bootstrap_eval.py score_on_world: the bootstrap-world
+        evaluator (r2_holdout, not IR -- keep bootstrap and financial rows in
+        separate policy_version arms).
+      - orchestrator _policy.py load_exploration_policy (~:190), BaselinePolicy
+        (~:113); _campaign.py _unexpanded_view (~:640) and the select call
+        (~:752).
+      - policy_runtime.screen_policy (feature 230): an admitted policy reaches
+        commit() on every terminating path, addresses nodes only through
+        question.*, never compares an observed score to a bare numeric literal
+        (route thresholds through one _schedule(beta) mapping), imports only
+        the deterministic allowlist.
+      - scoring _fdr.py fdr_deploy (~:331).
+      - canary: _halt.py require_dreaming_allowed (~:838), run.py (the nightly
+        verb), _reference.py / _reference_store.py (frozen pairs, migration
+        0119), _replay.py replay_pair. deploy/systemd/nullius-canary.timer and
+        .service exist but are not installed.
+      - bootstrap: _pool.py POOL_DOMAIN = "hpo" (~:247) fixes the pool to one
+        domain; _featsel.py and _symreg.py (with question fronts and tests)
+        already generate the other two domains; fill.py (--count, --pool-seed,
+        --census); _census.py world_census.
+    </conventions>
+    <constraints>
+      - Never edit docs/preregistration/** (pre-registrations are immutable)
+        or docs/user-journeys/**.
+      - Never edit packages/orchestrator/src/orchestrator/_sandbox_child.py,
+        packages/contract/src/contract/** or src/app/**: they are baked into
+        the gVisor runtime root, and any edit makes every sandboxed
+        evaluation (including the live daily forward-shadow build) fail with
+        gvisor_runtime_stale until the root is re-provisioned with sudo.
+      - Never edit deploy/shadow/**, packages/router/** or
+        packages/orchestrator/src/orchestrator/shadow*.py / _shadow.py.
+      - Nothing here places, cancels or closes an order.
+      - Existing stored rows are never rewritten: replay_score keeps -inf for
+        a miss; only statistics map it.
+    </constraints>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Dreaming Loop M3 Gate">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/dreaming/src/dreaming/paired.py,packages/dreaming/src/dreaming/transfer.py,packages/dreaming/tests/test_paired.py,packages/dreaming/tests/test_transfer.py">
+        System scores a world where a policy committed nothing as a flat book (IR exactly 0.0) inside the paired statistics, so that the M3 paired comparison returns a number on the real store, where 49 of 84 m2-fixed rows are -inf.
+        <steps>
+          - paired_pool_difference and pooled_family_transfer take a keyword-only `non_committing` argument: "refuse" (the default, today's behaviour, unchanged for every existing caller) or "flat", under which a stored reading equal to NON_COMMITTING_SCORE (-inf) enters the statistic as 0.0. Any other non-finite reading (nan, +inf) is still refused in both modes.
+          - The returned comparison also reports each arm's commit count and commit rate over the paired worlds (the count of readings that were not NON_COMMITTING_SCORE).
+          - Tests: under "flat", a candidate arm of finite readings paired with a baseline holding -inf on some worlds returns a finite mean difference equal to the hand computation with 0.0 substituted; under "refuse" the same input still raises PairedComparisonError; nan is refused under both; commit rates match the inputs.
+        </steps>
+      </feature>
+      <feature index="2" shape="core" depends_on=""
+               touches_files="deploy/dreaming/incumbent.m2.py,packages/orchestrator/tests/test_m2_incumbent_equivalence.py">
+        System ships the M2 fixed commit rule written in the question.* policy contract as deploy/dreaming/incumbent.m2.py, so that the first dreaming incumbent is the baseline itself and replaying it reproduces close-out's m2-fixed pick on every world (the equivalence test returns the identical committed node id, or the identical miss, for every fixture campaign).
+        <steps>
+          - The module reveals the campaign's evaluated nodes through question.* and commits the node close-out's _commit_top_node would commit (highest selection value among eligible nodes, ties broken by node id ascending), or commits nothing when no node is eligible. It is admitted by policy_runtime.screen_policy unchanged (thresholds routed through one _schedule(beta) mapping, no literal node ids, no imports outside the allowlist) and declares a module-level CONTRACT = "question".
+          - Tests over fixture campaigns built the way test_closeout_commit_oos.py builds them: for each fixture (a clear winner, a tie, a below-bar campaign that must miss, a single eligible node), replaying incumbent.m2.py through orchestrator._financial_eval.score_on_financial_world commits exactly the node closeout._commit_top_node commits (or misses where it misses), and the scores agree to 1e-12. Assert screen_policy adopts the module.
+        </steps>
+      </feature>
+      <feature index="3" shape="core" depends_on="1"
+               touches_files="packages/orchestrator/src/orchestrator/dream.py,packages/orchestrator/tests/test_dream_cli.py,packages/orchestrator/tests/test_dream_financial_worlds.py">
+        System runs the dreaming cycle's financial arm under the flat abstention rule, sweeps the incumbent as well as the winner over holdout, and reads only its own iteration's rows through the store, so that a cycle's summary reports a real comparison, or names exactly why it cannot (the summary JSON line prints a numeric financial_arm, or an "unscoreable" error message naming the cause).
+        <steps>
+          - _financial_arm calls paired_pool_difference(..., non_committing="flat"), and also compares the incumbent's financial arm against m2-fixed. It reports "thin" only for fewer than DREAMING_MIN_FINANCIAL_WORLDS admitted campaigns or no oos_dates; any other PairedComparisonError is reported as {"unscoreable": "&lt;the error's message&gt;"}, never "thin". The summary carries both arms' commit rates.
+          - run_cycle sweeps the incumbent over the holdout worlds alongside the winner, and the summary carries incumbent_holdout_mean beside holdout_mean.
+          - The train/holdout means and _existing_winner read through the dreaming/replay store APIs rather than a raw sqlite3 connection, so a PostgreSQL DATABASE_URL works, and they are restricted to the current iteration's rows (a second cycle reusing --seed must not mix in the first cycle's rows).
+          - Tests: a store whose m2-fixed rows include -inf yields a numeric financial_arm, not "thin"; a forced non-thin PairedComparisonError surfaces as "unscoreable"; two cycles with the same --seed and different --iteration-id each report means over their own rows only; the incumbent appears in the holdout sweep.
+        </steps>
+      </feature>
+      <feature index="4" shape="core" depends_on="1,2,3,7"
+               touches_files="packages/orchestrator/src/orchestrator/m3_verdict.py,packages/orchestrator/tests/test_m3_verdict.py,run.sh">
+        System computes the pre-registered M3 verdict for one dreaming iteration from `./run.sh m3-verdict --iteration-id ID` and records exactly one PASS or FAIL row, so that the M3 gate is decided by code, once, exactly as docs/preregistration/2026-10-17-m3-dreaming.md fixes it (saves to the m3_verdict table, returns exit 0 on PASS or 3 on FAIL, and displays an error message naming any refusal).
+        <steps>
+          - New module orchestrator/m3_verdict.py (python -m orchestrator.m3_verdict --iteration-id ID [--prereg PATH]), plus a run.sh verb m3-verdict run under op run --env-file=.env.campaign.tpl like closeout (it needs the null sidecar for criterion 2). The verdict store creates its m3_verdict table on first write (CREATE TABLE IF NOT EXISTS, the way discovery.CampaignManifests creates its own; no migration file) with columns (iteration_id UNIQUE, prereg_sha256, verdict PASS|FAIL, the three criteria's figures and pass flags, both arms' commit rates, n_bootstrap with per-domain counts, n_financial, the campaign ids, created_at).
+          - Refusals, before any computation, each exiting 1 with a code word: the pre-registration's sha256 does not match its .sha256 file; fewer than 50 bootstrap worlds or fewer than 10 in any of hpo/featsel/symreg; fewer than 20 admitted financial worlds; a verdict row already exists for this pre-registration (any iteration) -- one verdict per attempt.
+          - Criterion 1: winner vs m2-fixed paired over all admitted financial worlds with non_committing="flat"; pass iff mean difference > 0.3, one-sided p &lt; 0.05, and dreaming.cycle_bar clears at the cycle's recorded M.
+          - Criterion 2: FDR_deploy at pi0 = 0.9 (scoring.fdr_deploy) over the planted-null labels of the picks each arm committed across the admitted campaigns, joined only inside this process from the sidecar; pass iff the winner's is strictly lower than m2-fixed's.
+          - Criterion 3: for each bootstrap domain d, retake the argmax among the cycle's own swept candidates on the train worlds of the other two domains; score it minus the incumbent's, averaged over every world of d (sweeping any missing (candidate, world) pair through the cycle's evaluator); pass iff the mean over the three domains is > 0.
+          - Prints one JSON line with every figure; exit 0 on PASS, 3 on FAIL, 1 on a refusal, 2 for missing DATABASE_URL or sidecar configuration.
+          - Tests with stubbed evaluators and a fixture store: each criterion's pass and fail edge; each refusal; the second verdict under one pre-registration is refused; a FAIL row is written and exit 3; the row's prereg_sha256 equals the file's.
+        </steps>
+      </feature>
+    </category>
+    <category name="Dreaming Preconditions">
+      <feature index="5" shape="core" depends_on=""
+               touches_files="packages/canary/src/canary/_halt.py,packages/canary/src/canary/run.py,packages/canary/tests/test_halt.py,packages/canary/tests/test_canary_run.py">
+        System allows dreaming only after a recent canary pass that exercised the real evaluation path, so that a determinism break in the sandbox or the replay halts dreaming within a day instead of going unnoticed (./run.sh dream exits 1 and displays an error message naming the stale or missing canary).
+        <steps>
+          - canary.run gains an evaluation canary: re-evaluate one stored research node (configured by campaign id and node id, through the same sandbox and evaluation config a campaign uses) and one replay of a stored policy over one stored campaign tree, each compared against a constant recorded at --freeze-reference to 1e-12; a mismatch records the break exactly as the existing canary does and halts dreaming.
+          - require_dreaming_allowed additionally refuses, with its own code word, when the newest passing canary run is older than 26 hours or did not include the evaluation canary, or when no canary has ever run.
+          - Tests: fresh full pass allows; a pass 27 hours old refuses; a toy-only pass (no evaluation canary) refuses; a recorded break still refuses; the evaluation-canary mismatch halts. Use stubbed evaluators; no test starts a real sandbox.
+        </steps>
+      </feature>
+      <feature index="6" shape="core" depends_on="2"
+               touches_files="packages/orchestrator/src/orchestrator/_policy.py,packages/orchestrator/src/orchestrator/_campaign.py,packages/orchestrator/tests/test_policy.py,packages/orchestrator/tests/test_campaign.py">
+        System runs a question-contract policy (a dreaming winner or deploy/dreaming/incumbent.m2.py) as a campaign's exploration policy through NULLIUS_EXPLORATION_POLICY, so that a dreamed policy can drive live search instead of failing on its first selection (a campaign round returns the policy's chosen node ids as its expanded batch; an unknown CONTRACT raises a load error message naming it).
+        <steps>
+          - load_exploration_policy reads the admitted module's CONTRACT marker: "question" modules are called with the campaign's live question (the same question.* front orchestrator._live_tree provides to the financial evaluator), and the node ids they return are the next batch to expand, capped at the campaign width; modules without the marker keep today's select(PrefixView) contract unchanged; any other CONTRACT value is refused at load with a code word.
+          - Tests: incumbent.m2.py and deploy/dreaming/incumbent.example.py each drive one fixture campaign round without error and expand exactly the ids they return (up to width); BaselinePolicy and an unmarked prefix-view module behave exactly as before; an unknown CONTRACT is refused at load, not at the first round.
+        </steps>
+      </feature>
+      <feature index="7" shape="core" depends_on=""
+               touches_files="packages/bootstrap/src/bootstrap/_pool.py,packages/bootstrap/src/bootstrap/fill.py,packages/bootstrap/src/bootstrap/_census.py,packages/bootstrap/tests/test_pool.py,packages/bootstrap/tests/test_fill_cli.py,packages/bootstrap/tests/test_census.py,packages/orchestrator/src/orchestrator/_bootstrap_eval.py">
+        System fills the bootstrap pool across the hpo, featsel and symreg domains from `./run.sh bootstrap-fill --domain D --count N` and reports per-domain counts in the census, so that the M3 precondition of 50+ worlds over three families can be met (bootstrap-fill saves to the bootstrap_world table and returns a census JSON line that displays per-domain counts).
+        <steps>
+          - fill.py gains --domain {hpo,featsel,symreg} (default hpo, today's behaviour); BootstrapPool persists and reads worlds of every domain, keeping existing hpo world ids and rows unchanged; world ids keep the bootstrap-&lt;domain&gt;-&lt;pool_seed&gt;-&lt;index&gt; shape.
+          - world_census reports n_bootstrap per domain beside today's totals.
+          - orchestrator._bootstrap_eval.score_on_world scores a featsel or symreg world through that domain's existing question front.
+          - Tests: filling 10 featsel and 10 symreg worlds over an existing hpo pool leaves the hpo rows byte-identical, the census reports 45/10/10, and score_on_world returns a finite score for one world of each domain under a fixture policy.
+        </steps>
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>
