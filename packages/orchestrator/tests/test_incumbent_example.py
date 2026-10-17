@@ -45,7 +45,7 @@ from orchestrator._bootstrap_eval import score_on_world
 from orchestrator.dream import EXIT_OK, main
 from policy_runtime import CommittedPick, screen_policy
 
-from test_dream_cli import _APP, _migrated_pool  # isort: skip
+from test_dream_cli import _APP, _migrated_pool, _seed_passing_canary  # isort: skip
 
 #: Three parents up from this file is the repository root, the same
 #: resolution test_dream_cli.py and test_closeout_cli.py use.
@@ -93,6 +93,8 @@ def test_one_dream_cycle_over_a_tmp_pool_exits_0_with_the_incumbent_example(
     tmp_path: Path,
 ) -> None:
     database_url = _migrated_pool(tmp_path, world_count=POOL_WORLD_COUNT)
+    # Dreaming now refuses without a recent passing canary run on record.
+    _seed_passing_canary(database_url)
     env = {"DATABASE_URL": database_url}
     lines: list[str] = []
 
