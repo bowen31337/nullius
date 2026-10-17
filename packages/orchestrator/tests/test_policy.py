@@ -43,6 +43,8 @@ from orchestrator._policy import (
     DEFAULT_BASELINE_WIDTH,
     EXPLORATION_POLICY_ENV,
     POLICY_LOAD_CODE,
+    PREFIX_VIEW_CONTRACT,
+    QUESTION_CONTRACT,
     BaselinePolicy,
     ExplorationPolicy,
     PolicyLoadError,
@@ -50,11 +52,21 @@ from orchestrator._policy import (
 )
 from policy_runtime import (
     POLICY_MODULE_NAME,
+    CampaignTree,
     PolicyFilesystemError,
     PolicyImportError,
     PolicyObservation,
+    PolicyQuestion,
     PrefixView,
 )
+
+# conftest-less suite: this file is under packages/orchestrator/tests, so the
+# repository root is three parents up — the same resolution
+# test_m2_incumbent_equivalence.py and test_incumbent_example.py use to reach
+# the real deploy/dreaming/*.py files this suite also drives.
+REPO_ROOT = Path(__file__).resolve().parents[3]
+INCUMBENT_M2_PATH = REPO_ROOT / "deploy" / "dreaming" / "incumbent.m2.py"
+INCUMBENT_EXAMPLE_PATH = REPO_ROOT / "deploy" / "dreaming" / "incumbent.example.py"
 
 # ---------------------------------------------------------------------------
 # Building real prefix views, without a campaign tree or a question
@@ -374,6 +386,253 @@ def test_refuses_an_id_outside_the_view(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# The question contract -- additions_spec_dreaming_m3.xml, "Dreaming
+# Preconditions", feature 6
+# ---------------------------------------------------------------------------
+#
+# A question-contract module declares CONTRACT = "question" and is called
+# with the campaign's live question (a real policy_runtime.PolicyQuestion
+# over a real policy_runtime.CampaignTree here, built directly rather than
+# through a live campaign database -- the seam under test is "does
+# ExplorationPolicy wire select(question) and validate its answer
+# correctly", exactly as the prefix-view tests above build real PrefixView
+# objects rather than a live campaign).
+
+
+#: A question-contract fixture admitted by policy_runtime.screen_policy --
+#: every terminating path of ``select`` reaches its own ``question.commit(``
+#: call directly, the same structure deploy/dreaming/incumbent.example.py
+#: itself uses (see that module's own docstring).
+QUESTION_CONTRACT_SOURCE = """
+CONTRACT = "question"
+
+
+def select(question):
+    observed = question.observed()
+    if not observed:
+        roots = question.legal_roots()
+        question.commit(roots[0])
+        return list(roots)
+    ranked = sorted(observed, key=lambda node_id: (-observed[node_id].ic_insample, node_id))
+    question.commit(ranked[0])
+    frontier = []
+    for node_id in observed:
+        for action in question.legal_actions(node_id):
+            if action not in observed and action not in frontier:
+                frontier.append(action)
+    return frontier
+"""
+
+
+def _question(payloads: dict[str, tuple[str | None, int, dict[str, Any]]]) -> PolicyQuestion:
+    return PolicyQuestion(CampaignTree.freeze(payloads))
+
+
+def test_unmarked_admitted_module_keeps_the_prefix_view_contract(tmp_path: Path) -> None:
+    source_file = _write(tmp_path, ADMITTED_SELECT_SOURCE)
+    policy = load_exploration_policy(env={EXPLORATION_POLICY_ENV: str(source_file)})
+    assert policy.contract == PREFIX_VIEW_CONTRACT
+
+
+def test_unset_env_baseline_is_the_prefix_view_contract() -> None:
+    policy = load_exploration_policy(env={})
+    assert policy.contract == PREFIX_VIEW_CONTRACT
+
+
+def test_question_marked_module_is_loaded_with_the_question_contract(tmp_path: Path) -> None:
+    source_file = _write(tmp_path, QUESTION_CONTRACT_SOURCE)
+    policy = load_exploration_policy(env={EXPLORATION_POLICY_ENV: str(source_file)})
+    assert policy.contract == QUESTION_CONTRACT
+
+
+def test_question_contract_select_with_nothing_observed_commits_a_root_and_returns_roots(
+    tmp_path: Path,
+) -> None:
+    source_file = _write(tmp_path, QUESTION_CONTRACT_SOURCE)
+    policy = load_exploration_policy(env={EXPLORATION_POLICY_ENV: str(source_file)})
+
+    question = _question({"root-b": (None, 0, {}), "root-a": (None, 0, {})})
+
+    # question.commit("root-a") is reached inside select() -- without the
+    # merged front's commit door this call raises AttributeError, the exact
+    # bug additions_spec_dreaming_m3.xml's audit names.
+    assert policy.select(question) == ["root-a", "root-b"]
+
+
+def test_question_contract_select_with_observed_nodes_commits_and_returns_the_frontier(
+    tmp_path: Path,
+) -> None:
+    source_file = _write(tmp_path, QUESTION_CONTRACT_SOURCE)
+    policy = load_exploration_policy(env={EXPLORATION_POLICY_ENV: str(source_file)})
+
+    question = _question(
+        {
+            "root": (None, 0, {"ic_insample": 0.5}),
+            "child": ("root", 1, {}),
+        }
+    )
+    question.reveal_many(["root"])
+
+    assert policy.select(question) == ["child"]
+
+
+def test_question_contract_caps_at_the_campaign_width(tmp_path: Path) -> None:
+    source_file = _write(tmp_path, QUESTION_CONTRACT_SOURCE)
+    policy = load_exploration_policy(env={EXPLORATION_POLICY_ENV: str(source_file)})
+
+    question = _question({"root-a": (None, 0, {}), "root-b": (None, 0, {})})
+    assert policy.select(question)[:1] == ["root-a"]
+
+
+#: Commits a legal root, then answers a batch an id outside it.
+_BAD_ANSWER_QUESTION_SOURCE = """
+CONTRACT = "question"
+
+
+def select(question):
+    roots = question.legal_roots()
+    question.commit(roots[0])
+    return ["ghost"]
+"""
+
+#: Commits a legal root, then repeats one id in its own answer.
+_DUPLICATE_ANSWER_QUESTION_SOURCE = """
+CONTRACT = "question"
+
+
+def select(question):
+    roots = question.legal_roots()
+    question.commit(roots[0])
+    return [roots[0], roots[0]]
+"""
+
+#: Commits a legal root, then answers something that is not a sequence at all.
+_NON_SEQUENCE_ANSWER_QUESTION_SOURCE = """
+CONTRACT = "question"
+
+
+def select(question):
+    roots = question.legal_roots()
+    question.commit(roots[0])
+    return 42
+"""
+
+
+def test_question_contract_refuses_an_id_outside_the_tree(tmp_path: Path) -> None:
+    source_file = _write(tmp_path, _BAD_ANSWER_QUESTION_SOURCE)
+    policy = load_exploration_policy(env={EXPLORATION_POLICY_ENV: str(source_file)})
+    question = _question({"root": (None, 0, {})})
+
+    with pytest.raises(PolicyLoadError) as excinfo:
+        policy.select(question)
+    assert POLICY_LOAD_CODE in str(excinfo.value)
+
+
+def test_question_contract_refuses_a_duplicate_id_in_the_answer(tmp_path: Path) -> None:
+    source_file = _write(tmp_path, _DUPLICATE_ANSWER_QUESTION_SOURCE)
+    policy = load_exploration_policy(env={EXPLORATION_POLICY_ENV: str(source_file)})
+    question = _question({"root": (None, 0, {})})
+
+    with pytest.raises(PolicyLoadError) as excinfo:
+        policy.select(question)
+    assert POLICY_LOAD_CODE in str(excinfo.value)
+
+
+def test_question_contract_refuses_a_non_sequence_answer(tmp_path: Path) -> None:
+    source_file = _write(tmp_path, _NON_SEQUENCE_ANSWER_QUESTION_SOURCE)
+    policy = load_exploration_policy(env={EXPLORATION_POLICY_ENV: str(source_file)})
+    question = _question({"root": (None, 0, {})})
+
+    with pytest.raises(PolicyLoadError) as excinfo:
+        policy.select(question)
+    assert POLICY_LOAD_CODE in str(excinfo.value)
+
+
+def test_question_contract_accepts_a_tuple_answer_like_incumbent_m2(tmp_path: Path) -> None:
+    # incumbent.m2.py answers () -- a tuple, not a list -- on its
+    # non-committing path; the question contract's own validator must accept
+    # it, unlike the stricter prefix-view contract's list-only check.
+    tuple_answer_source = """
+CONTRACT = "question"
+
+
+def select(question):
+    roots = question.legal_roots()
+    question.commit(roots[0])
+    return ()
+"""
+    source_file = _write(tmp_path, tuple_answer_source)
+    policy = load_exploration_policy(env={EXPLORATION_POLICY_ENV: str(source_file)})
+    question = _question({"root": (None, 0, {})})
+
+    assert policy.select(question) == []
+
+
+# ---------------------------------------------------------------------------
+# An unknown CONTRACT is refused at load, not at the first round
+# ---------------------------------------------------------------------------
+
+UNKNOWN_CONTRACT_SOURCE = """
+CONTRACT = "bogus"
+
+
+def select(question):
+    roots = question.legal_roots()
+    question.commit(roots[0])
+    return []
+"""
+
+
+def test_unknown_contract_is_refused_at_load(tmp_path: Path) -> None:
+    source_file = _write(tmp_path, UNKNOWN_CONTRACT_SOURCE)
+
+    with pytest.raises(PolicyLoadError) as excinfo:
+        load_exploration_policy(env={EXPLORATION_POLICY_ENV: str(source_file)})
+
+    message = str(excinfo.value)
+    assert POLICY_LOAD_CODE in message
+    assert "bogus" in message
+
+
+# ---------------------------------------------------------------------------
+# The real dreaming deploy files -- additions_spec_dreaming_m3.xml feature 6's
+# own named test subjects
+# ---------------------------------------------------------------------------
+
+
+def test_incumbent_m2_is_admitted_as_a_question_contract_policy() -> None:
+    policy = load_exploration_policy(env={EXPLORATION_POLICY_ENV: str(INCUMBENT_M2_PATH)})
+    assert policy.contract == QUESTION_CONTRACT
+
+    # Nothing clears the M2 fixed rule's discovery bar -- select() commits
+    # nothing and answers its non-committing (), accepted as [].
+    question = _question({"root": (None, 0, {"ic_insample": 0.1})})
+    question.reveal_many(["root"])
+    assert policy.select(question) == []
+
+
+def test_incumbent_m2_commits_the_node_that_clears_the_bar(tmp_path: Path) -> None:
+    policy = load_exploration_policy(env={EXPLORATION_POLICY_ENV: str(INCUMBENT_M2_PATH)})
+
+    # ic_insample 3.0 clears the M2 rule's fixed 2.0 discovery bar -- this
+    # exercises question.commit(...) through the merged front without
+    # raising, the exact AttributeError additions_spec_dreaming_m3.xml's
+    # audit names ("_campaign.py:752 ... AttributeError: 'PrefixView' object
+    # has no attribute 'legal_roots'").
+    question = _question({"root": (None, 0, {"ic_insample": 3.0})})
+    question.reveal_many(["root"])
+    assert policy.select(question) == []
+
+
+def test_incumbent_example_is_admitted_as_a_question_contract_policy() -> None:
+    policy = load_exploration_policy(env={EXPLORATION_POLICY_ENV: str(INCUMBENT_EXAMPLE_PATH)})
+    assert policy.contract == QUESTION_CONTRACT
+
+    question = _question({"root-a": (None, 0, {}), "root-b": (None, 0, {})})
+    assert policy.select(question) == ["root-a", "root-b"]
+
+
+# ---------------------------------------------------------------------------
 # The module's surface
 # ---------------------------------------------------------------------------
 
@@ -385,6 +644,8 @@ def test_module_surface() -> None:
         "DEFAULT_BASELINE_WIDTH",
         "EXPLORATION_POLICY_ENV",
         "POLICY_LOAD_CODE",
+        "PREFIX_VIEW_CONTRACT",
+        "QUESTION_CONTRACT",
         "BaselinePolicy",
         "ExplorationPolicy",
         "PolicyLoadError",
@@ -393,3 +654,4 @@ def test_module_surface() -> None:
     assert issubclass(PolicyLoadError, Exception)
     assert isinstance(POLICY_LOAD_CODE, str) and POLICY_LOAD_CODE
     assert isinstance(DEFAULT_BASELINE_WIDTH, int) and DEFAULT_BASELINE_WIDTH > 0
+    assert PREFIX_VIEW_CONTRACT != QUESTION_CONTRACT

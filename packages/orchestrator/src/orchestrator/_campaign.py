@@ -78,6 +78,7 @@ from policy_runtime import PrefixView, budget_account, prefix_view
 
 from ._context import DEFAULT_EVALUATION_WORKERS
 from ._live_tree import live_question
+from ._policy import PREFIX_VIEW_CONTRACT, QUESTION_CONTRACT
 from ._roots import plant_root
 from ._worker import NodeWorker
 
@@ -749,7 +750,19 @@ def _continue_campaign(
             evaluation_periods=evaluation_periods,
             budget=account,
         )
-        batch = policy.select(_unexpanded_view(question))[:width]
+        # A question-contract policy (orchestrator._policy.QUESTION_CONTRACT —
+        # a dreaming winner, authored against question.commit/legal_roots/
+        # legal_actions) is asked over the live question itself, not its
+        # unexpanded prefix view: that view carries none of the methods such
+        # a policy calls. Every other policy — BaselinePolicy, an unmarked
+        # admitted module, or a bare test double with no `contract` at all —
+        # keeps today's select(PrefixView) contract unchanged.
+        world = (
+            question
+            if getattr(policy, "contract", PREFIX_VIEW_CONTRACT) == QUESTION_CONTRACT
+            else _unexpanded_view(question)
+        )
+        batch = policy.select(world)[:width]
 
         if not batch:
             stop_reason = STOP_NO_BATCH

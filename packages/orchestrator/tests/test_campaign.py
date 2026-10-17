@@ -46,10 +46,13 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
+import sqlite3
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 import discovery
 import providers
@@ -63,14 +66,22 @@ from orchestrator._campaign import (
     CampaignResult,
     run_campaign,
 )
+from orchestrator._policy import (
+    EXPLORATION_POLICY_ENV,
+    QUESTION_CONTRACT,
+    load_exploration_policy,
+)
 from policy_runtime import UNBOUNDED_BUDGET
 
 # conftest-less suite: this file is under packages/orchestrator/tests, so the
 # repository root is three parents up, and the migrations live beside it
 # under migrations/versions — the same resolution test_worker.py and
-# test_roots.py use.
+# test_roots.py use. The two real dreaming incumbents feature 6's own
+# verification step names live under deploy/dreaming, beside it.
 REPO_ROOT = Path(__file__).resolve().parents[3]
 VERSIONS_DIR = REPO_ROOT / "migrations" / "versions"
+INCUMBENT_M2_PATH = REPO_ROOT / "deploy" / "dreaming" / "incumbent.m2.py"
+INCUMBENT_EXAMPLE_PATH = REPO_ROOT / "deploy" / "dreaming" / "incumbent.example.py"
 
 CAMPAIGN_MIGRATION = "0111_campaign_table"
 
@@ -295,6 +306,37 @@ class FakeEvaluator:
             score=self._score,
             charges_budget=self._charges_budget,
         )
+
+
+def _sqlite_path(database_url: str) -> Path:
+    """``context.database_url`` as a filesystem path — the ``tree_database`` fixture's own grammar."""
+    return Path(unquote(urlparse(database_url).path).removeprefix("/"))
+
+
+class MetricsWritingEvaluator(FakeEvaluator):
+    """Like :class:`FakeEvaluator`, but also writes the node's ``ic_mean``.
+
+    The real ``LiveEvaluator`` persists a node's metrics as a side effect of
+    evaluation; :class:`FakeEvaluator`'s own stand-in skips that, which is
+    exactly right for every other test in this suite (none of them read a
+    question-contract policy's ``observed()``) but wrong for one that does:
+    such a policy needs at least one revealed cell — a non-``NULL``
+    ``ic_mean`` — to rank.
+    """
+
+    def __init__(self, *, database_url: str, ic_mean: float, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._path = _sqlite_path(database_url)
+        self._ic_mean = ic_mean
+
+    def evaluate(self, node_id: Any, campaign_id: Any, depth: Any, code: Any) -> Any:
+        outcome = super().evaluate(node_id, campaign_id, depth, code)
+        with closing(sqlite3.connect(self._path)) as connection:
+            connection.execute(
+                "UPDATE node SET ic_mean = ? WHERE id = ?", (self._ic_mean, node_id)
+            )
+            connection.commit()
+        return outcome
 
 
 class FakeSidecarSelection:
@@ -662,6 +704,122 @@ def test_an_exhausted_interruption_costs_no_outcome_and_the_round_still_complete
     assert result.rounds_run == 1
     assert result.nodes == ()
     assert len(author.expand_calls) == 3
+
+
+# -- A question-contract policy -- additions_spec_dreaming_m3.xml, "Dreaming
+# Preconditions", feature 6 -------------------------------------------------
+#
+# Before this feature, the round loop always handed policy.select() the
+# unexpanded PrefixView (_campaign.py:752's old line), so a dreaming winner
+# authored against question.commit()/legal_roots()/legal_actions() crashed
+# on its first call: "AttributeError: 'PrefixView' object has no attribute
+# 'legal_roots'" -- the exact fault the audit names. These two tests drive
+# the real deploy/dreaming incumbents feature 6's own verification step
+# names, through the real load_exploration_policy + run_campaign path.
+
+
+def test_question_contract_policy_drives_one_round_via_incumbent_example(
+    context: _Context,
+) -> None:
+    author = SequenceAuthor()
+    evaluator = FakeEvaluator()
+    sidecar = FakeSidecarSelection()
+    _events, emit = _recording_emit()
+    policy = load_exploration_policy(env={EXPLORATION_POLICY_ENV: str(INCUMBENT_EXAMPLE_PATH)})
+    assert policy.contract == QUESTION_CONTRACT
+
+    result = run_campaign(
+        campaign_type="Type-D",
+        workspaces=1,
+        rounds=1,
+        width=1,
+        allowance=UNBOUNDED_BUDGET,
+        author=author,
+        evaluator=evaluator,
+        policy=policy,
+        context=context,
+        sidecar_selection=sidecar,
+        emit=emit,
+    )
+
+    root_id = author.first_root_id
+    child_id = discovery.refined_node_id(root_id)
+
+    # FakeEvaluator never writes a node's metrics, so incumbent.example.py's
+    # first call sees nothing observed and answers [root_id] (its "nothing
+    # observed yet" placeholder walk) -- the round loop expands exactly that
+    # id, up to width, and the round cap stops the campaign cleanly.
+    assert result.stop_reason == STOP_ROUND_CAP
+    assert result.rounds_run == 1
+    assert result.nodes == (child_id,)
+
+
+def test_question_contract_policy_caps_the_round_loops_batch_at_width_via_incumbent_example(
+    context: _Context,
+) -> None:
+    author = SequenceAuthor()
+    evaluator = FakeEvaluator()
+    sidecar = FakeSidecarSelection()
+    _events, emit = _recording_emit()
+    policy = load_exploration_policy(env={EXPLORATION_POLICY_ENV: str(INCUMBENT_EXAMPLE_PATH)})
+
+    result = run_campaign(
+        campaign_type="Type-D",
+        workspaces=2,
+        rounds=1,
+        width=1,
+        allowance=UNBOUNDED_BUDGET,
+        author=author,
+        evaluator=evaluator,
+        policy=policy,
+        context=context,
+        sidecar_selection=sidecar,
+        emit=emit,
+    )
+
+    # incumbent.example.py's first call sees two planted roots and answers
+    # both (list(roots), two ids) -- the round loop's own [:width] slice
+    # must cap that two-id answer down to one, exactly as it already does
+    # for a prefix-view policy's wider answer (root ids are real uuid4()s,
+    # minted by run_campaign itself, so this asserts the cap rather than
+    # pinning which root a non-deterministic id happened to sort first).
+    assert len(result.roots) == 2
+    assert result.rounds_run == 1
+    assert len(result.nodes) == 1
+    assert result.nodes[0] in {discovery.refined_node_id(root_id) for root_id in result.roots}
+
+
+def test_question_contract_policy_commits_through_the_merged_front_via_incumbent_m2(
+    context: _Context,
+) -> None:
+    author = SequenceAuthor()
+    evaluator = MetricsWritingEvaluator(database_url=context.database_url, ic_mean=3.0)
+    sidecar = FakeSidecarSelection()
+    _events, emit = _recording_emit()
+    policy = load_exploration_policy(env={EXPLORATION_POLICY_ENV: str(INCUMBENT_M2_PATH)})
+    assert policy.contract == QUESTION_CONTRACT
+
+    result = run_campaign(
+        campaign_type="Type-D",
+        workspaces=1,
+        rounds=1,
+        width=1,
+        allowance=UNBOUNDED_BUDGET,
+        author=author,
+        evaluator=evaluator,
+        policy=policy,
+        context=context,
+        sidecar_selection=sidecar,
+        emit=emit,
+    )
+
+    # The root's ic_mean (3.0) clears the M2 rule's fixed 2.0 discovery bar,
+    # so select() reaches question.commit(...) on the first round -- through
+    # the merged front, without raising -- and answers its non-committing
+    # batch () (accepted as []), which expands nothing.
+    assert result.stop_reason == STOP_NO_BATCH
+    assert result.rounds_run == 0
+    assert result.nodes == ()
 
 
 # -- The module's surface ---------------------------------------------------------

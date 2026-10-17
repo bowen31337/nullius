@@ -28,6 +28,25 @@ handed, regardless of which source produced it — the baseline passes this by
 construction, and the check is what makes a misbehaving custom policy fail
 loud rather than hand the loop a batch it cannot act on.
 
+**A second shape, for a dreamed policy.**  additions_spec_dreaming_m3.xml,
+"Dreaming Preconditions", feature 6: an admitted module authored against the
+``question.*`` contract (``select(question)``, calling
+``question.commit``/``legal_roots``/``legal_actions`` — the shape
+``deploy/dreaming/incumbent.m2.py`` and ``incumbent.example.py`` both ship)
+cannot run under ``select(prefix_view)`` — its first call to a method the
+view does not carry raises an ``AttributeError`` before the round completes.
+:func:`load_exploration_policy` reads an admitted module's top-level
+``CONTRACT`` marker (:data:`PREFIX_VIEW_CONTRACT`, the default a module with
+no marker keeps, or :data:`QUESTION_CONTRACT`) and builds
+:class:`ExplorationPolicy` to match: a question-contract policy's
+``select`` is called with the campaign's live question, joined to its own
+commit door (:func:`_question_front`) rather than the bare
+:class:`~policy_runtime.PrefixView`, and the node ids it returns are the
+round loop's next batch, exactly as a prefix-view policy's are.  A module
+declaring any other ``CONTRACT`` value is refused at load, naming it — a
+refusal the operator sees before a campaign round is ever built around it,
+not an ``AttributeError`` the policy's first call would have raised instead.
+
 **Why the baseline cannot really honour "one per theme root" against the live
 tree.**  :mod:`orchestrator._live_tree`'s payload deliberately carries no
 ``theme_root`` key (its own docstring states why: the module reads only
@@ -59,6 +78,7 @@ from typing import Any
 from policy_runtime import (
     POLICY_MODULE_NAME,
     PolicyRuntimeError,
+    episode_commit,
     guard_policy,
     screen_policy,
 )
@@ -67,6 +87,8 @@ __all__ = [
     "DEFAULT_BASELINE_WIDTH",
     "EXPLORATION_POLICY_ENV",
     "POLICY_LOAD_CODE",
+    "PREFIX_VIEW_CONTRACT",
+    "QUESTION_CONTRACT",
     "BaselinePolicy",
     "ExplorationPolicy",
     "PolicyLoadError",
@@ -76,6 +98,25 @@ __all__ = [
 #: The environment variable naming a custom policy's source file.  Unset (or
 #: blank), the committed :class:`BaselinePolicy` is the policy.
 EXPLORATION_POLICY_ENV = "NULLIUS_EXPLORATION_POLICY"
+
+#: The two values :func:`load_exploration_policy` recognizes for an admitted
+#: module's top-level ``CONTRACT`` marker (additions_spec_dreaming_m3.xml,
+#: "Dreaming Preconditions", feature 6).  ``PREFIX_VIEW_CONTRACT`` is every
+#: policy's default: an admitted module that declares no ``CONTRACT`` at all
+#: — today's only shape, and :class:`BaselinePolicy`'s own unconfigured one —
+#: keeps the ``select(prefix_view)`` contract unchanged.  ``QUESTION_CONTRACT``
+#: names a dreaming winner's own shape (``deploy/dreaming/incumbent.m2.py``
+#: and ``incumbent.example.py`` both declare it): ``select(question)``, called
+#: with the campaign's live question — the same ``question.*`` front
+#: :mod:`orchestrator._financial_eval` hands a dreaming candidate — instead of
+#: a :class:`~policy_runtime.PrefixView`.  A module declaring any other value
+#: is refused at load, naming it, rather than failing on the policy's first
+#: call (the bug this feature closes: loading a question-contract module
+#: through the old, single-shape loader raised ``AttributeError: 'PrefixView'
+#: object has no attribute 'legal_roots'`` the moment the round loop called
+#: ``select``).
+PREFIX_VIEW_CONTRACT = "prefix_view"
+QUESTION_CONTRACT = "question"
 
 #: The greppable word every :class:`PolicyLoadError` message leads with — a
 #: caller greps one word for *the configured exploration policy could not be
@@ -157,34 +198,65 @@ class BaselinePolicy:
 
 
 class ExplorationPolicy:
-    """The object :func:`load_exploration_policy` answers — one ``select``, either source.
+    """The object :func:`load_exploration_policy` answers — one ``select``, either contract.
 
     Wraps the raw ``select`` callable (an admitted module's top-level
     function, or a bound :meth:`BaselinePolicy.select`) and, for an admitted
     module only, runs it under :func:`policy_runtime.guard_policy` every call
     — the runtime guard is a property of *authored* code, not of this
-    member's own trusted :class:`BaselinePolicy`.  Every answer, from either
-    source, is validated against the view it was computed over before it is
-    handed back: not a ``list``, a repeated id, or an id the view never
-    revealed each raise :class:`PolicyLoadError`.
+    member's own trusted :class:`BaselinePolicy`.
+
+    :attr:`contract` names which of the two shapes this policy's ``select``
+    was authored against — :data:`PREFIX_VIEW_CONTRACT` (the default) or
+    :data:`QUESTION_CONTRACT`.  The round loop
+    (:mod:`orchestrator._campaign`) reads it to decide *what* to hand
+    :meth:`select`: the unexpanded :class:`~policy_runtime.PrefixView` for
+    the former, or the campaign's raw live question for the latter.
+    :meth:`select` does the rest — for :data:`QUESTION_CONTRACT` it first
+    joins the question to a fresh :func:`policy_runtime.episode_commit`
+    record (:func:`_question_front`), the same join
+    :mod:`orchestrator._financial_eval` makes for a dreaming candidate, so a
+    question-contract policy's ``question.commit(...)`` reaches a real door
+    instead of an :class:`AttributeError`.  Every answer, from either
+    contract, is validated against the world it was computed over before it
+    is handed back: not a ``list``, a repeated id, or an id the world cannot
+    address each raise :class:`PolicyLoadError`.
     """
 
-    __slots__ = ("_guarded", "_select")
+    __slots__ = ("_contract", "_guarded", "_select")
 
-    def __init__(self, select: Callable[[Any], Any], *, guarded: bool) -> None:
+    def __init__(
+        self,
+        select: Callable[[Any], Any],
+        *,
+        guarded: bool,
+        contract: str = PREFIX_VIEW_CONTRACT,
+    ) -> None:
         self._select = select
         self._guarded = guarded
+        self._contract = contract
 
-    def select(self, prefix_view: Any) -> list[str]:
+    @property
+    def contract(self) -> str:
+        """Which of :data:`PREFIX_VIEW_CONTRACT`/:data:`QUESTION_CONTRACT` this policy answers to."""
+        return self._contract
+
+    def select(self, world: Any) -> list[str]:
+        if self._contract == QUESTION_CONTRACT:
+            asked: Any = _question_front(world)
+        else:
+            asked = world
         if self._guarded:
             with guard_policy(policy_module=POLICY_MODULE_NAME):
-                answer = self._select(prefix_view)
+                answer = self._select(asked)
         else:
-            answer = self._select(prefix_view)
-        return _validated_answer(answer, prefix_view)
+            answer = self._select(asked)
+        if self._contract == QUESTION_CONTRACT:
+            return _validated_question_answer(answer, asked)
+        return _validated_answer(answer, asked)
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid only
-        return f"ExplorationPolicy(guarded={self._guarded})"
+        return f"ExplorationPolicy(guarded={self._guarded}, contract={self._contract!r})"
 
 
 def load_exploration_policy(env: Mapping[str, str] | None = None) -> ExplorationPolicy:
@@ -227,10 +299,11 @@ def load_exploration_policy(env: Mapping[str, str] | None = None) -> Exploration
         raise PolicyLoadError(
             f"{POLICY_LOAD_CODE}: {EXPLORATION_POLICY_ENV} names {named!r}, "
             "which was admitted but carries no top-level select function: "
-            "the policy's contract is select(prefix_view), and a module "
-            "without one names no policy to run"
+            "the policy's contract is select(prefix_view) or select(question), "
+            "and a module without either names no policy to run"
         )
-    return ExplorationPolicy(select_fn, guarded=True)
+    contract = _module_contract(named, module)
+    return ExplorationPolicy(select_fn, guarded=True, contract=contract)
 
 
 # -- Reading and importing the configured file ---------------------------------
@@ -278,6 +351,87 @@ def _import_admitted(named: str, source: str) -> types.ModuleType:
     return module
 
 
+def _module_contract(named: str, module: types.ModuleType) -> str:
+    """The admitted module's own ``CONTRACT`` marker — read once, at load time.
+
+    A module that declares no ``CONTRACT`` at all keeps
+    :data:`PREFIX_VIEW_CONTRACT`, today's only shape, unchanged.
+    :data:`QUESTION_CONTRACT` is the one other value this loader runs.  Any
+    other value is refused *here*, naming it, rather than on the policy's
+    first :meth:`ExplorationPolicy.select` call — a module that mistypes its
+    marker fails loudly before a campaign round is ever built around it.
+    """
+    marker = getattr(module, "CONTRACT", None)
+    if marker is None:
+        return PREFIX_VIEW_CONTRACT
+    if marker == QUESTION_CONTRACT:
+        return QUESTION_CONTRACT
+    raise PolicyLoadError(
+        f"{POLICY_LOAD_CODE}: {EXPLORATION_POLICY_ENV} names {named!r}, "
+        f"whose module declares CONTRACT = {marker!r}: the only contract "
+        f"this loader runs besides the unmarked default is "
+        f"{QUESTION_CONTRACT!r}, and a value naming neither is not a "
+        "contract this loader can run"
+    )
+
+
+# -- The question contract: joining a live question to its one commit door ----
+
+
+class _QuestionContractFront:
+    """The ``question.*`` surface a :data:`QUESTION_CONTRACT` policy is handed.
+
+    Fronts the campaign's raw live question
+    (:func:`orchestrator._live_tree.live_question`'s own
+    :class:`policy_runtime.PolicyQuestion`) for every read (``observed``,
+    ``legal_roots``, ``legal_actions``, ``meta``, ``probe_batch``, ``tree``)
+    and a :class:`policy_runtime.EpisodeCommit` opened over that same
+    question for the one write (``commit``) — the identical join
+    :mod:`orchestrator._financial_eval`'s own ``_FinancialQuestion`` makes
+    for a dreaming candidate replayed over a financial world, built fresh
+    here so a question-contract policy driving a *live* campaign's round
+    loop reaches the same door rather than the bare
+    :class:`~policy_runtime.PolicyQuestion`, which carries no ``commit`` of
+    its own.
+    """
+
+    __slots__ = ("_commit", "_question")
+
+    def __init__(self, question: Any, commit: Any) -> None:
+        self._question = question
+        self._commit = commit
+
+    @property
+    def tree(self) -> Any:
+        return self._question.tree
+
+    def observed(self) -> Any:
+        return self._question.observed()
+
+    def legal_roots(self) -> Any:
+        return self._question.legal_roots()
+
+    def legal_actions(self, node_id: Any = None) -> Any:
+        return self._question.legal_actions(node_id)
+
+    def meta(self, node_id: Any) -> Any:
+        return self._question.meta(node_id)
+
+    def probe_batch(self, cells: Any, on_reveal: Any = None) -> Any:
+        return self._question.probe_batch(cells, on_reveal)
+
+    def commit(self, node_id: Any) -> Any:
+        return self._commit.commit(node_id)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid only
+        return "_QuestionContractFront()"
+
+
+def _question_front(question: Any) -> _QuestionContractFront:
+    """Join ``question`` to a fresh commit door — one call, per :meth:`ExplorationPolicy.select`."""
+    return _QuestionContractFront(question, episode_commit(question))
+
+
 # -- Validating any policy's answer against the view it was handed ------------
 
 
@@ -321,6 +475,55 @@ def _validated_answer(answer: Any, prefix_view: Any) -> list[str]:
                 f"{POLICY_LOAD_CODE}: the policy's answer names {node_id!r}, "
                 "which is not a revealed node in the view it was handed"
             )
+    return answer
+
+
+def _validated_question_answer(answer: Any, front: Any) -> list[str]:
+    """Check a question-contract policy's raw answer against the tree it fronts.
+
+    The same two rules :func:`_validated_answer` holds a prefix-view
+    policy's answer to — a sequence, no repeated id — checked here against
+    the tree's own address seam (``front.tree.node(node_id)``) rather than
+    against a reveal set: a question-contract policy's batch routinely names
+    a node the question has not revealed (an unevaluated root, a
+    not-yet-observed frontier neighbour — see
+    ``deploy/dreaming/incumbent.example.py``'s own walk), and such a node is
+    still one the campaign's tree holds and the round loop can expand.
+
+    A ``list`` or a ``tuple`` are both accepted — unlike
+    :func:`_validated_answer`'s strict ``list`` — because
+    ``deploy/dreaming/incumbent.m2.py`` answers its empty batch as ``()``,
+    the literal feature 2 shipped and this feature must run unchanged.
+    """
+    if not isinstance(answer, (list, tuple)):
+        raise PolicyLoadError(
+            f"{POLICY_LOAD_CODE}: a policy's select() must answer a list "
+            f"or tuple of node ids, got {answer!r} ({type(answer).__name__})"
+        )
+    answer = list(answer)
+    tree = getattr(front, "tree", None)
+    node = getattr(tree, "node", None)
+    if not callable(node):
+        raise PolicyLoadError(
+            f"{POLICY_LOAD_CODE}: a question-contract policy is handed a "
+            f"question exposing tree.node(...) — got {front!r} "
+            f"({type(front).__name__}), which has none"
+        )
+    seen: set[Any] = set()
+    for node_id in answer:
+        if node_id in seen:
+            raise PolicyLoadError(
+                f"{POLICY_LOAD_CODE}: the policy's answer names {node_id!r} "
+                "twice; a batch names each node at most once"
+            )
+        seen.add(node_id)
+        try:
+            node(node_id)
+        except PolicyRuntimeError as exc:
+            raise PolicyLoadError(
+                f"{POLICY_LOAD_CODE}: the policy's answer names {node_id!r}, "
+                "which is not a node in the tree the question fronts"
+            ) from exc
     return answer
 
 

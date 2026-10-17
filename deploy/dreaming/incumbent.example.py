@@ -47,7 +47,21 @@ the schedule's own ``frontier_cap`` so a wide lattice is not revealed in one
 round. Committing on every call -- not only the last -- means a replay that
 stops the loop early (the round cap, or an empty frontier) always has a
 committed pick to score.
+
+``CONTRACT = "question"`` names the policy contract this module is authored
+to -- ``select(question)`` over ``question.legal_roots()``/``observed()``/
+``legal_actions()``/``commit(...)``, the walk above -- for
+``orchestrator._policy.load_exploration_policy`` (additions_spec_dreaming_m3.xml,
+"Dreaming Preconditions", feature 6): unmarked, this file would be run under
+the older ``select(prefix_view)`` contract and its first
+``question.legal_roots()`` call would raise ``AttributeError``. A string
+literal rather than a derived value for the same reason
+``incumbent.m2.py`` states for its own marker: dreaming's default reviser
+jitters numeric literals only and leaves a string marker like this one
+untouched across a revision.
 """
+
+CONTRACT = "question"
 
 #: This policy's own fixed scalar, read once by ``select`` and threaded into
 #: ``_schedule`` -- distinct from a dreaming cycle's own ``--beta``, which
