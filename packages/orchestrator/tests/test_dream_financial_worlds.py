@@ -88,7 +88,7 @@ from orchestrator.dream import (
     run_cycle,
 )
 from policy_runtime import CommittedPick
-from replay import TerminalPick
+from replay import NON_COMMITTING_SCORE, TerminalPick
 
 # conftest-less suite: this file is under packages/orchestrator/tests, so the
 # repository root is three parents up, the resolution every sibling dream and
@@ -203,6 +203,29 @@ def select(question):
             if action not in observed and action not in frontier:
                 frontier.append(action)
     return frontier
+"""
+
+
+#: A candidate that declares it commits nothing -- ``select`` calls
+#: ``question.abstain()`` and returns no batch, the one-round-and-done shape
+#: the round loop already seeds roots for (see ``run_replay``'s own prefix
+#: seed), so the replay stops after round one with nothing revealed and
+#: nothing committed. ``_unused_commit_helper`` exists only so this source's
+#: admission reads exactly as it does today for a module with no
+#: ``CONTRACT = "question"`` marker: the module-wide "no commit() call at
+#: all" refusal scans every top-level function, not just ``select``, for a
+#: literal ``.commit(`` -- and a helper that carries one (never called, by
+#: construction) is what the M3 pre-registration's own abstaining baseline
+#: leans on today, ahead of the stricter per-``select`` reachability check a
+#: sibling feature is adding under ``CONTRACT = "question"`` alone.
+ABSTAIN_SOURCE = """
+def _unused_commit_helper(question, node_id):
+    question.commit(node_id)
+
+
+def select(question):
+    question.abstain()
+    return []
 """
 
 
@@ -408,6 +431,57 @@ def test_second_policy_committing_the_same_node_hits_the_cache(
     assert first.score == second.score
     assert len(calls) == 1
     assert calls[0][0] == node_id
+
+
+def test_abstaining_policy_returns_a_miss_whose_record_reports_abstained(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A policy that declares question.abstain() -- feature 5's own claim --
+    # terminates with no pick and the one score a fall-off already earns
+    # (NON_COMMITTING_SCORE), and never reaches the sandboxed scorer: there is
+    # no pick to hand it, exactly as replay.committed_pick's own miss path
+    # never calls the scorer at all.
+    database_url = f"sqlite:///{tmp_path / 'abstain-test.db'}"
+    _load_migration(CAMPAIGN_MIGRATION).apply(database_url)
+    for revision in NODE_TABLE_MIGRATIONS:
+        _load_migration(revision).apply(database_url)
+
+    campaign_id, node_id = _build_completed_campaign(database_url, ic_mean=0.5)
+    artifact_dir = tmp_path / "artifacts"
+    _write_code_artifact(artifact_dir, campaign_id, node_id)
+    calls = _counting_stub(monkeypatch)
+
+    # _FinancialQuestion.abstain() delegates to the same EpisodeCommit record
+    # commit() does, and that record is local to score_on_financial_world --
+    # captured here exactly the way the per-node cache is inspected elsewhere
+    # in this suite, by wrapping the module's own collaborator rather than
+    # reaching into the call's internals.
+    records: list[Any] = []
+    real_episode_commit = _financial_eval.episode_commit
+
+    def _capturing_episode_commit(question: Any) -> Any:
+        record = real_episode_commit(question)
+        records.append(record)
+        return record
+
+    monkeypatch.setattr(_financial_eval, "episode_commit", _capturing_episode_commit)
+
+    context = FinancialEvalContext(
+        evaluation=_fake_evaluation_context(
+            database_url=database_url,
+            artifact_dir=artifact_dir,
+            oos_dates=(dt.date(2026, 6, 1),),
+        )
+    )
+
+    result = score_on_financial_world(ABSTAIN_SOURCE, campaign_id, context=context)
+
+    assert result.pick is None
+    assert result.score == NON_COMMITTING_SCORE
+    assert len(records) == 1
+    assert records[0].abstained is True
+    assert records[0].committed is False
+    assert calls == []
 
 
 # -- dream.run_cycle: both arms, the #financial suffix, VOID exclusion --------

@@ -203,7 +203,11 @@ class _FinancialQuestion:
     the one write (``commit``) -- joining the two the way the module
     docstring describes, so a candidate's own ``question.commit(node_id)``
     reaches feature 222's door through the one question every other call
-    answers through.
+    answers through.  ``abstain`` is the record's other way through that same
+    door: a candidate that declares it commits nothing leaves ``record.pick``
+    ``None`` exactly as a fall-off would, so :func:`replay.committed_pick`
+    reads it as the identical miss -- :data:`replay.NON_COMMITTING_SCORE`,
+    no pick.
     """
 
     __slots__ = ("_commit", "_question")
@@ -236,6 +240,9 @@ class _FinancialQuestion:
 
     def commit(self, node_id: Any) -> Any:
         return self._commit.commit(node_id)
+
+    def abstain(self) -> None:
+        return self._commit.abstain()
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid only
         return "_FinancialQuestion()"
