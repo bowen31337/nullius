@@ -1,0 +1,127 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — declared abstention in the policy contract, and a commit-reachability check that follows helpers</project_name>
+  <addition_summary>
+    docs/preregistration/2026-10-17-m3-dreaming.md makes abstaining a legitimate
+    outcome: a world where a policy commits nothing scores as a flat book (IR
+    0.0) in every paired statistic. The M2 baseline abstains on 49 of 84 real
+    campaigns. But the policy contract has no way to say "I abstain", and the
+    admission gate (policy_runtime.screen_policy, feature 230) states the
+    opposite rule: docs/nullius-tech-architecture.md line 635 requires
+    "`commit()` reachable on every terminating path".
+
+    So deploy/dreaming/incumbent.m2.py abstains through a loophole. The gate's
+    reachability check is intra-procedural (admission.py module docstring,
+    "Commit reachability is intra-procedural and inline"): it holds only
+    functions that themselves contain a `.commit(` call, and treats every other
+    function as an unchecked helper. incumbent.m2.py therefore keeps `.commit(`
+    out of `select` and calls a one-line `_commit` helper only when a node
+    clears the bar. The same move lets any policy fall off without committing
+    and still be admitted, which is exactly what the check exists to refuse.
+
+    This addition gives the contract an explicit `question.abstain()`, makes the
+    check follow same-module helpers for question-contract policies so the
+    loophole closes, and rewrites incumbent.m2.py to abstain explicitly.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv-workspace / pytest. Pure-Python AST checks (stdlib ast only in admission.py).</stack>
+    <test_baseline>main after the dreaming-M3 run: policy-runtime 554 passed; bootstrap 543 passed; orchestrator 786 passed 5 skipped; root tests/ 1668 passed.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md.
+
+      Existing pieces:
+      - policy-runtime commit.py: EpisodeCommit.commit (~:380, a one-way door:
+        one commit per episode), Termination (~:226; committed, pick),
+        CommittedPick, NON_COMMITTING_SCORE (-inf for an episode with no pick).
+        episode_commit(question) builds the record.
+      - The question fronts that implement commit by delegating to an
+        EpisodeCommit record (find them all with `grep -rn "def commit(" packages/*/src`):
+        bootstrap _question.py (~:475, shared by the hpo/featsel/symreg
+        worlds), orchestrator _financial_eval.py _FinancialQuestion (~:237),
+        orchestrator _policy.py _QuestionContractFront (~:423, the campaign
+        adapter for CONTRACT = "question" modules). close-out's
+        _ClosingQuestion drives EpisodeCommit directly.
+      - policy-runtime admission.py: screen_policy (~:495),
+        AdmissionReason.UNREACHABLE_COMMIT (~:164), _function_contains_commit
+        (~:294), _top_level_functions (~:312), _scan_suite (~:335) -- the
+        per-function path walk. The module docstring documents the
+        intra-procedural boundary.
+      - A module declares its contract with a module-level string literal
+        CONTRACT = "question" (orchestrator _policy.py reads it at load);
+        dreaming's default reviser jitters numeric literals only, so the
+        marker survives revision.
+      - deploy/dreaming/incumbent.m2.py: select (~:123) and the _commit helper
+        (~:105). packages/orchestrator/tests/test_m2_incumbent_equivalence.py
+        pins it to closeout._commit_top_node.
+    </conventions>
+    <constraints>
+      - Never edit docs/preregistration/** or docs/user-journeys/**.
+      - Never edit packages/orchestrator/src/orchestrator/_sandbox_child.py,
+        packages/contract/src/contract/** or src/app/** (baked into the gVisor
+        runtime root; any edit makes every sandboxed evaluation fail with
+        gvisor_runtime_stale).
+      - Never edit deploy/shadow/**, packages/router/** or the shadow modules.
+      - Scores do not change: an abstained episode scores NON_COMMITTING_SCORE
+        exactly as a miss does, and no stored replay_score row is rewritten.
+      - A module without CONTRACT = "question" (the select(prefix_view)
+        rankers) is judged by today's rule, with abstain() counted wherever
+        commit() is; nothing it was admitted under before is refused now.
+    </constraints>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Policy Contract">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/policy-runtime/src/policy_runtime/commit.py,packages/policy-runtime/tests/test_commit.py">
+        System lets an episode record declare that it commits nothing through EpisodeCommit.abstain(), so that a deliberate abstention is recorded as one (Termination.abstained returns True) instead of being indistinguishable from a policy that fell off its end.
+        <steps>
+          - EpisodeCommit gains abstain(): records a deliberate abstention, returns None. It is the same one-way door as commit(): abstain after commit, commit after abstain, and a second abstain each raise the record's existing refusal with an error message naming both calls.
+          - Termination gains abstained (True only after abstain()); committed stays False and pick stays None for an abstained episode, and its score is NON_COMMITTING_SCORE exactly as for a miss.
+          - Tests: abstain then terminate returns abstained=True, committed=False, score NON_COMMITTING_SCORE; each one-way-door violation raises; a fall-off termination returns abstained=False.
+        </steps>
+      </feature>
+      <feature index="4" shape="core" depends_on="1"
+               touches_files="packages/bootstrap/src/bootstrap/_question.py,packages/bootstrap/tests/test_question.py">
+        System exposes question.abstain() on every bootstrap world's question (hpo, featsel and symreg), so that a policy abstaining on a bootstrap world returns a termination with abstained=True.
+        <steps>
+          - The bootstrap question's abstain() delegates to the same EpisodeCommit record its commit() uses. Confirm the featsel and symreg fronts share this class (or add abstain() to theirs if they do not, and say so in the commit message).
+          - Tests: a policy that abstains on one world of each domain terminates with abstained=True and scores NON_COMMITTING_SCORE.
+        </steps>
+      </feature>
+      <feature index="5" shape="core" depends_on="1"
+               touches_files="packages/orchestrator/src/orchestrator/_financial_eval.py,packages/orchestrator/tests/test_dream_financial_worlds.py">
+        System exposes question.abstain() on a financial world's question (_FinancialQuestion), so that a policy abstaining while replayed over a stored campaign returns a miss with no committed pick.
+        <steps>
+          - _FinancialQuestion.abstain() delegates to its EpisodeCommit record, beside commit().
+          - Tests: score_on_financial_world over a fixture campaign with a policy that abstains returns NON_COMMITTING_SCORE and no pick, and its record reports abstained=True.
+        </steps>
+      </feature>
+      <feature index="6" shape="core" depends_on="1"
+               touches_files="packages/orchestrator/src/orchestrator/_policy.py,packages/orchestrator/tests/test_policy.py">
+        System exposes question.abstain() to a question-contract policy driving a live campaign (_QuestionContractFront), so that such a policy can abstain in a campaign round (the round returns the policy's chosen node ids as its expanded batch instead of raising an AttributeError error message).
+        <steps>
+          - _QuestionContractFront.abstain() delegates to its commit record, beside commit().
+          - Tests: a CONTRACT = "question" fixture policy that abstains drives one campaign round without error and expands exactly the ids it returns.
+        </steps>
+      </feature>
+      <feature index="2" shape="core" depends_on="1"
+               touches_files="packages/policy-runtime/src/policy_runtime/admission.py,packages/policy-runtime/tests/test_admission.py,docs/nullius-tech-architecture.md">
+        System refuses a question-contract policy whose select can terminate without committing or abstaining, even when the commit sits in a helper, so that the admission gate returns UNREACHABLE_COMMIT for the helper loophole instead of admitting it.
+        <steps>
+          - abstain() counts wherever commit() counts in the reachability walk.
+          - For a module that declares CONTRACT = "question": the module must define a top-level select, and every terminating path of select (return, raise, falling off the end) must be preceded on its own path by commit() or abstain(), or by a call to a same-module top-level function that itself satisfies this on every one of its paths (followed transitively, with a cycle counted as not satisfying). A select that fails is refused with AdmissionReason.UNREACHABLE_COMMIT and a detail naming the terminating line.
+          - A module without the marker is judged exactly as today, with abstain() counted like commit(); a source with neither commit() nor abstain() anywhere is still refused.
+          - Update the admission.py module docstring's reachability paragraph, and docs/nullius-tech-architecture.md line 635's rule, to read "`commit()` or `abstain()` reachable on every terminating path of `select`, following same-module helpers". Change nothing else in the architecture doc.
+          - Tests: the incumbent.m2.py loophole shape (select with no commit, calling a one-line commit helper only on one branch) is refused when marked CONTRACT = "question"; the same shape with abstain() on the other branch is admitted; a helper that commits on every path is followed and admitted; a helper cycle is refused; unmarked prefix-view modules admitted today are still admitted (reuse every existing admission fixture unchanged); deploy/dreaming/incumbent.example.py is still admitted.
+        </steps>
+      </feature>
+      <feature index="3" shape="core" depends_on="1,2,5"
+               touches_files="deploy/dreaming/incumbent.m2.py,packages/orchestrator/tests/test_m2_incumbent_equivalence.py">
+        System ships deploy/dreaming/incumbent.m2.py abstaining through question.abstain() with no helper workaround, so that the M2 baseline is admitted by the strict gate and still returns close-out's exact commit or miss on every fixture campaign.
+        <steps>
+          - select commits the eligible node inline, or calls question.abstain() when none is eligible; the _commit helper and the docstring paragraph explaining the loophole are removed. The commit rule, the _schedule(beta) mapping and the CONTRACT marker are unchanged.
+          - Tests: screen_policy adopts the module under the strict rule; every existing equivalence fixture still matches closeout._commit_top_node exactly (commit for commit, miss for miss, score to 1e-12); a below-bar fixture now terminates with abstained=True.
+        </steps>
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>
